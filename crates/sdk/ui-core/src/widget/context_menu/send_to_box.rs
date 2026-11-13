@@ -1,5 +1,6 @@
 //! The send-to box: where it stands, the keyboard moving round its own fields,
-//! and the box a window opens with no menu around it.
+//! the box the send row opens beside the menu, and the box a window opens with
+//! no menu around it.
 
 use vello::kurbo::Rect;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -15,10 +16,9 @@ impl ContextMenu {
         &self.send_to
     }
 
-    /// Open the box with no menu around it: the row that sends what a menu is
-    /// about, a window's own send key over a selection, and a shell asking an
-    /// app to send what it holds, or to report a problem, when it names whom
-    /// the box goes to. `bounds` is where what is sent stands; the box stands
+    /// Open the box with no menu around it: a window's own send key over a
+    /// selection, and a shell asking an app to send what it holds, or to
+    /// report a problem, when it names whom the box goes to. `bounds` is where what is sent stands; the box stands
     /// beside it.
     pub fn open_send_to_alone(
         &mut self,
@@ -55,13 +55,27 @@ impl ContextMenu {
         self.alone.is_some() && (self.send_to.is_open() || self.send_to.is_drawn())
     }
 
-    /// Hand what the person does to the box that took the menu's place: a
-    /// press in it, a key while the keyboard is in it, and Tab round the box's
-    /// own fields and back to its first. Whether it took it.
+    /// Hand what the person does to the open box before the menu hears it: a
+    /// press in it, a key while the keyboard is in it, Tab round the box's own
+    /// fields and back to its first, and Escape, which puts away the box (and
+    /// a box beside the menu only, as a nested menu's Escape does). Whether it
+    /// took it.
     pub(super) fn route_to_send_to(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         if !self.send_to.is_open() {
             return false;
         }
+        let key = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => Some(*key),
+            _ => None,
+        };
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -70,46 +84,31 @@ impl ContextMenu {
             && self.send_to.contains(self.last_cursor)
         {
             self.send_to.press(self.last_cursor);
-            *ctx.handled = true;
-            if self.send_to.take_sent() {
+        } else if key == Some(NamedKey::Escape) {
+            if self.alone.is_some() {
                 self.close();
-            }
-            return true;
-        }
-        let tab = matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Tab),
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
-        );
-        if tab {
-            // With no menu around it, the box is the whole of what Tab can
-            // reach: past its last stop it wraps back to its first.
-            if self.send_to.is_focused() {
-                let _ = self.send_to.handle_event(event, ctx);
-                if !self.send_to.is_focused() {
-                    self.send_to.focus_first();
-                }
             } else {
+                self.send_to.close();
+                self.sync_rows();
+            }
+        } else if key == Some(NamedKey::Tab) {
+            // The box is the whole of what Tab reaches: past its last stop it
+            // wraps back to its first.
+            if !self.send_to.is_focused()
+                || !self.send_to.handle_event(event, ctx)
+                || !self.send_to.is_focused()
+            {
                 self.send_to.focus_first();
             }
-            self.dirty = true;
-            *ctx.handled = true;
-            return true;
+        } else if !(self.send_to.is_focused() && self.send_to.handle_event(event, ctx)) {
+            return false;
         }
-        if self.send_to.is_focused() && self.send_to.handle_event(event, ctx) {
-            if self.send_to.take_sent() {
-                self.close();
-            }
-            *ctx.handled = true;
-            return true;
+        if self.send_to.take_sent() {
+            self.close();
         }
-        false
+        self.dirty = true;
+        *ctx.handled = true;
+        true
     }
 
     /// The box with no menu around it: it hears the pointer and the keys
@@ -122,36 +121,18 @@ impl ContextMenu {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
         }
-        if self.route_to_send_to(event, ctx) {
-            if self.send_to.take_sent() {
-                self.close();
-            }
-            return;
-        }
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => {
-                if !self.send_to_alone_open() {
-                    return;
+        if !self.route_to_send_to(event, ctx)
+            && self.send_to_alone_open()
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
                 }
-                self.close();
-                *ctx.handled = true;
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                self.close();
-                *ctx.handled = true;
-            }
-            _ => {}
+            )
+        {
+            self.close();
+            *ctx.handled = true;
         }
     }
 }

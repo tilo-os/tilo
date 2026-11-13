@@ -119,7 +119,7 @@ impl BrowserWidget {
             let mut resource = ui::tilo_actions::ResourceSpec::new(
                 "browser.continuity",
                 "browser.continuity",
-                "Bring your browsing",
+                crate::CATALOG.t("browser-resource-continuity"),
             )
             .with_action(crate::effects::BrowserEffect::ReadContinuity.bound());
             if controller.status() == Status::Failed {

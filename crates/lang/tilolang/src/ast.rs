@@ -11,6 +11,23 @@ pub type NodeId = u32;
 pub struct Ident {
     pub name: String,
     pub span: Span,
+    /// The package a `template view` came from, when this name was rewritten at import to be
+    /// qualified with it (`shell.desk_style`): the resolver admits a plain name it qualified
+    /// this way even when it is not one the package offers, since the template's own body is
+    /// the one place that may call the package's unoffered helpers.
+    pub from_template_of: Option<String>,
+}
+
+impl Ident {
+    /// A name as written: no package marks it.
+    #[must_use]
+    pub fn plain(name: impl Into<String>, span: Span) -> Self {
+        Self {
+            name: name.into(),
+            span,
+            from_template_of: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -344,11 +361,15 @@ pub struct Param {
     pub name: Ident,
     pub ty: TypeExpr,
     /// `done: Bool = not item.done`: an action parameter's default, evaluated when the action is
-    /// invoked without it, over the parameters before it, and recorded as the argument.
-    pub default: Option<Expr>,
+    /// invoked without it, over the parameters before it, and recorded as the argument. Boxed:
+    /// most parameters have none, and a parameter stays small enough to pass by value.
+    pub default: Option<Box<Expr>>,
     /// `above: Option<Task> (above)`: the place the view offers the action in supplies it, and
     /// no invocation does: a row of a list gives the row above it in its own visible group.
     pub place: Option<Ident>,
+    /// `saved: Bool (label: "On the Watch later list")`: what the parameter is called where a
+    /// person gives it, when its name in words does not say what it holds.
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -629,14 +650,9 @@ pub enum UnOp {
     Not,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct RefLit {
-    /// The app part as written (an app id or an alias); empty for `@kind:id`.
-    pub app: String,
-    pub ty: String,
-    pub id: String,
-    pub version: Option<String>,
-}
+// The reference literal is the lexer's: it reads `@app.Type:id` as one token, and the tree keeps
+// the same value a token held.
+pub use tilolang_lex::RefLit;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StrPart {

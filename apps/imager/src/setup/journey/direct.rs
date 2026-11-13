@@ -1,4 +1,4 @@
-//! Retained guided inputs, handed to the canonical gated Full-OS surface.
+//! The direct route: Full Tilo installed beside the system the person is using.
 use super::{Destination, Imager, InstallerPreview, InstallerPreviewEffect, Page};
 use crate::setup::staging;
 use imager_backend::prepared_setup::PublicInstallProfile;
@@ -8,7 +8,6 @@ use ui::framework::Mounts;
 use ui::widget::{ButtonRole, Row};
 
 pub(super) struct Direct {
-    /// Mounts the setup window the review hands over to, in a live window.
     pub context: Option<Mounts<Imager>>,
     pub pending: Option<Snapshot>,
     pub belongings_pending: bool,
@@ -37,16 +36,12 @@ pub(super) struct Snapshot {
     plan: staging::plan::Plan,
     profile: imager_backend::imager_model::InstallProfile,
     migration: Option<MigrationIntent>,
-    /// Sensitive work finishes on the destination after its first-boot login
-    /// password exists; no ciphertext or preparation password crosses the
-    /// installation.
     deferred: bool,
 }
 
 impl InstallerPreview {
     pub(super) fn public_install_profile(&self) -> Result<PublicInstallProfile, &'static str> {
         let mut profile = self.install_preferences.clone();
-        // Linux GECOS is a presentation mapping, not the person's global name.
         profile.user.full_name = self
             .journey
             .name
@@ -67,7 +62,6 @@ impl InstallerPreview {
         self.direct_blocker().is_none()
     }
 
-    /// The explanation and the action share admission; display never grants permission.
     pub(super) fn direct_blocker(&self) -> Option<String> {
         use crate::setup::strings::t;
         let key = if !self.live
@@ -147,8 +141,6 @@ impl InstallerPreview {
 
     pub(super) fn review_storage_summary(&self) -> String {
         use crate::setup::strings::{t, t_args};
-        // Recompute for display from the current facts and selected size, not
-        // the cached approved geometry. This cannot authorize installation.
         let Some(basis) = self
             .storage
             .facts
@@ -227,8 +219,6 @@ impl InstallerPreview {
         Ok((migration, accounts))
     }
 
-    /// Prepare the chosen identity and source grants without firmware checks,
-    /// installation admission, a delegated installer or any disk write.
     pub(super) fn prepare_belongings(&mut self) -> Result<(), &'static str> {
         if !self.live
             || !matches!(
@@ -269,8 +259,6 @@ impl InstallerPreview {
                 home_applications: false,
                 home: None,
                 retained: migration,
-                // Source consent is prepared before target allocation. The
-                // real staged application declaration remains a later review.
                 planned_direct: None,
                 applications: None,
                 browser: (self.journey.migrate == Some(true)
@@ -300,10 +288,6 @@ impl InstallerPreview {
             .map_err(|_| "installer-preview-install-profile-invalid")?;
         if self.sensitive_handoff_deferred() {
             let tpm_target = self.tpm_target()?;
-            // The package keeps identity, accounts and browser. Mail, Home and
-            // applications stay in the source journal and are streamed after
-            // first boot, so a mailbox larger than the 32 MiB package bound
-            // never has to become installation ciphertext.
             let migration = self.deferred_migration(tpm_target.is_some())?;
             let snapshot = Snapshot {
                 facts: self
@@ -327,10 +311,6 @@ impl InstallerPreview {
                 return self.finish_direct(Some(prepared));
             }
             if let Some(target) = tpm_target {
-                // The package carries the approved identity and selected
-                // tokens under a machine-generated secret. Mail and retained
-                // files stay in the source journal, so a large mailbox never
-                // becomes installation ciphertext or exceeds the package bound.
                 let identity = self
                     .personal
                     .prepared_handle()
@@ -418,9 +398,6 @@ impl InstallerPreview {
                 home: None,
                 retained: snapshot.migration.clone(),
                 planned_direct: Some(snapshot.plan.clone()),
-                // The separately captured original Apps grant is carried by
-                // retained and registered against the real staging operation.
-                // This slot is the unrelated portal-selected portable export.
                 applications: None,
                 browser: (self.journey.migrate == Some(true)
                     && self.belongings.browser.available())
@@ -438,14 +415,6 @@ impl InstallerPreview {
         Ok(())
     }
 
-    /// Migration consent for retained original files that survives installation
-    /// without carrying identity, account or file ciphertext. The selected
-    /// mail, browser and Home decisions stay in a private journal inside the
-    /// source Home; the plan carries only its opaque operation and digest.
-    ///
-    /// Writing that journal needs the retained source's ownership and mounts,
-    /// which only the Linux-hosted installed system has; the backend owns that
-    /// decision and refuses the preparation elsewhere.
     fn deferred_migration(
         &self,
         carried_by_package: bool,
@@ -457,9 +426,6 @@ impl InstallerPreview {
             && !self.selected_applications()
             && !self.selected_source_anchor()
         {
-            // A complete source with nothing selected has no Home or account
-            // journal to anchor. It must not capture an empty Home merely
-            // because the category defaulted on.
             return Ok(None);
         }
         if !self.capabilities.prepared_installation {
@@ -487,10 +453,6 @@ impl InstallerPreview {
             .selected_mail()?
             .map(|selection| selection.profiles)
             .unwrap_or_default();
-        // Browser profiles and selected online accounts are already inside
-        // the TPM-protected package. Keeping them out of the journal prevents
-        // a second bookmarks/history import or a pending GOA row replacing the
-        // authentication the package carried.
         let browser = if carried_by_package {
             super::browser::SelectedSources::default()
         } else {
@@ -527,11 +489,6 @@ impl InstallerPreview {
     fn tpm_target(
         &self,
     ) -> Result<Option<imager_backend::setup::prepared_tpm::TargetAcquisition>, &'static str> {
-        // The live medium carries its own signed target bundle. A preparation
-        // host is not that image, so it uses the small target policy bundle
-        // published by the release catalog. The backend reviews either against
-        // the release authority pinned into this binary, never a
-        // caller-selected key.
         let policy = crate::host::architecture()
             .ok()
             .flatten()
@@ -569,8 +526,6 @@ impl InstallerPreview {
                 .map_err(|_| "installer-recovery-write-guard")?;
             snapshot.profile.prepared_setup = Some(prepared.expectation().clone());
         } else {
-            // Deferred setups still require the independent recovery copy
-            // review before the privileged write can begin.
             self.recovery
                 .evidence()
                 .map_err(|_| "installer-recovery-copy-required")?;

@@ -97,6 +97,9 @@ pub(super) struct Sibling {
     /// Fingerprint of the last codec advert taken from it: a repeated
     /// advert changes nothing.
     caps_advert: Option<[u8; 32]>,
+    /// Fingerprint of the last word taken from it of where the person's
+    /// workspaces are hosted: a repeated word changes nothing.
+    hosts_advert: Option<[u8; 32]>,
     tasks: [tokio::task::JoinHandle<()>; 2],
 }
 
@@ -162,27 +165,10 @@ impl ActorState {
     /// root, with every revocation that comes with them.
     pub(super) fn own_hello(&self) -> Option<Hello> {
         let identity = self.host_identity.as_ref()?;
-        let (cert, mut revocations) = identity.material_for(DEFAULT_WS_TOPIC);
-        let mut certs = vec![cert];
-        let mut workspaces: Vec<_> = identity.workspace_device_certs.keys().copied().collect();
-        workspaces.sort_unstable();
-        for ws in workspaces {
-            let (cert, entries) = identity.material_for(ws);
-            if !certs
-                .iter()
-                .any(|known| known.user_public_key == cert.user_public_key)
-            {
-                certs.push(cert);
-            }
-            for entry in entries {
-                if !revocations.contains(&entry) {
-                    revocations.push(entry);
-                }
-            }
-        }
+        let (cert, revocations) = identity.material_for(DEFAULT_WS_TOPIC);
         Some(Hello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            certs,
+            certs: vec![cert],
             revocations,
         })
     }
@@ -337,6 +323,7 @@ impl ActorState {
             revocations: hello.revocations,
             frames,
             caps_advert: None,
+            hosts_advert: None,
             tasks,
         };
         tracing::info!(peer = %peer, "session with a device of the person started");
@@ -395,6 +382,18 @@ impl ActorState {
                         })
                     }
                     NeighbourMsg::PersonalWorkspaces { .. } => true,
+                    // Where the person's workspaces are hosted, as the device that holds
+                    // them says: how a device copied from it, or one that holds none of
+                    // them yet, finds each workspace's host.
+                    NeighbourMsg::PersonalHosts { .. } => {
+                        let Ok(bytes) = postcard::to_allocvec(&msg) else {
+                            return;
+                        };
+                        let fingerprint = message_fingerprint(&bytes);
+                        self.siblings.get_mut(&peer).is_some_and(|sibling| {
+                            sibling.hosts_advert.replace(fingerprint) != Some(fingerprint)
+                        })
+                    }
                     _ => {
                         tracing::warn!(peer = %peer, kind = msg.kind(), "a device of the person sent what its session does not carry");
                         false

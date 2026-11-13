@@ -148,7 +148,7 @@ fn sidebar_new_note_controls_create_the_notebooks_note() {
 
         assert_eq!(
             open_title(&mut app).as_deref(),
-            Some(notes::notebook::UNTITLED),
+            Some(notes::notebook::NO_TITLE),
             "the header control opens the note it made"
         );
         assert!(
@@ -160,7 +160,7 @@ fn sidebar_new_note_controls_create_the_notebooks_note() {
             &mut twin,
             kind(),
             "new-note",
-            json!({ "title": notes::notebook::UNTITLED }),
+            json!({ "title": notes::notebook::NO_TITLE }),
         );
         assert_eq!(
             outline(&app),
@@ -187,14 +187,14 @@ fn sidebar_new_note_controls_create_the_notebooks_note() {
         );
         assert_eq!(
             open_title(&mut app).as_deref(),
-            Some(notes::notebook::UNTITLED)
+            Some(notes::notebook::NO_TITLE)
         );
 
         call(
             &mut twin,
             &item(twin_one),
             "new-child",
-            json!({ "title": notes::notebook::UNTITLED }),
+            json!({ "title": notes::notebook::NO_TITLE }),
         );
         assert_eq!(
             outline(&app),

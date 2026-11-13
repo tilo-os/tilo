@@ -8,15 +8,13 @@
 //! app and ranks it first. app-host binds the download to the signed
 //! catalogue's root, publisher, app id, version, and size before extracting.
 
+use crate::resource::CATALOG;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
-/// The outcome of a fully-executed [`execute`] call: whether the last
-/// meaningful step succeeded and the human-readable status the status
-/// bar should show.
 #[derive(Clone, Debug)]
 pub struct ActionOutcome {
     pub ok: bool,
@@ -24,8 +22,6 @@ pub struct ActionOutcome {
     pub launch: Option<ApplicationLaunch>,
 }
 
-/// A prepared installed application, launched through the Store's original
-/// authenticated workspace channel rather than the package custodian.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationLaunch {
     pub app_id: String,
@@ -120,15 +116,6 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     Ok(bytes.len() as u64)
 }
 
-/// Execute a card action end-to-end. `staging_dir` is where a
-/// downloaded `.tapp` is written before install; pass
-/// [`tapp_staging_dir`] in production.
-///
-/// For `Open`/`Update` on an uncached Tilo app this is: download →
-/// app-host verified install → exact prepared launch target. The Store
-/// submits that target on its original authenticated collaboration channel
-/// and waits for actual startup. Already-cached apps preserve their selected
-/// signed package root through the same route.
 pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
     execute_with_host(None, item, action, staging_dir)
 }
@@ -154,13 +141,13 @@ pub fn execute_with_host(
         (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) if item.installed.is_installed() => {
             tilo_existing(host, item, |host, id| {
                 host.pin(id, true)
-                    .map(|()| ui::i18n!("store-kept", "name" => item.name.clone()))
+                    .map(|()| CATALOG.t_args("store-kept", &[("name", item.name.clone().into())]))
             })
         }
         (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) => keep_new_tilo(host, item),
         (ActionKind::Unmark, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
             host.pin(id, false)
-                .map(|()| ui::i18n!("store-released", "name" => item.name.clone()))
+                .map(|()| CATALOG.t_args("store-released", &[("name", item.name.clone().into())]))
         }),
         (ActionKind::FlatpakInstall, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             let reference = match item.install_ref_path.as_deref() {
@@ -187,21 +174,21 @@ pub fn execute_with_host(
                         return Err("This repository belongs to the device. Ask its administrator to install the app.".into());
                     }
                     host.flatpak_install_remote(name, &item.id, branch)
-                        .map(|_| ui::i18n!("store-app-installed"))
+                        .map(|_| CATALOG.t("store-app-installed"))
                 } else {
                     host.flatpak(
                         app_host::client::FlatpakAction::Install,
                         &item.id,
                         reference.as_deref(),
                     )
-                    .map(|_| ui::i18n!("store-app-installed"))
+                    .map(|_| CATALOG.t("store-app-installed"))
                 }
             })
         }
         (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             host_result(host, |host| {
                 host.flatpak(app_host::client::FlatpakAction::Update, &item.id, None)
-                    .map(|_| ui::i18n!("store-app-updated"))
+                    .map(|_| CATALOG.t("store-app-updated"))
             })
         }
         (ActionKind::FlatpakOpen, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
@@ -223,7 +210,6 @@ pub fn execute_with_host(
     }
 }
 
-/// The Tilo `Open` / `Update` flow: fetch-if-needed, then launch.
 fn open_tilo(
     host: Option<&app_host::client::BlockingClient>,
     item: &StoreItem,
@@ -259,7 +245,7 @@ fn open_tilo(
         // An update replaces what runs at the app's next launch; it does
         // not open the app.
         if action == ActionKind::RuntimeInstall {
-            return ActionOutcome::ok(ui::i18n::I18nManager::format(
+            return ActionOutcome::ok(crate::resource::CATALOG.t_args(
                 "store-runtime-installed",
                 &[
                     ("name", ui::i18n::ArgValue::Text(item.name.clone())),
@@ -345,7 +331,9 @@ fn keep_new_tilo(
         .install_offer(&registry, &expected)
         .and_then(|installed| host.pin(installed, true))
     {
-        Ok(()) => ActionOutcome::ok(ui::i18n!("store-kept", "name" => item.name.clone())),
+        Ok(()) => {
+            ActionOutcome::ok(CATALOG.t_args("store-kept", &[("name", item.name.clone().into())]))
+        }
         Err(error) => ActionOutcome::fail(format!("{}: {error}", item.name)),
     }
 }
@@ -456,7 +444,6 @@ mod tests {
         }
     }
 
-    /// Without a Flatpak host, needs-host and open both fail without spawning anything.
     #[test]
     fn actions_without_a_flatpak_host_fail_without_spawning() {
         {

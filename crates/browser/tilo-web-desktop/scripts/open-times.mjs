@@ -94,7 +94,7 @@ async function page(index) {
   await send('Page.enable', {}, sessionId);
   // The first visit's first screen (web/first-run.mjs) counts as seen: this
   // drives the desktop behind it, as a returning person sees it.
-  await send('Page.addScriptToEvaluateOnNewDocument', {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"}, sessionId);
+  await send('Page.addScriptToEvaluateOnNewDocument', {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"}, sessionId);
   // Optional, explicit viewport for repeatable desktop/Retina acceptance.
   if (process.env.VIEWPORT) {
     const [width, height] = process.env.VIEWPORT.split('x').map(Number);

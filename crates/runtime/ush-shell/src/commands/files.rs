@@ -27,7 +27,6 @@ pub fn lookup(name: &str) -> Option<Command> {
     })
 }
 
-/// `basename NAME [SUFFIX]`, `basename -a NAME...`, `-s SUFFIX`, `-z`.
 fn basename(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     let spec = Spec::new(
         "s",
@@ -101,7 +100,6 @@ pub fn base_name(name: &str) -> String {
         .to_string()
 }
 
-/// The directory part of `name` as `dirname` takes it.
 pub fn dir_name(name: &str) -> String {
     let trimmed = name.trim_end_matches('/');
     if trimmed.is_empty() {
@@ -143,14 +141,10 @@ fn dirname(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     0
 }
 
-/// How much of a path must exist for [`canonicalize`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Must {
-    /// Every component (`-e`).
     All,
-    /// All but the last (`readlink -f`, `realpath`'s default).
     AllButLast,
-    /// None of it (`-m`).
     Nothing,
 }
 

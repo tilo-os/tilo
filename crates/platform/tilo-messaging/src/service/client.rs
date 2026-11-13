@@ -1,10 +1,9 @@
-//! An app's side of the messaging socket: the enrollment and messaging
-//! clients Messages is lent, backed by the service.
+//! An app's side of the messaging socket: the enrollment and messaging clients
+//! Messages is lent by the service.
 //!
-//! What the app reads without waiting (an account's state, an enrollment's
-//! phase) comes from the last snapshot the service sent; everything else is
-//! one call. Each account still checks its grant, contacts route and custody
-//! in the service on every operation; the snapshot authorizes nothing.
+//! What the app reads without waiting (an account's state, an enrollment's phase)
+//! comes from the last snapshot; everything else is one call. The snapshot
+//! authorizes nothing, and every operation rechecks its grant in the service.
 
 use std::os::fd::FromRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -24,9 +23,7 @@ use tilo_contact_directory::routing::Route;
 use super::link::{Handler, Responder};
 use super::wire::{AppLink, Call, Event, GroupCall, Handoff, PROTOCOL, Proposal, Reply, Snapshot};
 
-/// How long a connection waits for the service's first snapshot.
 const FIRST_STATE: Duration = Duration::from_secs(5);
-/// How long Passwords waits for the service's permission requests.
 const PROPOSALS: Duration = Duration::from_secs(2);
 
 type Observer = Weak<dyn Fn() + Send + Sync>;
@@ -88,16 +85,12 @@ impl Handler<Call, Reply, Event> for State {
     }
 }
 
-/// One connection to the service.
 pub struct Connection {
     link: AppLink,
     state: Arc<State>,
 }
 
 impl Connection {
-    /// The connection the launcher handed this app, once per process; `None`
-    /// when it was handed none (the service is not running, or the app was
-    /// not launched into a session).
     pub fn inherited() -> Option<Arc<Self>> {
         static INHERITED: OnceLock<Option<Arc<Connection>>> = OnceLock::new();
         INHERITED
@@ -115,16 +108,12 @@ impl Connection {
             .clone()
     }
 
-    /// Connect to the service at `socket` as `app_id`, writing the handoff
-    /// the launcher writes for a launched app. For a trusted host that shows
-    /// Messages in its own process.
     pub fn connect(socket: &std::path::Path, app_id: &str) -> std::io::Result<Arc<Self>> {
         let mut stream = UnixStream::connect(socket)?;
         write_handoff(&mut stream, app_id)?;
         Self::over(stream)
     }
 
-    /// A connection over a stream whose handoff was written.
     pub fn over(stream: UnixStream) -> std::io::Result<Arc<Self>> {
         let state = Arc::new(State {
             snapshot: RwLock::default(),
@@ -160,23 +149,18 @@ impl Connection {
         )
     }
 
-    /// The person the service holds accounts for.
     pub fn principal(&self) -> String {
         self.snapshot(|snapshot| snapshot.principal.clone())
     }
 
-    /// Account enrollment, as Messages is lent it.
     pub fn enrollment(self: &Arc<Self>) -> EnrollmentClient {
         EnrollmentClient::new(self.principal(), Arc::new(Enrollment(self.clone())))
     }
 
-    /// The running accounts, as Messages is lent them.
     pub fn messaging(self: &Arc<Self>) -> MessagingClient {
         MessagingClient::new(self.principal(), Arc::new(Messaging(self.clone())))
     }
 
-    /// Call `observer` whenever the accounts' state or history changed.
-    /// Dropping the returned guard stops it.
     pub fn observe(
         &self,
         observer: Arc<dyn Fn() + Send + Sync>,
@@ -189,7 +173,6 @@ impl Connection {
         Box::new(observer)
     }
 
-    /// The permission requests the service waits on; for Passwords.
     pub fn proposals(&self) -> Vec<Proposal> {
         match self.link.call_blocking(Call::Proposals, PROPOSALS) {
             Some(Reply::Proposals(proposals)) => proposals,
@@ -197,13 +180,10 @@ impl Connection {
         }
     }
 
-    /// How many times the requests changed: what a window that shows them
-    /// compares to know to look again.
     pub fn proposals_revision(&self) -> u64 {
         self.snapshot(|snapshot| snapshot.proposals)
     }
 
-    /// The person's answer to one request; for Passwords.
     pub fn decide(&self, proposal: &str, decision: super::wire::Decision) -> Result<(), SendError> {
         match self.link.call_blocking(
             Call::Decide {
@@ -227,7 +207,6 @@ impl Connection {
     }
 }
 
-/// Write the launcher's handoff for `app_id`.
 pub fn write_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_vec(&Handoff {

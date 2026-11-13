@@ -1,84 +1,8 @@
 //! Workspace capabilities → sandbox restrictions.
 //!
-//! The package manifest says what an app asks for *at install time*.
-//! This module carries the other half: what the **user** granted it at
-//! runtime. Both must be true before a path, device or network is
-//! reachable — the manifest is a ceiling, the capabilities are the
-//! user's decision, and the sandbox binds only what survives both.
-//!
-//! ## The vocabulary is not ours
-//!
-//! A capability is a [`CapOverride`] from `collab-types` — the same
-//! record the compositor stores and shows in the permissions UI.
-//! No launcher-local permission type is used, or the recorded and
-//! enforced grants could drift apart.
-//!
-//! ## How a capability becomes a kernel restriction
-//!
-//! | Scope | Verb | Effect on the sandbox |
-//! |---|---|---|
-//! | [`Scope::FsPath`] | [`Access::Read`] | `--ro-bind-try <p> <p>` + a Landlock read rule |
-//! | [`Scope::FsPath`] | [`Access::Write`] | `--bind-try <p> <p>` + a Landlock read/write rule |
-//! | [`Scope::Device`] `"camera"` | any | the host's `/dev/video*` nodes are bound |
-//! | [`Scope::Device`] `"microphone"` | any | the `PipeWire` socket + `/dev/snd` are bound |
-//! | [`Scope::Device`] `"screencast"` | any | nothing — brokered by the portal, not a bind |
-//! | [`Scope::NetHost`] `"*"` | any | the network namespace is shared instead of isolated |
-//! | [`Scope::NetHost`] a host | any | the namespace stays isolated and egress is brokered through [`crate::netgate`] |
-//!
-//! Everything else produces no bind. **Absence of a capability is
-//! enforced by absence of the mount.**
-//!
-//! ## Tilo's private stores are never inside a grant
-//!
-//! A grant names a folder the person understands as *theirs* — "my home",
-//! "my documents". Tilo keeps its own key material and trust roots in the
-//! same home: the identity store's fallback secrets, the accounts vault key,
-//! the publisher trust and revocation lists, the workspace tree that records
-//! every grant (all under `$XDG_CONFIG_HOME/tilo`), and a file-backed secret
-//! store named by `TILO_SECRETS_DIR`. [`private_store_roots`] names them, and
-//! [`CapabilityPlan::for_app`] keeps every grant out of them:
-//!
-//! - a grant **at or inside** a private store is refused;
-//! - a grant **containing** one keeps its bind, and the store is hidden behind
-//!   an empty read-only tmpfs mounted after every grant
-//!   ([`CapabilityPlan::masked_dirs`]). Landlock cannot carve an exception
-//!   beneath an allowed directory, so the mount namespace does it;
-//! - inside a **writable** grant, every directory between the grant and the
-//!   store is bound onto itself ([`CapabilityPlan::pinned_dirs`]). A mount point
-//!   cannot be renamed or removed, so the app cannot move the real store aside
-//!   and plant a substitute at its path for Tilo to read next;
-//! - a writable grant holding a symlink the store's path resolves through is
-//!   bound read-only: a symlink cannot be pinned, and repointing it would plant
-//!   a substitute just the same.
-//!
-//! ## Per-host network access
-//!
-//! A [`Scope::NetHost`] capability naming a host used to be applied as
-//! *unrestricted*, since the network namespace is all-or-nothing. It
-//! now reaches a mechanism: the namespace stays empty and the app's
-//! only route out is a socket the launcher holds, matching the
-//! allowlist against the **name** before it's resolved — see
-//! [`crate::netgate`].
-//!
-//! ## Read-only participation
-//!
-//! [`Participation`] answers "may this app originate changes at all?"
-//! — read as a capability, not a mode an app opts into. No new
-//! vocabulary needed: a workspace-scoped `Restrict` at `Access::Read`
-//! already reads "see everything, change nothing" through the same
-//! [`decide_capability`] every other decision goes through.
-//!
-//! A read-only participant gets no writable path. The launcher still gives
-//! it the public identity projection for attribution; no app receives root
-//! signing material. `TILO_PARTICIPATION=read-only` tells the app which shape
-//! it is in. At launch, an unscoped app inside a workspace is resolved to
-//! read-only so missing policy fails closed.
-//!
-//! ## Deny by default
-//!
-//! [`load_capability_file`] returns an empty list for a missing,
-//! unreadable or malformed file — every failure mode grants nothing.
-//! Nothing here can *widen* a manifest, only add what the user granted.
+//! The manifest says what an app asks for at install time; this module carries what the
+//! user granted it at runtime. Both must be true before a path, device or network is
+//! reachable, and the absence of a capability is enforced by the absence of the mount.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -88,34 +12,27 @@ use collab_types::caps::{
     decide_capability,
 };
 
-/// How an app may take part in the space it is launched into. Resolved
-/// from the capability list by [`CapabilityPlan::for_app`], not
-/// declared by the app and not a UI setting.
+/// How an app may take part in the space it is launched into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Participation {
-    /// No workspace-scoped capability names this app either way, so nothing
-    /// is inferred — the default, deliberately: guessing here would decide
-    /// who may author in a workspace, not this module's call.
+    /// No workspace-scoped capability names this app either way, so nothing is inferred — the default,
+    /// deliberately: guessing here would decide who may author in a workspace, not this module's call.
     #[default]
     Unscoped,
-    /// May see the space; may not change it. The identity is withheld, so
-    /// the app cannot originate an authored change at all.
+    /// May see the space; may not change it.
     ReadOnly,
     /// May change the space.
     Author,
 }
 
 impl Participation {
-    /// Should the sandbox carry the user identity? The one question the
-    /// answer feeds — a read-only participant holds no signing key, which
-    /// is what makes "cannot author" structural rather than enforced after
-    /// the fact.
+    /// Should the sandbox carry the user identity?
     pub fn carries_identity(self) -> bool {
         !matches!(self, Participation::ReadOnly)
     }
 
-    /// The value of `TILO_PARTICIPATION` inside the sandbox, if the mode is
-    /// one worth telling the app about.
+    /// The value of `TILO_PARTICIPATION` inside the sandbox, if the mode is one worth telling the app
+    /// about.
     pub fn env_value(self) -> Option<&'static str> {
         match self {
             Participation::ReadOnly => Some("read-only"),
@@ -126,47 +43,29 @@ impl Participation {
 }
 
 /// The resolved, host-side consequence of an app's capabilities.
-///
-/// Pure data: [`CapabilityPlan::for_app`] does the policy evaluation,
-/// [`crate::sandbox::build_bwrap_argv`] turns the result into bwrap
-/// flags, and `run.rs` turns it into Landlock rules — nothing
-/// downstream re-reads the capability list, so the two enforcement
-/// layers cannot disagree about what was granted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilityPlan {
     /// Host paths to bind read-only, at the same path in the sandbox.
     pub ro_paths: Vec<PathBuf>,
     /// Host paths to bind read-write, at the same path in the sandbox.
     pub rw_paths: Vec<PathBuf>,
-    /// Device classes that were granted (`"camera"`, `"microphone"`,
-    /// `"screencast"`). Kept for logging/tests; the paths they imply are
-    /// already in [`Self::rw_paths`].
+    /// Device classes that were granted (`"camera"`, `"microphone"`, `"screencast"`).
     pub devices: Vec<String>,
-    /// Whether any network capability was granted at all — says nothing
-    /// about *which* hosts. [`Self::net_hosts`] carries the difference,
-    /// and `crate::sandbox::egress_decision` is what acts on it.
+    /// Whether any network capability was granted at all — says nothing about *which* hosts.
     pub allow_network: bool,
-    /// The host patterns the network capabilities named. Enforced: a list
-    /// that is not exactly `["*"]` leaves the namespace isolated and
-    /// becomes the allowlist [`crate::netgate`] filters on.
+    /// The host patterns the network capabilities named.
     pub net_hosts: Vec<String>,
-    /// Whether the app may originate changes in the space. Decides
-    /// whether the sandbox carries a signing identity at all — see
-    /// [`Participation`].
+    /// Whether the app may originate changes in the space.
     pub participation: Participation,
-    /// Private stores a granted path would otherwise expose, at the path the
-    /// grant shows them in the sandbox. Each is covered by an empty read-only
-    /// tmpfs mounted after every grant — see the module docs.
+    /// Private stores a granted path would otherwise expose, at the path the grant shows them in the
+    /// sandbox.
     pub masked_dirs: Vec<PathBuf>,
-    /// Directories inside a writable grant on the way to a masked store,
-    /// outermost first. Each is bound read-write onto itself after the grants,
-    /// so it is a mount point the app cannot rename or remove.
+    /// Directories inside a writable grant on the way to a masked store, outermost first.
     pub pinned_dirs: Vec<PathBuf>,
 }
 
 impl CapabilityPlan {
-    /// The plan for an app that was granted nothing. `const` so call
-    /// sites can spell "no capabilities" without allocating.
+    /// The plan for an app that was granted nothing.
     pub const fn empty() -> Self {
         Self {
             ro_paths: Vec::new(),
@@ -188,29 +87,15 @@ impl CapabilityPlan {
             && !self.allow_network
     }
 
-    /// Resolve `caps` into the binds `app_id` has actually been granted, as
-    /// of `now` (seconds since the Unix epoch; `None` skips expiry
-    /// evaluation).
-    ///
-    /// The decision is `collab_types::decide_capability` — the same
-    /// fail-closed function the compositor and the filesystem call — so a
-    /// `Restrict` override or an expired grant removes a bind here exactly
-    /// as it removes an allow there. An app holds no base authority: every
-    /// bind below exists because some capability explicitly says so.
-    ///
-    /// Tilo's [`private_store_roots`] are then kept out of every grant
-    /// ([`Self::confine_private_stores`]).
+    /// Resolve `caps` into the binds `app_id` has actually been granted, as of `now` (seconds since the
+    /// Unix epoch; `None` skips expiry evaluation).
     pub fn for_app(app_id: &str, caps: &[CapOverride], now: Option<u64>) -> Self {
         Self::for_app_with(app_id, caps, now, host_device_paths)
             .confine_private_stores(&private_store_roots())
     }
 
-    /// [`Self::for_app`]'s policy evaluation with the device-node lookup
-    /// injected, before [`Self::confine_private_stores`].
-    ///
-    /// Which `/dev/video*` nodes exist is a property of the host, not the
-    /// policy, so tests substitute a fixed resolver to assert on an exact
-    /// argv — the policy evaluation itself is the production path either way.
+    /// [`Self::for_app`]'s policy evaluation with the device-node lookup injected, before
+    /// [`Self::confine_private_stores`].
     pub fn for_app_with(
         app_id: &str,
         caps: &[CapOverride],
@@ -218,15 +103,12 @@ impl CapabilityPlan {
         device_paths: fn(&str) -> Vec<PathBuf>,
     ) -> Self {
         let actor = Actor::app(app_id);
-        // path → writable. A path granted both Read and Write ends up
-        // read-write once, never bound twice.
         let mut fs: BTreeMap<String, bool> = BTreeMap::new();
         let mut devices: Vec<String> = Vec::new();
         let mut net_hosts: Vec<String> = Vec::new();
 
         for cap in caps {
-            // Only grants nominate a resource. A `Restrict` cannot introduce a
-            // bind, only take one away, through `decide_capability` below.
+            // Only grants nominate a resource.
             if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
                 continue;
             }
@@ -249,8 +131,8 @@ impl CapabilityPlan {
                     *slot |= writable;
                 }
                 Scope::Device(device) => {
-                    // `Read` is the floor of the verb ladder, so a grant
-                    // phrased in any verb answers it.
+                    // `Read` is the floor of the verb ladder, so a grant phrased in any verb answers
+                    // it.
                     if !allows(
                         &actor,
                         &ResourceRef::Device(device.clone()),
@@ -265,9 +147,9 @@ impl CapabilityPlan {
                     }
                 }
                 Scope::NetHost(host) => {
-                    // A stored grant that is not a host in the one grammar
-                    // (an IP literal, written before addresses were refused)
-                    // covers nothing; say so rather than drop it silently.
+                    // A stored grant that is not a host in the one grammar (an IP literal, written
+                    // before addresses were refused) covers nothing; say so rather than drop it
+                    // silently.
                     if let Err(reason) = collab_types::caps::NetHostPattern::parse(host) {
                         tracing::warn!(%reason, "ignoring a network grant that is not a host");
                         continue;
@@ -285,8 +167,8 @@ impl CapabilityPlan {
                         net_hosts.push(host.clone());
                     }
                 }
-                // A collaborative-file record is reached through the workspace's
-                // documents, not the kernel — inert here, never permissive.
+                // A collaborative-file record is reached through the workspace's documents, not the
+                // kernel — inert here, never permissive.
                 Scope::FsRecord(_) => {}
             }
         }
@@ -319,20 +201,12 @@ impl CapabilityPlan {
 /// (`tilo_secrets::SECRETS_DIR_ENV`).
 const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
 
-/// Symlinks followed while resolving one private store's path before the
-/// resolution gives up — the kernel's own limit.
+/// Symlinks followed while resolving one private store's path before the resolution gives up — the
+/// kernel's own limit.
 const MAX_SYMLINK_HOPS: usize = 40;
 
-/// The directories holding Tilo's own key material and trust roots, as this
-/// process's environment names them.
-///
-/// - `$XDG_CONFIG_HOME/tilo`, and `$HOME/.config/tilo` where that differs:
-///   the identity store and its fallback secrets, the accounts vault and its
-///   key, `trusted-attestors.toml`, `revoked-keys.toml`, the workspace tree
-///   that records every grant, and the app registries;
-/// - `$TILO_SECRETS_DIR`, a file-backed secret store with its key beside it.
-///
-/// The launcher runs in the person's session, so these are the person's own.
+/// The directories holding Tilo's own key material and trust roots, as this process's environment names
+/// them.
 pub fn private_store_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(config) = tilo_paths::xdg::config_home() {
@@ -347,15 +221,12 @@ pub fn private_store_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// A path resolved one component at a time, recording where each symlink on
-/// the way lives.
+/// A path resolved one component at a time, recording where each symlink on the way lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Route {
-    /// The path with every symlink followed. Components from the first one
-    /// that does not exist onwards are kept as written.
+    /// The path with every symlink followed.
     real: PathBuf,
     /// The resolved directory holding each symlink the resolution followed.
-    /// A writable grant containing one could repoint it.
     link_dirs: Vec<PathBuf>,
 }
 
@@ -408,8 +279,8 @@ impl Route {
     }
 }
 
-/// Queue `path`'s normal and parent components, at the front (a symlink's
-/// target, resolved before whatever followed the link) or at the back.
+/// Queue `path`'s normal and parent components, at the front (a symlink's target, resolved before
+/// whatever followed the link) or at the back.
 fn queue_components(
     pending: &mut std::collections::VecDeque<std::ffi::OsString>,
     path: &Path,
@@ -448,9 +319,9 @@ impl PrivateRoot {
     }
 }
 
-/// The private stores worth guarding: absolute, resolvable, and not inside
-/// another one (the outer store's mask already hides it, and a nested mask
-/// could not be mounted inside the outer read-only one).
+/// The private stores worth guarding: absolute, resolvable, and not inside another one (the outer
+/// store's mask already hides it, and a nested mask could not be mounted inside the outer read-only
+/// one).
 fn outermost_roots(roots: &[PathBuf]) -> Vec<PrivateRoot> {
     let mut resolved: Vec<PrivateRoot> = Vec::new();
     for raw in roots {
@@ -495,21 +366,15 @@ fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Does a grant resolving to `real` reach `route` — contain where it lands,
-/// or a symlink on the way there?
+/// Does a grant resolving to `real` reach `route` — contain where it lands, or a symlink on the way
+/// there?
 fn reaches(route: &Route, real: &Path) -> bool {
     route.real.starts_with(real) || route.link_dirs.iter().any(|dir| dir.starts_with(real))
 }
 
 impl CapabilityPlan {
-    /// Keep the private stores in `roots` out of this plan's filesystem
-    /// grants; the module docs say how. [`Self::for_app`] calls it with
-    /// [`private_store_roots`].
-    ///
-    /// A store a grant would reach is created first (mode 0700) when it does
-    /// not exist yet: the mask needs a directory to mount over, and a writable
-    /// grant must not be able to create the store for Tilo to find later. A
-    /// store that cannot be created takes the grants reaching it with it.
+    /// Keep the private stores in `roots` out of this plan's filesystem grants; the module docs say
+    /// how.
     #[must_use]
     pub fn confine_private_stores(mut self, roots: &[PathBuf]) -> Self {
         if self.ro_paths.is_empty() && self.rw_paths.is_empty() {
@@ -528,8 +393,7 @@ impl CapabilityPlan {
     }
 
     fn confine_one(&mut self, root: &PrivateRoot) {
-        // At or inside the store, by its name or by where the grant resolves:
-        // no bind at all.
+        // At or inside the store, by its name or by where the grant resolves: no bind at all.
         let inside = |granted: &PathBuf| {
             root.contains(granted)
                 || std::fs::canonicalize(granted).is_ok_and(|real| root.contains(&real))
@@ -572,8 +436,8 @@ impl CapabilityPlan {
             }
         };
 
-        // A symlink on the store's route inside a writable grant could be
-        // repointed: the grant keeps its reach and loses its write.
+        // A symlink on the store's route inside a writable grant could be repointed: the grant keeps
+        // its reach and loses its write.
         let unpinnable: Vec<PathBuf> = self
             .rw_paths
             .iter()
@@ -607,8 +471,8 @@ impl CapabilityPlan {
             if !self.masked_dirs.contains(&mask) {
                 self.masked_dirs.push(mask);
             }
-            // Pin each directory between the grant and the store whose
-            // visible mount is writable; a grant path is a mount already.
+            // Pin each directory between the grant and the store whose visible mount is writable; a
+            // grant path is a mount already.
             let mut dir = granted.clone();
             let mut parts = below.components().peekable();
             while let Some(part) = parts.next() {
@@ -630,8 +494,7 @@ impl CapabilityPlan {
         self.ro_paths.iter().chain(&self.rw_paths)
     }
 
-    /// Is the innermost grant containing `path` — the mount the sandbox shows
-    /// there — writable?
+    /// Is the innermost grant containing `path` — the mount the sandbox shows there — writable?
     fn innermost_grant_is_writable(&self, path: &Path) -> bool {
         let depth = |granted: &PathBuf| granted.components().count();
         let innermost = |paths: &[PathBuf]| {
@@ -659,9 +522,8 @@ fn allows(
     decide_capability(actor, resource, verb, caps, now) == CapDecision::Allow
 }
 
-/// A path we are willing to bind: absolute, and not the root itself
-/// (binding `/` over the sandbox root would replace the namespace the
-/// sandbox just built).
+/// A path we are willing to bind: absolute, and not the root itself (binding `/` over the sandbox root
+/// would replace the namespace the sandbox just built).
 fn is_bindable_path(raw: &str) -> bool {
     use std::path::Component;
 
@@ -681,8 +543,8 @@ fn is_bindable_path(raw: &str) -> bool {
         match component {
             Component::RootDir => {}
             Component::Normal(_) => normal_components = normal_components.saturating_add(1),
-            // A parent component can turn `/allowed/..` into `/`; accepting
-            // it would widen both the bwrap bind and the Landlock PathFd rule.
+            // A parent component can turn `/allowed/..` into `/`; accepting it would widen both the
+            // bwrap bind and the Landlock PathFd rule.
             Component::ParentDir | Component::CurDir | Component::Prefix(_) => return false,
         }
     }
@@ -690,9 +552,6 @@ fn is_bindable_path(raw: &str) -> bool {
 }
 
 /// Host paths a device class needs, as they exist on *this* machine.
-///
-/// Best-effort by design: a host with no camera yields no paths and the
-/// launch proceeds with the grant unsatisfied, rather than failing.
 pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
     match device {
         "camera" => {
@@ -725,19 +584,13 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
             }
             out
         }
-        // Screencast is brokered by the portal (a PipeWire node handed
-        // over an existing connection), not by a mount. Nothing to bind.
+        // Screencast is brokered by the portal (a PipeWire node handed over an existing connection),
+        // not by a mount.
         _ => Vec::new(),
     }
 }
 
 /// Read a capability file written by the compositor.
-///
-/// **Deny by default.** A missing file, an unreadable one, or one that
-/// doesn't deserialise into `Vec<CapOverride>` all yield an empty list
-/// — the app gets exactly what its manifest declared, nothing more.
-/// Never returns an error for that reason: no failure mode here should
-/// widen the sandbox, and none should abort a launch either.
 pub fn load_capability_file(path: &Path) -> LaunchGrants {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -768,8 +621,8 @@ mod tests {
     use super::*;
     use collab_types::caps::{Expiry, Subject};
 
-    /// Deterministic stand-in for the host's device nodes, so an argv
-    /// assertion doesn't depend on whether the test machine owns a webcam.
+    /// Deterministic stand-in for the host's device nodes, so an argv assertion doesn't depend on
+    /// whether the test machine owns a webcam.
     fn fake_device_paths(device: &str) -> Vec<PathBuf> {
         match device {
             "camera" => vec![PathBuf::from("/dev/video0")],
@@ -837,8 +690,8 @@ mod tests {
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
             assert_eq!(plan, CapabilityPlan::empty());
-            // Same capability, evaluated before it expires, does plan a bind
-            // — proving the emptiness above is the expiry and not a typo.
+            // Same capability, evaluated before it expires, does plan a bind — proving the emptiness
+            // above is the expiry and not a typo.
             let live =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(499), fake_device_paths);
             assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
@@ -986,8 +839,8 @@ mod tests {
         }
     }
 
-    /// A person's home with Tilo's store in it, the way `private_store_roots`
-    /// names it, and plans confined against it.
+    /// A person's home with Tilo's store in it, the way `private_store_roots` names it, and plans
+    /// confined against it.
     struct Fixture {
         _dir: tempfile::TempDir,
         home: PathBuf,
@@ -1042,8 +895,6 @@ mod tests {
             assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
             assert!(plan.pinned_dirs.is_empty(), "{plan:?}");
         }
-        // Phase `a_nested_read_only_grant_is_not_widened_by_a_pin`.
-        // A Read grant under a Write grant is writable too; a Restrict caps it.
         {
             let caps = vec![
                 fs_grant("so.tilo.files", &home.path(""), Access::Write),
@@ -1133,10 +984,6 @@ mod tests {
             assert!(!store.exists());
             assert!(plan.masked_dirs.is_empty());
         }
-        // Phase `a_symlink_inside_a_writable_grant_makes_it_read_only`.
-        // `~/.config/tilo` → `~/dotfiles/tilo`: the app could repoint the
-        // link, so the grant keeps its reach and loses its write; the store is
-        // masked where it really lives.
         {
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");
@@ -1159,8 +1006,8 @@ mod tests {
         }
     }
 
-    /// A launch file names which apps author the workspace; an app reads its
-    /// own entry and nothing of another app's.
+    /// A launch file names which apps author the workspace; an app reads its own entry and nothing of
+    /// another app's.
     #[test]
     fn a_launch_file_tells_each_app_whether_it_authors() {
         let grants = LaunchGrants {

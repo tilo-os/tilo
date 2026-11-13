@@ -18,7 +18,20 @@ pub struct TrustedSenders {
     pub senders: Set<String>,
 }
 
-#[resource(kind = "mail.trusted-senders", label = "Trusted senders")]
+impl TrustedSenders {
+    /// What the record holds: the senders whose remote images load without asking.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "mail.trusted-senders",
+    read_content = TrustedSenders::read_document
+)]
 impl TrustedSenders {
     /// Load remote images from `sender` without asking.
     #[action]
@@ -86,7 +99,10 @@ impl MailApp {
         for edit in &edits {
             if let Err(error) = followed.record.invoke(edit) {
                 self.shared.borrow_mut().status =
-                    Some(format!("Could not save your trusted senders: {error}"));
+                    Some(crate::state::Notice::error(crate::i18n::t_args(
+                        "mail-status-trusted-senders-not-saved",
+                        &[("error", ui::i18n::ArgValue::Text(error.to_string()))],
+                    )));
                 break;
             }
         }

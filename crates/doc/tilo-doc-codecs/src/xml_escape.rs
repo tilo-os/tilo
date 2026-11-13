@@ -14,7 +14,6 @@
 //! [`escape_attr_quotes`] is safe in either quoting and in text. HTML 4 has no
 //! `&apos;`, hence the numeric reference in [`escape_html_attr`].
 
-/// Appends `c` escaped for XML/HTML text content.
 pub fn push_text(out: &mut String, c: char) {
     match c {
         '&' => out.push_str("&amp;"),
@@ -24,20 +23,16 @@ pub fn push_text(out: &mut String, c: char) {
     }
 }
 
-/// `s` escaped for XML/HTML text content (`&`, `<`, `>`).
 #[must_use]
 pub fn escape_text(s: &str) -> String {
     escape(s, None, None)
 }
 
-/// `s` escaped for a double-quoted attribute value (`&`, `<`, `>`, `"`).
 #[must_use]
 pub fn escape_attr(s: &str) -> String {
     escape(s, Some("&quot;"), None)
 }
 
-/// `s` escaped for an XML attribute in either quoting, or text content: also
-/// `'` as `&apos;`.
 #[must_use]
 pub fn escape_attr_quotes(s: &str) -> String {
     escape(s, Some("&quot;"), Some("&apos;"))

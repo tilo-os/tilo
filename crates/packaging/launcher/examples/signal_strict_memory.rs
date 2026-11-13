@@ -1,5 +1,5 @@
-//! Source-runtime probe under the production strict syscall policy.
-//! This grants no authority and is never packaged as the Signal service.
+//! Source-runtime probe under the production strict syscall policy. This grants no
+//! authority and is never packaged as the Signal service.
 #[cfg(target_os = "linux")]
 use launcher::seccomp::{SeccompProfile, compile_baseline, compile_clone3_compat};
 use std::error::Error;
@@ -60,8 +60,7 @@ fn install(code: &[u8]) -> Result<(), Box<dyn Error>> {
         len: u16::try_from(filters.len())?,
         filter: filters.as_mut_ptr(),
     };
-    // SAFETY: the kernel copies the program while the backing vector stays
-    // live. The installed restriction is irreversible and grants no privilege.
+    // SAFETY: the kernel copies the program while the backing vector stays live.
     if unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) } != 0 {
         return Err(io::Error::last_os_error().into());
     }

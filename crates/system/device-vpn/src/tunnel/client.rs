@@ -15,24 +15,17 @@ use super::wire::{self, ClientHello, Offer, Purpose, close};
 use crate::net::{MAX_MTU, MIN_MTU, is_client_address};
 use crate::packet::Ipv4Packet;
 
-/// How long dialling an exit and its handshake may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Why an exit turned this device away or ended its tunnel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The exit is not one of this person's devices, or does not count this
     /// one as theirs.
     NotYours,
-    /// The exit's switch is off.
     ExitOff,
-    /// The person stopped this device using the exit, from the exit.
     Stopped,
-    /// The exit has no address left, or could not open its tunnel.
     Full,
-    /// Another connection of this device took over.
     Replaced,
-    /// The exit did not follow the handshake.
     Protocol,
 }
 
@@ -56,7 +49,6 @@ impl Refusal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClientError {
     Refused(Refusal),
-    /// The exit could not be reached, or the connection broke.
     Unreachable(String),
 }
 
@@ -69,14 +61,10 @@ impl std::fmt::Display for ClientError {
     }
 }
 
-/// How a tunnel ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended {
-    /// The exit ended it, saying why.
     Refused(Refusal),
-    /// This side closed it.
     Closed,
-    /// The path to the exit or the local TUN broke.
     Lost(String),
 }
 
@@ -96,11 +84,9 @@ impl Ended {
     }
 }
 
-/// A tunnel the exit accepted.
 pub struct Tunnel {
     pub connection: Connection,
     pub offer: Offer,
-    /// This device's address in the tunnel network.
     pub address: Ipv4Addr,
 }
 
@@ -117,7 +103,6 @@ impl Tunnel {
         self.offer.mtu.min(path).clamp(MIN_MTU, MAX_MTU)
     }
 
-    /// End the tunnel from this side.
     pub fn close(&self) {
         self.connection.close(VarInt::from_u32(close::BYE), b"bye");
     }
@@ -166,7 +151,6 @@ async fn handshake(
     }
 }
 
-/// What `exit` offers, without routing through it.
 pub async fn probe(
     endpoint: &Endpoint,
     exit: impl Into<EndpointAddr>,
@@ -181,7 +165,6 @@ pub async fn probe(
     Ok(offer)
 }
 
-/// Open a tunnel through `exit`.
 pub async fn connect(
     endpoint: &Endpoint,
     exit: impl Into<EndpointAddr>,
@@ -220,7 +203,6 @@ pub async fn run<D: PacketDevice>(tunnel: &Tunnel, device: Arc<D>) -> Ended {
             let Some(packet) = Ipv4Packet::parse(bytes) else {
                 continue;
             };
-            // Only this device's own traffic goes to the exit.
             if packet.source() != address {
                 continue;
             }

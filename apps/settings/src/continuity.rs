@@ -1,9 +1,8 @@
-//! What Settings calls the kinds of Continuity and the changes to them;
-//! the policy itself is [`settings_sections::continuity`]'s.
+//! What Settings calls the kinds of Continuity and the changes to them; the
+//! policy itself is [`settings_sections::continuity`]'s.
 
 pub use settings_sections::continuity::*;
 
-/// What `capability` is called in Settings.
 pub fn label(capability: Capability) -> String {
     crate::i18n::t(match capability {
         Capability::Clipboard => "continuity-clipboard",
@@ -18,7 +17,6 @@ pub fn label(capability: Capability) -> String {
     })
 }
 
-/// What allowing `capability` lets the person's other devices do.
 pub fn description(capability: Capability) -> String {
     crate::i18n::t(match capability {
         Capability::Clipboard => "continuity-clipboard-description",
@@ -33,7 +31,6 @@ pub fn description(capability: Capability) -> String {
     })
 }
 
-/// What `entry` changed, in words: `Clipboard allowed`, `All Continuity stopped`.
 pub fn summary(entry: &AuditEntry) -> String {
     let subject = entry
         .capability

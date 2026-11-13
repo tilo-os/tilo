@@ -26,17 +26,8 @@ use ui::time::Duration;
 use code_editor::lsp::{LspClient, LspEvent};
 use code_editor::model::Language;
 
-/// rust-analyzer has to run `cargo metadata` and build a crate graph before it
-/// says anything. On a one-file crate that is seconds; the ceiling is generous
-/// so a loaded machine reports the real failure rather than a timeout.
 const BUDGET: Duration = Duration::from_secs(180);
 
-/// A minimal but genuine Cargo project containing one deliberate error.
-///
-/// # Errors
-/// Returns an error if the temp directory or its fixture files can't be
-/// created — a real filesystem problem the caller (a `#[test]` fn, where
-/// `.expect()` is the correct test-failure mode) should fail loudly on.
 fn project_with_a_deliberate_error() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let root = dir.path();
@@ -46,8 +37,6 @@ fn project_with_a_deliberate_error() -> Result<tempfile::TempDir, Box<dyn std::e
         "[package]\nname = \"tilo-lsp-probe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n\
          [dependencies]\n",
     )?;
-    // `parse_limitt` does not exist. rustc's message for this is stable and
-    // specific, which is what makes it assertable.
     std::fs::write(
         root.join("src/main.rs"),
         "fn parse_limit(n: u64) -> u64 {\n    n * 2\n}\n\n\
@@ -56,8 +45,6 @@ fn project_with_a_deliberate_error() -> Result<tempfile::TempDir, Box<dyn std::e
     Ok(dir)
 }
 
-/// Drive a client until `want` returns true, or the budget runs out. Returns
-/// every event seen, so a failure can report what actually happened.
 fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Vec<LspEvent>, bool) {
     #[allow(
         clippy::arithmetic_side_effects,
@@ -67,8 +54,6 @@ fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Ve
     let mut seen = Vec::new();
     while ui::time::now() < deadline {
         for ev in client.poll() {
-            // Fold progress through the client the way the app does, so the
-            // task table under test is the one the status bar reads.
             if let LspEvent::Progress(p) = &ev {
                 client.note_progress(p);
             }
@@ -96,7 +81,6 @@ fn require_binary(name: &str) {
 
 #[test]
 fn rust_analyzer_indexes_visibly_and_reports_a_real_error_in_a_real_project() {
-    // Each phase builds its own fixture project and starts its own server.
     rust_analyzer_reports_a_real_error_in_a_real_project();
     indexing_is_visible_while_it_happens();
 }
@@ -129,8 +113,6 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     let uri = code_editor::lsp::path_to_uri(&main_rs);
     let text = std::fs::read_to_string(&main_rs).unwrap();
     client.did_open(&uri, "rust", 1, &text);
-    // rustc-backed diagnostics arrive in response to a save, which is why the
-    // editor sends this after every successful write.
     client.did_save(&uri);
 
     let (events, ok) = pump_until(&mut client, |seen| {
@@ -149,7 +131,6 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
         .expect("the server must wake an idle editor when events arrive");
     assert!(wake_scope.accepts(&wake));
 
-    // The diagnostic must be the real one, for the real file, at the real spot.
     let (diag_uri, diags) = events
         .iter()
         .rev()
@@ -184,17 +165,12 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
         "the error is on the line the call is on (0-based)"
     );
 
-    // And it projects onto the Problems panel in 1-based coordinates.
     let panel = found.to_panel();
     assert_eq!(panel.line, 6);
     assert!(panel.message.contains("parse_limitt") || panel.message.contains("cannot find"));
 }
 
 fn indexing_is_visible_while_it_happens() {
-    // The other half of the fix: a server that takes minutes must not be
-    // indistinguishable from a broken one. rust-analyzer only sends
-    // `$/progress` if the client advertised `window.workDoneProgress`, so this
-    // asserts on the capability having actually been sent.
     require_binary("rust-analyzer");
     require_binary("cargo");
 
@@ -218,7 +194,6 @@ fn indexing_is_visible_while_it_happens() {
     assert!(titled, "at least one progress notification names its task");
 }
 
-/// A compact description of what a pump saw, for failure messages.
 fn summarise(events: &[LspEvent]) -> String {
     if events.is_empty() {
         return "(nothing at all — the server never answered)".to_string();
@@ -245,7 +220,6 @@ fn summarise(events: &[LspEvent]) -> String {
     out.join(", ")
 }
 
-/// A guard that the module the test drives is the one the app drives.
 #[test]
 fn the_editor_roots_its_server_at_a_real_directory() {
     let d = tempfile::tempdir().unwrap();
@@ -256,7 +230,6 @@ fn the_editor_roots_its_server_at_a_real_directory() {
         .to_string();
     assert!(err.contains("not a directory"), "got: {err}");
 
-    // And a real one produces a real `file://` URI for its workspace root.
     let uri = code_editor::lsp::path_to_uri(d.path());
     assert_eq!(
         std::fs::canonicalize(url::Url::parse(&uri).unwrap().to_file_path().unwrap()).unwrap(),

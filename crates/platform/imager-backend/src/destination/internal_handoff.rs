@@ -1,14 +1,11 @@
 //! USB-free installation: the staged installer's handoff, as the UI sees it.
 //!
-//! Tilo Imager stages this live installer on the same disk as the retained
-//! OS and leaves `/EFI/tilo-staging/handoff.json` on the staging ESP. Before
-//! greetd starts, `tilo-staging-handoff detect` (root) publishes a validated
-//! copy at [`HANDOFF_PATH`] only when the firmware loader really ran from the
-//! ESP the handoff names. The Imager writes it with the same
-//! [`staging_handoff_model`] types and rules.
+//! The Imager stages the live installer beside the retained OS and leaves
+//! `/EFI/tilo-staging/handoff.json` on the staging ESP; `tilo-staging-handoff detect` publishes a
+//! validated copy at [`HANDOFF_PATH`] only when firmware really ran from the named ESP.
 //!
-//! The handoff is a hint, never authority. The UI uses it to preselect the one
-//! safe plan on the one disk it applies to and to prefill profile fields; the
+//! The handoff is a hint, never authority: the UI preselects one plan and prefills profile fields,
+//! and the backend re-derives every fact before writing.
 //! privileged backend re-derives every fact before it writes anything.
 
 use std::path::Path;
@@ -18,15 +15,13 @@ pub use staging_handoff_model::{Extent, Handoff, HostOs, StagedIdentity, is_guid
 pub const HANDOFF_PATH: &str = "/run/tilo-installer/handoff.json";
 pub const HANDOFF_ERROR_PATH: &str = "/run/tilo-installer/handoff.error";
 
-/// The Imager-supplied setup choices, validated field by field exactly like
-/// a media profile.
+/// The Imager's setup choices, validated field by field exactly like a media profile.
 pub fn media_profile(
     handoff: &Handoff,
 ) -> Result<crate::destination::media_profile::MediaProfile, String> {
     crate::destination::media_profile::validate_object(&handoff.profile)
 }
 
-/// Load the published copy. `Ok(None)` is the ordinary USB-media case.
 pub fn load_from(path: &Path) -> Result<Option<Handoff>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -36,17 +31,13 @@ pub fn load_from(path: &Path) -> Result<Option<Handoff>, String> {
     Handoff::parse(&bytes).map(Some)
 }
 
-/// Load the copy published at [`HANDOFF_PATH`].
-///
-/// # Errors
-///
-/// See [`load_from`].
+/// Loads the copy published at [`HANDOFF_PATH`].
 pub fn load() -> Result<Option<Handoff>, String> {
     load_from(Path::new(HANDOFF_PATH))
 }
 
-/// Why boot could not extract the staged installation's handoff, as it recorded
-/// it: what the wizard tells the person instead of using it.
+/// Why boot could not extract the handoff, as it recorded it: what the wizard tells the person
+/// instead of using it.
 pub fn boot_error() -> Option<String> {
     std::fs::read_to_string(HANDOFF_ERROR_PATH)
         .ok()
@@ -62,9 +53,8 @@ pub mod tests {
     use super::*;
 
     pub const GIB_SECTORS: u64 = 1024 * 1024 * 1024 / 512;
-    /// Matches `crates/system/install-helpers/tests/staging_handoff.rs`:
-    /// target 64 GiB after a 100 GiB Windows region, then a 1 GiB staging ESP
-    /// and 40 GiB root.
+    /// Matches `crates/system/install-helpers/tests/staging_handoff.rs`: target 64 GiB after a 100 GiB
+    /// Windows region, then a 1 GiB staging ESP and a 40 GiB root.
     pub const TARGET: (u64, u64) = (
         100 * GIB_SECTORS + 2048,
         100 * GIB_SECTORS + 2048 + 64 * GIB_SECTORS - 1,
@@ -91,8 +81,8 @@ pub mod tests {
         })
     }
 
-    /// `lsblk -J -b -p` output for the disk [`document`] describes, with the
-    /// live root on the staging root partition.
+    /// `lsblk -J -b -p` output for the disk [`document`] describes, with the live root on the staging
+    /// root partition.
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "fixture geometry is a handful of small constants"
@@ -181,12 +171,12 @@ pub mod tests {
             assert!(rejects(|v| v["staging_esp"]["first_lba"] = 0.into()).contains("malformed"));
         }
         {
-            // The handoff profile is the closed, secret-free media profile: a
-            // credential is refused before the media contract is consulted.
+            // The handoff profile is the closed, secret-free media profile: a credential is refused
+            // before the media contract is consulted.
             assert!(rejects(|v| v["profile"]["password"] = "hunter2".into()).contains("password"));
 
-            // The handoff carries the profile's schema opaquely; refusing an
-            // unsupported one is the media contract's decision.
+            // The schema is carried opaquely here; refusing an unsupported one is the media
+            // contract's decision.
             let mut value = document();
             value["profile"]["schema"] = 2.into();
             let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
@@ -204,8 +194,7 @@ pub mod tests {
             );
         }
         {
-            // The ordinary USB and older staged handoffs carry no sidecar and
-            // keep parsing unchanged.
+            // USB and older staged handoffs carry no sidecar and parse unchanged.
             assert!(media_profile(&handoff()).unwrap().tpm_handoff.is_none());
 
             let package = serde_json::json!({
@@ -220,8 +209,8 @@ pub mod tests {
                 Some("sealed sidecar")
             );
 
-            // A sidecar without the prepared package it belongs to is refused,
-            // and so is a value that is not a bounded string.
+            // A sidecar without its prepared package is refused, and so is a value that is not a
+            // bounded string.
             let mut value = document();
             value["profile"]["tpm_handoff"] = "sealed sidecar".into();
             let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();

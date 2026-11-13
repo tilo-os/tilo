@@ -59,7 +59,7 @@ impl People {
 
     /// The principal the person `person` of `standing`'s policy is.
     fn principal(&self, standing: &Standing, person: &str) -> String {
-        if person == standing.person {
+        if Some(person) == standing.person_id() {
             return self.me.clone();
         }
         self.participant
@@ -71,7 +71,7 @@ impl People {
     /// The person of `standing`'s policy the principal `who` is.
     fn person_of<'a>(&'a self, standing: &'a Standing, who: &'a str) -> &'a str {
         if who == self.me {
-            return &standing.person;
+            return standing.person_id().unwrap_or_default();
         }
         self.person.get(who).map_or(who, String::as_str)
     }
@@ -133,7 +133,7 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
         .into_iter()
         .flat_map(|package| {
             let meta = package.meta;
-            let own = crate::own_record(&meta, &standing.person);
+            let own = crate::own_record(&meta, standing.person_id().unwrap_or_default());
             meta.types
                 .iter()
                 .map(|ty| {

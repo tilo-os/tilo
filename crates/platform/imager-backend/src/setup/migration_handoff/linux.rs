@@ -278,8 +278,6 @@ impl ResolvedSource {
         Ok(facts)
     }
 
-    /// The resolved Home inside this authenticated read-only source mount.
-    /// Callers use it only after this resolver has revalidated the plan.
     pub fn path(&self) -> &Path {
         &self.home
     }
@@ -321,9 +319,8 @@ impl ResolvedSource {
         self.pin.validate()
     }
 
-    /// Close all directory pins first, deduplicate exact retained mount Arcs,
-    /// then observe every owned unmount. Related roots may share Home's volume;
-    /// no one root can retire that mount while another still retains it.
+    /// Close directory pins first, deduplicate retained mount `Arc`s, then observe every owned
+    /// unmount; no root retires a mount another still retains.
     pub fn retire_many(sources: Vec<Arc<Self>>) -> io::Result<()> {
         let mut unique_sources = Vec::new();
         for source in sources {
@@ -382,8 +379,7 @@ impl ResolvedSource {
             None => Ok(()),
         }
     }
-    /// Only a uniquely held mount created by this resolver can be released.
-    /// Borrowed sources have no owned mount and gain no unmount authority.
+    /// Only a mount this resolver created and uniquely holds can be released.
     pub fn retire(self) -> io::Result<()> {
         let Self {
             home,
@@ -399,8 +395,7 @@ impl ResolvedSource {
         retire_owned_mount(mount)
     }
 }
-/// A verified original-files grant retaining its read-only mount lease.
-/// This actor exposes access only; it creates no transfer destination or receipt.
+/// The actor exposes access only; it creates no destination or receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AccessMode {
@@ -413,8 +408,6 @@ pub struct RetainedSource {
     root_permit: Option<Arc<crate::setup::home_capture::RootRetainedPermit>>,
 }
 impl RetainedSource {
-    /// Root-only protected record read for the separate retained credential
-    /// purpose. Ordinary readonly original-source access stays readonly.
     pub fn open_retained_caller(&self, namespace: &Path) -> io::Result<std::fs::File> {
         self.validate()?;
         if self.mode != AccessMode::ReadWrite || rustix::process::geteuid().as_raw() != 0 {
@@ -526,9 +519,8 @@ impl ResolvedSource {
         )
     }
 
-    /// Resolve another reviewed directory in the original filesystem through
-    /// this same mount. Its stable identity and operation are re-attested; no
-    /// saved host path or global target Flatpak installation is substituted.
+    /// Resolves another reviewed directory through the same mount, re-attesting identity; no saved
+    /// host path is substituted.
     pub fn resolve_related_flatpak_source(
         &self,
         bytes: &[u8],
@@ -551,8 +543,6 @@ impl ResolvedSource {
         related.into_flatpak_source()
     }
 
-    /// Continue a saved Flatpak selection only with its retained original
-    /// deployment/repository inventory, resolved against actual read-only roots.
     pub fn review_transfer_with_handoff(
         &self,
         destination: &Path,
@@ -573,7 +563,8 @@ impl ResolvedSource {
             super::super::flatpak_transfer::portable::NativeOfflineRunner,
             |bytes| self.resolve_inventory_root(bytes, &mut secondary),
         )?;
-        // The same closed review the first-boot capture runs over its original
+        // The same closed review the first-boot capture runs: exact reviewed deployments, sealed
+        // when the transfer runs.
         // projection: exact reviewed deployments, sealed when the transfer runs.
         let source = super::super::flatpak_transfer::portable::PortableFlatpakSource::review_closed_original(
             &runner,
@@ -592,8 +583,6 @@ impl ResolvedSource {
             },
             Some(super::super::user_transfer::Applications::Original(source)),
         )?;
-        // Home and every original Flatpak root stay mounted while the review
-        // is cloned into the worker that seals the applications unit.
         review.retain_source_guard(Arc::new((self.mount.clone(), runner)));
         Ok(review)
     }
@@ -626,8 +615,8 @@ impl ResolvedSource {
         )
     }
 
-    /// Original inventory authority remains bound to original bytes. Only this
-    /// private installed companion maps its roots to completed physical geometry.
+    /// The installed companion maps these roots to completed physical geometry; the inventory stays
+    /// bound to the original bytes.
     pub fn original_flatpak_runner_completed(
         &self,
         grant: &super::super::flatpak_transfer::offline_original::OriginalInventoryGrant,
@@ -737,8 +726,7 @@ impl ResolvedSource {
     }
 }
 
-/// Resolve a separately reviewed Flatpak installation root through the same
-/// stable GPT/filesystem/inode grant and retained read-only mount as home data.
+/// Resolves a separately reviewed Flatpak root through the same stable grant and retained mount.
 pub fn resolve_flatpak_source(
     bytes: &[u8],
 ) -> Result<super::super::flatpak_transfer::ReadOnlySource, String> {
@@ -748,8 +736,7 @@ pub fn resolve_flatpak_source(
         .into_flatpak_source()
 }
 
-/// Accept only a freshly granted read-only mount. This does not mount anything
-/// and never interprets the plan's locator as an ambient path.
+/// Mounts nothing and never interprets the plan's locator as an ambient path.
 #[cfg(all(test, feature = "native-capture-qualification"))]
 pub fn resolve(plan: &Plan, mountpoint: &Path) -> io::Result<ResolvedSource> {
     resolve_with(plan, mountpoint, &Facts::read()?, true)
@@ -1030,8 +1017,8 @@ fn retire_owned_mount(mount: Arc<MountedVolume>) -> io::Result<()> {
     }
     Ok(())
 }
-/// A failed explicit retirement is quarantined, never reported as released.
-/// Retain exact service/device custody; do not retry against replaced mounts.
+/// A failed explicit retirement is quarantined, never reported as released; never retry against
+/// replaced mounts.
 fn retain_failed_mount(mount: Arc<MountedVolume>) {
     static FAILED: std::sync::Mutex<Vec<Arc<MountedVolume>>> = std::sync::Mutex::new(Vec::new());
     match FAILED.lock() {
@@ -1047,12 +1034,9 @@ impl Drop for MountedVolume {
     }
 }
 
-/// The existing UDisks service owns elevation and mount placement. Calls are
-/// made only for an explicit action; every returned grant is re-attested.
-/// Preserve existing authorized daemon placement in source namespaces which
-/// have not yet entered the canonical private helper stage. Never change the
-/// daemon's strict no-replay options or mount the kernel backend under shared
-/// propagation; host target-user lease integration is a separate continuation.
+/// The existing UDisks service owns elevation and mount placement; every returned grant is
+/// re-attested. Never change its no-replay options or mount the kernel backend under shared
+/// propagation.
 fn mount_root_role_volume(
     volume: &SourceVolume,
     facts: &Facts,
@@ -1110,8 +1094,6 @@ fn mount_root_role_volume(
     Ok((PathBuf::from(point), owned))
 }
 
-/// Authenticated boot/installed-root source roles explicitly select this route.
-/// Ordinary target-user continuations retain their authorized UDisks route.
 pub fn mount_authenticated_read_only(plan: &Plan) -> io::Result<ResolvedSource> {
     plan.validate()?;
     let (point, owned) = mount_root_role_volume(&plan.home.volume, &Facts::read()?)?;
@@ -1256,7 +1238,6 @@ pub fn capture_fixture(home: &Path, operation: &str, categories: Categories) -> 
     capture_with(home, operation, categories, &fixture::facts(base, false))
 }
 
-/// Resolve each exact source volume again and reject a shared physical target.
 /// Source request bytes are never substituted for kernel block identity.
 pub fn validate_offline_source_disks(plans: &[Vec<u8>], target_number: u64) -> io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -1312,8 +1293,7 @@ pub fn validate_offline_source_disks(plans: &[Vec<u8>], target_number: u64) -> i
     Ok(())
 }
 
-/// Broker-only derivation of a fixed record namespace on the selected Home
-/// volume. No second source-volume locator is returned or accepted.
+/// No second source-volume locator is returned or accepted.
 pub fn original_record_namespace(
     plan: &Plan,
     home: &Path,
@@ -1365,8 +1345,6 @@ enum OriginalFile {
 }
 
 impl ResolvedSource {
-    /// Authenticate the completed single-device resize through the exact granted
-    /// readonly source and held kernel block device, never a caller pathname.
     pub fn verify_completed_btrfs_resize(&self, bytes: u64) -> io::Result<()> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::{FileExt, FileTypeExt, OpenOptionsExt};
@@ -1435,8 +1413,8 @@ fn verify_completed_superblock(block: &[u8; 4096], fsid: &str, bytes: u64) -> io
 }
 
 impl ResolvedSource {
-    /// Clone only this exact held Home after kernel readonly attestation.
-    /// Its mount lease stays owned by the original SourceReadContext.
+    /// Clones only this exact held Home after kernel read-only attestation; the mount lease stays
+    /// with the original `SourceReadContext`.
     pub fn clone_original_home(&self) -> io::Result<std::fs::File> {
         self.pin.validate()?;
         kernel_read_only(&self.pin)?;
@@ -1444,9 +1422,8 @@ impl ResolvedSource {
         self.pin.validate()?;
         Ok(file)
     }
-    /// Read a broker record only inside this already reattested read-only
-    /// source volume. Namespace is a bounded same-volume selection hint;
-    /// the protected record must still prove its Home/operation binding.
+    /// Namespace is a bounded same-volume hint; the protected record must still prove its Home and
+    /// operation binding.
     pub fn open_original_record(&self, namespace: &Path) -> io::Result<std::fs::File> {
         self.open_original_file(namespace, OriginalFile::Record)
     }

@@ -8,13 +8,11 @@
 //! [`DeviceCapabilities::administrator`](tilo_user_identity::DeviceCapabilities::administrator)
 //! (`tilo-enroll certify --capability admin`).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context as _, bail};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{
-    DeviceCert, IdentityPaths, RevocationEntry, RevocationList, persist, verify_device_cert,
-};
+use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationList, persist, verify_device_cert};
 
 /// The device's identity root.
 pub const SYSTEM_ROOT: &str = "/var/lib/tilo";
@@ -69,7 +67,8 @@ impl Identity {
     /// The revocations this side has verified for its identity. A missing
     /// list is empty; a damaged one is an error rather than an empty list.
     pub fn revocations(&self) -> anyhow::Result<RevocationList> {
-        load_revocations(&revocations_path(&self.paths))
+        tilo_user_identity::read_revocations(&self.paths)
+            .map_err(|error| anyhow::anyhow!("{error}"))
     }
 }
 
@@ -83,34 +82,6 @@ fn read_cert_for(path: &Path, key: &SigningKey) -> anyhow::Result<DeviceCert> {
         );
     }
     Ok(cert)
-}
-
-/// Where the identity keeps its verified revocations (beside the person's
-/// public key, as the filesystem and relay read them).
-pub fn revocations_path(paths: &IdentityPaths) -> PathBuf {
-    paths
-        .user_pubkey
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("revocations.bin")
-}
-
-pub fn load_revocations(path: &Path) -> anyhow::Result<RevocationList> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(RevocationList::new());
-        }
-        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-    };
-    let entries: Vec<RevocationEntry> =
-        postcard::from_bytes(&bytes).with_context(|| format!("decode {}", path.display()))?;
-    let mut list = RevocationList::new();
-    for entry in entries {
-        list.insert(entry)
-            .with_context(|| format!("{} holds an entry that does not verify", path.display()))?;
-    }
-    Ok(list)
 }
 
 /// Make the dialing machine's device key under `root` if it has none, and

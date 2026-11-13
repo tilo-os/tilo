@@ -14,7 +14,11 @@ pub struct Note {
     pub text: String,
 }
 
-#[resource(kind = "test.note", label = "Note", app = "so.tilo.test-jottings")]
+#[resource(
+    kind = "test.note",
+    app = "so.tilo.test-jottings",
+    catalogue = "tests/locales"
+)]
 impl Note {
     /// Write the note.
     #[action]

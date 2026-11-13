@@ -1,11 +1,4 @@
 //! The `org.bluez.Agent1` pairing agent.
-//!
-//! `BlueZ` does not *tell* a desktop how pairing is going — it **asks**: `bluetoothd` makes a
-//! blocking D-Bus call into a registered object and waits for the pairing decision, so this
-//! cannot be a `bluetoothctl` wrapper (there's no CLI shape for "the daemon calls you and
-//! waits"). This object does no deciding itself — it translates each `BlueZ` question into a
-//! [`PairingRequest`], sends it to whoever owns the screen, and turns the [`PairingReply`]
-//! back into a return value or D-Bus error. The compositor draws the prompt; this is the wire.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -20,7 +13,6 @@ use zbus::{Connection, DBusError, interface};
 
 use crate::model::{PairingPrompt, PairingReply, PairingRequest, address_from_path, reply_answers};
 
-/// Where the agent object lives on our own connection.
 pub const AGENT_PATH: &str = "/org/tilo/BluetoothAgent";
 
 /// The I/O capability we advertise. `KeyboardDisplay` is the honest answer for a desktop
@@ -79,13 +71,10 @@ pub enum AgentError {
     /// Transport-level failures, carried through rather than dressed up as a `BlueZ` error name.
     #[zbus(error)]
     ZBus(zbus::Error),
-    /// The user declined.
     Rejected(String),
-    /// Nobody was there to answer, or the answer did not fit the question.
     Canceled(String),
 }
 
-/// What the agent emits towards the UI.
 #[derive(Debug)]
 pub enum AgentEvent {
     /// `BlueZ` is asking. Send a [`PairingReply`] on `reply` to unblock it. Dropping the sender
@@ -97,11 +86,9 @@ pub enum AgentEvent {
     /// `BlueZ` withdrew the pending request (the remote gave up, or pairing failed elsewhere).
     /// Any prompt on screen should be dismissed.
     Cancelled,
-    /// `BlueZ` released the agent — it is no longer registered.
     Released,
 }
 
-/// The receiving end, held by whoever draws the prompt.
 pub struct AgentEvents {
     events: mpsc::Receiver<AgentEvent>,
     lifecycle: watch::Receiver<Lifecycle>,
@@ -133,7 +120,6 @@ impl AgentEvents {
         }
     }
 
-    /// Stop accepting new queued events and drain the events already admitted.
     pub fn close(&mut self) {
         self.events.close();
         self.closed = true;
@@ -293,7 +279,6 @@ impl DeviceNames {
     }
 }
 
-/// The D-Bus object `BlueZ` calls into.
 pub struct PairingAgent {
     tx: mpsc::Sender<AgentEvent>,
     names: DeviceNames,
@@ -306,7 +291,6 @@ pub struct PairingAgent {
 }
 
 impl PairingAgent {
-    /// Build the agent and the receiver the UI drains.
     pub fn new(names: DeviceNames) -> (Self, AgentEvents) {
         Self::with_timeout(names, DEFAULT_ANSWER_TIMEOUT)
     }
@@ -419,7 +403,6 @@ impl PairingAgent {
         Ok(reply)
     }
 
-    /// One-way notification — nothing to wait for.
     fn notify(&self, device: &ObjectPath<'_>, prompt: PairingPrompt) {
         let path = device.as_str();
         let Ok(request) = self.request(path, prompt) else {
@@ -513,14 +496,12 @@ fn prompt_is_bounded(prompt: &PairingPrompt) -> bool {
 
 #[interface(name = "org.bluez.Agent1")]
 impl PairingAgent {
-    /// `BlueZ` is done with us.
     fn release(&self) {
         debug!(target: "tilo::bluez", "agent released by bluez");
         self.released.store(true, Ordering::Release);
         self.set_lifecycle(Lifecycle::Released);
     }
 
-    /// Legacy pairing: the user types a PIN (often `0000`).
     async fn request_pin_code(&self, device: ObjectPath<'_>) -> Result<String, AgentError> {
         match self.ask(&device, PairingPrompt::RequestPinCode).await? {
             PairingReply::PinCode(pin) => Ok(pin),
@@ -530,7 +511,6 @@ impl PairingAgent {
         }
     }
 
-    /// Legacy pairing: show a PIN for the user to type on the other device.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "device's ObjectPath type and by-value form are dictated by the org.bluez.Agent1 \
@@ -540,7 +520,6 @@ impl PairingAgent {
         self.notify(&device, PairingPrompt::DisplayPinCode { pin: pincode });
     }
 
-    /// The user reads a passkey off the other device and types it here.
     async fn request_passkey(&self, device: ObjectPath<'_>) -> Result<u32, AgentError> {
         match self.ask(&device, PairingPrompt::RequestPasskey).await? {
             PairingReply::Passkey(k) => Ok(k),
@@ -593,7 +572,6 @@ impl PairingAgent {
             .map(|_| ())
     }
 
-    /// The request went away. Dismiss whatever is on screen.
     fn cancel(&self) {
         debug!(target: "tilo::bluez", "bluez cancelled the pending pairing request");
         if !self.released.load(Ordering::Acquire) {
@@ -618,7 +596,6 @@ impl AgentRegistration {
         Self::register_at(connection, agent, AGENT_PATH, AGENT_CAPABILITY).await
     }
 
-    /// Register at an explicit path and capability. Tests use this to run several agents on one bus.
     pub async fn register_at(
         connection: &Connection,
         agent: PairingAgent,
@@ -652,7 +629,6 @@ impl AgentRegistration {
         })
     }
 
-    /// Unregister from `BlueZ` and drop the object.
     pub async fn unregister(self) -> zbus::Result<()> {
         let object_path = ObjectPath::try_from(self.path.clone())?;
         let manager = zbus::Proxy::new(
@@ -860,7 +836,6 @@ mod tests {
             assert!(!request.prompt.expects_answer());
         }
 
-        // `Cancel` withdraws whatever is on screen.
         a.cancel();
         assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
     }

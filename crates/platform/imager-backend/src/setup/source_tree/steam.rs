@@ -1,13 +1,9 @@
-//! Steam sources: installed titles, per-account user data, Proton prefixes and
-//! documented save locations.
+//! Steam sources: installed titles, per-account user data, Proton prefixes and documented save
+//! locations.
 //!
-//! Installed game files are reinstallable; save state is not. The two are
-//! separate children so a person can copy saves without copying tens of
-//! gigabytes of assets. Saves that live outside the Steam folder stay owned by
-//! the source that contains them; the game reports where they are documented.
-//! A title with no documented location keeps an explicit unknown fact: it is
-//! never shown as having zero saved progress. A Steam Cloud label is never
-//! treated as proof that a save was uploaded or that every save is covered.
+//! Game files are reinstallable and save state is not, so they are separate children. Saves outside the
+//! Steam folder stay owned by their source, a title with no documented location keeps an explicit
+//! unknown fact, and a Steam Cloud label never proves a save was uploaded.
 
 use super::{Counts, Fact, Label, Node, NodeKind, SaveRoot, SteamCatalog, group, leaf};
 use crate::windows_inventory::SteamAppManifest;
@@ -16,8 +12,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Per-entry accounting handed to the tree builder. Only files are counted, so
-/// summing a subtree cannot double count a directory and its contents.
 #[derive(Clone, Debug)]
 pub(crate) struct EntryCount {
     pub root: u16,
@@ -77,10 +71,9 @@ pub(super) fn unsupported_under(entries: &[EntryCount], root: u16, prefix: &Path
         .any(|entry| entry.root == root && entry.unsupported && entry.path.starts_with(prefix))
 }
 
-/// A documented-location resolver, general over the borrowed relative path.
+/// General over the borrowed relative path.
 pub(crate) type External<'a> = dyn for<'r> Fn(SaveRoot, &'r str) -> Option<(u16, PathBuf)> + 'a;
 
-/// Which save-location vocabulary applies to this Steam folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Platform {
     Windows,
@@ -89,25 +82,20 @@ pub(super) enum Platform {
 
 /// One Steam folder inside an already reviewed root.
 pub(super) struct SteamSource<'a> {
-    /// Index of the granted root that contains this Steam folder.
     pub root: u16,
-    /// The reviewed inventory of that root.
     pub entries: &'a [EntryCount],
-    /// The folder that contains `steamapps`, relative to the granted root.
     pub relative: PathBuf,
     pub label: Label,
     pub platform: Platform,
     pub apps: &'a [SteamAppManifest],
-    /// External library locations named by Valve's metadata. Suggestions only.
+    /// Suggestions only, named by Valve's metadata.
     pub libraries: &'a [PathBuf],
     pub catalog: &'a SteamCatalog,
-    /// Resolve a documented location in another reviewed root, if it is there.
     pub external: &'a External<'a>,
 }
 
-/// Build the Steam source node. `entries` is the reviewed inventory of the
-/// whole granted root, so every count comes from data the person already
-/// granted rather than from a second scan.
+/// `entries` is the reviewed inventory of the whole granted root, so every count comes from data the
+/// person already granted rather than from a second scan.
 pub(super) fn node(id: &str, source: &SteamSource<'_>, relative_dirs: &BTreeSet<PathBuf>) -> Node {
     let mut games = BTreeMap::<u32, Node>::new();
     let mut unnamed = Vec::new();
@@ -144,7 +132,6 @@ pub(super) fn node(id: &str, source: &SteamSource<'_>, relative_dirs: &BTreeSet<
             source,
         ));
     }
-    // Saves for titles that are no longer installed are still irreplaceable.
     for app_id in userdata_apps(relative_dirs, &source.relative) {
         games.entry(app_id).or_insert_with(|| {
             let title = source.catalog.app(app_id).map(|app| app.name.to_string());
@@ -323,8 +310,8 @@ fn game_node(
         ));
     }
 
-    // Documented locations outside this Steam folder. They stay owned by their
-    // own source; the fact tells the person where the saves are.
+    // Documented locations outside this Steam folder stay owned by their own source; the fact tells
+    // the person where the saves are.
     let locations = documented.map_or(&[][..], |app| match source.platform {
         Platform::Windows => app.windows,
         Platform::Linux => app.linux,
@@ -335,8 +322,6 @@ fn game_node(
         }
         facts.push(Fact::ExternalSaveLocation(location.root));
         if (source.external)(location.root, location.relative).is_none() {
-            // Not inside any reviewed source: say so instead of implying it is
-            // covered by the Steam folder.
             facts.push(Fact::NeedsIndependentGrant);
         }
     }
@@ -361,8 +346,8 @@ fn source_entries<'a>(source: &SteamSource<'a>) -> &'a [EntryCount] {
     source.entries
 }
 
-/// Save locations inside the Steam folder: per-account user data and the
-/// documented locations inside the Proton prefix.
+/// Save locations inside the Steam folder: per-account user data and documented Proton prefix
+/// locations.
 fn in_steam_saves(
     app_id: Option<u32>,
     prefix: Option<&Path>,
@@ -434,7 +419,6 @@ fn proton_path(prefix: &Path, root: SaveRoot, relative: &str) -> PathBuf {
     path
 }
 
-/// Resolve a documented Linux location against a reviewed Home inventory.
 pub(super) fn home_external(
     root: u16,
     entries: &[EntryCount],

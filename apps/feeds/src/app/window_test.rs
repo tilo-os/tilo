@@ -25,7 +25,6 @@ fn settle(mounted: &mut Framed<FeedsApp>) {
     Framed::harness_mut(mounted).wait_until(ui::time::Duration::from_secs(10), settled);
 }
 
-/// The rect a screen covers, in window coordinates.
 fn screen_of(shell: &NavShell, pane: NavPane) -> Rect {
     let geometry = shell.geometry();
     match pane {

@@ -2,12 +2,8 @@
 //! of an invocation, scenarios acting as named people, and rows of resources.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
 
     fn runtime(app: &App) -> Runtime {

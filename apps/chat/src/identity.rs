@@ -35,13 +35,9 @@ impl LocalIdentity {
     }
 
     /// Participant `id` as this device shows its own person: the display
-    /// name first-boot setup gave the runtime identity, else the login name.
+    /// name of the person's public identity record.
     pub fn for_participant(id: &str) -> Self {
-        let name = ui::local_identity::bound()
-            .map(|identity| identity.display_name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .or_else(user_display)
-            .unwrap_or_else(|| unnamed_label(id));
+        let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
             color_idx: color_from_bytes(id.as_bytes()),
@@ -62,18 +58,6 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, bytes);
     std::hash::Hasher::finish(&hasher)
-}
-
-/// An available login hint; absent names remain unnamed.
-fn user_display() -> Option<String> {
-    let raw = tilo_paths::session::user_name()?;
-    let display: String = raw
-        .split(['.', '_', '-', ' '])
-        .filter(|p| !p.is_empty())
-        .map(ui::format::capitalize_first)
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!display.is_empty()).then_some(display)
 }
 
 /// Distinguish unnamed participants without exposing their complete routing id.
@@ -100,6 +84,22 @@ pub(crate) fn shared_name_label(id: &str, name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// What to call software that wrote as `name`, acting for `person`: its name with the person's,
+/// as the surface showing it names them — "Helper for Ada", and "Helper for you" to Ada, as
+/// Chat's window names a message's author. Software that acted for nobody is named alone, with
+/// what it is: "Helper (agent)".
+pub(crate) fn acting_label(
+    name: &str,
+    person: Option<&str>,
+    name_of: impl Fn(&str) -> String,
+    is_me: impl Fn(&str) -> bool,
+) -> String {
+    person.map_or_else(
+        || crate::i18n::t_args("chat-agent-author", &[("name", name.into())]),
+        |person| ui::acting_line(name, Some(&name_of(person)), is_me(person)),
+    )
 }
 
 fn participant_tag(id: &str) -> String {

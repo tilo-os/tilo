@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fs;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
@@ -79,7 +77,7 @@ fn turn(session: &mut Session) -> Duration {
 /// copies on its own thread, so the suite's hang bound is what ends the wait,
 /// never a count of turns a loaded machine would run through too fast.
 fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
-    common::until(session, what, done);
+    crate::common::until(session, what, done);
 }
 
 /// An app copies (`cut == false`) or cuts a list of files.
@@ -448,7 +446,12 @@ fn kill_mid_transfer() {
 /// Start the child above, which kills itself mid-transfer, and wait for it.
 fn kill_under(stage: &str, source: &Path, destination: &Path) -> std::process::ExitStatus {
     Command::new(std::env::current_exe().expect("this test's binary"))
-        .args(["--exact", "kill_mid_transfer", "--ignored", "--nocapture"])
+        .args([
+            "--exact",
+            "clipboard_files::kill_mid_transfer",
+            "--ignored",
+            "--nocapture",
+        ])
         .env("CLIPBOARD_KILL_AT", stage)
         .env("TILO_FILE_PASTE_CRASH_POINT", stage)
         .env("CLIPBOARD_KILL_SOURCE", source)

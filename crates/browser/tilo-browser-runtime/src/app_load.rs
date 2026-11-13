@@ -37,6 +37,11 @@ impl Loads {
         Some(self.attempts)
     }
 
+    /// The applications whose code is being fetched now, in no order.
+    pub(crate) fn in_flight(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.in_flight.keys().copied()
+    }
+
     /// The fetch `attempt` of `app` ended, or its bound passed: `true` for
     /// whichever comes first, which decides what the waiting windows show.
     /// The other one finds the attempt settled and changes nothing.

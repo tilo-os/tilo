@@ -1,47 +1,24 @@
-//! Programs a hosted workspace's shell runs in the workspace's own VM
-//! (tier 3 on a host that serves other people's workspaces).
+//! Programs a hosted workspace's shell runs in the workspace's own VM, on a host that
+//! serves other people's workspaces: a stranger's `cargo` or `python` never runs in a
+//! guest sharing the host's kernel.
 //!
-//! On such a host, a stranger's `cargo` or `python` never runs in a guest
-//! sharing the host's kernel: [`HostedPrograms`] asks the host's hosted-VM
-//! service ([`legacy_vm::hosted`]) for the VM of this workspace environment,
-//! which boots it on first use and restores it from its snapshot after it
-//! went idle, and runs each program there through the VM's agent, with the
-//! shell's streams relayed and the environment's granted directories at the
-//! same paths. The shell, its own commands and their run records are the
-//! same as on a device; only where a program runs differs.
+//! [`HostedPrograms`] asks the hosted-VM service ([`legacy_vm::hosted`]) for the
+//! workspace environment's VM, which it boots on first use and restores from its snapshot
+//! after it went idle, and runs each program there through the VM's agent with the
+//! environment's granted directories at the same paths. The shell, its own commands and
+//! their run records are the same as on a device.
 //!
-//! When the host refuses the VM, the refusal is typed
-//! ([`host_account::Refusal`]) and says what would let it through:
+//! A refused VM is typed ([`host_account::Refusal`]) and says what would let it through: a
+//! person's command the account's standing would admit waits and runs once the host's
+//! plans file names the account ([`held_mark`], Terminal showing the prompt), while an
+//! agent's command fails at once with the refusal and what to ask the person. When the
+//! hosts have no room ([`Reply::Busy`]) a command waits after one line saying so, and
+//! interrupting it ends it having run nothing.
 //!
-//! - **A person's command** the account's standing would let through (a
-//!   card added on a host that sells VMs) waits. Terminal is told it is held
-//!   ([`held_mark`]) and shows the person the prompt, with the provider's
-//!   page; once the host's plans file names the account, the command runs,
-//!   without the person typing it again. Interrupting it (Terminal's Cancel
-//!   is Ctrl+C) ends it with a plain line, having run nothing.
-//! - **An agent's command** (the shell hands it on with `USH_RENDER=agent`)
-//!   never waits: it fails at once with the refusal's words and what to ask
-//!   the person, and Terminal gets the typed refusal for the agent's run and
-//!   shows the person the same prompt.
-//! - Anything else fails with the refusal's words.
-//!
-//! When the hosts have no room for the VM right now ([`Reply::Busy`]: every
-//! machine full, another one starting), the command waits, a person's and an
-//! agent's alike, after one line saying so; it is never refused for it.
-//! Interrupting it ends it having run nothing.
-//!
-//! A program whose input and output are the session's terminal runs on a
-//! pseudo-terminal in the VM ([`Relay::Terminal`]): the session's keys go
-//! to it as typed (the session's terminal is raw meanwhile; the VM's
-//! terminal does the line editing and turns Ctrl-C into a signal there),
-//! its output comes back as the program's standard output, recorded like
-//! any other, and the VM's terminal follows the session's size. So
-//! editors, prompts and pagers work as they do on a device.
-//!
-//! A host turns this on for its sessions with [`SOCKET_ENV`], naming the
-//! account billed with [`ACCOUNT_ENV`], the VM's size with [`SIZE_ENV`],
-//! and the plans file the service admits by with [`PLANS_ENV`], which a
-//! waiting command follows.
+//! A program whose input and output are the session's terminal runs on a pseudo-terminal
+//! in the VM ([`Relay::Terminal`]), so editors, prompts and pagers work as on a device.
+//! [`SOCKET_ENV`], [`ACCOUNT_ENV`], [`SIZE_ENV`] and [`PLANS_ENV`] turn this on for a
+//! host's sessions.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
@@ -61,19 +38,15 @@ use ush_shell::{Input, Output, Program, Std, Stdio};
 use ush_tilo::Programs;
 
 pub use tilo_host_account::{ACCOUNT_ENV, PLANS_ENV, SOCKET_ENV};
-/// The size of the session's VM (`small`, `default`, `large`, `xlarge`).
 pub const SIZE_ENV: &str = "TILO_HOSTED_VM_SIZE";
 
 #[cfg(any(test, feature = "test-host"))]
 pub mod test_host;
 
-/// How long a wake may take, a first boot included.
 const WAKE_PATIENCE: Duration = Duration::from_secs(300);
 
-/// How often a command waiting for room asks its host again.
 const BUSY_RETRY: Duration = Duration::from_secs(2);
 
-/// Where a hosted session's programs run, and who pays.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedTarget {
     pub socket: PathBuf,
@@ -85,7 +58,6 @@ pub struct HostedTarget {
 }
 
 impl HostedTarget {
-    /// The host's settings for its sessions, when it serves workspaces.
     #[must_use]
     pub fn from_env() -> Option<Self> {
         let socket = PathBuf::from(std::env::var_os(SOCKET_ENV)?);
@@ -105,7 +77,6 @@ impl HostedTarget {
 
 type Shares = dyn Fn() -> Vec<ShareRequest> + Send + Sync;
 
-/// A hosted workspace environment's VM, as the place its programs run.
 pub struct HostedPrograms {
     target: HostedTarget,
     /// The session's Terminal runs key ([`crate::runs::KEY_ENV`]): the
@@ -113,12 +84,8 @@ pub struct HostedPrograms {
     runs: Option<String>,
     workspace: String,
     environment: String,
-    /// The directories the environment grants now: writable ones read-write.
     shares: Box<Shares>,
-    /// The session's terminal, when it has one: programs on it run on a
-    /// terminal in the VM.
     terminal: Option<OwnedFd>,
-    /// Where the last refusal is told, for a caller that answers it typed.
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<host_account::Refusal>>>>,
 }
 
@@ -152,15 +119,12 @@ impl HostedPrograms {
         self
     }
 
-    /// Programs whose input and output are the session's own get a
-    /// terminal in the VM sized and fed from `terminal`, when it is one.
     #[must_use]
     pub fn terminal(mut self, terminal: OwnedFd) -> Self {
         self.terminal = is_terminal(&terminal).then_some(terminal);
         self
     }
 
-    /// Mark held commands for Terminal with the session's runs key.
     #[must_use]
     pub fn with_runs_key(mut self, key: Option<String>) -> Self {
         self.runs = key;
@@ -223,8 +187,6 @@ impl Write for OutputWriter<'_> {
     }
 }
 
-/// Wait `wait`, looking at `stop` as a running program's flag is looked
-/// at: whether the wait ran out rather than being stopped.
 fn pause(wait: Duration, stop: Option<&dyn Fn() -> bool>) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() < wait {
@@ -266,8 +228,6 @@ fn failed(name: &str, io: &Stdio, reason: &str) -> Program {
 }
 
 impl HostedPrograms {
-    /// The VM's link once the host lets the program in; or the program's
-    /// end: refused, or held and then cancelled.
     fn admitted(
         &self,
         name: &str,
@@ -319,9 +279,6 @@ impl HostedPrograms {
                 if waiting.is_some() {
                     self.mark(io, &released_mark);
                 }
-                // A person's command that cannot wait, or an agent's: the
-                // refusal now. Terminal shows the person the prompt for an
-                // agent's run too, from the same mark.
                 if refusal.awaits_the_account() {
                     self.mark(io, &|key| held_mark(key, agent, &refusal));
                 }
@@ -346,8 +303,6 @@ impl HostedPrograms {
                 // refusal and the watch is not missed.
                 None => match Hold::start(plans) {
                     Ok(hold) => {
-                        // Terminal shows the prompt with the provider's page; any other
-                        // terminal gets the whole refusal and where to add the card.
                         let words = if self.mark(io, &|key| held_mark(key, false, &refusal)) {
                             "needs a Linux machine.".to_owned()
                         } else {
@@ -416,13 +371,11 @@ pub fn held_mark(key: &str, agent: bool, refusal: &host_account::Refusal) -> Str
     )
 }
 
-/// `U`: the hold is over.
 #[must_use]
 pub fn released_mark(key: &str) -> String {
     format!("\x1b]133;U;k={key}\x07")
 }
 
-/// A held command following the plans file for the account to change.
 struct Hold {
     changes: std::sync::mpsc::Receiver<()>,
     _watch: tilo_files::native::ChangeWatch,
@@ -440,16 +393,12 @@ impl Hold {
         })
     }
 
-    /// Wait for the plans file to change: whether it did, or `stop` ended
-    /// the wait first.
     fn changed(&self, stop: Option<&dyn Fn() -> bool>) -> bool {
         use std::sync::mpsc::RecvTimeoutError;
         let Some(stop) = stop else {
             return self.changes.recv().is_ok();
         };
         loop {
-            // The file's change is the event; `stop` is the job's own flag,
-            // looked at as a running program's is.
             match self.changes.recv_timeout(Duration::from_millis(50)) {
                 Ok(()) => {
                     while self.changes.try_recv().is_ok() {}
@@ -530,7 +479,6 @@ impl Programs for HostedPrograms {
                     let finished = &finished;
                     scope.spawn(move || relay_terminal(fd, &relay, finished));
                 }
-                // Ended from outside (the job was killed): end it in the VM.
                 if let Some(stop) = stop {
                     while !running.is_finished() {
                         if stop() {
@@ -565,7 +513,6 @@ fn terminal_size(fd: &OwnedFd) -> TerminalSize {
     // SAFETY: TIOCGWINSZ writes only into the struct, which lives across
     // the call.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
     if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &raw mut size) } == 0
         && size.ws_col > 0
         && size.ws_row > 0
@@ -579,9 +526,6 @@ fn terminal_size(fd: &OwnedFd) -> TerminalSize {
     }
 }
 
-/// The session's terminal in raw mode while a program in the VM has it:
-/// every key goes to the VM's terminal, which edits lines and makes Ctrl-C
-/// a signal there. Restored when dropped.
 struct Raw<'a> {
     fd: &'a OwnedFd,
     cooked: Option<libc::termios>,
@@ -612,14 +556,11 @@ impl<'a> Raw<'a> {
 impl Drop for Raw<'_> {
     fn drop(&mut self) {
         if let Some(cooked) = self.cooked {
-            // SAFETY: as in `new`.
             unsafe { libc::tcsetattr(self.fd.as_raw_fd(), libc::TCSADRAIN, &raw const cooked) };
         }
     }
 }
 
-/// How often a waiting relay looks at the terminal's size and whether the
-/// program ended.
 const RELAY_TICK: Duration = Duration::from_millis(100);
 
 /// Relay the session's keys and size to a program on a terminal in the VM
@@ -636,10 +577,8 @@ fn relay_terminal(fd: &OwnedFd, signals: &LaunchSignals<AgentStream>, finished: 
             events: libc::POLLIN,
             revents: 0,
         };
-        // SAFETY: one pollfd, owned here, for the length of the call.
         let ready = unsafe { libc::poll(&raw mut poll, 1, tick) };
         if ready > 0 && poll.revents & libc::POLLIN != 0 {
-            // SAFETY: `buffer` is valid for writes of its length.
             let read =
                 unsafe { libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
             let Ok(read) = usize::try_from(read) else {
@@ -757,8 +696,6 @@ mod tests {
         );
     }
 
-    /// A hybrid-vsock socket whose port connections reach a real agent
-    /// running here as the current user.
     fn fake_vm(dir: &Path) -> PathBuf {
         use std::io::BufRead as _;
         let socket = dir.join("v.sock");
@@ -788,7 +725,6 @@ mod tests {
         socket
     }
 
-    /// The hosted-VM service, answering every wake with `link`.
     fn fake_service(dir: &Path, vm: PathBuf) -> PathBuf {
         let socket = dir.join("hosted.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
@@ -817,7 +753,6 @@ mod tests {
         use std::os::fd::FromRawFd as _;
         let dir = tempfile::tempdir().unwrap();
         let socket = fake_service(dir.path(), fake_vm(dir.path()));
-        // The session's terminal: the test types into its master.
         let (mut master, mut slave) = (-1, -1);
         let size = libc::winsize {
             ws_row: 33,
@@ -825,7 +760,6 @@ mod tests {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        // SAFETY: out-parameters and a size that live across the call.
         let opened = unsafe {
             libc::openpty(
                 &raw mut master,
@@ -887,10 +821,7 @@ mod tests {
             out.contains("hi secret"),
             "the typed line reached the program: {out:?}"
         );
-        // The session's terminal is back as it was: canonical, echoing.
-        // SAFETY: tcgetattr fills the struct owned here.
         let mut modes: libc::termios = unsafe { std::mem::zeroed() };
-        // SAFETY: as above.
         assert_eq!(
             unsafe { libc::tcgetattr(slave.as_raw_fd(), &raw mut modes) },
             0
@@ -898,7 +829,6 @@ mod tests {
         assert_ne!(modes.c_lflag & libc::ICANON, 0);
     }
 
-    /// An [`Output`] as a writer, for nesting a buffer under a host stream.
     struct OutputWriter2(Output);
 
     impl Write for OutputWriter2 {
@@ -914,7 +844,6 @@ mod tests {
 
     const KEY: &str = "0123456789abcdef0123";
 
-    /// A session on `host` for `account`, its terminal captured.
     fn session(
         host: &test_host::TestHost,
         account: &str,
@@ -936,8 +865,6 @@ mod tests {
         (programs, io, out, err)
     }
 
-    /// The refusal a held mark in `text` carries, and whether it is an
-    /// agent's.
     fn held(text: &str) -> Option<(bool, host_account::Refusal)> {
         use base64::Engine as _;
         let mark = text.split("\x1b]133;W;").nth(1)?.split('\x07').next()?;
@@ -973,7 +900,6 @@ mod tests {
                 None,
             )
         });
-        // phase: the command is held, and the terminal shows the prompt's mark
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mark = loop {
             let text = String::from_utf8_lossy(&err.peek()).into_owned();
@@ -996,7 +922,6 @@ mod tests {
             Some("https://tilo.sh/billing/card?account=acct-1")
         );
         assert!(!running.is_finished(), "a person's command waits");
-        // phase: the provider adds the card, and the command runs untyped again
         host.add_card("acct-1");
         assert_eq!(running.join().unwrap(), Program::Exited(0));
         assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");

@@ -1,14 +1,10 @@
-//! The commit page: what a commit changed, and the diffs of the files it
-//! touched.
-//!
-//! History is read, not edited: a commit's page names its files, and one of
-//! them opens in the same diff view the working tree uses. The files are read
-//! the first time a commit is opened, because walking every commit's tree up
-//! front costs a second on a real repository.
-//!
-//! A conflicted file is the other half of this: it is the only kind of change
-//! whose *decision* changes the repository, so its two sides are offered
-//! above its diff rather than left to a terminal.
+//! The commit page: what a commit changed, and the diffs of the files it touched.
+//! History is read, not edited: a commit's page names its files, and one opens in
+//! the same diff view the working tree uses, read the first time the commit is
+//! opened because walking every commit's tree up front costs a second on a real
+//! repository. A conflicted file is the only change whose decision alters the
+//! repository, so its two sides are offered above its diff rather than left to a
+//! terminal.
 
 use vello::kurbo::{Point, Rect};
 
@@ -25,9 +21,8 @@ use crate::diffview::DiffHit;
 
 use super::{GitClientState, Hit, ScrollRegion, Scroller, Target};
 
-/// What the band above a conflicted file says: what each choice costs, in
-/// the person's terms, or — where the sides cannot be read — the bare fact
-/// that both changed the file.
+/// What the band above a conflicted file says: what each choice costs, or — where the sides cannot
+/// be read — the bare fact that both changed the file.
 pub(super) fn conflict_note(cost: Option<crate::repo::ConflictCost>) -> String {
     match cost {
         Some(cost) => t_args(
@@ -80,9 +75,8 @@ impl GitClientState {
             .map(|file| file.path.clone())
     }
 
-    /// Keep one side of the conflicted file under review, which stages it as
-    /// resolved, and move on to the next file so a merge with several
-    /// conflicts is a few keystrokes rather than a terminal.
+    /// Keep one side of the conflicted file under review, which stages it as resolved, and move on
+    /// to the next file so a merge with several conflicts is a few keystrokes.
     pub(super) fn resolve_conflict(&mut self, side: crate::repo::ConflictSide) {
         let Some(file) = self.selected_conflict() else {
             return;
@@ -109,13 +103,10 @@ impl GitClientState {
         }
     }
 
-    /// A conflicted file's sides, above its diff: the choice that resolves
-    /// the conflict without a terminal, and what each choice costs.
-    ///
-    /// The sentence and the two buttons share a row where they fit; in a
-    /// narrow window the sentence wraps to the width it has and the buttons
-    /// stand under it, because a sentence elided before it says what the
-    /// second choice costs is not a sentence about the decision.
+    /// A conflicted file's sides, above its diff: the choice that resolves it without a terminal,
+    /// and what each choice costs. The sentence and the buttons share a row where they fit; in a
+    /// narrow window the sentence wraps and the buttons stand under it, since a sentence elided
+    /// before it says what the second choice costs is not a sentence about the decision.
     pub(super) fn paint_conflict_actions(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -148,8 +139,7 @@ impl GitClientState {
             .collect();
         let buttons_w: f64 = widths.iter().sum::<f64>()
             + f64::from(s.s2) * (f64::from(u32::try_from(widths.len()).unwrap_or(1)) - 1.0);
-        // One row when the sentence has room beside the buttons, two when it
-        // has not.
+        // One row when the sentence has room beside the buttons, two when it has not.
         let side_by_side = pad + note_w + f64::from(s.s4) + buttons_w + pad <= body.width();
         let text_room = if side_by_side {
             note_w
@@ -194,8 +184,8 @@ impl GitClientState {
         };
         let mut hits = Vec::new();
         for ((label, side), w) in labels.into_iter().zip(widths) {
-            // The width comes from the label; the face that is painted is
-            // the one with the button's own rect, or nothing shows.
+            // The width comes from the label; the face painted is the one with the button's own
+            // rect, or nothing shows.
             let rect = Rect::new(
                 x,
                 button_y + f64::from(s.s1),
@@ -211,10 +201,9 @@ impl GitClientState {
         (Rect::new(body.x0, band.y1, body.x1, body.y1), hits)
     }
 
-    /// What keeping each side of `file` would discard. Read once per
-    /// conflict — from the repository where there is one, from the bundled
-    /// sample's canned sides where the shot shows a repository that is not
-    /// on disk — and remembered until another file is picked.
+    /// What keeping each side of `file` would discard. Read once per conflict — from the repository
+    /// where there is one, from the sample's canned sides where the shot shows a repository that is
+    /// not on disk — and remembered until another file is picked.
     pub(super) fn conflict_cost_for(&mut self, file: &str) -> Option<crate::repo::ConflictCost> {
         if let Some((known, cost)) = &self.conflict_cost
             && known == file
@@ -237,8 +226,8 @@ impl GitClientState {
         self.conflict_cost = None;
     }
 
-    /// The sentence above the conflicted file, as the band paints it and as
-    /// assistive technology reads it: one sentence, one source.
+    /// The sentence above the conflicted file, as the band paints it and as assistive technology
+    /// reads it: one sentence, one source.
     pub(super) fn conflict_sentence(&self) -> String {
         let cost = match (&self.conflict_cost, self.selected_conflict()) {
             (Some((known, cost)), Some(file)) if *known == file => *cost,
@@ -304,9 +293,9 @@ impl GitClientState {
         });
     }
 
-    /// The commit's changed files, read from the repository the first time
-    /// the commit is opened. A repository that cannot answer leaves the
-    /// group out rather than showing an empty one that means "no changes".
+    /// The commit's changed files, read from the repository the first time the commit is opened. A
+    /// repository that cannot answer leaves the group out rather than showing an empty one that
+    /// means "no changes".
     pub(super) fn load_commit_files(&mut self, commit: &str) {
         if self.commit_files.contains_key(commit) {
             return;
@@ -322,9 +311,8 @@ impl GitClientState {
         }
     }
 
-    /// Whatever a diff view drew is reachable where it was drawn: a control
-    /// painted here and recorded nowhere is one that ignores a press and that
-    /// a reader never hears.
+    /// Whatever a diff view drew is reachable where it was drawn: a control painted here and
+    /// recorded nowhere ignores a press and is never announced.
     fn record_drawn(&mut self, targets: &[(Rect, DiffHit)]) {
         for &(rect, hit) in targets {
             if rect.width() > 0.0 && rect.height() > 0.0 {
@@ -340,9 +328,8 @@ impl GitClientState {
         }
     }
 
-    /// One file's changes in a commit: the same diff view the working tree
-    /// uses, with the commit and file as its heading and no stage or discard
-    /// actions (a commit is history; it is read, not edited).
+    /// One file's changes in a commit: the same diff view the working tree uses, with the commit
+    /// and file as its heading and no stage or discard actions.
     pub(super) fn paint_commit_diff(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -431,8 +418,8 @@ impl GitClientState {
                 settings: self.settings,
                 staged: false,
                 can_discard: false,
-                // The change is already committed: there is nothing here to
-                // stage, and the working tree's selection is not this file.
+                // The change is already committed: there is nothing here to stage, and the working
+                // tree's selection is not this file.
                 actions: false,
                 pointer: self.pointer,
             },

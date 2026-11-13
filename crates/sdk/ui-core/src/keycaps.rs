@@ -16,6 +16,7 @@
 //! documentation and onboarding use for it. Apple keyboards and XKB's Mac
 //! layout variants use the symbols printed on Apple keycaps (⌘ ⌥ ⌃ ⇧).
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tilo_sort::CompactSort as _;
 
@@ -123,14 +124,17 @@ impl Keycaps {
     /// The legends of XKB layout `layout` with variant `variant` (empty for
     /// the base layout). Mac variants (`mac`, `de_mac`, `mac_nodeadkeys`, …)
     /// describe Apple keyboards.
+    /// A keymap of several groups (`de,us`) types with its first: its legends are that one's.
     pub fn from_xkb(layout: &str, variant: &str) -> Self {
+        let first = |names: &str| names.split(',').next().unwrap_or_default().to_owned();
+        let (layout, variant) = (first(layout), first(variant));
         let family = if variant.to_ascii_lowercase().contains("mac") {
             KeyboardFamily::Apple
         } else {
             KeyboardFamily::Pc
         };
         Self {
-            language: KeycapLanguage::from_xkb_layout(layout),
+            language: KeycapLanguage::from_xkb_layout(&layout),
             family,
         }
     }
@@ -521,6 +525,103 @@ fn apple_key(name: &str) -> Option<&'static str> {
     })
 }
 
+/// The punctuation a US keyboard types with Shift, by the mark the same key types alone: a chord
+/// names a key by its unshifted mark, so `Shift+/` is the key that types `?`.
+const US_SHIFTED: [(char, char); 21] = [
+    ('/', '?'),
+    (';', ':'),
+    ('\'', '"'),
+    (',', '<'),
+    ('.', '>'),
+    ('-', '_'),
+    ('=', '+'),
+    ('[', '{'),
+    (']', '}'),
+    ('\\', '|'),
+    ('`', '~'),
+    ('1', '!'),
+    ('2', '@'),
+    ('3', '#'),
+    ('4', '$'),
+    ('5', '%'),
+    ('6', '^'),
+    ('7', '&'),
+    ('8', '*'),
+    ('9', '('),
+    ('0', ')'),
+];
+
+/// The mark a US keyboard's key types alone, for the one it types with Shift (`/` for `?`).
+#[must_use]
+pub fn us_unshifted(shifted: char) -> Option<char> {
+    US_SHIFTED
+        .iter()
+        .find_map(|(alone, with_shift)| (*with_shift == shifted).then_some(*alone))
+}
+
+/// Where the active layout types a mark (`/`, `=`, `[`): the legend of the key that carries it,
+/// as that key types alone (`7`, `0`, `8` on a German keyboard), and whether Shift or `AltGr` add
+/// the mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedMark {
+    pub key: String,
+    pub shift: bool,
+    pub alt_gr: bool,
+}
+
+static TYPED_MARKS: std::sync::RwLock<BTreeMap<char, TypedMark>> =
+    std::sync::RwLock::new(BTreeMap::new());
+
+/// Publish where the layout the keyboard switched to types each mark, as its keymap says.
+pub fn set_typed_marks(marks: BTreeMap<char, TypedMark>) {
+    *TYPED_MARKS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = marks;
+}
+
+/// A canonical chord (`["Super"]`, `"/"`) as the keys the active layout presses for it, as
+/// canonical tokens: a mark the layout types with Shift or `AltGr` is its key with them
+/// (`Super+Shift+7` for `Super+/` on a German keyboard), and `Shift` with a mark is the mark a US
+/// keyboard types so (`Super+Shift+/` is the key that types `?`). The desktop matches presses the
+/// same way: a mark the layout typed with Shift is named without it. Letters, named keys and a
+/// layout that never published its marks keep the chord as it is.
+#[must_use]
+pub fn as_typed<'a>(
+    modifiers: impl IntoIterator<Item = &'a str>,
+    key: &str,
+) -> (Vec<String>, String) {
+    let mut held: Vec<String> = modifiers.into_iter().map(str::to_owned).collect();
+    let mut chars = key.chars();
+    let (Some(mark), None) = (chars.next(), chars.next()) else {
+        return (held, key.to_owned());
+    };
+    let is_shift = |token: &String| canonical_modifier(token) == Some(KeyboardModifier::Shift);
+    let typed = if held.iter().any(is_shift) {
+        US_SHIFTED
+            .iter()
+            .find_map(|(alone, with_shift)| (*alone == mark).then_some(*with_shift))
+    } else {
+        Some(mark)
+    };
+    let marks = TYPED_MARKS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(at) = typed
+        .filter(char::is_ascii_punctuation)
+        .and_then(|typed| marks.get(&typed))
+    else {
+        return (held, key.to_owned());
+    };
+    held.retain(|token| !is_shift(token));
+    held.extend(
+        [(at.shift, "Shift"), (at.alt_gr, "AltGr")]
+            .into_iter()
+            .filter(|(holds, _)| *holds)
+            .map(|(_, token)| token.to_owned()),
+    );
+    (held, at.key.clone())
+}
+
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
 thread_local! {
@@ -607,6 +708,50 @@ mod tests {
         assert_eq!(us.modifier(KeyboardModifier::AltGr), "AltGr");
         assert_eq!(Keycaps::from_xkb("ru", ""), us);
         assert_eq!(Keycaps::from_xkb("gb", "extd"), us);
+    }
+
+    #[test]
+    fn a_chord_shows_the_keys_the_layout_presses_for_its_mark() {
+        let _german = scoped(Keycaps::from_xkb("de,us", ",intl"));
+        assert_eq!(
+            active().language,
+            KeycapLanguage::German,
+            "the first group types"
+        );
+        let mark = |key: &str, shift: bool, alt_gr: bool| TypedMark {
+            key: key.to_owned(),
+            shift,
+            alt_gr,
+        };
+        set_typed_marks(BTreeMap::from([
+            ('/', mark("7", true, false)),
+            ('?', mark("ß", true, false)),
+            ('=', mark("0", true, false)),
+            ('-', mark("-", false, false)),
+            ('[', mark("8", false, true)),
+        ]));
+        let typed = |modifiers: &[&str], key: &str| {
+            let (held, key) = as_typed(modifiers.iter().copied(), key);
+            active().chord(held.iter().map(String::as_str), &key)
+        };
+        assert_eq!(typed(&["Super"], "/"), "Super+Umschalt+7");
+        assert_eq!(typed(&["Super", "Shift"], "/"), "Super+Umschalt+ß");
+        assert_eq!(typed(&["Super"], "="), "Super+Umschalt+0");
+        assert_eq!(typed(&["Super"], "-"), "Super+-");
+        assert_eq!(typed(&["Super"], "["), "Super+Alt Gr+8");
+        assert_eq!(typed(&["Super", "Shift"], "s"), "Super+Umschalt+S");
+        assert_eq!(typed(&["Super"], "pageup"), "Super+Bild↑");
+        assert_eq!(
+            Keycaps::US.chord(["Super"], "/"),
+            "Super+/",
+            "the canonical spelling stays the chord's own"
+        );
+        set_typed_marks(BTreeMap::new());
+        assert_eq!(
+            typed(&["Super"], "/"),
+            "Super+/",
+            "no marks: the chord as written"
+        );
     }
 
     #[test]

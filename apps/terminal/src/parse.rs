@@ -1,18 +1,11 @@
-//! What a command run printed, read as items: the generic reading every run
-//! gets (escape sequences stripped; `path:line[:column]` locations, URLs,
-//! error and warning lines) and a tool's own reading, chosen by the command
-//! (`cargo`/`rustc` diagnostics in the human and JSON formats, libtest
-//! results, `git status`). docs/app-model/ush.md, "Parsers".
+//! What a run printed, read as items: the reading every run gets (escape sequences stripped,
+//! `path:line[:column]` locations, URLs), then the tools' own parsers.
 
 use crate::resource::{ItemKind, RunItem};
 
-/// The most items one run keeps.
 pub const MAX_ITEMS: usize = 512;
-/// The longest text an item keeps.
 const MAX_TEXT: usize = 512;
 
-/// The tool whose reading a command line gets: `cargo`, `rustc`, `git`, or
-/// none.
 #[must_use]
 pub fn tool_of(command: &str) -> &'static str {
     let words: Vec<&str> = command
@@ -46,7 +39,6 @@ pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
         .iter()
         .map(|item| (item.path.clone(), item.line))
         .collect();
-    // A tool that reports diagnostics reads its own error and warning lines.
     let diagnostics = !matches!(tool_of(command), "cargo" | "rustc");
     for item in generic(&text)
         .into_iter()
@@ -83,8 +75,6 @@ fn item(kind: ItemKind, text: &str) -> RunItem {
     }
 }
 
-/// A `path:line[:column]` at the start of `word`, the path relative or
-/// absolute with a file extension or a slash.
 fn location(word: &str) -> Option<(String, u32, Option<u32>)> {
     let word = word.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | '\'' | '"' | '[' | ']'));
     let mut parts = word.split(':');
@@ -101,7 +91,6 @@ fn location(word: &str) -> Option<(String, u32, Option<u32>)> {
     (looks_like_path && line > 0).then(|| (path.to_owned(), line, column))
 }
 
-/// The generic reading: locations, URLs, and error and warning lines.
 #[must_use]
 pub fn generic(text: &str) -> Vec<RunItem> {
     let mut out = Vec::new();
@@ -137,8 +126,6 @@ pub fn generic(text: &str) -> Vec<RunItem> {
     out
 }
 
-/// `cargo`/`rustc` diagnostics in the human format: `error[E0308]: …` with
-/// its `--> path:line:column` underneath.
 #[must_use]
 pub fn rust_human(text: &str) -> Vec<RunItem> {
     let mut out: Vec<RunItem> = Vec::new();
@@ -171,7 +158,6 @@ pub fn rust_human(text: &str) -> Vec<RunItem> {
                 None => continue,
             },
         };
-        // The summary lines cargo prints after the diagnostics.
         if message.trim_start().starts_with("could not compile")
             || message.trim_start().starts_with("aborting due to")
             || message.contains("generated") && message.contains("warning")
@@ -187,9 +173,6 @@ pub fn rust_human(text: &str) -> Vec<RunItem> {
     out
 }
 
-/// `cargo --message-format=json` (and `rustc --error-format=json`): one
-/// object per line, each `compiler-message` an error or warning with its
-/// code and primary span.
 #[must_use]
 pub fn rust_json(text: &str) -> Vec<RunItem> {
     let mut out = Vec::new();
@@ -251,9 +234,6 @@ pub fn rust_json(text: &str) -> Vec<RunItem> {
     out
 }
 
-/// Test results: libtest's `test path::name ... ok | FAILED | ignored` and
-/// nextest's `PASS|FAIL|SKIP [ 0.01s] (1/3) crate path::name`, one item per
-/// test with its name as the code.
 #[must_use]
 pub fn libtest(text: &str) -> Vec<RunItem> {
     let mut out: Vec<RunItem> = Vec::new();
@@ -306,8 +286,6 @@ pub fn libtest(text: &str) -> Vec<RunItem> {
     out
 }
 
-/// `git status`: the short and porcelain formats (`XY path`) and the long
-/// one (`modified:   path`), one item per path with its status as the code.
 #[must_use]
 pub fn git_status(text: &str) -> Vec<RunItem> {
     let mut out = Vec::new();
@@ -423,8 +401,6 @@ pub fn rerun_test(command: &str, test: &str) -> Option<String> {
     Some(format!("{} -- --exact {test}", kept.join(" ")))
 }
 
-/// The `cargo test` options that choose what is built and how, kept when one
-/// test runs again.
 const CARGO_TEST_SELECTION: &[&str] = &[
     "-p",
     "--package",
@@ -455,7 +431,6 @@ const CARGO_TEST_SELECTION: &[&str] = &[
     "--frozen",
 ];
 
-/// The kept options whose value is the next word unless given as `--x=value`.
 const CARGO_VALUE_FLAGS: &[&str] = &[
     "-p",
     "--package",
@@ -471,8 +446,6 @@ const CARGO_VALUE_FLAGS: &[&str] = &[
     "--manifest-path",
 ];
 
-/// Whether `word` reads the same to the shell as it does here: no quoting,
-/// expansion or control characters.
 fn shell_safe(word: &str) -> bool {
     word.chars().all(|c| {
         c.is_ascii_alphanumeric()
@@ -480,13 +453,9 @@ fn shell_safe(word: &str) -> bool {
     })
 }
 
-/// What showing one of a run's items opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Shown {
-    /// A web page, in the browser.
     Page(String),
-    /// A file at a line, a path relative to the run's directory made
-    /// absolute.
     File {
         path: std::path::PathBuf,
         line: Option<u32>,
@@ -494,11 +463,6 @@ pub enum Shown {
     },
 }
 
-/// What showing the item at `position` of a run in `cwd` opens.
-///
-/// # Errors
-/// Returns why the item shows nothing: there is none at `position`, or it
-/// names neither a page nor a file.
 pub fn shown(cwd: &str, items: &[RunItem], position: usize) -> Result<Shown, String> {
     let item = items
         .get(position)

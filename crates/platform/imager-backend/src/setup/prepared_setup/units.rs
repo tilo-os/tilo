@@ -1,13 +1,9 @@
-//! What a prepared setup carries: one unit per data kind and route, kept in
-//! one map. A unit's key says which kind of data it is and how it reaches the
-//! destination; its value is the authenticated declaration the destination
-//! admits it against. A unit that moves through stages (requested on the
-//! original disk, then sealed onto the medium) keeps its stage inside its
-//! value, so two stages of one unit can never be declared at once.
+//! What a prepared setup carries: one unit per data kind and route, keyed by both. A unit that
+//! moves through stages keeps its stage inside its value, so two stages of one unit cannot be
+//! declared at once.
 use super::*;
 use std::collections::BTreeMap;
 
-/// The kind of data a unit moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -18,16 +14,13 @@ pub enum Kind {
     ServiceSessions,
 }
 
-/// How a unit reaches the destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Route {
-    /// Sealed into the setup package on the installer medium, including what
-    /// is captured onto it from the original disk before installation.
+    /// Sealed into the setup package on the installer medium, including what the live medium captures
+    /// from the original disk before installation.
     Medium,
-    /// Left on the retained source disk and opened after installation.
     Retained,
-    /// Copied from the original disk into the installed Tilo.
     InstalledCopy,
 }
 
@@ -53,29 +46,24 @@ impl UnitKey {
     }
 }
 
-/// Where the Home on the medium stands.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum HomeCarriage {
-    /// Selected; no ciphertext is bound yet.
     Planned,
-    /// Requested from the original disk; the live medium captures it before
-    /// installation.
+    /// The live medium captures it from the original disk before installation.
     Offline(OfflineHomePlan),
-    /// The exact verified ciphertext inside the completed setup package.
     Sealed(super::super::portable_home_media::Expectation),
 }
 
-/// Where the applications on the medium stand.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ApplicationsCarriage {
-    /// Requested from the original disk without a Home; the live medium
-    /// captures them before installation.
+    /// Captured from the original disk without a Home; the live medium captures them before
+    /// installation.
     #[cfg(target_os = "linux")]
     Offline(OfflineApplicationsPlan),
-    /// The exact verified signed objects inside the setup package. `alone`
-    /// marks applications captured from the original disk without a Home.
+    /// The exact verified signed objects inside the setup package. `alone` marks applications
+    /// captured from the original disk without a Home.
     Sealed {
         expectation: super::super::flatpak_transfer::portable::Expectation,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -83,7 +71,6 @@ pub enum ApplicationsCarriage {
     },
 }
 
-/// One unit's authenticated declaration. Its variant fixes its key.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Unit {
@@ -94,9 +81,8 @@ pub enum Unit {
     MediumApplications(ApplicationsCarriage),
     RetainedHome {
         plan: RetainedHomePlan,
-        /// Authenticated requested source credentials; only the protected
-        /// source record and root-held RW lease can turn these bytes into
-        /// scoped authority.
+        /// Only the protected source record and a root-held RW lease turn these bytes into scoped
+        /// authority.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller: Option<super::super::home_capture::RetainedCallerDeclaration>,
     },
@@ -105,9 +91,9 @@ pub enum Unit {
     #[cfg(target_os = "linux")]
     InstalledCopyApplications(SharedHomeApplicationsDeclaration),
     Browser(BrowserHandoff),
-    /// Selected Thunderbird accounts, folders, address books and calendars.
-    /// Each artifact is authenticating ciphertext inside this package; the
-    /// declaration names only opaque source IDs and never a path or address.
+    /// Selected Thunderbird accounts, folders, address books and calendars. Each artifact is
+    /// authenticating ciphertext inside this package; the declaration names only opaque source IDs,
+    /// never a path or address.
     Mail(Vec<MailHandoff>),
     ServiceSessions(super::super::service_sessions::Declaration),
 }
@@ -129,8 +115,8 @@ impl Unit {
     }
 }
 
-/// The units of one prepared setup, at most one per kind and route. On the
-/// wire it is the list of units; a list naming one key twice is refused.
+/// At most one unit per kind and route. On the wire it is a list; a list naming one key twice is
+/// refused.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Units(BTreeMap<UnitKey, Unit>);
 
@@ -162,7 +148,6 @@ impl Units {
     pub fn contains(&self, key: UnitKey) -> bool {
         self.0.contains_key(&key)
     }
-    /// Declare `unit`, replacing the unit of its kind and route.
     pub fn insert(&mut self, unit: Unit) {
         self.0.insert(unit.key(), unit);
     }
@@ -199,8 +184,7 @@ impl Units {
             _ => None,
         }
     }
-    /// Declare the Home selection on the medium, keeping where its
-    /// ciphertext stands when one is already declared.
+    /// Keeps where its ciphertext stands when one is already declared.
     pub fn plan_home(&mut self, plan: PortableHomePlan) {
         let carriage = match self.remove(UnitKey::MEDIUM_HOME) {
             Some(Unit::MediumHome { carriage, .. }) => carriage,
@@ -232,7 +216,6 @@ impl Units {
             _ => None,
         }
     }
-    /// Move the Home on the medium to `carriage`; refused without one.
     pub fn carry_home(&mut self, to: HomeCarriage) -> io::Result<()> {
         match self.0.get_mut(&UnitKey::MEDIUM_HOME) {
             Some(Unit::MediumHome { carriage, .. }) => {
@@ -242,9 +225,8 @@ impl Units {
             _ => Err(invalid()),
         }
     }
-    /// Replace what was requested from the original disk with what the live
-    /// medium captured from it: the sealed Home, if any, and the sealed
-    /// applications, `alone` when they came without a Home.
+    /// Replaces what was requested from the original disk with what the live medium captured: the
+    /// sealed Home, if any, and the sealed applications, `alone` when they came without a Home.
     pub fn seal_offline(
         &mut self,
         home: Option<super::super::portable_home_media::Expectation>,
@@ -313,8 +295,6 @@ impl Units {
             _ => None,
         }
     }
-    /// Bind the requested source credentials to the retained Home; refused
-    /// without one.
     pub fn set_retained_caller(
         &mut self,
         declaration: Option<super::super::home_capture::RetainedCallerDeclaration>,

@@ -822,7 +822,7 @@ pub enum InputEvent<B: InputBackend> {
 /// Converts an xorg mouse button to the format used by libinput.
 ///
 /// Taken from https://sources.debian.org/src/xserver-xorg-input-libinput/1.1.0-1/src/xf86libinput.c/?hl=1508#L236-L252
-#[cfg(any(feature = "backend_winit", feature = "backend_x11"))]
+#[cfg(feature = "backend_winit")]
 pub(crate) fn xorg_mouse_to_libinput(xorg: u32) -> u32 {
     match xorg {
         0 => 0,

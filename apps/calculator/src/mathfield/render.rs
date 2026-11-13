@@ -1,6 +1,5 @@
-//! Rendering for the math field's editing state: the caret bar at the active
-//! gap and the selection highlight band, reading colours from the theme. The
-//! laid-out boxes themselves are painted by `ui::math::draw_layout`.
+//! The math field's caret bar and selection band, coloured from the theme; the
+//! laid-out boxes are painted by `ui::math::draw_layout`.
 
 use ui::paint::PaintCtx;
 use vello::kurbo::{Point, Rect};
@@ -9,8 +8,8 @@ use super::edit::Sel;
 use super::layout::{Gap, Layout};
 use super::model::{MathExpr, Node, Slot};
 
-/// Paint the selection band behind the glyphs. `origin` is the top-left of
-/// the content area in scene coords; gaps are in content-local coords.
+/// `origin` is the content area's top-left in scene coords; gaps are
+/// content-local.
 pub fn draw_selection(
     ctx: &mut PaintCtx<'_>,
     origin: Point,
@@ -26,11 +25,10 @@ pub fn draw_selection(
     }
 }
 
-/// Content-local selection rectangles. A logical row can occupy several
-/// visual spans (the four arguments of an integral, for example). Only join
-/// adjacent selected atoms whose gaps share a band and advance left to right.
-/// Hidden integral commas have no painted span, even when their neighbouring
-/// arguments share a baseline: highlighting them would cover the differential.
+/// Content-local selection rectangles. A logical row can span several visual
+/// spans, so adjacent selected atoms are joined only when their gaps share a
+/// band. Hidden integral commas get no highlight: it would cover the
+/// differential.
 #[must_use]
 pub fn selection_bands(selection: &Sel, row_gaps: &[(usize, &Gap)], expr: &MathExpr) -> Vec<Rect> {
     let hidden = hidden_integral_separators(expr, &selection.steps);
@@ -90,15 +88,12 @@ fn hidden_integral_separators(expr: &MathExpr, steps: &[(usize, Slot)]) -> Vec<u
     }
 }
 
-/// Paint the caret bar at `gap`, relative to the content `origin`.
 pub fn draw_caret(ctx: &mut PaintCtx<'_>, origin: Point, gap: &Gap) {
     let x = origin.x + gap.x;
     let bar = Rect::new(x - 1.0, origin.y + gap.top, x + 1.0, origin.y + gap.bottom);
     ctx.fill_rect(bar, ctx.theme.tokens.colors.intent.you);
 }
 
-/// Build the `(index, gap)` list for the caret's current row so the renderer
-/// can draw the selection band and locate the caret.
 pub fn row_gaps<'a>(layout: &'a Layout, steps: &[(usize, Slot)]) -> Vec<(usize, &'a Gap)> {
     layout
         .gaps
@@ -108,7 +103,6 @@ pub fn row_gaps<'a>(layout: &'a Layout, steps: &[(usize, Slot)]) -> Vec<(usize, 
         .collect()
 }
 
-/// The caret gap for a given path, if present in the layout.
 pub fn caret_gap<'a>(
     layout: &'a Layout,
     steps: &[(usize, Slot)],

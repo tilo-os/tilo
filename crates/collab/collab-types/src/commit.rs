@@ -108,6 +108,11 @@ pub struct UnitMutation<'a> {
     pub record: &'a str,
     /// What changed in the unit during the pass.
     pub mutation: &'a DocumentMutation,
+    /// The unit's document, holding the mutation's changes, when the
+    /// publisher has it. The next letter of a typed word continues its
+    /// gesture's first change and names its action only through it, which an
+    /// earlier pass may have carried.
+    pub document: Option<&'a automerge::Automerge>,
 }
 
 /// One signed action across every unit it wrote.
@@ -217,6 +222,7 @@ impl WorkspaceCommit {
             app,
             record,
             mutation,
+            document: None,
         };
         Ok(
             Self::of_units(workspace, author, std::slice::from_ref(&unit))?
@@ -615,6 +621,7 @@ impl Read {
         };
         let mut one_action = true;
         let mut first = None;
+        let mut entries = tilo_actions::EntryReader::default();
         for (position, change) in changes.iter().enumerate() {
             read.part.changes.push(change.hash().0);
             read.at_ms = read.at_ms.max(
@@ -622,9 +629,12 @@ impl Read {
                     .unwrap_or(0)
                     .saturating_mul(1000),
             );
-            let context = change
-                .message()
-                .and_then(tilo_actions::ActionContext::from_change_message);
+            let context = entries
+                .read(change.actor_id(), change.message())
+                .or_else(|| {
+                    unit.document
+                        .and_then(|document| tilo_actions::entry_of(document, change.hash()))
+                });
             let Some(context) = context else {
                 // A change that names no action is no part of one, and a
                 // commit is the one record of an action.
@@ -783,26 +793,31 @@ mod tests {
                 app: "tasks",
                 record: "a",
                 mutation: &title,
+                document: None,
             },
             UnitMutation {
                 app: "tasks",
                 record: "b",
                 mutation: &body,
+                document: None,
             },
             UnitMutation {
                 app: "chat",
                 record: "t",
                 mutation: &elsewhere,
+                document: None,
             },
             UnitMutation {
                 app: "tasks",
                 record: "mixed",
                 mutation: &mixed,
+                document: None,
             },
             UnitMutation {
                 app: "tasks",
                 record: "s",
                 mutation: &snapshot,
+                document: None,
             },
         ];
         let commits = WorkspaceCommit::of_units("workspace", &author([0; 32]), &units).unwrap();
@@ -1070,6 +1085,63 @@ mod tests {
         ));
     }
 
+    /// The next letter of a typed word continues its first letter's change:
+    /// it names its action through that change, in the same mutation or, from
+    /// the document, in one an earlier pass carried.
+    #[test]
+    fn a_continued_gesture_commits_to_its_action() {
+        use automerge::transaction::Transactable as _;
+        let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+        let typed = |text: &str| ActionContext {
+            action: Some(tilo_actions::EncodedAction {
+                type_id: "notes.type".into(),
+                payload: format!("{text:?}").into_bytes(),
+            }),
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            ..ActionContext::default().in_gesture(Some(gesture))
+        };
+        let mut doc = automerge::AutoCommit::new();
+        for (text, message) in [
+            ("a", typed("a").change_message().unwrap()),
+            ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
+        ] {
+            doc.put(automerge::ROOT, "body", text).unwrap();
+            doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+        }
+        let first = doc.get_changes(&[])[0].hash();
+        let unit = |mutation, document| UnitMutation {
+            app: "notes",
+            record: "",
+            mutation,
+            document,
+        };
+        let whole = DocumentMutation::Incremental(doc.save_after(&[]));
+        let commit =
+            WorkspaceCommit::of_units("workspace", &author([0; 32]), &[unit(&whole, None)])
+                .unwrap()[0]
+                .clone()
+                .expect("both letters are one action");
+        assert_eq!(commit.parts[0].changes.len(), 2);
+
+        let next = DocumentMutation::Incremental(doc.save_after(&[first]));
+        assert!(matches!(
+            WorkspaceCommit::of_units("workspace", &author([0; 32]), &[unit(&next, None)]),
+            Err(CommitError::Unnamed(_))
+        ));
+        let commit = WorkspaceCommit::of_units(
+            "workspace",
+            &CommitAuthor {
+                principal: None,
+                device: [0; 32],
+            },
+            &[unit(&next, Some(doc.document()))],
+        )
+        .unwrap()[0]
+            .clone()
+            .expect("the next letter alone is still its action's");
+        assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+    }
+
     #[test]
     fn a_field_edit_is_a_commit_too() {
         let (mutation, claims) = field_edit_mutation("tasks", "title", "write").unwrap();
@@ -1145,6 +1217,7 @@ mod tests {
                 id: "run-1".to_owned(),
                 label: "Alex".to_owned(),
                 kind: "agent-run".to_owned(),
+                title: None,
             }),
             invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
             source_invocation: Some(invocation),

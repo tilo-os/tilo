@@ -205,9 +205,8 @@ fn open() -> (Compositor, Child, tempfile::TempDir) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-lock-screen"));
     command
         // Its window is the session's lock: on every output, taking every
-        // input, showing who the session locked for.
+        // input.
         .env("TILO_SURFACE_LOCK", "1")
-        .env("TILO_SURFACE_PERSON", "Ada Lovelace")
         // Nothing of this desktop: no X display, and a runtime directory of
         // its own.
         .env("XDG_RUNTIME_DIR", runtime.path())

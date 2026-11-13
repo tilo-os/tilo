@@ -184,7 +184,7 @@ mod tests {
         pub text: String,
     }
 
-    #[resource(kind = "test.anchored-note", label = "Note")]
+    #[resource(kind = "test.anchored-note", catalogue = "tests/locales")]
     impl Note {
         /// Remark on some text.
         #[action(writes = remarks)]

@@ -1,14 +1,5 @@
-//! Data-driven keyboard layouts + pure geometry.
-//!
-//! A [`KeyboardLayout`](crate::touch::KeyboardLayout) is just rows of [`Key`](crate::touch::Key)s. Adding AZERTY, QWERTZ, a
-//! Dvorak layer, an emoji layer, … is *data* — build a `KeyboardLayout` and
-//! register it on the OSK widget.
-//! Nothing about rendering, sizing, or input is layout-specific.
-//!
-//! The *same* normalized key positions double as the FUTO
-//! swipe `load_layout_json()` geometry — one source of truth for rendering and
-//! (later) swipe decoding. [`key_rects`](crate::touch::key_rects) is that single geometry pass;
-//! a swipe decoder can normalise its output rects into 0..1 space.
+//! Data-driven keyboard layouts and pure geometry: a layout is rows of keys, and
+//! adding one is data.
 
 /// Bundled letter layouts, in their legacy switching order.
 pub const LAYOUT_NAMES: [&str; 2] = ["qwerty", "azerty"];
@@ -16,59 +7,40 @@ pub const LAYOUT_NAMES: [&str; 2] = ["qwerty", "azerty"];
 use ui::icons::Icon;
 use vello::kurbo::Rect;
 
-/// What a key emits / does when activated. The text-producing variants
-/// ([`Char`](KeyAction::Char), [`Space`](KeyAction::Space),
-/// [`Enter`](KeyAction::Enter)) append to the widget's output; the rest are
-/// state transitions (`Shift`, `SymbolsToggle`, `Layout`) or edits
-/// (`Backspace`).
+/// What a key emits or does when activated: the text variants append to the
+/// widget's output, the rest are state transitions or edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyAction {
     /// Emit a literal string (usually one grapheme — a letter, digit, or
     /// symbol). Held as a `String` so future multi-codepoint keys (emoji,
     /// accented composites) need no enum change.
     Char(String),
-    /// Delete the grapheme before the caret.
     Backspace,
-    /// Commit a newline / submit.
     Enter,
-    /// Emit a single space.
     Space,
     /// Cycle the shift state (Off → Shift → `CapsLock` → Off).
     Shift,
-    /// Toggle between the active letter layout and the symbols layer.
     SymbolsToggle,
-    /// Switch the active letter layout to the named registered layout
-    /// (e.g. `"azerty"`). Data-driven layout switching.
     Layout(String),
-    /// Open the emoji panel (or, while searching emoji, go back to it).
     Emoji,
 }
 
-/// One key in a layout row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Key {
-    /// Base label shown on the keycap (lowercase for letters). The
-    /// *displayed* label is derived via [`Key::display_label`] so shift /
-    /// caps can upper-case letters without mutating the data.
+    /// The label on the keycap, lowercased for letters; [`Key::display_label`]
+    /// applies shift, so the data is never mutated.
     pub label: String,
-    /// What the key does.
     pub action: KeyAction,
-    /// Width *weight* relative to a standard 1.0-wide key. The spacebar is
-    /// wide (e.g. 5.0); Shift / Backspace are often 1.5. Geometry divides
-    /// the row's available width by the sum of weights — see [`key_rects`].
+    /// Width relative to a standard 1.0-wide key (spacebar 5.0, Shift 1.5):
+    /// geometry divides the row's width by the sum of the weights.
     pub width: f32,
-    /// An optional vector glyph to render on the keycap instead of [`label`].
-    /// Used for the modifier/edit keys (Shift, Backspace, Return), whose
-    /// conventional symbols have no glyph in the shipped UI font and would otherwise render as a
-    /// `.notdef` box. The `label` is kept as the accessible/testable name.
-    ///
-    /// [`label`]: Key::label
+    /// A vector glyph drawn instead of [`label`]: the conventional Shift, Backspace
+    /// and Return symbols have no glyph in the shipped font, and the label stays as
+    /// the accessible name.
     pub icon: Option<Icon>,
 }
 
 impl Key {
-    /// A standard 1.0-wide letter key. `c` is the lowercase form; shift
-    /// upper-cases both label and emitted value at activation time.
     pub fn letter(c: char) -> Self {
         Self {
             label: c.to_string(),
@@ -78,7 +50,6 @@ impl Key {
         }
     }
 
-    /// A 1.0-wide key emitting an arbitrary string (digits, symbols).
     pub fn ch(s: &str) -> Self {
         Self {
             label: s.to_string(),
@@ -88,13 +59,10 @@ impl Key {
         }
     }
 
-    /// A 1.0-wide key for a single non-letter character (digit / symbol).
-    /// Convenience for building digit grids from a row string.
     pub fn ch_char(c: char) -> Self {
         Self::ch(&c.to_string())
     }
 
-    /// An action / modifier key with an explicit label and weight.
     pub fn action(label: &str, action: KeyAction, width: f32) -> Self {
         Self {
             label: label.to_string(),
@@ -104,31 +72,23 @@ impl Key {
         }
     }
 
-    /// Override this key's width weight (builder).
     #[must_use]
     pub fn with_width(mut self, width: f32) -> Self {
         self.width = width;
         self
     }
 
-    /// Render this key with a vector [`Icon`] instead of its text label
-    /// (the label is retained as the accessible/testable name). Used for the
-    /// Shift, Backspace and Return keys.
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    /// Whether this key produces an upper-/lower-casable letter.
     pub fn is_letter(&self) -> bool {
         matches!(&self.action, KeyAction::Char(s)
             if s.chars().count() == 1 && s.chars().all(char::is_alphabetic))
     }
 
-    /// The label to render given the current shift state. Letters
-    /// upper-case under [`ShiftState::Shift`] / [`ShiftState::CapsLock`];
-    /// everything else is unaffected.
     pub fn display_label(&self, shift: ShiftState) -> String {
         if self.is_letter() && shift.is_upper() {
             ShiftState::CapsLock.case_word(&self.label)
@@ -137,9 +97,6 @@ impl Key {
         }
     }
 
-    /// The action to *emit* given the current shift state. A `Char` letter
-    /// is upper-cased under shift/caps; all other actions pass through
-    /// unchanged.
     pub fn emit_action(&self, shift: ShiftState) -> KeyAction {
         match &self.action {
             KeyAction::Char(s) if self.is_letter() && shift.is_upper() => {
@@ -149,11 +106,9 @@ impl Key {
         }
     }
 
-    /// What a long press on this key offers: the letter itself first (so a
-    /// press released without sliding types it), then its accented forms,
-    /// cased for `shift`. `usage` says how often the typing language uses a
-    /// form: forms it uses come first, most used first; the rest follow in
-    /// `ALTERNATES` order. Empty for keys without accented forms.
+    /// What a long press offers: the letter itself first, so a press released without
+    /// sliding types it, then its accented forms cased for `shift`, the forms the
+    /// typing language uses first.
     pub fn alternates(&self, shift: ShiftState, usage: impl Fn(char) -> f64) -> Vec<String> {
         let KeyAction::Char(s) = &self.action else {
             return Vec::new();
@@ -186,9 +141,8 @@ impl Key {
 }
 
 /// Accented forms offered on a long press, for the Latin letters the shipped
-/// layouts type: French (é è ê ë à â ç ù û ü ô œ î ï ÿ), German, Spanish,
-/// Portuguese, Nordic and Central European. The typing language's usage
-/// reorders them (see [`Key::alternates`]); this order breaks ties.
+/// layouts type; the typing language's usage reorders them, and this order
+/// breaks ties.
 const ALTERNATES: &[(&str, &[char])] = &[
     ("a", &['à', 'â', 'á', 'ä', 'æ', 'ã', 'å', 'ā']),
     ("c", &['ç', 'ć', 'č']),
@@ -203,10 +157,8 @@ const ALTERNATES: &[(&str, &[char])] = &[
     ("z", &['ž', 'ź', 'ż']),
 ];
 
-/// Shift / caps-lock state. The transition cycle on tapping Shift is
-/// Off → Shift → `CapsLock` → Off (deterministic and unit-tested). A single
-/// `Shift` is one-shot: it auto-resets to `Off` after the next character is
-/// emitted; `CapsLock` is sticky.
+/// Shift and caps-lock state. Tapping Shift cycles Off → Shift → `CapsLock` → Off;
+/// one `Shift` resets after the next character, `CapsLock` is sticky.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ShiftState {
     #[default]
@@ -217,8 +169,7 @@ pub enum ShiftState {
 
 impl ShiftState {
     /// Apply typing case to a decoded word: one-shot Shift changes its first
-    /// Unicode character; Caps Lock changes the whole word. This is the same
-    /// casing policy used for key labels, emitted letters and accent choices.
+    /// character, Caps Lock the whole word.
     #[must_use]
     pub fn case_word(self, word: &str) -> String {
         match self {
@@ -228,12 +179,10 @@ impl ShiftState {
         }
     }
 
-    /// Whether letters should render / emit upper-case in this state.
     pub fn is_upper(self) -> bool {
         matches!(self, ShiftState::Shift | ShiftState::CapsLock)
     }
 
-    /// Next state when the Shift key is tapped.
     #[must_use]
     pub fn cycle(self) -> Self {
         match self {
@@ -244,16 +193,13 @@ impl ShiftState {
     }
 }
 
-/// A full keyboard layout: a name plus rows of keys.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyboardLayout {
     pub name: String,
     pub rows: Vec<Vec<Key>>,
 }
 
-/// Stable identity for a key within a layout: its (row, column) index. The
-/// pair is stable for a given layout snapshot, which is all the widget and
-/// the geometry pass need to correlate a hit-test with a [`Key`].
+/// Stable identity for a key within a layout: its (row, column) index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyId {
     pub row: usize,
@@ -267,43 +213,30 @@ impl KeyId {
 }
 
 impl KeyboardLayout {
-    /// Look up a key by id, if the id is in range.
     pub fn key(&self, id: KeyId) -> Option<&Key> {
         self.rows.get(id.row).and_then(|r| r.get(id.col))
     }
 
-    /// Total number of rows — drives the intrinsic keyboard height.
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
 
-    /// The standard English QWERTY letter layout with a bottom function
-    /// row (symbols-toggle, comma, space, period, Enter) and a Shift /
-    /// Backspace flanked third row.
     pub fn qwerty() -> Self {
         Self::alpha("qwerty", &["qwertyuiop", "asdfghjkl", "zxcvbnm"])
     }
 
-    /// French AZERTY — another locale represented as data. Same
-    /// chrome (Shift / Backspace / function row) as QWERTY.
     pub fn azerty() -> Self {
         Self::alpha("azerty", &["azertyuiop", "qsdfghjklm", "wxcvbn"])
     }
 
-    /// Build a three-row alpha layout from row strings, adding the shared
-    /// Shift/Backspace row chrome and the bottom function row. The three
-    /// `letters` rows are the letter clusters top-to-bottom.
     fn alpha(name: &str, letters: &[&str; 3]) -> Self {
         let mut rows: Vec<Vec<Key>> = Vec::new();
-        // Rows 0 and 1: bare letters.
         rows.push(letters[0].chars().map(Key::letter).collect());
         rows.push(letters[1].chars().map(Key::letter).collect());
-        // Row 2: Shift, letters, Backspace.
         let mut r3 = vec![Key::action("Shift", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
         r3.extend(letters[2].chars().map(Key::letter));
         r3.push(Key::action("Backspace", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
         rows.push(r3);
-        // Row 3: function row.
         rows.push(vec![
             Key::action("?123", KeyAction::SymbolsToggle, 1.5),
             Key::ch(","),
@@ -323,27 +256,21 @@ impl KeyboardLayout {
         }
     }
 
-    /// A calculator-style number pad on four columns: the digits on the
-    /// first three, and Backspace, the minus sign, the decimal point and
-    /// Enter down the fourth, with `0` across the first three of the bottom
-    /// row. Every row runs on the same columns, so the key edges line up.
-    /// Suited to plain number entry where a sign and decimals are reasonable
-    /// (quantities, ages, amounts).
+    /// A calculator-style number pad on four columns, every row on the same grid so
+    /// the key edges line up: digits on the first three, Backspace, minus, the
+    /// decimal point and Enter down the fourth, `0` across the bottom three.
     pub fn numeric() -> Self {
         Self::digit_pad("numeric", Key::ch("-"), Key::ch("."))
     }
 
-    /// Like [`numeric`](Self::numeric) but tuned for decimal entry: no minus
-    /// sign, and both the decimal point and the decimal comma one tap away.
-    /// Kept distinct from `numeric` so a field that only wants non-negative
-    /// decimals (prices, measurements) can pick it.
+    /// Like [`numeric`](Self::numeric) without a minus sign, so a field that wants
+    /// only a non-negative decimal can pick it.
     pub fn decimal() -> Self {
         Self::digit_pad("decimal", Key::ch("."), Key::ch(","))
     }
 
-    /// A phone dialpad: the standard `1-9` grid plus a `* 0 #` bottom row, with
-    /// a `+` (for international prefixes) and Backspace on the side. No Enter —
-    /// dialing is committed by the host, not a keyboard return.
+    /// A phone dialpad: `1-9` plus `* 0 #`, with `+` and Backspace on the side. No
+    /// Enter, since dialing is committed by the host.
     pub fn phone() -> Self {
         let rows = vec![
             "123".chars().map(Key::ch_char).collect::<Vec<_>>(),
@@ -361,9 +288,8 @@ impl KeyboardLayout {
         }
     }
 
-    /// A PIN pad: digits only (`0-9`) plus Backspace and Enter. Deliberately
-    /// has no `.`, `-`, `*`, or `#` — a secret numeric code is just digits, and
-    /// extra symbols would only invite mistakes.
+    /// A PIN pad: digits, Backspace and Enter only, since a secret numeric code is
+    /// just digits.
     pub fn pin() -> Self {
         let rows = vec![
             "123".chars().map(Key::ch_char).collect::<Vec<_>>(),
@@ -381,9 +307,6 @@ impl KeyboardLayout {
         }
     }
 
-    /// Build a number pad on four columns: `1-9` on the first three, `0`
-    /// across them on the bottom row, and the fourth column top to bottom
-    /// Backspace, `second`, `third` and Enter.
     fn digit_pad(name: &str, second: Key, third: Key) -> Self {
         let digits = |chars: &str, side: Key| {
             let mut row: Vec<Key> = chars.chars().map(Key::ch_char).collect();
@@ -408,9 +331,8 @@ impl KeyboardLayout {
         }
     }
 
-    /// The QWERTY letters with an `@` and a `.` always on the bottom row (plus
-    /// a `.com` convenience key), so an email address can be typed without
-    /// detouring through the symbols layer.
+    /// The QWERTY letters with `@` and `.` on the bottom row, so an address needs no
+    /// detour through the symbols layer.
     pub fn email() -> Self {
         Self::alpha_with_bottom(
             "email",
@@ -426,9 +348,8 @@ impl KeyboardLayout {
         )
     }
 
-    /// The QWERTY letters with `/`, `.`, and a `.com` key always on the bottom
-    /// row. A URL has no spaces, but the wide key stays functional (and is
-    /// relabelled `"/"` to nudge toward the path separator instead).
+    /// The QWERTY letters with `/` and `.` on the bottom row, where the wide key
+    /// stays a working Space labelled `"/"`.
     pub fn url() -> Self {
         Self::alpha_with_bottom(
             "url",
@@ -437,8 +358,7 @@ impl KeyboardLayout {
                 Key::action("?123", KeyAction::SymbolsToggle, 1.5),
                 Key::ch("."),
                 Key::ch("/"),
-                // A URL has no spaces; the wide bar stays a working Space key
-                // but is labelled "no space" to discourage the habit.
+                // A URL has no spaces: the wide bar stays a Space key, labelled "no space".
                 Key::action("no space", KeyAction::Space, 3.5),
                 Key::ch(".com").with_width(1.5),
                 Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
@@ -446,10 +366,6 @@ impl KeyboardLayout {
         )
     }
 
-    /// Build a letter layout (rows 0-2 + Shift/Backspace chrome as in
-    /// [`alpha`](Self::alpha)) but with a caller-supplied bottom function row,
-    /// so layouts like email/url can pin field-specific keys (`@`, `.`, `.com`)
-    /// onto it.
     fn alpha_with_bottom(name: &str, letters: &[&str; 3], bottom: Vec<Key>) -> Self {
         let mut rows: Vec<Vec<Key>> = Vec::new();
         rows.push(letters[0].chars().map(Key::letter).collect());
@@ -465,15 +381,12 @@ impl KeyboardLayout {
         }
     }
 
-    /// The symbols / numbers layer. The leading key returns to letters
-    /// (`SymbolsToggle`); ships a digit row and two symbol rows.
     pub fn symbols() -> Self {
         let rows = vec![
             "1234567890".chars().map(Key::letter).collect::<Vec<_>>(),
             "@#$_&-+()/".chars().map(Key::letter).collect::<Vec<_>>(),
             {
-                // Eight marks and a wider Backspace fill the ten columns the
-                // rows above use, so every key edge lines up.
+                // Eight marks and a wider Backspace fill the ten columns the rows above use.
                 let mut r: Vec<Key> = "%*\"':;!?".chars().map(Key::letter).collect();
                 r.push(Key::action("Backspace", KeyAction::Backspace, 2.0).with_icon(Icon::Delete));
                 r
@@ -493,49 +406,30 @@ impl KeyboardLayout {
     }
 }
 
-/// The kind of value a focused text field expects. The keyboard picks a
-/// layout to match, so a phone-number field shows a dialpad and a PIN field
-/// shows digits only.
-///
-/// These mirror the Wayland `text-input-unstable-v3` `content_purpose` values
-/// (`normal`, `number`, `digits` / `pin`, `phone`, `url`, `email`, `password`,
-/// `date`, `time`, …). The compositor's input-method side can map an incoming
-/// `content_purpose` straight onto these variants later. This enum carries no
-/// Wayland dependency — it is purely the OSK's own notion of field intent.
+/// The kind of value a focused field expects, which picks a layout. These mirror
+/// the Wayland `text-input-unstable-v3` `content_purpose` values, with no Wayland
+/// dependency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum InputPurpose {
-    /// Free-form text — the standard letter keyboard.
     #[default]
     Text,
-    /// Source code or terminal input; retain literal symbols and indentation.
     Terminal,
-    /// A number with no decimal point or sign expectation beyond `-`.
     Number,
-    /// A number where a decimal point is expected.
     Decimal,
-    /// A telephone number (dialpad with `*` `#` `+`).
     Telephone,
-    /// A web/URI address.
     Url,
-    /// An email address.
     Email,
-    /// A numeric secret code — digits only, nothing else.
     Pin,
-    /// A password — full letter keyboard (so any character is reachable); the
-    /// host is responsible for masking the displayed value.
+    /// A password: the full letter keyboard, so every character is reachable; the
+    /// host masks the displayed value.
     Password,
-    /// A calendar date. No date-specific layout yet, so it falls back to the
-    /// number pad.
     Date,
-    /// A clock time. No time-specific layout yet, so it falls back to the
-    /// number pad.
     Time,
 }
 
 impl KeyboardLayout {
-    /// The name of the built-in layout best suited to an [`InputPurpose`].
-    /// The returned name is always one the widget can register on demand (see
-    /// [`KeyboardLayout::by_name`]).
+    /// The name of the built-in layout for a purpose, always one the widget can
+    /// register on demand.
     pub fn for_purpose(purpose: InputPurpose) -> &'static str {
         match purpose {
             // Number entry, and date/time (no dedicated layout yet), are all
@@ -551,10 +445,8 @@ impl KeyboardLayout {
         }
     }
 
-    /// Construct a built-in layout by its name (the names returned by
-    /// [`for_purpose`](Self::for_purpose) plus the always-present letter and
-    /// symbol layouts). Returns `None` for an unknown name so callers can fall
-    /// back rather than panic.
+    /// Construct a built-in layout by its name, or `None` for an unknown one, so a
+    /// caller falls back rather than panics.
     pub fn by_name(name: &str) -> Option<Self> {
         Some(match name {
             "qwerty" => Self::qwerty(),
@@ -571,28 +463,15 @@ impl KeyboardLayout {
     }
 }
 
-/// **Pure geometry.** Lay `layout` out inside `area`, returning a rect for
-/// every key keyed by its [`KeyId`].
-///
-/// Sizing model (responsive, phone → desktop):
-/// * Rows split `area`'s height evenly (`area.height / row_count`).
-/// * Within a row, each key's width is `(area.width / Σ weights) × weight`,
-///   so the keyboard always *fills the available width* and wide keys
-///   (spacebar = 5.0) scale proportionally. Doubling `area.width` doubles
-///   every key's width; the target key *height* is chosen by the caller
-///   when it sizes `area`.
-///
-/// `shift` is accepted for forward-compatibility (a future layout could
-/// vary geometry by shift — e.g. revealing long-press accent rows). The
-/// current built-in layouts are shift-invariant in geometry, so it does
-/// not affect the returned rects today.
+/// Lay `layout` out inside `area`, a rect for every key. Rows split the height
+/// evenly, and a key's width is `(area.width / Σ weights) × weight`, so a layout
+/// fills the width and wide keys scale with it; the caller picks the height.
 #[allow(
     clippy::cast_precision_loss,
     reason = "row counts and indices become floating display coordinates; subpixel rounding is inherent in the geometry"
 )]
 pub fn key_rects(layout: &KeyboardLayout, area: Rect, shift: ShiftState) -> Vec<(KeyId, Rect)> {
-    // Reserved for shift-dependent geometry (accent rows etc.); the shipped
-    // layouts size identically regardless of shift.
+    // Reserved for shift-dependent geometry; the shipped layouts size identically.
     let _ = shift;
 
     let mut out = Vec::new();
@@ -649,10 +528,9 @@ mod tests {
             assert_eq!(l.rows[1][0].label, "q");
         }
 
-        // The Shift, Backspace and Return action keys must carry a vector icon on every layout
-        // that exposes them — their Unicode symbols have no glyph in the shipped
-        // UI font and would render as `.notdef` boxes otherwise. This asserts the
-        // production layout data (what the widget draws), not a helper.
+        // The Shift, Backspace and Return keys carry a vector icon on every layout that
+        // exposes them: their Unicode symbols have no glyph in the shipped font. This
+        // checks the production layout data, not a helper.
         eprintln!("phase modifier_and_edit_keys_carry_icons");
         {
             fn icon_for_action(l: &KeyboardLayout, action: &KeyAction) -> Option<Icon> {

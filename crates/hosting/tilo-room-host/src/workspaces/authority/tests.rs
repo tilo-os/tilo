@@ -7,14 +7,13 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
-use ed25519_dalek::Signer as _;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::AuthenticatedPeer;
 use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::workspaces::{
-    JoinReply, JoinStep, WorkspaceRole, WorkspacesReply, WorkspacesRequest, join_proof_digest,
+    JoinReply, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 
@@ -45,25 +44,15 @@ async fn admit(
         )
         .await
         .unwrap();
-    let (key, cert) = guest_device();
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert: cert.clone(),
-            request_id: rand::random(),
-        })
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
+    let (_, cert) = guest_device();
     let reply = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: format!("Person {seed}"),
-            token: token.to_vec(),
-        })
+        .admit_proven(
+            issued.signed_invitation,
+            cert.clone(),
+            rand::random(),
+            &format!("Person {seed}"),
+            Some(token.as_slice()),
+        )
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     cert
@@ -643,27 +632,12 @@ async fn read_wait_list(
     listed
 }
 
-/// A new device asks to join with `invitation` and proves it holds its key.
+/// A new device asks to join with `invitation`, its key proved on the connection its entry
+/// rides.
 async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> JoinReply {
-    let (guest_key, guest) = guest_device();
-    let request_id = rand::random();
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation,
-            device_cert: guest,
-            request_id,
-        })
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let signature = guest_key.sign(&join_proof_digest(&challenge)).to_bytes();
+    let (_, guest) = guest_device();
     workspaces
-        .page_join(JoinStep::Prove {
-            challenge,
-            signature,
-            name: "Bo".into(),
-        })
+        .admit_proven(invitation, guest, rand::random(), "Bo", None)
         .await
 }
 

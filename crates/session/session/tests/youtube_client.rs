@@ -20,11 +20,9 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use tilo_session::Session;
 
-use common::{CANVAS_ENTRY, Repl, on_screen, placed_resources, private_home, until};
+use crate::common::{CANVAS_ENTRY, Repl, on_screen, placed_resources, private_home, until};
 
 /// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
@@ -36,7 +34,7 @@ const VIDEO: &str = "The phone that finally lasts a week";
 /// The seeded apps with the `YouTube` client among them: notes, tasks, chat, mail and the client,
 /// each filled by its first scenario, on the canvas.
 fn seeded_session(root: &std::path::Path) -> Session {
-    common::seeded_session(root)
+    crate::common::seeded_session(root)
 }
 
 /// Every resource the session publishes, the ones a record holds included: what the session's

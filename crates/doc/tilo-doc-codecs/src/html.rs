@@ -1,21 +1,9 @@
-//! Built-in HTML **import** codec — parses `.html`/`.htm` onto the canonical
-//! rich-text model ([`crate::export_html`] handles export). HTML in the wild isn't strict
-//! XML, so this hand-rolls a tolerant tokenizer: never errors on malformed
-//! markup, degrades unknown tags to text, unescapes entities itself.
+//! The built-in HTML import codec: `.html`/`.htm` parsed onto the canonical rich-text model
+//! ([`crate::export_html`] handles export).
 //!
-//! Tag → model: `<h1-6>`→`heading`+`level`; `<p>`→`paragraph`; `<blockquote>`→
-//! `quote`; `<ul>`/`<ol>`/`<li>`→`list_item` (`ordered`, nesting `level`);
-//! `<table><tr><td|th>`→`cell` tagged `table`/`row`/`col`; `<pre>`/`<pre><code>`→
-//! `code`=true; `<img src>`→`image` (`data:` → content-addressed blob, else `src` attr).
-//!
-//! Inline → mark: `<strong>`/`<b>`→`strong`; `<em>`/`<i>`→`em`; `<u>`→`underline`;
-//! `<s>`/`<del>`/`<strike>`→`strike`; `<a href>`→`link`; `<span style>` maps CSS
-//! colour/background/font-size/font-family; `<sup>`/`<sub>`→`super`/`sub`;
-//! inline `<code>`→`fontFamily`=mono.
-//!
-//! `<head>`/`<script>`/`<style>` is skipped. `export` is `Unsupported`: HTML
-//! export is [`crate::export_html::render_html`], which needs a `DocSnapshot`,
-//! not the `DocRef` a `FormatProvider` gets.
+//! HTML in the wild is not strict XML, so this hand-rolls a tolerant tokenizer that never errors
+//! on malformed markup, degrades unknown tags to text and unescapes entities itself. `<head>`,
+//! `<script>` and `<style>` are skipped.
 
 use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
@@ -38,7 +26,6 @@ impl FormatProvider for HtmlCodec {
     }
 
     fn export(&self, _doc: DocRef, _content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
-        // The HTML writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
             "HTML export is provided by tilo_doc::export_html::render_html, not the qdoc codec"
                 .to_string(),
@@ -48,7 +35,6 @@ impl FormatProvider for HtmlCodec {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
-    /// A start tag: lowercased name + raw attrs (between the name and `>`/`/>`).
     Open {
         name: String,
         attrs: String,
@@ -60,8 +46,6 @@ enum Token {
     Text(String),
 }
 
-/// Tokenizes HTML into a flat tag/text stream (tolerant: an unterminated `<` is
-/// literal text; `<script>`/`<style>` bodies are consumed raw and dropped).
 fn tokenize(src: &str) -> Vec<Token> {
     let chars: Vec<char> = src.chars().collect();
     let len = chars.len();
@@ -124,7 +108,6 @@ fn tokenize(src: &str) -> Vec<Token> {
         let name_end = body.find(char::is_whitespace).unwrap_or(body.len());
         let name = body.get(..name_end).unwrap_or("").to_ascii_lowercase();
         let attrs = body.get(name_end..).unwrap_or("").trim().to_string();
-        // `<script>`/`<style>` bodies are raw text (CDATA-like); consume to the matching close tag and drop both.
         if (name == "script" || name == "style") && !self_closing {
             i = skip_raw_body(&chars, end.saturating_add(1), &name);
             continue;
@@ -146,7 +129,6 @@ fn char_at(chars: &[char], i: usize) -> char {
     chars.get(i).copied().unwrap_or('\0')
 }
 
-/// Advances past a `<!--...-->` comment; tolerant of an unterminated one (runs to EOF).
 fn skip_comment(chars: &[char], i: usize) -> usize {
     let len = chars.len();
     let mut j = i.saturating_add(4);
@@ -156,7 +138,6 @@ fn skip_comment(chars: &[char], i: usize) -> usize {
     j.saturating_add(3).min(len)
 }
 
-/// Advances past a `<!...>`/`<?...>` declaration or processing instruction.
 fn skip_declaration(chars: &[char], i: usize) -> usize {
     let len = chars.len();
     let mut j = i;
@@ -191,7 +172,6 @@ fn scan_tag(chars: &[char], i: usize) -> Option<(String, usize)> {
     Some((raw, end))
 }
 
-/// Consumes a `<script>`/`<style>` body up to and including its matching close tag.
 fn skip_raw_body(chars: &[char], start: usize, name: &str) -> usize {
     let len = chars.len();
     let close_tag = format!("</{name}");
@@ -227,8 +207,6 @@ fn starts_with_ci(chars: &[char], i: usize, pat: &str) -> bool {
     }
 }
 
-/// Unescapes HTML entities: numeric (`&#NN;`, `&#xHH;`) and common named ones;
-/// unknown entities and a bare `&` pass through unchanged.
 fn unescape_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
@@ -377,7 +355,6 @@ fn parse_attrs(raw: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The value of attribute `key` (case-insensitive) in a raw attr string, if present.
 fn attr_value(raw: &str, key: &str) -> Option<String> {
     parse_attrs(raw)
         .into_iter()
@@ -385,7 +362,6 @@ fn attr_value(raw: &str, key: &str) -> Option<String> {
         .map(|(_, v)| v)
 }
 
-/// Parses a `style="…"` string into the model run-marks it implies (mirrors the markdown codec's `marks_from_span_style`).
 fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
     let mut out: Vec<(&'static str, MarkVal)> = Vec::new();
     for decl in style.split(';') {
@@ -441,7 +417,6 @@ fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
     out
 }
 
-/// Normalises a CSS colour to canonical `#rrggbb` (lower-case hex, common keywords, else passed through trimmed).
 fn normalize_css_color(v: &str) -> String {
     let t = v.trim();
     if let Some(hex) = t.strip_prefix('#') {
@@ -468,7 +443,6 @@ fn normalize_css_color(v: &str) -> String {
     }
 }
 
-/// A mark value: boolean toggle, a string payload, or an integer (fontSize).
 #[derive(Clone)]
 enum MarkVal {
     Bool(bool),
@@ -478,14 +452,11 @@ enum MarkVal {
 
 /// An open inline wrapper: the marks it contributes + the char index where it opened; closed and applied on its end tag.
 struct OpenInline {
-    /// The HTML tag name that opened this wrapper (for matched-close lookup).
     tag: String,
-    /// `(mark_name, value, start_char)` triples to apply when the wrapper closes.
     marks: Vec<(&'static str, MarkVal)>,
     start: usize,
 }
 
-/// A run mark gathered during parsing, applied after the block's text is complete.
 struct PendingMark {
     block: String,
     start: usize,
@@ -499,7 +470,6 @@ struct ListCtx {
     ordered: bool,
 }
 
-/// All of `import_html`'s parse state, threaded through the per-token handlers.
 #[derive(Default)]
 struct ImportState {
     // Images carried inline as `data:` URIs, for the caller's content store.
@@ -514,13 +484,10 @@ struct ImportState {
     trow: usize,
     tcol: usize,
     table_seq: usize,
-    // Whether we've seen a `<tr>` yet — a leading `<td>` with no `<tr>` still gets row 0.
     in_row: bool,
-    // Skip-content: inside `<head>`/`<title>` etc., drop all text until this tag's close.
     skip_until: Option<String>,
     // Quote depth: while > 0 (inside a `<blockquote>`), a bare `<p>` flows into the quote block instead of opening a fresh paragraph.
     quote_depth: usize,
-    // Pre depth: while > 0 (inside `<pre>`), text is verbatim and `<code>` adds no mono mark.
     pre_depth: usize,
 }
 
@@ -592,7 +559,6 @@ fn handle_open_tag(
         }
         "p" => {
             if st.quote_depth > 0 {
-                // Inside a blockquote, `<p>` text flows into the quote block, opened lazily if needed.
                 if st.cur_block.is_none() {
                     open_block(doc, st, "quote");
                 }
@@ -603,7 +569,6 @@ fn handle_open_tag(
         }
         "blockquote" => {
             finish_inline_now(st);
-            // Open the quote block now; nested `<p>`s flow into it.
             open_block(doc, st, "quote");
             st.quote_depth = st.quote_depth.saturating_add(1);
         }
@@ -638,9 +603,6 @@ fn handle_open_tag(
         }
         "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "sup" | "sub"
         | "mark" | "code" | "a" | "span" | "font" => open_inline_tag(st, name, attrs),
-        // Structural containers (html/body/div/section/…), `hr`, and
-        // unknown/other tags: no modeled construct, so their text just
-        // flows through.
         _ => {}
     }
 }
@@ -718,7 +680,6 @@ fn open_inline_tag(st: &mut ImportState, name: &str, attrs: &str) {
             vec![("highlight", MarkVal::Str("#ffff00".to_string()))],
         ),
         "code" => {
-            // Inline `<code>` → mono mark; inside `<pre>` it's structural.
             if st.pre_depth > 0 {
                 push_inline(&mut st.inline, name, st.cur_len, vec![]);
             } else {
@@ -765,7 +726,6 @@ fn handle_close_tag(st: &mut ImportState, name: &str) {
                 st.cur_block = None;
                 st.cur_len = 0;
             }
-            // Inside a quote, keep the quote block current across `</p>`.
         }
         "blockquote" => {
             finish_inline_now(st);
@@ -789,7 +749,6 @@ fn handle_close_tag(st: &mut ImportState, name: &str) {
             st.table_id = None;
             st.in_row = false;
         }
-        // Close the nearest matching open inline wrapper (robust to mis-nesting).
         "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "sup" | "sub"
         | "mark" | "code" | "a" | "span" | "font" => {
             close_inline(
@@ -815,7 +774,6 @@ fn handle_text(doc: &mut DocMut, st: &mut ImportState, t: &str) {
         }
         return;
     }
-    // Collapse runs of HTML whitespace to single spaces (HTML rules).
     let collapsed = collapse_ws(t);
     if collapsed.is_empty() {
         return;
@@ -832,7 +790,6 @@ fn handle_text(doc: &mut DocMut, st: &mut ImportState, t: &str) {
     }
 }
 
-/// Opens a fresh top-level block anchored after the previous one, and makes it the current text target; returns its id.
 fn open_block(doc: &mut DocMut, st: &mut ImportState, kind: &str) -> String {
     let id = doc.insert_block(st.prev_block.as_deref(), kind);
     st.prev_block = Some(id.clone());
@@ -847,7 +804,6 @@ fn insert_image(doc: &mut DocMut, st: &mut ImportState, attrs: &str) {
     let alt = attr_value(attrs, "alt").unwrap_or_default();
     let id = doc.insert_block(st.prev_block.as_deref(), "image");
     st.prev_block = Some(id.clone());
-    // An image block does not become the inline text cursor.
     st.cur_block = None;
     st.cur_len = 0;
 
@@ -940,7 +896,6 @@ fn push_inline(
     });
 }
 
-/// Closes the nearest open wrapper matching `tag`, emitting its marks over `[start, cur_len)` into `pending`; robust to mis-nesting.
 fn close_inline(
     inline: &mut Vec<OpenInline>,
     pending: &mut Vec<PendingMark>,
@@ -948,7 +903,6 @@ fn close_inline(
     cur_block: Option<&str>,
     cur_len: usize,
 ) {
-    // Treat `<b>` and `<strong>` (and `<i>`/`<em>`) as interchangeable on close.
     let matches = |t: &str| -> bool {
         t == tag
             || (matches!(tag, "b" | "strong") && matches!(t, "b" | "strong"))
@@ -971,7 +925,6 @@ fn close_inline(
     }
 }
 
-/// Shorthand for `finish_inline` over the current parse state; used at every block boundary.
 fn finish_inline_now(st: &mut ImportState) {
     finish_inline(
         &mut st.inline,
@@ -981,7 +934,6 @@ fn finish_inline_now(st: &mut ImportState) {
     );
 }
 
-/// Closes every still-open inline wrapper, emitting marks up to `cur_len`; called at block boundaries so an unclosed `<b>` doesn't bleed forward.
 fn finish_inline(
     inline: &mut Vec<OpenInline>,
     pending: &mut Vec<PendingMark>,
@@ -1022,10 +974,6 @@ mod tests {
         (d.materialize(), inputs)
     }
 
-    /// Import `html` as the rich text under `root`, a rich-text field of another document (a
-    /// message body): its containers are started when missing and the imported paragraphs appended.
-    /// An import holding no paragraph leaves one empty paragraph to type in. Images arrive in
-    /// `inputs`.
     fn import_html_under(
         doc: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
@@ -1361,7 +1309,6 @@ mod tests {
 
     #[test]
     fn html_import_images_decode_data_uris_and_keep_remote_src() {
-        // Phase `base64_payload_decoding_is_lenient_about_layout_only`.
         {
             assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
             assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
@@ -1375,20 +1322,17 @@ mod tests {
             );
             assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
             assert_eq!(base64_decode(" \n").as_deref(), Some(&[][..]));
-            // Decoding stops at the first `=`; whatever follows is ignored.
             assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
             assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
             assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
             assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
             assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
-            // Anything outside the standard alphabet is rejected, even last.
             assert_eq!(base64_decode("Zm9v-_"), None);
             assert_eq!(base64_decode("Zm9vY!"), None);
             assert_eq!(base64_decode("!"), None);
             assert_eq!(base64_decode("Zm9v\u{a0}"), None);
         }
         {
-            // A 1-byte payload "A" (base64 "QQ==").
             let (snap, inputs) =
                 import_with_inputs(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
             let img = snap

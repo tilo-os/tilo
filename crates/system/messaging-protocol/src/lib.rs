@@ -1,8 +1,4 @@
 //! Transport boundary primitives usable by either messaging product.
-//!
-//! No app policy, account login or external credentials live here. Codecs
-//! do not authorize a send. The broker must durably reserve an operation and
-//! recheck account ownership/revocation before writing the encoded request.
 
 pub mod journal;
 #[cfg(feature = "signal-broker")]
@@ -38,7 +34,6 @@ pub enum Service {
     Sms,
 }
 
-/// Immutable routing identity. Labels and contact names are not addresses.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Route {
     service: Service,
@@ -159,14 +154,10 @@ impl ProtocolReference {
     }
 }
 
-/// Evidence at the send boundary. No variant implies recipient delivery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Submission {
-    /// Durable reservation exists; no adapter write has begun.
     Reserved,
-    /// The broker persisted this boundary before any external write.
     Started,
-    /// The adapter returned a matching acknowledgment, not a delivery receipt.
     Acknowledged,
     /// Submission may have occurred; automatic retry is unsafe.
     Uncertain,

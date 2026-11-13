@@ -11,7 +11,6 @@ use tilo_doc_codecs::{FormatProvider, MarkdownCodec};
 
 use crate::{heap, synth};
 
-/// Heap bytes this thread still holds after `build`, and what it built.
 fn held<T>(build: impl FnOnce() -> T) -> (T, isize) {
     let before = heap::held();
     let value = build();
@@ -45,7 +44,6 @@ fn assert_holds_like_loaded(what: &str, imported: isize, saved: &[u8]) {
 
 #[test]
 fn imports_hold_what_a_loaded_document_does() {
-    // Phase `an_owned_import_holds_what_a_loaded_document_does`.
     {
         let md = synth::markdown(150_000);
         let (mut doc, imported) = held(|| {
@@ -64,7 +62,6 @@ fn imports_hold_what_a_loaded_document_does() {
         drop(doc);
         assert_holds_like_loaded("owned", imported, &saved);
     }
-    // Phase `an_import_into_a_new_host_document_holds_what_a_loaded_document_does`.
     {
         let md = synth::markdown(150_000);
         let (mut am, imported) = held(|| {

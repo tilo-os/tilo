@@ -41,7 +41,7 @@ fn a_marker_row_speaks_its_time_and_note_and_offers_its_controls() {
     let mut app = marked(&[(12.0, "act two")]);
     act(
         &mut app,
-        "Edit note on act two",
+        "Edit the note on act two",
         &Action::SetValue("check the horizon line".into()),
     )
     .unwrap();
@@ -54,9 +54,12 @@ fn a_marker_row_speaks_its_time_and_note_and_offers_its_controls() {
         row.contains("check the horizon line"),
         "and its note: {row}"
     );
-    for verb in ["Edit note on", "Rename", "Delete"] {
-        let control = named(&mut app, &format!("{verb} act two"))
-            .unwrap_or_else(|| panic!("the row offers {verb}"));
+    for verb in [
+        "Edit the note on act two",
+        "Rename act two",
+        "Delete act two",
+    ] {
+        let control = named(&mut app, verb).unwrap_or_else(|| panic!("the row offers {verb}"));
         assert_eq!(control.role(), Role::Button);
     }
     let project = app.state();
@@ -70,7 +73,7 @@ fn a_marker_row_speaks_its_time_and_note_and_offers_its_controls() {
 #[test]
 fn a_note_can_be_cleared_but_a_name_cannot() {
     let mut app = marked(&[(12.0, "act two")]);
-    let note = "Edit note on act two";
+    let note = "Edit the note on act two";
     act(&mut app, note, &Action::SetValue("a note".into())).unwrap();
     act(&mut app, note, &Action::SetValue(String::new())).unwrap();
     assert_eq!(

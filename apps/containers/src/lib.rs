@@ -1,19 +1,10 @@
-//! Containers — a rootless-podman container & distrobox manager for Tilo.
-//!
-//! The app projects the local container engine (containers, images,
-//! volumes, distroboxes) into a window built from the `ui` toolkit: the
-//! sections in a sidebar, the container list beside a tabbed detail (logs,
-//! usage, settings, shell), a new-container form, and a page per section.
-//! The new-container draft is the app's resource document; the
-//! engine snapshot is transient host data mirrored from `podman`, published
-//! as live rows.
-//!
-//! [`ContainersShell`] is the app: the live window, `--shots` and every other
-//! host run it through the framework.
+//! Containers: a rootless-podman and distrobox manager. The window has a sidebar of
+//! sections, a container list beside a tabbed detail, a new-container form and a
+//! page per section. The draft is the app's record; the engine snapshot is host data
+//! mirrored into live rows.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Panic-producing lints stay denied; shared crates keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

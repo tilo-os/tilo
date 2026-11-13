@@ -1,8 +1,7 @@
-//! Bounded, injectable account connection probes used by resource actions.
-//!
-//! The probes speak the protocols through the same clients the apps use:
+//! Bounded, injectable account connection probes used by resource actions. The
+//! probes speak the protocols through the same clients the apps use:
 //! `async-imap` (as Mail does) for IMAP and the shared `tilo-dav` client for
-//! `CalDAV`/`WebDAV`. Both verify servers against Tilo's trust store.
+//! `CalDAV`/`WebDAV`.
 
 use std::sync::Arc;
 use ui::time::Duration;
@@ -32,8 +31,6 @@ pub trait AccountTester: Send + Sync {
 pub struct LiveAccountTester;
 
 impl LiveAccountTester {
-    /// Deadline for each network step: resolving, connecting, the TLS
-    /// handshake and greeting, and the login round-trip.
     const NETWORK_TIMEOUT: Duration = Duration::from_secs(8);
 
     async fn connect(host: &str, port: u16) -> Result<TcpStream, String> {
@@ -297,8 +294,6 @@ mod tests {
     use std::net::TcpListener;
     use test_http::{Reply, Responder};
 
-    /// A one-connection TLS IMAP server. `login_reply` answers the LOGIN
-    /// command with the command's own tag substituted for `TAG`.
     fn imap_server(
         greeting: &'static str,
         login_reply: &'static str,
@@ -419,10 +414,7 @@ mod tests {
             ),
         ];
         for (case, greeting, reply, password, trusted, want, login_must_contain) in served {
-            let (port, roots, worker) = imap_server(
-                // The server fixture takes `'static` strings; the table is static.
-                greeting, reply,
-            );
+            let (port, roots, worker) = imap_server(greeting, reply);
             let roots = if trusted {
                 roots
             } else {
@@ -456,7 +448,6 @@ mod tests {
             }
         }
 
-        // Control characters are refused before any connection is attempted.
         assert_eq!(
             LiveAccountTester::email_with_roots(
                 &email_account(9),

@@ -10,6 +10,8 @@
 
 #[path = "content_history.rs"]
 mod content_history;
+#[path = "crowd_cost.rs"]
+mod crowd_cost;
 #[path = "current_epoch_only.rs"]
 mod current_epoch_only;
 #[path = "interop_with_signed_op.rs"]

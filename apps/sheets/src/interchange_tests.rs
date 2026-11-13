@@ -1,8 +1,3 @@
-//! What Sheets reads from real-world `.xlsx`/`.ods` files and round-trips
-//! through its own exports, pinned on packages shaped like the ones Excel and
-//! `LibreOffice` Calc write: shared strings, shared formulas, date number
-//! formats, booleans, compressed repeated cells and rows, several tabs.
-
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 
@@ -28,7 +23,6 @@ fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
     zw.finish().unwrap().into_inner()
 }
 
-/// A temporary file that removes itself.
 struct TempFile(PathBuf);
 
 impl TempFile {
@@ -90,15 +84,9 @@ const XLSX_WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standal
 const XLSX_SHARED_STRINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3"><si><t>Item</t></si><si><t>Rent</t></si><si><r><t>Tot</t></r><r><rPr><b/></rPr><t>al</t></r></si></sst>"#;
 
-/// Cell formats: 0 general, 1 built-in date (14), 2 custom date, 3 custom
-/// currency, 4 built-in percent (10), 5 built-in duration (46).
 const XLSX_STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy\-mm\-dd;@"/><numFmt numFmtId="165" formatCode="&quot;$&quot;#,##0.00"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="46" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>"#;
 
-/// Budget: shared strings (one rich), an inline string, a currency-styled
-/// number, built-in and custom date styles, a boolean, a percent, a plain
-/// formula, a shared formula filled down three rows, a text-result formula,
-/// an error-result formula and a duration.
 const XLSX_SHEET1: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:E6"/><sheetData>
 <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>Amount</t></is></c><c r="C1" t="s"><v>2</v></c></row>
@@ -109,12 +97,9 @@ const XLSX_SHEET1: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="ye
 <row r="6"><c r="A6" s="5"><v>0.5</v></c></row>
 </sheetData></worksheet>"#;
 
-/// "Notes & Data": anchored at A1 with a gap before C3.
 const XLSX_SHEET2: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>note &lt;1&gt;</t></is></c></row><row r="3"><c r="C3"><v>7</v></c></row></sheetData></worksheet>"#;
 
-/// [`excel_like_xlsx`] with its "Notes & Data" tab hidden, as Excel keeps a
-/// tab someone hid.
 pub(crate) fn excel_like_xlsx_hiding_notes() -> Vec<u8> {
     let workbook = XLSX_WORKBOOK.replace(
         r#"sheetId="2" r:id="rId2""#,
@@ -147,7 +132,6 @@ fn excel_like_xlsx() -> Vec<u8> {
 
 #[test]
 fn foreign_workbooks_import_and_exports_round_trip() {
-    // Case `excel_workbook_imports_tabs_values_formats_and_formulas`.
     {
         let file = TempFile::with("excel.xlsx", &excel_like_xlsx());
         let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
@@ -161,8 +145,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(budget, "C1"), "Total");
         assert_eq!(raw(budget, "A2"), "Rent");
 
-        // Numbers import as numbers in the format their cell style shows:
-        // money stays money and a percentage a percentage, as dates do.
         assert_eq!(raw(budget, "B2"), "1200");
         assert_eq!(
             format(budget, "B2"),
@@ -179,7 +161,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(budget, "A4"), "TRUE");
         assert_eq!(format(budget, "A4"), CellFormat::Boolean);
 
-        // Formulas come back live, `=`-prefixed, with their cached results.
         assert_eq!(formula(budget, "A5"), Some("=SUM(B2:B4)"));
         assert_eq!(raw(budget, "A5"), "46201.75");
         assert_eq!(formula(budget, "E2"), Some("=IF(B2>100,\"big\",\"small\")"));
@@ -200,7 +181,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(notes, "C3"), "7");
     }
 
-    // Case `calc_spreadsheet_imports_tabs_values_repeats_and_formulas`.
     {
         let file = TempFile::with("calc.ods", &calc_like_ods());
         let tables = crate::ods::read_ods(&file.0).unwrap();
@@ -218,7 +198,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(format(budget, "B2"), CellFormat::Boolean);
         assert_eq!(raw(budget, "C2"), "0.21");
 
-        // The OpenFormula spelling is normalised to A1.
         assert_eq!(formula(budget, "A3"), Some("=SUM(B1;C2)"));
         assert_eq!(raw(budget, "A3"), "1200.21");
         assert_eq!(raw(budget, "B3"), "line one\nline two");
@@ -234,7 +213,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(&tables[1], "A1"), "3.5");
     }
 
-    // Case `sheets_xlsx_export_round_trips`.
     {
         let tables = sheets_workbook();
         let file = TempFile::empty("roundtrip.xlsx");
@@ -244,7 +222,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(format(&back[0], "B4"), CellFormat::Date(DateStyle::Iso));
     }
 
-    // Case `sheets_ods_export_round_trips`.
     {
         let tables = sheets_workbook();
         let file = TempFile::empty("roundtrip.ods");
@@ -254,9 +231,6 @@ fn foreign_workbooks_import_and_exports_round_trip() {
     }
 }
 
-/// A `content.xml` shaped like Calc's: typed cells with automatic styles,
-/// repeated populated cells and rows, a formula, a two-paragraph cell and the
-/// huge trailing repeat Calc appends to every table.
 const ODS_CONTENT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" office:version="1.3"><office:body><office:spreadsheet>
 <table:table table:name="Budget"><table:table-column table:number-columns-repeated="3"/>
@@ -281,8 +255,6 @@ fn calc_like_ods() -> Vec<u8> {
     ])
 }
 
-/// A workbook as Sheets exports it: every format, a formula of each result
-/// type, several tabs.
 fn sheets_workbook() -> Vec<SheetTable> {
     use crate::model::{Addr, CellValue};
     use std::collections::HashMap;
@@ -344,8 +316,6 @@ fn assert_sheets_round_trip(back: &[SheetTable]) {
     assert_eq!(raw(budget, "B4"), "45000");
     assert_eq!(raw(budget, "B5"), "TRUE");
     assert_eq!(format(budget, "B5"), CellFormat::Boolean);
-    // A text-formatted cell is written and read back as text (its payload is
-    // the computed value, as for every exported cell).
     assert_eq!(raw(budget, "A6"), "7");
     assert_eq!(format(budget, "A6"), CellFormat::Text);
     assert_eq!(formula(budget, "B6"), Some("=B2*(1+B3)"));
@@ -357,7 +327,6 @@ fn assert_sheets_round_trip(back: &[SheetTable]) {
     assert_eq!(raw(&back[2], "A1"), "1");
 }
 
-/// A one-tab `.xlsx` with the given worksheet body.
 fn xlsx_sheet(sheet_xml: &str) -> Vec<u8> {
     let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
@@ -372,10 +341,8 @@ fn xlsx_sheet(sheet_xml: &str) -> Vec<u8> {
     ])
 }
 
-/// Offset tabs keep positions; sparse tabs and DTD packages are refused.
 #[test]
 fn offset_sparse_and_dtd_packages_are_handled_safely() {
-    // Case `a_tab_that_starts_below_a1_keeps_its_cell_positions`.
     {
         let file = TempFile::with(
             "offset.xlsx",
@@ -389,7 +356,6 @@ fn offset_sparse_and_dtd_packages_are_handled_safely() {
         assert_eq!(formula(&tables[0], "D3"), Some("=C3*2"));
     }
 
-    // Case `a_far_flung_sparse_tab_is_refused_before_it_is_materialised`.
     {
         let file = TempFile::with(
             "far.xlsx",
@@ -401,7 +367,6 @@ fn offset_sparse_and_dtd_packages_are_handled_safely() {
         assert!(error.to_string().contains("import limit"), "{error:#}");
     }
 
-    // Case `a_package_carrying_a_dtd_is_refused`.
     {
         let xxe = r#"<?xml version="1.0"?><!DOCTYPE w [<!ENTITY x SYSTEM "file:///etc/passwd">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>&x;</t></is></c></row></sheetData></worksheet>"#;
         let file = TempFile::with("xxe.xlsx", &xlsx_sheet(xxe));

@@ -34,7 +34,7 @@ pub const APP_ID: &str = "so.tilo.power";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Power {}
 
-#[resource(kind = "power.session", label = "Power")]
+#[resource(kind = "power.session")]
 impl Power {}
 
 /// What the person can do to their session and their computer. Each acts on
@@ -44,6 +44,7 @@ impl Power {}
 pub enum PowerEffect {
     /// Lock
     #[effect(
+        label = "power-lock",
         own_device,
         idempotent,
         keywords = "lock screen, lock computer, secure, screensaver, away"
@@ -51,6 +52,7 @@ pub enum PowerEffect {
     Lock,
     /// Log out
     #[effect(
+        label = "power-logout",
         own_device,
         destructive,
         keywords = "logout, sign out, sign off, end session, leave"
@@ -58,15 +60,21 @@ pub enum PowerEffect {
     LogOut,
     /// Switch user
     #[effect(
+        label = "power-switch-user",
         own_device,
         keywords = "switch account, change user, other user, fast user switching"
     )]
     SwitchUser,
     /// Suspend
-    #[effect(own_device, keywords = "sleep, standby, hibernate, nap")]
+    #[effect(
+        label = "power-suspend",
+        own_device,
+        keywords = "sleep, standby, hibernate, nap"
+    )]
     Suspend,
     /// Restart
     #[effect(
+        label = "power-restart",
         own_device,
         destructive,
         keywords = "reboot, reset computer, power cycle"
@@ -74,6 +82,7 @@ pub enum PowerEffect {
     Restart,
     /// Shut down
     #[effect(
+        label = "power-shut-down",
         own_device,
         destructive,
         keywords = "shutdown, power off, turn off, switch off, halt"

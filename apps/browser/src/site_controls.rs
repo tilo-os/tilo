@@ -1,4 +1,4 @@
-//! Exact-origin site protection and information, owned by browser chrome.
+//! Exact-origin site protection and information, owned by the browser chrome.
 use std::collections::BTreeSet;
 
 pub fn origin(input: &str) -> Option<String> {
@@ -44,11 +44,10 @@ pub struct SiteControls {
     next_poll: Instant,
     notice: String,
     filters: crate::native_blocker::Status,
-    /// The origins protection is off for, as the browser document holds
-    /// them; the engine follows them.
+    /// The origins protection is off for, as the document holds them; the engine follows
+    /// them.
     exceptions: BTreeSet<String>,
-    /// Protection changes the engine accepted for an origin, which the
-    /// browser records in its document.
+    /// Protection changes the engine accepted, which the document then records.
     decisions: Vec<(String, bool)>,
 }
 impl Default for SiteControls {
@@ -72,8 +71,8 @@ impl Default for SiteControls {
     }
 }
 impl SiteControls {
-    /// Follow the site exceptions the document holds. A started engine is
-    /// told when they change; a new one takes them in [`Self::initialize`].
+    /// Follow the site exceptions the document holds: a started engine is told when they
+    /// change, a new one takes them in [`Self::initialize`].
     pub fn present_exceptions(
         &mut self,
         engine: &SharedEngine,
@@ -101,8 +100,6 @@ impl SiteControls {
         }
     }
 
-    /// The protection changes accepted since the last call: `(origin,
-    /// enabled)`, for the document.
     pub fn take_decisions(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.decisions)
     }
@@ -179,8 +176,8 @@ impl SiteControls {
                         self.exceptions.insert(origin.clone());
                     }
                     self.decisions.push((origin.clone(), enabled));
-                    // This belongs to the accepted action, not the popover's
-                    // replaceable button-intent slot. Dismissal must not lose it.
+                    // This belongs to the accepted action, not the popover's replaceable
+                    // button-intent slot: a dismissal must not lose it.
                     self.pending_reload = Some((origin, generation));
                 }
                 self.next_poll = ui::time::now();
@@ -284,15 +281,15 @@ impl SiteControls {
         }
         dirty
     }
-    fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
-        Button::new(id, label).on_effect(self.command(pending))
+    fn button(&self, id: &str, key: &str, pending: Pending) -> Button {
+        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(pending))
     }
     fn command(&self, pending: Pending) -> impl FnMut() + 'static {
         let state = self.pending.clone();
         move || state.set(Some(pending.clone()))
     }
-    /// The closure that opens the panel on its information (`true`) or its
-    /// protection (`false`) page.
+    /// The closure that opens the panel on its information (`true`) or its protection
+    /// (`false`) page.
     pub fn open_command(&self, information: bool) -> impl FnMut() + 'static {
         self.command(Pending::Open(information))
     }
@@ -305,8 +302,6 @@ impl SiteControls {
         .tooltip(crate::CATALOG.t("browser-site-launcher-tooltip"))
         .on_effect(self.open_command(true))
     }
-    /// The panel's own page switcher: protection, or the connection and the
-    /// data the site holds.
     fn pages(&self) -> ui::widget::ViewTabs {
         let pending = self.pending.clone();
         ui::widget::ViewTabs::new(
@@ -324,8 +319,8 @@ impl SiteControls {
         clippy::too_many_lines,
         reason = "the two bounded site-panel pages share their action context"
     )]
-    /// The panel's content, `width` wide. It is as tall as it needs to be up
-    /// to `max_height`, then scrolls.
+    /// The panel's content, `width` wide: as tall as it needs to be up to `max_height`,
+    /// then scrolling.
     pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
         let line =
             |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
@@ -348,7 +343,7 @@ impl SiteControls {
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(self.button(
                         "browser.site.close",
-                        &crate::CATALOG.t("browser-site-done"),
+                        "browser-site-done",
                         Pending::Close,
                     ))),
             ))
@@ -439,20 +434,19 @@ impl SiteControls {
                     .push(Box::new(
                         self.button(
                             "browser.site.revoke",
-                            &crate::CATALOG.t("browser-site-block-permissions"),
+                            "browser-site-block-permissions",
                             action("revoke"),
                         )
                         .role(ButtonRole::Destructive)
                         .with_enabled(self.action.is_none()),
                     ))
                     .push(note(&crate::CATALOG.t("browser-site-block-note")));
-                // Undoes a block, and an allow given at a prompt: the site
-                // asks again. Offered where the engine can.
+                // Undoes a block, and an allow given at a prompt: the site asks again.
                 if status.can_reset {
                     column = column.push(Box::new(
                         self.button(
                             "browser.site.reset",
-                            &crate::CATALOG.t("browser-site-ask-again"),
+                            "browser-site-ask-again",
                             action("reset"),
                         )
                         .with_enabled(self.action.is_none()),
@@ -462,7 +456,7 @@ impl SiteControls {
                     .push(Box::new(
                         self.button(
                             "browser.site.clear",
-                            &crate::CATALOG.t("browser-site-clear-data"),
+                            "browser-site-clear-data",
                             action("clear"),
                         )
                         .role(ButtonRole::Destructive)
@@ -486,11 +480,11 @@ impl SiteControls {
                     .push(Box::new(
                         self.button(
                             "browser.site.toggle",
-                            &crate::CATALOG.t(if status.excepted {
+                            if status.excepted {
                                 "browser-site-protection-enable"
                             } else {
                                 "browser-site-protection-disable"
-                            }),
+                            },
                             action(if status.excepted { "enable" } else { "disable" }),
                         )
                         .with_enabled(self.action.is_none() && self.pending_reload.is_none()),
@@ -505,7 +499,7 @@ impl SiteControls {
                 column = column.push(Box::new(
                     self.button(
                         "browser.site.filters.retry",
-                        &crate::CATALOG.t("browser-site-filters-update"),
+                        "browser-site-filters-update",
                         Pending::Refresh,
                     )
                     .with_enabled(!self.filters.busy),
@@ -531,7 +525,6 @@ impl SiteControls {
         )
     }
 }
-/// How the engine's permission names and states read in the panel.
 fn permission_label(name: &str) -> String {
     match name {
         "camera" => crate::CATALOG.t("browser-site-permission-camera"),
@@ -596,7 +589,6 @@ mod tests {
             self.0.drain_events()
         }
     }
-    /// Origin canonicalisation, exceptions, private sharing and certificate text.
     #[test]
     fn site_origins_exceptions_and_certificates_are_canonical() {
         {
@@ -807,7 +799,6 @@ mod tests {
             ui::widget::find_test_id(panel.as_ref(), "browser.site.reset").is_none(),
             "an engine that cannot reset is not asked to"
         );
-        // Choosing it asks the engine to put the site back to asking.
         let capture = ui::webview::test_engine::TestEngine::new();
         let engine: ui::webview::SharedEngine = capture.clone();
         controls.pending.set(Some(Pending::Action {

@@ -10,7 +10,6 @@ fn entry(id: &str, label: &str, internal: bool, open_at: Option<&Path>) -> Drive
     }
 }
 
-/// The drives the opener below was asked for, across the threads it runs on.
 static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[expect(
@@ -26,7 +25,6 @@ fn refuse_open(_drive: &str) -> Result<(), String> {
     Err("The person chose not now".into())
 }
 
-/// Wait for the answer of a request that runs off the UI thread.
 fn settle(files: &FileExplorerWidget, done: impl Fn(&FileExplorerWidget) -> bool) {
     tilo_test_env::wait_until("the request's answer", || {
         files.state().poll_drives();
@@ -156,8 +154,6 @@ fn sample_drive_opens_the_capture_folder_without_asking_the_shell() {
 
 #[test]
 fn every_drive_is_a_resource_with_an_open_action() {
-    // Drives are the host person's, like cloud accounts: published only
-    // inside their own callback.
     crate::files_app::tests::with_owner_callback(drives_are_published);
 }
 
@@ -200,12 +196,9 @@ fn the_window_starts_with_no_drives_and_tests_never_ask_a_shell() {
     assert!(files.state().drives.next_wake().is_none());
 }
 
-/// How often the lister below was asked, and whether it may answer yet.
 static LISTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static ANSWER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Answers once the test lets it, as a shell busy elsewhere would; a
-/// test that never lets it gets an error, which shows no drives.
 fn held_lister() -> Result<Vec<DriveEntry>, String> {
     use std::sync::atomic::Ordering;
     LISTED.fetch_add(1, Ordering::SeqCst);
@@ -234,8 +227,6 @@ fn an_idle_window_never_asks_for_drives_and_each_announced_change_asks_once() {
     );
     assert_eq!(LISTED.load(Ordering::SeqCst), 0, "nothing asked while idle");
 
-    // The shell says the drives changed (the first answer of the wait does
-    // too): the window wakes at once and asks once.
     let changed = ui::collaboration::CollabEvent::DrivesChanged;
     ui::widget::Collaborative::handle_collab_event(&mut files, &changed);
     assert!(
@@ -251,7 +242,6 @@ fn an_idle_window_never_asks_for_drives_and_each_announced_change_asks_once() {
         None,
         "waits for the answer"
     );
-    // Two more changes while that ask is unanswered become one more ask.
     ui::widget::Collaborative::handle_collab_event(&mut files, &changed);
     ui::widget::Collaborative::handle_collab_event(&mut files, &changed);
     files.state().poll_drives();

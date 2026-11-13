@@ -1,5 +1,5 @@
-//! A key applies to publish under namespaces it proves, over HTTP, and only
-//! the owner's approval — which checks the proofs again — allowlists it.
+//! A key applies to publish under namespaces it proves, over HTTP, and only the owner's approval,
+//! which checks the proofs again, allowlists it.
 
 #![allow(
     clippy::unwrap_used,

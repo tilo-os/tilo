@@ -41,15 +41,10 @@ use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits};
 
 tilo_automerge_isolate::test_worker!();
 
-/// How much to measure.
 struct Scale {
-    /// Changes of history each keystroke document has.
     histories: &'static [usize],
-    /// Keystrokes timed per document.
     keystrokes: usize,
-    /// Documents to load: a label, their changes and letters per change.
     documents: &'static [(&'static str, usize, usize)],
-    /// Loads timed per document.
     loads: usize,
 }
 
@@ -90,8 +85,6 @@ impl Letters {
     }
 }
 
-/// A text written by two collaborators in `changes` changes of `per_change`
-/// letters each, at scattered positions.
 fn history(changes: usize, per_change: usize) -> (AutoCommit, ObjId) {
     let mut letters = Letters(0x9e37_79b9_7f4a_7c15);
     let mut ada = AutoCommit::new().with_actor(ActorId::from(vec![0xa1; 16]));
@@ -128,7 +121,6 @@ fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e3
 }
 
-/// Nearest-rank percentile.
 fn percentile(samples: &mut [Duration], p: usize) -> Duration {
     samples.sort_unstable();
     let rank = (samples.len() * p).div_ceil(100).max(1);
@@ -150,9 +142,7 @@ fn isolate() -> Isolate {
 
 fn keystroke_cost(isolate: &Isolate, changes: usize, keystrokes: usize) {
     let (mut base, text) = history(changes, 4);
-    // The caller's document, admitted as a peer's would be.
     let mut doc = isolate.load(&base.save()).unwrap();
-    // The same document, taking the same keystrokes without a worker.
     let mut mirror = doc.fork().with_actor(doc.get_actor().clone());
     let mut remote = base.fork().with_actor(ActorId::from(vec![0xc3; 16]));
     let mut letters = Letters(u64::try_from(changes).unwrap() | 1);

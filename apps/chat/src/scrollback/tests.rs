@@ -81,7 +81,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
                     "u_aria",
                 )
                 .unwrap();
-            assert_eq!(at, part);
+            assert_eq!(at, Some(part));
         }
         if part == 2 {
             break;
@@ -90,7 +90,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
             if chain
                 .stage_as(&crate::demo::post(ARCHIVE, &long_post(n), None), "u_milo")
                 .unwrap()
-                != part
+                != Some(part)
             {
                 break;
             }
@@ -468,4 +468,41 @@ fn a_channel_with_nothing_earlier_reads_nothing_back() {
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![2]);
     assert!(!bo.with_chat(|surface| surface.reads_back()).unwrap());
+}
+
+/// A newcomer to a public workspace holds no part of its chat: the workspace
+/// sends it none until it opens Chat. Opening Chat asks for the chain's head,
+/// which names whichever part is the newest, and nothing is written until the
+/// workspace answered: a part started before then would be the chat's first
+/// again, or an old one, and everyone else's messages would be in another.
+#[test]
+fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
+    let mut bo = Window::on_device("bo").unwrap();
+    bo.asks_the_workspace();
+    let chain = chain_of(&mut bo);
+    assert!(chain.head_arriving(), "the newest part is on its way");
+    assert!(
+        bo.wanted_records()
+            .contains(&crate::parts::chain().chain_head()),
+        "the chain's head is asked for, whichever part it is"
+    );
+    let post = crate::demo::post(CHAT_CHANNEL, "hello", None);
+    assert_eq!(
+        chain.stage_as(&post, "u_bo").unwrap(),
+        None,
+        "nothing is written before the workspace answered: the post waits"
+    );
+    assert_eq!(held(&mut bo), Vec::<u64>::new(), "no part was started");
+    assert!(
+        !bo.wanted_records().contains(&crate::parts::part(0)),
+        "the chat's first part is not taken for its newest"
+    );
+
+    // The workspace has no part of it: the chat starts with its first part.
+    bo.workspace_answered(crate::parts::chain().chain_head());
+    assert!(!chain.head_arriving());
+    bo.workspace_answered(crate::parts::part(0));
+    assert_eq!(held(&mut bo), [0], "the waiting post started it");
+    assert!(chain.unwritten().is_none(), "the post was written");
+    assert_eq!(chain.stage_as(&post, "u_bo").unwrap(), Some(0));
 }

@@ -1,8 +1,6 @@
-//! Bind optional service-session admission to actual signed receiving artifacts.
-//!
-//! Candidate receiver qualification binds the native CEF qualifier to signed
-//! artifacts. Admission remains unavailable until the actual sandbox credential
-//! receiving route is qualified; codec/native-engine probes alone are
+//! Optional service-session admission bound to actual signed receiving artifacts. Admission stays
+//! unavailable until the sandbox credential receiving route is qualified; native-engine probes
+//! alone are insufficient.
 //! insufficient.
 use super::{
     account::{self, Runner, digest, hex_digest, interpreter, lexists, load_toml, read_trimmed},
@@ -30,11 +28,9 @@ pub const RECEIVING_ENTRY: &str = "/usr/libexec/tilo-installer-receive-fixture/r
 pub const QUALIFICATION_SCRIPT: &str = "/usr/libexec/tilo-service-session-qualification.py";
 const BRIDGE: &str = "/usr/libexec/tilo-installer-receive-fixture/service_contract.py";
 const BRIDGE_OUTPUT_BOUND: usize = 16 * 1024;
-/// The installed session: the one receiving Shell a canonical image carries,
-/// and the binary the receiving fixture drives.
+/// The one receiving Shell a canonical image carries, and the binary the receiving fixture drives.
 pub(crate) const SHELL: &str = "/usr/bin/tilo-session";
-/// Schema 2 is the complete measured Python receiving closure. Schema 1
-/// candidate Browser/CEF proofs are never sufficient for service admission.
+/// Schema 1 candidate Browser/CEF proofs are never sufficient for service admission.
 pub const SERVICE_SCHEMA: i64 = 2;
 pub const ROUTE_KEYS: [&str; 7] = [
     "receiving_shell_path",
@@ -46,14 +42,11 @@ pub const ROUTE_KEYS: [&str; 7] = [
     "receiving_route_qualification_sha256",
 ];
 
-/// Native CEF qualification executor: command and environment.
 pub type Qualifier<'a> =
     dyn FnMut(&[OsString], &[(&str, OsString)]) -> std::io::Result<Vec<u8>> + 'a;
-/// Owned receiving-route executor: command, environment and request.
 pub type RouteQualifier<'a> =
     dyn FnMut(&[OsString], &[(&str, OsString)], &[u8]) -> std::io::Result<Vec<u8>> + 'a;
 
-/// The account receipt fields the service proof binds to, named as there.
 #[allow(
     clippy::struct_field_names,
     reason = "the fields keep the account receipt's names"
@@ -113,9 +106,8 @@ fn native_origin_completion(output: &[u8]) -> std::io::Result<()> {
     )
 }
 
-/// The image producer is root, not the Browser user. Exercise CEF as an
-/// unprivileged synthetic actor so its native sandbox remains enabled; neither
-/// a `--no-sandbox` flag nor root credentials belong in this probe.
+/// Exercise CEF as an unprivileged synthetic actor so its native sandbox stays on; no
+/// `--no-sandbox` flag or root credentials belong in this probe.
 pub fn native_qualify(command: &[OsString], env: &[(&str, OsString)]) -> std::io::Result<Vec<u8>> {
     let command = privilege_dropped(command, rustix::process::geteuid().is_root());
     invoke::run(&invoke::Request {
@@ -144,7 +136,6 @@ fn privilege_dropped(command: &[OsString], root: bool) -> Vec<OsString> {
     dropped
 }
 
-/// The selected installed receiving Browser and its exact CEF runtime.
 pub struct Selected {
     pub package_id_hex: String,
     pub publisher_key_hex: String,
@@ -155,7 +146,6 @@ pub struct Selected {
 }
 
 impl Selected {
-    /// What `--receiving-browser` prints, for the receiving fixture's admission.
     pub fn json(&self) -> Value {
         json!({
             "package_id_hex": self.package_id_hex,
@@ -171,9 +161,8 @@ impl Selected {
 /// Where the image store keeps each package's signed record, `<package id>.pkg`.
 const IMAGE_PACKAGES: &str = "/usr/share/tilo-apps/pkgs";
 
-/// The image store's tree of `package`: named by the payload root hash its
-/// signed record commits to (os/scripts/signed-records.py), after checking
-/// that the record is that package's.
+/// Named by the payload root hash its signed record commits to, after checking that the record is
+/// that package's.
 fn image_tree(root: &Path, package: &str) -> std::io::Result<String> {
     let record = format!("{IMAGE_PACKAGES}/{package}.pkg/signed-root");
     let mut bytes = Vec::new();
@@ -192,7 +181,7 @@ fn image_tree(root: &Path, package: &str) -> std::io::Result<String> {
     ))
 }
 
-/// Canonical installed-store layout, never a caller-supplied executable path.
+/// Never a caller-supplied executable path.
 pub fn selected(root: &Path) -> std::io::Result<Option<Selected>> {
     let registry = root.join("usr/share/tilo-apps/registry.toml");
     if !registry.exists() {
@@ -287,7 +276,6 @@ fn executable(path: &Path, limit: u64, message: &str) -> std::io::Result<()> {
     require(account::regular(path, limit)?.mode() & 0o111 != 0, message)
 }
 
-/// Measure the fixed receiving Shell and Python closure.
 pub fn route_artifacts(root: &Path, shell_path: &str) -> std::io::Result<Map<String, Value>> {
     require(
         shell_path == SHELL,
@@ -301,8 +289,8 @@ pub fn route_artifacts(root: &Path, shell_path: &str) -> std::io::Result<Map<Str
         account::regular(&path, MIB)?;
         dependencies.insert((*relative).into(), digest(&path, MIB)?.into());
     }
-    // Python's fixed installed alias may target its versioned ELF, but may not
-    // redirect outside the admitted image. The target is measured independently.
+    // Python's fixed alias may target its versioned ELF, but may not redirect outside the admitted
+    // image; the target is measured independently.
     let python = std::fs::canonicalize(root.join("usr/bin/python3"))?;
     let name = python
         .file_name()
@@ -354,7 +342,6 @@ pub fn route_artifacts(root: &Path, shell_path: &str) -> std::io::Result<Map<Str
     Ok(facts)
 }
 
-/// Inputs of one optional service proof run.
 pub struct Produce<'a, 'r> {
     pub root: &'a Path,
     pub runner: &'a mut Runner<'r>,
@@ -365,8 +352,8 @@ pub struct Produce<'a, 'r> {
     pub route_qualifier: &'a mut RouteQualifier<'r>,
 }
 
-/// A saved receipt attests prior native qualification: a read-only check
-/// revalidates its artifacts without repeating TLS/enrollment or rewriting.
+/// A saved receipt attests earlier native qualification: a read-only check revalidates its
+/// artifacts without repeating TLS or enrolment.
 pub fn produce(run: Produce<'_, '_>) -> std::io::Result<Option<Value>> {
     let Produce {
         root,
@@ -412,9 +399,8 @@ pub fn produce(run: Produce<'_, '_>) -> std::io::Result<Option<Value>> {
         return Ok(Some(proof));
     }
     if qualify {
-        // Cloud grants do not imply an installed, qualified service-session
-        // receiver. Only explicitly provisioned qualification tools enable
-        // this optional proof; a saved proof above may never disappear.
+        // Cloud grants do not imply a qualified service receiver; only explicitly provisioned tools
+        // enable this proof, and a saved proof never disappears.
         let present =
             [RECEIVING_ENTRY, QUALIFICATION_SCRIPT].map(|path| lexists(&under(root, path)));
         require(
@@ -433,8 +419,7 @@ pub fn produce(run: Produce<'_, '_>) -> std::io::Result<Option<Value>> {
         "expected the canonical receiving Shell",
     )?;
     let proof = qualify_receiving_route(root, sdk, &candidate, SHELL, route_qualifier)?;
-    // Route qualification executes the actual Shell; revalidate the signed
-    // Browser/CEF/SDK and exact native qualifier again after it returns.
+    // Revalidate the signed Browser/CEF/SDK and the native qualifier after the real Shell ran.
     require(
         qualify_receivers(root, runner, sdk, false, Some(&candidate), qualifier)?.as_ref()
             == Some(&candidate),
@@ -453,7 +438,6 @@ fn route_proof(candidate: Value, shell_path: &str, facts: Map<String, Value>) ->
     proof
 }
 
-/// Candidate artifact qualification; not sufficient for service admission.
 #[allow(
     clippy::too_many_lines,
     reason = "one linear contract: each step gates the next"
@@ -466,8 +450,7 @@ fn qualify_receivers(
     evidence: Option<&Value>,
     qualifier: &mut Qualifier<'_>,
 ) -> std::io::Result<Option<Value>> {
-    // No claim is made on an old account-only image. A saved claim may never
-    // disappear merely because one of its receiving artifacts went missing.
+    // A saved claim never disappears because one of its receiving artifacts went missing.
     if !qualify && evidence.is_none() {
         return Ok(None);
     }
@@ -524,8 +507,8 @@ fn qualify_receivers(
             "receiving service artifact is not executable",
         )?;
     }
-    // The canonical verifier chooses this exact installed image row, never a
-    // same-id package from an importing user's writable store.
+    // The canonical verifier chooses the installed image row, never a same-id package from a
+    // user's writable store.
     let mut package_env = env.clone();
     package_env.push((
         "TILO_APPS_DATA_DIR",
@@ -558,8 +541,7 @@ fn qualify_receivers(
     })();
     let protocol = match probed {
         Ok(protocol) => protocol,
-        // Old receivers may retain protected account grants without asserting
-        // service support. A previously qualified receiver cannot downgrade.
+        // A previously qualified receiver cannot downgrade.
         Err(error) if invoke::is_command_failure(&error) => {
             require(
                 qualify && evidence.is_none(),
@@ -610,8 +592,7 @@ fn qualify_receivers(
             "installed service capability differs from qualified consumers",
         )?;
     }
-    // Neither active probe nor native qualification may replace the receiving
-    // artifacts before the image records their capability.
+    // Nothing may replace the receiving artifacts before the image records their capability.
     account::verify_bundle(root, bundle, &publisher, runner, &env)?;
     runner(&verify_browser, &package_env)?;
     let share = root.join("usr/share/tilo");
@@ -658,9 +639,8 @@ fn qualify_receivers(
     Ok(Some(proof))
 }
 
-/// Run the fixed image-controlled bridge of the existing owned receiving
-/// coordinator. It checks the owned candidate, evidence and outer namespace
-/// witness itself before starting the coordinator.
+/// Runs the fixed image-controlled bridge of the owned receiving coordinator, which checks the
+/// candidate, evidence and namespace witness itself first.
 pub fn native_route_qualify(
     command: &[OsString],
     env: &[(&str, OsString)],
@@ -690,12 +670,10 @@ pub fn native_route_qualify(
         env,
         input: Some(request),
         limit: BRIDGE_OUTPUT_BOUND,
-        // The bridge bounds the coordinator at 2800 seconds itself.
         timeout: Duration::from_secs(2900),
     })
 }
 
-/// Qualify the actual admitted sandbox route.
 pub(super) fn qualify_receiving_route(
     root: &Path,
     sdk: &Sdk,
@@ -775,8 +753,7 @@ pub(super) fn qualify_receiving_route(
     Ok(route_proof(candidate.clone(), shell_path, facts))
 }
 
-/// Read-only check of the image ownership of everything a saved service proof
-/// names, before any of it executes.
+/// Read-only check of the image ownership of everything a saved service proof names.
 pub fn check_trust(evidence: &Value) -> std::io::Result<()> {
     let fields = evidence
         .as_object()

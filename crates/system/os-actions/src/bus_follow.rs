@@ -1,16 +1,12 @@
-//! Following a system service by its signals, instead of asking it again on
-//! a timer: a page that shows what `ModemManager`, `UPower` or timedated
-//! report reads them again when they say something changed, and only then.
+//! Follows a system service by its signals instead of asking it again on a timer.
 
 use futures_util::StreamExt as _;
 use zbus::{MatchRule, MessageStream};
 
-/// Signals queued for a follower before the oldest is dropped: a burst only
-/// needs to say that something changed.
+/// Signals queued for a follower before the oldest is dropped: a burst only needs to say that something
+/// changed.
 const SIGNAL_QUEUE: usize = 64;
 
-/// Following services for [`follow_system_services`]; it stops when this is
-/// dropped.
 #[derive(Debug)]
 pub struct ServiceFollow {
     task: tilo_rt::JoinHandle<()>,
@@ -22,16 +18,8 @@ impl Drop for ServiceFollow {
     }
 }
 
-/// Call `on_change` on the app runtime each time one of the system
-/// services owning the bus names `services` sends a signal (a property that
-/// changed, an object added or removed) and each time one starts or goes. It
-/// listens on a connection of its own, so following never waits for, or
-/// holds up, the calls that read the services. Nothing polls.
-///
-/// # Errors
-///
-/// When the app runtime cannot start. A system bus that cannot be reached
-/// is logged and followed no further.
+/// Calls `on_change` on the app runtime whenever one of `services` sends a signal or one of their names
+/// changes hands.
 pub fn follow_system_services(
     services: &'static [&'static str],
     on_change: impl Fn() + Send + Sync + 'static,
@@ -59,7 +47,6 @@ fn follow_boxed(
     Ok(ServiceFollow { task })
 }
 
-/// Every signal `services` send, and their names changing hands.
 async fn signals(
     services: &'static [&'static str],
 ) -> zbus::Result<impl futures_util::Stream<Item = zbus::Result<zbus::Message>>> {

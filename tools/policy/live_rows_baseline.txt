@@ -48,7 +48,7 @@ untyped-live-row 3 apps/settings/src/panes/agent_models.rs
 untyped-live-row 2 apps/settings/src/panes/agent_models/hub.rs
 untyped-live-row 3 apps/settings/src/panes/audio.rs
 untyped-live-row 1 apps/settings/src/panes/bluetooth.rs
-untyped-live-row 2 apps/settings/src/panes/device_mesh.rs
+untyped-live-row 1 apps/settings/src/panes/device_mesh.rs
 untyped-live-row 1 apps/settings/src/panes/device_mesh/home_relay.rs
 untyped-live-row 2 apps/settings/src/panes/disk_unlock.rs
 untyped-live-row 3 apps/settings/src/panes/display.rs

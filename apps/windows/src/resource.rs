@@ -41,7 +41,26 @@ impl Windows {
     }
 }
 
-#[resource(kind = "windows.manager", label = "Windows manager")]
+impl Windows {
+    /// What the record holds: the launch routes the people sharing the manager agreed on, by
+    /// application.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "windows.manager",
+    read_content = Windows::read_document
+)]
 impl Windows {}
 
 /// One application's route as the service reports it.
@@ -139,6 +158,7 @@ impl ResourceApp for WindowsShell {
     const ID: &'static str = "so.tilo.windows";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "Windows Apps";
+    const TITLE_KEY: &'static str = "windows-app-title";
     const ICON: Option<&'static str> = Some("windows");
     /// An installer to add (`windows setup.exe`).
     const ARGUMENTS: usize = 1;

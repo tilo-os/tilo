@@ -29,7 +29,7 @@ impl ResponsiveRoot {
         Self {
             rect: KurboRect::ZERO,
             children: vec![],
-            nodes: vec![],
+            nodes: vec![].into(),
             builds,
             editing: false,
             trap: false,

@@ -1,34 +1,16 @@
 //! The file-backed half of the content store.
 //!
-//! Content larger than a few chunks is not split into one blob per chunk.
-//! It lives in one file per entry, at the entry's own byte offsets, sparse
-//! until its ranges arrive:
+//! Content larger than a few chunks lives in one file per entry, at the entry's own byte offsets,
+//! sparse until its ranges arrive. An entry is keyed by 32 bytes (a content id, or a caller's key
+//! such as a cloud account's revision); its residency is a [`RangeSet`] of the bytes present,
+//! persisted, so partial content survives restarts and a transfer resumes where it stopped; a chunk
+//! index maps every chunk hash to where it lives, so a chunk is served and deduplicated without a
+//! second copy; a retention class decides eviction, in which [`Retention::Cached`] and
+//! [`Retention::Fetchable`] entries go by budget, least recently used first, and
+//! [`Retention::LocalOnly`] and [`Retention::Pinned`] entries never do.
 //!
-//! - an **entry** is keyed by 32 bytes: a content id (the manifest hash of
-//!   a file version) or a caller's key (a cloud account's revision);
-//! - its **residency** is a [`RangeSet`] of the bytes present, persisted,
-//!   so partial content survives restarts and a transfer resumes where it
-//!   stopped. A range is recorded only after its bytes are durable;
-//! - a **chunk index** maps every chunk hash of a content entry to where it
-//!   lives, so a chunk is served, deduplicated and read from the entry's
-//!   file without a second copy;
-//! - a **retention** class decides eviction: [`Retention::Cached`] entries
-//!   are dropped when the resident bytes exceed the byte budget, those an
-//!   always-on device is known to hold first ([`FileArea::set_held_elsewhere`]),
-//!   least recently used first within each; [`Retention::Fetchable`]
-//!   entries (public content fetched from where it came from) are evicted
-//!   with them, in the same order and against the same budget, but only
-//!   their bytes go: the entry and its origin stay, so a read fetches them
-//!   again; [`Retention::LocalOnly`] (content only this device holds) and
-//!   [`Retention::Pinned`] entries never are.
-//!
-//! Entries enter by being filled range by range, or whole: a complete file
-//! is cloned in (`FICLONE`, sharing extents with the source on a
-//! reflink-capable filesystem, a copy elsewhere), or bytes are written.
-//! Complete keyed entries with identical bytes share extents the same way.
-//!
-//! Nothing here verifies content: callers write only verified bytes, and
-//! the store re-verifies chunks against their hash before serving them.
+//! Nothing here verifies content: callers write only verified bytes, and chunks are re-verified
+//! against their hash before being served.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -45,71 +27,56 @@ use serde::{Deserialize, Serialize};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 const ENTRIES: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_entries");
-/// Chunk hash → `key ‖ offset (u64 LE) ‖ len (u32 LE)`.
+/// Chunk hash to `key ‖ offset (u64 LE) ‖ len (u32 LE)`.
 const CHUNKS: MultimapTableDefinition<[u8; 32], [u8; 44]> =
     MultimapTableDefinition::new("area_chunks");
-/// Entry key → its chunk index values, for removing them with the entry.
 const MEMBERS: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_members");
-/// Entry key → where a [`Retention::Fetchable`] entry's bytes are fetched
-/// from.
+/// Entry key to where a [`Retention::Fetchable`] entry's bytes are fetched from.
 const ORIGINS: TableDefinition<[u8; 32], &str> = TableDefinition::new("area_origins");
 
-/// Open file handles kept for reads and fills.
 const OPEN_FILES: usize = 256;
-/// Buffer for filling from a reader or copying without a kernel copy.
 const COPY_BUFFER: usize = 1024 * 1024;
-/// Newly resident bytes of one entry that may be recorded in memory only.
-/// A crash loses at most this much of a transfer's progress, and it is
-/// what one sync and one record cover.
+/// Newly resident bytes of one entry that may be recorded in memory only: a crash loses at most this
+/// much of a transfer's progress.
 const SYNC_BATCH: u64 = 256 * 1024 * 1024;
 
 pub type AreaKey = [u8; 32];
 
-/// The most recently used cached entries, which the budget drops strictly
-/// least recently used first even when an always-on device holds them: the
-/// file being read and the ones predicted to be opened next (a prefetch
-/// marks what it filled as used).
+/// The most recently used cached entries, which the budget keeps even when an always-on device holds
+/// them: the file being read and the ones predicted next.
 pub const WORKING_SET_ENTRIES: usize = 8;
 
-/// Names the entries an always-on device is known to hold, asked once per
-/// eviction pass.
+/// Names the entries an always-on device is known to hold, asked once per eviction pass.
 pub type HeldElsewhere = Arc<dyn Fn() -> HashSet<AreaKey> + Send + Sync>;
 
-/// How an entry may be evicted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Retention {
-    /// A copy of content held elsewhere: evicted first, least recently used
-    /// first, when the budget is exceeded.
+    /// A copy of content held elsewhere: evicted first, least recently used first, when the budget is
+    /// exceeded.
     Cached,
-    /// Content this device may be the only holder of. Never evicted by the
-    /// budget.
+    /// Content this device may be the only holder of. Never evicted by the budget.
     LocalOnly,
-    /// Kept offline on request. Never evicted by the budget.
     Pinned,
-    /// A copy of public content this device can fetch again from where it
-    /// came from ([`FileArea::origin`]). Evicted with the cached entries,
-    /// in the same order and against the same budget, but only its bytes
-    /// go ([`FileArea::drop_bytes`]): the entry, its size and its origin
-    /// stay, so reading it again fetches them.
+    /// A copy of public content this device can fetch again from where it came from
+    /// ([`FileArea::origin`]). Evicted with the cached entries, but only its bytes go: the entry, its
+    /// size and its origin stay, so reading it again fetches them.
     Fetchable,
 }
 
 impl Retention {
-    /// Whether the budget may evict an entry of this retention.
     pub const fn evictable(self) -> bool {
         matches!(self, Self::Cached | Self::Fetchable)
     }
 
-    /// This retention once the entry is kept offline: only what the budget
-    /// could take changes. [`Self::LocalOnly`] stays, so a pin going away
-    /// later never makes content only this device holds evictable.
+    /// This retention once the entry is kept offline: only what the budget could take changes.
+    /// [`Self::LocalOnly`] stays, so a later unpin never makes content only this device holds
+    /// evictable.
     #[must_use]
     pub const fn kept_offline(self) -> Self {
         if self.evictable() { Self::Pinned } else { self }
     }
 
-    /// This retention once no pin keeps the entry offline: a pinned copy is
-    /// a cached one again.
+    /// This retention once no pin keeps the entry offline: a pinned copy is a cached one again.
     #[must_use]
     pub const fn released(self) -> Self {
         match self {
@@ -119,7 +86,6 @@ impl Retention {
     }
 }
 
-/// Where one chunk's bytes are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChunkLocation {
     pub key: AreaKey,
@@ -153,7 +119,6 @@ impl ChunkLocation {
     }
 }
 
-/// What the area knows about one entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryInfo {
     pub size: u64,
@@ -167,12 +132,9 @@ impl EntryInfo {
     }
 }
 
-/// Where a read of an entry can be served from.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Residency {
-    /// Every requested byte is in the file at this path.
     Complete(PathBuf),
-    /// These ranges of the request are missing.
     Missing(Vec<Range<u64>>),
 }
 
@@ -182,8 +144,8 @@ struct Stored {
     resident: Vec<(u64, u64)>,
     retention: Retention,
     last_use: u64,
-    /// BLAKE3 of the complete bytes of a keyed entry, for sharing extents
-    /// between entries with the same bytes.
+    /// BLAKE3 of the complete bytes of a keyed entry, for sharing extents between entries with the
+    /// same bytes.
     digest: Option<[u8; 32]>,
 }
 
@@ -195,10 +157,9 @@ struct Entry {
     digest: Option<[u8; 32]>,
     /// Bytes recorded resident in memory since the last durable record.
     unsynced: u64,
-    /// What the last durable record holds.
     durable: RangeSet,
-    /// Changes whenever the entry's file is created anew, so a write into
-    /// an earlier file is never recorded against the new one.
+    /// Changes whenever the entry's file is created anew, so a write into an earlier file is never
+    /// recorded against the new one.
     generation: u64,
 }
 
@@ -232,7 +193,6 @@ struct State {
     handles: HashMap<AreaKey, Arc<File>>,
     clock: u64,
     generations: u64,
-    /// Complete keyed entries by the BLAKE3 of their bytes.
     digests: HashMap<[u8; 32], AreaKey>,
 }
 
@@ -250,27 +210,20 @@ impl State {
 
 pub struct FileArea {
     data: PathBuf,
-    /// The area's index; `None` once [`FileArea::close`] released it.
     db: std::sync::RwLock<Option<Arc<Database>>>,
     state: Mutex<State>,
-    /// Serialises persistence so an older snapshot of an entry never
-    /// overwrites a newer one.
+    /// Serialises persistence so an older snapshot of an entry never overwrites a newer one.
     commit: Mutex<()>,
-    /// Serialises creating and replacing entries: two creators of one entry
-    /// must not both create its file, or the later would truncate bytes the
-    /// earlier already wrote and recorded.
+    /// Serialises creating and replacing entries: two creators of one entry must not both create its
+    /// file, or the later would truncate bytes the earlier already wrote and recorded.
     create: Mutex<()>,
-    /// Distinguishes the staging files of concurrent adoptions.
     staging: AtomicU64,
     budget: AtomicU64,
-    /// Bytes [`Self::read_at`] has read.
     read_bytes: AtomicU64,
-    /// Which cached entries the budget gives up first; `None` is plain
-    /// least-recently-used.
+    /// Which cached entries the budget gives up first; `None` is plain least-recently-used.
     held_elsewhere: std::sync::RwLock<Option<HeldElsewhere>>,
-    /// Whether data is synced and the index is on disk. An ephemeral area
-    /// (an in-memory content store's) is gone with its process, so syncing
-    /// it would only cost a disk flush per write.
+    /// Whether data is synced and the index is on disk. An ephemeral area is gone with its process, so
+    /// syncing it would only cost a disk flush per write.
     durable: bool,
 }
 
@@ -287,7 +240,6 @@ fn range_set(ranges: &[(u64, u64)]) -> RangeSet {
 }
 
 impl FileArea {
-    /// Makes `file`'s data durable, in a durable area.
     fn sync(&self, file: &File) -> io::Result<()> {
         if self.durable {
             file.sync_data()
@@ -296,7 +248,6 @@ impl FileArea {
         }
     }
 
-    /// The area's index database, unless the area was closed.
     fn database(&self) -> io::Result<Arc<Database>> {
         self.db
             .read_recover()
@@ -304,32 +255,22 @@ impl FileArea {
             .ok_or_else(|| io::Error::other("the content area is closed"))
     }
 
-    /// Releases the area's index database, so that the same directory can
-    /// be opened again in this process while handles to this area remain.
-    /// Every later operation on this area fails.
+    /// Releases the area's index database, so the same directory can be opened again in this process
+    /// while handles to this area remain. Every later operation fails.
     pub fn close(&self) {
         self.db.write_recover().take();
     }
 
-    /// Opens (or creates) the area under `dir`, holding at most `budget`
-    /// resident bytes of cached entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the directory or its database cannot be opened.
+    /// Opens (or creates) the area under `dir`, holding at most `budget` resident bytes of cached
+    /// entries.
     pub fn open(dir: &Path, budget: u64) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let db = Database::create(dir.join("area.redb")).map_err(db_error)?;
         Self::open_with(dir, db, budget, true)
     }
 
-    /// An area whose files live under `dir` but whose index is in memory
-    /// and whose data is never synced: for a store that does not outlive
-    /// its process.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the directory cannot be created.
+    /// An area whose files live under `dir` but whose index is in memory and whose data is never
+    /// synced: for a store that does not outlive its process.
     pub fn open_ephemeral(dir: &Path, budget: u64) -> io::Result<Self> {
         let db = Database::builder()
             .create_with_backend(redb::backends::InMemoryBackend::new())
@@ -364,9 +305,8 @@ impl FileArea {
         Ok(area)
     }
 
-    /// Reads the persisted entries, dropping those whose file is gone and
-    /// files that belong to no entry (left by a crash before the entry was
-    /// recorded).
+    /// Reads the persisted entries, dropping those whose file is gone and files that belong to no
+    /// entry (left by a crash before the entry was recorded).
     fn load(&self) -> io::Result<()> {
         let mut entries = HashMap::new();
         let mut clock = 0_u64;
@@ -444,9 +384,8 @@ impl FileArea {
         self.budget.store(bytes, Ordering::Relaxed);
     }
 
-    /// Tell the budget which entries an always-on device holds, so it
-    /// gives those up before content that may be harder to fetch again.
-    /// It only orders cached entries: it never makes a local-only or
+    /// Tell the budget which entries an always-on device holds, so it gives those up before content
+    /// that may be harder to fetch. It only orders cached entries: it never makes a local-only or
     /// pinned entry evictable, nor keeps the budget from being met.
     pub fn set_held_elsewhere(&self, held: HeldElsewhere) {
         *self.held_elsewhere.write_recover() = Some(held);
@@ -488,8 +427,7 @@ impl FileArea {
         })
     }
 
-    /// Parts of `range` of `key` that are not resident (all of it when the
-    /// area has no such entry).
+    /// Parts of `range` of `key` that are not resident (all of it when the area has no such entry).
     pub fn missing(&self, key: &AreaKey, range: &Range<u64>) -> Vec<Range<u64>> {
         let state = self.lock();
         match state.entries.get(key) {
@@ -502,8 +440,7 @@ impl FileArea {
         }
     }
 
-    /// Where `range` of `key` (an entry of `size` bytes) can be read, and
-    /// marks the entry as used.
+    /// Where `range` of `key` (an entry of `size` bytes) can be read, marking the entry as used.
     pub fn residency(&self, key: &AreaKey, size: u64, range: &Range<u64>) -> Residency {
         let clipped = range.start.min(size)..range.end.min(size);
         let missing = {
@@ -529,15 +466,9 @@ impl FileArea {
         }
     }
 
-    /// Makes sure `key` has an entry of `size` bytes, creating an empty
-    /// (sparse) one if needed. An entry with another size is replaced. A
-    /// stricter retention than the entry has is applied. `chunks` indexes
-    /// the chunks of a content entry: `(hash, offset, len)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be created or the entry cannot
-    /// be recorded.
+    /// Makes sure `key` has an entry of `size` bytes, creating an empty sparse one if needed. An entry
+    /// with another size is replaced, and a stricter retention than the entry has is applied.
+    /// `chunks` indexes the chunks of a content entry as `(hash, offset, len)`.
     pub fn ensure(
         &self,
         key: &AreaKey,
@@ -550,8 +481,8 @@ impl FileArea {
             let mut state = self.lock();
             state.entries.get_mut(key).map(|entry| {
                 let same = entry.size == size;
-                // Only what the budget could take is held back; nothing
-                // asked for here makes an entry evictable.
+                // Only what the budget could take is held back; nothing asked for here makes an entry
+                // evictable.
                 let stricter = same && entry.retention.evictable() && !retention.evictable();
                 if stricter {
                     entry.retention = retention;
@@ -622,7 +553,6 @@ impl FileArea {
         txn.commit().map_err(db_error)
     }
 
-    /// Where chunk `hash` is resident, if it is.
     pub fn find_chunk(&self, hash: &[u8; 32]) -> Option<ChunkLocation> {
         let candidates: Vec<ChunkLocation> = {
             let txn = self.database().ok()?.begin_read().ok()?;
@@ -643,11 +573,6 @@ impl FileArea {
     }
 
     /// The open file of `key`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the area has no such entry or its file cannot
-    /// be opened.
     pub fn file(&self, key: &AreaKey) -> io::Result<Arc<File>> {
         {
             let state = self.lock();
@@ -676,11 +601,6 @@ impl FileArea {
     }
 
     /// Writes `bytes` at `offset` of `key` without marking them resident.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry is missing, the write would pass its
-    /// end, or the write fails.
     pub fn write_at(&self, key: &AreaKey, offset: u64, bytes: &[u8]) -> io::Result<()> {
         let size = self
             .entry(key)
@@ -695,11 +615,10 @@ impl FileArea {
         self.file(key)?.write_all_at(bytes, offset)
     }
 
-    /// Records `ranges` of `key` (bytes already written to its file) as
-    /// resident. They are readable at once. The record reaches disk after
-    /// the file's data has been synced: with `durable` now, otherwise once
-    /// `SYNC_BATCH` bytes have accumulated or the entry is complete, so a
-    /// recorded range is never one whose bytes a crash could lose.
+    /// Records `ranges` of `key` (bytes already written to its file) as resident. They are readable at
+    /// once; the record reaches disk after the file's data is synced, with `durable` now or otherwise
+    /// once `SYNC_BATCH` bytes accumulated or the entry is complete, so a recorded range is never one
+    /// a crash could lose.
     pub fn mark_resident(
         &self,
         key: &AreaKey,
@@ -713,13 +632,8 @@ impl FileArea {
         self.lock().entries.get(key).map(|e| e.generation)
     }
 
-    /// The file of `key` together with its generation, for writes that are
-    /// recorded later with [`Self::mark_resident_in`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the area has no such entry or its file cannot
-    /// be opened.
+    /// The file of `key` with its generation, for writes recorded later with
+    /// [`Self::mark_resident_in`].
     pub fn file_in_generation(&self, key: &AreaKey) -> io::Result<(Arc<File>, u64)> {
         let generation = || self.lock().entries.get(key).map(|e| e.generation);
         let before = generation();
@@ -733,13 +647,8 @@ impl FileArea {
         }
     }
 
-    /// [`Self::mark_resident`] for bytes written into the file of
-    /// `generation`: when the entry has since been replaced (evicted and
-    /// created anew), nothing is recorded.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::mark_resident`].
+    /// [`Self::mark_resident`] for bytes written into the file of `generation`: when the entry has been
+    /// replaced since, nothing is recorded.
     pub fn mark_resident_in(
         &self,
         key: &AreaKey,
@@ -786,8 +695,8 @@ impl FileArea {
         }
     }
 
-    /// Syncs `key`'s data, then records `stored`, a snapshot of its state
-    /// taken before the sync: ranges recorded later are not covered by it.
+    /// Syncs `key`'s data, then records `stored`, a snapshot taken before the sync: ranges recorded
+    /// later are not covered by it.
     fn persist_synced(&self, key: &AreaKey, stored: &Stored) -> io::Result<()> {
         self.sync(self.file(key)?.as_ref())?;
         self.persist_stored(key, stored)?;
@@ -802,7 +711,6 @@ impl FileArea {
         Ok(())
     }
 
-    /// Reads `len` bytes at `offset` of `key`. Every byte must be resident.
     pub fn read_at(&self, key: &AreaKey, offset: u64, len: u64) -> io::Result<Vec<u8>> {
         let range = offset..offset.saturating_add(len);
         if !self.missing(key, &range).is_empty() {
@@ -820,12 +728,10 @@ impl FileArea {
         Ok(out)
     }
 
-    /// Bytes [`Self::read_at`] has read so far.
     pub fn read_bytes(&self) -> u64 {
         self.read_bytes.load(Ordering::Relaxed)
     }
 
-    /// Marks `key` as used now, for least-recently-used eviction.
     pub fn touch(&self, key: &AreaKey) {
         let mut state = self.lock();
         let now = state.tick();
@@ -835,10 +741,6 @@ impl FileArea {
     }
 
     /// Changes `key`'s retention.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the change cannot be recorded.
     pub fn set_retention(&self, key: &AreaKey, retention: Retention) -> io::Result<()> {
         let changed = {
             let mut state = self.lock();
@@ -853,12 +755,8 @@ impl FileArea {
         if changed { self.persist(key) } else { Ok(()) }
     }
 
-    /// Keeps `key` offline ([`Retention::kept_offline`]), or stops keeping
-    /// it ([`Retention::released`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the change cannot be recorded.
+    /// Keeps `key` offline ([`Retention::kept_offline`]), or stops keeping it
+    /// ([`Retention::released`]).
     pub fn keep_offline(&self, key: &AreaKey, keep: bool) -> io::Result<()> {
         let Some(current) = self.lock().entries.get(key).map(|entry| entry.retention) else {
             return Ok(());
@@ -871,15 +769,10 @@ impl FileArea {
         self.set_retention(key, wanted)
     }
 
-    /// Keeps exactly the entries in `kept` offline: an evictable one among
-    /// them is pinned, and a pinned entry outside them (unpinned since, an
-    /// earlier version of a pinned file, a deleted file) is released to the
-    /// budget. Entries only this device holds are never touched. Returns
-    /// how many entries changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a change cannot be recorded.
+    /// Keeps exactly the entries in `kept` offline: an evictable one among them is pinned, and a pinned
+    /// entry outside them (unpinned since, an earlier version of a pinned file, a deleted file) is
+    /// released to the budget. Entries only this device holds are never touched. Returns how many
+    /// entries changed.
     pub fn keep_offline_only(&self, kept: &HashSet<AreaKey>) -> io::Result<usize> {
         let changed: Vec<AreaKey> = {
             let mut state = self.lock();
@@ -905,9 +798,8 @@ impl FileArea {
         Ok(changed.len())
     }
 
-    /// Makes `key` a complete entry holding the first `len` bytes of
-    /// `source`: cloned where the filesystem shares extents, copied
-    /// otherwise. `chunks` are indexed as by [`Self::ensure`].
+    /// Makes `key` a complete entry holding the first `len` bytes of `source`: cloned where the
+    /// filesystem shares extents, copied otherwise. `chunks` are indexed as by [`Self::ensure`].
     pub fn adopt_clone(
         &self,
         key: &AreaKey,
@@ -938,7 +830,6 @@ impl FileArea {
         self.install(key, &staging, target, len, retention, None, chunks)
     }
 
-    /// Makes `key` a complete entry holding `bytes`.
     pub fn adopt_bytes(
         &self,
         key: &AreaKey,
@@ -976,14 +867,9 @@ impl FileArea {
         )
     }
 
-    /// Makes `key` a complete entry by moving the file at `path` in (a copy
-    /// when it lives on another filesystem). Returns the BLAKE3 of its
-    /// bytes; another complete keyed entry with the same bytes shares its
-    /// extents with this one where the filesystem allows.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be read, moved or recorded.
+    /// Makes `key` a complete entry by moving the file at `path` in (a copy when it lives on another
+    /// filesystem). Returns the BLAKE3 of its bytes; another complete keyed entry with the same bytes
+    /// shares extents with it where the filesystem allows.
     pub fn adopt_file(
         &self,
         key: &AreaKey,
@@ -1050,8 +936,6 @@ impl FileArea {
         self.persist(key)
     }
 
-    /// Replaces `target`'s bytes with a clone of a complete entry holding
-    /// the same bytes, so the two share extents. Best effort.
     fn share_extents(&self, digest: &[u8; 32], target: &File, len: u64) {
         let twin = self.lock().digests.get(digest).copied();
         let Some(twin) = twin else { return };
@@ -1064,10 +948,9 @@ impl FileArea {
         }
     }
 
-    /// Writes `len` bytes read from `body` at `offset` of `key` (an entry of
-    /// `size` bytes, created if needed) and records them resident. A keyed
-    /// entry that becomes complete is fingerprinted and shares extents with
-    /// an identical one.
+    /// Writes `len` bytes read from `body` at `offset` of `key` (an entry of `size` bytes, created if
+    /// needed) and records them resident. A keyed entry that becomes complete is fingerprinted and
+    /// shares extents with an identical one.
     pub fn fill_from(
         &self,
         key: &AreaKey,
@@ -1113,9 +996,8 @@ impl FileArea {
         Ok(())
     }
 
-    /// Copies `range` of `key` into `dest` at the same offsets: a clone of
-    /// shared extents where the filesystem allows, a copy elsewhere. Every
-    /// byte must be resident.
+    /// Copies `range` of `key` into `dest` at the same offsets: a clone of shared extents where the
+    /// filesystem allows. Every byte must be resident.
     pub fn copy_to(&self, key: &AreaKey, range: &Range<u64>, dest: &File) -> io::Result<()> {
         if !self.missing(key, range).is_empty() {
             return Err(io::Error::new(
@@ -1136,16 +1018,8 @@ impl FileArea {
 
     /// Removes `key`, its file and its chunk index entries.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the removal cannot be recorded.
-    /// Makes `key` a complete [`Retention::Fetchable`] entry holding `bytes`,
-    /// fetched from `origin`, where a read fetches them again once the
-    /// budget dropped them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bytes or the origin cannot be recorded.
+    /// `adopt_fetched` makes `key` a complete [`Retention::Fetchable`] entry holding `bytes`, fetched
+    /// from `origin`, where a read fetches them again once the budget dropped them.
     pub fn adopt_fetched(&self, key: &AreaKey, bytes: &[u8], origin: &str) -> io::Result<()> {
         self.adopt_bytes(key, bytes, Retention::Fetchable, &[])?;
         let _commit = self.commit.lock_recover();
@@ -1167,13 +1041,8 @@ impl FileArea {
             .map(|origin| origin.value().to_owned())
     }
 
-    /// Drops the bytes of a [`Retention::Fetchable`] entry and keeps the
-    /// entry, its size and its origin: reading it again fetches them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be emptied or the change
-    /// recorded.
+    /// Drops the bytes of a [`Retention::Fetchable`] entry and keeps the entry, its size and its origin:
+    /// reading it again fetches them.
     pub fn drop_bytes(&self, key: &AreaKey) -> io::Result<()> {
         let size = {
             let mut state = self.lock();
@@ -1189,8 +1058,8 @@ impl FileArea {
             state.handles.remove(key);
             size
         };
-        // A sparse file of the entry's size: its blocks are freed, and the
-        // entry still loads after a restart.
+        // A sparse file of the entry's size: its blocks are freed, and the entry still loads after a
+        // restart.
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -1214,12 +1083,10 @@ impl FileArea {
         self.unpersist(key)
     }
 
-    /// Drops cached entries until their resident bytes fit the budget:
-    /// first those an always-on device holds, outside the
-    /// [working set](WORKING_SET_ENTRIES), then the rest, least recently
-    /// used first within each. A [`Retention::Fetchable`] entry is one of
-    /// them and loses only its bytes. `keep` are never dropped (entries
-    /// being read or filled right now). Returns the bytes freed.
+    /// Drops cached entries until their resident bytes fit the budget: first those an always-on device
+    /// holds, outside the [working set](WORKING_SET_ENTRIES), then the rest, least recently used first
+    /// within each. A [`Retention::Fetchable`] entry loses only its bytes. `keep` are never dropped.
+    /// Returns the bytes freed.
     pub fn evict_to_budget(&self, keep: &[AreaKey]) -> u64 {
         let mut uses: Vec<u64> = {
             let state = self.lock();
@@ -1336,8 +1203,8 @@ impl FileArea {
         txn.commit().map_err(db_error)
     }
 
-    /// Syncs and records every entry's residency and last use, so progress
-    /// and eviction order survive a restart.
+    /// Syncs and records every entry's residency and last use, so progress and eviction order survive a
+    /// restart.
     pub fn flush(&self) -> io::Result<()> {
         let unsynced: Vec<AreaKey> = self
             .lock()
@@ -1396,23 +1263,16 @@ fn parse_hex(name: &str) -> Option<AreaKey> {
     Some(key)
 }
 
-/// Where the area under `dir` keeps its entries' files.
 fn data_dir(dir: &Path) -> PathBuf {
     dir.join("data")
 }
 
-/// `key`'s whole file from the area under `dir`, read without opening the
-/// area: for another process that must not take the area's database lock,
-/// such as a compute worker beside a home peer's replica. `Ok(None)` when
-/// there is no regular file for `key` or it is longer than `max_bytes`.
+/// `key`'s whole file from the area under `dir`, read without opening the area: for another process
+/// that must not take the area's database lock. `Ok(None)` when there is no regular file for `key` or
+/// it is longer than `max_bytes`.
 ///
-/// The bytes are neither verified nor known to be wholly resident (missing
-/// ranges of a sparse entry read as zeros): the caller checks them against
-/// a hash it trusts.
-///
-/// # Errors
-///
-/// Returns an error when the file exists but cannot be read.
+/// The bytes are neither verified nor known to be wholly resident (missing ranges of a sparse entry
+/// read as zeros): the caller checks them against a hash it trusts.
 pub fn read_entry_unlocked(
     dir: &Path,
     key: &AreaKey,
@@ -1433,8 +1293,8 @@ pub fn read_entry_unlocked(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    // The file read must be the one inspected: an entry replaced in
-    // between is simply not read this time.
+    // The file read must be the one inspected: an entry replaced in between is simply not read this
+    // time.
     let opened = file.metadata()?;
     if (opened.dev(), opened.ino()) != (listed.dev(), listed.ino()) || opened.len() > max_bytes {
         return Ok(None);
@@ -1444,14 +1304,12 @@ pub fn read_entry_unlocked(
     Ok(Some(bytes))
 }
 
-/// BLAKE3 of a file, streamed.
 pub fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(File::open(path)?)?;
     Ok(*hasher.finalize().as_bytes())
 }
 
-/// Clones all of `source` into `target` (`FICLONE`).
 #[cfg(all(target_os = "linux", feature = "filesystem"))]
 fn reflink(source: &File, target: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
@@ -1475,8 +1333,7 @@ fn reflink(_source: &File, _target: &File) -> io::Result<()> {
     ))
 }
 
-/// Makes `target` hold the first `len` bytes of `source`, sharing extents
-/// where the filesystem can.
+/// Makes `target` hold the first `len` bytes of `source`, sharing extents where the filesystem can.
 fn clone_or_copy(source: &File, target: &File, len: u64) -> io::Result<()> {
     if source.metadata()?.len() == len && reflink(source, target).is_ok() {
         return Ok(());
@@ -1486,8 +1343,8 @@ fn clone_or_copy(source: &File, target: &File, len: u64) -> io::Result<()> {
     target.set_len(len)
 }
 
-/// Copies `len` bytes from `source` at `from` to `dest` at `to`. The kernel
-/// clones shared extents where it can (`copy_file_range`).
+/// Copies `len` bytes from `source` at `from` to `dest` at `to`; the kernel clones shared extents
+/// where it can (`copy_file_range`).
 pub fn copy_range(source: &File, from: u64, dest: &File, to: u64, len: u64) -> io::Result<()> {
     #[cfg(all(target_os = "linux", feature = "filesystem"))]
     {
@@ -1621,8 +1478,6 @@ mod tests {
         area.touch(&key(1));
         area.fill_from(&key(5), 100, 0, &mut &data[..], 100)
             .unwrap();
-        // 300 cached bytes over a 250 budget: key 4 is the least recently
-        // used cached entry; local-only and pinned entries stay.
         assert!(area.entry(&key(4)).is_none());
         for kept in [1, 2, 3, 5] {
             assert!(area.entry(&key(kept)).is_some(), "{kept}");
@@ -1648,8 +1503,6 @@ mod tests {
             area.adopt_bytes(&key(3), &data, Retention::LocalOnly, &[])
                 .unwrap();
             area.touch(&key(2));
-            // The same budget and the same order as cached entries: the
-            // fetchable one is the least recently used.
             area.adopt_bytes(&key(4), &data, Retention::Cached, &[])
                 .unwrap();
             assert_eq!(area.evict_to_budget(&[]), 100);
@@ -1663,8 +1516,6 @@ mod tests {
             assert!(area.entry(&key(2)).is_some() && area.entry(&key(4)).is_some());
             assert_eq!(area.missing(&key(1), &(0..100)), vec![0..100]);
         }
-        // An emptied entry survives a restart, still saying where its bytes
-        // are fetched from, and fetching them makes it whole again.
         let area = FileArea::open(dir.path(), u64::MAX).unwrap();
         assert_eq!(area.entry(&key(1)).map(|e| e.resident), Some(0));
         assert_eq!(area.origin(&key(1)).as_deref(), Some(origin));
@@ -1680,8 +1531,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let area = FileArea::open(dir.path(), u64::MAX).unwrap();
         let data = [7_u8; 100];
-        // Four older entries, key 1 the least recently used, then the
-        // working set: the files just read and predicted.
         let working_set: Vec<u8> = (10..10 + u8::try_from(WORKING_SET_ENTRIES).unwrap()).collect();
         for n in (1..=4).chain(working_set.iter().copied()) {
             area.adopt_bytes(&key(n), &data, Retention::Cached, &[])
@@ -1692,8 +1541,6 @@ mod tests {
             .unwrap();
         area.adopt_bytes(&key(6), &data, Retention::LocalOnly, &[])
             .unwrap();
-        // The always-on device holds two of the older entries, one in the
-        // working set, and the pinned and local-only ones.
         let last = *working_set.last().unwrap();
         area.set_held_elsewhere(Arc::new(move || {
             [key(3), key(4), key(last), key(5), key(6)].into()

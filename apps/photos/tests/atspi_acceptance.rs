@@ -1,10 +1,6 @@
-//! The installed-image AT-SPI scenario in `tilo-app.toml`, run headlessly.
-//!
-//! The release gate opens Photos on a freshly installed profile, finds the
-//! manifest's `required` names, activates `action` and waits for every
-//! `after_action` name. This drives the same steps through the exported
-//! accessibility tree — the one the AT-SPI bridge serves — so a manifest that
-//! names something the app does not expose fails here, not in a booted VM.
+//! The installed-image AT-SPI scenario in `tilo-app.toml`, run headlessly. The release gate opens
+//! Photos on a freshly installed profile, finds the manifest's `required` names, activates `action`
+//! and waits for every `after_action` name.
 
 #![allow(
     clippy::expect_used,
@@ -16,7 +12,6 @@ use photos::PhotosShell;
 use ui::accesskit::Action as AkAction;
 use ui::framework::testing::TestApp;
 
-/// A tiled desktop window on the gate's 1280x800 display.
 const WINDOW: (u32, u32) = (664, 760);
 
 struct Acceptance {
@@ -25,8 +20,6 @@ struct Acceptance {
     after_action: Vec<String>,
 }
 
-/// The `[accessibility.atspi_acceptance]` strings, read from the manifest
-/// the package ships.
 fn acceptance() -> Acceptance {
     let manifest = include_str!("../tilo-app.toml");
     let section = manifest
@@ -116,8 +109,6 @@ fn the_manifest_scenario_holds_on_a_fresh_library() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

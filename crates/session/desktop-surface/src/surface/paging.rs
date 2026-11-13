@@ -11,7 +11,9 @@ use ui::winit::event::MouseScrollDelta;
 
 use tilo_desktop_model::{GroupId, TabId};
 
-use super::{DesktopSurface, STEP_TRAVEL_PX, Swipe};
+use crate::navigation::{self, Admitted, RouteIds};
+
+use super::{DesktopSurface, STEP_TRAVEL_PX, SWIPE_GAP, Swipe};
 
 /// Who owns the sideways wheel gesture in progress, decided by the gesture's first event: the
 /// content under the pointer, when it scrolled by that event, or the strip, which takes what
@@ -338,5 +340,187 @@ impl DesktopSurface {
         };
         self.finish_swipe(swipe, now, cancelled);
         true
+    }
+}
+
+/// What the strip does with a gesture once it is over: where it comes to rest, and the window
+/// focus follows it to.
+impl DesktopSurface {
+    /// The strip travel of a wheel event: its sideways travel, or over empty canvas, where nothing
+    /// scrolls, its vertical travel too, so a plain mouse wheel moves the strip there (down toward
+    /// later windows).
+    pub(super) fn strip_travel(&self, delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
+        // Sideways is the strip's everywhere. A plain wheel belongs to the app under it, so a mouse
+        // that has only that one pans the strip where no app can scroll: over the strip's own
+        // canvas and window bars. The bar is the shell's, as on the native desktop, where the wheel
+        // over the tab strip is not a client's.
+        sideways(delta, scale_factor).or_else(|| {
+            self.shown_row_ref()
+                .is_some_and(GroupRow::pointer_over_chrome)
+                .then(|| vertical(delta, scale_factor))
+                .filter(|travel| *travel != 0.0)
+        })
+    }
+
+    /// Whether this event is in a sideways gesture the strip owns and pans with it, answered
+    /// without routing it. A pan moves where the windows are and nothing else. Stepping focus on a
+    /// strip that fits, a swipe at the strip's end and the end of an earlier pan, which moves focus
+    /// to the window panned to, all do more. A gesture's first event is the content's to take, so
+    /// only a gesture already the strip's counts.
+    pub(super) fn pans_strip(&self, delta: MouseScrollDelta, now: Instant) -> bool {
+        // Only the direction matters here, which no scale factor changes.
+        let Some(travel) = self.strip_travel(delta, 1.0) else {
+            return false;
+        };
+        let pans = self.shown_row_ref().is_some_and(|row| can_pan(row, travel));
+        match self.swipe {
+            Some(swipe) if now.saturating_duration_since(swipe.last) < SWIPE_GAP => {
+                swipe.owner == Sideways::Strip && pans
+            }
+            Some(swipe) if swipe.panned => false,
+            _ => false,
+        }
+    }
+
+    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. Fingers the desk claims report
+    /// their own end, so this only ends a wheel's.
+    pub(super) fn end_idle_swipe(&mut self, now: Instant) {
+        let Some(swipe) = self.swipe else {
+            return;
+        };
+        if swipe.hand == Hand::Fingers || now.saturating_duration_since(swipe.last) < SWIPE_GAP {
+            return;
+        }
+        self.swipe = None;
+        self.finish_swipe(swipe, now, false);
+    }
+
+    /// The gesture `swipe` is over `cancelled` at `now` : a strip it panned settles, the hand's
+    /// velocity carried on where the hand throws it, and focus follows the pan to the window the
+    /// person is left looking at, so the keyboard and Super+Left/Right carry on from it.
+    fn finish_swipe(&mut self, swipe: Swipe, now: Instant, cancelled: bool) {
+        if swipe.pan.is_some()
+            && let Some(row) = self.shown_row()
+        {
+            // A trackpad and a wheel already coasted the gesture (their momentum, a spun wheel's
+            // notches), so the strip is thrown nowhere: a pull past an end springs back, and a
+            // strip left within its range stays there through later geometry changes. Three fingers
+            // carry no momentum of their own, so the strip coasts with the velocity they let go at,
+            // unless the hand was taken back.
+            let settling = match (swipe.hand, cancelled) {
+                (Hand::Wheel, _) | (Hand::Fingers, true) => row.cancel_strip_pan(now),
+                (Hand::Fingers, false) => row.end_strip_pan(now),
+            };
+            if !settling {
+                row.hold_strip_pan();
+            }
+        }
+        if swipe.panned {
+            self.pan_follow = self.shown;
+        }
+    }
+
+    /// Focus the window the strip has come to rest on, once the pan that moved it is over: a thrown
+    /// strip coasts past the window the fingers let go of, and a pull past an end springs back, so
+    /// focus waits for where the strip ends. The strip itself stays where the person left it
+    /// ([`Self::settle`]).
+    pub(super) fn settle_pan_focus(&mut self) {
+        let Some(panned) = self.pan_follow else {
+            return;
+        };
+        if self.shown != Some(panned) {
+            self.pan_follow = None;
+            return;
+        }
+        if self
+            .shown_row_ref()
+            .is_some_and(ui::widget::GroupRow::direct_pan_in_progress)
+        {
+            return;
+        }
+        self.pan_follow = None;
+        let Some((current, group, tab)) =
+            self.shown
+                .zip(self.shown_row_ref())
+                .and_then(|(strip, row)| {
+                    let current = navigation::active_route(&self.shared.borrow().tree)?;
+                    if strip != current.strip {
+                        return None;
+                    }
+                    let group = panned_to(row, Some(current.group))?;
+                    let tab = row
+                        .groups
+                        .iter()
+                        .find(|g| g.id == group)
+                        .map(ui::widget::WindowGroup::active_tab_id)?;
+                    Some((current, group, tab))
+                })
+        else {
+            return;
+        };
+        if group == current.group {
+            return;
+        }
+        self.shared
+            .borrow_mut()
+            .queue
+            .push(Admitted::Select(RouteIds {
+                group,
+                tab,
+                ..current
+            }));
+        self.settle = Some(group);
+    }
+
+    /// Focus the window `steps` along the shown strip, walking every tab of every group in order
+    /// and stopping at either end, as Super+Left/Right does in the shell. False when there is
+    /// nowhere to go.
+    fn step_focus(&self, steps: i32) -> bool {
+        let Some(target) = self.neighbour(steps) else {
+            return false;
+        };
+        self.shared
+            .borrow_mut()
+            .queue
+            .push(Admitted::Select(target));
+        true
+    }
+
+    /// The window `steps` along the shown strip from the focused one (or the one a queued select is
+    /// about to focus), as [`Self::step_focus`] walks it.
+    fn neighbour(&self, steps: i32) -> Option<RouteIds> {
+        let shared = self.shared.borrow();
+        // A step queued since the last update has moved focus already.
+        let current = shared
+            .queue
+            .iter()
+            .rev()
+            .find_map(|admitted| match admitted {
+                Admitted::Select(route) => Some(*route),
+                _ => None,
+            })
+            .or_else(|| navigation::active_route(&shared.tree))?;
+        let strip = shared
+            .tree
+            .workspaces
+            .iter()
+            .find(|w| w.slot == current.workspace)
+            .and_then(|w| w.strips.iter().find(|s| s.id == current.strip))?;
+        let windows: Vec<(GroupId, TabId)> = strip
+            .window_groups
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(move |t| (g.id, t.id)))
+            .collect();
+        let at = windows
+            .iter()
+            .position(|&(g, t)| g == current.group && t == current.tab)?;
+        let &(group, tab) = at
+            .checked_add_signed(isize::try_from(steps).unwrap_or(0))
+            .and_then(|index| windows.get(index))?;
+        Some(RouteIds {
+            group,
+            tab,
+            ..current
+        })
     }
 }

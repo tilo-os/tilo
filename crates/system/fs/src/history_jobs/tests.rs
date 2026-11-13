@@ -4,8 +4,6 @@ use crate::test_bytes::pseudo;
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::Router;
 
-/// A peer serving committed content, and a hydrator on another endpoint
-/// that has none of it.
 struct Remote {
     router: Router,
     source: Endpoint,
@@ -57,7 +55,6 @@ fn new_key() -> JobKey {
     }
 }
 
-/// Wait, bounded, until `key`'s job leaves `Hydrating`.
 async fn settled(jobs: &HistoryJobs, key: JobKey) -> Option<State> {
     let started = std::time::Instant::now();
     loop {
@@ -117,7 +114,6 @@ async fn remote_content_hydrates_in_a_job_and_the_next_request_commits() {
     let gate = jobs.hold();
     let key = new_key();
 
-    // The request returns while the job has not fetched a byte.
     assert_eq!(
         jobs.ensure_local(key, &remote.hydrator, &[hash]),
         Readiness::Hydrating
@@ -127,12 +123,10 @@ async fn remote_content_hydrates_in_a_job_and_the_next_request_commits() {
         Some(State::Hydrating { done: 0, total: 0 })
     );
     assert_eq!(remote.hydrator.local_len(hash).await, None);
-    // Repeating it does not start a second download.
     assert_eq!(
         jobs.ensure_local(key, &remote.hydrator, &[hash, hash]),
         Readiness::Hydrating
     );
-    // Another request under the same id for other content waits its turn.
     let other = remote.content(b"other").await;
     assert_eq!(
         jobs.ensure_local(key, &remote.hydrator, &[other]),
@@ -145,13 +139,11 @@ async fn remote_content_hydrates_in_a_job_and_the_next_request_commits() {
         remote.hydrator.local_len(hash).await,
         Some(bytes.len() as u64)
     );
-    // The ready job is consumed by the request that commits.
     assert_eq!(
         jobs.ensure_local(key, &remote.hydrator, &[hash]),
         Readiness::Local
     );
     assert_eq!(jobs.state(key), None);
-    // Local content never starts a job.
     let local = new_key();
     assert_eq!(
         jobs.ensure_local(local, &remote.hydrator, &[hash]),
@@ -178,8 +170,6 @@ async fn cancel_stops_hydration() {
         "a cancelled job cannot be cancelled again"
     );
     assert_eq!(jobs.state(key), Some(State::Cancelled));
-    // Releasing the hold must not resurrect the aborted job: once its task
-    // has ended, nobody is left to take the released permit.
     tilo_test_env::within("the cancelled job's task to end", async {
         while !jobs.lock().get(&key).unwrap().task.is_finished() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -194,7 +184,6 @@ async fn cancel_stops_hydration() {
     );
     assert_eq!(jobs.state(key), Some(State::Cancelled));
     assert_eq!(remote.hydrator.local_len(hash).await, None);
-    // The cancellation is reported once; the next request starts afresh.
     assert_eq!(
         jobs.ensure_local(key, &remote.hydrator, &[hash]),
         Readiness::Cancelled
@@ -212,7 +201,6 @@ async fn cancel_stops_hydration() {
 async fn unreachable_content_fails_once_and_jobs_are_bounded() {
     let remote = Remote::new().await;
     let jobs = HistoryJobs::default();
-    // Content no peer has: the job fails, and says so once.
     let missing = Hash::new(b"no peer has this manifest");
     let key = new_key();
     assert_eq!(
@@ -226,8 +214,6 @@ async fn unreachable_content_fails_once_and_jobs_are_bounded() {
     );
     assert_eq!(jobs.state(key), None);
 
-    // Downloads past the bound are refused rather than queued; finished
-    // jobs nobody came back for make room.
     let _gate = jobs.hold();
     let hash = remote.content(b"bounded").await;
     let first = new_key();

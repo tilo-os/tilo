@@ -1,6 +1,5 @@
-// Exercise the window's immediate-edit path with the dispatcher attached by
-// the real framework. The queue is deliberately not connected to a broker:
-// publishing an observation must not delay the document's local projection.
+// The dispatcher is real; the queue is deliberately not connected to a broker,
+// so publishing cannot delay the document's local projection.
 fn assert_calculator_capture(
     queue: &ui::local_document_action::Queue,
     doc: &mut AutoCommit,

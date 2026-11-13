@@ -1,29 +1,11 @@
-//! Clip thumbnails: real frames from the source, cached per (source, time).
+//! Clip thumbnails, decoded by the shared `thumbnail` pipeline and cached per
+//! source and time: one bin swatch per source, and a different frame per cell of
+//! a timeline filmstrip, sampled across the clip's trimmed window.
 //!
-//! Two things need pictures, and they need different ones:
-//!
-//!   * The **bin swatch** — one representative frame per source, sampled near
-//!     the start. [`ThumbnailCache::ensure`] serves it.
-//!   * The **timeline filmstrip** — a *different* frame per cell, walking the
-//!     clip's trimmed `[in_point, out_point]` window so the strip actually
-//!     shows the shot changing. [`ThumbnailCache::ensure_strip`] requests
-//!     them and [`ThumbnailCache::frame_at`] looks one up per cell. Tiling a
-//!     single image across every cell is not a filmstrip; it is one picture
-//!     repeated.
-//!
-//! Frames come from the system's one preview pipeline (`thumbnail`): its
-//! priority queue, its content-addressed cache — so a filmstrip decoded once
-//! is there on the next launch — and its video workers, each of which keeps
-//! one `GStreamer` pipeline open and reuses it across every request for the
-//! same source. Standing up a whole engine per thumbnail — one pipeline per
-//! cell — is what made a scrolled timeline unusable.
-//!
-//! Every request has three terminal outcomes and no fourth: a real frame, a
-//! generated representative frame (no decoder compiled, or the bytes are not
-//! hydrated yet), or **failure**. Failure is recorded and never retried, so a
-//! source that cannot be decoded settles instead of being re-requested every
-//! frame — a request with no failure state kept [`ThumbnailCache::has_pending`]
-//! true forever and pinned the app in a wake loop.
+//! A request settles three ways and no fourth: a real frame, a generated
+//! representative frame (no decoder, or the bytes not hydrated yet), or failure.
+//! A failure is recorded and never retried, so an undecodable source settles
+//! instead of pinning [`ThumbnailCache::has_pending`] true forever.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(feature = "decode")]
@@ -38,75 +20,55 @@ use crate::media::MediaSource;
 use crate::model::MediaId;
 use crate::preview::palette_rgb;
 
-/// Default thumbnail resolution (16:9). Small — it's an icon, and the renderer
-/// scales it to fit the bin swatch / timeline cell. Decoded frames are fitted
-/// inside this box before being cached, so a 4K source costs the same as a
-/// 480p one.
+/// Decoded frames are fitted inside this box before they are cached, so a 4K
+/// source costs what a 480p one does.
 pub const THUMB_W: u32 = 160;
 pub const THUMB_H: u32 = 90;
 #[cfg(any(feature = "decode", test))]
 const THUMB_SIZE: ThumbSize = ThumbSize::new(THUMB_W, THUMB_H);
 
-/// Filmstrip resolution in source time.
-///
-/// A clip body asks for one frame per cell; quantising those times onto a
-/// quarter-second grid means neighbouring cells share a decode and a small
-/// zoom change reuses what is already decoded rather than restarting the
-/// pipeline at slightly different timestamps.
+/// Filmstrip resolution in source time: on a quarter-second grid, neighbouring
+/// cells share a decode and a small zoom change reuses what is decoded.
 pub const STRIP_BUCKET_SECS: f64 = 0.25;
 
-/// Cached frames kept per source. A long clip scrolled end to end would
-/// otherwise grow without bound; the least-recently-looked-up bucket goes first.
 const MAX_FRAMES_PER_SOURCE: usize = 96;
 
-/// Decode workers the editor's pipeline runs — and therefore the cap on live
-/// `GStreamer` pipelines.
 const MAX_WORKERS: usize = 2;
 
-/// How far [`ThumbnailCache::frame_at`] will reach for an already-decoded
-/// neighbour while the exact bucket is still in flight. Two seconds of source
-/// time: close enough that the stand-in is the same shot, near enough in time
-/// that the strip fills in smoothly instead of jumping to a frame from
-/// somewhere else in the clip.
+/// How far [`ThumbnailCache::frame_at`] reaches for a decoded neighbour while
+/// the exact bucket is in flight: two seconds, which is the same shot.
 const NEAR_BUCKETS: u32 = (2.0 / STRIP_BUCKET_SECS) as u32;
 
-/// The source-time bucket `t` (seconds) falls in.
 pub fn bucket_of(t: f64) -> u32 {
     (t.max(0.0) / STRIP_BUCKET_SECS)
         .floor()
         .min(f64::from(u32::MAX)) as u32
 }
 
-/// The centre time (seconds) of `bucket` — the time a bucket's frame is
-/// decoded at, so every request for a bucket names one frame.
+/// The centre of `bucket`, so every request for a bucket names one frame.
 #[cfg(any(feature = "decode", test))]
 fn bucket_time(bucket: u32) -> f64 {
     (f64::from(bucket) + 0.5) * STRIP_BUCKET_SECS
 }
 
-/// Milliseconds of source time, for the pipeline.
 #[cfg(feature = "decode")]
 fn millis(t: f64) -> u64 {
     (t.max(0.0) * 1000.0).round().min(u64::MAX as f64) as u64
 }
 
-/// A decoded/generated thumbnail: tightly packed `width*height*4` RGBA.
 #[derive(Clone, Debug)]
 pub struct Thumb {
     pub width: u32,
     pub height: u32,
-    /// The pixels, shared. `Arc` so handing the same frame to the scene every
-    /// frame costs a refcount bump, not a copy of the buffer.
+    /// Shared, so handing the frame to the scene each frame is a refcount bump.
     pub rgba: Arc<Vec<u8>>,
-    /// `true` when this is a real decoded frame (vs. a generated representative).
+    /// Whether this is a decoded frame rather than a generated stand-in.
     pub real: bool,
-    /// Render handle for `rgba`, built once — see [`Thumb::image`].
     image: ImageData,
 }
 
 impl PartialEq for Thumb {
-    /// Two thumbnails are equal when their pixels are; the render handle is a
-    /// derived cache, not part of the value.
+    /// The render handle is derived, so it is not part of the value.
     fn eq(&self, other: &Self) -> bool {
         self.width == other.width
             && self.height == other.height
@@ -116,7 +78,6 @@ impl PartialEq for Thumb {
 }
 
 impl Thumb {
-    /// Wrap owned pixels, building the render handle once.
     pub fn new(width: u32, height: u32, rgba: Arc<Vec<u8>>, real: bool) -> Self {
         let data: Arc<dyn AsRef<[u8]> + Send + Sync> = rgba.clone();
         let image = ui::raster::rgba8(Blob::new(data), width, height);
@@ -129,22 +90,17 @@ impl Thumb {
         }
     }
 
-    /// The stable render handle for these pixels.
-    ///
-    /// Built once at construction and **cloned** by the renderer: a clone
-    /// shares the same [`Blob`] identity, so the GPU atlas recognises pixels it
-    /// has already uploaded. Constructing a fresh `Blob` at the draw call — as
-    /// `Blob::new(Arc::new(thumb.rgba.clone()))` did — both deep-copies the
-    /// buffer and mints a new id, so every filmstrip cell missed the atlas and
-    /// re-uploaded, every frame.
+    /// Cloned by the renderer, never rebuilt: a clone keeps the same [`Blob`]
+    /// identity, so the GPU atlas recognises pixels it has already uploaded. A
+    /// fresh `Blob` at the draw call deep-copies the buffer and misses the atlas
+    /// every frame.
     pub fn image(&self) -> &ImageData {
         &self.image
     }
 }
 
-/// Generate a representative thumbnail frame for a `palette` slot: a soft
-/// vertical gradient with a horizon band and a gentle corner vignette, in the
-/// palette's colour family — reads as a frame, not a flat swatch.
+/// A stand-in frame in a `palette` slot's colour family: a vertical gradient
+/// with a horizon band and a corner vignette, so it reads as a frame.
 #[expect(
     clippy::many_single_char_names,
     reason = "pixel maths: w/h and x/y are the frame and pixel, r/g/b the channels"
@@ -163,11 +119,9 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     let (wf, hf) = (f64::from(w), f64::from(h));
     for (y, row) in (0..h).zip(rgba.chunks_exact_mut(w as usize * 4)) {
         let yf = f64::from(y) / hf;
-        // Vertical gradient top→bottom.
         let mut r = top[0] + (bottom[0] - top[0]) * yf;
         let mut g = top[1] + (bottom[1] - top[1]) * yf;
         let mut b = top[2] + (bottom[2] - top[2]) * yf;
-        // A subtle horizon band around 62% height.
         if (0.60..0.68).contains(&yf) {
             r *= 0.82;
             g *= 0.82;
@@ -175,7 +129,6 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
         }
         for (x, px) in (0..w).zip(row.as_chunks_mut::<4>().0) {
             let xf = f64::from(x) / wf;
-            // Gentle corner vignette.
             let dx = (xf - 0.5) * 2.0;
             let dy = (yf - 0.5) * 2.0;
             let v = (1.0 - 0.28 * (dx * dx + dy * dy)).clamp(0.0, 1.0);
@@ -190,17 +143,13 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     Thumb::new(w, h, Arc::new(rgba), false)
 }
 
-/// What we know about one (source, time-bucket) frame.
 #[derive(Clone)]
 enum Slot {
-    /// The pipeline has been asked for it (under this key) and has not
-    /// answered yet. Only the decoder path asks for frames.
+    /// Asked for under this key and not answered yet.
     #[cfg(any(feature = "decode", test))]
     Pending(ThumbKey),
-    /// A real decoded frame.
     Ready(Arc<Thumb>),
-    /// The decode was attempted and produced nothing. **Terminal** — never
-    /// requested again, and not pending.
+    /// The decode produced nothing: never requested again, not pending.
     Failed,
 }
 
@@ -213,7 +162,6 @@ impl Slot {
         }
     }
 
-    /// The decoded frame, if the slot holds one.
     fn ready(&self) -> Option<&Arc<Thumb>> {
         if let Self::Ready(thumb) = self {
             Some(thumb)
@@ -223,40 +171,23 @@ impl Slot {
     }
 }
 
-/// One source's frames, keyed by time bucket, plus the LRU stamps used to
-/// bound how many are kept.
 #[derive(Default)]
 struct SourceFrames {
     slots: BTreeMap<u32, Slot>,
     touched: HashMap<u32, u64>,
 }
 
-/// Per-source thumbnail cache over the shared preview pipeline.
-///
-/// A representative frame is generated synchronously on first request (cheap,
-/// cached); real frames are decoded by the pipeline and replace it per time
-/// bucket.
 pub struct ThumbnailCache {
-    /// The bin swatch: one frame per source (representative, then real).
     swatch: HashMap<MediaId, Arc<Thumb>>,
-    /// Filmstrip frames, per source, per time bucket.
     frames: HashMap<MediaId, SourceFrames>,
-    /// Sources with a bin-swatch decode in flight, and the key it settles under.
     swatch_pending: HashMap<MediaId, ThumbKey>,
-    /// Sources whose decode has failed outright. Nothing is ever requested for
-    /// these again — this is what lets `has_pending` go quiet.
     undecodable: HashSet<MediaId>,
-    /// Consecutive failures per source, before it is written off entirely.
     failures: HashMap<MediaId, u32>,
-    /// Each source's identity in the pipeline: its path and the key its
-    /// frames derive from.
     #[cfg(feature = "decode")]
     sources: HashMap<MediaId, (PathBuf, ThumbKey)>,
-    /// Monotonic stamp for LRU eviction.
     clock: u64,
-    /// Whether real frames are decoded at all. A hermetic editor (a capture,
-    /// a past version) shows representative frames only, so what it draws
-    /// does not depend on when a decode lands.
+    /// A capture or a past version decodes nothing, so what it draws does not
+    /// depend on when a decode lands.
     decoding: bool,
     service: ThumbnailService,
 }
@@ -267,15 +198,13 @@ impl Default for ThumbnailCache {
     }
 }
 
-/// A source is written off after this many consecutive failed decodes. One
-/// bad seek near a damaged GOP should not condemn a whole clip; a file that
-/// answers nothing anywhere is not decodable.
+/// One bad seek near a damaged GOP must not condemn a whole clip.
 pub(crate) const FAILURES_BEFORE_GIVING_UP: u32 = 3;
 
 impl ThumbnailCache {
     pub fn new() -> Self {
-        // Tests stay hermetic; the app keeps decoded filmstrips in the user's
-        // preview cache so a reopened project does not decode them again.
+        // Tests stay hermetic; the app keeps filmstrips in the preview cache, so
+        // a reopened project does not decode them again.
         let service = if cfg!(test) || !cfg!(feature = "decode") {
             ThumbnailService::ephemeral(MAX_WORKERS)
         } else {
@@ -296,17 +225,13 @@ impl ThumbnailCache {
         }
     }
 
-    /// Stop (or resume) decoding real frames: representative frames stand in
-    /// for every source while it is off.
     pub fn set_decoding(&mut self, decoding: bool) {
         self.decoding = decoding;
     }
 
-    /// Pull settled decodes into the cache. Call each `sync`.
-    ///
-    /// A request the pipeline no longer knows (dropped from its bounded queue
-    /// while off screen) simply stops being pending here; the renderer's next
-    /// `ensure_strip` asks again.
+    /// Called each sync. A request the pipeline no longer knows, dropped from its
+    /// bounded queue, simply stops being pending and the next `ensure_strip` asks
+    /// again.
     pub fn drain(&mut self) {
         let mut settled: Vec<(MediaId, u32, Option<ThumbState>)> = Vec::new();
         for (id, key) in &self.swatch_pending {
@@ -351,8 +276,7 @@ impl ThumbnailCache {
         }
     }
 
-    /// Record the pipeline's answer for `(id, bucket)`. `None` is a real,
-    /// terminal failure — not "try again later".
+    /// `None` is a terminal failure, not "try again later".
     fn settle(&mut self, id: MediaId, bucket: u32, thumb: Option<Thumb>) {
         if let Some(t) = thumb {
             self.failures.remove(&id);
@@ -368,8 +292,7 @@ impl ThumbnailCache {
                     .insert(bucket, Slot::Ready(t));
             }
         } else {
-            // Terminal. Record it so the slot stops being pending and is never
-            // re-requested.
+            // Terminal, never re-requested.
             self.swatch_pending.remove(&id);
             if bucket != SWATCH_BUCKET {
                 self.frames
@@ -387,9 +310,8 @@ impl ThumbnailCache {
         self.evict(id);
     }
 
-    /// Give up on `id`: mark every outstanding request for it failed and stop
-    /// asking. The representative frame stays, permanently, and the app goes
-    /// quiet instead of re-requesting a decode that will never succeed.
+    /// Fail every outstanding request for `id` and stop asking, so the app goes
+    /// quiet with the representative frame.
     fn write_off(&mut self, id: MediaId) {
         self.undecodable.insert(id);
         if let Some(key) = self.swatch_pending.remove(&id) {
@@ -405,15 +327,12 @@ impl ThumbnailCache {
         }
     }
 
-    /// Whether `id` has been written off as undecodable — the renderer can say
-    /// so honestly instead of waiting for a frame that is not coming.
     pub fn is_undecodable(&self, id: MediaId) -> bool {
         self.undecodable.contains(&id)
     }
 
-    /// Ensure a bin swatch exists for `id`: generate the representative frame
-    /// now (once), and — under the decode feature, when the bytes are hydrated
-    /// — request a real frame at source time `at` to replace it.
+    /// Generate the representative frame once, then ask for a real one at `at`
+    /// to replace it when the bytes are hydrated.
     pub fn ensure(&mut self, id: MediaId, palette: u8, source: &MediaSource, at: f64) {
         self.swatch
             .entry(id)
@@ -428,11 +347,9 @@ impl ThumbnailCache {
         let _ = (source, at);
     }
 
-    /// Request the frames a clip body needs: `cells` evenly spaced samples
-    /// across the clip's trimmed source window `[in_point, out_point]`.
-    ///
-    /// Idempotent and cheap to call every frame — a bucket already ready,
-    /// pending or failed is not re-requested.
+    /// Ask for `cells` samples across the trimmed window `[in_point, out_point]`.
+    /// Cheap to call every frame: a bucket ready, pending or failed is not asked
+    /// for again.
     pub fn ensure_strip(
         &mut self,
         id: MediaId,
@@ -442,8 +359,7 @@ impl ThumbnailCache {
         out_point: f64,
         cells: usize,
     ) {
-        // The representative frame is the strip's stand-in until real frames
-        // land, so make sure it exists even on a build with no decoder.
+        // The stand-in until real frames land, even with no decoder.
         self.swatch
             .entry(id)
             .or_insert_with(|| Arc::new(representative(palette, THUMB_W, THUMB_H)));
@@ -458,7 +374,6 @@ impl ThumbnailCache {
         let _ = source;
     }
 
-    /// Note that `bucket` is being looked at, for LRU eviction.
     fn touch(&mut self, id: MediaId, bucket: u32) {
         self.clock += 1;
         let clock = self.clock;
@@ -469,9 +384,8 @@ impl ThumbnailCache {
             .insert(bucket, clock);
     }
 
-    /// The key `id`'s frames derive from: its path, modification time and
-    /// size, so an edited file gets new frames. Recomputed only when the
-    /// source's path changes.
+    /// Its path, modification time and size, so an edited file gets new frames.
+    /// Recomputed only when the path changes.
     #[cfg(feature = "decode")]
     fn source_key(&mut self, id: MediaId, source: &MediaSource) -> Option<ThumbKey> {
         if let Some((path, key)) = self.sources.get(&id)
@@ -489,14 +403,12 @@ impl ThumbnailCache {
         Some(key)
     }
 
-    /// Ask the pipeline for `(id, bucket)` unless it is already known or in
-    /// flight. Only reached under the decode feature.
+    /// Ask unless the bucket is already known or in flight.
     #[cfg(feature = "decode")]
     fn request(&mut self, id: MediaId, source: &MediaSource, bucket: u32, at: f64) {
         if !self.decoding || self.undecodable.contains(&id) || !source.is_decodable() {
             return;
         }
-        // Already answered, already failed, or already in flight.
         if bucket == SWATCH_BUCKET {
             if self.swatch_pending.contains_key(&id) {
                 return;
@@ -514,8 +426,6 @@ impl ThumbnailCache {
         let at_ms = millis(at);
         let key = base.at_frame(at_ms);
         let request = thumbnail::ThumbRequest::video_frame(key, source.abs_path.clone(), at_ms);
-        // A cached frame answers at once; anything else is pending until the
-        // pipeline settles it.
         if let ThumbState::Ready(frame) = self.service.request(request) {
             let thumb = Thumb::new(
                 frame.width,
@@ -537,19 +447,14 @@ impl ThumbnailCache {
         }
     }
 
-    /// The bin swatch for `id`, if one has been generated.
     pub fn get(&self, id: MediaId) -> Option<&Arc<Thumb>> {
         self.swatch.get(&id)
     }
 
-    /// The filmstrip frame to draw for source time `t` (seconds).
-    ///
-    /// Exact bucket when it has been decoded; otherwise a decoded frame from
-    /// the same source within `NEAR_BUCKETS` (a real frame a moment away,
-    /// while the exact one is still decoding); otherwise the generated
-    /// representative. Never a frame from elsewhere in the clip, never one
-    /// from a different source, and never invented pixels dressed as a decode
-    /// — [`Thumb::real`] always tells the truth about which of the three it is.
+    /// The exact bucket when decoded, else a decoded frame within
+    /// `NEAR_BUCKETS`, else the representative. Never a frame from elsewhere in
+    /// the clip or another source, and [`Thumb::real`] says which of the three it
+    /// is.
     pub fn frame_at(&self, id: MediaId, t: f64) -> Option<&Arc<Thumb>> {
         let want = bucket_of(t);
         if let Some(f) = self.frames.get(&id) {
@@ -580,13 +485,9 @@ impl ThumbnailCache {
         self.swatch.get(&id)
     }
 
-    /// Whether any decode is still outstanding, so the app keeps syncing until
-    /// it lands.
-    ///
-    /// Goes **false** once every request has reached a terminal state — a
-    /// frame or a recorded failure. A failed decode that left its request
-    /// permanently in flight is what kept this true forever and burned CPU in
-    /// an endless idle-sync loop.
+    /// Whether any decode is outstanding, so the app keeps syncing until it
+    /// lands. False once every request has settled, a frame or a recorded
+    /// failure: one that stays in flight keeps the app in an idle-sync loop.
     pub fn has_pending(&self) -> bool {
         !self.swatch_pending.is_empty()
             || self
@@ -595,16 +496,10 @@ impl ThumbnailCache {
                 .any(|f| f.slots.values().any(|s| s.pending_key().is_some()))
     }
 
-    /// Bound what one source keeps: drop the least-recently-looked-at settled
-    /// frames past the cap, and forget LRU stamps for buckets that hold
-    /// nothing. Scrubbing a long clip visits unboundedly many buckets, so both
-    /// halves have to be pruned, not just the pixels.
     fn evict(&mut self, id: MediaId) {
         let Some(f) = self.frames.get_mut(&id) else {
             return;
         };
-        // A pending slot is in flight and must survive; anything settled is
-        // fair game.
         let mut settled: Vec<u32> = f
             .slots
             .iter()
@@ -626,9 +521,7 @@ impl ThumbnailCache {
     }
 }
 
-/// The distinct buckets a strip of `cells` cells samples across
-/// `[in_point, out_point]`, each cell at its centre so cell 0 is not always
-/// frame 0.
+/// Each cell at its centre, so cell 0 is not always frame 0.
 fn strip_buckets(in_point: f64, out_point: f64, cells: usize) -> Vec<u32> {
     let span = (out_point - in_point).max(0.0);
     let mut buckets: Vec<u32> = (0..cells)
@@ -638,8 +531,6 @@ fn strip_buckets(in_point: f64, out_point: f64, cells: usize) -> Vec<u32> {
     buckets
 }
 
-/// Sentinel bucket for the single bin-swatch frame, which is not part of the
-/// filmstrip grid.
 const SWATCH_BUCKET: u32 = u32::MAX;
 
 #[cfg(test)]
@@ -674,13 +565,11 @@ mod tests {
             assert_eq!(t.rgba.len(), 32 * 18 * 4);
             assert!(!t.real, "a generated frame is not a real decode");
             assert!(t.rgba.chunks(4).all(|px| px[3] == 255), "opaque");
-            // Not a flat black frame — the palette contributes visible colour.
             assert!(
                 t.rgba
                     .chunks(4)
                     .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8)
             );
-            // The top row is lighter than the bottom row (the vertical gradient).
             let top_lum: u32 = t.rgba[0..4].iter().take(3).map(|&v| u32::from(v)).sum();
             let last = (17 * 32 * 4) as usize;
             let bot_lum: u32 = t.rgba[last..last + 3].iter().map(|&v| u32::from(v)).sum();
@@ -689,7 +578,6 @@ mod tests {
                 "gradient runs light→dark ({top_lum} vs {bot_lum})"
             );
         }
-        // Case `cache_generates_a_representative_thumb_on_first_request`.
         {
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
@@ -707,8 +595,8 @@ mod tests {
             );
         }
         {
-            // The renderer clones this per cell per frame. Every clone must carry
-            // the *same* blob id, or the GPU atlas re-uploads the pixels each time.
+            // Every clone must carry the same blob id, or the atlas re-uploads
+            // the pixels each time.
             let t = representative(1, 16, 9);
             let first = t.image().clone();
             let second = t.image().clone();
@@ -718,8 +606,7 @@ mod tests {
                 "cloning the cached handle keeps one identity"
             );
             assert_eq!(first.data.id(), t.image().data.id());
-            // …and a *fresh* blob over the same bytes would not, which is exactly
-            // the miss the old draw path caused.
+            // A fresh blob over the same bytes would miss the atlas.
             let fresh =
                 Blob::new(Arc::new(t.rgba.as_ref().clone()) as Arc<dyn AsRef<[u8]> + Send + Sync>);
             assert_ne!(fresh.id(), first.data.id());
@@ -735,11 +622,8 @@ mod tests {
     )]
     fn thumbnail_decode_failures_settle_without_condemning_sources() {
         {
-            // The reported bug: `ensure` asks for the bin swatch, the decode
-            // yields nothing, and the old code both dropped the result and left
-            // the id in the in-flight set — so `has_pending` stayed true forever
-            // and the app never went idle. Drive exactly that: mark the requests
-            // as `request` does, then deliver the pipeline's empty answer.
+            // Mark the requests as `request` does, then deliver the pipeline's
+            // empty answer.
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             let src = projected("/not/decodable.mp4");
@@ -762,8 +646,7 @@ mod tests {
                 "outstanding strip requests settle too, rather than hanging"
             );
 
-            // Re-running the app's per-frame `ensure`/`ensure_strip` must not
-            // resurrect the request — that is the loop that burned CPU.
+            // The app's per-frame `ensure` must not resurrect the request.
             cache.ensure(id, 0, &src, 0.5);
             cache.ensure_strip(id, 0, &src, 0.0, 4.0, 12);
             assert!(
@@ -775,8 +658,8 @@ mod tests {
             assert!(!t.real);
         }
         {
-            // Repeated per-bucket failures also have to terminate, or a clip whose
-            // every cell fails would keep the app awake one bucket at a time.
+            // Per-bucket failures terminate too, or every failing cell keeps the
+            // app awake one bucket at a time.
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             cache.ensure(id, 0, &projected("/broken.mp4"), 0.5);
@@ -799,16 +682,13 @@ mod tests {
                 !cache.is_undecodable(id),
                 "a single failed bucket is not a verdict"
             );
-            // The bucket itself is terminal, though — never asked for again.
+            // The bucket itself is terminal, though.
             assert!(matches!(cache.frames[&id].slots[&3], Slot::Failed));
             assert!(!cache.has_pending());
         }
         {
-            // A request the shared queue dropped (it was off screen when the queue
-            // filled) is unknown to the pipeline. It must not stay pending here —
-            // a slot marked pending for a job nobody holds never reaches a
-            // terminal state, and `has_pending` would stay true for the rest of
-            // the session.
+            // A request the filled queue dropped is unknown to the pipeline, so it
+            // must not stay pending here.
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             pending(&mut cache, id, 4);
@@ -833,9 +713,7 @@ mod tests {
     )]
     fn thumbnail_strip_samples_real_times_within_bounded_caches() {
         {
-            // Feed real frames for three different source times, as the pipeline
-            // would, and check the strip lookup returns a *different* picture per
-            // cell across a clip's trimmed window.
+            // Three source times give three different pictures.
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             cache.ensure(id, 0, &projected("/clip.mp4"), 0.5);
@@ -850,12 +728,10 @@ mod tests {
             assert!(a.real && b.real && c.real, "all three are real decodes");
             assert_ne!(a.rgba[0], b.rgba[0], "1s and 5s are different pictures");
             assert_ne!(b.rgba[0], c.rgba[0], "5s and 9s are different pictures");
-            // Distinct handles too, so the atlas keys them separately.
             assert_ne!(a.image().data.id(), b.image().data.id());
         }
         {
-            // A clip trimmed to [4, 8] must ask for buckets inside that window and
-            // nowhere else — the strip shows the part of the source in use.
+            // A clip trimmed to [4, 8] asks for buckets inside that window only.
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             cache.ensure_strip(id, 0, &projected("/clip.mp4"), 4.0, 8.0, 8);
@@ -876,15 +752,13 @@ mod tests {
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             cache.ensure(id, 3, &projected("/clip.mp4"), 0.5);
-            // Nothing decoded: the strip shows the representative, marked as such.
             let t = cache.frame_at(id, 12.0).expect("something to draw");
             assert!(
                 !t.real,
                 "an undecoded cell must not claim to be a real frame"
             );
 
-            // With one real frame present, a nearby time reuses it (still real,
-            // still this source) rather than jumping back to the gradient.
+            // A nearby time reuses the real frame rather than the gradient.
             cache.settle(
                 id,
                 bucket_of(12.0),
@@ -894,8 +768,7 @@ mod tests {
             assert!(near.real);
             assert_eq!(near.rgba[0], 9);
 
-            // Far away in the clip, though, that frame says nothing — the strip
-            // falls back to the representative rather than showing the wrong shot.
+            // Far away the frame says nothing, so the strip falls back.
             let far = cache.frame_at(id, 90.0).expect("something to draw");
             assert!(
                 !far.real,
@@ -909,8 +782,8 @@ mod tests {
             assert!(buckets.windows(2).all(|w| w[0] < w[1]));
         }
         {
-            // Scrubbing visits far more buckets than are ever decoded; the
-            // bookkeeping for them must be pruned too, not just the pixels.
+            // Scrubbing visits far more buckets than are decoded; the bookkeeping
+            // is pruned too.
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();
             for b in 0..(MAX_FRAMES_PER_SOURCE as u32 * 6) {
@@ -922,7 +795,6 @@ mod tests {
                 "stamps for buckets holding nothing are forgotten"
             );
         }
-        // Case `cached_frames_are_capped_per_source`.
         {
             let mut cache = ThumbnailCache::new();
             let id = uuid::Uuid::new_v4();

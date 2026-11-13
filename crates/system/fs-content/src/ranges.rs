@@ -89,7 +89,6 @@ impl RangeSet {
             .collect()
     }
 
-    /// The parts of `r` that are not in the set.
     pub fn missing(&self, r: &Range<u64>) -> Vec<Range<u64>> {
         let mut out = Vec::new();
         let mut at = r.start;

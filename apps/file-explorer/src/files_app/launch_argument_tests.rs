@@ -1,6 +1,4 @@
-//! What a launch names: Files launched on a folder shows it, and on a file
-//! ("Show in Files", a screenshot's receipt) shows its folder with the file
-//! selected.
+//! What a launch names: Files launched on a folder shows it, on a file opens it.
 
 use super::*;
 

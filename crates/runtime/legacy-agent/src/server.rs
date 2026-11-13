@@ -21,8 +21,6 @@ use crate::terminal::Pty;
 use crate::user::GuestUser;
 use tilo_lock::MutexRecover as _;
 
-/// How long a finished app's output pumps get to drain before the exit is
-/// reported anyway (a daemon it spawned may hold the pipe open forever).
 const DRAIN: Duration = Duration::from_secs(2);
 
 pub struct Agent {
@@ -51,7 +49,6 @@ impl Agent {
         }
     }
 
-    /// Serve one host connection to completion.
     pub fn serve<S: Duplex>(&self, mut stream: S) -> Result<(), ProtocolError> {
         match recv(&mut stream)?.ok_or(ProtocolError::Closed)? {
             HostMessage::Hello { protocol_major } if protocol_major == PROTOCOL_MAJOR => {}
@@ -138,7 +135,6 @@ impl Agent {
         }
     }
 
-    /// Mount the host's directories over vsock, as the guest user's files.
     fn mount_files(&self, desired: &[legacy_agent_protocol::files::FileShare]) -> GuestMessage {
         if let Err(error) = legacy_agent_protocol::files::FileShare::validate_set(desired) {
             return GuestMessage::Error {
@@ -171,7 +167,6 @@ impl Agent {
         }
     }
 
-    /// Start the forwarded Xwayland once; later launches reuse it.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "held across the spawn so two launches start one Xwayland"
@@ -348,7 +343,6 @@ impl Agent {
         reply(&GuestMessage::Exited(status))
     }
 
-    /// The guest process for `request`, and what to tell its stderr first.
     fn prepare(&self, request: &Launch) -> (Command, Option<String>) {
         let runtime_dir = self.user.runtime_dir();
         ensure_runtime_dir(&runtime_dir, &self.user);
@@ -416,17 +410,11 @@ fn pump<S: Duplex, R: Read + Send + 'static>(
     });
 }
 
-/// Where the host's input goes: the app's stdin pipe, or the master of
-/// its terminal.
 enum Input {
     Pipe(Option<ChildStdin>),
     Terminal(std::fs::File),
 }
 
-/// Feed the host's stdin, close, resizes and signals to the app. When the
-/// host goes away, a tool is hung up on like a closed terminal would; a
-/// windowed app keeps running, the way a desktop app outlives the terminal
-/// that opened it.
 fn host_input<S: Duplex>(mut stream: S, input: Input, pid: u32, windowed: bool) {
     std::thread::spawn(move || {
         let mut input = input;
@@ -476,7 +464,6 @@ fn host_input<S: Duplex>(mut stream: S, input: Input, pid: u32, windowed: bool) 
     });
 }
 
-/// The guest's boot id, which changes on every boot.
 #[must_use]
 pub fn boot_id() -> String {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
@@ -484,7 +471,6 @@ pub fn boot_id() -> String {
         .unwrap_or_default()
 }
 
-/// `/etc/passwd`'s entry for the guest user.
 #[must_use]
 pub fn guest_user(name: &str) -> Option<GuestUser> {
     GuestUser::from_passwd(&std::fs::read_to_string("/etc/passwd").ok()?, name)
@@ -644,7 +630,6 @@ mod tests {
         assert!(err.is_empty());
     }
 
-    /// Output, kept, saying once when the first line is complete.
     struct Watched {
         seen: Vec<u8>,
         printed: Option<mpsc::Sender<()>>,

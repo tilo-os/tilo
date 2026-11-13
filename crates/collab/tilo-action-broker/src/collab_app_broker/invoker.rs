@@ -36,27 +36,25 @@ pub(super) fn host_set_invoker(
         None
     };
     // A Shortcut's step is admitted as its person: the invoker stays them.
-    let admitted = caller
-        .map(tilo_actions::remote::Caller::actor)
-        .filter(|admitted| admitted.id == actor.id)
-        .unwrap_or_else(|| {
-            tilo_actions::InteractionActor::new(
-                actor.id.clone(),
-                if actor.is_agent {
-                    tilo_actions::ActorKind::Agent
-                } else {
-                    tilo_actions::ActorKind::Person
-                },
-            )
-        });
-    Ok(match (context, participant) {
-        (None, None) => None,
-        (context, participant) => Some(
-            context
-                .unwrap_or_default()
-                .with_host_actor(&admitted, participant),
-        ),
-    })
+    let admitting = caller.filter(|caller| caller.actor().id == actor.id);
+    // Without a caller (an agent's task run), the admitted actor says whom an agent acts for.
+    let admitted = admitting.map_or_else(|| actor.shown(), tilo_actions::remote::Caller::actor);
+
+    // A person acting for themselves needs no context to say so; anyone else is named with
+    // their kind and the person they act for, so what they write is theirs, not that person's.
+    if context.is_none() && participant.is_none() && !admitted.kind.acts_for_someone() {
+        return Ok(None);
+    }
+    let mut context = context
+        .unwrap_or_default()
+        .with_host_actor(&admitted, participant);
+    // The name the admitting host knows an agent by, never one the request carries.
+    if let Some(invoker) = context.invoker.as_mut() {
+        invoker.name = admitting
+            .and_then(tilo_actions::remote::Caller::agent_name)
+            .map(str::to_owned);
+    }
+    Ok(Some(context))
 }
 
 /// The participant a host-set context routes to (see [`host_set_invoker`]).
@@ -115,6 +113,11 @@ mod tests {
                     .with_participant(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
             )
         );
+        // A task run's agent acting for its starter names them, with no caller to say so.
+        let started = BrokerActor::agent("agent:alpha").for_person("owner");
+        let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
+        let invoker = context.and_then(|context| context.invoker).unwrap();
+        assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
         let untasked = tilo_actions::ActionContext::default();
         let context = host_set_invoker(Some(untasked), &actor, None, None)
             .unwrap()
@@ -140,6 +143,22 @@ mod tests {
                 tilo_actions::ActionInvoker::actor("agent:alpha")
                     .with_kind(tilo_actions::ActorKind::Agent)
                     .acting_for("owner")
+            )
+        );
+
+        // Asked with no context at all, it is still the agent's, by the name its admission gave
+        // it, for the person: what it writes is never taken for theirs.
+        let named = caller.named("Helper");
+        let context = host_set_invoker(None, &actor, Some(&named), None)
+            .unwrap()
+            .expect("an agent's invocation always names it");
+        assert_eq!(
+            context.invoker,
+            Some(
+                tilo_actions::ActionInvoker::actor("agent:alpha")
+                    .with_kind(tilo_actions::ActorKind::Agent)
+                    .acting_for("owner")
+                    .named(Some("Helper".into()))
             )
         );
 

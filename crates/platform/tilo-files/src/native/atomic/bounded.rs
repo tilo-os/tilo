@@ -1,23 +1,13 @@
-//! Bounded current privacy profiles for supported macOS and Linux filesystems.
-//! This is not root/lease authority or proof of original host resource funding.
-//!
-//! The supported 64-bit macOS profile requires affirmative extended-security
-//! volume capability and a complete known ACL layout, with no ALLOW or deferred
-//! inheritance. Ordinary `Privacy::OwnerOnly` remains unchanged. Every operation
-//! checks current held objects. The caller must retain original root/child-name
-//! and writer-lease custody; this does not defeat a hostile same-principal actor.
-//!
-//! Linux supports the ext2/3/4 family, btrfs, XFS and tmpfs POSIX ACL profiles.
-//! `OverlayFS` is excluded. tmpfs privacy is not persistent/reboot evidence.
-//!
-//! Syscall buffers are fixed stack arrays. Rust heap costs below describe
-//! requested backing bytes, not kernel use or allocator caches. The installed
-//! syscall stubs and SDK layout require platform requalification after changes.
-//! Formatting/wrapping errors (including `into_io_error`) is outside these costs.
+//! Bounded current privacy profiles for supported macOS and Linux filesystems: not root
+//! or lease authority, and no proof of the original host resource funding. The caller
+//! keeps original root, child-name and writer-lease custody, and this does not defeat a
+//! hostile same-principal actor. Linux supports the ext2/3/4 family, btrfs, XFS and
+//! tmpfs POSIX ACL profiles, with `OverlayFS` excluded; tmpfs privacy is not reboot
+//! evidence. Syscall buffers are fixed stack arrays.
 use crate::native::atomic::{FileIdentity, StorageDirectory, native};
 use std::{ffi::OsStr, fs::File, io, os::unix::ffi::OsStrExt};
 
-/// Move-only current privacy profile; never a caller or persistence receipt.
+/// A move-only current privacy profile, never a caller or persistence receipt.
 pub struct BoundedOwnerDirectory {
     pub(crate) directory: StorageDirectory,
 }
@@ -38,27 +28,19 @@ impl std::fmt::Debug for AdmissionError {
     }
 }
 impl BoundedOwnerDirectory {
-    /// Inspect the exact retained FD. This does not acquire a lease or sync data.
+    /// Inspects the exact retained descriptor; this acquires no lease and syncs no data.
     pub fn admit(directory: StorageDirectory) -> Result<Self, AdmissionError> {
         match directory.inner.validate_bounded() {
             Ok(()) => Ok(Self { directory }),
             Err(source) => Err(AdmissionError { source }),
         }
     }
-    /// Query the retained directory's identity.
     pub fn identity(&self) -> io::Result<FileIdentity> {
         self.directory.identity()
     }
-    /// Revalidate the retained directory's bounded privacy profile.
     pub fn validate(&self) -> io::Result<()> {
         self.directory.inner.validate_bounded()
     }
-    /// Open a current existing private regular file for reading.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid name, a directory that fails validation,
-    /// or a child that cannot be opened under the bounded file policy.
     pub fn open_read(&self, name: &OsStr) -> io::Result<File> {
         name_check(name)?;
         self.validate()?;
@@ -66,8 +48,7 @@ impl BoundedOwnerDirectory {
             .inner
             .open_read_policy(name, native::FilePolicy::BoundedOwner)
     }
-    /// Open a current existing private regular sentinel, without create/truncate.
-    /// The caller separately acquires its actual `FileLease`.
+    /// Without create or truncate; the caller acquires the lease separately.
     pub fn open_lease_existing(&self, name: &OsStr) -> io::Result<File> {
         name_check(name)?;
         self.validate()?;
@@ -87,12 +68,6 @@ mod linux_tests;
 mod tests;
 
 impl BoundedOwnerDirectory {
-    /// Durably publish `bytes` as the private child `name`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`crate::native::atomic::PublicationError`] carrying the known publication state
-    /// when validation, staging, rename or a durability barrier fails.
     pub fn publish(
         &self,
         name: &OsStr,
@@ -116,12 +91,6 @@ impl BoundedOwnerDirectory {
             None,
         )
     }
-    /// Commit the exact existing private child and its name, without publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`crate::native::atomic::ExistingCommitError`] retaining commit authority when
-    /// the existing binding changed or a durability barrier failed.
     pub fn commit_existing(
         &self,
         name: &OsStr,
@@ -136,7 +105,7 @@ impl BoundedOwnerDirectory {
     }
 }
 
-// Keep original and generated stage names inside rustix's256-byte stack path.
+// Keeps original and generated stage names inside rustix's 256-byte stack path.
 pub(crate) fn name_check(name: &OsStr) -> io::Result<()> {
     let b = name.as_bytes();
     if b.is_empty()
@@ -152,28 +121,14 @@ pub(crate) fn name_check(name: &OsStr) -> io::Result<()> {
     }
 }
 impl BoundedOwnerDirectory {
-    /// Validate this retained parent and open its current named child.
-    /// This is privacy inspection, not a stable-name or writer-lease receipt.
-    /// The operation requests no heap allocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChildOpenError::Open`] when this parent fails validation or the
-    /// child cannot be opened, and [`ChildOpenError::Admission`] when the child
-    /// is not a bounded owner-only directory.
+    /// Validates this retained parent and opens its current named child: privacy inspection, not a
+    /// stable-name handle.
     pub fn open_directory_child(&self, name: &OsStr) -> Result<Self, ChildOpenError> {
         self.validate().map_err(ChildOpenError::Open)?;
         Self::open_child(&self.directory, name)
     }
 
-    /// Open one existing child under the retained parent. The parent is borrowed,
-    /// not qualified by this operation; the caller must keep its root custody.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ChildOpenError::Open`] for an invalid name or an unopenable
-    /// child, and [`ChildOpenError::Admission`] when the child is not a bounded
-    /// owner-only directory.
+    /// The parent is borrowed, not qualified by this operation; the caller keeps its root custody.
     pub fn open_child(parent: &StorageDirectory, name: &OsStr) -> Result<Self, ChildOpenError> {
         name_check(name).map_err(ChildOpenError::Open)?;
         let inner = parent
@@ -186,7 +141,7 @@ impl BoundedOwnerDirectory {
         name_check(name)?;
         Ok(name.as_bytes().len().saturating_add(37))
     }
-    /// Exact requested heap bytes for the retained existing-commit name.
+    /// The exact requested heap bytes for the retained existing-commit name.
     pub fn existing_commit_allocation_bytes(name: &OsStr) -> io::Result<usize> {
         name_check(name)?;
         Ok(name.as_bytes().len())

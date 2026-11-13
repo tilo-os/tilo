@@ -90,7 +90,7 @@ pub struct Checklist {
     pub tags: Vec<String>,
 }
 
-#[resource(kind = "test.cached-checklist", label = "Checklist")]
+#[resource(kind = "test.cached-checklist", catalogue = "tests/locales")]
 impl Checklist {
     /// Type into the draft.
     #[action]
@@ -436,7 +436,7 @@ pub struct Texts {
     pub count: i64,
 }
 
-#[resource(kind = "test.merged-texts", label = "Texts")]
+#[resource(kind = "test.merged-texts", catalogue = "tests/locales")]
 impl Texts {
     /// Keep a text under a key, the first time.
     #[action]
@@ -481,7 +481,7 @@ pub struct Table {
     pub title: String,
 }
 
-#[resource(kind = "test.cached-table", label = "Table")]
+#[resource(kind = "test.cached-table", catalogue = "tests/locales")]
 impl Table {
     /// Add a row.
     #[action]

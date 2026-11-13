@@ -1,15 +1,12 @@
-//! Tiny HTML → [`ContentBlock`] converter for live-fetched article bodies.
+//! HTML → [`ContentBlock`] conversion for fetched article bodies.
 //!
-//! feed-rs hands us article content as an HTML fragment. We don't embed a
-//! web engine in the reader pane — instead we flatten the markup into the
-//! same block list the gemtext parser and the sample data produce, so the
-//! reader has exactly one rendering path. This is intentionally lossy:
-//! headings, paragraphs, list items, blockquotes and `<pre>` survive;
-//! everything else collapses to text.
+//! feed-rs hands an article body over as an HTML fragment, which is flattened
+//! into the block list the gemtext parser and the sample data produce, so the
+//! reader has one rendering path. It is lossy on purpose: headings, paragraphs,
+//! list items, blockquotes and `<pre>` survive and everything else becomes text.
 
 use crate::model::{BlockKind, ContentBlock};
 
-/// Convert an HTML fragment into renderable blocks.
 pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let mut buf = String::new();
@@ -221,10 +218,8 @@ fn decode_entity(ent: &str) -> String {
 mod tests {
     use super::*;
 
-    /// HTML renders paragraphs, headings, bullets, plain text, numeric entities and unclosed preformatted blocks.
     #[test]
     fn html_renders_blocks_text_and_entities() {
-        // --- phase: paragraphs_and_headings ---
         {
             let html = "<h2>Title</h2><p>First para.</p><p>Second &amp; last.</p>";
             let blocks = to_blocks(html);
@@ -234,7 +229,6 @@ mod tests {
             assert_eq!(blocks[2].text, "Second & last.");
         }
 
-        // --- phase: list_items_become_bullets ---
         {
             let html = "<ul><li>One</li><li>Two</li></ul>";
             let blocks = to_blocks(html);
@@ -245,20 +239,17 @@ mod tests {
             assert_eq!(bullets, 2);
         }
 
-        // --- phase: plain_text_fallback ---
         {
             let blocks = to_blocks("just some text without tags");
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].text, "just some text without tags");
         }
 
-        // --- phase: numeric_entities ---
         {
             let blocks = to_blocks("<p>caf&#233; &#x41;</p>");
             assert_eq!(blocks[0].text, "café A");
         }
 
-        // --- phase: unclosed_preformatted_block_uses_the_shared_final_flush ---
         {
             let blocks = to_blocks("<pre>\nfn main() {\n    work();\n}");
             assert_eq!(blocks.len(), 1);

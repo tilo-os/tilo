@@ -99,18 +99,14 @@ fn field_id(meta: &tilolang_tilo::runtime::Meta, ty: &str, field: &str) -> Strin
 }
 
 /// A note titled `title`, made through the notes app's own actions.
-fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title: &str) -> String {
+fn note(service: &mut RecordService, title: &str) -> String {
     let notebook = service
         .resources()
         .into_iter()
         .find(|resource| resource.kind == format!("tl.{NOTES_APP}.Notebook"))
         .unwrap();
     let Started::Done(made) = service
-        .invoke(
-            notebook.id.as_str(),
-            &action_id(meta, "new_note"),
-            &Map::new(),
-        )
+        .invoke(notebook.id.as_str(), "new_note", &Map::new())
         .unwrap()
     else {
         panic!("a tilolang action is done once committed");
@@ -119,7 +115,7 @@ fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title:
     service
         .invoke(
             &note,
-            &action_id(meta, "retitle"),
+            "retitle",
             json!({ "title": title }).as_object().unwrap(),
         )
         .unwrap();
@@ -131,6 +127,7 @@ fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title:
 /// the type `shows` through the view `shown_as` (`""`: the type's default view).
 fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading {
     ArrangementReading {
+        queries: Vec::new(),
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
             name: "Desk".to_owned(),
@@ -200,7 +197,7 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
         let arguments: Map<String, Json> = ask
             .arguments
             .iter()
-            .map(|(name, value)| (name.clone(), Json::String(value.clone())))
+            .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
         service
             .invoke(&ask.resource, &ask.action, &arguments)
@@ -209,10 +206,8 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
     });
 }
 
-/// The `spaces` desk style over the arrangement the part holds now. A desk style is a view of
-/// the arrangement any installed package offers (`so.tilo.shell:spaces`, shell.md §6), and the
-/// desk draws the person's choice through `show(a, view: <style>)`; this is the style the places
-/// below are read through, opened over the arrangement the part holds.
+/// The shell's spaces canvas over the arrangement the part holds now: the view the person's
+/// Spaces style draws, its places standing as their own views rather than in frames.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
     let app = host
@@ -229,16 +224,7 @@ fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
             },
         )
         .unwrap();
-    let view = host
-        .package(&app)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "spaces")
-        .unwrap()
-        .id
-        .clone();
+    let view = host.package(&app).unwrap().view_id("spaces").unwrap();
     host.open_resource(&root, Some(&view)).unwrap()
 }
 
@@ -281,7 +267,7 @@ fn texts(node: &tilolang_tilo::runtime::UiNode) -> Vec<String> {
 #[test]
 fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the_note() {
     let (mut service, meta) = notebook();
-    let note = note(&mut service, &meta, "Groceries");
+    let note = note(&mut service, "Groceries");
 
     let (mut part, link) = showing(&service, &note);
     let arrangement = note_arrangement(&note);
@@ -349,7 +335,7 @@ fn the_shell_keeps_no_copy_of_the_apps_it_composes() {
 #[test]
 fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
     let (mut service, meta) = notebook();
-    let note = note(&mut service, &meta, "Groceries");
+    let note = note(&mut service, "Groceries");
     let (part, link) = showing(&service, &note);
 
     let view = canvas(&part);
@@ -380,8 +366,8 @@ fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
 #[test]
 fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let _settled = ui::motion::testing::settled();
-    let (mut service, meta) = notebook();
-    let note = note(&mut service, &meta, "Groceries");
+    let (mut service, _) = notebook();
+    let note = note(&mut service, "Groceries");
     let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
     let mut arrangement = note_arrangement(&note);
     // The one place names no view: it falls back to its type's default view.
@@ -478,7 +464,6 @@ struct Room {
     channel: String,
     message: ResourceRef,
     task: ResourceRef,
-    tasks: tilolang_tilo::runtime::Meta,
     /// The readings the session follows for the shell's places, by id, each with its type: what
     /// it reads again for the ones a change touched.
     following: BTreeMap<String, String>,
@@ -543,7 +528,6 @@ fn room() -> Room {
         channel: target(&design).id_string(),
         message,
         task: published(&target(&made)),
-        tasks: tasks.meta,
         following: BTreeMap::new(),
         needed: std::collections::BTreeSet::new(),
     }
@@ -646,8 +630,13 @@ fn session_turn(link: &SessionLink, arrangement: &ArrangementReading, room: &mut
     needed.extend(link.take_wanted_packages().into_keys());
     let mut apps = needed.clone();
     room.needed = needed;
-    for ty in super::readings::placed_records(arrangement, &room.service.resources()).values() {
-        if let Some(app) = super::readings::app_of(ty) {
+    for ty in tilolang_tilo::records_service::placed_records(
+        arrangement.places.iter().map(|place| place.record.as_str()),
+        &room.service.resources(),
+    )
+    .values()
+    {
+        if let Some(app) = tilolang_tilo::records_service::app_of(ty) {
             apps.insert(app.to_owned());
         }
     }
@@ -785,11 +774,7 @@ fn a_chat_place_ticks_the_task_made_from_its_message_done() {
 
     // Ben finishes the task in Tasks, with no Tasks window open: the message's row ticks.
     room.service
-        .invoke(
-            &room.task.id_string(),
-            &action_id(&room.tasks, "check"),
-            &Map::new(),
-        )
+        .invoke(&room.task.id_string(), "check", &Map::new())
         .unwrap();
     room.service.settle();
     for _ in 0..8 {

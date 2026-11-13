@@ -89,8 +89,8 @@ d-5wdrqcpl-filter-project = Project
 d-fjqi4yze = Tasks
     .doc = The workspace's tasks and projects.
     .noun = { $count ->
-        [one] tasks
-       *[other] taskses
+        [one] task
+       *[other] tasks
     }
 
 d-lg5gedbh = Items
@@ -114,48 +114,69 @@ d-clxahlh2 = High
 
 d-d6avlyc5 = Urgent
 
-d-3776c5yx = Row place
-    .doc = What the place a task's row stands in already says, and the row therefore leaves out.
-
-d-u4wzi4k4 = The day it is grouped under, as a list of a day is
-    .doc = The day it is grouped under, as a list of a day is.
-
-d-ifftrju4 = Its project, as a project's list is of one
-    .doc = Its project, as a project's list is of one.
-
 d-rs3ubifz = New task
     .doc = Adds a task to the inbox or to `p`, in the lane `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so "Call the landlord fri 10am @Bo" is a task due Friday at ten, for Bo.
 
+d-rs3ubifz-p = P
+
+d-rs3ubifz-s = S
+
+d-rs3ubifz-due = Due
+
+d-rs3ubifz-at = At
+
+d-rs3ubifz-assignee = Assignee
+
+d-rs3ubifz-title = Title
+
 d-zjuy7y7f = New project
     .doc = Starts a project.
+    .w-new-project = New project
 
 d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
+    .w-complete = Complete
+    .w-reopen = Reopen
+
+d-vwgro4iv-done = Done
 
 d-fykojijd = Add subtask
     .doc = Adds a subtask under a task, in its project and section, and opens a done one: there is work under it now.
     .did = added a subtask
 
+d-fykojijd-t = T
+
+d-fykojijd-title = Title
+
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, from the presets or a day the person picks.
+    .w-it-is-done-already = It is done already
 
 d-wclcgiyt = Tomorrow
     .doc = Makes a task due tomorrow.
+    .w-it-is-done-already = It is done already
 
 d-tg5yjcju = Next week
     .doc = Makes a task due at the start of next week.
+    .w-it-is-done-already = It is done already
 
 d-jqhwyztw = Pick date
     .doc = Makes a task due on a day the person picks.
 
+d-jqhwyztw-due = Due
+
 d-x5xnqddo = No date
     .doc = Clears the day a task is due by: it waits in the inbox, undated.
+    .w-it-has-no-date = It has no date
 
 d-3qq23ybf = Remind me
     .doc = Sets the moment whoever is doing a task is reminded of it.
 
+d-3qq23ybf-when = When
+
 d-vjsjvx7u = No reminder
     .doc = Clears a task's reminder: it is not told of again.
+    .w-it-has-no-reminder = It has no reminder
 
 d-7vjyuy7c = Remind
     .doc = Tells whoever is doing a task, or the one who made it, what it is and when it is due: once, and not of a task already done.
@@ -163,54 +184,85 @@ d-7vjyuy7c = Remind
 
 d-w43ij7uu = No priority
     .doc = Sets how much a task matters.
+    .w-it-has-no-priority = It has no priority
 
 d-pdc7ukxu = Low
     .doc = Marks a task as low priority.
+    .w-it-is-low-already = It is low already
 
 d-cpcxkauo = Medium
     .doc = Marks a task as medium priority.
+    .w-it-is-medium-already = It is medium already
 
 d-kglmmfa7 = High
     .doc = Marks a task as high priority.
+    .w-it-is-high-already = It is high already
 
 d-lrdm4l3c = Urgent
     .doc = Marks a task as urgent.
+    .w-it-is-urgent-already = It is urgent already
 
 d-laxsa3x6 = Project
     .doc = Files a task under a project the person picks.
 
+d-laxsa3x6-p = P
+
 d-dshqxolf = Inbox
     .doc = Takes a task out of its project, back to the inbox.
+    .w-it-is-in-the-inbox-already = It is in the inbox already
 
 d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
 
+d-c6y4cxdd-who = Who
+
 d-berwb3de = Move to
     .doc = Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), or where `before` stands.
+    .w-a-task-cannot-go-inside-itself = A task cannot go inside itself
+
+d-berwb3de-moved = Moved
+
+d-berwb3de-parent = Parent
+
+d-berwb3de-before = Before
 
 d-he6qkhh4 = Indent
     .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does.
+    .w-nothing-over-it-to-move-under = Nothing over it to move under
+
+d-he6qkhh4-above = Above
 
 d-khy6tj7s = Outdent
     .doc = Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
+    .w-it-is-at-the-top-level = It is at the top level already
 
 d-23y3zdgu = Duplicate
     .doc = Copies a task, with every task under it, just after the one it copies.
 
+d-23y3zdgu-t = T
+
 d-ojzyzzxu = Delete
     .doc = Deletes a task and its subtasks.
 
+d-ojzyzzxu-t = T
+
 d-rjpcv6es = Delete finished tasks
     .doc = Deletes every finished task and answers how many went: a finished branch goes whole, and a done task with a step still open under it stays.
+    .w-nothing-is-finished-yet = Nothing is finished yet
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
 
+d-2xixz4sk-p = P
+
 d-2pra5lmb = New section
     .doc = Adds a section at the end of a project's board.
+    .w-new-section = New section
 
 d-xmsyxvog = Rename section
     .doc = Renames a section.
+
+d-xmsyxvog-name = Name
 
 d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
@@ -218,11 +270,23 @@ d-vi6srojh = Delete section
 d-pcn3xgni = New task
     .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first).
 
+d-pcn3xgni-title = Title
+
+d-pcn3xgni-s = S
+
 d-scjlkb6d = Place in board
     .doc = Puts a task into the lane `s` of its project's board (none for the first) at the place `at` among the tasks already there: what a card's drag names.
+    .w-it-is-in-no-project-s = It is in no project's board
+    .w-that-lane-belongs-to-another-project = That lane belongs to another project
+
+d-scjlkb6d-s = S
+
+d-scjlkb6d-at = At
 
 d-kjbukd2o = Rename
     .doc = Renames a project.
+
+d-kjbukd2o-name = Name
 
 d-qwizihx4 = Check~present
 
@@ -256,6 +320,9 @@ d-rxpe5yqk = Place~present
 
 d-i2mhsb3h = Home
     .w-tasks = Tasks
+    .w-new-task-in = New task in { $name }
+    .w-new-task-for-today = New task for today
+    .w-new-task = New task
     .w-projects = Projects
     .w-no-tasks-here = No tasks here
 

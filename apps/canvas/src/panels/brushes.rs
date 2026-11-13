@@ -110,7 +110,7 @@ pub fn picker(
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     let labels = presets
         .iter()
-        .map(|preset| ui::i18n::I18nManager::lookup_plain(&preset.label()))
+        .map(|preset| crate::locales::CATALOG.t(&preset.label()))
         .collect();
     // The sheet's colour names each swatch's ring; the painter draws it.
     let paper = 0x00f4_efe3; // document colour: the sample sheet's paper
@@ -156,7 +156,6 @@ pub fn preset_name(presets: &[Preset], index: usize) -> String {
         .unwrap_or_default()
 }
 
-/// Showing a picked swatch while building a picker.
 trait Selecting {
     fn selecting(self, index: Option<usize>) -> Self;
 }

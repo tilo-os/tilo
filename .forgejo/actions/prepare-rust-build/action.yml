@@ -23,17 +23,6 @@ runs:
       shell: bash
       run: echo 'RUSTUP_AUTO_INSTALL=0' >> "$GITHUB_ENV"
 
-    # Builder images created before the NTFS reader landed do not contain the
-    # GNU build system needed to bootstrap its pinned source archive. Keep this
-    # fallback until every runner has consumed a rebuilt Containerfile.builder;
-    # on current images it is an inexpensive command check.
-    - name: Ensure pinned NTFS build dependencies
-      shell: bash
-      run: |
-        if test -d crates/session/tilo-ntfs-helper && ! command -v autoreconf >/dev/null; then
-          dnf install -y autoconf automake libtool libgcrypt-devel
-        fi
-
     - name: Restore Cargo downloads
       id: cargo-downloads
       uses: ./.forgejo/actions/restore-cargo-downloads

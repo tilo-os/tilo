@@ -1,18 +1,11 @@
 //! One `pw-record` capture, for every sound this device records: a screen
-//! recording's tracks, a dictation's microphone and a level meter.
+//! recording's tracks, a dictation's microphone, a level meter.
 //!
-//! `PipeWire`'s reference tools are this session's stable graph boundary
-//! (`wpctl` for routing, `pw-dump` for privacy attribution), so capture asks
-//! `pw-record` for raw 16-bit samples on stdout and lets `PipeWire` mix and
-//! resample. `--raw` matters: without it `pw-record` puts a WAV header on the
-//! samples.
-//!
-//! One capture is one process: its own process group, bound to its owner's
-//! death, and a reader thread that hands chunks over a bounded queue. A
-//! caller either drains whole sample frames ([`Stream::take`]) or waits for
-//! chunks ([`Stream::next`]). What differs between the callers is a [`Spec`]
-//! and what a reader that falls behind does ([`Overflow`]), never a second
-//! capture.
+//! `pw-record` gives raw 16-bit samples on stdout (`--raw`, or it writes a WAV
+//! header) and lets `PipeWire` mix and resample. One capture is one process: its own
+//! process group, bound to its owner's death, with a reader thread handing chunks
+//! over a bounded queue. Callers differ in a [`Spec`] and in what a reader that falls
+//! behind does ([`Overflow`]), never in the number of captures.
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -24,36 +17,27 @@ use std::time::Duration;
 
 use zeroize::{Zeroize as _, Zeroizing};
 
-/// Bytes one read hands on: a read's cost, and how much sound arrives before
-/// the queue is asked again.
 const CHUNK_BYTES: usize = 16 * 1024;
-/// Chunks the reader may get ahead of its consumer before [`Overflow`] decides.
 const QUEUED_CHUNKS: usize = 12;
-/// What probing for the recorder may print and take.
 const PROBE_OUTPUT_LIMIT: usize = 64 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The samples one capture produces: 16-bit, interleaved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Format {
     pub rate: u32,
-    /// Interleaved channels: mono or stereo.
     pub channels: u8,
 }
 
 impl Format {
-    /// What a recording's tracks are captured at before its muxer takes them.
     pub const STEREO_48K: Self = Self {
         rate: 48_000,
         channels: 2,
     };
-    /// What a recognizer wants.
     pub const MONO_16K: Self = Self {
         rate: 16_000,
         channels: 1,
     };
 
-    /// Bytes of one sample of every channel: what [`Stream::take`] aligns on.
     #[must_use]
     pub const fn frame_bytes(self) -> usize {
         (self.channels as usize).saturating_mul(2)
@@ -68,7 +52,6 @@ impl Format {
     }
 }
 
-/// What a reader that gets ahead of its consumer does with a chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overflow {
     /// Drop the stale chunk and keep recording: the consumer is drawing or
@@ -79,21 +62,16 @@ pub enum Overflow {
     Fail,
 }
 
-/// What one capture asks `pw-record` for.
 #[derive(Clone, Copy, Debug)]
 pub struct Spec<'a> {
-    /// `--target`: a node name, id or `object.serial`.
     pub target: &'a str,
     /// The stream's properties, named so the person sees what is recording.
     pub properties: Option<&'a str>,
     pub format: Format,
     pub overflow: Overflow,
-    /// What is recording, in the reader's thread name and in errors.
     pub label: &'static str,
 }
 
-/// Whether this machine can record at all: the `pw-record` reference tool is
-/// installed.
 #[must_use]
 pub fn available() -> bool {
     bounded_command::run(
@@ -106,7 +84,6 @@ pub fn available() -> bool {
     .is_ok_and(|output| output.status.success())
 }
 
-/// What `pw-record` is asked for, whatever the caller would rather have.
 fn arguments(spec: &Spec<'_>) -> Result<Vec<String>, String> {
     let channel_map = spec.format.channel_map().ok_or_else(|| {
         format!(
@@ -148,8 +125,6 @@ fn arguments(spec: &Spec<'_>) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-/// An open `pw-record` for one source. Dropping it kills the recorder's whole
-/// process group and joins its reader.
 pub struct Capture {
     child: Child,
     reader: Option<JoinHandle<()>>,
@@ -230,7 +205,6 @@ impl Drop for Capture {
     }
 }
 
-/// What one [`Capture`] produced, from the queue the reader hands it to.
 pub struct Stream {
     chunks: Receiver<Zeroizing<Vec<u8>>>,
     /// Sound taken from the queue that is not yet a whole number of samples.
@@ -314,7 +288,6 @@ fn read_audio(
                 interrupted.store(true, Ordering::Release);
                 return;
             }
-            // The owner let the stream go: it stopped listening.
             Err(TrySendError::Disconnected(_)) => return,
         }
     }
@@ -331,7 +304,6 @@ fn bind_to_owner(command: Command) -> Command {
     {
         use std::os::unix::process::CommandExt as _;
         let mut command = command;
-        // SAFETY: getpid is an argument-free identity query and cannot fail.
         let parent = unsafe { libc::getpid() };
         // SAFETY: this callback performs only async-signal-safe identity
         // queries and syscalls after fork. It allocates nothing and locks no
@@ -349,8 +321,6 @@ fn bind_to_owner(command: Command) -> Command {
         }
         command
     }
-    // Elsewhere the recorder's own process group is what bounds its life:
-    // there is no parent-death signal to bind it to.
     #[cfg(not(target_os = "linux"))]
     {
         command
@@ -402,7 +372,6 @@ mod tests {
         );
         assert_eq!(Format::STEREO_48K.frame_bytes(), 4);
         assert_eq!(Format::STEREO_48K.rate, 48_000);
-        // A recognizer gets mono at its own rate and no named stream.
         let mono = arguments(&Spec {
             target: "mic",
             properties: None,
@@ -420,7 +389,6 @@ mod tests {
         assert!(!mono.iter().any(|arg| arg == "--properties"));
         assert_eq!(mono.last().map(String::as_str), Some("-"));
         assert_eq!(Format::MONO_16K.frame_bytes(), 2);
-        // Three interleaved channels have no layout this boundary writes.
         let bad = arguments(&Spec {
             format: Format {
                 rate: 48_000,
@@ -572,8 +540,6 @@ mod tests {
     #[test]
     fn a_recorder_does_not_survive_its_owner() {
         let mut recorder = bind_to_owner(Command::new("true"));
-        // SAFETY: query the actual child kernel state after the production
-        // callback and before exec; no microphone, allocation or lock is used.
         unsafe {
             std::os::unix::process::CommandExt::pre_exec(&mut recorder, || {
                 let mut signal: libc::c_int = 0;

@@ -1,13 +1,9 @@
-//! Terminal-aware output helpers.
-//!
-//! The builder emits OSC 8 hyperlinks on terminals and plain text when output
-//! is redirected. It does not provide colour, progress bars, or tables;
-//! callers needing those can use their preferred output library.
+//! Terminal-aware output: OSC 8 hyperlinks on a terminal, plain text when
+//! output is redirected. No colour, progress bars or tables.
 
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
 
-/// Chainable builder returned by [`crate::output()`].
 pub struct OutputBuilder {
     hyperlinks: bool,
     stream: Stream,
@@ -20,32 +16,29 @@ enum Stream {
 }
 
 impl OutputBuilder {
-    /// Force hyperlinks on; default is auto-detect via [`io::IsTerminal`].
+    /// Force hyperlinks on; the default follows [`io::IsTerminal`].
     #[must_use]
     pub fn hyperlinks(mut self, on: bool) -> Self {
         self.hyperlinks = on;
         self
     }
 
-    /// Route to stderr instead of stdout.
     #[must_use]
     pub fn stderr(mut self) -> Self {
         self.stream = Stream::Stderr;
         self
     }
 
-    /// Write a bare line to the stream.
     pub fn line<S: fmt::Display>(&self, text: S) -> io::Result<()> {
         self.write(|w| writeln!(w, "{text}"))
     }
 
-    /// Write text and a clickable hyperlink (OSC 8) on the same line; pipes
-    /// and files fall back to `<label> [<url>]`. An empty label renders the
-    /// URL itself as the anchor.
+    /// Text and a clickable link on one line; a pipe or file gets
+    /// `<label> [<url>]`, and an empty label shows the URL alone.
     pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
         self.write(|w| {
             if self.hyperlinks_active(w) {
-                // OSC 8 sequence: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
+                // OSC 8: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
                 write!(w, "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")?;
                 writeln!(w)
             } else if label.is_empty() {
@@ -56,8 +49,6 @@ impl OutputBuilder {
         })
     }
 
-    /// Emit a `file://` hyperlink for the given path — a convenience wrapper
-    /// over [`OutputBuilder::hyperlink`].
     pub fn hyperlink_path<P: AsRef<std::path::Path>>(
         &self,
         label: &str,
@@ -86,7 +77,6 @@ impl OutputBuilder {
         }
     }
 
-    /// Whether to actually emit hyperlink escapes, given the stream's TTY status.
     fn hyperlinks_active(&self, w: &dyn Write) -> bool {
         let _ = w; // borrow — we can't call is_terminal on a &dyn Write
         if !self.hyperlinks {
@@ -99,7 +89,6 @@ impl OutputBuilder {
     }
 }
 
-/// Start a terminal-aware output builder; hyperlinks default to on-if-terminal.
 pub fn output() -> OutputBuilder {
     OutputBuilder {
         hyperlinks: true,

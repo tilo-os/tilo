@@ -121,21 +121,26 @@ impl BooksApp {
         let remove = Rect::new(x1 - height, y, x1, y + height);
         self.button(
             ctx,
-            ButtonFace::icon_only(remove, Icon::Trash2, "Remove from library")
-                .role(ButtonRole::Secondary)
-                .control_size(ControlSize::Small),
+            ButtonFace::icon_only(
+                remove,
+                Icon::Trash2,
+                &crate::resource::CATALOG.t("ebook-action-remove-book"),
+            )
+            .role(ButtonRole::Secondary)
+            .control_size(ControlSize::Small),
             Action::RemoveFromLibrary(book_id.to_string()),
         );
         x1 = remove.x0 - f64::from(theme.tokens.spacing.rhythm.related);
         if !shared {
-            let width = ButtonFace::new(Rect::ZERO, "Share")
+            let share_label = crate::resource::CATALOG.t("ebook-share");
+            let width = ButtonFace::new(Rect::ZERO, &share_label)
                 .icon(Icon::Users)
                 .control_size(ControlSize::Small)
                 .intrinsic_width(ctx.text, theme);
             let share = Rect::new(x1 - width, y, x1, y + height);
             self.button(
                 ctx,
-                ButtonFace::new(share, "Share")
+                ButtonFace::new(share, &share_label)
                     .icon(Icon::Users)
                     .control_size(ControlSize::Small),
                 Action::ShareToWorkspace(book_id.to_string()),

@@ -1,9 +1,9 @@
 //! A page's popup windows (a sign-in, a payment) in a panel beside it.
 //!
-//! A popup stays the page's: when the person has signed in it answers the
-//! page that opened it (`window.opener`), which a tab of its own could not,
-//! and usually closes itself. The panel names the popup's site, so a person
-//! can tell the real sign-in page from a lookalike.
+//! A popup stays the page's: after signing in it answers the page that opened it
+//! (`window.opener`), which a tab of its own could not, and usually closes itself. The
+//! panel names the popup's site, so a person can tell the real sign-in page from a
+//! lookalike.
 use ui::{
     LocalState,
     icons::Icon,
@@ -14,15 +14,15 @@ use ui::{
 
 use crate::CATALOG;
 
-/// The size of a popup that names none, in CSS pixels: about what sign-in
-/// pages are laid out for.
+/// The size of a popup that names none, in CSS pixels: about what sign-in pages are laid
+/// out for.
 const DEFAULT_SIZE: (f32, f32) = (500.0, 600.0);
 /// The smallest a popup is shown, however small it asked to be.
 const MIN_SIZE: (f32, f32) = (200.0, 150.0);
 
 pub struct PagePopups {
-    /// The page engine asked for its popups; another engine (a restarted
-    /// one) is asked again, and the popups of the old one close.
+    /// The engine the popups were asked of; another engine is asked again, and the old
+    /// one's popups close.
     asked: Option<std::sync::Weak<dyn ui::webview::WebViewEngine>>,
     open: Option<Open>,
     close: LocalState<bool>,
@@ -45,8 +45,7 @@ struct Open {
 }
 
 impl PagePopups {
-    /// Take the popups `page` opened and follow the one shown. Returns
-    /// whether the panel changed.
+    /// Take the popups `page` opened and follow the one shown. Whether the panel changed.
     pub fn sync(&mut self, page: &SharedEngine) -> bool {
         let mut changed = false;
         let asked = self
@@ -109,18 +108,16 @@ impl PagePopups {
         self.open.is_some()
     }
 
-    /// Close the popup shown, as its window's close button would.
     pub fn close(&mut self) {
         self.open = None;
     }
 
-    /// The width the popup shown asks for, within `room`.
     pub fn width(&self, room: f32) -> Option<f32> {
         self.open.as_ref().map(|open| open.size.0.min(room))
     }
 
-    /// The panel: the popup's site and a close button over its page, which
-    /// is at most `max_height` tall with `row` taken by the header.
+    /// The panel: the popup's site and a close button over its page, which is at most
+    /// `max_height` tall with `row` taken by the header.
     pub fn panel(&self, width: f32, max_height: f32, row: f32) -> Option<Box<dyn Widget>> {
         let open = self.open.as_ref()?;
         let close = self.close.clone();
@@ -171,8 +168,8 @@ fn size_of(width: u32, height: u32) -> (f32, f32) {
     )
 }
 
-/// Where the popup is, as a person reads it: its host, or the address
-/// itself when it has none.
+/// Where the popup is, as a person reads it: its host, or the address itself when it has
+/// none.
 fn site_of(url: &str) -> String {
     url::Url::parse(url)
         .ok()
@@ -243,8 +240,6 @@ mod tests {
             "the newest, no smaller than shown"
         );
         let first = engine.adopted(1 << 30).unwrap();
-        // Held by the test engine's record and here: the panel let it go,
-        // which closes it.
         assert_eq!(Arc::strong_count(&first), 2);
         popups.close.set(true);
         assert!(popups.sync(&shared));

@@ -8,7 +8,6 @@ use std::{error::Error, fmt, io};
 pub mod consumer;
 pub mod deadline;
 #[cfg(target_os = "linux")]
-mod handoff;
 pub mod launch_request;
 #[cfg(target_os = "linux")]
 mod native;

@@ -27,11 +27,12 @@ use std::rc::Rc;
 use tilo_compositor::gestures::GestureConfig;
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{Arrangement, GestureEvent, WindowInfo, WindowPolicy};
+
 use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
-use crate::desktop::{DeskGesture, GestureReader, Reading, WindowFollowers, WindowObserver};
+use crate::desktop::{DeskGesture, GestureReader, WindowFollowers, WindowObserver};
 use crate::widget::WidgetHost;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
@@ -251,6 +252,7 @@ impl WellPolicy {
             parent: window.parent,
             min_size: window.min_size,
             max_size: window.max_size,
+            pid: window.pid,
         });
         if let Err(error) = mapped {
             tracing::warn!(%error, window = window.id, "the shell has no place for a window");
@@ -258,6 +260,8 @@ impl WellPolicy {
         }
         self.mapped.push(window.id);
         self.desk.relayout();
+        // A window launched into a workspace not in front goes there once its tab is made.
+        self.desk.policy().carry_launched();
         self.followers.mapped(window);
     }
 
@@ -307,6 +311,8 @@ impl WindowPolicy for WellPolicy {
         outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
         self.desk.cover(outputs);
+        // A launched window whose tab came with the last layout goes to its own workspace.
+        self.desk.policy().carry_launched();
         // A window the compositor lists has shown its buffer.
         self.pending
             .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));
@@ -395,15 +401,10 @@ impl WindowPolicy for WellPolicy {
     }
 
     fn gesture(&mut self, gesture: &GestureEvent) -> bool {
-        let config = self.desk.gesture_config();
-        match self.gestures.read(gesture, config) {
-            Reading::Clients => false,
-            Reading::Taken => true,
-            Reading::Asked(asked) => {
-                self.desk.took_gesture(asked);
-                true
-            }
-        }
+        let desk = &self.desk;
+        self.gestures.take(gesture, desk.gesture_config(), |asked| {
+            desk.took_gesture(asked);
+        })
     }
 
     fn focused(&mut self) -> Option<u64> {

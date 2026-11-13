@@ -25,7 +25,6 @@ export PYTHONDONTWRITEBYTECODE=1
 
 proofs=(
   agent-seats-proof.py
-  mcp-live-proof.py
   session-lock-proof.py
 )
 

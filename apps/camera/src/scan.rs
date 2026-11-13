@@ -47,7 +47,6 @@ pub fn encode(payload: &str) -> Option<QrMatrix> {
 #[derive(Clone, Debug)]
 pub struct Decoded {
     pub text: String,
-    /// Four corners, clockwise from top-left, in buffer pixel coordinates.
     pub corners: [(f32, f32); 4],
 }
 
@@ -105,8 +104,6 @@ mod tests {
     use super::*;
     use crate::model::CodeKind;
 
-    /// Rasterize a [`QrMatrix`] into a greyscale buffer with a quiet zone
-    /// so the detector has the margin it expects.
     fn rasterize(m: &QrMatrix, scale: usize, quiet: usize) -> (Vec<u8>, usize) {
         let dim = (m.size + quiet * 2) * scale;
         let mut buf = vec![255u8; dim * dim];

@@ -1,22 +1,16 @@
-//! Mentions as a workspace fact: who a record's rich text names, read from the record itself, and
-//! the one notice each mentioned reader gets.
+//! Mentions as a workspace fact: who a record's rich text names, read from the record itself.
 //!
 //! A mention is a run of rich text marked `mention` with the participant's id, whichever app wrote
 //! it: a paragraph of a note (an Automerge text mark, as `tilo-doc` keeps them) or a block of a
 //! chat message (a stored mark span, as `tilo_document::ClipBlock` keeps them). [`in_record`] finds
 //! every one without the app's code, so whatever holds the record derives the same facts from what
-//! it was sent; only the record's readers are sent it, so only they learn of a mention. A notice's
-//! excerpt reads each reference as it reads for the person told ([`Look::read`]).
+//! it was sent; only the record's readers are sent it, so only they learn of a mention. An excerpt
+//! reads each reference as it reads for the person told ([`Look::read`]).
 //!
 //! Where a mention is is the item of the record it was written in, as the app publishes it
-//! (`<kind>/<field>/<id>`, `tilo_resource::items`); opening that resource is what opening the
-//! mention means.
-//!
-//! [`MentionInbox`] turns the facts into notices for one person: one per place, never for their
-//! own mention, quietly taken for what they were looking at when it arrived, withdrawn when the
-//! mention is edited away, and never again once told.
-
-use std::collections::{BTreeMap, BTreeSet};
+//! (`<kind>/<field>/<id>`, `tilo_resource::items`); a notice's [`Place`] is that item and the
+//! record it is in, and the notice each mentioned reader gets is the session's
+//! (`tilo_session::mentions`).
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
@@ -410,24 +404,28 @@ fn excerpt(text: &str, at: usize) -> String {
     }
 }
 
-/// Where a mention opens: the app's resource, in its record.
+/// Where choosing a notice lands: the app keeping a record, the record, and the item in it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Place {
     /// The app keeping the record, by package id.
     pub app: String,
-    /// The record, as its route names it: empty for the app's own record of
-    /// the workspace.
+    /// The record, as its route names it: empty for the app's own record of the workspace.
     pub record: String,
-    /// The resource whose `open` shows the mention (`<kind>/<field>/<id>`),
-    /// or empty for the record as a whole.
+    /// The resource whose `open` shows the item (`<kind>/<field>/<id>`), or empty for the record
+    /// as a whole.
     pub resource: String,
 }
 
-/// The activation scheme a mention's notice carries.
+/// The activation scheme a notice's [`Place`] is carried by: what a host that reports clicks hands
+/// back when the person chooses it.
 pub const SCHEME: &str = "tilo-mention";
 
+/// What the tag of a mention's notice starts with ([`Place::tag`]): how a host showing them knows
+/// which of its notifications are theirs.
+pub const TAGS: &str = "mention:";
+
 impl Place {
-    /// The notice's activation: `tilo-mention:<app>?<record>#<resource>`,
+    /// The activation URI a host carries the place by: `tilo-mention:<app>?<record>#<resource>`,
     /// each part percent-encoded.
     #[must_use]
     pub fn activation(&self) -> String {
@@ -453,12 +451,12 @@ impl Place {
         (!place.app.is_empty()).then_some(place)
     }
 
-    /// The tag a notice of this place for `person` goes by: the same on
-    /// every device and window, so the host shows it once.
+    /// The tag a notice of this place for `person` goes by: the same on every device and window,
+    /// so the host shows it once.
     #[must_use]
     pub fn tag(&self, person: &str) -> String {
         format!(
-            "mention:{}/{}/{}/{}",
+            "{TAGS}{}/{}/{}/{}",
             self.app, self.record, self.resource, person
         )
     }
@@ -495,203 +493,6 @@ fn decode(part: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// One notice for the person: what the host shows, and where it opens.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    pub tag: String,
-    pub title: String,
-    pub body: String,
-    pub place: Place,
-}
-
-impl Notice {
-    /// The host notification this notice is.
-    #[must_use]
-    pub fn notification(&self) -> tilo_host::notify::Notification {
-        tilo_host::notify::Notification::new(&self.tag, &self.title, &self.body)
-            .with_activation(self.place.activation())
-    }
-}
-
-/// What one look at a record changed: notices to show, and the tags of
-/// those whose mention is gone.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Told {
-    pub show: Vec<Notice>,
-    pub withdraw: Vec<String>,
-}
-
-/// A record as an inbox looks at it.
-pub struct Look<'a> {
-    /// The app keeping it.
-    pub app: &'a str,
-    /// The record, as its route names it: empty for the app's own record
-    /// of the workspace.
-    pub record: &'a str,
-    /// The kind of the app's records, for a record (or chain) whose
-    /// document names none, as the app's own record of the workspace does.
-    pub kind: &'a str,
-    /// Its document.
-    pub doc: &'a AutoCommit,
-    /// The record its places belong to, when it is a part of another (a
-    /// chat's part, published as the chat's items): its document.
-    pub tree: Option<&'a AutoCommit>,
-    /// Take what it holds as seen: the person is looking at it, or it is
-    /// what the workspace held before this device first followed it.
-    pub quiet: bool,
-    /// How a reference in its text reads for the person told: what a notice's excerpt says of
-    /// it ([`reading_nothing`] where nobody here can tell what they hold).
-    pub read: Reader<'a>,
-}
-
-/// The notices of one person's mentions, on one device: what was told is
-/// kept ([`Self::told_state`]) so nothing is told twice.
-#[derive(Default)]
-pub struct MentionInbox {
-    /// Every id the person goes by.
-    me: BTreeSet<String>,
-    /// Per record (`app` and route), the tags told and still standing.
-    told: BTreeMap<(String, String), BTreeSet<String>>,
-}
-
-impl MentionInbox {
-    /// The inbox of the person going by `ids`.
-    #[must_use]
-    pub fn new(ids: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            me: ids.into_iter().filter(|id| !id.is_empty()).collect(),
-            told: BTreeMap::new(),
-        }
-    }
-
-    /// Whether this device ever looked at `app`'s record `route`.
-    #[must_use]
-    pub fn knows(&self, app: &str, route: &str) -> bool {
-        self.told.contains_key(&(app.to_owned(), route.to_owned()))
-    }
-
-    /// Look at a record again: new mentions of the person are told, ones no
-    /// longer there withdrawn. `name` gives a participant's name.
-    pub fn look(&mut self, look: &Look<'_>, name: &dyn Fn(&str) -> String) -> Told {
-        let (record, kind) = place_record(look);
-        let route = look.record.to_owned();
-        let mut standing: BTreeMap<String, Notice> = BTreeMap::new();
-        for mention in in_record_for(look.doc, look.read) {
-            if !self.me.contains(&mention.person)
-                || mention.by.as_ref().is_some_and(|by| self.me.contains(by))
-            {
-                continue;
-            }
-            // Without a kind the item has no address: the record opens.
-            let resource = mention
-                .item
-                .as_ref()
-                .filter(|_| !kind.is_empty())
-                .map_or_else(String::new, |(field, id)| format!("{kind}/{field}/{id}"));
-            let place = Place {
-                app: look.app.to_owned(),
-                record: record.clone(),
-                resource,
-            };
-            let tag = place.tag(&mention.person);
-            if standing.contains_key(&tag) {
-                continue;
-            }
-            let who = mention.by.as_deref().map_or_else(
-                || crate::i18n::widget_format("mention-notice-someone", &[]),
-                name,
-            );
-            let channel = mention
-                .channel
-                .as_deref()
-                .and_then(|channel| look.tree.and_then(|tree| channel_name(tree, channel)));
-            let title = match (channel, &mention.title) {
-                (Some(channel), _) => crate::i18n::widget_format(
-                    "mention-notice-channel",
-                    &[("name", who.into()), ("channel", channel.into())],
-                ),
-                (None, Some(title)) => crate::i18n::widget_format(
-                    "mention-notice-title",
-                    &[("name", who.into()), ("place", title.clone().into())],
-                ),
-                (None, None) => {
-                    crate::i18n::widget_format("mention-notice", &[("name", who.into())])
-                }
-            };
-            standing.insert(
-                tag.clone(),
-                Notice {
-                    tag,
-                    title,
-                    body: mention.excerpt,
-                    place,
-                },
-            );
-        }
-        let told = self.told.entry((look.app.to_owned(), route)).or_default();
-        let withdraw: Vec<String> = told
-            .iter()
-            .filter(|tag| !standing.contains_key(*tag))
-            .cloned()
-            .collect();
-        for tag in &withdraw {
-            told.remove(tag);
-        }
-        let show = standing
-            .into_iter()
-            .filter(|(tag, _)| told.insert(tag.clone()))
-            .map(|(_, notice)| notice)
-            .filter(|_| !look.quiet)
-            .collect();
-        Told { show, withdraw }
-    }
-
-    /// What this inbox told, to keep: one line per record, its app and
-    /// route then each tag, tab-separated.
-    #[must_use]
-    pub fn told_state(&self) -> String {
-        let mut out = String::new();
-        for ((app, route), tags) in &self.told {
-            out.push_str(&encode(app));
-            out.push('\t');
-            out.push_str(&encode(route));
-            for tag in tags {
-                out.push('\t');
-                out.push_str(&encode(tag));
-            }
-            out.push('\n');
-        }
-        out
-    }
-
-    /// Take up what [`Self::told_state`] kept.
-    pub fn restore(&mut self, state: &str) {
-        for line in state.lines() {
-            let mut parts = line.split('\t').filter_map(decode);
-            let (Some(app), Some(route)) = (parts.next(), parts.next()) else {
-                continue;
-            };
-            self.told.entry((app, route)).or_default().extend(parts);
-        }
-    }
-}
-
-/// The record a mention in the record `look` names opens in, by route,
-/// and that record's kind: the chain a part belongs to, else the record
-/// itself.
-fn place_record(look: &Look<'_>) -> (String, String) {
-    let kind_of = |doc: Option<&AutoCommit>| {
-        doc.and_then(crate::record::identity).map_or_else(
-            || look.kind.to_owned(),
-            |identity| identity.kind.as_str().to_owned(),
-        )
-    };
-    match chain_of(look.record) {
-        Some(chain) => (chain.to_owned(), kind_of(look.tree)),
-        None => (look.record.to_owned(), kind_of(Some(look.doc))),
-    }
-}
-
 /// The route of the chain whose part the record `route` names
 /// ([`RecordId::part`]): empty for a part of the app's own record.
 #[must_use]
@@ -706,7 +507,8 @@ pub fn chain_of(route: &str) -> Option<&str> {
 }
 
 /// The name of channel `id` of a chat record, as `#name`.
-fn channel_name(tree: &AutoCommit, id: &str) -> Option<String> {
+#[must_use]
+pub fn channel_name(tree: &AutoCommit, id: &str) -> Option<String> {
     let walk = Walk {
         doc: tree,
         found: Vec::new(),
@@ -719,7 +521,3 @@ fn channel_name(tree: &AutoCommit, id: &str) -> Option<String> {
         .filter(|name| !name.is_empty())
         .map(|name| format!("#{name}"))
 }
-
-#[cfg(test)]
-#[path = "mentions_tests.rs"]
-mod tests;

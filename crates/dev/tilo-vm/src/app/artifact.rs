@@ -1,6 +1,6 @@
 //! Verified downloaded layers use the ordinary authenticated import and swap
-//! RPCs. In particular apps+runtime never skips the daemon's signed SDK/app,
-//! publisher, runtime or ISA checks.
+//! RPCs: `apps+runtime` never skips the daemon's signed SDK, publisher, runtime
+//! or ISA checks.
 
 use tilo_vm_protocol::{ApplyResult, LayerImport, LayerSource, LayerVerify, SlotShow, Swap};
 
@@ -137,8 +137,6 @@ impl App {
             .set("artifact_run_attempt", request.run_attempt);
         self.receipt
             .set("artifact_receipt_sha256", &request.receipt_sha256);
-        // Import and verify every addressed layer before activating prerequisites.
-        // The daemon rejects a malformed/unsigned cohort on its normal Swap path.
         for layer in &mut prepared.layers {
             if !order.contains(&layer.receipt.component.as_str()) {
                 continue;

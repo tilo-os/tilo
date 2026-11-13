@@ -23,18 +23,6 @@ pub struct QsActionAvailability {
 }
 
 impl QsActionAvailability {
-    pub const fn all() -> Self {
-        Self {
-            brightness: true,
-            volume: true,
-            wifi: true,
-            power_profile: true,
-            vpn: true,
-            bluetooth: true,
-            airplane_mode: true,
-        }
-    }
-
     /// Which parts of the device this machine has, as the session's
     /// readings say: a control no service published anything to change is
     /// not offered.

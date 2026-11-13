@@ -207,6 +207,66 @@ impl WorkspaceStore {
     }
 }
 
+/// The retained channel a device's identity hello is kept under.
+pub(crate) fn hello_channel(device: &[u8; 32]) -> [u8; 32] {
+    *blake3::hash(&[b"identity-hello\0".as_slice(), device].concat()).as_bytes()
+}
+
+impl WorkspaceStore {
+    /// Forget the identity hello each of `devices` retained here: devices
+    /// the workspace no longer admits, whose hello a replay no longer sends
+    /// anyone. A workspace many people pass through would otherwise keep one
+    /// for every device that ever came. A device's hello stays whole when
+    /// `keeps` holds for any of its entries' bodies: one that brings a
+    /// revocation the workspace holds nowhere else, which a replay still
+    /// sends every newcomer. Must run on the persistence owner. Returns how
+    /// many entries it forgot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a lineage cannot be read or its new, empty
+    /// generation cannot be written.
+    pub(crate) fn forget_hellos(
+        &self,
+        devices: &[[u8; 32]],
+        keeps: &dyn Fn(&[u8]) -> bool,
+    ) -> Result<usize, StoreError> {
+        let mut forgotten = 0_usize;
+        for device in devices {
+            let channel = hello_channel(device);
+            let lineage = self
+                .root
+                .join(RETAINED_DIR)
+                .join("v2")
+                .join(lineage_name(device, &channel));
+            let Some(active) = current(&lineage)? else {
+                continue;
+            };
+            let names = record_names(&active)?;
+            if names.is_empty() {
+                continue;
+            }
+            let mut kept = false;
+            for name in &names {
+                let bytes = fs::read(active.join(name))?;
+                if super::retained::body_of(&bytes, self.workspace_id)
+                    .is_some_and(|body| keeps(&body))
+                {
+                    kept = true;
+                    break;
+                }
+            }
+            if kept {
+                continue;
+            }
+            self.forget_channel_listing(&channel);
+            rewrite(self, &lineage, &[], &[], 0)?;
+            forgotten = forgotten.saturating_add(names.len());
+        }
+        Ok(forgotten)
+    }
+}
+
 /// Where [`WorkspaceStore::archive_channel`] keeps what it takes out of
 /// replay, under the retained directory, beside the `v2` replay reads.
 pub(crate) const ARCHIVE_DIR: &str = "archive-v1";
@@ -246,6 +306,50 @@ impl WorkspaceStore {
             sync_dir(&kept)?;
             rewrite(self, &lineage, &[], &[], 0)?;
             archived = archived.saturating_add(names.len());
+        }
+        Ok(archived)
+    }
+}
+
+impl WorkspaceStore {
+    /// Keep every entry of `channel` for which `keeps` holds, given its file bytes, in a new
+    /// archive under [`ARCHIVE_DIR`], as it was written, without taking it out of replay: the
+    /// writes a fold is about to leave out of their record for good, which an operator can still
+    /// read there. Must run on the persistence owner. Returns how many entries it archived.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read, link or directory barrier fails.
+    pub(crate) fn archive_entries(
+        &self,
+        channel: &[u8; 32],
+        keeps: &dyn Fn(&[u8]) -> bool,
+    ) -> Result<usize, StoreError> {
+        let archive = self
+            .root
+            .join(RETAINED_DIR)
+            .join(ARCHIVE_DIR)
+            .join(hex::encode(rand::random::<[u8; 16]>()));
+        let mut archived = 0_usize;
+        for (lineage, _) in self.channel_lineages(channel)? {
+            let Some(active) = current(&lineage)? else {
+                continue;
+            };
+            let kept = archive.join(lineage.file_name().unwrap_or_default());
+            let mut linked = false;
+            for name in record_names(&active)? {
+                let path = active.join(&name);
+                if !keeps(&fs::read(&path)?) {
+                    continue;
+                }
+                fs::create_dir_all(&kept)?;
+                tilo_relay_store::durable::link(&path, &kept.join(&name))?;
+                linked = true;
+                archived = archived.saturating_add(1);
+            }
+            if linked {
+                sync_dir(&kept)?;
+            }
         }
         Ok(archived)
     }

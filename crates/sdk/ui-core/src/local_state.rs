@@ -54,9 +54,20 @@ impl<T> LocalState<T> {
     }
 
     /// Read the current value without exposing the backing lock.
+    ///
+    /// A component's pass that reads it follows it from then on
+    /// ([`crate::component_inputs`]): a write moves its owner's input
+    /// revision, so the reader syncs again.
     pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
+        crate::component_inputs::read_owned_by(&self.inner.wake);
         let value = self.inner.value.read_recover();
         read(&value)
+    }
+
+    /// Tell whoever reads this state that it changed: its owner's input
+    /// revision moves, or, for state of no scope, the detached revision.
+    fn note_written(&self) {
+        crate::component_inputs::note_written(&self.inner.wake);
     }
 
     /// Replace the value and invalidate widgets bound to this handle.
@@ -85,6 +96,7 @@ impl<T> LocalState<T> {
         *current = value;
         self.inner.revision.store(revision, Ordering::Release);
         drop(current);
+        self.note_written();
         Some(revision)
     }
 
@@ -109,11 +121,13 @@ impl<T> LocalState<T> {
         update(&mut value);
         self.inner.revision.store(revision, Ordering::Release);
         drop(value);
+        self.note_written();
         true
     }
 
     /// Monotonic local edit revision for correlating asynchronous receipts.
     pub fn revision(&self) -> u64 {
+        crate::component_inputs::read_owned_by(&self.inner.wake);
         self.inner.revision.load(Ordering::Acquire)
     }
 
@@ -648,6 +662,18 @@ impl<T> LocalStateWriter<T> {
         }
         self.wake.wake();
         true
+    }
+}
+
+impl<T: PartialEq> LocalState<T> {
+    /// Replace the value only when `value` differs from it: a value set
+    /// again on every pass is no change, so nothing that follows the state
+    /// syncs again for it. Whether it was replaced.
+    pub fn set_if_changed(&self, value: T) -> bool {
+        if self.with(|current| *current == value) {
+            return false;
+        }
+        self.try_set(value)
     }
 }
 

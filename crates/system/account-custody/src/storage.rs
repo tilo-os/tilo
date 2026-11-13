@@ -43,13 +43,6 @@ fn opened(cloud: OAuthCloud) -> impl Fn(cloud_source::Error) -> CustodyError {
     }
 }
 
-/// Resolve the mount configuration of `cloud` with a fresh access token.
-/// `base` replaces the provider's default configuration (another API
-/// origin, a chosen folder or shared drive).
-///
-/// # Errors
-/// [`CustodyError::Offline`], [`CustodyError::NeedsAuthentication`] or
-/// [`CustodyError::SignIn`] when the provider could not be asked.
 pub fn resolve(
     cloud: OAuthCloud,
     base_config: Option<&serde_json::Value>,
@@ -60,8 +53,6 @@ pub fn resolve(
         expires: None,
     }));
     match cloud {
-        // My Drive (or the configured shared drive or folder) is addressed
-        // by aliases Drive resolves per request; nothing to ask.
         OAuthCloud::GoogleDrive => value(&base(base_config, DriveConfig::my_drive())?),
         OAuthCloud::OneDrive => {
             let config = base(base_config, OneDriveConfig::me())?;

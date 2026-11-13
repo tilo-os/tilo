@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
@@ -112,7 +110,7 @@ fn scale(session: &mut Session, connector: &str) -> Option<f64> {
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
-    common::wait_for(session, format!("the condition at {at}"), |session| {
+    crate::common::wait_for(session, format!("the condition at {at}"), |session| {
         done(session).then_some(())
     });
 }

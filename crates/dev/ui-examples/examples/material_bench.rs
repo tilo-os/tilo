@@ -2,23 +2,6 @@
 //! busy wallpaper, the top bar, a window with a sidebar and controls, a menu
 //! and a notification floating over both, drawn in each theme with the
 //! backdrop pass, as the shell composes a frame.
-//!
-//! ```text
-//! cargo run -p ui-examples --release --example ui-perf -- material_bench [THEME]...
-//! ```
-//!
-//! Without themes it runs Default, Glass and Block, light and dark. A
-//! theme is a shipped theme's name or a theme bundle's directory
-//! (`tilo_ui::theme_bundle`), whose painter modules it loads. For each it
-//! writes `material-<theme>.png` to `TILO_UI_SNAPSHOT_OUT` (a directory,
-//! default the working directory) and prints the median and 95th
-//! percentile frame time over `TILO_UI_MATERIAL_FRAMES` frames (default
-//! 120): building the scene, the backdrop blur and the render, GPU completion
-//! and readback included. `first` is the shot's frame, the one that paints
-//! every part before the toolkit's cache holds it. `idle` is the same frame
-//! again and again; `moving` drags the window a few pixels each frame over
-//! the still wallpaper, as a person moving it does. `reused` counts the
-//! regions the backdrop pass showed from the sample it kept.
 
 use std::time::{Duration, Instant};
 

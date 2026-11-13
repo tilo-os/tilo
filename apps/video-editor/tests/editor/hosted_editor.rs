@@ -86,7 +86,7 @@ pub fn with_modifier(app: &mut Editor, modifier: &str, key: &str) {
 
 /// Where the playhead is, as the transport reads it out.
 pub fn playhead(app: &mut Editor) -> String {
-    value(app, "Transport")
+    value(app, "Playback")
 }
 
 /// The clip placing the source `name` on a track of `kind`.

@@ -159,9 +159,6 @@ fn prepare_config(config_root: &Path, uid: u32, microphone: bool) -> Result<(), 
         &pipewire_dropin,
         &pipewire_dropin_contents(&host_pulse, microphone),
     )?;
-    // The base PipeWire Pulse configuration supplies the protocol server.  An
-    // empty Tilo-owned drop-in makes the private configuration directory
-    // complete and gives upgrades a stable place for future Pulse policy.
     write_private_file(&pulse_dropin, pulse_dropin_contents())?;
     Ok(())
 }
@@ -304,7 +301,6 @@ mod tests {
 
     #[test]
     fn the_private_audio_graph_exposes_sources_only_by_grant() {
-        // Phase `installed_pipewire_accepts_the_generated_private_graph`.
         fn installed_pipewire_accepts_the_generated_private_graph() {
             if !Path::new(PIPEWIRE_BIN).is_file() || !Path::new(PIPEWIRE_PULSE_BIN).is_file() {
                 return;
@@ -343,7 +339,6 @@ mod tests {
             assert_ne!(proxy, Path::new("/run/user/1000/pulse/native"));
             assert!(proxy.starts_with(root));
         }
-        // Phase `installed_pipewire_accepts_the_generated_private_graph` (defined above).
         installed_pipewire_accepts_the_generated_private_graph();
     }
 }

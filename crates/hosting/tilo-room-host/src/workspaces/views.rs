@@ -2,13 +2,18 @@
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
+use tilo_peer_state::MemberAuthority;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 impl GovernedWorkspace {
-    /// Called while holding this governed workspace's lock, including before keys.
-    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+    /// The authority `caller` holds here now: only a person on a device this
+    /// workspace certified, whose certificate is current and whose membership
+    /// it still records. A revoked device, a removed member and a stranger hold
+    /// none. What a member may do with what they find is decided per action, by
+    /// this authority.
+    fn admitted(&self, caller: &Caller) -> Option<MemberAuthority> {
         if !matches!(caller.principal(), CallerPrincipal::Person(_)) {
             return None;
         }
@@ -22,17 +27,37 @@ impl GovernedWorkspace {
         {
             return None;
         }
-        let now = SystemTime::now();
-        peer.check_document_read(device, app, record, now).ok()?;
-        let standing = peer.permissions(device, now).ok()?.standing();
-        let sandbox = peer.governance().governed_sandbox().ok()?;
-        drop(peer);
+        peer.permissions(device, tilo_clock::wall()).ok()
+    }
+
+    /// Whether `caller` is someone this workspace admits.
+    fn admits(&self, caller: &Caller) -> bool {
+        self.admitted(caller).is_some()
+    }
+
+    /// `caller`'s standing across the workspace now and its sandbox: what
+    /// every record's policy holds before the record's own read is checked.
+    fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
+        let standing = self.admitted(caller)?.standing();
+        let sandbox = self.peer().governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             workspace: self.workspace().to_owned(),
             standing,
             sandbox,
-            unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
+            unix_time: tilo_clock::wall()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()?
+                .as_secs(),
         })
+    }
+
+    /// Called while holding this governed workspace's lock, including before keys.
+    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+        let device = *caller.device_public_key()?;
+        self.peer()
+            .check_document_read(device, app, record, tilo_clock::wall())
+            .ok()?;
+        self.workspace_policy(caller)
     }
 }
 
@@ -51,9 +76,13 @@ pub fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime)
 }
 
 impl Workspaces {
-    /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
-    /// false for a workspace not governed here.
-    pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+    /// `answer` of the workspace `workspace` governed here, under its lock;
+    /// `None` for a workspace not governed here.
+    async fn governing<T>(
+        &self,
+        workspace: u64,
+        answer: impl FnOnce(&GovernedWorkspace) -> T,
+    ) -> Option<T> {
         let workspaces = self
             .inner
             .workspaces
@@ -65,10 +94,29 @@ impl Workspaces {
         for governed in workspaces {
             let runtime = governed.lock().await;
             if runtime.workspace_id() == workspace {
-                return bot_shows_personas(&runtime.peer(), installation, SystemTime::now());
+                return Some(answer(&runtime));
             }
         }
-        false
+        None
+    }
+
+    /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
+    /// false for a workspace not governed here.
+    pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+        self.governing(workspace, |runtime| {
+            bot_shows_personas(&runtime.peer(), installation, tilo_clock::wall())
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// Whether the workspace `workspace` governs here admits `caller`: false
+    /// for a workspace it does not govern, and for anyone its governance does
+    /// not certify a device for.
+    pub async fn admits(&self, workspace: u64, caller: &Caller) -> bool {
+        self.governing(workspace, |runtime| runtime.admits(caller))
+            .await
+            .unwrap_or(false)
     }
 
     pub async fn resource_view_policy(
@@ -78,21 +126,24 @@ impl Workspaces {
         app: &str,
         record: &str,
     ) -> Option<ViewReadPolicy> {
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
+        self.governing(workspace, |runtime| {
+            runtime.view_read_policy(caller, app, record)
+        })
+        .await
+        .flatten()
+    }
+
+    /// `caller`'s standing across the workspace `workspace` governed here,
+    /// with no record's read checked: what a workspace's content and its new
+    /// records are decided by.
+    pub async fn workspace_policy(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+    ) -> Option<ViewReadPolicy> {
+        self.governing(workspace, |runtime| runtime.workspace_policy(caller))
             .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for governed in workspaces {
-            let runtime = governed.lock().await;
-            if runtime.workspace_id() == workspace {
-                return runtime.view_read_policy(caller, app, record);
-            }
-        }
-        None
+            .flatten()
     }
 
     pub async fn resource_view_document(
@@ -142,7 +193,7 @@ impl Workspaces {
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
-        let bytes = replay_source(source, keys, primary_governor, retained)?;
+        let bytes = replay_source(source, keys.as_ref(), primary_governor, retained)?;
         runtime
             .view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
@@ -157,20 +208,13 @@ impl Workspaces {
 
 fn replay_source(
     source: &DocumentRoute,
-    keys: Option<channel_crypto::ChannelContentKeys>,
+    keys: Option<&channel_crypto::ChannelContentKeys>,
     primary_governor: Option<[u8; 32]>,
     retained: Vec<crate::workspace_records::RetainedBody>,
 ) -> Result<Vec<u8>, String> {
     let channel =
         collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-    let mut ciphers = tilo_peer_state::document_frame::Ciphers::new();
-    if let Some(keys) = keys {
-        ciphers.insert(
-            source.clone(),
-            tilo_peer_state::document_frame::content_key_reader(keys),
-        );
-    }
-    let mut reassembly = tilo_peer_state::document_frame::Reassembly::default();
+    let mut transfers = tilo_peer_state::document_frame::Transfers::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
     let mut found = false;
@@ -201,18 +245,15 @@ fn replay_source(
         if bytes > MAX_VIEW_DOCUMENT_BYTES {
             return Err("source replay exceeds read budget".into());
         }
-        let frame = tilo_peer_state::document_frame::open_frame(
-            &retained.body,
-            retained.author,
-            &mut ciphers,
-        )
-        .map_err(|error| error.to_string())?
-        .ok_or("source frame missing")?;
-        if let Some(frame) = reassembly
-            .accept(frame)
-            .map_err(|error| error.to_string())?
-        {
-            let mutation = frame.mutation().ok_or("source mutation missing")?;
+        let frame =
+            tilo_peer_state::document_frame::open_frame(&retained.body, retained.author, keys)
+                .map_err(|error| error.to_string())?
+                .ok_or("source frame missing")?;
+        let plaintext = frame
+            .decrypted_payload
+            .as_deref()
+            .unwrap_or(&frame.envelope.payload);
+        if let Some(mutation) = transfers.take(frame.author, plaintext)? {
             let (collab_types::DocumentMutation::Snapshot(change)
             | collab_types::DocumentMutation::Incremental(change)) = mutation;
             tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &change)
@@ -220,7 +261,7 @@ fn replay_source(
             found = true;
         }
     }
-    if !found || reassembly.buffered_bytes() != 0 || !doc.get_missing_deps(&[]).is_empty() {
+    if !found || !transfers.is_empty() || !doc.get_missing_deps(&[]).is_empty() {
         return Err("existing source is not completely retained".into());
     }
     Ok(doc.save())

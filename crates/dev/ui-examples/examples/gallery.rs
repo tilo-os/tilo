@@ -2,9 +2,7 @@
 //! toolkit. Opens a live window with a card per component family (buttons,
 //! controls, text/selection, badges/chips/avatars, feedback/loading, metrics,
 //! charts/gauges, navigation, banners, empty state, and an editable table).
-//!
 //! Run:  cargo run -p ui-examples --example ui-lab -- gallery
-//! For the offscreen light+dark renders, see `gallery_shots`.
 
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Scrollable, Widget};

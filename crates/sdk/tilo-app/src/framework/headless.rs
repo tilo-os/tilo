@@ -97,7 +97,33 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
+/// The content secret of `workspace`'s members, which every window of it in
+/// this process holds.
+fn workspace_secret(workspace: &str) -> Option<tilo_seal::SymmetricKey> {
+    static SECRETS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, tilo_seal::SymmetricKey>>,
+    > = std::sync::OnceLock::new();
+    let generated = tilo_seal::SymmetricKey::generate().ok()?;
+    Some(
+        SECRETS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(workspace.to_owned())
+            .or_insert(generated)
+            .clone(),
+    )
+}
+
 impl Profile {
+    /// The workspace the app opens in, on a temporary profile.
+    fn workspace(&self) -> Option<&str> {
+        match self {
+            Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => Some(workspace),
+            Self::DataDir(_) => None,
+        }
+    }
+
     /// The profile's settings, which the app's typed settings use instead of
     /// the person's.
     fn settings(&self) -> ui_core::storage::SettingsDocument {
@@ -182,35 +208,7 @@ fn serve_kept<A: ResourceApp>(
             &kept,
             settings.clone(),
         );
-        let person = author.to_owned();
-        harness.serve_provider(
-            provider,
-            Box::new(move |invocation| {
-                // The person's own settings: the host admits nobody else.
-                if invocation.actor != person {
-                    return Err(tilo_actions::DoorError::Unavailable {
-                        code: "permission_denied".into(),
-                        reason: format!("only {person} changes their settings"),
-                    });
-                }
-                let arguments = match invocation.argument {
-                    tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
-                    tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-                    tilo_actions::remote::InvokeArgument::Text(_) => {
-                        return Err(tilo_actions::DoorError::InvalidArguments(
-                            "a settings change carries typed arguments".into(),
-                        ));
-                    }
-                };
-                records.invoke(
-                    invocation.address,
-                    &arguments,
-                    invocation.confirmed,
-                    &tilo_actions::ActionInvoker::actor(&person),
-                    None,
-                )
-            }),
-        );
+        harness.serve_provider(provider, records.served_for(author));
     }
 }
 
@@ -274,75 +272,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             |_| {},
         )
-    }
-
-    /// The app as its owner opens it over `answers`, the session's document
-    /// host: no record is opened here, the view reads the reading `answers`
-    /// publishes at `resource`, and everything it submits goes back to
-    /// `answers` (`one-app-model.md` §4).
-    pub fn hosted(
-        resource: &str,
-        answers: impl super::Answers + 'static,
-    ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
-        let person = AUTHOR.to_owned();
-        let author = UserId(person.clone());
-        let permissions = role_permissions(&person, Role::Owner);
-        let (mut host, instance) = profile_host(
-            &Profile::Temporary(
-                Rc::clone(&profile),
-                TEST_WORKSPACE.to_owned(),
-                TEST_DEVICE.to_owned(),
-            ),
-            author,
-            &permissions,
-        )?;
-        let definition = super::app::definition::<A>();
-        let records = host.records_for(definition)?;
-        let mut context = ui_core::application::HostContext::prepare_session_hosted(
-            definition,
-            ui_core::application::HostContextInputs {
-                records: records.clone(),
-                views: host.views().clone(),
-                device_id: TEST_DEVICE.to_owned(),
-                instance_id: instance,
-                permissions: permissions.clone(),
-                author: UserId(person.clone()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            resource,
-        )?;
-        context.provide_content(super::app::profile_content(profile.path()));
-        context.provide_connection(super::Connection::in_process(answers));
-        let target = ui_core::application::LaunchTarget::Record {
-            checkout: RecordCheckout::new(
-                RecordId::package_primary(),
-                definition.record_kind.clone(),
-            ),
-            reveal: None,
-        };
-        let component =
-            definition.instantiate(context, target, ui_core::application::RestoreInput::None)?;
-        let inputs = ui_core::application::ComponentRunnerInputs::from_native_process();
-        let harness = FrameHarness::from_component(component, (1280, 800), inputs)?;
-        Ok(Self {
-            harness,
-            closed: false,
-            records,
-            checkout: RecordCheckout::new(
-                RecordId::package_primary(),
-                definition.record_kind.clone(),
-            ),
-            instance,
-            profile: Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
-            role: Role::Owner,
-            author: person,
-            last_effect: None,
-            workspace: None,
-            permissions,
-            _settled: None,
-            marker: std::marker::PhantomData,
-        })
     }
 
     /// The app as `person` (the hex of a root public key) opens it on a
@@ -615,6 +544,67 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// A new window of the app on a fresh profile whose workspace already
+    /// holds `documents`, each stamped with the identity beside it and named
+    /// in the app's workspace index by its name: records this device was
+    /// given from elsewhere — a window on another device, an agent in a
+    /// hosted workspace — rather than started here. What a relay publishes
+    /// reaches a reader this way.
+    pub fn with_named_records(
+        documents: &mut [(&str, ui_core::record::RecordId, tilo_resource::Doc)],
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        {
+            let native =
+                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+            let app = super::app::hooks::<A>().id();
+            let kind = super::app::definition::<A>().record_kind.clone();
+            let mut index = automerge::AutoCommit::new();
+            for (name, id, document) in documents.iter_mut() {
+                if !ui_core::record::init_scoped(
+                    document,
+                    id,
+                    &kind,
+                    TEST_WORKSPACE,
+                    Some(TEST_WORKSPACE),
+                ) {
+                    return Err(operation("a record could not be stamped for the workspace"));
+                }
+                let (checkout, _landing) = ui_core::record::transfer::install(
+                    native.store(),
+                    app,
+                    TEST_WORKSPACE,
+                    document,
+                )
+                .map_err(operation)?;
+                ui_core::record::index::reference(&mut index, &checkout.id, &checkout.kind);
+                ui_core::record::index::set_name(&mut index, &checkout.id, Some(name));
+            }
+            let _landing = ui_core::record::transfer::install_workspace_document(
+                native.store(),
+                app,
+                TEST_WORKSPACE,
+                &mut index,
+            )
+            .map_err(operation)?;
+        }
+        Self::open(
+            Profile::Window(
+                profile,
+                TEST_WORKSPACE.to_owned(),
+                TEST_DEVICE.to_owned(),
+                INSTANCE + 2,
+            ),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
     /// A new window of an app that [keeps one record per workspace](ResourceApp::WORKSPACE_RECORD)
     /// on a fresh profile whose workspace record is already `document`: how a
     /// workspace an earlier version of the app wrote opens.
@@ -769,6 +759,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
             _settled: settled,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// Hand the records the app declares kept by other providers
+    /// ([`Records::kept_by`](super::Records::kept_by)) to `host`, in place of
+    /// the test's own stand-in: a host under test (a page keeping the
+    /// person's settings) is told the window's frame, the profile's settings
+    /// document and the person at the window, and serves them as it does
+    /// for a live window.
+    pub fn kept_by_host(
+        &mut self,
+        host: impl FnOnce(&mut FrameHarness, &ui_core::storage::SettingsDocument, &str),
+    ) {
+        let mut declared = super::Records::declaring();
+        A::records(&mut declared);
+        for (provider, _) in declared.into_kept() {
+            self.harness.stop_serving_provider(provider);
+        }
+        host(&mut self.harness, &self.profile.settings(), &self.author);
     }
 
     /// The app's file areas in this profile, which the running app writes
@@ -948,6 +956,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(took_in)
     }
 
+    /// Take this window's records to come from its workspace's hosts, as a
+    /// page's do ([`ui_core::record::RecordStore::ask_workspace_for_missing`]):
+    /// a record not here is asked for, and new only once they answered.
+    pub fn asks_the_workspace(&mut self) {
+        self.records.ask_workspace_for_missing();
+    }
+
+    /// What this window asks its workspace's hosts for
+    /// ([`ui_core::record::RecordStore::wanted_records`]).
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.records.wanted_records()
+    }
+
     /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
     /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
@@ -1048,6 +1070,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .into_iter()
             .map(|checkout| checkout.id)
             .collect()
+    }
+
+    /// The whole document of `id` as this window holds it: its own record,
+    /// or one it keeps beside it (a part of a chain).
+    pub fn record_document(&self, id: &RecordId) -> Option<Vec<u8>> {
+        self.records.read(id, |doc| doc.clone().save())
     }
 
     /// Submit `submit` through the running view's own dispatcher, as a
@@ -1548,11 +1576,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Run the frame the app runs after an event: edits the views and
-    /// effects submitted are applied, and what they change is drawn.
+    /// effects submitted are applied, and what they change is drawn. Every
+    /// component syncs and settles, as after an event that reached it: a
+    /// test may have changed what its views read past the framework
+    /// ([`ui_core::component_inputs`]).
     pub fn settle(&mut self) {
-        self.service_owner_wakes();
-        self.harness()
-            .wait_until(ui_core::time::Duration::ZERO, |_| true);
+        ui_core::component_inputs::forcing(|| {
+            self.harness()
+                .wait_until(ui_core::time::Duration::ZERO, |_| true);
+        });
     }
 
     /// What the live window does once input stops, and no more: what its
@@ -1562,7 +1594,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// forces no frame to sync and publish, so it costs what the live window
     /// costs: what the perf measurements run after each interaction.
     pub fn idle(&mut self) {
-        self.service_owner_wakes();
         self.harness().idle();
     }
 
@@ -1571,18 +1602,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// takes it, then the frame a redraw, an animation or a due deadline
     /// asks for. Whether a frame ran.
     pub fn frame(&mut self) -> bool {
-        self.service_owner_wakes();
         self.harness().poll_frame().unwrap_or(false)
-    }
-
-    /// Take up what the app's workers woke its components for, as the live
-    /// window does at the start of each frame. Left queued, a wake kept
-    /// every later frame syncing and publishing, which the live window
-    /// never does.
-    fn service_owner_wakes(&mut self) {
-        if let Err(error) = self.harness().service_pending_owner_models() {
-            tracing::warn!(?error, "test app: a woken component's model was refused");
-        }
     }
 
     /// Invoke any published action of the resource by id with JSON
@@ -2139,6 +2159,15 @@ fn open_app(
         (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
+    // The harness holds the workspace's keys, as the record's route does on a
+    // device: what the app stores is sealed under its members' secret.
+    if let Some(workspace) = profile.workspace() {
+        ui_core::collaboration::record_content::ContentLane::of(
+            opening.id,
+            super::app::record_wire(&checkout.id),
+        )
+        .hold_secret(workspace_secret(workspace));
+    }
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     if private {
@@ -2287,32 +2316,38 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     )
 }
 
-/// The ids of the effects and of the named views a built view publishes.
-type PublishedIds = (Vec<String>, Vec<String>);
+/// What a built view publishes beside its resource's verbs: its effects and
+/// the resource's named views, and what the effects declare, which its surface
+/// publishes as actions of the resource.
+#[derive(Default)]
+struct PublishedActions {
+    /// The ids of every effect, views included.
+    effects: Vec<String>,
+    /// The ids of the resource's named views.
+    views: Vec<String>,
+    /// Every read effect's declaration: what its surface publishes it as.
+    rows: Vec<tilo_resource::effect::EffectRow>,
+}
 
-/// [`PublishedIds`] of `A`'s root `harness` hosts.
-fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
+/// [`PublishedActions`] of `A`'s root `harness` hosts.
+fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedActions {
     harness
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
             let views = <A::Resource as Resource>::views(&typed.live.get());
-            Some(ids_of(&typed.effects.specs(), views))
+            Some(PublishedActions {
+                effects: typed
+                    .effects
+                    .specs()
+                    .iter()
+                    .map(|spec| spec.id.clone())
+                    .collect(),
+                views: views.into_iter().map(|view| view.id).collect(),
+                rows: typed.effects.rows(),
+            })
         })
         .flatten()
         .unwrap_or_default()
-}
-
-/// The ids of `effects` and of `views`: taken here once rather than in
-/// every app's [`published_ids`].
-#[inline(never)]
-fn ids_of(
-    effects: &[tilo_actions::ActionSpec],
-    views: Vec<tilo_actions::ResourceViewSpec>,
-) -> PublishedIds {
-    (
-        effects.iter().map(|spec| spec.id.clone()).collect(),
-        views.into_iter().map(|view| view.id).collect(),
-    )
 }
 
 /// [`surface_report`] of the app `opening` describes, whose resource's
@@ -2320,9 +2355,9 @@ fn ids_of(
 /// reads the ids of the effects and the named views a built view publishes.
 fn report_surface(
     opening: &Opening,
-    surface: tilo_resource::Surface,
+    mut surface: tilo_resource::Surface,
     person: &[super::PersonKind],
-    published: &dyn Fn(&mut FrameHarness) -> PublishedIds,
+    published: &dyn Fn(&mut FrameHarness) -> PublishedActions,
 ) -> serde_json::Value {
     let collecting = collect_unbound();
     let profile = profile_directory().map(Rc::new).map_err(operation);
@@ -2346,14 +2381,17 @@ fn report_surface(
         )
     });
     // What the view publishes besides the resource's verbs: its effects and
-    // the resource's named views, whose ids must not be the framework's.
-    let (effects, views, view) = match built {
-        Ok(mut opened) => {
-            let (effects, views) = published(&mut opened.harness);
-            (effects, views, None)
-        }
-        Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
-    };
+    // the resource's named views, whose ids must not be the framework's. The
+    // app's read effects are actions of its own resource and are published
+    // with it, as a verb of the surface.
+    let mut declared = PublishedActions::default();
+    let mut view = None;
+    match built {
+        Ok(mut opened) => declared = published(&mut opened.harness),
+        Err(error) => view = Some(error.to_string()),
+    }
+    add_effect_verbs(&mut surface, &declared.rows);
+    let PublishedActions { effects, views, .. } = declared;
     let (unbound, opened) = collecting.finish();
     let mut resources = vec![surface];
     resources.extend(opened);
@@ -2377,6 +2415,59 @@ fn report_surface(
         "reserved": super::reserved_action_ids(),
         "view": view,
     })
+}
+
+/// Publish the app's read effects on `surface`: its resource's verbs take
+/// them, each with its parameters and the value it answers with, and the
+/// records and enums that value names join the surface's types.
+fn add_effect_verbs(
+    surface: &mut tilo_resource::Surface,
+    rows: &[tilo_resource::effect::EffectRow],
+) {
+    use tilo_resource::surface::{FieldType, NamedType};
+
+    let mut types = tilo_resource::surface::TypeSet::new();
+    let mut verbs = tilo_resource::surface::effect_verbs(rows, &mut types);
+    let declared: Vec<NamedType> = types.into_types();
+    // A record the resource's fields already declare, named again by a value
+    // an action answers with, keeps the one name: the surface declares it
+    // once.
+    let mut renames: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for named in &declared {
+        let same = surface.types.iter().find(|known| {
+            known.name != named.name && known.fields == named.fields && known.cases == named.cases
+        });
+        if let Some(known) = same {
+            renames.insert(named.name.clone(), known.name.clone());
+        }
+    }
+    let renamed_type = |ty: &FieldType| ty.renamed(&renames);
+    for verb in &mut verbs {
+        for param in &mut verb.params {
+            param.ty = renamed_type(&param.ty);
+        }
+        if let Some(returns) = &mut verb.returns {
+            returns.ty = renamed_type(&returns.ty);
+        }
+    }
+    let kept: Vec<NamedType> = declared
+        .into_iter()
+        .filter(|named| !renames.contains_key(&named.name))
+        .map(|mut named| {
+            for field in &mut named.fields {
+                field.ty = renamed_type(&field.ty);
+            }
+            for case in &mut named.cases {
+                for field in &mut case.fields {
+                    field.ty = renamed_type(&field.ty);
+                }
+            }
+            named
+        })
+        .filter(|named| !surface.types.iter().any(|known| known.name == named.name))
+        .collect();
+    surface.types.extend(kept);
+    surface.verbs.extend(verbs);
 }
 
 /// Collects the controls bound to something the resource does not publish

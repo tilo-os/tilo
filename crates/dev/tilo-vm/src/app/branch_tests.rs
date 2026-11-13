@@ -2,10 +2,13 @@
 //! the hypervisor commands they run (recorded by [`Hv`]) and the files and
 //! registry they leave.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::rc::Rc;
 
 use clap::Parser as _;
 
+use super::branch_admit::{Guest, Guests, Held};
 use super::*;
 use crate::cli::{BranchArgs, Cli};
 use crate::config::Base;
@@ -14,14 +17,10 @@ use crate::hypervisor::Output;
 const QCOW2: &[u8] = b"QFI\xfb\0\0\0\x03";
 const SETUP: &[u8] = b"QFI\xfb dev as the person set it up";
 
-/// The host's hypervisor tools as tilo-vm sees them: each command is
-/// recorded; `virsh domstate`, `virsh list` and `utmctl status` answer from
-/// `state` (default off); `qemu-img create` writes the disk it names; a
-/// UTM clone gets an id of its own (unless `same_uuid`), which `osascript`
-/// reports; a command containing `fail` fails.
 #[derive(Default)]
 struct Hv {
     ran: Vec<String>,
+    log: Rc<RefCell<Vec<String>>>,
     state: BTreeMap<String, String>,
     fail: Option<String>,
     ids: BTreeMap<String, String>,
@@ -32,6 +31,7 @@ impl Runner for Hv {
     fn output(&mut self, command: &CommandLine) -> Result<Output, CliError> {
         let line = command.display();
         self.ran.push(line.clone());
+        self.log.borrow_mut().push(line.clone());
         if self.fail.as_deref().is_some_and(|fail| line.contains(fail)) {
             return Ok(Output {
                 success: false,
@@ -44,6 +44,14 @@ impl Runner for Hv {
         let stdout = match (command.program.as_str(), args.as_slice()) {
             ("qemu-img", [.., disk]) => {
                 std::fs::write(disk, QCOW2).unwrap();
+                String::new()
+            }
+            ("virsh", [_, _, "start", name]) => {
+                self.state.insert((*name).to_owned(), "running".into());
+                String::new()
+            }
+            ("virsh", [_, _, "shutdown" | "destroy", name]) => {
+                self.state.insert((*name).to_owned(), "shut off".into());
                 String::new()
             }
             ("virsh", [_, _, "domstate", name]) => self
@@ -101,6 +109,13 @@ impl Hv {
     }
 }
 
+fn naming<'a>(ran: &'a [String], path: &str) -> Vec<&'a str> {
+    ran.iter()
+        .filter(|line| line.contains(path))
+        .map(String::as_str)
+        .collect()
+}
+
 fn branch_args(words: &str) -> BranchArgs {
     let line = format!("tilo-vm vm branch {words}");
     let Some(Command::Vm(VmCommand::Branch(args))) =
@@ -117,8 +132,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// One VM `dev` that `vm create` made with `hypervisor` and the person
-    /// set up: its disk is a child of the published image.
     fn new(hypervisor: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let app = App {
@@ -169,7 +182,12 @@ impl Fixture {
     }
 
     fn branch(&self, hv: &mut Hv, words: &str) -> Result<Outcome, CliError> {
-        self.app.branch_with(hv, &branch_args(words))
+        self.app
+            .branch_with(hv, &mut World::default(), &branch_args(words))
+    }
+
+    fn branch_in(&self, hv: &mut Hv, world: &mut World, words: &str) -> Result<Outcome, CliError> {
+        self.app.branch_with(hv, world, &branch_args(words))
     }
 
     fn rm(&mut self, hv: &mut Hv, name: &str) -> Outcome {
@@ -183,7 +201,6 @@ impl Fixture {
         self.app.vm_rm(hv, &name, force).unwrap()
     }
 
-    /// The one base made from `from` whose users include `user`.
     fn base_of(&self, user: &str) -> (String, Base) {
         let registry = self.registry();
         let image = registry.vms[user].image.clone().unwrap();
@@ -198,10 +215,6 @@ impl Fixture {
     }
 }
 
-/// A stopped VM's disk is frozen into a read-only base; the source gets a
-/// fresh child at its old path and each branch another, with its own UUID
-/// (domain and SMBIOS system UUID alike), MAC, SSH port and copy of the
-/// root key. `vm list` shows the relationships; a rerun changes nothing.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -210,7 +223,7 @@ impl Fixture {
 fn a_stopped_vm_branches_into_children_of_one_frozen_base() {
     let fx = Fixture::new("libvirt");
     let mut hv = Hv::default();
-    let outcome = fx.branch(&mut hv, "dev a b").unwrap();
+    let outcome = fx.branch(&mut hv, "dev a b --no-admit").unwrap();
     let registry = fx.registry();
     assert_eq!(registry.bases.len(), 1, "{:?}", registry.bases);
     let (id, base) = fx.base_of("dev");
@@ -298,8 +311,6 @@ fn a_stopped_vm_branches_into_children_of_one_frozen_base() {
                 "{name}'s domain lacks {needle}:\n{xml}"
             );
         }
-        // Stable across boots: a later redefinition (swap kernel --direct)
-        // keeps the recorded UUID without asking libvirt.
         let mut later = Hv::default();
         let vm = Vm { name, entry };
         hypervisor::Libvirt
@@ -335,16 +346,12 @@ fn a_stopped_vm_branches_into_children_of_one_frozen_base() {
     assert!(list.contains("used by a, b, dev"), "{list}");
 
     let mut again = Hv::default();
-    let rerun = fx.branch(&mut again, "dev a b").unwrap();
+    let rerun = fx.branch(&mut again, "dev a b --no-admit").unwrap();
     assert!(rerun.text.contains("nothing to do"), "{}", rerun.text);
     assert!(again.ran.is_empty(), "{:?}", again.ran);
     assert_eq!(fx.registry(), registry);
 }
 
-/// What cannot be branched is refused before anything changes: a running,
-/// paused or unknown-state source (with the --stop fix), names that clash,
-/// a VM tilo-vm did not make, adapters without a branch path, and a disk
-/// in the way.
 #[test]
 fn a_running_source_and_bad_requests_are_refused_without_a_change() {
     let fx = Fixture::new("libvirt");
@@ -374,7 +381,7 @@ fn a_running_source_and_bad_requests_are_refused_without_a_change() {
         fail: Some("domstate".into()),
         ..Hv::default()
     };
-    let error = fx.branch(&mut silent, "dev a").err().unwrap();
+    let error = fx.branch(&mut silent, "dev a --no-admit").err().unwrap();
     assert!(
         error.to_string().contains("did not say whether it is off"),
         "{error}"
@@ -392,12 +399,15 @@ fn a_running_source_and_bad_requests_are_refused_without_a_change() {
         unchanged(&fx);
     }
     assert!(matches!(
-        fx.branch(&mut Hv::default(), "nope a"),
+        fx.branch(&mut Hv::default(), "nope a --no-admit"),
         Err(CliError::UnknownVm { .. })
     ));
 
     std::fs::write(fx.path("vms/a.qcow2"), "someone's").unwrap();
-    let error = fx.branch(&mut Hv::default(), "dev a").err().unwrap();
+    let error = fx
+        .branch(&mut Hv::default(), "dev a --no-admit")
+        .err()
+        .unwrap();
     assert!(matches!(error, CliError::DiskExists { .. }), "{error}");
     std::fs::remove_file(fx.path("vms/a.qcow2")).unwrap();
     unchanged(&fx);
@@ -418,13 +428,19 @@ fn a_running_source_and_bad_requests_are_refused_without_a_change() {
         registry.vms.insert(adapter.into(), other.clone());
     }
     registry.save(&fx.app.registry_path).unwrap();
-    let error = fx.branch(&mut Hv::default(), "dev taken").err().unwrap();
+    let error = fx
+        .branch(&mut Hv::default(), "dev taken --no-admit")
+        .err()
+        .unwrap();
     assert!(
         error.hint().contains("tilo-vm vm rm taken"),
         "{}",
         error.hint()
     );
-    let error = fx.branch(&mut Hv::default(), "shared a").err().unwrap();
+    let error = fx
+        .branch(&mut Hv::default(), "shared a --no-admit")
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("did not create it"), "{error}");
     for (adapter, says) in [
         ("qemu", "--hypervisor libvirt"),
@@ -438,12 +454,10 @@ fn a_running_source_and_bad_requests_are_refused_without_a_change() {
     }
 }
 
-/// Removing the source keeps its branches bootable; the base lives until
-/// the last VM using it goes, and then goes with it.
 #[test]
 fn removing_the_source_keeps_branches_and_the_base_until_the_last_user() {
     let mut fx = Fixture::new("libvirt");
-    fx.branch(&mut Hv::default(), "dev a b").unwrap();
+    fx.branch(&mut Hv::default(), "dev a b --no-admit").unwrap();
     let (id, base) = fx.base_of("a");
 
     let mut hv = Hv::default();
@@ -459,7 +473,6 @@ fn removing_the_source_keeps_branches_and_the_base_until_the_last_user() {
     assert!(outcome.text.contains("a, b still use"), "{}", outcome.text);
     assert_eq!(std::fs::read(&base.disk).unwrap(), SETUP);
     for name in ["a", "b"] {
-        // What a boot of the branch reads: its own disk over the base.
         let entry = &fx.registry().vms[name];
         assert!(
             Path::new(entry.disk.as_deref().unwrap()).is_file(),
@@ -492,15 +505,13 @@ fn removing_the_source_keeps_branches_and_the_base_until_the_last_user() {
     );
 }
 
-/// A branch of a branch freezes the branch's disk into a base over the
-/// first one; each base goes once nothing above it is left.
 #[test]
 fn a_branch_of_a_branch_chains_its_base_onto_the_first() {
     let mut fx = Fixture::new("libvirt");
-    fx.branch(&mut Hv::default(), "dev a").unwrap();
+    fx.branch(&mut Hv::default(), "dev a --no-admit").unwrap();
     let (first, first_base) = fx.base_of("a");
     std::fs::write(fx.path("vms/a.qcow2"), b"QFI\xfb a's own changes").unwrap();
-    fx.branch(&mut Hv::default(), "a a2").unwrap();
+    fx.branch(&mut Hv::default(), "a a2 --no-admit").unwrap();
     let (second, second_base) = fx.base_of("a2");
     assert_ne!(first, second);
     assert_eq!(second_base.from, "a");
@@ -532,10 +543,6 @@ fn a_branch_of_a_branch_chains_its_base_onto_the_first() {
     assert!(fx.registry().bases.is_empty(), "{}", outcome.text);
 }
 
-/// A failure midway keeps the branches made before it, registered and
-/// working, removes what the failed one left, and the same command then
-/// makes only the rest. A failure on the first branch puts the source's
-/// disk back as it was.
 #[test]
 fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     let fx = Fixture::new("libvirt");
@@ -544,7 +551,7 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
         fail: Some(format!("define {b}.xml")),
         ..Hv::default()
     };
-    let error = fx.branch(&mut hv, "dev a b c").err().unwrap();
+    let error = fx.branch(&mut hv, "dev a b c --no-admit").err().unwrap();
     assert!(matches!(error, CliError::Branch { .. }), "{error}");
     assert!(error.to_string().contains("making b failed"), "{error}");
     assert!(
@@ -557,10 +564,8 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
         "{}",
         error.hint()
     );
-    assert!(
-        hv.ran.iter().all(|c| !c.contains("c.qcow2")),
-        "c is not attempted"
-    );
+    let untouched = naming(&hv.ran, &fx.path("vms/c.qcow2"));
+    assert!(untouched.is_empty(), "c is not attempted: {untouched:?}");
     assert!(
         hv.ran.iter().all(|c| !c.contains("undefine")),
         "b was never defined"
@@ -576,17 +581,14 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     assert!(Path::new(&base.disk).is_file());
 
     let mut rerun = Hv::default();
-    let outcome = fx.branch(&mut rerun, "dev a b c").unwrap();
+    let outcome = fx.branch(&mut rerun, "dev a b c --no-admit").unwrap();
     assert!(
         outcome.text.contains("already branched from dev: a"),
         "{}",
         outcome.text
     );
-    assert!(
-        rerun.ran.iter().all(|c| !c.contains("a.qcow2")),
-        "{:?}",
-        rerun.ran
-    );
+    let remade = naming(&rerun.ran, &fx.path("vms/a.qcow2"));
+    assert!(remade.is_empty(), "a is already made: {remade:?}");
     let registry = fx.registry();
     assert!(
         ["a", "b", "c"]
@@ -596,14 +598,13 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     assert_eq!(fx.base_of("a").0, first, "a keeps its base");
     assert_eq!(fx.base_of("b").1.image.as_deref(), Some(base.disk.as_str()));
 
-    // The first branch fails: nothing changes.
     let fx = Fixture::new("libvirt");
     let before = fx.registry();
     let mut hv = Hv {
         fail: Some(fx.path("vms/a.qcow2")),
         ..Hv::default()
     };
-    let error = fx.branch(&mut hv, "dev a b").err().unwrap();
+    let error = fx.branch(&mut hv, "dev a b --no-admit").err().unwrap();
     assert!(
         error.hint().contains("nothing was changed"),
         "{}",
@@ -619,9 +620,6 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
     assert_eq!(bases, 0);
 }
 
-/// UTM: each branch is a clone of the stopped source (UTM clones the
-/// bundle copy-on-write), which tilo-vm gives a new MAC and whose new UUID
-/// it checks and records. A clone with the source's UUID is undone.
 #[test]
 fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
     let fx = Fixture::new("utm");
@@ -630,7 +628,7 @@ fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
         ids: BTreeMap::from([("dev".to_owned(), source_id.to_owned())]),
         ..Hv::default()
     };
-    fx.branch(&mut hv, "dev u1").unwrap();
+    fx.branch(&mut hv, "dev u1 --no-admit").unwrap();
     let registry = fx.registry();
     let u1 = &registry.vms["u1"];
     let mac = u1.nic_mac.clone().unwrap();
@@ -669,7 +667,7 @@ fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
     );
 
     let error = fx
-        .branch(&mut Hv::running("dev", "started"), "dev u2")
+        .branch(&mut Hv::running("dev", "started"), "dev u2 --no-admit")
         .err()
         .unwrap();
     assert!(error.hint().contains("--stop"), "{}", error.hint());
@@ -679,7 +677,7 @@ fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
         same_uuid: true,
         ..Hv::default()
     };
-    let error = fx.branch(&mut same, "dev u2").err().unwrap();
+    let error = fx.branch(&mut same, "dev u2 --no-admit").err().unwrap();
     assert!(error.to_string().contains("gave u2 dev's UUID"), "{error}");
     assert_eq!(
         same.ran.last().map(String::as_str),
@@ -689,13 +687,11 @@ fn utm_branches_are_clones_with_a_new_mac_and_a_checked_uuid() {
     assert!(!sshkey::key_path(&fx.app.registry_path, "u2").exists());
 }
 
-/// WHPX: the base and children as on libvirt, and QEMU gets each VM's UUID
-/// (`-uuid`, its SMBIOS system UUID) and MAC.
 #[test]
 fn whpx_branches_pass_their_uuid_and_mac_to_qemu() {
     let fx = Fixture::new("whpx");
     let mut hv = Hv::default();
-    fx.branch(&mut hv, "dev w1").unwrap();
+    fx.branch(&mut hv, "dev w1 --no-admit").unwrap();
     let (_, base) = fx.base_of("w1");
     let w1 = fx.path("vms/w1.qcow2");
     assert!(
@@ -720,5 +716,417 @@ fn whpx_branches_pass_their_uuid_and_mac_to_qemu() {
     assert!(
         start.contains(&format!("virtio-net-pci,netdev=net0,mac={mac}")),
         "{start}"
+    );
+}
+
+#[derive(Default)]
+struct World {
+    log: Rc<RefCell<Vec<String>>>,
+    memory: Option<u64>,
+    clock: Duration,
+    answers: BTreeMap<String, VecDeque<Option<Guest>>>,
+}
+
+impl Guests for World {
+    fn available_memory_mb(&mut self) -> Option<u64> {
+        self.memory
+    }
+
+    fn read(
+        &mut self,
+        vm: &str,
+        _slots: Option<&BTreeSet<String>>,
+        _wake: bool,
+    ) -> Result<Option<Guest>, CliError> {
+        self.log.borrow_mut().push(format!("read {vm}"));
+        let queue = self
+            .answers
+            .entry(vm.to_owned())
+            .or_insert_with(|| VecDeque::from([Some(taken_in(vm))]));
+        Ok(if queue.len() > 1 {
+            queue.pop_front().unwrap()
+        } else {
+            queue.front().cloned().unwrap()
+        })
+    }
+
+    fn pause(&mut self) {
+        self.clock = self.clock.saturating_add(Duration::from_secs(5));
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.clock
+    }
+}
+
+fn taken_in(vm: &str) -> Guest {
+    Guest {
+        key: Some(format!("key of {vm}")),
+        recorded: true,
+        slots: BTreeMap::from([(
+            "me".to_owned(),
+            Some(vec![Held {
+                room: "room-desk".into(),
+                name: "Desk".into(),
+                host: "dev".into(),
+                hosted_here: vm == "dev",
+                awaiting: false,
+            }]),
+        )]),
+    }
+}
+
+fn coming_up(vm: &str) -> VecDeque<Option<Guest>> {
+    let mut before = taken_in(vm);
+    before.recorded = false;
+    before.key = Some("key of dev".into());
+    let mut waiting = taken_in(vm);
+    if let Some(Some(held)) = waiting.slots.get_mut("me") {
+        held[0].awaiting = true;
+    }
+    VecDeque::from([
+        None,
+        Some(before),
+        Some(waiting.clone()),
+        Some(waiting),
+        Some(taken_in(vm)),
+    ])
+}
+
+impl World {
+    fn shared(log: &Rc<RefCell<Vec<String>>>) -> Self {
+        Self {
+            log: Rc::clone(log),
+            ..Self::default()
+        }
+    }
+}
+
+fn steps(log: &Rc<RefCell<Vec<String>>>) -> Vec<String> {
+    log.borrow()
+        .iter()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split(' ').collect();
+            match words.as_slice() {
+                ["read", vm] => Some(format!("read {vm}")),
+                ["virsh", _, _, verb @ ("start" | "shutdown"), vm] => Some(format!("{verb} {vm}")),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn shared_hv(log: &Rc<RefCell<Vec<String>>>) -> Hv {
+    Hv {
+        log: Rc::clone(log),
+        ..Hv::default()
+    }
+}
+
+#[test]
+fn branches_boot_once_beside_their_source_to_be_taken_in_then_everything_stops() {
+    let fx = Fixture::new("libvirt");
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    let mut world = World::shared(&log);
+    world.answers.insert("a".into(), coming_up("a"));
+    let outcome = fx.branch_in(&mut hv, &mut world, "dev a b").unwrap();
+    assert_eq!(
+        steps(&log),
+        [
+            "start dev",
+            "read dev",
+            "start a",
+            "start b",
+            "read a",
+            "read b",
+            "read a",
+            "read a",
+            "read a",
+            "read a",
+            "shutdown a",
+            "shutdown b",
+            "shutdown dev",
+        ],
+        "{:#?}",
+        log.borrow()
+    );
+    assert!(
+        outcome.text.contains("a, b booted once beside dev"),
+        "{}",
+        outcome.text
+    );
+    assert_eq!(outcome.data["admitted"], json!(["a", "b"]));
+    let registry = fx.registry();
+    for name in ["dev", "a", "b"] {
+        assert!(registry.vms[name].awaits_host.is_none(), "{name}");
+        assert_eq!(
+            hv.state.get(name).map(String::as_str),
+            Some("shut off"),
+            "{name} is off again"
+        );
+    }
+}
+
+#[test]
+fn branches_boot_in_batches_that_fit_the_hosts_memory() {
+    let fx = Fixture::new("libvirt");
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    let mut world = World::shared(&log);
+    world.memory = Some(branch_admit::HOST_RESERVE_MB + 3 * 8192);
+    fx.branch_in(&mut hv, &mut world, "dev a b c").unwrap();
+    assert_eq!(
+        steps(&log),
+        [
+            "start dev",
+            "read dev",
+            "start a",
+            "start b",
+            "read a",
+            "read b",
+            "shutdown a",
+            "shutdown b",
+            "start c",
+            "read c",
+            "shutdown c",
+            "shutdown dev",
+        ]
+    );
+    assert_eq!(
+        branch_admit::batches(("dev", 8192), &[("a".into(), 8192)], Some(4096)),
+        Err("dev needs 8192 MiB to boot and the host has 4096 MiB free (keeping 2048 MiB for itself)".into())
+    );
+
+    let fx = Fixture::new("libvirt");
+    let before = fx.registry();
+    let mut world = World {
+        memory: Some(6000),
+        ..World::default()
+    };
+    let mut hv = Hv::default();
+    let error = fx.branch_in(&mut hv, &mut world, "dev a").err().unwrap();
+    assert!(
+        error.to_string().contains("dev needs 8192 MiB to boot"),
+        "{error}"
+    );
+    assert!(
+        error.hint().contains("tilo-vm vm branch dev a --no-admit"),
+        "{}",
+        error.hint()
+    );
+    assert!(error.hint().contains("free memory"), "{}", error.hint());
+    assert_eq!(fx.registry(), before, "nothing was made");
+    assert!(
+        hv.ran.iter().all(|c| !c.contains("qemu-img")),
+        "{:?}",
+        hv.ran
+    );
+}
+
+#[test]
+fn a_branch_not_taken_in_in_time_names_the_workspace_and_a_rerun_takes_it_in() {
+    let fx = Fixture::new("libvirt");
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    let mut world = World::shared(&log);
+    let mut waiting = taken_in("a");
+    if let Some(Some(held)) = waiting.slots.get_mut("me") {
+        held[0].awaiting = true;
+    }
+    world
+        .answers
+        .insert("a".into(), VecDeque::from([Some(waiting)]));
+    let error = fx
+        .branch_in(&mut hv, &mut world, "dev a --admit-timeout 20")
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("a: Desk (slot me) has not taken it in yet"),
+        "{error}"
+    );
+    assert!(
+        error.hint().contains("a made and registered, not booted"),
+        "{}",
+        error.hint()
+    );
+    assert!(
+        error
+            .hint()
+            .contains("rerun to try again: tilo-vm vm branch dev a"),
+        "{}",
+        error.hint()
+    );
+    let last: Vec<String> = steps(&log).into_iter().rev().take(2).collect();
+    assert_eq!(last, ["shutdown dev", "shutdown a"]);
+    assert!(fx.registry().vms["a"].awaits_host.is_some());
+
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    let mut world = World::shared(&log);
+    let outcome = fx.branch_in(&mut hv, &mut world, "dev a").unwrap();
+    assert!(
+        outcome.text.contains("a booted once beside dev"),
+        "{}",
+        outcome.text
+    );
+    assert!(
+        hv.ran.iter().all(|c| !c.contains("qemu-img")),
+        "nothing is made again"
+    );
+    assert_eq!(
+        steps(&log),
+        [
+            "start dev",
+            "read dev",
+            "start a",
+            "read a",
+            "shutdown a",
+            "shutdown dev"
+        ]
+    );
+    assert!(fx.registry().vms["a"].awaits_host.is_none());
+
+    let fx = Fixture::new("libvirt");
+    let mut world = World::default();
+    let mut kept = taken_in("b");
+    kept.key = Some("key of dev".into());
+    world
+        .answers
+        .insert("b".into(), VecDeque::from([Some(kept)]));
+    let error = fx
+        .branch_in(&mut Hv::default(), &mut world, "dev b")
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("b kept dev's device key"),
+        "{error}"
+    );
+    assert!(
+        error.hint().contains("boot dev once on a current image"),
+        "{}",
+        error.hint()
+    );
+}
+
+#[test]
+fn no_admit_boots_nothing_and_a_running_source_stays_running() {
+    let fx = Fixture::new("libvirt");
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    let mut world = World::shared(&log);
+    let outcome = fx
+        .branch_in(&mut hv, &mut world, "dev a --no-admit")
+        .unwrap();
+    assert!(steps(&log).is_empty(), "{:?}", steps(&log));
+    assert!(
+        outcome.text.contains("not booted (--no-admit)"),
+        "{}",
+        outcome.text
+    );
+    assert!(fx.registry().vms["a"].awaits_host.is_some());
+
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    hv.state.insert("dev".into(), "running".into());
+    let mut world = World::shared(&log);
+    fx.branch_in(&mut hv, &mut world, "dev a").unwrap();
+    assert_eq!(steps(&log), ["read dev", "start a", "read a", "shutdown a"]);
+    assert_eq!(hv.state["dev"], "running");
+    assert!(fx.registry().vms["a"].awaits_host.is_none());
+}
+
+#[test]
+fn a_branch_that_does_not_boot_leaves_everything_made_and_off() {
+    let fx = Fixture::new("libvirt");
+    let log = Rc::default();
+    let mut hv = Hv {
+        fail: Some("start b".into()),
+        ..shared_hv(&log)
+    };
+    let mut world = World::shared(&log);
+    let error = fx.branch_in(&mut hv, &mut world, "dev a b").err().unwrap();
+    assert!(error.to_string().contains("b did not boot"), "{error}");
+    assert_eq!(
+        steps(&log),
+        [
+            "start dev",
+            "read dev",
+            "start a",
+            "start b",
+            "shutdown a",
+            "shutdown dev"
+        ]
+    );
+    let registry = fx.registry();
+    assert!(registry.vms["a"].awaits_host.is_some() && registry.vms["b"].awaits_host.is_some());
+    assert!(
+        hv.state.values().all(|state| state == "shut off"),
+        "{:?}",
+        hv.state
+    );
+
+    let log = Rc::default();
+    let mut hv = shared_hv(&log);
+    let mut world = World::shared(&log);
+    fx.branch_in(&mut hv, &mut world, "dev a b").unwrap();
+    let registry = fx.registry();
+    assert!(registry.vms["a"].awaits_host.is_none() && registry.vms["b"].awaits_host.is_none());
+}
+
+#[test]
+fn a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait() {
+    let answer = json!({"answer": {"workspaces": [
+        {"room": "room-desk", "name": "Desk", "host": "dev", "hosted_here": false, "awaiting_host": true},
+        {"room": "room-old", "name": ""},
+    ]}});
+    assert_eq!(
+        branch_admit::held_of(&answer),
+        [
+            Held {
+                room: "room-desk".into(),
+                name: "Desk".into(),
+                host: "dev".into(),
+                hosted_here: false,
+                awaiting: true
+            },
+            Held {
+                room: "room-old".into(),
+                name: "room-old".into(),
+                ..Held::default()
+            },
+        ]
+    );
+    let vm_stat = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               1000.\nPages active:                             5000.\nPages inactive:                           2000.\nPages speculative:                        1000.\n";
+    assert_eq!(
+        branch_admit::vm_stat_free_mb(vm_stat),
+        Some((4000 * 16384) >> 20)
+    );
+}
+
+#[test]
+fn the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    let line = branch_admit::machine_line();
+    assert_eq!(line.len(), 1, "{line:?}");
+    let dir = tempfile::tempdir().unwrap();
+    let private = dir.path().join("var/lib/tilo/device-private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::write(private.join("keypair.bin"), b"key").unwrap();
+    let joined = line.join(" ").replace(
+        "/var/lib/tilo/device-private",
+        &private.display().to_string(),
+    );
+    let out = std::process::Command::new("sh")
+        .args(["-c", &joined])
+        .current_dir(dir.path())
+        .output_locked()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains("KEY="),
+        "the whole script ran where the record is: {said:?}"
     );
 }

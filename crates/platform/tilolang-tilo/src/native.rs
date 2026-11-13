@@ -33,7 +33,7 @@ use tilolang_runtime::query::Order;
 use tilolang_runtime::reads::{ReadAnswer, ReadRequest};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{
-    FieldRead, FieldValue, Lit, Pred, Scalar, StoreError, lit_of, ordered_cmp,
+    FieldRead, FieldValue, Lit, Pred, Scalar, StoreError, field_lit_of, lit_of, ordered_cmp,
 };
 use tilolang_runtime::value::split_id;
 
@@ -769,10 +769,11 @@ impl Held<'_> {
             .unwrap_or_else(|| field_or_default(self.schema, field)))
     }
 
-    /// The field a predicate reads, as it compares it.
+    /// The field a predicate reads, as it compares it: a rich text as the text it is written
+    /// as, as every store reads it.
     fn lit(&mut self, read: &FieldRead) -> Result<Lit, StoreError> {
         let value = self.get(&read.spec.id).map_err(StoreError::Backend)?;
-        read.lit(value)
+        field_lit_of(read, value)
     }
 }
 

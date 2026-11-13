@@ -7,7 +7,9 @@
 //! process of its own; `cargo test` runs them as threads of one. A test that
 //! holds such state runs its body through [`in_own_process`], which under
 //! `cargo test` starts the test binary again for that one test, so no other
-//! test ever shares the process with it.
+//! test ever shares the process with it. A test whose body is a future its
+//! attribute drives asks [`in_own_process_here`] instead and returns when it
+//! answers `false`.
 
 #![allow(
     clippy::panic,
@@ -40,39 +42,93 @@ const CHILD_PROOF: &str = "TILO_TEST_OWN_PROCESS_PROOF";
 /// When the child cannot be started, fails, or exits without running `body`.
 #[track_caller]
 pub fn in_own_process(module: &str, test: &str, body: impl FnOnce()) {
-    // libtest names a test by its path within the crate.
-    let name = match module.split_once("::") {
-        Some((_, within)) => format!("{within}::{test}"),
-        None => test.to_owned(),
-    };
-    let per_test = env::var_os("NEXTEST_EXECUTION_MODE")
-        .is_some_and(|mode| mode == OsStr::new("process-per-test"));
-    if per_test {
-        body();
+    let name = test_path(module, test);
+    if shared_with_other_tests() && !is_the_child(&name) {
+        let scratch = tempfile::tempdir().expect("a directory for the child's proof");
+        let proof = scratch.path().join("ran");
+        let status = run_child(&name, &proof);
+        assert!(
+            status.success(),
+            "{name}, in a process of its own, failed: {status}"
+        );
+        assert_eq!(
+            fs::read_to_string(&proof).ok().as_deref(),
+            Some(name.as_str()),
+            "the process started for {name} did not run it"
+        );
         return;
     }
-    if env::var_os(CHILD_TEST).is_some_and(|child| child == OsStr::new(&name)) {
-        body();
+    body();
+    if is_the_child(&name) {
         let proof = env::var_os(CHILD_PROOF).expect("the child knows where to record its end");
         fs::write(proof, &name).expect("the child records its end");
-        return;
     }
-    let scratch = tempfile::tempdir().expect("a directory for the child's proof");
-    let proof = scratch.path().join("ran");
-    let binary = env::current_exe().expect("the test binary");
-    let status = run_child(&binary, &name, &proof);
-    assert!(
-        status.success(),
-        "{name}, in a process of its own, failed: {status}"
-    );
-    assert_eq!(
-        fs::read_to_string(&proof).ok().as_deref(),
-        Some(name.as_str()),
-        "the process started for {name} did not run it"
-    );
 }
 
-fn run_child(binary: &Path, name: &str, proof: &Path) -> std::process::ExitStatus {
+/// Whether this is the process of its own for the test `test` of `module`,
+/// starting one and waiting for it to pass when it is not.
+///
+/// [`in_own_process`] without a body to run, for a test whose body is a
+/// future its attribute drives: that body cannot run inside a closure here,
+/// so such a test asks this first and returns when it answers `false`, which
+/// is the shared process that just started and waited for its own.
+///
+/// # Panics
+///
+/// When the child cannot be started, fails, or does not pass.
+#[must_use]
+#[track_caller]
+pub fn in_own_process_here(module: &str, test: &str) -> bool {
+    let name = test_path(module, test);
+    if !shared_with_other_tests() || is_the_child(&name) {
+        return true;
+    }
+    // The child copies the environment as it starts: start it while no
+    // other test's scope has the environment changed.
+    let output = Command::new(env::current_exe().expect("the test binary"))
+        .args([
+            "--exact",
+            name.as_str(),
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
+        .env(CHILD_TEST, &name)
+        .output_locked()
+        .unwrap_or_else(|error| panic!("run {name} in a process of its own: {error}"));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{name}, in a process of its own, failed: {}\n{stdout}\n{stderr}",
+        output.status
+    );
+    false
+}
+
+/// The test `test` of `module` as libtest names it: its path within the
+/// crate.
+fn test_path(module: &str, test: &str) -> String {
+    match module.split_once("::") {
+        Some((_, within)) => format!("{within}::{test}"),
+        None => test.to_owned(),
+    }
+}
+
+/// Whether this process runs the tests of its binary together, as `cargo
+/// test` does; nextest gives every test a process of its own.
+fn shared_with_other_tests() -> bool {
+    env::var_os("NEXTEST_EXECUTION_MODE").is_none_or(|mode| mode != OsStr::new("process-per-test"))
+}
+
+fn is_the_child(name: &str) -> bool {
+    env::var_os(CHILD_TEST).is_some_and(|child| child == OsStr::new(name))
+}
+
+fn run_child(name: &str, proof: &Path) -> std::process::ExitStatus {
+    let binary = env::current_exe().expect("the test binary");
     let mut command = Command::new(binary);
     command
         .args(["--exact", name, "--nocapture", "--test-threads", "1"])

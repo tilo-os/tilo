@@ -148,6 +148,8 @@ impl Holder for NativeHolder {
 pub(super) struct NativeLink {
     pub scope: Arc<Scope>,
     pub link: Arc<DirectSync>,
+    /// What this link sent of the device's custody of the workspace.
+    sending: tilo_session_client::custody::Sending,
     /// Held while the workspace's hold runs this link; let go with it.
     held: Option<tokio::sync::oneshot::Sender<()>>,
     pump: tokio::task::JoinHandle<()>,
@@ -155,24 +157,99 @@ pub(super) struct NativeLink {
 
 impl Drop for NativeLink {
     fn drop(&mut self) {
-        self.scope.close();
         // The workspace's hold dials again once its link is let go.
         drop(self.held.take());
         self.pump.abort();
     }
 }
 
+/// How a message this device publishes into a workspace it takes part in over
+/// its host's link travels there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Carried {
+    /// Over the link itself, as this device's own: a sealed write, which the
+    /// workspace's governor never admits and its host keeps for the record's
+    /// channel members, the workspace's channel governance, which the host
+    /// takes in and sends on to the other members, and an ask for a record's
+    /// content, which the host answers or hands to the member keeping it.
+    Link,
+    /// In the workspace's own publication: a cleartext write, which the
+    /// device's engine published already and the link publishes in order.
+    Publication,
+    /// Nowhere: the link syncs the workspace's state by itself.
+    Nowhere,
+}
+
+/// How `msg` travels in a workspace this device takes part in over its
+/// host's link; `None` for what goes on the workspace's live plane instead.
+pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
+    match msg {
+        NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
+            Some(Carried::Link)
+        }
+        _ if is_channel_governance(msg) || is_record_content(msg) => Some(Carried::Link),
+        NeighbourMsg::AppDocument { .. } => Some(Carried::Publication),
+        NeighbourMsg::SyncReq { .. } | NeighbourMsg::SyncResp { .. } => Some(Carried::Nowhere),
+        _ => None,
+    }
+}
+
+/// Whether `msg` is a workspace's channel governance: a frame of a channel's
+/// group, a device asking to join one, or the host's word that one has none.
+pub(super) fn is_channel_governance(msg: &NeighbourMsg) -> bool {
+    msg.channel_workspace().is_some()
+}
+
+/// Whether `msg` is about a record's content: a member asking the workspace
+/// for the bytes a record names, or a device answering with the pieces it keeps
+/// or with word that it keeps none. It is live traffic between the workspace's
+/// members, never their state, and travels as such.
+pub(super) fn is_record_content(msg: &NeighbourMsg) -> bool {
+    matches!(
+        msg,
+        NeighbourMsg::RecordContentWant { .. }
+            | NeighbourMsg::RecordContentPiece { .. }
+            | NeighbourMsg::RecordContentLacks { .. }
+    )
+}
+
+/// The message event `heard`, a frame a workspace's link brought, is for this
+/// device's apps when it is about a record's content: an ask or an answer
+/// reaches them as the same frame sent on the workspace's topic does, from the
+/// device that authored it. `None` for everything else, which is the
+/// workspace's state the link admitted.
+pub(super) fn content_message(
+    ws: u64,
+    heard: &tilo_peer_state::direct::Heard,
+) -> Option<super::NetEvent> {
+    if !is_record_content(&heard.message) {
+        return None;
+    }
+    let peer = iroh::EndpointId::from_bytes(&heard.author).ok()?;
+    Some(super::NetEvent::Msg {
+        ws,
+        peer,
+        membership_epoch: None,
+        replayed: heard.retained,
+        msg: heard.message.clone(),
+    })
+}
+
 impl ActorState {
-    /// Send `msg`, a member's own write, to the workspace's host as its link
-    /// carries it: the link keeps it at its store, and the next link the
-    /// workspace has sends it again.
-    pub(super) fn publish_sealed_native(&self, ws: u64, msg: &NeighbourMsg) {
+    /// Send `msg` to the workspace's host over the link up now
+    /// ([`Carried::Link`]). A sealed write is kept at the link's store, and
+    /// the next link the workspace has sends it again; channel governance
+    /// with no link up waits for the next one, which sends what this device
+    /// remembers of it as it connects.
+    pub(super) fn publish_over_link(&self, ws: u64, msg: &NeighbourMsg) {
         if let Some(link) = self.native_links.get(&ws)
             && let Err(error) = link.link.send(msg.clone())
         {
-            tracing::debug!(ws, %error, "sealed write kept for the workspace's next link");
+            tracing::debug!(ws, %error, "kept for the workspace's next link");
         }
-        self.tell_unsynced(ws);
+        if !is_channel_governance(msg) {
+            self.tell_unsynced(ws);
+        }
     }
 
     /// Tell the workspace on topic `ws`'s apps how many of this device's writes
@@ -203,10 +280,158 @@ impl ActorState {
         let Some(link) = self.native_links.get(&ws) else {
             return;
         };
-        let input = Input::heard(Arc::clone(&link.scope), heard);
+        // A record's content is the workspace's members' own traffic, never its
+        // state: an ask or an answer reaches this device's apps as one sent on
+        // the workspace's topic does, so the content service keeping what its
+        // records name hears it.
+        if is_record_content(&heard.message) {
+            self.deliver_content(ws, &heard).await;
+            return;
+        }
+        // The devices that take part through this one hear the rest of the
+        // workspace through it alone. Its channels' governance goes to them
+        // with the rest of what the channel service hears.
+        if let Some(members) = &self.members
+            && heard.report.is_ok()
+            && !is_channel_governance(&heard.message)
+        {
+            members.carry(link.scope.workspace(), heard.author, heard.message.clone());
+        }
+        self.deliver(ws, Arc::clone(&link.scope), heard).await;
+    }
+
+    /// Hand `heard`, a frame of the workspace on topic `ws` about a record's
+    /// content, to this device's apps as the message its author sent, as one
+    /// arriving on the workspace's topic is: the content service keeps the
+    /// ask or answer, and the workspace's state keeps none of it.
+    async fn deliver_content(&self, ws: u64, heard: &tilo_peer_state::direct::Heard) {
+        let Some(message) = content_message(ws, heard) else {
+            return;
+        };
+        self.tally.note(heard.message.kind());
+        self.publish_to_subscriber(ws, message).await;
+    }
+
+    /// Hand `heard`, a frame of the workspace on topic `ws` that this
+    /// device's owner took in under `scope`, to this device's apps.
+    async fn deliver(&self, ws: u64, scope: Arc<Scope>, heard: tilo_peer_state::direct::Heard) {
+        let input = Input::heard(scope, heard);
         self.tally.note(super::heard_kind(&input));
         self.publish_to_subscriber(ws, super::NetEvent::NativeInput(Box::new(input)))
             .await;
+    }
+
+    /// Relay for `members`, the devices that take part in this device's
+    /// workspaces through it: what their links bring reaches
+    /// [`Self::member_heard`].
+    pub(super) fn serve_members(&mut self, members: tilo_peer_state::direct::Owning) {
+        let (tell, mut told) = tokio::sync::mpsc::unbounded_channel();
+        members.hear(Arc::new(move |workspace, heard| {
+            let _ = tell.send((workspace, heard.clone()));
+        }));
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            while let Some((workspace, heard)) = told.recv().await {
+                let ws = crate::workspace_topic_id(workspace);
+                if tx
+                    .send(InternalEvent::MemberHeard {
+                        ws,
+                        workspace,
+                        heard,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        self.members = Some(members);
+    }
+
+    /// A frame a device that takes part in `workspace` (on topic `ws`)
+    /// through this one wrote, which this device's owner took in: it reaches
+    /// this device's apps, and the workspace's own host over this device's
+    /// link when one is up, so the devices that take part there read it too.
+    /// A workspace this device hosts itself has no link: its apps take the
+    /// frame all the same. Its link already sent it to this device's other
+    /// members. The channels' governance takes its own path, through the
+    /// channel service.
+    pub(super) async fn member_heard(
+        &mut self,
+        ws: u64,
+        workspace: tilo_desktop_model::WorkspaceId,
+        heard: tilo_peer_state::direct::Heard,
+    ) {
+        if (heard.report.is_err() && !is_record_content(&heard.message))
+            || is_channel_governance(&heard.message)
+        {
+            return;
+        }
+        // A record's content is live traffic, never the workspace's state: a
+        // device with no link has no host to hand it to, and its apps read it
+        // as the frame sent on the workspace's topic.
+        let content = is_record_content(&heard.message);
+        let scope = if let Some(link) = self.native_links.get(&ws) {
+            // A record's content a member asks for or answers reaches the workspace's
+            // host over this device's link as its writes do.
+            if (content || matches!(heard.message, NeighbourMsg::AppDocument { .. }))
+                && let Err(error) = link.link.send(heard.message.clone())
+            {
+                tracing::debug!(ws, %error, "a member's write waits for the workspace's next link");
+            }
+            Some(Arc::clone(&link.scope))
+        } else {
+            self.member_scope(ws, workspace)
+        };
+        if content {
+            self.deliver_content(ws, &heard).await;
+            return;
+        }
+        let Some(scope) = scope else {
+            tracing::debug!(
+                ws,
+                "a member's frame reaches no app: this device holds no custody of the workspace"
+            );
+            return;
+        };
+        self.deliver(ws, scope, heard).await;
+    }
+
+    /// What this device's apps take the members' frames of `workspace` (on
+    /// topic `ws`) under while no link of it is up: this device's own custody
+    /// of the workspace, as a link to it would hold it. `None` when this
+    /// device holds none.
+    fn member_scope(
+        &mut self,
+        ws: u64,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Option<Arc<Scope>> {
+        if let Some(scope) = self.member_scopes.get(&ws) {
+            return Some(Arc::clone(scope));
+        }
+        let (members, identity) = (self.members.as_ref()?, self.host_identity.as_ref()?);
+        let connect = Connect::new(members.owner().clone(), workspace).ok()?;
+        let (hint, cert, continuity) = connect.material(identity).ok()?;
+        let scope = Arc::new(Scope::via(connect, hint.clone(), hint, cert, continuity));
+        self.member_scopes.insert(ws, Arc::clone(&scope));
+        Some(scope)
+    }
+
+    /// Send `msg`, a write this device publishes, to the devices that take
+    /// part in its workspace through this one: they read the workspace
+    /// through this device alone.
+    pub(super) fn carry_own(&self, msg: &NeighbourMsg) {
+        let (Some(members), Some(identity)) = (&self.members, &self.host_identity) else {
+            return;
+        };
+        let NeighbourMsg::AppDocument { cluster_id, .. } = msg else {
+            return;
+        };
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(cluster_id) else {
+            return;
+        };
+        members.carry(workspace, identity.device_public_key(), msg.clone());
     }
 
     /// The workspace on topic `ws`'s link has its host's retained history in
@@ -222,12 +447,32 @@ impl ActorState {
             return;
         };
         let peer = payload.endpoint_addr.id;
-        self.publish_to_subscriber(ws, super::NetEvent::HostReady { ws, peer })
-            .await;
+        self.publish_to_subscriber(
+            ws,
+            super::NetEvent::HostReady {
+                ws,
+                peer,
+                // This host keeps the workspace's records on its link's own session, which
+                // replays them all to this device as its history starts: nothing of a record
+                // waits for the record to be opened here.
+                records_when_opened: false,
+            },
+        )
+        .await;
     }
 
-    /// The workspace on topic `ws`'s link ended.
-    pub(super) fn native_link_closed(&mut self, ws: u64) {
+    /// The workspace on topic `ws`'s link ended: its host said its owner
+    /// `deleted` it, or the next heartbeat dials it again.
+    pub(super) async fn native_link_closed(&mut self, ws: u64, deleted: bool) {
+        if deleted {
+            tracing::info!(ws, "a workspace's owner deleted it; nothing dials it again");
+            // Its hold goes first, so letting go of the link dials nothing.
+            self.native_routes.remove(ws);
+            self.native_links.remove(&ws);
+            self.publish_to_subscriber(ws, super::NetEvent::WorkspaceDeleted { ws })
+                .await;
+            return;
+        }
         tracing::info!(
             ws,
             "a workspace's link ended; the next heartbeat dials it again"
@@ -242,16 +487,45 @@ impl ActorState {
 
     /// Publish what the workspace `ws`'s owner holds for its other devices over
     /// the link it holds now.
-    pub(super) fn drive_native_publication(&self, ws: u64) {
-        if let (Some(link), Some(identity)) = (self.native_links.get(&ws), &self.host_identity)
-            && let Err(error) = link.scope.publish(&link.link, identity)
-        {
-            tracing::debug!(%error,"native publication remains in durable custody");
+    /// Retirement commits to disk, so it runs off this actor.
+    /// Send this device's custody of the workspace on topic `ws` over its link up now, as far as
+    /// the link takes it, then retire what the workspace receipted or refused.
+    pub(super) fn drive_native_publication(&mut self, ws: u64) {
+        if let (Some(link), Some(route), Some(identity)) = (
+            self.native_links.get_mut(&ws),
+            self.native_routes.entries.get(&ws),
+            &self.host_identity,
+        ) {
+            let (owner, workspace) = (route.connect.owner().clone(), route.connect.workspace());
+            let sent = link.scope.current(identity).and_then(|()| {
+                link.sending.drive(
+                    &owner,
+                    workspace,
+                    |view| link.scope.authorize(view, identity),
+                    |write| {
+                        postcard::from_bytes(write.bytes)
+                            .map_err(|error| error.to_string())
+                            .and_then(|message| link.link.send(message))
+                            .inspect_err(|error| tracing::debug!(%error, "native publication remains in durable custody"))
+                            .is_ok()
+                    },
+                )
+            });
+            if let Err(error) = sent {
+                tracing::debug!(%error, "native publication remains in durable custody");
+            }
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = owner.retire_outgoing(workspace) {
+                    tracing::warn!(%error, "native publication retirement not committed");
+                }
+            });
         }
         self.tell_unsynced(ws);
     }
     pub(super) fn native_connect(&mut self, connect: Connect) {
         let ws = crate::workspace_topic_id(connect.workspace());
+        // The custody the members' frames were taken under is read again.
+        self.member_scopes.remove(&ws);
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
@@ -396,13 +670,8 @@ impl ActorState {
         // workspace while its governor was away.
         self.native_links.remove(&ws);
         let link = Arc::new(linked.link.clone());
-        let pump = super::spawn_direct_pump(
-            ws,
-            linked,
-            Arc::clone(&link),
-            scope.clone(),
-            self.internal_tx.clone(),
-        );
+        let pump =
+            super::spawn_direct_pump(ws, linked, Arc::clone(&link), self.internal_tx.clone());
         // What this device said while the link was down: its channel
         // governance (its writer publishes it again), and the held state of
         // its workspace.
@@ -432,6 +701,7 @@ impl ActorState {
             NativeLink {
                 scope,
                 link,
+                sending: tilo_session_client::custody::Sending::default(),
                 held: Some(held),
                 pump,
             },
@@ -462,5 +732,101 @@ fn drop_unpinned(
     });
     if unpinned {
         links.remove(&ws);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{Carried, NeighbourMsg, carried};
+    use collab_types::{ChannelId, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame};
+
+    /// A host asks a linked member for the surface a change names; the member's
+    /// session hears it as a member's message, which its content service keeps,
+    /// never as workspace state, which the owner has no use for.
+    #[test]
+    fn a_record_contents_ask_heard_on_a_link_reaches_the_session_as_a_message() {
+        let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32])
+            .verifying_key()
+            .to_bytes();
+        let want = NeighbourMsg::RecordContentWant {
+            requester: 9,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: "workspace".into(),
+            hash: "ab".repeat(32),
+            have: Vec::new(),
+        };
+        let heard = |message: NeighbourMsg| tilo_peer_state::direct::Heard {
+            author: device,
+            message,
+            landed: false,
+            retained: false,
+            report: Err("the workspace keeps no state of it".into()),
+            fresh: true,
+        };
+        let Some(super::super::NetEvent::Msg {
+            ws,
+            peer,
+            replayed,
+            msg,
+            ..
+        }) = super::content_message(7, &heard(want.clone()))
+        else {
+            panic!("a record's content heard on a link is a message");
+        };
+        assert_eq!((ws, replayed), (7, false));
+        assert_eq!(peer.as_bytes(), &device);
+        assert_eq!(msg, want);
+        assert!(
+            super::content_message(
+                7,
+                &heard(NeighbourMsg::SyncResp {
+                    changes: Vec::new(),
+                    room: "workspace".into(),
+                })
+            )
+            .is_none(),
+            "the workspace's state is what the link admitted, not a message"
+        );
+    }
+
+    /// A workspace a device takes part in over its host's link has no other
+    /// path to its host: channel governance kept off the link left every
+    /// device founding the channel's group on its own, with keys no other
+    /// member held.
+    #[test]
+    fn channel_governance_travels_over_the_workspaces_link() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let channel = ChannelId::new();
+        let genesis = NeighbourMsg::MlsGovernance {
+            workspace: "workspace".into(),
+            frame: Box::new(
+                MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, &key)
+                    .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let request = || Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, &key).unwrap());
+        let asking = NeighbourMsg::MlsAccessRequest {
+            workspace: "workspace".into(),
+            request: request(),
+            delivery: 0,
+        };
+        let routed = NeighbourMsg::MlsRoutedAccessRequest {
+            room: "workspace".into(),
+            request: request(),
+            route: Box::new(collab_types::ChannelRoute::new("app", "record")),
+            delivery: 0,
+        };
+        // A member's ask for a record's content reaches its host the same way:
+        // the host answers it, or hands it to the member keeping it.
+        let want = NeighbourMsg::RecordContentWant {
+            requester: 9,
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "workspace".into(),
+            hash: "ab".repeat(32),
+            have: Vec::new(),
+        };
+        for message in [genesis, asking, routed, want] {
+            assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());
+        }
     }
 }

@@ -1,6 +1,3 @@
-//! The music library on its own: verbs and field edits through the door the
-//! host uses, merging between devices, and the history people read.
-
 use super::*;
 use crate::resource::library::CreatePlaylist;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
@@ -102,9 +99,6 @@ fn playlists_and_likes_change_through_verbs_and_field_edits() {
         "catalogue content only arrives by importing"
     );
 
-    // The playlist, its name, cover and songs live in the document, so Undo
-    // takes a delete back whole: deleting asks nothing (the one undo step is
-    // proved in the resource's tests).
     library
         .apply(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
         .expect("an undoable delete asks nothing");
@@ -115,9 +109,6 @@ fn playlists_and_likes_change_through_verbs_and_field_edits() {
     );
 }
 
-/// Two devices editing one library converge: songs added to one playlist
-/// on both are kept in one order, a song both add is listed once, likes
-/// and a rename merge.
 #[test]
 fn concurrent_edits_converge() {
     let mut laptop = sample();
@@ -156,8 +147,6 @@ fn concurrent_edits_converge() {
     assert_eq!(merged.playlist(&mix).unwrap().name, "Shared mix");
 }
 
-/// An agent makes a playlist, fills it and likes a song with one call
-/// each, and the person reads what it did in Music's sentences.
 #[test]
 fn an_agents_changes_render_as_musics_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

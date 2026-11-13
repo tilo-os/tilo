@@ -13,7 +13,7 @@ pub struct Channel {
     pub messages: Vec<String>,
 }
 
-#[resource(kind = "test.channel", label = "Channel")]
+#[resource(kind = "test.channel", catalogue = "tests/locales")]
 impl Channel {
     /// Mark as read.
     #[action(housekeeping)]

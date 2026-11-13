@@ -68,8 +68,6 @@ fn selected(scenario: &str) -> bool {
         .map_or(true, |only| only.split(',').any(|s| s.trim() == scenario))
 }
 
-/// The two store volumes, or `None` (after saying why) when this machine
-/// cannot or should not run the benchmark.
 fn stores(scenario: &str) -> Option<(PathBuf, PathBuf)> {
     let skip = |why: &str| {
         eprintln!("skipping {scenario}: {why}");
@@ -97,14 +95,11 @@ fn stores(scenario: &str) -> Option<(PathBuf, PathBuf)> {
     Some((PathBuf::from(a), PathBuf::from(b)))
 }
 
-/// When the benchmark process started; verbose daemon logs are stamped
-/// with the time since.
 fn bench_clock() -> Instant {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *START.get_or_init(Instant::now)
 }
 
-/// A stamped marker among the verbose daemon logs.
 fn mark(what: &str) {
     if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
         eprintln!(
@@ -168,8 +163,6 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     .unwrap();
 }
 
-/// Two network namespaces joined by a veth pair with a fixed one-way delay
-/// on both ends, removed on drop.
 struct Link {
     names: [String; 2],
     devices: [String; 2],
@@ -219,7 +212,6 @@ impl Link {
         &self.names[i]
     }
 
-    /// Bytes received so far by the device in namespace `i`.
     fn rx_bytes(&self, i: usize) -> u64 {
         let out = Command::new("ip")
             .args(["netns", "exec", &self.names[i], "cat"])
@@ -268,8 +260,6 @@ impl Daemon {
         std::fs::create_dir_all(&sockets).unwrap();
         let binary = std::env::var_os("TILO_FS_TEST_BINARY")
             .map_or_else(|| tilo_test_env::package_binary!("fs"), PathBuf::from);
-        // Only the network namespace changes: the daemon's bind mount must
-        // stay visible to this process.
         let mut command = match netns {
             Some(ns) => {
                 let mut c = Command::new("nsenter");
@@ -385,7 +375,6 @@ impl Daemon {
 
     fn signal(&self, sig: libc::c_int) {
         let pid = libc::pid_t::try_from(self.child.id()).unwrap();
-        // SAFETY: signalling our own child process.
         unsafe { libc::kill(pid, sig) };
     }
 }
@@ -435,8 +424,6 @@ impl Drop for LiveWorkspaces {
     }
 }
 
-/// Two devices of one person. Dropped in field order: daemons first, then
-/// their workspaces, then the link and the directory.
 struct Pair {
     host: Daemon,
     peer: Daemon,
@@ -449,7 +436,6 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
     start_pair_with(store_a, store_b, seed, false)
 }
 
-/// Bytes the peer has received over the link, when there is one.
 fn peer_rx(pair: &Pair) -> Option<u64> {
     pair.link.as_ref().map(|link| link.rx_bytes(1))
 }
@@ -459,8 +445,6 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
         std::env::var_os("TILO_FS_BENCH_DIR").map_or_else(|| "/var/tmp".into(), PathBuf::from);
     let temp = tempfile::tempdir_in(base).unwrap();
     let dir = temp.path().to_path_buf();
-    // Identities (and so workspace ids) differ per run: a run never reuses a
-    // workspace another run left or still uses.
     let salt = u8::try_from(std::process::id() % 83).unwrap_or(0);
     let seed = seed.wrapping_add(salt.wrapping_mul(3));
     let person = [seed; 32];
@@ -523,8 +507,6 @@ fn wait_for<T>(pair: &mut Pair, what: &str, mut probe: impl FnMut() -> Option<T>
     }
 }
 
-/// Deterministic pseudo-random bytes: distinct per `(seed, offset)` so no
-/// two chunks deduplicate.
 fn fill(seed: u64, offset: u64, out: &mut [u8]) {
     for (i, word) in out.chunks_mut(8).enumerate() {
         let mut x = (offset / 8 + i as u64)
@@ -574,7 +556,6 @@ fn many_small_files() {
     });
     let visible = t0.elapsed();
     mark("the last small file is on the peer");
-    // Every file, with the author's bytes.
     wait_for(&mut pair, "every small file on the peer", || {
         (0..files)
             .all(|i| {
@@ -605,8 +586,6 @@ fn many_small_files() {
     );
 }
 
-/// Bytes of `(seed, offset)` a large-file scenario writes, with each
-/// `(edit seed, start, len)` range overlaid by the edit seed's bytes.
 fn expected(seed: u64, edits: &[(u64, u64, u64)], offset: u64, out: &mut [u8]) {
     fill(seed, offset, out);
     let end = offset + out.len() as u64;
@@ -621,7 +600,6 @@ fn expected(seed: u64, edits: &[(u64, u64, u64)], offset: u64, out: &mut [u8]) {
 
 const BLOCK: usize = 8 * 1024 * 1024;
 
-/// Writes `size` bytes of `seed` at `path` and syncs them.
 fn write_big(path: &Path, seed: u64, size: u64) {
     let mut buf = vec![0u8; BLOCK];
     let mut f = std::fs::File::create(path).unwrap();
@@ -635,7 +613,6 @@ fn write_big(path: &Path, seed: u64, size: u64) {
     f.sync_all().unwrap();
 }
 
-/// Reads `path` from start to end and checks every byte.
 fn read_big(path: &Path, seed: u64, edits: &[(u64, u64, u64)], size: u64) {
     let mut f = std::fs::File::open(path).unwrap();
     let mut got = vec![0u8; BLOCK];
@@ -713,10 +690,6 @@ fn one_large_file() {
     }
 }
 
-/// A large file that is already on both devices changes in a small range:
-/// the author saves it the usual way (a new file renamed over the old
-/// one). Reports how long the new version takes to show and to read, and
-/// how many bytes the peer received for it.
 #[test]
 fn incremental_edit() {
     let scenario = "edit";
@@ -735,8 +708,6 @@ fn incremental_edit() {
     read_big(&target, 9, &[], size);
     let first_rx = peer_rx(&pair).unwrap();
 
-    // Save the edited file: a copy with the change applied, synced and
-    // renamed over the original.
     let at = size / 2 + 12_345;
     let edits = [(10, at, change)];
     let staged = m1.join(".big.bin.save");

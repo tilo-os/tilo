@@ -8,9 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
-use common::KeywordModel;
+use crate::common::KeywordModel;
 use serde_json::json;
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::Answer;
@@ -33,7 +31,7 @@ impl PlanModel for Canned {
 }
 
 fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
-    let app = common::open(app_id, "agent", ReplicaActor::Agent, Seed::New).unwrap();
+    let app = crate::common::open(app_id, "agent", ReplicaActor::Agent, Seed::New).unwrap();
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: WORKSPACE.into(),

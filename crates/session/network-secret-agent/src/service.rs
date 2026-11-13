@@ -194,7 +194,7 @@ impl SecretAgent {
             }
         }
         tracing::info!(
-            target: "shell::network_secrets",
+            target: "tilo_network_secrets",
             connection = %request.connection_id,
             setting = %setting_name,
             flags,
@@ -257,7 +257,7 @@ impl SecretAgent {
         .await
         .map_err(|_| AgentError::InvalidConnection("the secret store stopped".into()))?;
         saved.map_err(|error| {
-            tracing::warn!(target: "shell::network_secrets", %error, "could not keep saved secrets");
+            tracing::warn!(target: "tilo_network_secrets", %error, "could not keep saved secrets");
             AgentError::InvalidConnection(error)
         })
     }
@@ -350,11 +350,11 @@ async fn reregister_on_restart(connection: zbus::Connection) {
         }
         match register(&connection).await {
             Ok(()) => tracing::info!(
-                target: "shell::network_secrets",
+                target: "tilo_network_secrets",
                 "registered again with a restarted NetworkManager"
             ),
             Err(error) => tracing::warn!(
-                target: "shell::network_secrets",
+                target: "tilo_network_secrets",
                 %error,
                 "could not register with a restarted NetworkManager"
             ),

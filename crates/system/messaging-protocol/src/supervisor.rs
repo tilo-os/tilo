@@ -143,14 +143,12 @@ impl AccountSupervisor {
         self.observers.publish();
         Ok(())
     }
-    /// Publish only the owner-matched native private broker.
     pub fn install_native(
         &self,
         broker: &crate::native_broker::NativeBroker,
     ) -> Result<(), SendError> {
         self.install(broker.owner(), broker.client())
     }
-    /// Install an existing account-owned broker; no connection/login is started.
     pub fn install_external(
         &self,
         broker: &crate::external_broker::ExternalBroker,

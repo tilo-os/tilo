@@ -208,7 +208,7 @@ fn a_denied_answer_confirms_nothing() {
     own_devices.answer(Err(ActionHostError::NotPermitted));
     assert!(matches!(
         waiting.wait_timeout(Duration::from_secs(30)),
-        Ok(Some(Err(ActionHostError::ConfirmationRequired)))
+        Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
     ));
     drop(fixture);
 }
@@ -233,7 +233,7 @@ fn without_an_own_device_nobody_is_asked() {
             .state
             .request_witness(&fixture.caller, None, &request())
             .wait_timeout(Duration::from_secs(5)),
-        Ok(Some(Err(ActionHostError::ConfirmationRequired)))
+        Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
     ));
     drop(fixture);
 }
@@ -260,7 +260,7 @@ fn an_unanswered_question_refuses_the_invocation() {
     assert!(
         matches!(
             answered,
-            Ok(Some(Err(ActionHostError::ConfirmationRequired)))
+            Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
         ),
         "a question nobody answers confirms nothing"
     );

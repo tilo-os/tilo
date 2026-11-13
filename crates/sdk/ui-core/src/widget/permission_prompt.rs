@@ -10,6 +10,7 @@
 //! one-shot output; the parent drains it each frame and applies the
 //! resulting `Capability` grant.
 
+use crate::i18n::{widget_format, widget_text};
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -212,8 +213,8 @@ impl PermissionPrompt {
         }
         if let Some(local) = &self.local_input {
             match choice {
-                PromptChoice::Allow => return crate::i18n!(local.labels[0]),
-                PromptChoice::Deny => return crate::i18n!(local.labels[1]),
+                PromptChoice::Allow => return widget_text(local.labels[0]),
+                PromptChoice::Deny => return widget_text(local.labels[1]),
                 _ => {}
             }
         }
@@ -409,7 +410,7 @@ impl PermissionPrompt {
 
 /// Shared localized label for pointer and semantic permission decisions.
 pub fn button_label(choice: PromptChoice) -> String {
-    crate::i18n!(match choice {
+    widget_text(match choice {
         PromptChoice::Allow => "permission-prompt-allow",
         PromptChoice::Session => "permission-prompt-session",
         PromptChoice::Always => "permission-prompt-always",
@@ -701,10 +702,12 @@ impl Widget for PermissionPrompt {
             .collect();
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(crate::i18n!(
+                .with_name(widget_format(
                     "permission-prompt-requested",
-                    "capability" => self.capability_label.as_str(),
-                    "app" => self.app_id.as_str()
+                    &[
+                        ("capability", self.capability_label.as_str().into()),
+                        ("app", self.app_id.as_str().into()),
+                    ],
                 ))
                 .with_state(
                     AccessState::new()

@@ -1,9 +1,4 @@
 //! The native-input observer reads the app without touching its document.
-//!
-//! The snapshot a native audit asks for must describe the live state (the
-//! selected category, the layout class, the document heads) without
-//! committing the document's pending changes: the observer is a witness, not
-//! a writer.
 
 use crate::Inspected;
 use crate::categories::Category;
@@ -39,9 +34,6 @@ fn app_heads(app: &mut App) -> Vec<ChangeHash> {
     app.harness().state_mut().doc.get_heads()
 }
 
-/// Type `query` into the window bar's search, as the bar hands it to the
-/// app: the search narrows the sidebar's list in place. Settings draws no
-/// search field of its own.
 fn bar_search(app: &mut App, search: &mut ui::widget::SearchDriver, query: &str) {
     let root = app.harness().root_widget_mut();
     if search.in_place() == ui::widget::InPlace::Nothing {
@@ -65,15 +57,12 @@ fn sidebar_row_count(root: &dyn Widget) -> usize {
         .fold(own, usize::saturating_add)
 }
 
-/// Whether the window shows the settings the bar's search found in place
-/// of the pane: the content is titled for them.
 fn shows_found(app: &mut App) -> bool {
     app.harness()
         .a11y_node_named(&crate::i18n::t("settings-found-title"))
         .is_some()
 }
 
-/// Whether the window shows the control of the setting `id`.
 fn shows_setting(app: &mut App, id: &str) -> bool {
     fn walk(widget: &dyn Widget, setting: &settings_store::index::Setting) -> bool {
         widget.test_id().is_some_and(|id| setting.is_control(id))
@@ -86,8 +75,6 @@ fn shows_setting(app: &mut App, id: &str) -> bool {
     walk(app.harness().root_widget(), setting)
 }
 
-/// The window's shell: whether it is narrow, whether the list shows, and
-/// the content screen's back arrow.
 fn shell(app: &mut App) -> (bool, bool, vello::kurbo::Rect) {
     app.with_widget::<ui::widget::NavShell, _>(|shell| {
         (
@@ -99,10 +86,8 @@ fn shell(app: &mut App) -> (bool, bool, vello::kurbo::Rect) {
     .expect("settings shows its shell")
 }
 
-/// The native observer tracks search rebuilds/backspace and never commits pending changes.
 #[test]
 fn native_observer_tracks_search_without_committing_pending_changes() {
-    // Case `native_observer_tracks_the_bar_search`.
     {
         let mut h = mounted(1200, 1800);
         let mut search = ui::widget::SearchDriver::default();
@@ -139,7 +124,6 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         );
     }
 
-    // Case `native_observer_does_not_commit_original_pending_changes`.
     {
         let mut h = mounted(1200, 760);
         let mut doc = automerge::AutoCommit::new();
@@ -174,7 +158,6 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
     }
 }
 
-/// The innermost widget in `widget`'s tree that announces `text`.
 fn announced_identity(widget: &dyn Widget, text: &str) -> Option<usize> {
     fn announces(node: &ui::a11y::AccessNode, text: &str) -> bool {
         node.name.as_deref() == Some(text)
@@ -214,9 +197,6 @@ fn search_preserves_the_pane_but_category_switch_replaces_it() {
     );
 }
 
-/// Searching from a narrow window's list narrows the list; what it finds
-/// comes in front of it as the rows a wide window shows, and finding
-/// nothing more goes back to the list.
 #[test]
 fn narrow_search_shows_what_it_finds_in_front_of_the_list() {
     let mut h = mounted(440, 820);
@@ -267,7 +247,6 @@ fn native_observer_reports_the_selected_category_and_layout_class() {
     assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
 }
 
-/// `visit` the mounted window.
 fn window<O>(app: &mut App, visit: impl FnOnce(&mut Inspected) -> O) -> O {
     app.with_widget::<Inspected, _>(visit)
         .expect("the window is mounted")
@@ -277,11 +256,9 @@ fn observe(app: &mut App, input: ui::widget::PhysicalInput) {
     window(app, |window| window.observe_physical_input(input));
 }
 
-/// Open `category`'s page as its sidebar row does.
 fn show(app: &mut App, category: Category) {
     crate::effects::show_pane(app, category);
     app.settle();
-    // The keyboard is drawn off the UI thread; the page shows it once it is.
     if category == Category::Keyboard {
         assert!(
             app.harness()
@@ -355,8 +332,6 @@ fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
         original_heads,
         "pressed positions stay ephemeral"
     );
-    // The same held physical position survives an ordinary recomposition
-    // while the bar's search keeps the list narrowed.
     h.harness().relayout();
     if draws_native_legends() {
         assert_eq!(
@@ -502,11 +477,6 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
     );
 }
 
-/// On a narrow page the keyboard map stays the page's prominent element and
-/// still reads the seat's real symbols live through its own accessible value.
-/// The redesigned page drops the separate key selector and details dump (this
-/// test used to look for `input.map.inspect-key` and
-/// `input.keyboard-map.details`); inspection is the map plus its action.
 #[test]
 fn narrow_keyboard_map_stays_prominent_and_live_readable() {
     fn find_rect(widget: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {

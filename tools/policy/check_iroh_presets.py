@@ -18,7 +18,7 @@ a device's identity:
   list: the test attribute is what exempts it.
 * A process that is not a desktop. ``EXEMPT`` names each file and why:
   ``tilo-relay``'s diagnostic subcommands and its daemon, the initrd's
-  sibling unlock, a headless runtime. Each lives as
+  sibling unlock. Each lives as
   long as the command that started it, dials an address it was handed, or is
   the relay devices are meant to find. They are listed so that a device
   endpoint added beside one has to be argued for rather than absorbed.
@@ -55,8 +55,6 @@ EXEMPT = {
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.
     "crates/system/tilo-sibling-unlock/src/exchange.rs": "initrd unlock exchange",
-    # A headless runtime that dials the app host that started it.
-    "crates/runtime/tilo-runtime/src/standalone.rs": "standalone runtime client",
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The relay daemon's own endpoint, which is what devices dial.

@@ -1,20 +1,11 @@
-//! Video recording — a self-contained Motion-JPEG / AVI encoder.
+//! Video recording: a self-contained Motion-JPEG / AVI encoder.
 //!
-//! Each RGBA frame handed to [`Recorder`] is JPEG-encoded (via the `image`
-//! crate) and the finished clip is muxed
-//! into a standards-compliant RIFF/AVI container with an `MJPG` video stream
-//! and an `idx1` index. The result is a playable `.avi` file rather than a
-//! directory of PNG frames.
-//!
-//! This path is deliberately codec-in-Rust and source-agnostic: the same
-//! [`Recorder`] records frames coming off a webcam (the `live-capture`
-//! pipeline hands it RGBA buffers) and the procedural frames used by the
-//! headless demo/tests. No `GStreamer`, no ffmpeg, no device required to
-//! produce or verify an encoded video.
-//!
-//! MJPEG (one JPEG per frame) is chosen over an inter-frame codec on purpose:
-//! it needs no motion estimation or bitstream state, so the encoder is small
-//! and fully deterministic, while remaining a widely-supported video codec.
+//! Each RGBA frame handed to [`Recorder`] is JPEG-encoded and the clip muxed
+//! into a RIFF/AVI container with an `MJPG` stream and an `idx1` index, so the
+//! result is a playable `.avi` file. Frames come from a webcam or from the
+//! procedural frames of the headless demo and tests alike, with no `GStreamer`,
+//! ffmpeg or device needed. MJPEG needs no motion estimation or bitstream
+//! state, so the encoder stays small and deterministic.
 
 use std::io;
 use std::path::Path;
@@ -52,7 +43,6 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// A recorder that will tag the clip at `fps` frames per second.
     pub fn new(fps: u32) -> Self {
         Self {
             frames: Vec::new(),
@@ -106,7 +96,6 @@ impl Recorder {
         (self.w, self.h)
     }
 
-    /// Clip duration in milliseconds implied by the frame count and fps.
     pub fn duration_ms(&self) -> i64 {
         (self.frames.len() as i64 * 1000) / i64::from(self.fps)
     }
@@ -121,7 +110,6 @@ impl Recorder {
     }
 }
 
-/// JPEG-encode a tightly-packed RGB8 buffer.
 fn encode_jpeg(rgb: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     ui::jpeg::encode_rgb8(w, h, rgb, QUALITY).ok()
 }
@@ -136,7 +124,6 @@ fn push_tag(buf: &mut Vec<u8>, tag: [u8; 4]) {
     buf.extend_from_slice(&tag);
 }
 
-/// Build the 56-byte `avih` main-header body.
 fn avih(w: u32, h: u32, fps: u32, frames: u32, max_frame: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(56);
     push_u32(&mut b, 1_000_000 / fps.max(1)); // dwMicroSecPerFrame
@@ -155,7 +142,6 @@ fn avih(w: u32, h: u32, fps: u32, frames: u32, max_frame: u32) -> Vec<u8> {
     b
 }
 
-/// Build the 56-byte `strh` video stream-header body.
 fn strh(fps: u32, frames: u32, max_frame: u32, w: u32, h: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(56);
     push_tag(&mut b, *b"vids"); // fccType
@@ -178,7 +164,6 @@ fn strh(fps: u32, frames: u32, max_frame: u32, w: u32, h: u32) -> Vec<u8> {
     b
 }
 
-/// Build the 40-byte `strf` BITMAPINFOHEADER body for an MJPEG stream.
 fn strf(w: u32, h: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(40);
     push_u32(&mut b, 40); // biSize
@@ -195,7 +180,6 @@ fn strf(w: u32, h: u32) -> Vec<u8> {
     b
 }
 
-/// Wrap `body` as `tag <size> body` with the size field preceding it.
 fn chunk(tag: [u8; 4], body: &[u8]) -> Vec<u8> {
     let mut b = Vec::with_capacity(body.len() + 8);
     push_tag(&mut b, tag);
@@ -204,7 +188,6 @@ fn chunk(tag: [u8; 4], body: &[u8]) -> Vec<u8> {
     b
 }
 
-/// Mux JPEG `frames` into a complete AVI byte stream.
 fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
     let n = frames.len() as u32;
     let max_frame = frames.iter().map(std::vec::Vec::len).max().unwrap_or(0) as u32;
@@ -287,9 +270,6 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 #[cfg(test)]
 const PROBE_READ_LIMIT: usize = 256 * 1024 * 1024;
 
-/// Read the leading AVI headers of `path` and return `(width, height,
-/// duration_ms)`: `None` if the file is not a readable AVI. Tests use it to
-/// check what the recorder wrote.
 #[cfg(test)]
 pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is

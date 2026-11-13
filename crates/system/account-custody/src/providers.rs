@@ -12,24 +12,19 @@ use serde::Deserialize;
 use tilo_oauth::{ClientId, Provider, Refresh, Revocation};
 
 pub const GOOGLE_DRIVE_TYPE: &str = accounts::cloud_types::GOOGLE_DRIVE;
-/// Account type id of a `OneDrive` account (personal or work/school).
 pub const ONEDRIVE_TYPE: &str = accounts::cloud_types::ONEDRIVE;
 pub const DROPBOX_TYPE: &str = accounts::cloud_types::DROPBOX;
 pub const ICLOUD_DRIVE_TYPE: &str = accounts::cloud_types::ICLOUD_DRIVE;
 pub const NEXTCLOUD_TYPE: &str = accounts::cloud_types::NEXTCLOUD;
-/// Account type id of a plain `WebDAV` account.
 pub const WEBDAV_TYPE: &str = accounts::cloud_types::WEBDAV;
 
-/// A provider that registered Tilo as an installed `OAuth` client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OAuthIssuer {
     Google,
     Microsoft,
     Dropbox,
     Spotify,
-    /// The person's `OpenAI` account, for their `ChatGPT` subscription.
     OpenAi,
-    /// GitHub, for a Copilot subscription.
     GitHub,
     HuggingFace,
 }
@@ -75,7 +70,6 @@ impl OAuthIssuer {
         Self::HuggingFace,
     ];
 
-    /// Stable identifier, also the issuer's table in `oauth-clients.toml`.
     pub fn id(self) -> &'static str {
         match self {
             Self::Google => "google",
@@ -88,7 +82,6 @@ impl OAuthIssuer {
         }
     }
 
-    /// Who the person signs in with.
     pub fn label(self) -> &'static str {
         match self {
             Self::Google => "Google",
@@ -101,8 +94,6 @@ impl OAuthIssuer {
         }
     }
 
-    /// The environment variable that overrides the client id, read at
-    /// runtime and then at build time.
     pub fn client_id(self) -> ClientId {
         match self {
             Self::Google => ClientId::new(
@@ -148,9 +139,6 @@ impl OAuthIssuer {
         }
     }
 
-    /// The issuer's endpoints and the authorization parameters that make it
-    /// issue a refresh token, without scopes: those come from the use (see
-    /// [`crate::ClientTable::descriptor`]).
     pub fn endpoints(self) -> Provider {
         let pairs = |values: &[(&str, &str)]| {
             values
@@ -168,15 +156,10 @@ impl OAuthIssuer {
                     endpoint: "https://oauth2.googleapis.com/revoke".into(),
                 },
                 scopes: Vec::new(),
-                // Without both, Google issues no refresh token on a repeat
-                // consent.
                 authorization_params: pairs(&[("access_type", "offline"), ("prompt", "consent")]),
                 refresh: Refresh::RefreshToken,
                 device_authorization_endpoint: None,
             },
-            // The `common` tenant accepts both personal Microsoft accounts
-            // and work or school accounts; `offline_access` (in each use's
-            // scopes) yields the refresh token.
             Self::Microsoft => Provider {
                 id: self.id().into(),
                 label: self.label().into(),
@@ -213,8 +196,6 @@ impl OAuthIssuer {
                 refresh: Refresh::RefreshToken,
                 device_authorization_endpoint: None,
             },
-            // OpenAI's own sign-in page, as its Codex clients open it: the
-            // ChatGPT account's token, not an API organisation's.
             Self::OpenAi => Provider {
                 id: self.id().into(),
                 label: self.label().into(),
@@ -230,9 +211,6 @@ impl OAuthIssuer {
                 refresh: Refresh::RefreshToken,
                 device_authorization_endpoint: None,
             },
-            // GitHub signs Copilot's editors in with a device code; the
-            // grant's GitHub token is then traded for Copilot tokens
-            // (see `ClientTable::descriptor`).
             Self::GitHub => Provider {
                 id: self.id().into(),
                 label: self.label().into(),
@@ -259,18 +237,12 @@ impl OAuthIssuer {
     }
 }
 
-/// What a grant is used for. Each has its own scopes per issuer in
-/// `oauth-clients.toml`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
-    /// Cloud storage the storage daemon mounts.
     Files,
-    /// Mail over IMAP and SMTP (`XOAUTH2`).
     Mail,
-    /// Calendars over `CalDAV`.
     Calendar,
-    /// Provider-confirmed identity, separate from resource-specific mail tokens.
     Identity,
     Music,
     MusicStreaming,
@@ -279,12 +251,9 @@ pub enum Capability {
     /// of its own, so the broad scope it may need never rides on a mail or
     /// storage token, and forgetting it leaves those untouched.
     Models,
-    /// Model weights the model manager downloads (Hugging Face's gated
-    /// models), apart from any grant the gateway calls models with.
     ModelDownloads,
 }
 
-/// One use of an issuer's client: who signs the person in, and what for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OAuthUse {
     pub issuer: OAuthIssuer,
@@ -296,22 +265,18 @@ impl OAuthUse {
         Self { issuer, capability }
     }
 
-    /// Mail from `issuer` (Gmail, Outlook).
     pub const fn mail(issuer: OAuthIssuer) -> Self {
         Self::new(issuer, Capability::Mail)
     }
 
-    /// Calendars from `issuer`. An unsupported issuer has no configured scopes.
     pub const fn calendar(issuer: OAuthIssuer) -> Self {
         Self::new(issuer, Capability::Calendar)
     }
 
-    /// Provider-confirmed identity, without requesting files or mail access.
     pub const fn identity(issuer: OAuthIssuer) -> Self {
         Self::new(issuer, Capability::Identity)
     }
 
-    /// The product name shown to the person.
     pub fn label(self) -> &'static str {
         match (self.issuer, self.capability) {
             (OAuthIssuer::Spotify, _) => "Spotify",
@@ -338,7 +303,6 @@ impl OAuthUse {
     }
 }
 
-/// A cloud storage provider that signs in with `OAuth`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OAuthCloud {
     GoogleDrive,
@@ -363,7 +327,6 @@ impl OAuthCloud {
             .find(|provider| provider.type_id() == type_id)
     }
 
-    /// Whose client this provider signs in through.
     pub fn issuer(self) -> OAuthIssuer {
         match self {
             Self::GoogleDrive => OAuthIssuer::Google,
@@ -372,7 +335,6 @@ impl OAuthCloud {
         }
     }
 
-    /// The use a grant for this provider is for.
     pub fn oauth_use(self) -> OAuthUse {
         OAuthUse::new(self.issuer(), Capability::Files)
     }
@@ -385,8 +347,6 @@ impl OAuthCloud {
         self.issuer().label()
     }
 
-    /// The environment variable that overrides the client id; see
-    /// [`OAuthIssuer::client_id`].
     pub fn client_id(self) -> ClientId {
         self.issuer().client_id()
     }
@@ -397,7 +357,6 @@ impl OAuthCloud {
         self.issuer().client_secret()
     }
 
-    /// The provider descriptor with the committed storage scopes.
     pub fn descriptor(self) -> Provider {
         crate::ClientTable::defaults().descriptor(self.oauth_use())
     }

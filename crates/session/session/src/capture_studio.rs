@@ -24,7 +24,7 @@
     reason = "frames are bounded by the displays' pixels, far from the integers' limits"
 )]
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -39,8 +39,9 @@ use tilo_capture_studio::{
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
+
 use tilo_portal::CaptureError;
-use tilo_surface_host::Doors;
+use tilo_session_core::door::Doors;
 use ui::vello::kurbo::Rect;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept,
@@ -51,7 +52,6 @@ use crate::Options;
 use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, WriteFailed, Written};
 use crate::capture_send::Sends;
 use crate::nearby_transfer::NearbyTransfer;
-use crate::panels::Held;
 use crate::sheets::Sheet;
 
 /// One frame every this long: the replay buffer's rate, so a recording and a clip of what just
@@ -248,8 +248,8 @@ pub(crate) fn mount(
         Ok(sheet) => {
             let sheet = sheet.always_serving();
             let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            let sheet = sheet.layer();
+            compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(CaptureStudio {
                 seat,

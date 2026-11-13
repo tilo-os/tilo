@@ -1,11 +1,7 @@
-//! Files' common actions are found by every word people use for them.
+//! Files' common actions are found by the words people use for them.
 
 use ui::tilo_resource::{Effect as _, EffectDecl, Resource as _, declaration_spec};
 
-/// Each word people use for one of the app's common actions ranks that
-/// action among the app's first three, on the fields every search ranks an
-/// app's action by: the words come from the action's declaration, so an
-/// action that loses them drops out here.
 #[test]
 fn people_find_files_actions_by_the_words_they_use() {
     let mut actions: Vec<ui::tilo_actions::ActionSpec> = Vec::new();

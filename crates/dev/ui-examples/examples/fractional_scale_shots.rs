@@ -1,21 +1,7 @@
 //! Offscreen renders of the component gallery at different **device scales** and
 //! **user font sizes**, so fractional scaling can be self-inspected without a
 //! real high-DPI display.
-//!
-//! Every shot drives the identical logical widget tree (the same one the
-//! interactive `gallery` builds) through the real five-pass pipeline. The only
-//! thing that changes between shots is:
-//!   * the **device scale** — the physical buffer is `logical × scale` and the
-//!     scene is drawn through `Affine::scale(device_scale)`, exactly as the App's
-//!     render loop composites a fractional-scaled output; and
-//!   * the **user scale** — a `Theme::with_ui_scale` / `with_text_scale` applied
-//!     to the theme handed to the layout pass.
-//!
-//! At 1.5× the text and strokes are rasterised at 1.5× the pixels from the same
-//! vector outlines — crisp, not a blurry upscale of the 1.0× raster.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- fractional_scale_shots`
-//! Out:  `$FRAC_SCALE_SHOTS_OUT` (default `/tmp/frac_scale_shots`)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,6 +19,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 /// Logical canvas size — fixed across shots; only the physical buffer grows
 /// with the device scale.
@@ -102,7 +89,7 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
     // Composite the logical scene at the device scale — crisp physical raster.
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    root.draw(
+    root.draw_child(
         &mut scene,
         composite_transform(device_scale),
         &mut tr,

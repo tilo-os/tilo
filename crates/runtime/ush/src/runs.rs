@@ -1,11 +1,10 @@
-//! Marking command runs for Terminal: where each command a session's shell
-//! runs starts and ends, with its command line, working directory and exit
-//! status, written into the pty stream as marks only Terminal can read
-//! (docs/app-model/ush.md, "Command runs").
+//! Marking command runs for Terminal: where each command starts and ends, with its
+//! command line, working directory and exit status, written into the pty stream as marks
+//! only Terminal can read.
 //!
-//! Terminal names a key per session (`"runs"` in `open-session`). When the
-//! session's shell is `bash`, its rc file ([`crate::shell_start::bash_rc`])
-//! ends with a `DEBUG` trap and a `PROMPT_COMMAND` that write
+//! Terminal names a key per session (`"runs"` in `open-session`). A `bash` shell gets it
+//! through [`KEY_ENV`] in its rc file ([`crate::shell_start::bash_rc`]), where a `DEBUG`
+//! trap and a `PROMPT_COMMAND` write
 //!
 //! ```text
 //! ESC ] 133 ; A ; k=<key> BEL                                       the prompt is shown
@@ -13,18 +12,12 @@
 //! ESC ] 133 ; D ; <status> ; k=<key> ; t=<n> BEL                    it ended with <status>
 //! ```
 //!
-//! The key reaches the shell in [`KEY_ENV`], which the rc file takes into a
-//! shell variable and out of the environment before anything runs, so no
-//! program the session runs can write a mark Terminal believes. `t` is the
-//! command's number in the shell's own history, so a run that does nothing (an
-//! empty line, `exit`) writes none, and Terminal tells a line its own `run`
-//! typed from one the person typed: a `run` is asked for before the shell has
-//! read it, both carry the same history number.
+//! The rc file takes the key into a shell variable and out of the environment before
+//! anything runs, so no program the session runs can write a mark Terminal believes. `t`
+//! is the command's number in the shell's history, so an empty line writes none.
 
 use std::path::Path;
 
-/// The environment variable that carries the session's key to the shell (and,
-/// from the supervisor, to the `run` process that builds the guest).
 pub const KEY_ENV: &str = "TILO_USH_RUNS";
 
 /// Whether `key` may mark a session's runs: 16 to 64 ASCII letters and
@@ -34,14 +27,11 @@ pub fn valid_key(key: &str) -> bool {
     (16..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
-/// Whether `shell` is `bash`, the shell the marks are written for.
 #[must_use]
 pub fn is_bash(shell: &Path) -> bool {
     shell.file_name().is_some_and(|name| name == "bash")
 }
 
-/// The marks the session's `bash` rc file ends with
-/// ([`crate::shell_start::bash_rc`]).
 pub(crate) const MARKS: &str = r#"__ush_runs_key=$TILO_USH_RUNS
 unset TILO_USH_RUNS
 __ush_runs_armed=0
@@ -116,8 +106,6 @@ mod tests {
         assert!(!is_bash(Path::new("/usr/bin/zsh")));
     }
 
-    /// A real `bash` with the rc file marks each command with its line,
-    /// directory and status, and no program it runs sees the key.
     #[test]
     fn bash_marks_each_run_and_hides_the_key() {
         let Ok(bash) = which("bash") else {
@@ -155,8 +143,6 @@ mod tests {
                 b64(line)
             )
         };
-        // Numbers are the shell's own history: each command starts with the
-        // one it was typed as, and both lines of the session are numbered.
         let commands = [
             ("echo hello | tr h j", 1, 0),
             ("false", 2, 1),

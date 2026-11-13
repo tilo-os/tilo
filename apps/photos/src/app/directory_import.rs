@@ -1,5 +1,5 @@
-//! Importing photographs from a folder or a contents chooser: the import
-//! run, its status line and its failure details.
+//! Importing photographs from a folder or a contents chooser: an import, its status line and
+//! its failure details.
 
 use crate::actions::PhotosEffect;
 use crate::model::PhotoLibrary;
@@ -13,7 +13,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ListRowFace;
-use ui::widget::{Button, ButtonFace, ModalAction, ModalSpec, Widget};
+use ui::widget::{Button, ButtonFace, ModalAction, ModalSpec};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
@@ -22,11 +22,9 @@ use super::{
     DirectoryImportEvent, DirectoryImportMode, DirectoryImportReceipt, DirectoryStatusHit, Photos,
     bound,
 };
+use ui::widget::DrawChild;
 
 impl Photos {
-    /// Pose a running folder import for hermetic offscreen visual coverage.
-    /// The held sender prevents the ordinary sync loop from treating this
-    /// deterministic fixture as a crashed worker.
     pub fn show_directory_import_progress_for_shot(&mut self) {
         self.show_library();
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -64,8 +62,6 @@ impl Photos {
         });
     }
 
-    /// Pose a completed partial import with a deliberately bounded issue
-    /// receipt. It exists only for offscreen regression images.
     pub fn show_directory_import_errors_for_shot(&mut self) {
         self.show_library();
         self.directory_import = None;
@@ -117,7 +113,7 @@ impl Photos {
             self.notice = Some(tr("photos-import-already-running"));
             return;
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = ui::wake::waking_channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let content = self.content.clone();
@@ -469,7 +465,6 @@ impl Photos {
         }
     }
 
-    /// Collect a chosen file from the portal, if one has arrived.
     #[expect(
         clippy::too_many_lines,
         reason = "drains every portal picker channel with its outcome handling side by side"
@@ -526,8 +521,6 @@ impl Photos {
                 self.picker = None;
                 self.import_content = None;
                 if self.picker_stale {
-                    // The chooser already ran. Settle its real selection outcome
-                    // without importing into content changed since dispatch.
                     let message = tr_with(
                         "photos-import-stale-named",
                         "name",
@@ -614,8 +607,6 @@ impl Photos {
         }
     }
 
-    /// The title and the one-line summary of the folder import in flight or
-    /// just finished, if any.
     pub(super) fn directory_import_summary(&self) -> Option<(String, String, usize, bool)> {
         let count = |n: usize| ArgValue::Number(n as f64);
         if let Some(job) = self.directory_import.as_ref() {
@@ -640,7 +631,6 @@ impl Photos {
             (false, DirectoryImportMode::Reindex) => tr("photos-reindex-complete"),
             (false, DirectoryImportMode::Import) => tr("photos-import-complete"),
         };
-        // The facts that happened, as sentences; a count of zero says nothing.
         let mut sentences = vec![tr_args(
             "photos-import-result",
             &[
@@ -669,9 +659,6 @@ impl Photos {
         Some((title, sentences.join(" "), receipt.failure_count, false))
     }
 
-    /// The folder import's progress or result, on the floating material at
-    /// the bottom-trailing corner of the content, with its actions. While its
-    /// issues are open in their dialog, the dialog stands for it.
     pub(super) fn draw_directory_import_status(
         &mut self,
         scene: &mut Scene,
@@ -747,7 +734,7 @@ impl Photos {
                 y + f64::from(theme.tokens.radii.detail) * 2.0,
             );
             self.directory_import_progress.apply_layout_external(bar);
-            self.directory_import_progress.draw(
+            self.directory_import_progress.draw_child(
                 ctx.scene,
                 transform,
                 ctx.text,
@@ -770,7 +757,7 @@ impl Photos {
                 x = rect.x0 - gap;
                 button.set_enabled(true);
                 button.apply_layout_external(rect);
-                button.draw(ctx.scene, transform, ctx.text, &ink, &PresenceCtx::empty());
+                button.draw_child(ctx.scene, transform, ctx.text, &ink, &PresenceCtx::empty());
             } else {
                 button.set_enabled(false);
                 button.apply_layout_external(Rect::ZERO);
@@ -778,8 +765,6 @@ impl Photos {
         }
     }
 
-    /// The folder import's issues in a modal sheet over the window, the list
-    /// scrolling in the sheet's body. Painted in the top layer.
     #[expect(
         clippy::too_many_lines,
         reason = "the sheet measures, lays out and paints its rows and actions in one pass"
@@ -833,7 +818,6 @@ impl Photos {
                 )
             })
             .collect();
-        // When there were more issues than were kept, how many in all.
         let count = |n: usize| ArgValue::Number(n as f64);
         let overview = (failure_count > retained).then(|| {
             tr_args(
@@ -933,7 +917,6 @@ impl Photos {
     }
 }
 
-/// What a folder import card's button says.
 fn directory_status_label(hit: DirectoryStatusHit) -> String {
     tr(match hit {
         DirectoryStatusHit::Stop => "photos-import-stop",
@@ -972,7 +955,6 @@ impl DirectoryStatusHit {
 }
 
 impl Photos {
-    /// Import the photographs a contents chooser delivered.
     fn drain_contents_picker(&mut self) {
         let Some(rx) = self.contents_picker.as_ref() else {
             return;

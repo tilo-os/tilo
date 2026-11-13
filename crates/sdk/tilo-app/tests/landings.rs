@@ -22,7 +22,7 @@ pub struct Script {
     pub lines: Collection<Line>,
 }
 
-#[resource(kind = "test.script", label = "Script", lands = Script::lands)]
+#[resource(kind = "test.script", lands = Script::lands, catalogue = "tests/locales")]
 impl Script {
     /// Append a line.
     #[action]
@@ -44,7 +44,7 @@ impl Script {
 
 /// What a participant does at a place in the script.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "test.script.effects")]
+#[effect(operation = "test.script.effects", catalogue = "tests/locales")]
 pub enum ScriptEffect {
     /// Mark a line.
     #[effect(view, participant)]

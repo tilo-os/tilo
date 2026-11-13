@@ -424,7 +424,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     // living twice as long, on a fresh session (the expired one may already
     // be cut off by the access audit, and subscribing under it is refused).
     let mut lifetime = Duration::from_millis(500);
-    let (client, expires) = loop {
+    let (client, expires, admitted) = loop {
         let issued = tilo_clock::try_unix_now_ns().unwrap();
         let expires = issued
             .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
@@ -465,8 +465,19 @@ async fn expired_agent_delegation_cannot_invoke_host() {
                 matches!(answer, Some(Envelope::RemoteAction { .. })),
                 "a live delegation subscribes ({ready:?}) and reaches the host, got {answer:?}"
             );
-            assert_eq!(*actions.callers.lock().unwrap(), delegated);
-            break (client, expires);
+            // The host names the run of every connection it admits, so the
+            // caller it saw is the delegated agent with the execution it
+            // minted for this connection: everything else is the client's
+            // word and must be the delegation's.
+            let seen = actions.callers.lock().unwrap().clone();
+            let [seen] = seen.as_slice() else {
+                panic!("one caller reached the host: {seen:?}")
+            };
+            let lease = seen
+                .execution_lease()
+                .expect("the host names the run of the connection it admitted");
+            assert_eq!(*seen, delegated[0].clone().in_execution(lease));
+            break (client, expires, seen.clone());
         }
         assert!(
             lifetime < tilo_test_env::hang_bound(),
@@ -489,7 +500,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     );
     assert_eq!(
         *actions.callers.lock().unwrap(),
-        delegated,
+        [admitted],
         "an expired delegation never reaches the app-serving plane"
     );
 }

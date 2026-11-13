@@ -62,7 +62,6 @@ a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
 
 ## Status bar
-status-untitled = Untitled
 
 ## Header / footer edit-mode tabs
 band-header = Header
@@ -157,7 +156,7 @@ style-menu-delete = Delete style
 style-menu-duplicate = Duplicate style
 
 ## Transient toasts (confirmation cues)
-toast-toc-empty = Add headings first — a table of contents lists them
+toast-toc-empty = Add headings first
 toast-save-failed = Could not save the document
 toast-view-only = This document is open to view only.
 toast-file-dialog-failed = Could not open the file chooser
@@ -210,12 +209,6 @@ color-cyan = cyan
 color-pink = pink
 color-orange = orange
 panel-close = Close
-
-# A selected file differs from the current admitted workspace document.
-file-choice-title = Choose the document to open
-file-choice-body = This file differs from the workspace document. Keep the workspace version, or import the selected file into its history.
-file-choice-keep = Keep workspace version
-file-choice-use = Use selected file
 
 ## Inspector and status band
 status-words = { $words } { $words ->
@@ -283,3 +276,61 @@ word-processor-set-page-margins = Changed the page margins
 word-processor-generate-toc = Added a table of contents
 word-processor-note-file-written = Saved to its file
 status-page = Page { $page } of { $pages }
+
+## Actions
+
+word-processor-effects-share-image = Share image
+word-processor-effects-open-document = Open document
+word-processor-effects-save = Save document
+word-processor-effects-save-as = Save document as
+word-processor-effects-read-file = Read a file
+word-processor-effects-read-content = Read document content
+word-processor-effects-import-docx-content = Import document content
+word-processor-effects-export-content = Export document content
+word-processor-effects-convert-file = Convert a file
+word-processor-effects-find = Find in document
+word-processor-effects-zoom-in = Zoom in
+word-processor-effects-zoom-out = Zoom out
+word-processor-effects-zoom-reset = Reset zoom to 100%
+word-processor-effects-spellcheck = Toggle spellcheck
+word-processor-effects-markup = Toggle review markup
+word-processor-effects-styles = Toggle styles panel
+word-processor-effects-ruler = Toggle ruler
+word-processor-effects-outline = Toggle outline
+word-processor-effects-move-caret = Move caret
+word-processor-effects-select-range = Select range
+word-processor-effects-select-block = Select paragraph
+word-processor-effects-find-text = Find text
+word-processor-effects-type-text = Type text
+word-processor-effects-new-paragraph = New paragraph
+word-processor-effects-erase-text = Erase text
+word-processor-effects-toggle-mark = Toggle formatting
+word-processor-effects-set-format = Set text format
+word-processor-effects-clear-format = Clear text format
+word-processor-effects-set-paragraph-style = Set paragraph style
+word-processor-effects-apply-named-style = Apply style
+word-processor-effects-align = Align paragraph
+word-processor-effects-insert-table-here = Insert table here
+word-processor-effects-insert-page-break = Insert page break
+word-processor-effects-set-hyperlink = Set hyperlink
+word-processor-effects-replace-selection = Replace selection
+word-processor-effects-comment-selection = Comment on selection
+word-processor-effects-place-image = Place image
+word-processor-effects-go-to = Go to
+word-processor-effects-go-to-anchor = Go to commented text
+word-processor-document = Document
+word-processor-document-append-paragraph = Add paragraph
+word-processor-document-replace-body = Replace body
+word-processor-document-replace-text = Find and replace
+word-processor-document-delete-image = Delete image
+word-processor-document-accept-change = Accept change
+word-processor-document-reject-change = Reject change
+word-processor-document-add-comment = Add comment
+word-processor-document-reply-to-comment = Reply to comment
+word-processor-document-adopt-comments = Keep imported comments
+word-processor-document-set-page-margins = Set page margins
+word-processor-document-generate-toc = Generate table of contents
+word-processor-document-note-file-written = Record a written file
+
+## What the app is called in a window and in the launcher
+word-processor-app-title = Word Processor

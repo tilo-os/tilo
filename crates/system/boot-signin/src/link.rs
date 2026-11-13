@@ -1,11 +1,5 @@
 //! The socket between `tilo-boot-signin` and the greeter it starts in boot
 //! mode (docs/security/sign-in.md §3.4).
-//!
-//! One message is one packet of a `SOCK_SEQPACKET` pair, so neither side
-//! reads half a message or two. The supervisor tells the greeter what to
-//! show; the greeter answers with what the person did. A secret travels as
-//! bytes in a buffer that is wiped when it is dropped, on both sides; every
-//! other message is JSON.
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -17,41 +11,37 @@ use zeroize::Zeroizing;
 use crate::flow::Note;
 use crate::people::Person;
 
-/// What the supervisor tells the greeter.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "message", rename_all = "kebab-case")]
 pub enum ToGreeter {
     /// The first message: the device's sign-in comforts, as the volume's
     /// `tilo-comforts` token has them. The greeter clamps every value.
-    Hello { comforts: serde_json::Value },
-    /// Everyone who may sign in, with `highlighted` the one to ask first.
+    Hello {
+        comforts: serde_json::Value,
+    },
     People {
         people: Vec<Person>,
         highlighted: usize,
     },
-    /// Ask `person` for their secret, with `note` under the field.
     Ask {
         person: usize,
         note: Note,
         several: bool,
     },
-    /// The secret given is being checked.
     Checking,
-    /// The sign-in is over; the greeter quits.
-    Finish { unlocked: bool },
+    Finish {
+        unlocked: bool,
+    },
 }
 
-/// What the person asked the machine to do from the power menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Power {
     PowerOff,
     Reboot,
 }
 
-/// What the greeter tells the supervisor.
 #[derive(Debug, PartialEq)]
 pub enum FromGreeter {
-    /// `person` (an index into the people sent) typed `secret`.
     Secret {
         person: usize,
         secret: Zeroizing<String>,
@@ -61,20 +51,15 @@ pub enum FromGreeter {
     Power(Power),
 }
 
-/// The tags that open a packet from the greeter.
 const SECRET: u8 = b'S';
 const CANT_SIGN_IN: u8 = b'C';
 const POWER_OFF: u8 = b'P';
 const REBOOT: u8 = b'R';
-/// A packet from the supervisor: JSON after the tag.
 const JSON: u8 = b'J';
 
-/// The longest secret a packet carries. The TPM takes far shorter ones.
 pub const SECRET_LIMIT: usize = 4096;
-/// The largest packet either side reads; the people list is the largest.
 const PACKET_LIMIT: usize = 64 * 1024;
 
-/// One end of the socket pair.
 pub struct Link(OwnedFd);
 
 impl Link {
@@ -90,7 +75,6 @@ impl Link {
         Ok((Self(ours), Self(theirs)))
     }
 
-    /// The end a process was handed.
     pub fn from_fd(fd: OwnedFd) -> Self {
         Self(fd)
     }
@@ -108,7 +92,6 @@ impl Link {
         self.send(&packet)
     }
 
-    /// The greeter's next message, waiting for it.
     pub fn recv_from_greeter(&self) -> io::Result<FromGreeter> {
         let packet = self.recv()?;
         let (tag, body) = packet.split_first().ok_or_else(malformed)?;
@@ -156,7 +139,6 @@ impl Link {
         self.send(&packet)
     }
 
-    /// The supervisor's next message, waiting for it.
     pub fn recv_from_supervisor(&self) -> io::Result<ToGreeter> {
         let packet = self.recv()?;
         match packet.split_first() {

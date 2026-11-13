@@ -1,8 +1,5 @@
 //! Bounded Thunderbird account discovery. Only `prefs.js` metadata is read;
 //! JavaScript is never executed and credential databases are never opened.
-//!
-//! Socket/auth values are Thunderbird's `MailNewsTypes2.idl` constants:
-//! <https://searchfox.org/comm-central/source/mailnews/base/public/MailNewsTypes2.idl>
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -13,7 +10,6 @@ use serde_json::Value;
 
 use crate::email::{AccountConfig, AuthMethod};
 
-/// Metadata awaiting an explicit sign-in: legacy Mail readers only load `email`.
 pub const PENDING_TYPE: &str = "email-pending";
 
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -33,7 +29,6 @@ pub struct Endpoint {
     pub port: u16,
     pub username: String,
     pub transport: Transport,
-    /// An omitted Thunderbird preference remains unspecified.
     pub authentication: Option<i64>,
 }
 
@@ -47,7 +42,6 @@ pub struct Candidate {
     pub outgoing: Endpoint,
 }
 
-/// How Thunderbird stores this account's mail locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServerKind {
@@ -111,7 +105,6 @@ pub struct ProfileMetadata {
     pub calendars: Vec<Calendar>,
 }
 
-/// Errors contain no source values, credentials, or preference contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscoveryError {
     Read,

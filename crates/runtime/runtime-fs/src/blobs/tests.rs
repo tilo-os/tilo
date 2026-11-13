@@ -8,7 +8,6 @@ use tilo_fs_client::wire::FsReply;
 
 use super::*;
 
-/// What one served capability answers with.
 type Dispatch = Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>>;
 
 /// Scope-checked in-memory backend: the protocol's contract, not the
@@ -18,13 +17,10 @@ struct MemoryBackend {
     bytes: Mutex<HashMap<String, Vec<u8>>>,
     refs: Mutex<HashSet<(String, String)>>,
     pending: Mutex<HashSet<String>>,
-    /// Every ranged read served, as `(offset, max_len)`.
     reads: Mutex<Vec<(u64, u32)>>,
-    /// The length of every piece a streamed put received.
     pieces: Mutex<Vec<usize>>,
     /// Streamed puts that ended without finishing, so stored nothing.
     abandoned: std::sync::atomic::AtomicUsize,
-    /// Held by a test to keep streamed puts from reading their pieces.
     stall: tokio::sync::Mutex<()>,
 }
 
@@ -427,8 +423,6 @@ fn blob_reader_fetches_ranges_as_it_is_read() {
 
 type Shared<T> = Arc<Mutex<T>>;
 
-/// A `DocumentBlobs` that keeps content in memory and logs every upload
-/// write as it arrives: what the daemon sees of a streamed put.
 struct Recording {
     content: Shared<HashMap<String, Vec<u8>>>,
     writes: Shared<Vec<usize>>,
@@ -586,10 +580,10 @@ impl io::Read for Watched {
 
 #[test]
 fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
-    // phase: content_larger_than_a_message_reaches_the_store_chunk_by_chunk
+    // phase: content_larger_than_a_piece_reaches_the_store_piece_by_piece
     {
         let Recorded { client, writes, .. } = recording_client();
-        let len = MAX_PUT_CHUNK * 3 + 5;
+        let len = UPLOAD_PIECE * 3 + 5;
         let mut reader = Watched::new(len, &writes);
         let stored = client
             .put_reader(&mut reader, "application/octet-stream")
@@ -599,11 +593,11 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
         assert_eq!(stored.len, len as u64);
         assert_eq!(
             *writes.lock().unwrap(),
-            [MAX_PUT_CHUNK, MAX_PUT_CHUNK, MAX_PUT_CHUNK, 5],
-            "the store saw one write per chunk"
+            [UPLOAD_PIECE, UPLOAD_PIECE, UPLOAD_PIECE, 5],
+            "the store saw one write per piece"
         );
         assert!(
-            reader.most_held <= MAX_PUT_CHUNK,
+            reader.most_held <= UPLOAD_PIECE,
             "a put held {} bytes the store had not received",
             reader.most_held
         );
@@ -615,7 +609,7 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
             }
         );
     }
-    // phase: content_of_one_message_or_less_is_one_put
+    // phase: content_shorter_than_a_piece_is_one_put
     {
         let Recorded {
             client,
@@ -623,17 +617,17 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
             content: store,
         } = recording_client();
         let stored = client
-            .put_reader(&mut Watched::new(MAX_PUT_CHUNK - 1, &writes), "")
+            .put_reader(&mut Watched::new(UPLOAD_PIECE - 1, &writes), "")
             .unwrap();
         assert!(writes.lock().unwrap().is_empty());
         assert!(store.lock().unwrap().contains_key(&stored.hash));
         let empty = client.put_reader(&mut io::empty(), "").unwrap();
         assert_eq!(empty.hash, blake3::hash(b"").to_hex().as_str());
         let exact = client
-            .put_reader(&mut Watched::new(MAX_PUT_CHUNK, &writes), "")
+            .put_reader(&mut Watched::new(UPLOAD_PIECE, &writes), "")
             .unwrap();
-        assert_eq!(*writes.lock().unwrap(), [MAX_PUT_CHUNK]);
-        assert_eq!(exact.len, MAX_PUT_CHUNK as u64);
+        assert_eq!(*writes.lock().unwrap(), [UPLOAD_PIECE]);
+        assert_eq!(exact.len, UPLOAD_PIECE as u64);
     }
     // phase: oversized_content_is_refused_one_byte_past_the_limit
     {
@@ -670,7 +664,6 @@ fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference() {
             Err(BlobError::Input(_))
         ));
         assert!(store.lock().unwrap().is_empty());
-        // The connection stays usable after the abandoned upload.
         assert!(client.put(b"after", "").is_ok());
     }
 }

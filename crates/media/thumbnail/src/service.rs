@@ -1,25 +1,9 @@
-//! The off-thread thumbnail service: request a preview, get a placeholder now
-//! and the generated image on a later frame.
+//! The off-thread thumbnail service: request a preview, get a placeholder now and the
+//! generated image on a later frame.
 //!
-//! Every preview in the system goes through here: a file-manager tile, a photo
-//! in a library grid, a camera roll peek, a video filmstrip cell. One
-//! **priority queue** feeds one worker pool, fronted by the content-addressed
-//! [`ThumbCache`], so work is never repeated across frames, folders, sessions
-//! or peers:
-//!
-//! - A request is keyed by a [`ThumbKey`]. A key already queued, in flight or
-//!   settled is never scheduled twice; asking again for a queued key at a
-//!   higher [`Priority`] moves it up instead.
-//! - Workers always take the highest-priority job, newest first within a
-//!   priority, so what just scrolled into view beats what scrolled past.
-//! - The queue is bounded: past [`DEFAULT_MAX_QUEUED`] the lowest-priority,
-//!   oldest request is dropped (and forgotten, so asking again re-queues it).
-//! - Settled results kept in memory are bounded too; an evicted preview is
-//!   still in the cache and settles again on the next request.
-//! - Decoders are the shared ones: images and EPUB covers in pure Rust, PDFs
-//!   through the sandboxed PDF helper, video through the `GStreamer`
-//!   `MediaEngine`. A worker keeps its video pipeline open and prefers jobs
-//!   for that source, so a filmstrip decodes through one pipeline.
+//! Every preview goes through here. One priority queue feeds one worker pool, behind the
+//! content-addressed [`ThumbCache`], so work is never repeated across frames, folders,
+//! sessions or peers.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -31,37 +15,24 @@ use crate::category::FileCategory;
 use crate::generate::{self, DEFAULT_EDGE, RgbaThumb, Source, ThumbSize};
 use tilo_lock::MutexRecover as _;
 
-/// Requests waiting for a worker before the lowest-priority one is dropped.
 pub const DEFAULT_MAX_QUEUED: usize = 512;
-/// Settled results kept in memory; older ones are re-read from the cache.
 pub const DEFAULT_MAX_SETTLED: usize = 2048;
-/// How long a worker holding an open video pipeline waits for more work before
-/// closing it — long enough for a scrub, short enough not to pin a decoder.
 const PIPELINE_IDLE: Duration = Duration::from_secs(20);
-/// How deep into its priority tier a worker with an open pipeline looks for a
-/// job on that same source before taking the head of the queue.
 const AFFINITY_SCAN: usize = 32;
 
-/// How urgently a preview is wanted. Workers always take the highest first.
+/// How urgently a preview is wanted; workers take the highest first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
-    /// Work nobody is looking at yet (warming a library).
     Background,
-    /// Just outside the viewport: likely next.
     Prefetch,
-    /// On screen now.
     #[default]
     Visible,
 }
 
-/// What a client should paint for a given request right now.
 #[derive(Clone)]
 pub enum ThumbState {
-    /// Generation is queued or in flight — paint a placeholder.
     Loading,
     Ready(Arc<RgbaThumb>),
-    /// No rendered preview: an unsupported type, or a decode that failed. The
-    /// client draws a type badge for `category`.
     Badge(FileCategory),
 }
 
@@ -78,23 +49,23 @@ impl ThumbState {
     }
 }
 
-/// A loader run on a worker, never on the requesting thread: reading an
-/// xattr or a file may cross a FUSE boundary and wait on a peer. Only a
-/// host with no threads at all (a browser page, which has no FUSE either)
-/// runs it on the requesting thread.
+/// A loader run on a worker, never on the requesting thread: reading an xattr or a file
+/// may cross a FUSE boundary and wait on a peer.
 type Loader = Box<dyn FnOnce() -> Option<Vec<u8>> + Send + 'static>;
 
 enum Work {
-    /// Generate from a file on disk, by category.
     File(PathBuf),
     /// Generate from source bytes a loader produces (a content-store read).
     Load(Loader),
-    /// Adopt an already-encoded PNG (the FUSE `user.tilo.thumb` xattr).
     Encoded(Loader),
-    /// Prefer a host-provided PNG, else generate from an already-local file.
-    EncodedOrFile { load: Loader, path: PathBuf },
-    /// The frame at `at_ms` of a video.
-    VideoFrame { path: PathBuf, at_ms: u64 },
+    EncodedOrFile {
+        load: Loader,
+        path: PathBuf,
+    },
+    VideoFrame {
+        path: PathBuf,
+        at_ms: u64,
+    },
 }
 
 impl Work {
@@ -106,8 +77,6 @@ impl Work {
     }
 }
 
-/// One preview to produce. Build with a constructor, adjust with
-/// [`ThumbRequest::priority`], hand to [`ThumbnailService::request`].
 pub struct ThumbRequest {
     key: ThumbKey,
     category: FileCategory,
@@ -117,7 +86,6 @@ pub struct ThumbRequest {
 }
 
 impl ThumbRequest {
-    /// Generate from a file on disk (image, PDF, ebook or video by `category`).
     pub fn file(key: ThumbKey, category: FileCategory, path: PathBuf) -> Self {
         Self::new(key, category, Work::File(path))
     }
@@ -142,8 +110,6 @@ impl ThumbRequest {
         Self::new(key, category, Work::Encoded(Box::new(png)))
     }
 
-    /// Adopt a host-provided PNG, falling back to generating a preview from a
-    /// file whose content is already local.
     pub fn encoded_or_file(
         key: ThumbKey,
         category: FileCategory,
@@ -160,8 +126,6 @@ impl ThumbRequest {
         )
     }
 
-    /// The frame at `at_ms` of the video at `path`, fitted to `key.size`. Key
-    /// it with [`ThumbKey::at_frame`] so each time has its own entry.
     pub fn video_frame(key: ThumbKey, path: PathBuf, at_ms: u64) -> Self {
         Self::new(key, FileCategory::Video, Work::VideoFrame { path, at_ms })
     }
@@ -191,7 +155,6 @@ impl ThumbRequest {
         self
     }
 
-    /// The key this request settles under.
     pub fn key(&self) -> ThumbKey {
         self.key
     }
@@ -237,8 +200,6 @@ struct Inner {
     queued: HashMap<ThumbKey, Queued>,
     seq: u64,
     in_flight: usize,
-    /// Settled keys, oldest first, for bounding `slots`. May name keys that
-    /// were since forgotten; eviction skips those.
     settled: VecDeque<ThumbKey>,
     shutdown: bool,
 }
@@ -284,9 +245,7 @@ impl Inner {
 
 struct Shared {
     inner: Mutex<Inner>,
-    /// Signalled when work is queued or the service shuts down.
     work: Condvar,
-    /// Signalled when a job settles.
     settled: Condvar,
     cache: ThumbCache,
     /// Where transient results go instead: nowhere that outlives the slot.
@@ -302,7 +261,6 @@ impl Shared {
     }
 }
 
-/// Stops the workers when the last service handle goes away.
 struct Shutdown(Arc<Shared>);
 
 impl Drop for Shutdown {
@@ -317,7 +275,6 @@ impl Drop for Shutdown {
     }
 }
 
-/// A cheap-to-clone handle to the shared background thumbnail pool + cache.
 #[derive(Clone)]
 pub struct ThumbnailService {
     shared: Arc<Shared>,
@@ -344,8 +301,6 @@ impl ThumbnailService {
         ))
     }
 
-    /// Open a service over the per-user preview cache (`tilo/thumbnails` in
-    /// the cache directory), or, with no cache directory, a temporary one.
     pub fn open_default(workers: usize) -> std::io::Result<Self> {
         // No cache directory and no file system (the page): previews live
         // in memory. `temp_dir` panics there rather than failing.
@@ -365,8 +320,6 @@ impl ThumbnailService {
         Self::new(ThumbCache::ephemeral(256), workers, DEFAULT_EDGE)
     }
 
-    /// Build a service over an existing cache with an explicit worker count and
-    /// default target edge.
     pub fn new(cache: ThumbCache, workers: usize, edge: u32) -> Self {
         Self::with_bounds(
             cache,
@@ -420,13 +373,10 @@ impl ThumbnailService {
         *self.shared.wake.lock_recover() = Some(Arc::new(wake));
     }
 
-    /// The configured default longest edge for generated thumbnails.
     pub fn edge(&self) -> u32 {
         self.edge
     }
 
-    /// The cache backing this service (for direct content-hash lookups, e.g.
-    /// from the FUSE host path).
     pub fn cache(&self) -> &ThumbCache {
         &self.shared.cache
     }
@@ -493,8 +443,6 @@ impl ThumbnailService {
         ThumbState::Loading
     }
 
-    /// Generate every queued preview on this thread, for a service with no
-    /// workers.
     fn run_queued(&self) {
         let mut video = VideoPipeline::default();
         loop {
@@ -517,13 +465,10 @@ impl ThumbnailService {
         }
     }
 
-    /// Request a preview for a file on disk at [`Priority::Visible`].
     pub fn request_file(&self, key: ThumbKey, category: FileCategory, path: PathBuf) -> ThumbState {
         self.request(ThumbRequest::file(key, category, path))
     }
 
-    /// Adopt an already-encoded PNG thumbnail the host provided (e.g. read from
-    /// the `user.tilo.thumb` xattr), at [`Priority::Visible`].
     pub fn request_encoded(
         &self,
         key: ThumbKey,
@@ -533,8 +478,6 @@ impl ThumbnailService {
         self.request(ThumbRequest::encoded(key, category, png))
     }
 
-    /// Adopt a host-provided PNG, falling back to generating a preview from a
-    /// file whose content is already local, at [`Priority::Visible`].
     pub fn request_encoded_or_file(
         &self,
         key: ThumbKey,
@@ -551,8 +494,6 @@ impl ThumbnailService {
         self.shared.lock().slots.get(key).map(Slot::state)
     }
 
-    /// Withdraw a request that is still queued (it scrolled away). An in-flight
-    /// or settled preview is left alone. Returns whether a job was withdrawn.
     pub fn cancel(&self, key: &ThumbKey) -> bool {
         let mut inner = self.shared.lock();
         let Some(queued) = inner.queued.remove(key) else {
@@ -579,12 +520,10 @@ impl ThumbnailService {
         }
     }
 
-    /// Number of queued and in-flight generations.
     pub fn pending(&self) -> usize {
         self.shared.lock().pending()
     }
 
-    /// Whether every scheduled generation has settled.
     pub fn is_idle(&self) -> bool {
         self.pending() == 0
     }
@@ -604,12 +543,10 @@ impl ThumbnailService {
     }
 }
 
-/// A worker's open video pipeline, reused across requests for one source.
 #[derive(Default)]
 struct VideoPipeline {
     #[cfg(feature = "video")]
     session: Option<crate::video::FrameSession>,
-    /// Without a decoder nothing is ever open; the path stays `None`.
     #[cfg(not(feature = "video"))]
     session: Option<PathBuf>,
 }
@@ -630,7 +567,6 @@ impl VideoPipeline {
         self.session = None;
     }
 
-    /// The frame at `at_ms` of `path`, reopening only when the source changed.
     #[cfg(feature = "video")]
     fn frame(&mut self, path: &std::path::Path, at_ms: u64, size: ThumbSize) -> Option<RgbaThumb> {
         if self.session.as_ref().is_none_or(|s| s.path() != path) {
@@ -694,7 +630,6 @@ fn worker_loop(shared: &Arc<Shared>) {
     }
 }
 
-/// Record a generated preview, bound the settled results and tell the app.
 fn finish(shared: &Shared, key: ThumbKey, slot: Slot) {
     let mut inner = shared.lock();
     inner.in_flight = inner.in_flight.saturating_sub(1);
@@ -747,7 +682,6 @@ fn adopt(cache: &ThumbCache, key: &ThumbKey, png: Vec<u8>) -> Option<Slot> {
 }
 
 fn run_job(cache: &ThumbCache, job: Job, video: &mut VideoPipeline) -> Slot {
-    // A prior session (or a peer, via content-addressing) may already hold it.
     if let Some(png) = cache.get(&job.key)
         && let Some(thumb) = generate::decode_png(&png)
     {
@@ -949,8 +883,6 @@ mod tests {
         }
     }
 
-    /// Visible work runs before prefetch before background, and within one
-    /// priority the newest request runs first.
     #[test]
     fn the_queue_runs_the_most_urgent_newest_request_first() {
         let (_dir, svc, release) = blocked_service();
@@ -969,8 +901,6 @@ mod tests {
         );
     }
 
-    /// Asking again for a queued key never schedules it twice, and asking at a
-    /// higher priority moves it ahead of the work it was behind.
     #[test]
     fn a_repeated_request_is_deduplicated_and_can_move_up() {
         let (_dir, svc, release) = blocked_service();
@@ -992,8 +922,6 @@ mod tests {
         assert_eq!(ran, ["scrolled-into-view", "prefetch"]);
     }
 
-    /// Past the bound the least urgent, oldest request is dropped and
-    /// forgotten, so asking for it again queues it afresh.
     #[test]
     fn the_queue_is_bounded_by_dropping_the_least_urgent_request() {
         let (_dir, svc, release) = blocked_service();
@@ -1022,8 +950,6 @@ mod tests {
         assert_eq!(order.try_iter().count(), 0);
     }
 
-    /// Settled results in memory are bounded; an evicted one settles again
-    /// from the cache without running its generator.
     #[test]
     fn evicted_results_come_back_from_the_cache() {
         let dir = tempfile::tempdir().unwrap();
@@ -1077,8 +1003,6 @@ mod tests {
         rx.recv_timeout(SETTLE).unwrap();
     }
 
-    /// Without a real decoder a video frame settles as a badge — never a
-    /// synthesised picture passed off as a frame.
     #[cfg(not(feature = "video"))]
     #[test]
     fn a_video_frame_without_a_decoder_settles_as_a_badge() {

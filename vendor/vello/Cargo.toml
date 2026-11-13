@@ -43,7 +43,6 @@ targets = []
 
 [features]
 bump_estimate = ["vello_encoding/bump_estimate"]
-debug_layers = []
 default = [
     "wgpu",
     "wgpu_default",
@@ -52,7 +51,6 @@ hot_reload = ["vello_shaders/compile"]
 wgpu = [
     "dep:wgpu",
     "dep:vello_shaders",
-    "dep:futures-intrusive",
 ]
 wgpu-profiler = ["dep:wgpu-profiler"]
 wgpu_default = [
@@ -67,10 +65,6 @@ path = "src/lib.rs"
 [dependencies.bytemuck]
 version = "1.25.0"
 features = ["derive"]
-
-[dependencies.futures-intrusive]
-version = "0.5.0"
-optional = true
 
 [dependencies.log]
 version = "0.4.29"

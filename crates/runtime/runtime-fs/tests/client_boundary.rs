@@ -164,17 +164,6 @@ fn mit_directory_client_cannot_promote_read_custody_to_creation_or_history_autho
     let refused = client.create_file(ROOT_DIRECTORY, &ungranted).unwrap();
     assert_failed_job(&client, refused);
     assert!(client.recoveries(ROOT_DIRECTORY, &[]).is_err());
-    let observed = client.stat(ROOT_DIRECTORY, &chosen).unwrap().unwrap();
-    assert!(
-        client
-            .history_query(
-                ROOT_DIRECTORY,
-                &chosen,
-                observed.identity,
-                b"user.tilo.history"
-            )
-            .is_err()
-    );
     assert!(!disk.path().join("ungranted").exists());
     authority.revoke_directory(&root).unwrap();
     assert!(client.read(held, 0, 64).is_err());

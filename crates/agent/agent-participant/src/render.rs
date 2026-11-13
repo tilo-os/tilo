@@ -96,6 +96,11 @@ pub fn offered(descriptors: Vec<ActionDescriptor>) -> Vec<ActionDescriptor> {
     offered_where(descriptors, available())
 }
 
+/// Whether this host makes the renders an agent asks of a record.
+pub(crate) fn can_render() -> bool {
+    available()
+}
+
 /// [`offered`] on a host that `can_render` or not.
 fn offered_where(
     mut descriptors: Vec<ActionDescriptor>,
@@ -480,11 +485,11 @@ impl Snapshot {
     fn check_sources(&self, content: &ContentStore) -> Result<(), String> {
         match agent_render::placed_content(&self.project)
             .into_iter()
-            .find(|hash| !content.has(hash))
+            .find(|reference| !content.has(reference))
         {
-            Some(hash) => Err(format!(
-                "the workspace does not hold tilo.content:{hash}, which the timeline places: \
-                 import it again"
+            Some(reference) => Err(format!(
+                "the workspace does not hold {reference}, which the timeline places: import it \
+                 again"
             )),
             None => Ok(()),
         }
@@ -494,11 +499,16 @@ impl Snapshot {
     fn lay_out(&self, content: &ContentStore) -> Result<JobDir, String> {
         let mut dir = JobDir::create(&std::env::temp_dir(), SOURCE_BUDGET)?;
         dir.put_snapshot(&self.bytes)?;
-        for hash in agent_render::placed_content(&self.project) {
+        for reference in agent_render::placed_content(&self.project) {
+            let address = tilo_content::content_address(&reference).ok_or_else(|| {
+                format!("the timeline places {reference}, which is no content reference")
+            })?;
+            // Read through the reference: a workspace that keeps content
+            // sealed holds ciphertext under its address.
             let mut reader = content
-                .open(&hash)
-                .ok_or_else(|| format!("the workspace no longer holds tilo.content:{hash}"))?;
-            dir.put_source(&hash, &mut reader)?;
+                .open(&reference)
+                .ok_or_else(|| format!("the workspace no longer holds {reference}"))?;
+            dir.put_source(&address, &mut reader)?;
         }
         Ok(dir)
     }

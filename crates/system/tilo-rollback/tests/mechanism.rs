@@ -1,10 +1,10 @@
-//! Mechanism tests against an emulated TPM and a loopback-free LUKS2 image, driving the
-//! production `policy`/`keyslots`/`counter` code paths without root, loop devices or a VM.
-//! Mounting and `tilo-rollback unlock` on a booted machine are not covered.
+//! Mechanism tests against an emulated TPM and a LUKS2 image on a plain file, driving the
+//! production `policy`/`keyslots`/`counter` code paths without root, loop devices or a VM. Mounting
+//! and `tilo-rollback unlock` on a booted machine are not covered.
 //!
-//! Requires `swtpm`, `tpm2-tools`, and `cryptsetup`; run with
-//! `cargo test -p tilo-rollback --test mechanism -- --test-threads 1` (each test gets its own
-//! `swtpm` since several drive dictionary-attack lockout, which a shared instance would leak).
+//! Requires `swtpm`, `tpm2-tools` and `cryptsetup`; run with `cargo test -p tilo-rollback --test
+//! mechanism -- --test-threads 1` (each test gets its own `swtpm`, since several drive
+//! dictionary-attack lockout, which a shared instance would leak).
 
 #![allow(
     clippy::unwrap_used,
@@ -171,7 +171,6 @@ impl Fixture {
         a
     }
 
-    /// Raise the floor by `times` steps, issuing the approvals needed to do it.
     fn bump_floor(&self, times: u64) {
         let ws = self.ws();
         let counter_value = self.counter_now();
@@ -205,8 +204,6 @@ impl Fixture {
         assert_eq!(out.steps, times, "expected {times} steps");
     }
 
-    /// Issue exactly the approvals needed to confirm `generation` up to `target_floor`, mirroring
-    /// a real deployment: staging enrolls, then the authority approves.
     fn approve_up_to(&self, base: i64, generation: u64, target_floor: u64) {
         let floor = counter::FloorState {
             counter: self.counter_now(),
@@ -215,13 +212,10 @@ impl Fixture {
         self.issue_approvals(floor, &[generation], target_floor, true);
     }
 
-    /// Base from the most recent `floor()` call, recovered from the counter (materialised first).
     fn current_base(&self) -> i64 {
         self.base.get()
     }
 
-    /// Sign a prediction over the machine's current measurements for one generation;
-    /// `key` selects the authorised or unauthorised signer.
     fn predict(&self, generation: u64, key: &Path, label: &str) -> Prediction {
         let ws = self.ws();
         let approved =
@@ -235,7 +229,6 @@ impl Fixture {
         }
     }
 
-    /// Seal a secret for one generation and wrap it in a token, without touching disk.
     fn seal_token(
         &self,
         generation: u64,
@@ -306,7 +299,6 @@ fn gen_rsa(priv_path: &Path, pub_path: &Path) {
     std::fs::write(pub_path, generated.public_key_pem().as_bytes()).expect("write public key");
 }
 
-/// A generation enrolled without a PIN.
 fn unpinned(
     generation: u64,
     floor: counter::FloorState,
@@ -320,7 +312,6 @@ fn unpinned(
     }
 }
 
-/// A LUKS2 image on a plain file, slot 0 holding `recovery`.
 fn luks_image(dir: &Path, recovery: &[u8]) -> PathBuf {
     let img = dir.join("disk.img");
     let f = std::fs::File::create(&img).expect("create image");
@@ -792,7 +783,6 @@ fn a_slot_is_never_removed_without_a_proven_alternative() {
         "the refusal should name the self-authorisation: {e:#}"
     );
 
-    // With a real, different, verified proof it goes.
     keyslots::kill_generation_slot(&f.runner, &ws, &img, tok6, slot6, &proof7)
         .expect("removal with a proven alternative");
     assert!(
@@ -805,8 +795,8 @@ fn a_slot_is_never_removed_without_a_proven_alternative() {
     );
 }
 
-/// Restoring a LUKS2 header backup resurrects every pruned token and keyslot — why the
-/// keyslot mechanism cannot stand alone and why the floor lives in the TPM.
+/// Restoring a LUKS2 header backup resurrects every pruned token and keyslot: why the keyslot
+/// mechanism cannot stand alone, and why the floor lives in the TPM.
 #[test]
 fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
     let f = fixture!();
@@ -815,7 +805,6 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
     let ws = f.ws();
     let floor = f.floor(5);
 
-    // Generation 5 is enrolled while it is inside the window.
     let p5 = vec![f.predict(5, &f.sign_priv, "g5")];
     let (slot5, tok5) = keyslots::enroll_generation(
         &f.runner,
@@ -936,7 +925,6 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
     let preds = f.dir().join("predictions");
     let state = f.dir().join("state.json");
 
-    // Generations 5, 6, 7, 8 all ship a prediction for the live measurements.
     for g in [5u64, 6, 7, 8] {
         let p = f.predict(g, &f.sign_priv, "");
         policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
@@ -1214,7 +1202,6 @@ fn the_floor_can_be_certified_with_an_attestation_key() {
         "the qualifying nonce must appear in the attestation's extraData"
     );
 
-    // Moving the floor must change what is certified.
     f.bump_floor(2);
     let att2 = tilo_rollback::certify::certify_floor(
         &f.runner,
@@ -1443,7 +1430,6 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
         .1;
     let secret7 = f.try_unseal(&t7, None).expect("unseal").expect("applies");
 
-    // Something outside this tool removes the recovery keyslot.
     let kf = f.dir().join("kill.key");
     std::fs::write(&kf, &secret7).expect("write key file");
     assert!(
@@ -1491,9 +1477,9 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
 
 /// The staged update's keyslot must survive confirming the currently-running generation.
 ///
-/// Regression test: `drop_set` treated any generation newer than the running one as stale
-/// residue, but a machine mid-update normally runs N with N+1's keyslot sealed. Confirming N
-/// deleted N+1's keyslot, so rebooting into N+1 had nothing to unseal and fell back to the
+/// A machine mid-update normally runs N with N+1's keyslot sealed. Treating any generation newer
+/// than the running one as stale residue deleted N+1's keyslot, so rebooting into N+1 had nothing
+/// to unseal and fell back to the recovery key.
 /// recovery key.
 #[test]
 fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
@@ -1510,7 +1496,6 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
     }
     let floor = f.floor(3);
 
-    // Running generation 5, and generation 6 staged with its keyslot sealed.
     keyslots::enroll_generation(
         &f.runner,
         &ws,
@@ -1633,8 +1618,8 @@ fn trial_digest(f: &Fixture, steps: &[&[&str]]) -> Vec<u8> {
     d
 }
 
-/// `PolicyCommandCode`, `PolicyAuthValue` and `PolicyNvWritten` (both ways) each match the TPM's own
-/// trial-session digest.
+/// `PolicyCommandCode`, `PolicyAuthValue` and `PolicyNvWritten` (both ways) each match the TPM's
+/// own trial-session digest.
 fn assert_simple_policy_primitives_match(f: &Fixture, sess_s: &str) {
     assert_eq!(
         trial_digest(
@@ -1841,7 +1826,6 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     let operand = assert_policy_nv_matches(&f, &sess_s, &idx, &nv_name);
     assert_policy_authorize_and_or_match(&f, &sess_s);
 
-    // And the approval policy, end to end.
     let target = floor.counter + 1;
     assert_approval_policy_matches(&f, &sess_s, &idx, &nv_name, &operand, target);
 }
@@ -1852,14 +1836,12 @@ fn an_increment_without_an_approval_is_refused() {
     let floor = f.floor(3);
     let idx = format!("0x{:08X}", f.cfg.nv_index);
 
-    // Empty authorisation: what a root process could try on its own (index has no authwrite).
     let out = f.raw("tpm2_nvincrement", &[&idx, "-C", &idx]);
     assert!(
         !out.ok(),
         "an unauthorised increment must be refused — otherwise anything running as root can push \
          the floor above the running generation and force the machine onto its recovery key"
     );
-    // Owner authorisation must not work either.
     let out = f.raw("tpm2_nvincrement", &[&idx, "-C", "o"]);
     assert!(
         !out.ok(),
@@ -1902,7 +1884,6 @@ fn a_replayed_approval_is_refused_by_the_tpm() {
     assert_eq!(approvals.len(), 1, "one step, one approval");
     let approval = &approvals[0];
 
-    // First use works.
     counter::increment_approved(
         &f.runner,
         &ws,
@@ -1938,7 +1919,6 @@ fn an_approval_is_bound_to_one_target_and_cannot_reach_another() {
     let f = fixture!();
     let ws = f.ws();
     let floor = f.floor(3);
-    // Approvals for two steps: floor 4 and floor 5.
     let approvals = f.issue_approvals(floor, &[], 5, false);
     assert_eq!(approvals.len(), 2);
 
@@ -1960,7 +1940,6 @@ fn an_approval_is_bound_to_one_target_and_cannot_reach_another() {
     assert!(format!("{err:#}").contains("does not apply"), "{err:#}");
     assert_eq!(f.counter_now(), floor.counter);
 
-    // In order, both work, one step each.
     for a in &approvals {
         counter::increment_approved(
             &f.runner,
@@ -2169,7 +2148,6 @@ fn issuance_refuses_to_approve_past_the_newest_enrolled_generation() {
         "{msg}"
     );
 
-    // Up to the bound is fine, and it is exactly enough steps to get there.
     let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
     assert_eq!(ok.len(), 3, "floor 3 -> 6 is three single-use steps");
     assert_eq!(ok[0].target_floor, 4);

@@ -1,10 +1,10 @@
-//! Uploads: one `files/upload` for a file that fits a single chunk, else an
-//! upload session (`upload_session/start`, `append_v2`, `finish`) that can
-//! be resumed from its persisted state after a restart.
+//! Uploads: one `files/upload` for a file that fits a single chunk, else an upload
+//! session (`upload_session/start`, `append_v2`, `finish`) that can be resumed from its
+//! persisted state after a restart.
 //!
-//! Every request carries the `content_hash` of its body, so Dropbox rejects
-//! bytes damaged in transit, and the committed file's hash is compared with
-//! the hash of everything sent.
+//! Every request carries the `content_hash` of its body, so Dropbox rejects bytes damaged
+//! in transit, and the committed file's hash is compared with the hash of everything
+//! sent.
 
 use std::io::Read;
 
@@ -23,7 +23,6 @@ enum Mode {
     Update(String),
 }
 
-/// Where the upload is committed and under which write mode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commit {
     path: String,
@@ -31,7 +30,6 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// Create; an existing item at `path` is a conflict.
     pub fn add(path: String) -> Self {
         Self {
             path,
@@ -39,7 +37,6 @@ impl Commit {
         }
     }
 
-    /// Replace unconditionally.
     pub fn overwrite(path: String) -> Self {
         Self {
             path,
@@ -47,7 +44,6 @@ impl Commit {
         }
     }
 
-    /// Replace only while the file is at `rev`.
     pub fn update(path: String, rev: String) -> Self {
         Self {
             path,
@@ -117,7 +113,6 @@ fn session_error(failure: Failure) -> Error {
     }
 }
 
-/// The server's committed offset from an `incorrect_offset` error.
 fn correct_offset(failure: &Failure) -> Option<u64> {
     let Failure::Route { error, .. } = failure else {
         return None;

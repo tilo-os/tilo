@@ -54,7 +54,7 @@ impl wire::DirectorySource for LocalDocumentDirectory {
 
     fn resolve(
         &self,
-        (revision, _, _): (&str, &str, &str),
+        (revision, _, action): (&str, &str, &str),
         local_document: bool,
         _max_bytes: u32,
     ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
@@ -69,6 +69,11 @@ impl wire::DirectorySource for LocalDocumentDirectory {
         if self.pin_dropped.get() || revision != "original-r1" {
             return Box::pin(std::future::ready(Ok(
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
+            )));
+        }
+        if action == "never-offered" {
+            return Box::pin(std::future::ready(Ok(
+                runtime_collab::ActionDirectoryResolution::NotFound,
             )));
         }
         let mut row = directory_state("original-r1").borrow().row();
@@ -250,6 +255,17 @@ async fn local_report_admission(
             assert!(
                 !rejected(&error),
                 "unknown requests must retain reconciliation custody: {error}"
+            );
+            assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
+            let mut never_offered = request.clone();
+            never_offered.action = "never-offered".into();
+            never_offered.invocation = never_offered.bound_invocation().unwrap();
+            let error = admit(&raw, &never_offered)
+                .await
+                .expect_err("an action its surface never offered is not admitted");
+            assert!(
+                rejected(&error),
+                "no retry finds an action the retained surface lacks: {error}"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             let once_grant = |id: &str| {

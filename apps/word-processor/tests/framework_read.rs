@@ -1,6 +1,3 @@
-//! An agent reads the document through the bound-action door the broker
-//! and the MCP bridge reach: `read-text` pages the committed body text.
-
 use ui::bound_dispatch::BoundActionAddress;
 use ui::framework::testing::TestApp;
 use word_processor::framework::WordProcessorApp;
@@ -116,8 +113,6 @@ fn invoke(
     let (invocation, started) = harness
         .start_bound_job(&address, arguments.as_object().unwrap(), false)
         .unwrap();
-    // An edit at the caret is applied as the frame settles; one that answers
-    // with what it changed does so then.
     harness.relayout();
     if let Some(output) = started.completed() {
         return output.value;
@@ -172,8 +167,6 @@ fn an_edit_answers_with_the_blocks_it_changed() {
     );
 }
 
-/// `text` with every `{#id}` and `{#table id}` emptied, so a test can state
-/// the layout it expects without the generated ids.
 fn without_ids(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
@@ -190,7 +183,6 @@ fn without_ids(text: &str) -> String {
     out + rest
 }
 
-/// The id closing the line of `markdown` holding `text`, cell or block.
 fn id_of(markdown: &str, text: &str) -> String {
     let (_, tagged) = markdown
         .split_once(&format!("{text} {{#"))
@@ -242,8 +234,6 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
         "the cell's id selects it: {markdown}"
     );
 
-    // The table read names is the one a row is added to, and the next read
-    // shows the row.
     let table = markdown
         .split_once("{#table ")
         .and_then(|(_, tagged)| tagged.split_once('}'))
@@ -260,8 +250,6 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
     );
 }
 
-/// A paste and a row added answer with the blocks they made, so the caller
-/// fills them without reading the document again.
 #[test]
 fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
     ui::i18n::I18nManager::init("en-US");
@@ -295,7 +283,6 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
         .map(|(id, _)| id.to_owned())
         .expect("the paste answers with the table's id");
     let appended = invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
-    // A verb answers with what it changed, beside the ids it minted.
     let appended = appended
         .as_ref()
         .and_then(|value| value["changed"].as_str())
@@ -307,7 +294,6 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
     );
 }
 
-/// The document's blocks as (kind, text, align), in order.
 fn blocks(app: &TestApp<WordProcessorApp>) -> Vec<(String, String, Option<String>)> {
     app.read_document(|doc| {
         let containers = word_processor::model::open(doc).unwrap();
@@ -335,8 +321,6 @@ fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
     app.harness().type_text("Book the venue for the offsite");
     app.harness().relayout();
 
-    // The paragraphs are published by their first words, each naming its
-    // paragraph as an item of the document.
     let resources = app.harness().resources();
     let root = resources[0].id.as_str().to_owned();
     let title = resources[0]
@@ -379,8 +363,6 @@ fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
     assert_eq!(after[0].2.as_deref(), Some("center"), "{after:?}");
     assert_eq!(after[1].2, None, "only the named paragraph is aligned");
 
-    // It is left there: its next edit at its caret is beside the title,
-    // not at the end of the document where an agent starts.
     app.call_by(agent, &root, "insert-table-here", serde_json::json!({}))
         .unwrap();
     app.settle();
@@ -396,7 +378,6 @@ fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
         "{after:?}"
     );
 
-    // A place that is not in the document is refused, and nothing changes.
     let before = blocks(&app);
     assert!(
         app.call(

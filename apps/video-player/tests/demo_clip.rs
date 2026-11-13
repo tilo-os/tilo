@@ -1,5 +1,5 @@
-//! The capture's demo clip plays on every VP9 decoder: Profile 0, 8-bit,
-//! 4:2:0, read from the pinned fixture's own `vpcC` record.
+//! The capture's demo clip plays on every VP9 decoder: Profile 0, 8-bit, 4:2:0, read from
+//! the pinned fixture's own `vpcC` record.
 
 #![allow(
     clippy::expect_used,
@@ -8,8 +8,6 @@
 
 use std::path::Path;
 
-/// The payload of the first box of `kind` among the boxes in `data`, and the
-/// rest of `data` after that box.
 fn next_box(data: &[u8], kind: [u8; 4]) -> Option<(&[u8], &[u8])> {
     let mut rest = data;
     while let (Some(size32), Some(found)) = (rest.get(0..4), rest.get(4..8)) {
@@ -31,13 +29,12 @@ fn next_box(data: &[u8], kind: [u8; 4]) -> Option<(&[u8], &[u8])> {
     None
 }
 
-/// The payload of the first box of `kind` among the boxes in `data`.
 fn child(data: &[u8], kind: [u8; 4]) -> Option<&[u8]> {
     next_box(data, kind).map(|(payload, _)| payload)
 }
 
-/// The VP9 codec configuration (`vpcC`) of the file's video track:
-/// `(profile, bit depth, chroma subsampling)`.
+/// The VP9 configuration (`vpcC`) of the file's video track: `(profile, bit depth, chroma
+/// subsampling)`.
 fn vp9_config(file: &[u8]) -> Option<(u8, u8, u8)> {
     let mut rest = child(file, *b"moov")?;
     while let Some((trak, after)) = next_box(rest, *b"trak") {
@@ -51,8 +48,8 @@ fn vp9_config(file: &[u8]) -> Option<(u8, u8, u8)> {
         };
         // The visual sample entry's fixed fields come before its child boxes.
         let vpcc = child(entry.get(78..)?, *b"vpcC")?;
-        // A full box: version and flags, then profile, level, and one byte of
-        // bit depth (4 bits), chroma subsampling (3) and full range (1).
+        // A full box: version and flags, then profile, level, and one byte packing bit
+        // depth (4 bits), chroma subsampling (3) and full range (1).
         let profile = *vpcc.get(4)?;
         let packed = *vpcc.get(6)?;
         return Some((
@@ -72,6 +69,6 @@ fn the_demo_clip_is_vp9_profile_0_8_bit_4_2_0() {
         vp9_config(&file).expect("the clip has a VP9 track with a vpcC record");
     assert_eq!(profile, 0, "VP9 Profile 0, which every VP9 decoder plays");
     assert_eq!(bit_depth, 8, "8-bit samples");
-    // 0 and 1 are 4:2:0 (vertical or colocated chroma); 2 is 4:2:2, 3 is 4:4:4.
+    // 0 and 1 are 4:2:0, 2 is 4:2:2, 3 is 4:4:4.
     assert!(chroma <= 1, "4:2:0 chroma, found subsampling code {chroma}");
 }

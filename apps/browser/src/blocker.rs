@@ -1,49 +1,21 @@
-//! Built-in ad blocking. Two complementary mechanisms:
-//!
-//! 1. **Content filter** — fetch Brave/EasyList-syntax filter lists,
-//!    cache them on disk, compile them to `WebKit` content-blocker JSON via
-//!    [`ui::webview::adblock`], and hand the result to the engine
-//!    ([`spawn_filter_loader`]). Blocking then runs natively inside the
-//!    engine's network process — no per-request work in the app. This
-//!    covers network blocking + cosmetic (`css-display-none`) hiding for
-//!    ordinary sites.
-//!
-//! 2. **User scripts** — [`user_scripts`] returns JavaScript injected at
-//!    document-start into every frame. `WebKit` content filters are purely
-//!    *declarative* (block + hide only); they cannot run scriptlets. Sites
-//!    that serve their ads same-origin and need JS to defeat — `YouTube`
-//!    being the canonical case — are handled here instead. `user_scripts`
-//!    is consumed separately by the app: the orchestrator sends each
-//!    string to the engine as a document-start, all-frames user script.
-//!
-//! The content-filter path happens on a spawned thread so a cold cache /
-//! slow network never delays first paint; pages loaded before the filter
-//! compiles simply go unfiltered once.
+//! Ad blocking, two ways: filter lists compiled to `WebKit` content-blocker JSON
+//! and run natively in the engine's network process, and user scripts for what
+//! declarative filters cannot do, such as scriptlets that skip `YouTube`'s ads.
+//! Lists compile on a spawned thread, so a cold cache never delays first paint.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use ui::webview::{SharedEngine, WebViewCommand};
 
-/// Filter lists to fetch, as `(cache file name, URL)`.
+/// Filter lists to fetch, as `(cache file name, URL)`: uBlock Origin's default
+/// set, restricted to the lists whose rules survive conversion to `WebKit`'s
+/// declarative format.
 ///
-/// The canonical uBlock-Origin-default blocking set, restricted to lists
-/// whose rules survive adblock-rust's conversion to `WebKit`'s *declarative*
-/// content-blocker format cleanly:
-///
-/// - **`EasyList`** / **`EasyPrivacy`** — the network + tracker backbone.
-/// - **`EasyList` Cookie List** — cookie/consent banner annoyances.
-/// - **uBlock Origin** `filters`, `privacy`, `badware`, `resource-abuse` —
-///   uBO's own maintained supplements.
-///
-/// Deliberately excluded: uBO **quick-fixes** and **`AdGuard` Base**. Both
-/// lean on rule types `WebKit` content blocking cannot express — `$replace`
-/// (response-body rewriting), `$redirect`, and raw-regex `$frame` filters
-/// spanning a huge URL range. adblock-rust's lossy conversion turns some
-/// of those into over-broad `block` rules that catch a page's *own*
-/// first-party document/scripts during load, blanking it. They also churn
-/// daily, so a fresh compile can regress unpredictably. `EasyList` + uBO
-/// already cover the same targets through WebKit-safe rules.
+/// `EasyList` and `EasyPrivacy` are the backbone, with the cookie list and uBO's
+/// own supplements. Left out: uBO quick fixes and `AdGuard` Base, whose
+/// `$replace`, `$redirect` and regex `$frame` rules become over-broad blocks
+/// that blank a page's own document, and which churn daily.
 pub const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     (
@@ -72,33 +44,18 @@ pub const LISTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Lists that must stay out of [`LISTS`], by cache-file name.
-///
-/// Adding either one back reintroduces the blank-page-on-load regression
-/// described above; `apps/browser/examples/adblock_blank_repro.rs`
-/// reproduces it. Named here so the invariant is testable rather than
-/// only stated in prose.
+/// Lists that stay out of [`LISTS`], by cache file name:
+/// `apps/browser/examples/adblock_blank_repro.rs` reproduces what adding one
+/// back does.
 #[cfg(test)]
 const EXCLUDED_LISTS: &[&str] = &["ublock-quick-fixes.txt", "adguard-base.txt"];
 
-/// Re-download a cached list after this age.
 const CACHE_MAX_AGE: Duration = Duration::from_secs(604_800);
 
-/// Load + compile the filter lists in the background and install the
-/// compiled content filter into `engine` when ready.
-///
-/// This is only the declarative content-filter path. The scriptlet path
-/// ([`user_scripts`]) is installed separately by the app, since it maps
-/// to a different engine capability (user scripts, not content filters).
-///
-/// `then` (the window's first navigation) is sent once the engine has the
-/// rules it can have at once: an engine that filters natively is handed the
-/// cached lists first, read off the calling thread; otherwise it is sent
-/// now, as compiling takes long.
-///
-/// If the OS refuses to spawn the background loader thread (e.g. the
-/// process is out of resources), ad blocking is simply left disabled for
-/// this session rather than taking the whole app down with it.
+/// Load and compile the filter lists in the background and install them when
+/// ready, sending `then` (the window's first navigation) once the engine has the
+/// rules it can have at once. This is the declarative filter only; the scriptlet
+/// path ([`user_scripts`]) is installed separately as user scripts.
 pub fn spawn_filter_loader(engine: SharedEngine, then: Option<WebViewCommand>) {
     if engine.supports_native_filtering() {
         crate::native_blocker::start(&engine, then);
@@ -118,10 +75,9 @@ pub fn spawn_filter_loader(engine: SharedEngine, then: Option<WebViewCommand>) {
                         skipped = filter.skipped,
                         "content filter compiled"
                     );
-                    // Installed as several filters — the full rule set exceeds
-                    // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
-                    // `version` (hash of the source lists) lets the engine reuse
-                    // previously compiled filters when the lists are unchanged.
+                    // Installed as several filters, since the full rule set
+                    // exceeds WebKit's per-filter cap. The `version` (a hash of
+                    // the source lists) lets the engine reuse compiled filters.
                     engine.send(WebViewCommand::SetContentFilters {
                         version,
                         chunks: std::sync::Arc::new(filter.chunks),
@@ -139,19 +95,12 @@ pub fn spawn_filter_loader(engine: SharedEngine, then: Option<WebViewCommand>) {
     }
 }
 
-/// JavaScript user scripts for scriptlet-style blocking that the
-/// declarative content filter cannot express.
+/// JavaScript user scripts for scriptlet-style blocking that the declarative
+/// content filter cannot express.
 ///
-/// Each entry is a standalone, self-contained script meant to be injected
-/// at **document-start** into **all frames**. They are defensive (feature
-/// detection, no throwing) so an injection into an unexpected page is
-/// harmless. The app/orchestrator owns delivery to the engine — this
-/// function is a pure catalogue with no engine dependency, which keeps it
-/// trivially unit-testable.
-///
-/// The `YouTube` ad-skip script is the priority: `YouTube` stitches video ads
-/// into the same origin as the player, so no network rule can drop them —
-/// only page-side JS can mute, fast-forward, and click past them.
+/// Each is standalone and injected at document-start into every frame, and
+/// defensive, so an injection into an unexpected page is harmless. The app sends
+/// them to the engine; this is a pure catalogue, so it is testable alone.
 pub fn user_scripts() -> Vec<String> {
     vec![
         youtube_ad_skip_script().to_string(),
@@ -159,26 +108,13 @@ pub fn user_scripts() -> Vec<String> {
     ]
 }
 
-/// Robust `YouTube` video-ad skipper.
+/// A `YouTube` ad skipper: the ads are stitched into the player's own origin, so no
+/// network rule can drop them and only page-side script can.
 ///
-/// Detection + skip strategy (kept resilient to `YouTube`'s frequent markup
-/// churn by matching on several class/selector variants and re-running on
-/// every DOM mutation plus a short interval, so it survives SPA
-/// navigation between videos without a full reload):
-///
-/// - **Ad in progress?** `#movie_player` carries the `ad-showing` class
-///   while a video ad plays.
-/// - **Skip button** — click any of the known skip-button variants the
-///   moment it appears (`.ytp-ad-skip-button`,
-///   `.ytp-ad-skip-button-modern`, `.ytp-skip-ad-button`, …).
-/// - **Unskippable portion** — mute the `<video>` (recording that *we*
-///   muted it so the user's own mute is never clobbered), crank
-///   `playbackRate`, and seek `currentTime` to `duration` to fast-forward
-///   the ad to its end; restore audio + rate once the ad clears.
-/// - **Overlays/banners** — inject CSS hiding the in-player ad modules,
-///   overlay slots, and feed/masthead ad renderers that the declarative
-///   filter can't target on this same-origin markup, and click the
-///   overlay close button.
+/// While `#movie_player` carries `ad-showing`: click any known skip button; mute
+/// the video (recording that we did, so the person's own mute survives), raise
+/// `playbackRate` and seek to the end; then restore audio and rate once the ad
+/// clears, and hide the in-player ad slots the content filter cannot reach.
 fn youtube_ad_skip_script() -> &'static str {
     r"(function () {
   'use strict';
@@ -188,8 +124,7 @@ fn youtube_ad_skip_script() -> &'static str {
     return;
   }
 
-  // Hide ad overlays/banners the declarative filter can't reach on
-  // YouTube's same-origin markup.
+  // Hide ad overlays and banners on YouTube's same-origin markup.
   var css =
     '.ad-showing .video-ads, .ytp-ad-module, .ytp-ad-overlay-slot,' +
     '.ytp-ad-image-overlay, .ytp-ad-overlay-container,' +
@@ -221,7 +156,7 @@ fn youtube_ad_skip_script() -> &'static str {
       try { skipBtn.click(); } catch (e) {}
     }
 
-    // Dismiss overlay/interstitial close buttons.
+    // Dismiss overlay and interstitial close buttons.
     var close = document.querySelector(
       '.ytp-ad-overlay-close-button, .ytp-ad-overlay-close-container'
     );
@@ -230,18 +165,18 @@ fn youtube_ad_skip_script() -> &'static str {
     }
 
     if (adShowing && video) {
-      // Only mute if the user hadn't already muted the video.
+      // Only mute if the person had not muted it.
       if (!video.muted) {
         video.muted = true;
         video.dataset.tiloAdMuted = '1';
       }
       try { video.playbackRate = 16; } catch (e) {}
       if (isFinite(video.duration) && video.duration > 0) {
-        // Seek to the end: fast-forwards the unskippable portion away.
+        // Seek to the end, to fast-forward the rest of the ad.
         video.currentTime = video.duration;
       }
     } else if (video && video.dataset.tiloAdMuted === '1') {
-      // Ad cleared — restore only what we changed.
+      // Ad cleared: restore only what we changed.
       video.muted = false;
       try { video.playbackRate = 1; } catch (e) {}
       delete video.dataset.tiloAdMuted;
@@ -263,20 +198,17 @@ fn youtube_ad_skip_script() -> &'static str {
   } else {
     document.addEventListener('DOMContentLoaded', start, { once: true });
   }
-  // Interval backstop for SPA navigations that don't mutate <body>.
+  // Backstop for SPA navigations that never mutate <body>.
   setInterval(skip, 500);
 })();
 "
 }
 
-/// Generic cosmetic belt-and-suspenders: hide the most common ad-slot
-/// containers at document-start, before the content filter's CSS lands.
+/// Hide the commonest ad-slot containers at document-start, before the content
+/// filter's CSS lands.
 ///
-/// Conservative on purpose — it only matches attribute/id shapes that are
-/// unambiguously ad slots (`AdSense`, Google Publisher Tag, generic
-/// `data-ad-*` slots), never generic layout, so it can't hide real
-/// content. Injecting the rule from JS lets it apply inside frames the
-/// declarative filter may reach later.
+/// Conservative on purpose: only unambiguously ad-shaped attributes and ids
+/// (`AdSense`, Google Publisher Tag, `data-ad-*`), so real content is never hidden.
 fn generic_ad_cosmetic_script() -> &'static str {
     r#"(function () {
   'use strict';
@@ -309,8 +241,8 @@ pub fn read_cached_list(path: &std::path::Path) -> Option<String> {
     (text.len() <= 8 * 1024 * 1024).then_some(text)
 }
 
-/// Return the list text: fresh cache if young enough, otherwise fetch
-/// (updating the cache), otherwise a stale cache beats nothing.
+/// The list text: a fresh cache, else a fetch that updates the cache, else a
+/// stale cache.
 pub fn load_list(name: &str, url: &str) -> Option<String> {
     let path = cache_dir().map(|d| d.join(name));
 
@@ -380,8 +312,8 @@ fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), Stri
     if texts.is_empty() {
         return Err("no filter lists available (offline with an empty cache)".into());
     }
-    // A stable id of the *source* rule set, so the engine can reuse the
-    // previously compiled WebKit filters when the lists haven't changed.
+    // A stable id of the source rule set, so the engine can reuse the compiled
+    // filters while the lists are unchanged.
     let version = source_version(&texts);
     let filter = ui::webview::adblock::compile_filter_lists_chunked(
         texts.iter().map(String::as_str),
@@ -391,7 +323,7 @@ fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), Stri
     Ok((version, filter))
 }
 
-/// FNV-1a over the concatenated source lists — the cache version tag.
+/// FNV-1a over the concatenated source lists: the cache version tag.
 fn source_version(texts: &[String]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     for t in texts {
@@ -422,7 +354,6 @@ mod tests {
                 .expect("a YouTube ad-skip script referencing ytp-ad");
 
             assert!(!yt.trim().is_empty(), "YouTube script is empty");
-            // References the skip logic the content filter can't express.
             assert!(yt.contains("ytp-ad-skip-button"), "no skip-button click");
             assert!(
                 yt.to_lowercase().contains("skip"),
@@ -458,11 +389,10 @@ mod tests {
         }
 
         {
-            // uBO quick-fixes and AdGuard Base convert to over-broad WebKit
-            // `block` rules that catch a page's own first-party document, so a
-            // reload or fresh navigation goes permanently blank. They were
-            // removed once and silently reinstated; assert their absence so the
-            // next reinstatement fails here instead of in the browser.
+            // uBO quick fixes and AdGuard Base convert to over-broad `block`
+            // rules that catch a page's own first-party document, so a
+            // navigation goes permanently blank. They were reinstated once by
+            // accident; this asserts their absence.
             let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
             for banned in EXCLUDED_LISTS {
                 assert!(

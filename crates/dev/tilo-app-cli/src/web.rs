@@ -21,7 +21,6 @@ use crate::{DevRequest, PackageOutcome, PackageRequest, resolve_app_dir};
 /// The runtime module inside a bundle's `pkg/`.
 const BUNDLE_MODULE: &str = "pkg/tilo_browser_runtime_bg.wasm";
 
-/// What to build.
 #[derive(Debug, Default)]
 pub struct WebBuildRequest {
     /// A directory to hold a copy of the bundle; the build itself stays in
@@ -39,7 +38,6 @@ pub struct WebBuildRequest {
     pub assertions: bool,
 }
 
-/// A finished web build: the bundle directory and its one module.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebBuild {
     pub app_dir: PathBuf,
@@ -48,7 +46,6 @@ pub struct WebBuild {
     pub app_id: String,
     /// The page to open inside `output`.
     pub entry: String,
-    /// The runtime and the app, linked into one module.
     pub module: PathBuf,
     pub module_bytes: u64,
     pub module_sha256: String,
@@ -145,7 +142,6 @@ pub(crate) fn package_web(start: &Path, _request: &PackageRequest) -> Result<Pac
 /// How `dev --platform web` serves the page.
 #[derive(Clone, Debug)]
 pub struct WebDevOptions {
-    /// The address the page is served on.
     pub bind: String,
     /// Open the app in a workspace other people join from their own browser
     /// (`--share`).

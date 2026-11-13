@@ -1,20 +1,19 @@
 use super::*;
 use serde_json::json;
+use test_http::{Reply, Responder};
 
-fn peer(answer: serde_json::Value) -> (ProviderProfile, std::thread::JoinHandle<()>) {
-    use std::io::Write as _;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+fn peer(answer: &serde_json::Value) -> (ProviderProfile, Responder) {
+    let body = answer.to_string();
+    let responder = Responder::start(vec![
+        Reply::status(200)
+            .header("Content-Type", "application/json")
+            .body(body),
+    ]);
     let profile = ProviderProfile {
-        endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+        endpoint: format!("{}/v1", responder.url()),
         ..ProviderProfile::default()
     };
-    let task = std::thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let _ = super::tests::read_request(&mut socket);
-        let body = answer.to_string();
-        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-    });
-    (profile, task)
+    (profile, responder)
 }
 
 async fn invoke(
@@ -22,9 +21,10 @@ async fn invoke(
     request: neutral::ModelRequest,
     answer: serde_json::Value,
 ) -> Result<Option<neutral::ModelResponse>, String> {
-    let (profile, peer) = peer(answer);
+    // Held until the call answers, which is when the provider is spoken to.
+    let (profile, _served) = peer(&answer);
     let client = provider_client().unwrap();
-    let result = if path == "legacy" {
+    if path == "legacy" {
         let body = json!({
             "model":"checked-model", "messages":[{"role":"user", "content":"question"}],
             "tools":request.tools.iter().map(|tool| json!({"type":"function", "function": {
@@ -88,9 +88,7 @@ async fn invoke(
                 .map(Some)
                 .map_err(|error| error.to_string())
         })
-    };
-    peer.join().unwrap();
-    result
+    }
 }
 
 fn answer(finish: serde_json::Value, tool: bool) -> serde_json::Value {

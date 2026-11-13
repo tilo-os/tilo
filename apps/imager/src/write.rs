@@ -1,27 +1,4 @@
-//! The write / verify seam for destructive work, safely gated.
-//!
-//! Writing a disk image onto a block device is **destructive** and needs
-//! privileged raw access. This module is the single choke point where that
-//! work happens. It ships a streaming copy + read-back verify
-//! engine ([`stream_copy`], [`verify_readback`], [`run_job_paths`]) — the
-//! exact byte loop that flashes a USB stick — and three independent safety
-//! gates in front of the block device:
-//!
-//! 1. **Typed confirmation.** A job only begins after the host collected an
-//!    explicit, typed confirmation of the drive's published write: the
-//!    operator types the target device name. [`begin_job`] re-checks that
-//!    token against the target before it returns [`JobStart::Started`].
-//!
-//! 2. **Write-time privilege.** The wizard always runs as the signed-in user.
-//!    Only after confirmation does it ask the host to authenticate a short-
-//!    lived helper mode of this executable. The helper receives a secret-free
-//!    request, repeats every target check, writes, verifies, and exits.
-//!
-//! 3. **Capacity + fit checks** ([`WriteRequest`] / [`TargetDrive::fits`]).
-//!
-//! The engine is exercised in tests against **temp files** (a copy +
-//! verify, byte-for-byte) — never a block device — so the production loop is
-//! proven without any risk to hardware.
+//! The write seam: what may be written, which engine writes it, and the job that does.
 
 use std::io;
 #[cfg(test)]
@@ -44,50 +21,26 @@ use sha2::{Digest, Sha256};
 pub use crate::profile::{PROFILE_BLOCK_SIZE, PROFILE_MAGIC};
 const _: () = assert!(PROFILE_BLOCK_SIZE == imager_backend::media_model::PROFILE_BLOCK_SIZE);
 
-/// Outcome of asking to start a job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobStart {
-    /// Pre-conditions satisfied; the real job may run.
     Started,
-    /// Refused because privileged raw-device writes are not enabled.
     WriteDisabled,
-    /// Refused — the confirmation token did not match the target device.
-    /// This is the safety gate: a typo means no write.
     ConfirmationMismatch,
-    /// Refused — no source or no target selected.
     Incomplete,
-    /// Refused — the image is larger than the target drive.
     TooSmall,
-    /// Refused because desktop imaging is restricted to external media. The
-    /// booted Tilo installer owns internal-disk and dual-boot installation.
     UnsafeTarget,
-    /// Refused before any I/O because an installable image's embedded profile
-    /// would be rejected by the live installer.
     InvalidProfile(String),
 }
 
-/// Which engine actually performs the write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteBackend {
-    /// Raw-device effects are unavailable in this process (tests and shots).
     Disabled,
-    /// Real raw write via a direct block-device open. Selecting this is itself
-    /// gated (see [`WriteBackend::for_window`]); it is never the default.
     System,
-    /// The unprivileged live UI will authenticate a short-lived platform
-    /// helper at write time.
     PrivilegedHelper,
-    /// Linux sandbox path: `UDisks2` authorizes and returns one exclusive raw
-    /// device descriptor.  The Flatpak never sees `/dev` and cannot execute
-    /// commands on the host.
     Udisks2,
 }
 
 impl WriteBackend {
-    /// Choose the backend for a window: `live` when someone uses it, never
-    /// for a screenshot, a past version or a test. The allow gate is
-    /// retained for deliberate root-side diagnostics; a live window uses the
-    /// narrow helper.
     pub fn for_window(live: bool) -> Self {
         if cfg!(all(target_os = "linux", feature = "flatpak-media-writer"))
             && std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1")
@@ -102,41 +55,27 @@ impl WriteBackend {
         }
     }
 
-    /// Whether this backend can perform a real write. Both the deliberately
-    /// allow-gated direct backend and the normal live UI's short-lived helper
-    /// are usable; tests and screenshot rendering remain disabled.
     pub fn is_available(self) -> bool {
         self != WriteBackend::Disabled
     }
 }
 
-/// The env allow-gate. `TILO_IMAGER_ALLOW_WRITE=1` is the single switch that
-/// lets a real block-device write happen; unset (the default) keeps every
-/// path unavailable. Modelled on the VPN app's `TILO_VPN_ALLOW_EXEC`.
 pub fn allow_write() -> bool {
     std::env::var("TILO_IMAGER_ALLOW_WRITE").as_deref() == Ok("1")
 }
 
-/// A validated request to write `source` to `target` using `action`
-/// (+ profile when pre-configuring). Construction does not start anything.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WriteRequest {
     pub source: Source,
     pub target: TargetDrive,
     pub action: Action,
     pub profile: InstallProfile,
-    /// Prepared etc/var tree with Wi-Fi and enrolled identity. Built on the
-    /// setup machine before elevation; the privileged writer only copies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_stage: Option<std::path::PathBuf>,
-    /// Private exact Windows suggestions and independent recovery receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) windows_preparation: Option<crate::windows_media::WindowsMedia>,
-    /// Provision a distinct migration data filesystem after verified imaging.
     #[serde(default)]
     pub provision_migration_data: bool,
-    /// Public expectation only: the writer independently recomputes every byte
-    /// of the planned geometry using its authorized descriptors before writing.
     #[cfg(target_os = "linux")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline_layout: Option<OfflineLayout>,
@@ -174,9 +113,6 @@ impl WriteRequest {
 }
 
 impl WriteRequest {
-    /// Validate that the typed confirmation token matches the target's device
-    /// name (e.g. the operator typed `sdb` for `/dev/sdb`). This is the
-    /// explicit typed gate required before any write.
     pub fn confirmation_matches(&self, typed: &str) -> bool {
         let typed = typed.trim();
         !typed.is_empty()
@@ -186,12 +122,6 @@ impl WriteRequest {
     }
 }
 
-/// Attempt to start the job. Returns [`JobStart::Started`] only after every
-/// safety pre-condition is met; otherwise a specific refusal the UI surfaces.
-///
-/// This is the pure *planning / dry-run* entry: it validates and never opens a
-/// device. The live app hands a `Started` request to [`spawn_job`], which
-/// chooses the backend; with the allow-gate off the request is refused.
 pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     if let Err(error) = validate_windows_preparation(req) {
         return JobStart::InvalidProfile(error.to_string());
@@ -246,9 +176,6 @@ pub use crate::profile::{encode_profile_block, write_profile_block};
 
 pub use imager_backend::write::JobResult;
 
-/// Peer-local control for one running write. The immutable write request stays
-/// separately digest-bound; cancellation only narrows authority by asking the
-/// worker/helper to stop at its next safe chunk boundary.
 #[derive(Clone, Debug)]
 pub struct JobControl {
     cancelled: Arc<AtomicBool>,
@@ -328,8 +255,6 @@ impl JobControl {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(monitor);
         }
     }
-    /// Capture presentation owns an idle worker, never a device writer. Its
-    /// exit is observed through the same join used by live worker teardown.
     pub(crate) fn bind_capture_worker(&self) -> io::Result<()> {
         let cancelled = Arc::downgrade(&self.cancelled);
         let joined = std::thread::Builder::new()
@@ -431,7 +356,6 @@ fn acquire_target_write_lock(
 ) -> io::Result<imager_backend::write::TargetWriteLock> {
     imager_backend::write::acquire_target_write_lock(target)
 }
-/// Keep the privileged writer lock through reviewed mounted output.
 #[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
 fn with_locked_media_root<T>(
     target: &TargetDrive,
@@ -442,9 +366,6 @@ fn with_locked_media_root<T>(
 
 pub use imager_backend::write::{CHUNK, stream_copy, verify_readback};
 
-/// Run a full write + verify against explicit paths, reporting a [`Progress`]
-/// snapshot after every chunk through `on_progress`. Split from device
-/// selection so tests drive the real loop against temp files.
 pub fn run_job_paths(
     src: &Path,
     dst: &Path,
@@ -474,9 +395,6 @@ fn run_job_paths_bound(
     )
 }
 
-/// Run the same exact write, digest, read-back and profile pipeline against an
-/// already-authorized device descriptor. `UDisks2` uses this seam so raw-device
-/// authority never has to be represented by a sandbox-visible path.
 #[cfg(any(test, target_os = "linux"))]
 fn run_job_file_bound(
     req: &WriteRequest,
@@ -545,7 +463,6 @@ fn run_job_file_bound(
     )
 }
 
-/// Bind an already-open block descriptor to the freshly reviewed device node.
 #[cfg(all(target_os = "linux", feature = "installation"))]
 pub(crate) fn attest_target_descriptor(
     target: &TargetDrive,
@@ -554,9 +471,6 @@ pub(crate) fn attest_target_descriptor(
     imager_backend::write::attest_target_descriptor(target, file)
 }
 
-/// Run the real job for `req` (source file → target device), streaming
-/// [`Progress`] over `tx`. Only ever called on a worker thread when the
-/// allow-gate selected [`WriteBackend::System`].
 fn run_system_job(
     req: &WriteRequest,
     should_cancel: &impl Fn() -> bool,
@@ -692,8 +606,6 @@ fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
     imager_backend::write::udisks::open_udisks_device(target)
 }
 
-/// Qualification uses the actual canonical UDisks writer open, under the
-/// same root-owned target lock. No fabricated target or raw path grant.
 #[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
 pub(crate) fn with_qualification_udisks_target<T>(
     target: &TargetDrive,
@@ -745,7 +657,6 @@ fn release_handoff_stage(req: &WriteRequest) {
     }
 }
 
-/// Customize only a regular disk image through the shared installed-root path.
 pub(crate) fn apply_handoff_stage_to_image_file(image: &Path, staged: &Path) -> io::Result<()> {
     imager_backend::write::handoff::apply_handoff_stage_to_image_file(
         image,
@@ -775,13 +686,12 @@ pub(crate) fn apply_handoff_stage_onto_mounted_root(mnt: &Path, staged: &Path) -
 }
 
 #[cfg(test)]
+#[cfg(target_os = "linux")]
+use block_devices::installed_root::mountpoint_listing_is_busy;
+#[cfg(test)]
 use block_devices::installed_root::{
     root_listing_waits_for_filesystem_type, select_tilo_root_partition,
 };
-// Only the Linux tests mount an installed root or read a mountpoint listing.
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-use block_devices::installed_root::mountpoint_listing_is_busy;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
@@ -808,13 +718,6 @@ fn handoff_when_root_was_not_found(
     )
 }
 
-/// Execute the privileged helper mode when `args` requests it. This is called
-/// before the windowing runtime is initialized.
-///
-/// The request is deserialized from a user-private temporary file, then fully
-/// validated and its live target identity is checked again by
-/// `run_system_job`. Progress is append-only JSON so the unprivileged window
-/// can remain responsive while the platform authentication broker waits.
 pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Error>> {
     let Some(authorized) = imager_backend::write::helper::read_authorized_helper_request(args)?
     else {
@@ -924,14 +827,6 @@ fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) -> boo
 #[cfg(test)]
 use imager_backend::write::{macos_should_eject, run_finite_status};
 
-/// Spawn a job on a worker thread and return the receiver the UI drains once
-/// per frame. The returned [`JobStart`] is the validation result; a channel is
-/// only returned when it is [`JobStart::Started`].
-///
-/// * Tests/shots → the request is refused and no worker is created.
-/// * Live UI → platform authentication starts the narrow helper.
-/// * Deliberate allow-gated root diagnostics → `run_system_job` runs in the
-///   current process.
 pub fn spawn_job(
     req: WriteRequest,
     typed: &str,
@@ -1018,7 +913,6 @@ mod tests {
     use crate::model::{sample_source, sample_targets};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// Target identity, confirmation and job admission.
     #[test]
     fn begin_refuses_mismatched_oversized_forbidden_or_invalid_jobs() {
         {
@@ -1125,13 +1019,11 @@ mod tests {
         }
     }
 
-    /// Backend gating across builds and platforms.
     #[test]
     fn backend_selection_is_gated_and_never_simulates_writes() {
         #[cfg(not(feature = "host-media-writer"))]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            // No opt-in env var set → unavailable, never a fake success.
             env.remove("TILO_IMAGER_ALLOW_WRITE");
             assert_eq!(WriteBackend::for_window(false), WriteBackend::Disabled);
             assert!(!allow_write());
@@ -1175,9 +1067,6 @@ mod tests {
 
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            // The real block-device backend is chosen ONLY when the operator opts
-            // in explicitly; flipping the gate is the single switch between the
-            // disabled path and the real device write.
             env.set("TILO_IMAGER_ALLOW_WRITE", "1");
             assert!(allow_write());
             assert_eq!(WriteBackend::for_window(false), WriteBackend::System);
@@ -1193,8 +1082,6 @@ mod tests {
         #[cfg(not(feature = "host-media-writer"))]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            // Validation remains pure, but the live start refuses rather than
-            // reporting synthetic progress and success.
             env.remove("TILO_IMAGER_ALLOW_WRITE");
             let r = req();
             assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
@@ -1334,9 +1221,6 @@ mod tests {
         }
 
         {
-            // PowerShell single-quoted strings do not treat backslash as an
-            // escape. The wrapper must concatenate a literal `"`, not `\"`,
-            // around both paths before Start-Process flattens ArgumentList.
             assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
             assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
             assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[4] + '\"')"));
@@ -1344,7 +1228,6 @@ mod tests {
         }
     }
 
-    /// Cancellation markers, relay errors and command deadlines.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1451,7 +1334,6 @@ mod tests {
         }
     }
 
-    /// Profile block reservation, encoding, extraction and cancel.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1500,9 +1382,6 @@ mod tests {
             assert!(error.to_string().contains("Hostname"));
         }
 
-        // Phase `written_profile_is_consumed_by_the_live_extractor`.
-        // Exercise the real Rust encoder/tail writer against the exact live-media
-        // extractor instead of maintaining two merely similar format fixtures.
         #[cfg(target_os = "linux")]
         {
             let mut profile = InstallProfile {
@@ -1561,7 +1440,6 @@ mod tests {
         }
     }
 
-    /// Stream copy, readback verification, job paths and eject.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1614,9 +1492,6 @@ mod tests {
             });
             assert_eq!(result, JobResult::Verified);
             assert!(result.is_success());
-            // It really wrote the bytes and drove both non-terminal phases to
-            // completion. Only `run_system_job` may announce terminal success,
-            // after the optional profile write and device finalisation.
             assert_eq!(std::fs::read(dst.path()).unwrap(), data);
             assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
             assert!((last.write_frac - 1.0).abs() < 1e-9);
@@ -1661,7 +1536,6 @@ mod tests {
         {
             let data = sample_bytes(1024);
             let src = tmp_with(&data);
-            // A destination under a path that cannot exist → open fails → WriteFailed.
             let bad = std::path::Path::new("/proc/definitely/not/writable/imager.img");
             let result = run_job_paths(src.path(), bad, data.len() as u64, |_| {});
             assert!(matches!(result, JobResult::WriteFailed(_)));
@@ -1690,7 +1564,6 @@ mod tests {
         (0..n).map(|i| ((i * 31 + 7) % 251) as u8).collect()
     }
 
-    /// Cancellation during write and readback, and revalidation failure.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1771,7 +1644,6 @@ mod tests {
         }
     }
 
-    /// Source size, replacement, identity and digest checks during the write.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1931,8 +1803,6 @@ mod tests {
             );
         }
 
-        // A partition node whose type has not arrived yet is not proof that
-        // the disk has no installed root. A vfat-only listing is complete.
         assert!(root_listing_waits_for_filesystem_type(
             "/dev/sda",
             "/dev/sda\n/dev/sda1\n/dev/sda2 vfat\n"
@@ -1942,8 +1812,6 @@ mod tests {
             "/dev/sda\n/dev/sda1 vfat\n"
         ));
 
-        // The Orange Pi disk is a loader hole, a FAT ESP, then the btrfs root.
-        // The hole has no filesystem type; the write must land on the root.
         {
             let lsblk = "\
 /dev/loop0\n\
@@ -1956,8 +1824,6 @@ mod tests {
             );
         }
 
-        // An ext4 boot partition listed before the btrfs root is not the
-        // installed system. The handoff has to land on the root.
         {
             let lsblk = "\
 /dev/sda\n\
@@ -1970,8 +1836,6 @@ mod tests {
             );
         }
 
-        // The installer's ext4 boot partition is not a root. With no btrfs
-        // beside it, the handoff stays out of that partition.
         {
             let lsblk = "\
 /dev/sda\n\
@@ -1980,8 +1844,6 @@ mod tests {
             assert_eq!(select_tilo_root_partition("/dev/sda", lsblk), None);
         }
 
-        // The boot partition and the btrfs root together: skip the boot
-        // partition and use the root.
         {
             let lsblk = "\
 /dev/sda\n\
@@ -1994,8 +1856,6 @@ mod tests {
             );
         }
 
-        // `loop1` is a prefix of `loop10`. The later disk's filesystem is
-        // not this disk's root.
         {
             let lsblk = "\
 /dev/loop1\n\
@@ -2133,8 +1993,6 @@ mod tests {
             |mnt| apply_handoff_stage_onto_mounted_root(mnt, staged.path()),
             |attached| observed.set(Some(attached)),
         );
-        // A message-based check mistakes a failed post-attachment partition
-        // probe for rejection before losetup. Observe the real bounded attempt.
         let attached = observed
             .get()
             .expect("a regular file must reach the loop attachment attempt");

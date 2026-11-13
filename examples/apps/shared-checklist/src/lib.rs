@@ -27,7 +27,6 @@ pub const APP_TITLE: &str = "Shared Checklist";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// One item of the checklist.
@@ -58,7 +57,7 @@ impl Checklist {
 
 /// The name, every title and every done flag are edited at their paths; the
 /// verbs are what a field edit cannot say.
-#[resource(kind = "example.checklist", label = "Checklist")]
+#[resource(kind = "example.checklist")]
 impl Checklist {
     /// Add an item.
     #[action]
@@ -96,19 +95,19 @@ impl Checklist {
 
 fn item_row(row: &mut ViewCx<Checklist, Item>) -> Element {
     let p = row.paths();
-    let done = row.checkbox(crate::locales::keys::CHECKLIST_DONE_LABEL, p.done);
+    let done = row.checkbox("checklist-done-label", p.done);
     let title = row
         .input(p.title)
-        .with_placeholder(crate::locales::keys::CHECKLIST_TITLE_PLACEHOLDER);
+        .with_placeholder("checklist-title-placeholder");
     Box::new(ui::row![done, title])
 }
 
 fn progress_text(checklist: &Checklist) -> String {
     let (done, total) = checklist.progress();
     if total == 0 {
-        return I18nManager::lookup_plain("checklist-empty");
+        return crate::locales::CATALOG.t("checklist-empty");
     }
-    I18nManager::format(
+    crate::locales::CATALOG.t_args(
         "checklist-progress",
         &[("done", done.into()), ("total", total.into())],
     )
@@ -127,7 +126,7 @@ impl ResourceApp for App {
 
     fn label(checklist: &Checklist) -> String {
         if checklist.name.is_empty() {
-            I18nManager::lookup_plain("checklist-untitled")
+            crate::locales::CATALOG.t("checklist-untitled")
         } else {
             checklist.name.clone()
         }
@@ -138,26 +137,20 @@ impl ResourceApp for App {
         let name = cx
             .input(p.name)
             .with_id("name-input")
-            .with_placeholder(crate::locales::keys::CHECKLIST_NAME_PLACEHOLDER);
+            .with_placeholder("checklist-name-placeholder");
         // The next item's title is this window's own until it is added.
         let next = cx.form::<checklist::Add>();
         let draft = cx
             .input(next.paths().title)
             .with_id("draft-input")
-            .with_placeholder(crate::locales::keys::CHECKLIST_DRAFT_PLACEHOLDER);
-        let add = cx.button(crate::locales::keys::CHECKLIST_ADD, next.submit());
+            .with_placeholder("checklist-draft-placeholder");
+        let add = cx.button("checklist-add", next.submit());
         let progress = cx.text(progress_text).with_id("progress");
         let rows = cx.each(|checklist| &checklist.items, item_row);
-        let clear = cx.button(
-            crate::locales::keys::CHECKLIST_CLEAR_DONE,
-            Checklist::CLEAR_DONE.invoke(),
-        );
+        let clear = cx.button("checklist-clear-done", Checklist::CLEAR_DONE.invoke());
         Box::new(ui::column![
-            labeled_field(crate::locales::keys::CHECKLIST_NAME_LABEL, name),
-            ui::row![
-                labeled_field(crate::locales::keys::CHECKLIST_DRAFT_LABEL, draft),
-                add
-            ],
+            labeled_field("checklist-name-label", name),
+            ui::row![labeled_field("checklist-draft-label", draft), add],
             progress,
             rows,
             clear,

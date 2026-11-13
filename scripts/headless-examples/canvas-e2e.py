@@ -1,43 +1,46 @@
 #!/usr/bin/env python3
-"""The harness of the canvas arrangement: a headless nested session with Board, Todo and Chat
-open over sample data, driven through the test control socket.
+"""The canvas: what a person types on it, and where their windows stand on it.
 
-It prepares nothing itself: the nested session is built once (dist/dev/nested-session.sh
---prepare-only) and every start reuses that build (--no-build). Each start is headless and
-renders on lavapipe alone (--software): it never opens this machine's GPU and never touches
-the live desktop. Every session it starts is stopped again, its process groups and all.
+One headless nested session whose whole screen is the tilolang shell (`--shell screen`), with
+the tree's own apps installed: the shell itself, Board and Chat built from `apps/tl` into
+signed packages, and Notes, Chat, Tasks and the agent from the session's build. Nothing here
+starts an app binary directly and nothing touches this machine's desktop: lavapipe alone, a
+private runtime directory, a throwaway identity. Every session it starts is stopped again, its
+process groups and all.
 
-What it sets up:
+What it drives, as a person does:
 
-  apps       the tilolang apps Board, Todo and Chat (apps/tl/*), built with `tilolang build`
-             and installed with --install-tapp, and native Tasks from the session's build
-  seed       each tilolang app's workspace holds what its sample scenario shows ("a release
-             board", "a saturday list", "a busy workspace"), made through the apps' public
-             actions, as a person or an agent would make it (see seed_* below)
-  windows    one window each of Board, Todo and Chat, each presenting a frame
-  frames     every start records the compositor's frame loop: TILO_FRAME_TRACE (one row per
-             tick) and TILO_FRAME_SUMMARY (written when the session stops cleanly), as
-             OUT/frames-<tag>.csv and .json, with a viewer attached (`watch`) so headless
-             frames rasterize
+  style    the desk shows the canvas: the bar's style menu, then Frames, pressed where they are
+           drawn
+  windows  Board and Chat open onto the canvas and take free space on it, and the canvas pans
+           to the one that arrives past its edge: a window a person just opened stands whole on
+           screen
+  ask      a sentence typed at the canvas entry is the person's send to the workspace's agent:
+           Chat opens their conversation with it as a place on the canvas, in view, and no Tasks
+           window opens
+  again    a second ask lands in the conversation the first opened: that window is raised and
+           no second window of the same conversation stands
+  placed   every window stands at its own place on the workspace's canvas, none over another,
+           and each presents a frame
+  pan      a middle drag pans the canvas, and every window goes with its frame: each window's
+           rectangle on screen moves by the drag, on the frames the drag is drawn in
+  frames   panning, zooming and typing keep the loop inside a frame's budget, read from the
+           frame trace of the start (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`)
+  restart  on the same state again, without --fresh-desktop: every place is where it was
 
---smoke starts a fresh session, seeds it, opens the three windows, snapshots it, restarts it
-on the same state without --fresh-desktop and checks the three windows came back. The verdict
-is OUT/summary.json; the exit status is non-zero when a step fails. canvas_steps() is where the
-canvas's own steps go.
+The verdict is OUT/canvas-summary.json; the exit status is non-zero when a step fails. The
+session's build is `target/nested-session`, or TILO_NESTED_SESSION_BUILD (`--build` makes it
+through dist/dev/nested-session-build.sh, or through TILO_NESTED_SESSION_BUILD_EXEC where this
+machine has no toolchain). Nothing runs it on a schedule: it takes a session of its own, so a
+person starts it.
 
 Usage:
-  scripts/headless-examples/canvas-e2e.py --smoke [--out DIR] [--state DIR] [--build]
   scripts/headless-examples/canvas-e2e.py --canvas [--out DIR] [--state DIR] [--shots DIR]
   scripts/headless-examples/canvas-e2e.py --start --keep [--out DIR] [--state DIR]
 
---start starts a fresh session, opens the windows and seeds it, prints its ready JSON (control
-socket, runtime directory, the script's pid) and, with --keep, leaves it running: stop it with
-`kill -TERM -<pid>`. Without --build the session's build (target/nested-session, or
-TILO_NESTED_SESSION_BUILD) and target/debug/tilolang must exist. --build makes both. With
-TILO_NESTED_SESSION_BUILD_EXEC set, the session's build runs whole through that command prefix
-(any remote-exec tool that runs dist/dev/nested-session-build.sh in a builder's copy of the
-worktree and brings target/nested-session back), since it stages what this machine may lack (a
-dbus-daemon, the build's timings); without it the build runs here.
+--start starts a fresh session, shows the canvas and opens the apps, prints its ready JSON
+(control socket, runtime directory, the script's pid) and, with --keep, leaves it running: stop
+it with `kill -TERM -<pid>`.
 """
 
 from __future__ import annotations
@@ -46,24 +49,36 @@ import argparse
 import json
 import os
 import shutil
-import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-# The tilolang apps, by their directory under apps/tl, and the native apps installed beside them.
-TL_APPS = ["board", "todo", "chat"]
-NATIVE_APPS = "tasks agent"
+# The tilolang apps as the apps' own packages name them (their `app` declaration), by their
+# directory under apps/tl: the shell is the session's screen, and Board is a window it draws on
+# the canvas.
+TL_APPS = ["shell", "board"]
+# The apps the session's build installs beside them (`--apps`): Chat is where the canvas' ask
+# lands, the agent answers it there, and Tasks is installed and closed — an ask must not open
+# its window.
+NATIVE_APPS = "chat tasks agent"
+# The style whose desk is the canvas, and the canvas' own entry, by the names the desk's
+# controls answer to.
+CANVAS = "Frames"
+CANVAS_ENTRY = "Find something, or ask"
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this drives and the tools that act in it: the one harness every
 # check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
 import real_apps  # noqa: E402
-from real_apps import Failed, app_id, run, until  # noqa: E402
+from real_apps import Failed, run, until  # noqa: E402
+
+
+def app_id(name: str) -> str:
+    """The application id of the tree's tilolang app `name`: its package's own."""
+    return f"so.tilo.lang.{name}"
 
 
 # --- the session -----------------------------------------------------------------------------
@@ -81,13 +96,15 @@ class CanvasSession(real_apps.Session):
         self.frames: dict[str, dict] = {}
 
     def start(self, fresh: bool = True) -> "CanvasSession":
-        """Start the session on its state; `fresh` forgets the saved desktop (workspaces and
-        windows, so their workspaces too), else it comes back as it was left."""
+        """Start the session on its state, the tilolang shell as its whole screen; `fresh`
+        forgets the saved desktop (workspaces and windows, so their places too), else it comes
+        back as it was left."""
         self.starts += 1
         tag = f"{self.starts}-{'fresh' if fresh else 'again'}"
         trace, summary = self.out / f"frames-{tag}.csv", self.out / f"frames-{tag}.json"
         self.frames[tag] = {"trace": str(trace), "summary": str(summary)}
         super().start(apps=self.native, fresh=fresh, out=self.out, tag=tag, tapps=self.tapps,
+                      session_args=["--shell", "screen"],
                       env={"TILO_FRAME_TRACE": str(trace), "TILO_FRAME_SUMMARY": str(summary)})
         return self
 
@@ -103,7 +120,7 @@ class CanvasSession(real_apps.Session):
 
     def restart(self) -> "CanvasSession":
         """Stop and start again on the same state, without --fresh-desktop: the workspaces, their
-        windows and their layout survive."""
+        windows and their places survive."""
         self.stop()
         return self.start(fresh=False)
 
@@ -145,6 +162,95 @@ def build_tl_apps(state: Path, out: Path, build: bool) -> list[Path]:
     return tapps
 
 
+# --- the desk --------------------------------------------------------------------------------
+
+def control_rect(session: CanvasSession, name: str, deadline: float = 30.0) -> list[float]:
+    """Where the desk draws the control `name` now, once it stands still across two frames: a
+    press aimed at a place a control has left misses it."""
+    def standing():
+        first = next((t.get("rect") for t in session.targets() if t.get("name") == name), None)
+        if first is None:
+            return None
+        time.sleep(0.1)
+        second = next((t.get("rect") for t in session.targets() if t.get("name") == name), None)
+        return second if first == second else None
+
+    rect = until(f"the control {name!r} to stand still", standing, deadline)
+    return rect
+
+
+def press(session: CanvasSession, name: str) -> dict:
+    """Press the control `name` where it is drawn, as the person's pointer does."""
+    x, y, w, h = control_rect(session, name)
+    return session.click_at(x + w / 2, y + h / 2)
+
+
+def show_canvas(session: CanvasSession) -> dict:
+    """Show the desk as the canvas: the bar's style menu, then Frames, as a person switches."""
+    menu = next((t["name"] for t in session.targets()
+                 if str(t.get("name", "")).startswith("Showing ")), None)
+    if menu is None:
+        raise Failed(f"the bar offers no style menu: "
+                     f"{[t.get('name') for t in session.targets()][:20]}")
+    pressed = {"menu": menu}
+    press(session, menu)
+    rect = control_rect(session, CANVAS)
+    pressed[CANVAS] = rect
+    press(session, CANVAS)
+    until("the canvas' entry", lambda: any(
+        t.get("name") == CANVAS_ENTRY for t in session.targets()), 30)
+    return pressed
+
+
+# --- windows and places ----------------------------------------------------------------------
+
+def canvas_places(session: CanvasSession) -> dict[str, dict]:
+    """Where each window group of the desk stands on its workspace's canvas, by group: the
+    arrangement's own rows, as the desk publishes them (`arrangement.places` of each workspace,
+    a place being where its top-leading corner is and how wide and tall it stands there)."""
+    tree = session.state_dump().get("workspace_tree") or {}
+    places: dict[str, dict] = {}
+    for workspace in tree.get("workspaces") or []:
+        for group, place in (workspace.get("arrangement") or {}).get("places", {}).items():
+            places[str(group)] = place
+    return places
+
+
+def placed(session: CanvasSession) -> dict[str, dict]:
+    """Every open window with the place it stands at on the canvas, by its app: what a person
+    sees, the window and where on the canvas it is."""
+    rows = {}
+    for window in placed_rows(session):
+        rows[window.get("app_id")] = window
+    return rows
+
+
+def placed_rows(session: CanvasSession) -> list[dict]:
+    """Every open window with the place it stands at, one row by window: the two windows of one
+    app — an app and the conversation an ask opened in it — are two rows, each at its own
+    place."""
+    places = canvas_places(session)
+    return [{**window, "place": places.get(str(window.get("group")))}
+            for window in session.windows()]
+
+
+def chat_windows(session: CanvasSession) -> list[dict]:
+    """The windows of Chat the desk stands: a conversation is one of them."""
+    return [row for row in session.windows() if row.get("app_id") == "so.tilo.chat"]
+
+
+def overlaps(a: list[float], b: list[float]) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def no_overlaps(rows: list[dict]) -> bool:
+    """No two windows stand over one another on the canvas."""
+    at = [row["place"] for row in rows if row.get("place")]
+    return all(not overlaps([p["x"], p["y"], p["width"], p["height"]],
+                            [q["x"], q["y"], q["width"], q["height"]])
+               for at_index, p in enumerate(at) for q in at[at_index + 1:])
+
+
 # --- windows ---------------------------------------------------------------------------------
 
 def open_apps(session: CanvasSession, apps: list[str]) -> dict:
@@ -152,7 +258,8 @@ def open_apps(session: CanvasSession, apps: list[str]) -> dict:
     frame: their windows by app id."""
     for app in apps:
         until(f"{app} among the applications", lambda: any(
-            a.get("provider") == "applications" and a.get("id") == app for a in session.actions(app)), 60, 0.5)
+            a.get("provider") == "applications" and a.get("id") == app
+            for a in session.actions(app)), 60, 0.5)
     have = {w.get("app_id") for w in session.windows()}
     for app in apps:
         if app not in have:
@@ -164,244 +271,19 @@ def open_apps(session: CanvasSession, apps: list[str]) -> dict:
     return {a: windows[a] for a in apps}
 
 
-# --- seeding ---------------------------------------------------------------------------------
+# --- the canvas' own actions -----------------------------------------------------------------
 
-# A scenario runs only in captures: its hidden action may act as named people at given times
-# (`as mia at ...`), which nothing a live workspace offers may do. So the live workspace gets the
-# same records through what every app publishes to people and agents: its declared actions, and
-# the workspace's typed field edit (`apply` with `edit-text`, what a bound text input sends) for a
-# field no declared action sets. The door stamps each change with the session's person; nothing here
-# names an author or a time.
-
-TODO_ITEMS = [  # "a saturday list": title, done, notes (due dates have no action to set them)
-    ("Take the bins out", True, ""),
-    ("Buy oat milk and eggs", False, ""),
-    ("Call the landlord about the boiler", False, "Ask whether Tuesday morning works for the engineer."),
-    ("Water the plants", True, ""),
-    ("Return the library books", False, ""),
-    ("Book a haircut", False, ""),
-    ("Pay the electricity bill", True, ""),
-    ("Fix the bike's back brake", False, ""),
-    ("Reply to Mia about Sunday lunch", False, ""),
-    ("Clean the oven", False, ""),
-    ("Pick up the parcel from the post office", False, "Bring an ID; it closes at one."),
-    ("Change the bed sheets", True, ""),
-    ("Order a birthday present for Sam", False, ""),
-    ("Back up the laptop", False, ""),
-]
-
-BOARD_COLUMNS = ["To do", "Doing", "Done"]  # "a release board"
-
-CHAT = [  # "a busy workspace": each conversation and what was said in it, in order
-    ("Weekend plans", ["Is everyone still up for the walk on Saturday?",
-                       "The long loop, round the reservoir and back over the hill.",
-                       "I can bring sandwiches. The forecast says sun until three.",
-                       "Count me in.",
-                       "Let's meet at the station at ten.",
-                       "Platform four, by the coffee stand."]),
-    ("Release checklist", ["Docs still need the new screenshots.", "I'll take the screenshots after lunch."]),
-    ("Flat hunting", ["The one on Elm Street has a balcony.",
-                      "Viewing is Saturday at eleven, bring the deposit papers."]),
-    ("Book club: Piranesi", ["Halfway through. The statues are wonderful."]),
-    ("Design review", ["The sidebar collapses too early at large text.", "Agreed, I'll look at the thresholds."]),
-    ("Sam's birthday", ["Concert tickets or a kitchen knife?"]),
-    ("Garden allotment", ["The tomatoes need water by Thursday."]),
-    ("Running group", ["Long run on Sunday, fifteen kilometres."]),
-    ("Importer bugs", ["The importer drops tables with merged cells."]),
-    ("Recipes", ["The lentil soup needs more lemon than you think."]),
-    ("Interview loop", ["Ask about the last project they were proud of.", "I'll take the system design round."]),
-    ("Holiday in August", []),
-]
+def type_on_canvas(session: CanvasSession, text: str) -> None:
+    """Type `text` at the canvas' entry and submit it, as the person does: the entry is where
+    they point on the canvas, and Enter asks it."""
+    press(session, CANVAS_ENTRY)
+    time.sleep(0.3)
+    session.type(text)
+    time.sleep(0.4)
+    session.key("Enter")
 
 
-def app_ids(name: str) -> dict[str, str]:
-    """apps/tl/NAME/app.ids: each declaration's stable id, by its name."""
-    ids = {}
-    for line in (REPO / "apps/tl" / name / "app.ids").read_text().splitlines():
-        if "=" in line and not line.startswith("#"):
-            key, _, value = line.rpartition("=")
-            ids.setdefault(key.strip(), value.strip())
-    return ids
-
-
-class AppActions:
-    """The published actions of one tilolang app in the session, by the ids its app.ids names."""
-
-    def __init__(self, session: CanvasSession, name: str, root_type: str):
-        self.session = session
-        self.app = app_id(name)
-        self.ids = app_ids(name)
-        self.root = f"root-{self.ids[root_type]}"
-        self.root_kind = self.kind(root_type)
-
-    def kind(self, type_name: str) -> str:
-        return f"tl.{self.app}.{type_name}"
-
-    def listed(self, operation: str, key: str | None = None) -> dict | None:
-        for action in self.session.actions(""):
-            identity = action.get("semantic_identity") or {}
-            if (action.get("application") == self.app and action.get("operation") == operation
-                    and (key is None or identity.get("key") == key)):
-                return action
-        return None
-
-    def keys(self, type_name: str) -> list[str]:
-        """The published resources of `type_name`, as `tl:<app>:<id>` keys, in listing order."""
-        kind, seen = self.kind(type_name), []
-        for action in self.session.actions(""):
-            key = (action.get("semantic_identity") or {}).get("key")
-            if action.get("application") == self.app and (action.get("semantic_identity") or {}).get(
-                    "kind") == kind and key not in seen:
-                seen.append(key)
-        return seen
-
-    def invoke(self, operation: str, args: dict | None = None, key: str | None = None) -> dict:
-        """Invoke the action `operation` (on the resource `key`, else on the app's root or workspace),
-        listing it again while an id listed a moment ago has moved on."""
-        last = None
-        for _ in range(20):
-            action = self.listed(operation, key)
-            if action is None:
-                last = f"{self.app} lists no action {operation} on {key or 'its root'}"
-                time.sleep(0.5)
-                continue
-            try:
-                update = self.session.invoke(action["provider"], action["id"], args)["receipt"]["update"]
-            except Failed as error:
-                if "list it again" in str(error) or "unknown_action" in str(error):
-                    last = str(error)
-                    time.sleep(0.25)
-                    continue
-                raise
-            if update.get("state") != "succeeded":
-                raise Failed(f"{self.app} {operation} on {key or 'its root'}: {json.dumps(update)[:1000]}")
-            return update
-        raise Failed(last or f"{self.app} {operation} never answered")
-
-    def created(self, type_name: str, before: list[str], operation: str, args: dict | None = None,
-                key: str | None = None) -> str:
-        """Invoke a creating action and answer the key of the one resource it made."""
-        self.invoke(operation, args, key)
-        new = until(f"the {type_name} {operation} made",
-                    lambda: [k for k in self.keys(type_name) if k not in before], 15, 0.25)
-        if len(new) != 1:
-            raise Failed(f"{operation} made {len(new)} {type_name}s: {new}")
-        return new[0]
-
-    def ref(self, type_name: str, key: str, label: str = "") -> dict:
-        """A resource argument, as the door takes a picked resource."""
-        return {"app": self.app, "kind": self.kind(type_name), "id": key, "label": label}
-
-    def edit_item_text(self, collection: str, key: str, field: str, text: str) -> None:
-        """Set the text field `field` of the item `key` of the root's `collection`: the typed edit
-        a bound text input sends, applied through the workspace's `apply`."""
-        item = key.rsplit(":", 1)[-1]
-        action = {
-            "app": self.app, "kind": self.root_kind, "action_id": "edit-text",
-            "args": {"field": self.ids[field], "value": text},
-            # Who invoked is the door's to record, not this value's.
-            "authorship": {"invoker": "", "module": ""},
-            "edits": [{"op": "edit", "id": self.root, "edit": {
-                "path": [{"field": self.ids[collection]}, {"item": item}, {"field": self.ids[field]}],
-                "op": "replace", "text": text}}],
-        }
-        self.invoke("apply", {"action": action})
-
-
-def expect(app: str, got: dict, **want) -> dict:
-    """`got`, once each count in `want` is what it says."""
-    wrong = {k: (got[k], v) for k, v in want.items() if got[k] != v}
-    if wrong:
-        raise Failed(f"{app} holds other counts than its scenario (got, want): {wrong}")
-    return got
-
-
-def seed_todo(session: CanvasSession) -> dict:
-    todo = AppActions(session, "todo", "TodoList")
-    todo.invoke(todo.ids["rename"], {"name": "Saturday"})
-    for title, done, notes in TODO_ITEMS:
-        key = todo.created("Todo", todo.keys("Todo"), todo.ids["add"], {"title": title})
-        if done:
-            todo.invoke(todo.ids["check"], {"done": True}, key)
-        if notes:
-            todo.edit_item_text("TodoList.items", key, "Todo.notes", notes)
-    return expect("Todo", {"list": "Saturday", "items": len(todo.keys("Todo")),
-                           "done": sum(1 for _, done, _ in TODO_ITEMS if done)}, items=len(TODO_ITEMS))
-
-
-def seed_chat(session: CanvasSession) -> dict:
-    chat = AppActions(session, "chat", "Conversations")
-    for title, said in CHAT:
-        key = chat.created("Conversation", chat.keys("Conversation"), chat.ids["start"], {"title": title})
-        for text in said:
-            chat.invoke(chat.ids["post"], {"text": text, "block": ""}, key)
-    return expect("Chat", {"conversations": len(chat.keys("Conversation")),
-                           "messages": sum(len(s) for _, s in CHAT)}, conversations=len(CHAT))
-
-
-BOARD_CARDS = [  # "a release board": column, title, notes
-    ("To do", "Write the release notes", "Lead with the sync fix, then the new board."),
-    ("To do", "Screenshots for the docs", ""),
-    ("To do", "Translate the onboarding", "German and French first."),
-    ("To do", "Check the importer on large tables", ""),
-    ("Doing", "Fix the sidebar at large text", "It collapses too early above 150%."),
-    ("Doing", "Review the sharing dialog", ""),
-    ("Done", "Bump the version", ""),
-    ("Done", "Merge the offline queue", "Landed on Tuesday."),
-    ("Done", "Plan the next cycle", ""),
-]
-
-
-def seed_board(session: CanvasSession) -> dict:
-    """The release board: its three columns and the cards in each."""
-    board = AppActions(session, "board", "Board")
-    columns = {}
-    for title in BOARD_COLUMNS:
-        key = board.created("Column", board.keys("Column"), board.ids["new_column"])
-        board.invoke(board.ids["rename_column"], {"title": title}, key)
-        columns[title] = key
-    for column, title, notes in BOARD_CARDS:
-        key = board.created("Card", board.keys("Card"), board.ids["new_card"],
-                            {"col": board.ref("Column", columns[column], column)})
-        board.edit_item_text("Board.cards", key, "Card.title", title)
-        if notes:
-            board.edit_item_text("Board.cards", key, "Card.notes", notes)
-    return expect("Board", {"columns": len(board.keys("Column")), "cards": len(board.keys("Card"))},
-                  columns=len(BOARD_COLUMNS), cards=len(BOARD_CARDS))
-
-
-def seed(session: CanvasSession) -> dict:
-    """Fill each tilolang app's workspace with its scenario's data, through the apps' public actions."""
-    return {"todo": seed_todo(session), "chat": seed_chat(session), "board": seed_board(session)}
-
-
-# --- canvas ----------------------------------------------------------------------------------
-
-ASK_FREE = "show me this week's release work"
-ASK_CARD = "what blocks this card from being done?"
-TASKS = "so.tilo.tasks"
-
-
-def canvas_state(session: CanvasSession) -> dict:
-    """The canvas as the shell shows it (state_dump's chrome.canvas)."""
-    return session.state_dump()["chrome"].get("canvas") or {}
-
-
-def canvas_windows(session: CanvasSession) -> dict[int, dict]:
-    """Every window on the canvas by its group: its place (canvas pixels) and screen rect, with
-    the app its front tab shows."""
-    apps = {w.get("group"): w.get("app_id") for w in session.windows()}
-    return {w["group"]: {**w, "app_id": apps.get(w["group"])} for w in canvas_state(session).get("windows", [])}
-
-
-def overlaps(a: list[float], b: list[float]) -> bool:
-    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
-
-
-def no_overlaps(windows: dict[int, dict]) -> bool:
-    placed = [w["place"] for w in windows.values() if w.get("place")]
-    return all(not overlaps(a, b) for i, a in enumerate(placed) for b in placed[i + 1:])
-
+# --- frames ----------------------------------------------------------------------------------
 
 def trace_tail(session: CanvasSession) -> int:
     """The start_us of the last tick the frame trace holds now."""
@@ -463,86 +345,191 @@ def measure(session: CanvasSession, name: str, drive) -> dict:
     return frame_window(session, since, trace_tail(session), name)
 
 
+# --- the canvas, end to end ------------------------------------------------------------------
+
+ASK = "what is on my task list?"
+# The second ask lands in the conversation the first opened: one window shows it, and the
+# person's lens is on it, never a second window of the same conversation.
+ASK_AGAIN = "and what is due today?"
+
+# How long the windows must stand still for the second ask to have landed: Chat opens the
+# conversation's window as soon as the send reaches it, so a second window would show by then.
+# That the send itself lands is the session's own test (`session/tests/canvas_ask.rs`: a second
+# ask goes to the agent the first made); what only a live session shows is the window it opens.
+SECOND_ASK_SETTLES = 10.0
+
+
+def screen() -> tuple[float, float]:
+    """The output the session renders, in physical pixels: headless 1280x800, or what
+    `TILO_HEADLESS_SIZE` names (`dist/dev/nested-session.sh`)."""
+    width, height = os.environ.get("TILO_HEADLESS_SIZE", "1280x800").lower().split("x")
+    return float(width), float(height)
+
+
+def on_screen(rect: list[float], view: tuple[float, float]) -> bool:
+    """Whether `rect` (`x`, `y`, `width`, `height`) stands whole inside the screen `view`: a
+    window a person just opened is where they can see it, not past the output's edge."""
+    x, y, width, height = rect
+    return x >= 0 and y >= 0 and x + width <= view[0] and y + height <= view[1]
+
+
+def standing_on_screen(rows: list[dict], apps: list[str] | None = None) -> list[dict] | None:
+    """`rows` (the windows of `apps`, or of every app) once each stands whole on the screen,
+    else `None`: a window a person just opened is where they can see it, not past the edge."""
+    view = screen()
+    windows = [row for row in rows if apps is None or row.get("app_id") in apps]
+    whole = bool(windows) and all(
+        row.get("rect") and on_screen(row["rect"], view) for row in windows)
+    return rows if whole else None
+
+
+# How far the pan check drags the canvas, in logical pixels, and in how many steps.
+PAN_BY = (-160.0, -80.0)
+PAN_STEPS = 16
+
+
+def pan_carries_windows(session: CanvasSession) -> dict:
+    """A middle drag on the canvas' ground pans it, and every window goes with its frame: each
+    window's rectangle moves by the drag, and while the drag runs no window stands where it
+    stood before nor anywhere but where the drag has carried the canvas to."""
+    before = {row["group"]: row["rect"] for row in placed_rows(session) if row.get("rect")}
+    if not before:
+        raise Failed("no window stands on the canvas to pan")
+    # The canvas' ground below the windows, clear of every window, with room on the screen for
+    # the whole drag.
+    lowest = max(rect[1] + rect[3] for rect in before.values())
+    start = (screen()[0] / 2, min(lowest + 40.0, screen()[1] - 60.0))
+    session.control({"op": "pointer_move", "x": start[0], "y": start[1]})
+    session.control({"op": "pointer_button", "pressed": True, "button": "middle"})
+    seen = []
+    for step in range(1, PAN_STEPS + 1):
+        dx, dy = PAN_BY[0] * step / PAN_STEPS, PAN_BY[1] * step / PAN_STEPS
+        session.control({"op": "pointer_move", "x": start[0] + dx, "y": start[1] + dy})
+        time.sleep(1 / 60)
+        seen.append(((dx, dy), {row["group"]: row["rect"] for row in session.windows()
+                                if row.get("group") in before and row.get("rect")}))
+    session.control({"op": "pointer_button", "pressed": False, "button": "middle"})
+
+    def carried():
+        rows = {row["group"]: row["rect"] for row in session.windows()
+                if row.get("group") in before and row.get("rect")}
+        moved = all(abs(rows[g][0] - (r[0] + PAN_BY[0])) <= 1.0
+                    and abs(rows[g][1] - (r[1] + PAN_BY[1])) <= 1.0
+                    for g, r in before.items() if g in rows)
+        return rows if moved and len(rows) == len(before) else None
+
+    after = until("every window to stand where the pan carried its frame", carried, 10)
+    # On the way, each window was where the canvas had been dragged to by then, give or take the
+    # one frame between the drag's step and the reading.
+    lagging = []
+    for (dx, dy), rows in seen:
+        for group, rect in rows.items():
+            was = before[group]
+            gone = (rect[0] - was[0], rect[1] - was[1])
+            step = (abs(PAN_BY[0]) / PAN_STEPS + 1.0, abs(PAN_BY[1]) / PAN_STEPS + 1.0)
+            if abs(gone[0] - dx) > step[0] or abs(gone[1] - dy) > step[1]:
+                lagging.append({"drag": (dx, dy), "moved": gone, "group": group})
+    if lagging:
+        raise Failed(f"windows trailed the canvas while it panned: {lagging[:5]}")
+    return {"by": PAN_BY, "windows": len(after)}
+
+
 def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     """The canvas end to end, in a fresh session:
 
-    1. the workspace shows its canvas, empty; a click on it puts the caret there (shot 1),
-       typing goes to it (shot 2), and Enter asks an agent: the caret says how the ask goes, in
-       place (that no model is set up, or the run of the Tasks issue it made), and no Tasks
-       window opens (shot 3);
-    2. Board, Todo and Chat open over their sample data and take free space (shot 4);
-    3. a sentence typed into the menu of Board (right-click, type, Enter) asks about it, said
-       at a caret beside Board, again with no Tasks window;
-    4. panning, zooming and typing are measured from the frame trace;
-    5. a restart keeps every window's place."""
+    1. the desk shows the canvas: the person switches the bar's style to Frames, and the
+       canvas' entry stands on it;
+    2. Board and Chat open onto it, each stands at its own place on the canvas, none over
+       another, and each presents a frame; Chat lands past the output's edge and stands whole on
+       the screen, the canvas having panned to it (shot 1);
+    3. a sentence typed at the entry asks the workspace's agent: Chat opens their conversation
+       with it as a place on the canvas, in view, and no Tasks window opens (shot 2); a second
+       ask lands in that same window, raised, and opens no second window of the conversation;
+       a middle drag pans the canvas and every window goes with its frame;
+    4. panning, zooming and typing at the entry are measured from the frame trace;
+    5. a restart keeps every place (shot 3).
+
+    The words the send carried are the session's own test (`session/tests/canvas_ask.rs`: the
+    entry's submit is `shell:arrangement#place-found`, and what it sends is `session:send-to`'s
+    reading); what only a live session shows is here: the conversation the person reads the
+    answer in stands on the canvas, at the free space beside them."""
     steps: dict = {}
     shots.mkdir(parents=True, exist_ok=True)
     session.start(fresh=True)
-    # An agent of the workspace's own takes the asks; the Tasks issue waits for it.
-    steps["agent"] = session.invoke("actions", "agent.invite", {"name": "Claude", "preset": "contributor"})
-    # Adding an agent opens its access review in the workspace settings; close it.
-    session.key("Escape")
-    time.sleep(1.0)
-    session.invoke("actions", "workspace.show-canvas")
-    state = until("the canvas", lambda: (lambda s: s if s.get("shown") and s.get("frame") else None)(
-        canvas_state(session)), 30)
-    fx, fy, fw, fh = state["frame"]
-    caret_at = (fx + fw * 0.30, fy + fh * 0.28)
-    session.click_at(*caret_at)
-    caret = until("a caret where the canvas was clicked", lambda: canvas_state(session).get("caret"), 10)
-    session.snapshot(shots / "01-empty-canvas-caret.png")
-    session.type(ASK_FREE)
-    until("the sentence at the caret", lambda: (canvas_state(session).get("caret") or {}).get("text") == ASK_FREE, 10)
-    session.snapshot(shots / "02-typing.png")
-    session.key("Enter")
-    said = until("the caret to say how the ask goes", lambda: (lambda c: c if c.get("refused")
-                 or c.get("follows") else None)(canvas_state(session).get("caret") or {}), 90)
-    time.sleep(1.0)
-    if any(w.get("app_id") == TASKS for w in session.windows()):
-        raise Failed("asking on the canvas opened a Tasks window")
-    session.snapshot(shots / "03-asked-in-place.png")
-    steps["free_space_ask"] = {"caret": caret, "said": said}
-    session.key("Escape")
-
-    apps = [app_id(n) for n in TL_APPS]
+    steps["style"] = show_canvas(session)
+    apps = [app_id("board"), "so.tilo.chat"]
     open_apps(session, apps)
-    steps["seed"] = seed(session)
-    windows = until("every window placed, none over another", lambda: (lambda ws: ws if all(
-        any(w.get("app_id") == a and w.get("place") for w in ws.values()) for a in apps) and no_overlaps(ws)
-        else None)(canvas_windows(session)), 30)
+    until("every window placed, none over another",
+          lambda: (lambda rows: rows if all(row.get("place") for row in rows)
+                   and no_overlaps(rows) else None)(placed_rows(session)), 30)
+    until("every window to present its own frame",
+          lambda: all(row.get("frames") for row in placed(session).values()), 30)
+    # A window a person opens stands where they can see it: Chat lands beside Board, past the
+    # output's edge, and the canvas pans to it. Board keeps the place it stands at and slides
+    # with the canvas, as every place does.
+    until("the window just opened to stand whole on the screen",
+          lambda: standing_on_screen(placed_rows(session), ["so.tilo.chat"]), 30)
     time.sleep(1.5)
-    session.snapshot(shots / "04-populated-canvas.png")
-    steps["populated"] = {str(g): {"app": w["app_id"], "place": w["place"]} for g, w in windows.items()}
+    session.snapshot(shots / "01-populated-canvas.png")
+    before = placed(session)
+    steps["populated"] = {app: {"place": row.get("place"), "rect": row.get("rect")}
+                          for app, row in before.items()}
 
-    # Right-click Board and type: the menu takes the sentence, and its answer opens beside Board.
-    board = next(w for w in windows.values() if w.get("app_id") == app_id("board"))
-    bx, by, bw, bh = board["screen"]
-    tasks_before = {g for g, w in windows.items() if w.get("app_id") == TASKS}
-    session.right_click_at(bx + bw * 0.25, by + bh * 0.35)
-    time.sleep(0.6)
-    session.snapshot(shots / "05-board-menu.png")
-    session.type(ASK_CARD)
-    time.sleep(0.4)
-    session.snapshot(shots / "06-board-menu-typed.png")
-    session.key("Enter")
-    beside = until("the menu's ask said beside Board", lambda: (lambda c: c if c.get("refused")
-                   or c.get("follows") else None)(canvas_state(session).get("caret") or {}), 90)
-    bp = board["place"]
-    if any(w.get("app_id") == TASKS and w.get("group") not in tasks_before for w in session.windows()):
-        raise Failed("asking from Board's menu opened a Tasks window")
-    steps["board_menu_ask"] = {"board": bp, "caret": beside}
+    # A sentence at the entry is the person's ask: it goes to the workspace's agent, and the
+    # conversation it lands in stands on the canvas beside them.
+    conversation_before = {row.get("group") for row in session.windows() if row.get("app_id") == "so.tilo.chat"}
+    type_on_canvas(session, ASK)
+    conversation = until("Chat to open the conversation the ask landed in", lambda: (
+        lambda new: new[0] if new else None)(
+        [row for row in session.windows()
+         if row.get("app_id") == "so.tilo.chat" and row.get("group") not in conversation_before]), 90)
+    stood = until("the conversation to stand on the canvas", lambda: next(
+        (row for row in placed_rows(session)
+         if row.get("group") == conversation.get("group")), {}).get("place"), 30)
+    def the_conversation_shown() -> dict | None:
+        """The window the ask landed in, once it stands whole on the screen: the canvas pans to
+        it wherever Chat opened it."""
+        row = next((row for row in placed_rows(session)
+                    if row.get("group") == conversation.get("group")), None)
+        if row is None or not row.get("rect") or not on_screen(row["rect"], screen()):
+            return None
+        return row
+
+    shown = until("the conversation to stand whole on the screen", the_conversation_shown, 30)
+    if any(row.get("app_id") == "so.tilo.tasks" for row in session.windows()):
+        raise Failed("asking on the canvas opened a Tasks window")
+    steps["ask"] = {"asked": ASK, "conversation": conversation.get("title"), "place": stood,
+                    "rect": shown.get("rect")}
     time.sleep(1.5)
-    session.snapshot(shots / "07-asked-beside-board.png")
-    session.key("Escape")
+    session.snapshot(shots / "02-asked.png")
 
-    # Frame times: panning (wheel), zooming (Ctrl+wheel) and typing at a caret, on empty canvas.
-    empty = (fx + fw - 40, fy + fh - 40)
+    # A second ask lands in the same conversation: the window it already shows is raised and
+    # revealed, never a second window of the same conversation.
+    standing = {row.get("group"): row for row in chat_windows(session)}
+    type_on_canvas(session, ASK_AGAIN)
+    since = time.monotonic()
 
-    def pan():
-        session.control({"op": "pointer_move", "x": empty[0], "y": empty[1]})
-        for i in range(60):
-            session.control({"op": "scroll", "dx": 0.0 if i % 2 else 1.0, "dy": -1.0 if i < 30 else 1.0})
-            time.sleep(1 / 60)
+    def the_same_windows():
+        now = {row.get("group"): row for row in chat_windows(session)}
+        if set(now) != set(standing):
+            raise Failed(f"the second ask opened another window of the conversation: "
+                         f"{sorted(set(now) - set(standing))}")
+        if time.monotonic() - since < SECOND_ASK_SETTLES:
+            return None
+        return now
+
+    after_ask = until("the second ask to land in the standing conversation", the_same_windows, 60)
+    until("the conversation to stand whole on the screen again", the_conversation_shown, 30)
+    raised = [row for row in after_ask.values() if row.get("active")]
+    if not raised:
+        raise Failed(f"the second ask left the conversation's window behind: {after_ask}")
+    steps["ask-again"] = {"asked": ASK_AGAIN, "windows": len(after_ask),
+                          "conversation": raised[0].get("title")}
+
+    # Frames: panning (a middle drag, every window carried with it), zooming (Ctrl+wheel) and
+    # typing at the entry, on the canvas.
+    empty = (40.0, 700.0)
+    pans = []
 
     def zoom():
         session.control({"op": "pointer_move", "x": empty[0], "y": empty[1]})
@@ -553,96 +540,29 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
         session.control({"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False})
 
     def typing():
-        session.click_at(*empty)
+        press(session, CANVAS_ENTRY)
         for ch in "release notes for friday":
             session.type(ch)
             time.sleep(1 / 30)
         session.key("Escape")
 
-    steps["frames"] = [measure(session, "pan", pan), measure(session, "zoom", zoom),
-                       measure(session, "type", typing)]
+    steps["frames"] = [measure(session, "pan", lambda: pans.append(pan_carries_windows(session))),
+                       measure(session, "zoom", zoom), measure(session, "type", typing)]
+    steps["pan"] = pans[0]
 
-    before = {g: w["place"] for g, w in canvas_windows(session).items() if w.get("place")}
+    before_restart = {group: place for group, place in canvas_places(session).items()}
     session.restart()
-    after = until("the canvas after a restart, every window placed", lambda: (lambda s, ws: ws if s.get("shown") and all(
-        g in ws and ws[g].get("place") for g in before) else None)(canvas_state(session), canvas_windows(session)), 90)
-    moved = {g: (before[g], after[g]["place"]) for g in before if after[g]["place"] != before[g]}
+    after = until("the canvas after a restart, every place kept", lambda: (lambda places: places if
+                 all(group in places and places[group] for group in before_restart) else None)(
+        canvas_places(session)), 90)
+    moved = {group: (before_restart[group], after[group]) for group in before_restart
+             if after[group] != before_restart[group]}
     if moved:
-        raise Failed(f"windows moved across the restart: {moved}")
+        raise Failed(f"places moved across the restart: {moved}")
     time.sleep(2.0)
-    session.snapshot(shots / "08-after-restart.png")
-    steps["restart"] = {"places_kept": len(before)}
+    session.snapshot(shots / "03-after-restart.png")
+    steps["restart"] = {"places_kept": len(before_restart)}
     return steps
-
-
-def canvas_steps(session: CanvasSession, out: Path) -> dict:
-    """The canvas's own steps in the smoke session (the full run is --canvas)."""
-    session.invoke("actions", "workspace.show-canvas")
-    state = until("the canvas", lambda: (lambda s: s if s.get("shown") else None)(canvas_state(session)), 30)
-    return {"shown": state.get("shown"), "windows": len(state.get("windows", []))}
-
-
-# --- smoke -----------------------------------------------------------------------------------
-
-def smoke(session: CanvasSession, out: Path) -> dict:
-    summary: dict = {"steps": {}, "failed": []}
-
-    def step(name, fn):
-        print(f"==> {name}", file=sys.stderr)
-        t0 = time.monotonic()
-        try:
-            summary["steps"][name] = fn()
-        except Failed as error:
-            summary["failed"].append(name)
-            summary["steps"][name] = {"failed": str(error)}
-            print(f"FAIL {name}: {error}", file=sys.stderr)
-            raise
-        finally:
-            summary.setdefault("seconds", {})[name] = round(time.monotonic() - t0, 1)
-
-    apps = [app_id(n) for n in TL_APPS]
-    try:
-        step("start", lambda: session.start(fresh=True) and {"ready": session.ready})
-        step("windows", lambda: {a: {k: w.get(k) for k in ("workspace", "group", "tab", "title")}
-                                 for a, w in open_apps(session, apps).items()})
-        step("seed", lambda: seed(session))
-        step("snapshot", lambda: {"path": str(session.snapshot(out / "smoke.png"))})
-        step("canvas", lambda: canvas_steps(session, out))
-        step("restart", lambda: session.restart() and {"ready": session.ready})
-        step("windows-again", lambda: check_windows_back(session, summary["steps"]["windows"]))
-        step("snapshot-again", lambda: {"path": str(session.snapshot(out / "smoke-again.png"))})
-    except Failed:
-        pass
-    finally:
-        session.stop()
-    summary["frames"] = frame_summaries(session)
-    return summary
-
-
-def check_windows_back(session: CanvasSession, before: dict) -> dict:
-    """After a restart without --fresh-desktop, each window is back in its workspace, and each
-    app presents a frame again."""
-    windows = until("the windows restored", lambda: (lambda ws: ws if all(a in ws for a in before) else None)(
-        {w.get("app_id"): w for w in session.windows()}), 60)
-    moved = {a: (before[a]["workspace"], windows[a].get("workspace"))
-             for a in before if windows[a].get("workspace") != before[a]["workspace"]}
-    if moved:
-        raise Failed(f"windows came back in other workspaces: {moved}")
-    tree = session.state_dump()["workspace_tree"]
-    restored = {"windows": {a: {k: windows[a].get(k) for k in ("workspace", "group", "tab", "title")}
-                            for a in before},
-                "workspaces": len(tree.get("workspaces", []))}
-    try:
-        until("every restored app answering with its own actions",
-              lambda: all(session.answering(a) for a in before), 60)
-    except Failed:
-        missing = [a for a in before if not session.answering(a)]
-        log = (session.state / "logs/session.log").read_text(errors="replace").splitlines()
-        said = [line[-300:] for line in log
-                if any(f"[app {a} stderr] error" in line or f"[app {a} stderr] Error" in line for a in missing)]
-        raise Failed(f"the windows came back ({json.dumps(restored)}) but these apps present no frame: "
-                     f"{missing}; they said: {said[-6:]}") from None
-    return restored
 
 
 def frame_summaries(session: CanvasSession) -> dict:
@@ -660,8 +580,7 @@ def frame_summaries(session: CanvasSession) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--smoke", action="store_true", help="run the smoke sequence")
-    parser.add_argument("--canvas", action="store_true", help="run the canvas end to end (canvas_run)")
+    parser.add_argument("--canvas", action="store_true", help="run the canvas end to end")
     parser.add_argument("--shots", type=Path, help="where --canvas writes its screenshots (default OUT/shots)")
     parser.add_argument("--out", type=Path, default=REPO / "target/canvas-e2e")
     parser.add_argument("--state", type=Path, help="the session's state (default OUT/state)")
@@ -669,7 +588,7 @@ def main() -> int:
                         help="build the nested session and the tilolang tool first (remotely)")
     parser.add_argument("--keep", action="store_true", help="leave the session --start started running")
     parser.add_argument("--start", action="store_true",
-                        help="start a fresh session, seed it and open the windows, then print its ready JSON")
+                        help="start a fresh session, show the canvas and open the apps, then print its ready JSON")
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -681,13 +600,6 @@ def main() -> int:
     prepare(state, args.build)
     tapps = build_tl_apps(state, out, args.build)
     session = CanvasSession(state, out, tapps)
-    if args.smoke:
-        summary = smoke(session, out)
-        summary["total_seconds"] = round(time.monotonic() - t0, 1)
-        (out / "summary.json").write_text(json.dumps(summary, indent=2))
-        verdict = "FAILED: " + ", ".join(summary["failed"]) if summary["failed"] else "smoke passed"
-        print(f"==> {verdict} (summary: {out / 'summary.json'})", file=sys.stderr)
-        return 1 if summary["failed"] else 0
     if args.canvas:
         summary: dict = {}
         try:
@@ -708,8 +620,8 @@ def main() -> int:
     if args.start:
         try:
             session.start(fresh=True)
-            open_apps(session, [app_id(n) for n in TL_APPS])
-            seed(session)
+            show_canvas(session)
+            open_apps(session, [app_id("board"), "so.tilo.chat"])
             print(json.dumps({**session.ready, "pid": session.proc.pid}))
         finally:
             if not args.keep:

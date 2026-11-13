@@ -10,7 +10,6 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
     listener.set_nonblocking(true).unwrap();
-    // Portal services alone are not a checked import issuer.
     let (services, _) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
     let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
@@ -83,7 +82,6 @@ fn two_windows_cancel_only_their_queued_attempt_and_keep_its_status() {
         destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap(),
         folder,
     };
-    // Execution after queued cancellation cannot clear the request or contact a provider.
     assert_eq!(
         crate::cloud_jobs::run(&op, crate::cloud_jobs::fixture_consent(&op)).reason(),
         Some("cloud import cancelled")

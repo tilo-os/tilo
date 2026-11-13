@@ -8,6 +8,7 @@ use crate::component::{Component, Described, Event};
 use crate::widget::{MediaTransport, TransportArt, TransportFeed, TransportRepeat, TransportState};
 
 use super::media_transport::TransportTriggers;
+use crate::widget::DrawChild;
 
 // The `TransportRepeat` choice is declared beside the enum, in `media_transport.rs`.
 
@@ -233,7 +234,8 @@ impl crate::widget::Widget for DeclaredTransport {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.band.draw(scene, transform, text, theme, presence);
+        self.band
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn children(&self) -> Vec<&dyn crate::widget::Widget> {

@@ -46,9 +46,10 @@ pub mod reflect;
 pub mod select;
 pub mod view;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use automerge::ChangeHash;
 use redb::{
@@ -62,30 +63,70 @@ use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 use crate::chunk::{ChunkNo, Stamps};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 15;
+pub const FORMAT: u32 = 17;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
 const CACHE_BYTES: usize = 4 << 20;
 
+/// Text an index table is keyed by, compared as its bytes: UTF-8 orders as the text does, and a
+/// lookup does not check that every key it passes on its way is text, as `&str` keys do.
+#[derive(Debug)]
+pub struct Text;
+
+impl redb::Value for Text {
+    type SelfType<'a> = &'a str;
+    type AsBytes<'a> = &'a str;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> &'a str
+    where
+        Self: 'a,
+    {
+        // A key that is not text is no key this index wrote, and reads as none.
+        // ignored-failure: only text is ever written as a key of these tables
+        std::str::from_utf8(data).unwrap_or_default()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a &'b str) -> &'a str
+    where
+        Self: 'b,
+    {
+        value
+    }
+
+    fn type_name() -> redb::TypeName {
+        redb::TypeName::new("tilo::index::Text")
+    }
+}
+
+impl redb::Key for Text {
+    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
+        data1.cmp(data2)
+    }
+}
+
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Each record of the package: its type.
-const DOCS: TableDefinition<&str, &[u8]> = TableDefinition::new("docs");
+const DOCS: TableDefinition<Text, &[u8]> = TableDefinition::new("docs");
 /// `(resource, field)`: the field's value; `$type` and `$key` hold the resource's type and,
 /// for an item, its order key.
-const FIELDS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("fields");
-const DIRS: TableDefinition<&str, &[u8]> = TableDefinition::new("dirs");
-const PAGES: TableDefinition<(&str, u32), &[u8]> = TableDefinition::new("pages");
+const FIELDS: TableDefinition<(Text, Text), &[u8]> = TableDefinition::new("fields");
+const DIRS: TableDefinition<Text, &[u8]> = TableDefinition::new("dirs");
+const PAGES: TableDefinition<(Text, u32), &[u8]> = TableDefinition::new("pages");
 /// The word postings of format 2, which search no longer reads: emptying the index drops them.
 const FORMAT_2_POSTINGS: TableDefinition<(&str, &str), u8> = TableDefinition::new("postings");
 /// `(list, value)`: how many entries of a column's list hold the value, for a column whose
 /// values are few (a toggle, an enum): where a value's run starts and ends, and the counts
 /// of a filter's chips, without reading the list's pages.
-const COUNTS: TableDefinition<(&str, &str), u64> = TableDefinition::new("counts");
+const COUNTS: TableDefinition<(Text, Text), u64> = TableDefinition::new("counts");
 /// Each resource's newest version, as a [`reflect::Stamp`]: what a mark of the resource, or of the document
 /// holding it, reads without the resource's log. Keyed by the resource alone, so a document's
 /// resources are read as a page of them, never the document whole.
-const NEWEST: TableDefinition<&str, &[u8]> = TableDefinition::new("newest");
+const NEWEST: TableDefinition<Text, &[u8]> = TableDefinition::new("newest");
 
 /// The pseudo-field holding a resource's type.
 pub const TYPE: &str = "$type";
@@ -106,6 +147,15 @@ pub const LEFT: &str = "$left";
 /// as it closed a cycle ([`tilolang_runtime::place`]): a move in it is derived with the whole
 /// record.
 pub const CYCLES: &str = "$cycles";
+
+/// Whether the index keeps `field` as a short text rather than as a field value: the
+/// pseudo-fields naming a resource's type, its order key, where it is and where it left from,
+/// what it links to and what left its collections. The versions [`reflect`] keeps of a resource
+/// are field values like its own fields, what a view reads of them.
+#[must_use]
+fn is_text(field: &str) -> bool {
+    field.starts_with('$') && !reflect::is_reflected(field)
+}
 
 /// The pseudo-field of a resource holding the items that left a collection of it, in the order
 /// they left, each with the version that removed it: what a list shows of them struck, until
@@ -289,6 +339,8 @@ pub struct Index {
     db: Arc<Database>,
     stats: Arc<IndexStats>,
     path: Option<PathBuf>,
+    /// The stores holding it ([`Held`]).
+    holders: AtomicUsize,
 }
 
 impl std::fmt::Debug for Index {
@@ -304,10 +356,52 @@ impl std::fmt::Debug for Index {
 #[derive(Debug)]
 pub enum Opened {
     /// An index of this format and schema, complete, reflecting these heads of each chunk.
-    Ready(Index, Stamps),
+    Ready(Held, Stamps),
     /// Nothing usable (no file, another format or schema, a broken file): an empty index to
     /// build.
-    Empty(Index),
+    Empty(Held),
+}
+
+/// The indexes kept on disk that this process has open, by file. A file is open once in a
+/// process (redb holds it), so every store reading one record's index (every window of an app on
+/// one workspace record) holds the one open index, and a window opened again reads the index the
+/// last one kept.
+static OPEN: LazyLock<Mutex<HashMap<PathBuf, Weak<Index>>>> = LazyLock::new(Mutex::default);
+
+/// One store's hold on an index. Stores that share an index each derive what their record holds
+/// into it, as each change is a resource's fields written whole over what the index holds, so
+/// they agree; emptying it for a build is the only write that is not, and a store does that only
+/// to an index it holds alone ([`Self::shared`]).
+#[derive(Debug)]
+pub struct Held(Arc<Index>);
+
+impl Held {
+    /// `index`, held by one store more.
+    #[must_use]
+    pub fn new(index: Arc<Index>) -> Self {
+        index.holders.fetch_add(1, Ordering::SeqCst);
+        Self(index)
+    }
+
+    /// Whether another store holds the index too.
+    #[must_use]
+    pub fn shared(&self) -> bool {
+        self.0.holders.load(Ordering::SeqCst) > 1
+    }
+}
+
+impl std::ops::Deref for Held {
+    type Target = Arc<Index>;
+
+    fn deref(&self) -> &Arc<Index> {
+        &self.0
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.holders.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// The file of the index of `app` in the directory `dir`.
@@ -412,21 +506,63 @@ fn decode_doc(sealed: &[u8]) -> Result<(String, ChunkNo), Corrupt> {
 
 impl Index {
     /// The index of `app` at `path`, if it holds a complete index of this format and of the
-    /// package's schema `schema`; else the file emptied (or made anew when it cannot be read
-    /// at all) for a build. An index whose file needs repairing (the process ended in the
-    /// middle of a commit) is built anew too: repairing reads the whole file.
+    /// package's schema `schema`; else the file emptied (or made anew when there is none) for a
+    /// build. An index whose file needs repairing (the process was killed in the middle of a
+    /// commit) is built anew too: repairing reads the whole file, and what it held is not trusted
+    /// anyway.
+    ///
+    /// An index this process has open already is that one, shared ([`Held`]), read as the heads
+    /// it reflects say (none yet while the store holding it builds it); one of another schema is
+    /// not this one's to empty (an error, as for a file another process holds).
     pub fn open(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
+        let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        open.retain(|_, index| index.strong_count() > 0);
+        if let Some(index) = open.get(path).and_then(Weak::upgrade) {
+            drop(open);
+            return Self::join(index, app, schema);
+        }
+        // Held while the file opens: a store opening it at once on another thread shares it.
+        let opened = Self::open_file(path, app, schema)?;
+        let (Opened::Ready(held, _) | Opened::Empty(held)) = &opened;
+        open.insert(path.to_owned(), Arc::downgrade(held));
+        drop(open);
+        Ok(opened)
+    }
+
+    /// The index `index` this process has open, for one store more (see [`Self::open`]).
+    fn join(index: Arc<Index>, app: &str, schema: &str) -> Result<Opened, IndexError> {
+        if index.app != app || index.schema != schema || index.stats.is_corrupt() {
+            return Err(IndexError::Io("the index is open elsewhere".into()));
+        }
+        let alone = index.holders.load(Ordering::SeqCst) == 0;
+        let held = Held::new(index);
+        match held.valid(schema) {
+            Ok(Some(heads)) => Ok(Opened::Ready(held, heads)),
+            // Nobody reads it any more: it is this store's to build.
+            _ if alone => {
+                held.clear(schema)?;
+                Ok(Opened::Empty(held))
+            }
+            _ => Err(IndexError::Io("the index is open elsewhere".into())),
+        }
+    }
+
+    fn open_file(path: &Path, app: &str, schema: &str) -> Result<Opened, IndexError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| IndexError::Io(e.to_string()))?;
         }
-        let opened = Database::builder()
-            .set_cache_size(CACHE_BYTES)
-            .set_repair_callback(redb::RepairSession::abort)
-            .create(path);
+        // A file that is not there holds nothing to lose: it is made anew, and a fresh index
+        // that redb reads before its first commit is no index the person ever had.
+        let held = std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0);
+        let mut builder = Database::builder();
+        builder.set_cache_size(CACHE_BYTES);
+        if held {
+            builder.set_repair_callback(redb::RepairSession::abort);
+        }
+        let opened = builder.create(path);
         let db = match opened {
             Ok(db) => db,
-            // Another index holds the file (a second window on the workspace): it is not this one's
-            // to empty.
+            // Another process holds the file: it is not this one's to empty.
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
                 return Err(IndexError::Io("the index is open elsewhere".into()));
             }
@@ -444,7 +580,7 @@ impl Index {
                     .create(path)?
             }
         };
-        let index = Self::with(app, schema, db, Some(path.to_owned()));
+        let index = Held::new(Arc::new(Self::with(app, schema, db, Some(path.to_owned()))));
         if let Ok(Some(heads)) = index.valid(schema) {
             Ok(Opened::Ready(index, heads))
         } else {
@@ -470,6 +606,7 @@ impl Index {
             db,
             stats,
             path,
+            holders: AtomicUsize::new(0),
         }
     }
 
@@ -602,16 +739,16 @@ impl Drop for Index {
     }
 }
 
-type FieldsTable = ReadOnlyTable<(&'static str, &'static str), &'static [u8]>;
+type FieldsTable = ReadOnlyTable<(Text, Text), &'static [u8]>;
 
 /// The index as one commit left it, read on any thread.
 pub struct Snapshot {
-    docs: ReadOnlyTable<&'static str, &'static [u8]>,
+    docs: ReadOnlyTable<Text, &'static [u8]>,
     fields: FieldsTable,
-    dirs: ReadOnlyTable<&'static str, &'static [u8]>,
-    pages: ReadOnlyTable<(&'static str, u32), &'static [u8]>,
-    counts: ReadOnlyTable<(&'static str, &'static str), u64>,
-    newest: ReadOnlyTable<&'static str, &'static [u8]>,
+    dirs: ReadOnlyTable<Text, &'static [u8]>,
+    pages: ReadOnlyTable<(Text, u32), &'static [u8]>,
+    counts: ReadOnlyTable<(Text, Text), u64>,
+    newest: ReadOnlyTable<Text, &'static [u8]>,
     stats: Arc<IndexStats>,
 }
 
@@ -886,7 +1023,7 @@ impl Snapshot {
         for entry in self.fields.iter()? {
             let (key, value) = entry?;
             let (resource, field) = key.value();
-            let shown = if field.starts_with('$') && !reflect::is_reflected(field) {
+            let shown = if is_text(field) {
                 codec::get_text(value.value())?
             } else {
                 format!("{:?}", codec::get_value(value.value())?)
@@ -944,12 +1081,12 @@ impl ListSource for Snapshot {
 /// The tables of one write, read through by the lists being changed in it.
 pub struct Tables<'t> {
     meta: Table<'t, &'static str, &'static [u8]>,
-    docs: Table<'t, &'static str, &'static [u8]>,
-    fields: Table<'t, (&'static str, &'static str), &'static [u8]>,
-    dirs: Table<'t, &'static str, &'static [u8]>,
-    pages: Table<'t, (&'static str, u32), &'static [u8]>,
-    counts: Table<'t, (&'static str, &'static str), u64>,
-    newest: Table<'t, &'static str, &'static [u8]>,
+    docs: Table<'t, Text, &'static [u8]>,
+    fields: Table<'t, (Text, Text), &'static [u8]>,
+    dirs: Table<'t, Text, &'static [u8]>,
+    pages: Table<'t, (Text, u32), &'static [u8]>,
+    counts: Table<'t, (Text, Text), u64>,
+    newest: Table<'t, Text, &'static [u8]>,
 }
 
 impl ListSource for Tables<'_> {
@@ -1094,6 +1231,14 @@ impl<'t> Writer<'t> {
                 return Ok(());
             }
         }
+        self.set_newest(resource, stamp)
+    }
+
+    /// Keep `stamp`'s version as the newest version of `resource`, whatever it holds there.
+    ///
+    /// # Errors
+    /// The index cannot be written.
+    pub fn set_newest(&mut self, resource: &str, stamp: &reflect::Stamp) -> Result<(), IndexError> {
         self.tables
             .newest
             .insert(resource, codec::put_value(&stamp.value()).as_slice())?;

@@ -110,12 +110,16 @@ impl FrameHarness {
         if self.window_bar || self.slot_row.is_some() {
             return;
         }
+        // The row's slots are this window's, as the desktop bar's are
+        // ([`Self::present_in_window_bar`]): a process laying out several windows keeps each
+        // row to its own window.
+        self.host_bar_window();
+        let _running = self.running();
         self.slot_row = Some(Box::new(HostedSlots {
             row: SlotRow::new(),
             inset: 0.0,
             revision: crate::window_toolbar::revision().wrapping_sub(1),
         }));
-        crate::window_toolbar::set_hosted(true);
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(false);
@@ -139,11 +143,11 @@ impl FrameHarness {
     /// ground moves the window. A browser page's row carries none: the
     /// browser has the window's own chrome.
     pub fn host_window_controls(&mut self) {
+        self.invalidate_local();
         let Some(hosted) = self.slot_row.as_mut() else {
             return;
         };
         hosted.row.set_window_controls(true);
-        self.invalidate_local();
         self.relayout();
     }
 
@@ -327,6 +331,152 @@ impl FrameHarness {
         })
     }
 
+    /// The row as HTML: a toolbar across the top of the window, each slot a
+    /// real button showing its face, named as a reader hears it, and the
+    /// location as its words. A notice stands over the
+    /// app's top as a status that is read out, and does not move what the
+    /// app shows. While a menu is open, the location is edited or the search
+    /// is open, the row shows its paint, which those draw over the app.
+    pub(super) fn slot_row_composition(&self) -> Option<crate::composition::Composed> {
+        use crate::composition::{Composed, Own};
+        use std::hash::{Hash, Hasher};
+        let hosted = self.slot_row.as_ref()?;
+        if !hosted.row.is_shown() {
+            return None;
+        }
+        let window = Rect::new(0.0, 0.0, f64::from(self.viewport.0), hosted.inset);
+        let nodes = hosted.row.accessibility();
+        let named = |key: &str| {
+            nodes
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some(key))
+                .cloned()
+        };
+        let mut row = Composed::new(
+            WINDOW_SLOTS.into(),
+            "WindowSlots",
+            [window.x0, window.y0, window.width(), window.height()],
+        );
+        row.tag = Some("header");
+        row.semantics = Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
+                .with_name(self.window_tab().title),
+        );
+        if !hosted.row.composes() {
+            // Its paint, with each slot a real button over it.
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            serde_json::to_string(&nodes)
+                .unwrap_or_default()
+                .hash(&mut hash);
+            window.width().to_bits().hash(&mut hash);
+            format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
+            row.own = Some(Own::Painted {
+                version: hash.finish(),
+            });
+            row.children = nodes
+                .iter()
+                .filter_map(|slot| {
+                    let rect = slot.bounds?.to_rect();
+                    (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
+                        let mut button = Composed::new(
+                            format!(
+                                "{WINDOW_SLOTS}#{}",
+                                slot.action_target.as_deref().unwrap_or_default()
+                            ),
+                            "WindowSlot",
+                            [rect.x0, rect.y0, rect.width(), rect.height()],
+                        );
+                        button.tag = Some("button");
+                        button.semantics = Some(slot.clone());
+                        button.focusable = true;
+                        button
+                    })
+                })
+                .collect();
+            return Some(row);
+        }
+        row.surfaces.push((
+            [window.x0, window.y0, window.width(), window.height()],
+            "ground",
+        ));
+        let strip = hosted.row.strip_card(&self.theme);
+        for (key, rect, own) in hosted.row.composed_parts(&self.theme) {
+            let notice = key == crate::widget::window_toolbar_row::STRIP_KEY;
+            let location = key == crate::widget::window_toolbar_row::LOCATION_KEY;
+            let mut part = Composed::new(
+                format!("{WINDOW_SLOTS}#{key}"),
+                "WindowSlot",
+                [rect.x0, rect.y0, rect.width(), rect.height()],
+            );
+            part.own = Some(own);
+            if notice {
+                part.widget = "WindowNotice".into();
+                part.semantics = nodes
+                    .iter()
+                    .find(|node| node.live.is_some() && node.role == crate::a11y::Role::StaticText)
+                    .cloned();
+            } else if location {
+                part.widget = "WindowLocation".into();
+                part.semantics =
+                    named(crate::widget::window_toolbar_row::LOCATION_TARGET).or_else(|| {
+                        nodes
+                            .iter()
+                            .find(|node| node.bounds.is_some_and(|b| b.to_rect() == rect))
+                            .cloned()
+                    });
+                if part
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|node| node.action_target.is_some())
+                {
+                    part.tag = Some("button");
+                    part.focusable = true;
+                }
+            } else {
+                part.tag = Some("button");
+                part.focusable = true;
+                part.semantics = named(&key);
+            }
+            row.children.push(part);
+        }
+        // The notice: a card over the app at the window's
+        // foot, that comes and goes without moving the app.
+        if let Some(band) = strip {
+            let mut card = Composed::new(
+                format!("{WINDOW_SLOTS}#strip"),
+                "WindowNoticeStrip",
+                [band.x0, band.y0, band.width(), band.height()],
+            );
+            card.surfaces
+                .push(([band.x0, band.y0, band.width(), band.height()], "raised"));
+            if let Some(index) = row
+                .children
+                .iter()
+                .position(|child| child.widget == "WindowNotice")
+            {
+                card.children.push(row.children.remove(index));
+            }
+            row.children.push(card);
+        }
+        Some(row)
+    }
+
+    /// The row's band alone, at `scale`, for its picture.
+    pub(super) fn paint_slot_row(&mut self, scale: f64) -> Option<(vello::Scene, [f64; 4])> {
+        let hosted = self.slot_row.as_mut()?;
+        let width = f64::from(self.viewport.0);
+        let mut scene = vello::Scene::new();
+        hosted.row.draw(
+            &mut scene,
+            Affine::scale(scale),
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+            0.0,
+        );
+        Some((scene, [0.0, 0.0, width, hosted.inset]))
+    }
+
     /// The window's own actions pressed through the row's semantics since
     /// the last call. The frame stands for no window, so a test reads them.
     #[cfg(test)]
@@ -339,12 +489,18 @@ impl FrameHarness {
     /// slot or a `window-search-*` part), as assistive technology and
     /// automation do, and show what the app made of it, as a press on the
     /// slot does.
+    ///
+    /// The row itself is no slot: a part of it that names no target names
+    /// the window for a reader (its location's label, a menu's name) and
+    /// stands where a press on the row's own background does nothing.
     pub(super) fn perform_slot_row_semantic(
         &mut self,
         target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        let target = target.ok_or("a window slot is performed by its target")?;
+        let Some(target) = target else {
+            return Ok(());
+        };
         let ran = self
             .with_slot_row(|row, lent| row.perform(lent, target, action))
             .ok_or("this frame hosts no window slots")?;
@@ -405,6 +561,12 @@ mod tests {
             let name = if self.muted { "Unmute" } else { "Mute" };
             crate::window_toolbar::declare(Some(WindowToolbar {
                 actions: vec![ToolbarAction::new("call-mute", "mic", name)],
+                // What the call is, in the bar: a label a reader hears, and
+                // no control of its own.
+                location: Some(crate::window_toolbar::ToolbarLocation {
+                    label: "Call".into(),
+                    ..crate::window_toolbar::ToolbarLocation::default()
+                }),
                 ..WindowToolbar::default()
             }));
             self.content.sync(state, path);
@@ -592,6 +754,153 @@ mod tests {
             harness.take_slot_row_window_actions(),
             [WindowAction::Close],
             "the press reaches the window"
+        );
+    }
+
+    // The bar names what the window is on: a label at the row's location
+    // that names no target, because a press on it runs nothing that a press
+    // on the row's own background does not. A reader that presses it is
+    // told nothing was refused, and no slot runs.
+    #[test]
+    fn a_press_on_the_rows_own_label_runs_nothing_and_is_not_refused() {
+        let (mut harness, heard) = call_app();
+        let named = |harness: &FrameHarness, name: &str| {
+            fn find(node: &crate::a11y::AccessNode, name: &str) -> bool {
+                node.name.as_deref() == Some(name)
+                    || node.children.iter().any(|child| find(child, name))
+            }
+            let inspection = harness.inspection();
+            inspection
+                .root
+                .children
+                .iter()
+                .find(|node| node.path == WINDOW_SLOTS)
+                .and_then(|row| row.semantics.as_ref())
+                .is_some_and(|row| find(row, name))
+        };
+        assert!(
+            named(&harness, "Call"),
+            "the call is named in the row: {:?}",
+            slot(&harness, MUTE).and_then(|mute| mute.name)
+        );
+        harness
+            .perform_semantic_named(WINDOW_SLOTS, None, &crate::a11y::Action::Activate)
+            .expect("a press on the row's own label is not refused");
+        assert!(
+            heard.borrow().is_empty(),
+            "no slot ran: {:?}",
+            heard.borrow()
+        );
+        assert!(harness.take_slot_row_window_actions().is_empty());
+    }
+
+    /// An app whose bar holds a menu, as a list's sort menu does: the row's button says what the
+    /// menu is, and the rows it lists run by their id.
+    struct SortApp {
+        content: crate::widget::Column,
+        heard: Rc<RefCell<Vec<ToolbarEvent>>>,
+    }
+
+    impl crate::widget::Decorator for SortApp {
+        type Inner = crate::widget::Column;
+
+        fn inner(&self) -> &Self::Inner {
+            &self.content
+        }
+
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.content
+        }
+
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            for event in crate::window_toolbar::take_events() {
+                self.heard.borrow_mut().push(event);
+            }
+            crate::window_toolbar::declare(Some(WindowToolbar {
+                actions: vec![
+                    ToolbarAction::new("sort", "arrow-up-down", "Sort")
+                        .labelled()
+                        .with_items(vec![
+                            ToolbarAction::new("sort~row-0", "", "Everything"),
+                            ToolbarAction::new("sort~row-1", "", "Title"),
+                        ]),
+                ],
+                ..WindowToolbar::default()
+            }));
+            self.content.sync(state, path);
+        }
+    }
+
+    fn sort_app() -> (FrameHarness, Rc<RefCell<Vec<ToolbarEvent>>>) {
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let app = SortApp {
+            content: crate::widget::Column::new()
+                .push(Box::new(crate::widget::Button::new("send", "Send"))),
+            heard: Rc::clone(&heard),
+        };
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            app,
+            (900, 600),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+        );
+        harness.host_window_slots();
+        harness.relayout();
+        (harness, heard)
+    }
+
+    // A menu in the window's own bar opens on one click and stays open while it is read: the
+    // frames that follow the click leave it up, a second click on its button closes it, and a row
+    // chosen in it runs.
+    #[test]
+    fn a_menu_in_a_window_of_its_own_opens_on_one_click_and_stays_open() {
+        let (mut harness, heard) = sort_app();
+        let button = slot(&harness, "window-toolbar-action:sort")
+            .and_then(|button| button.bounds)
+            .expect("the sort menu stands in the row");
+        let (x, y) = ((button.x0 + button.x1) / 2.0, (button.y0 + button.y1) / 2.0);
+        harness.send_host_event(&crate::synthetic_input::cursor_moved(x, y));
+        harness.send_host_event(&crate::synthetic_input::mouse_press());
+        harness.send_host_event(&crate::synthetic_input::mouse_release());
+        harness.relayout();
+        let rows = |harness: &FrameHarness| {
+            let inspection = harness.inspection();
+            let row = inspection
+                .root
+                .children
+                .iter()
+                .find(|node| node.path == WINDOW_SLOTS);
+            let mut names = Vec::new();
+            fn walk(node: &crate::a11y::AccessNode, names: &mut Vec<String>) {
+                if let Some(name) = &node.name {
+                    names.push(name.clone());
+                }
+                for child in &node.children {
+                    walk(child, names);
+                }
+            }
+            if let Some(semantics) = row.and_then(|row| row.semantics.as_ref()) {
+                walk(semantics, &mut names);
+            }
+            names
+        };
+        assert!(
+            rows(&harness).iter().any(|name| name == "Title"),
+            "one click opens the menu: {:?}",
+            rows(&harness)
+        );
+        // It stays up: the frames after the click leave it alone.
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        assert!(
+            rows(&harness).iter().any(|name| name == "Title"),
+            "the menu stays open: {:?}",
+            rows(&harness)
+        );
+        assert!(
+            heard.borrow().is_empty(),
+            "opening the menu runs none of its rows"
         );
     }
 }

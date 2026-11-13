@@ -21,12 +21,12 @@ use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicU64, Ordering},
 };
-use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::authority::{AuthorityDriver, Verdict};
 use crate::carrier;
 pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
+use crate::plane::{Next, next};
 use crate::voice;
 
 /// Sessions still being admitted at once. An admitted session is bounded by
@@ -34,16 +34,14 @@ use crate::voice;
 /// device), never by a count here, so a call has no participant limit.
 pub const MAX_ADMITTING: usize = 16;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
-/// Exact WebTransport path of the voice relay.
-pub const VOICE_PATH: &str = crate::preface::PATH;
 /// The one track a voice broadcast carries.
 pub const VOICE_TRACK: &str = "audio";
 /// Longest an offered namespace whose publisher authority lapsed may stay
 /// offered to a subscriber before that subscriber fails closed.
 const LAPSED_OFFER_FENCE: Duration = Duration::from_millis(900);
 /// How long a revoked or expired session may stay open after the revocation
-/// notice so the client closes first. Chromium can crash its renderer when the
-/// server closes a WebTransport session with streams in flight. No media flows
+/// notice so the client closes first, rather than having the session cut
+/// under it with streams in flight. No media flows
 /// to or from the session during this grace: its view and its publication are
 /// dropped when authority is lost.
 pub const GOAWAY_GRACE: Duration = Duration::from_secs(1);
@@ -72,26 +70,6 @@ const MAX_GROUPS_IN_FLIGHT: usize = 3;
 const MAX_OPAQUE_OBJECT_BYTES: usize = 4096;
 /// Objects one opaque group may have.
 const MAX_OPAQUE_GROUP_OBJECTS: u64 = 16;
-
-/// Host-internal marker for a fresh per-request exact raw route comparison.
-///
-/// This marker is neither authentication nor independent authority evidence.
-/// Its private field only requires callers to use [`Relay::validate_route`]
-/// before URL normalization for each accepted request, or
-/// [`VoiceRoute::negotiated`] where the transport itself negotiated the one
-/// route.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VoiceRoute(());
-
-impl VoiceRoute {
-    /// The route of a connection whose transport negotiated
-    /// [`carrier::PROTOCOL`](crate::carrier::PROTOCOL) directly, with no HTTP/3
-    /// authority or path to compare: a native iroh carrier.
-    #[must_use]
-    pub fn negotiated() -> Self {
-        Self(())
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -166,20 +144,27 @@ pub trait SessionAuthorization: Send + Sync {
     }
 }
 
-/// Who is asking to be admitted, as the transport proved it.
+/// Who is asking to be admitted: the iroh endpoint id the QUIC/TLS handshake
+/// proved. Every device reaches the plane over iroh, a page included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Peer {
-    /// An iroh connection: the endpoint id the QUIC/TLS handshake proved.
-    Native([u8; 32]),
-    /// A WebTransport session on the relay: nothing but the proof identifies
-    /// it, and only the listener knows its route.
-    Web,
-}
+pub struct Peer(pub [u8; 32]);
+
+/// What an authority answers a session's admission with, once it has read
+/// what it decides on.
+pub type Admission<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Arc<dyn SessionAuthorization>, Denied>> + Send + 'a,
+    >,
+>;
 
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
+///
+/// An authority may wait for what it decides on (a workspace's governance
+/// another task is changing): the session waits with it, and is admitted or
+/// refused on that state, never refused because it was busy.
 pub trait RelayAuthority: Send + Sync {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a>;
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -371,27 +356,21 @@ impl Relay {
         }
     }
 
-    /// Serve one session answered with [`carrier::PROTOCOL`] on an exactly
-    /// validated route.
+    /// Serve one session answered with [`carrier::PROTOCOL`].
     ///
     /// This runs the admission preface, attaches only host-owned scopes, and
     /// keeps the `MoQ` driver in this future: it is cancelled on any
     /// authorization failure or caller cancellation and never detached.
     /// `peer` is who the transport proved is asking; the authority sees it
     /// beside the preface's own proof.
-    pub async fn serve_session<S: carrier::Carrier>(
-        &self,
-        _route: VoiceRoute,
-        transport: S,
-        peer: Peer,
-    ) {
+    pub async fn serve_session<S: carrier::Carrier>(&self, transport: S, peer: Peer) {
         let Ok(admitting) = self.admitting.clone().try_acquire_owned() else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             carrier::close(&transport, carrier::CLOSE_DENIED, "relay busy");
             return;
         };
         let accepted = carrier::accept(transport, |proof| async move {
-            let mut scopes = self.scopes(peer, &proof)?;
+            let mut scopes = self.scopes(peer, &proof).await?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
                 let name = scopes.authorization.publication()?;
@@ -419,11 +398,11 @@ impl Relay {
         self.run_session(accepted, scopes).await;
     }
 
-    fn scopes(&self, peer: Peer, proof: &[u8]) -> Option<RelayScopes> {
+    async fn scopes(&self, peer: Peer, proof: &[u8]) -> Option<RelayScopes> {
         if proof.is_empty() || proof.len() > MAX_AUTHORIZATION_BYTES {
             return None;
         }
-        let authorization = self.authority.admit(peer, proof).ok()?;
+        let authorization = self.authority.admit(peer, proof).await.ok()?;
         if !scopes_well_formed(authorization.as_ref()) {
             return None;
         }
@@ -656,32 +635,6 @@ impl Relay {
     }
 }
 
-/// The next datagram or group of a subscribed track.
-pub(crate) enum Next {
-    Datagram(moq_net::Datagram),
-    Group(Box<moq_net::group::Consumer>),
-    End,
-}
-
-pub(crate) async fn next(track: &mut moq_net::track::Subscriber) -> Next {
-    moq_net::kio::wait(|waiter| {
-        if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
-            return Poll::Ready(match datagram {
-                Ok(Some(datagram)) => Next::Datagram(datagram),
-                _ => Next::End,
-            });
-        }
-        if let Poll::Ready(group) = track.poll_recv_group(waiter) {
-            return Poll::Ready(match group {
-                Ok(Some(group)) => Next::Group(Box::new(group)),
-                _ => Next::End,
-            });
-        }
-        Poll::Pending
-    })
-    .await
-}
-
 /// Copy one publisher's voice broadcast from its private ingress into the
 /// shared origin for as long as it is announced there. Every datagram bundle
 /// and object is validated before any subscriber can observe it.
@@ -708,7 +661,7 @@ async fn forward(
         ) else {
             return;
         };
-        let pictures = crate::Task::spawn(forward_pictures(
+        let demands = crate::Task::spawn(forward_demands(
             out.dynamic(),
             source.clone(),
             counters.clone(),
@@ -738,12 +691,12 @@ async fn forward(
             Err(_) => None,
         };
         if let Some(input) = input {
-            copy_voice(input, track, &counters).await;
+            copy_checked(input, track, &counters, voice_bounds()).await;
         } else {
             let _ = source.closed().await;
             let _ = track.abort(moq_net::Error::Cancel);
         }
-        drop(pictures);
+        drop(demands);
         drop(opaque);
         out.finish();
         // A publisher that ends and re-announces is picked up afresh.
@@ -751,16 +704,74 @@ async fn forward(
     }
 }
 
-async fn copy_voice(
+/// Whether a group's frame, at its place in the group, is one to copy.
+type FrameCheck = Box<dyn Fn(u64, &[u8]) -> bool + Send + Sync>;
+
+/// What one copied track lets through: each datagram and each group's frames
+/// are checked before any subscriber can observe them, and a group carries
+/// at most `frames` of them. `frame` is told each frame's place in its group.
+struct Bounds {
+    datagram: fn(&[u8]) -> bool,
+    frame: FrameCheck,
+    frames: u64,
+}
+
+/// Voice: every bundle and object validated.
+fn voice_bounds() -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |payload| voice::validate_bundle(payload).is_ok(),
+        frame: Box::new(|_, payload| voice::validate(payload).is_ok()),
+        frames: voice::FRAMES_PER_GROUP,
+    })
+}
+
+/// The plane's opaque tracks (presence, activity): the scope's own sealed
+/// bytes, copied unread, bounded in size.
+fn opaque_bounds() -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |payload| payload.len() <= MAX_OPAQUE_OBJECT_BYTES,
+        frame: Box::new(|_, payload| payload.len() <= MAX_OPAQUE_OBJECT_BYTES),
+        frames: MAX_OPAQUE_GROUP_OBJECTS,
+    })
+}
+
+/// Pictures of `layer`, in groups only: a keyframe first, every picture of
+/// the track's own layer.
+fn picture_bounds(layer: crate::video::Layer) -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |_| false,
+        frame: Box::new(move |index, payload| {
+            crate::video::validate(payload)
+                .is_ok_and(|header| header.layer == layer && (index > 0 || header.keyframe))
+        }),
+        frames: crate::video::MAX_GROUP_OBJECTS,
+    })
+}
+
+/// A window's page: every object a valid page object, a group entered at a
+/// whole frame.
+fn page_bounds() -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |_| false,
+        frame: Box::new(|index, payload| {
+            crate::page::validate(payload).is_ok_and(|header| index > 0 || header.whole)
+        }),
+        frames: crate::page::MAX_GROUP_OBJECTS,
+    })
+}
+
+/// Copy `input` into `output` within `bounds` until the input ends.
+async fn copy_checked(
     mut input: moq_net::track::Subscriber,
     mut output: moq_net::track::Producer,
     counters: &Arc<Counters>,
+    bounds: Arc<Bounds>,
 ) {
     let mut groups: VecDeque<crate::Task> = VecDeque::new();
     loop {
         match next(&mut input).await {
             Next::Datagram(datagram) => {
-                let valid = voice::validate_bundle(&datagram.payload).is_ok()
+                let valid = (bounds.datagram)(&datagram.payload)
                     && output
                         .insert_datagram(datagram.sequence, datagram.timestamp, datagram.payload)
                         .is_ok();
@@ -784,10 +795,11 @@ async fn copy_voice(
                     counters.dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
-                groups.push_back(crate::Task::spawn(copy_voice_group(
+                groups.push_back(crate::Task::spawn(copy_checked_group(
                     *group,
                     out,
                     counters.clone(),
+                    Arc::clone(&bounds),
                 )));
             }
             Next::End => break,
@@ -797,18 +809,20 @@ async fn copy_voice(
     let _ = output.abort(moq_net::Error::Cancel);
 }
 
-async fn copy_voice_group(
+async fn copy_checked_group(
     mut input: moq_net::group::Consumer,
     mut output: moq_net::group::Producer,
     counters: Arc<Counters>,
+    bounds: Arc<Bounds>,
 ) {
     let mut count: u64 = 0;
     loop {
         match input.read_frame().await {
             Ok(Some(frame)) => {
+                let valid = (bounds.frame)(count, &frame.payload);
                 count = count.saturating_add(1);
-                if count > voice::FRAMES_PER_GROUP
-                    || voice::validate(&frame.payload).is_err()
+                if !valid
+                    || count > bounds.frames
                     || output.write_frame(frame.timestamp, frame.payload).is_err()
                 {
                     counters.dropped.fetch_add(1, Ordering::Relaxed);
@@ -829,13 +843,11 @@ async fn copy_voice_group(
     }
 }
 
-/// Copy one opaque plane track (presence, activity) unread: its objects are
-/// the scope's own sealed bytes, so the relay only bounds their size and the
-/// groups in flight.
+/// Copy one opaque plane track (presence, activity) unread ([`opaque_bounds`]).
 async fn copy_opaque(
     source: moq_net::broadcast::Consumer,
     name: String,
-    mut output: moq_net::track::Producer,
+    output: moq_net::track::Producer,
     counters: Arc<Counters>,
 ) {
     let input = match source.track(name.as_str()) {
@@ -846,124 +858,69 @@ async fn copy_opaque(
         }
         Err(error) => Err(error),
     };
-    let Ok(mut input) = input else {
+    let Ok(input) = input else {
         // The publisher does not carry this track: announce nothing.
         let _ = output.abort(moq_net::Error::NotFound);
         return;
     };
-    let mut groups: VecDeque<crate::Task> = VecDeque::new();
-    loop {
-        match next(&mut input).await {
-            Next::Datagram(datagram) => {
-                let size = datagram.payload.len();
-                let valid = size <= MAX_OPAQUE_OBJECT_BYTES
-                    && output
-                        .insert_datagram(datagram.sequence, datagram.timestamp, datagram.payload)
-                        .is_ok();
-                let counter = if valid {
-                    &counters.forwarded
-                } else {
-                    &counters.dropped
-                };
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
-            Next::Group(group) => {
-                groups.retain(|task| !task.is_finished());
-                if groups.len() >= MAX_GROUPS_IN_FLIGHT {
-                    groups.pop_front();
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                }
-                let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence))
-                else {
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                };
-                groups.push_back(crate::Task::spawn(copy_opaque_group(
-                    *group,
-                    out,
-                    counters.clone(),
-                )));
-            }
-            Next::End => break,
-        }
-    }
-    drop(groups);
-    let _ = output.abort(moq_net::Error::Cancel);
+    copy_checked(input, output, &counters, opaque_bounds()).await;
 }
 
-async fn copy_opaque_group(
-    mut input: moq_net::group::Consumer,
-    mut output: moq_net::group::Producer,
-    counters: Arc<Counters>,
-) {
-    let mut count: u64 = 0;
-    loop {
-        match input.read_frame().await {
-            Ok(Some(frame)) => {
-                count = count.saturating_add(1);
-                if count > MAX_OPAQUE_GROUP_OBJECTS
-                    || frame.payload.len() > MAX_OPAQUE_OBJECT_BYTES
-                    || output.write_frame(frame.timestamp, frame.payload).is_err()
-                {
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    let _ = output.abort(moq_net::Error::ProtocolViolation);
-                    return;
-                }
-                counters.forwarded.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(None) => {
-                let _ = output.finish();
-                return;
-            }
-            Err(_) => {
-                let _ = output.abort(moq_net::Error::Cancel);
-                return;
-            }
-        }
-    }
-}
-
-/// Serve the picture and window tracks subscribers ask of one publication:
-/// each copied from the publisher, validated, only while someone asks for
-/// it. Any other track name is refused.
-async fn forward_pictures(
+/// Serve the tracks subscribers ask of one publication — a call's picture
+/// layers, a publisher's viewed windows and a window's page — each copied
+/// from the publisher, validated, only while someone asks for it. Any other
+/// track name is refused.
+async fn forward_demands(
     mut requests: moq_net::broadcast::Dynamic,
     source: moq_net::broadcast::Consumer,
     counters: Arc<Counters>,
 ) {
-    let mut serving: Vec<crate::Task> = Vec::new();
+    let mut pictures: Vec<crate::Task> = Vec::new();
     let mut windows: Vec<crate::Task> = Vec::new();
+    let mut pages: Vec<crate::Task> = Vec::new();
     while let Ok(request) = requests.requested_track().await {
-        serving.retain(|task| !task.is_finished());
+        pictures.retain(|task| !task.is_finished());
         windows.retain(|task| !task.is_finished());
-        let Some(track) = crate::video::Track::parse(request.name()) else {
+        pages.retain(|task| !task.is_finished());
+        let Some(track) = crate::live::parse_track(request.name()) else {
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        // A call's layers and a publisher's viewed windows are bounded
-        // apart: a window viewer never takes a call's picture slots.
-        let (tasks, bound) = match track {
-            crate::video::Track::Picture(..) => (&mut serving, MAX_PICTURE_TRACKS),
-            crate::video::Track::Window(_) => (&mut windows, crate::video::MAX_WINDOW_TRACKS),
+        // A call's layers, a publisher's viewed windows and its pages are
+        // bounded apart: a window viewer never takes a call's picture slots.
+        let (tasks, bound, bounds) = match track {
+            crate::live::Track::Camera(layer) | crate::live::Track::Screen(layer) => {
+                (&mut pictures, MAX_PICTURE_TRACKS, picture_bounds(layer))
+            }
+            crate::live::Track::Window(_, layer) => (
+                &mut windows,
+                crate::video::MAX_WINDOW_TRACKS,
+                picture_bounds(layer),
+            ),
+            crate::live::Track::Page(_) => (&mut pages, crate::page::MAX_TRACKS, page_bounds()),
+            _ => {
+                request.reject(moq_net::Error::NotFound);
+                continue;
+            }
         };
         if tasks.len() >= bound {
             request.reject(moq_net::Error::BoundsExceeded(moq_net::BoundsExceeded));
             continue;
         }
-        tasks.push(crate::Task::spawn(forward_picture(
+        tasks.push(crate::Task::spawn(forward_demand(
             request,
             source.clone(),
-            track.layer(),
+            bounds,
             counters.clone(),
         )));
     }
 }
 
-/// Copy one picture track for as long as a subscriber asks for it.
-async fn forward_picture(
+/// Copy one demanded track for as long as a subscriber asks for it.
+async fn forward_demand(
     request: moq_net::track::Request,
     source: moq_net::broadcast::Consumer,
-    layer: crate::video::Layer,
+    bounds: Arc<Bounds>,
     counters: Arc<Counters>,
 ) {
     let subscription = moq_net::track::Subscription::default().with_max_age(PICTURE_RETAIN);
@@ -981,84 +938,9 @@ async fn forward_picture(
     let output = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_RETAIN));
     let watched = output.clone();
     tokio::select! {
-        () = copy_pictures(input, output, layer, &counters) => {}
-        // Nobody shows this layer any more: stop asking the publisher for it.
+        () = copy_checked(input, output, &counters, bounds) => {}
+        // Nobody shows this track any more: stop asking the publisher for it.
         _ = watched.unused() => {}
-    }
-}
-
-async fn copy_pictures(
-    mut input: moq_net::track::Subscriber,
-    output: moq_net::track::Producer,
-    layer: crate::video::Layer,
-    counters: &Arc<Counters>,
-) {
-    let mut groups: VecDeque<crate::Task> = VecDeque::new();
-    loop {
-        match next(&mut input).await {
-            // Pictures travel in groups only.
-            Next::Datagram(_) => {
-                counters.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-            Next::Group(group) => {
-                groups.retain(|task| !task.is_finished());
-                if groups.len() >= MAX_GROUPS_IN_FLIGHT {
-                    groups.pop_front();
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                }
-                let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence))
-                else {
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                };
-                groups.push_back(crate::Task::spawn(copy_picture_group(
-                    *group,
-                    out,
-                    layer,
-                    counters.clone(),
-                )));
-            }
-            Next::End => break,
-        }
-    }
-    drop(groups);
-    let _ = output.abort(moq_net::Error::Cancel);
-}
-
-/// Copy one group of pictures: a keyframe first, every picture of the
-/// track's own layer, at most [`crate::video::MAX_GROUP_OBJECTS`].
-async fn copy_picture_group(
-    mut input: moq_net::group::Consumer,
-    mut output: moq_net::group::Producer,
-    layer: crate::video::Layer,
-    counters: Arc<Counters>,
-) {
-    let mut count: u64 = 0;
-    loop {
-        match input.read_frame().await {
-            Ok(Some(frame)) => {
-                let valid = crate::video::validate(&frame.payload)
-                    .is_ok_and(|header| header.layer == layer && (count > 0 || header.keyframe));
-                count = count.saturating_add(1);
-                if !valid
-                    || count > crate::video::MAX_GROUP_OBJECTS
-                    || output.write_frame(frame.timestamp, frame.payload).is_err()
-                {
-                    counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    let _ = output.abort(moq_net::Error::ProtocolViolation);
-                    return;
-                }
-                counters.forwarded.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(None) => {
-                let _ = output.finish();
-                return;
-            }
-            Err(_) => {
-                let _ = output.abort(moq_net::Error::Cancel);
-                return;
-            }
-        }
     }
 }
 

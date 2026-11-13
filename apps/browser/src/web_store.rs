@@ -1,5 +1,4 @@
-//! Chrome Web Store items: recognising their pages and fetching their
-//! packages from Google's update service for this Chromium version.
+//! Chrome Web Store items: recognising their pages and fetching their packages.
 
 use std::io::Read as _;
 use std::time::Duration;
@@ -11,22 +10,20 @@ use crate::extensions::ExtensionError;
 const UPDATE_SERVICE: &str = "https://clients2.google.com/service/update2/crx";
 /// Matches `extensions::MAX_ARCHIVE_BYTES`.
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
-/// The Chromium the engine runs when it has not reported its version.
 pub const FALLBACK_CHROMIUM_VERSION: &str = "152.0.7977.83";
 
-/// A Web Store listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    /// The extension identifier: thirty-two letters a-p.
+    /// The extension id: thirty-two letters a-p.
     pub id: String,
 }
 
-/// The item a Web Store page URL shows, or `None` for any other address.
+/// The item the page at `address` shows; `None` for any other address.
 ///
-/// Recognised: `https://chromewebstore.google.com/detail/<name>/<id>`, the
-/// same without the name, and the legacy
-/// `https://chrome.google.com/webstore/detail/<name>/<id>`. Only plain
-/// `https` on the default port counts, so a look-alike never offers an install.
+/// Known: `https://chromewebstore.google.com/detail/<name>/<id>`, the same
+/// without the name, and the legacy `chrome.google.com/webstore/detail/...`.
+/// Only plain `https` on the default port counts, so a look-alike page never
+/// offers an install.
 pub fn item_from_url(address: &str) -> Option<Item> {
     let url = Url::parse(address).ok()?;
     if url.scheme() != "https"
@@ -49,14 +46,10 @@ pub fn item_from_url(address: &str) -> Option<Item> {
     crate::crx::is_extension_id(id).then(|| Item { id: id.to_owned() })
 }
 
-/// The update-service address of the CRX3 package for `id` that Chromium
-/// `chromium_version` would be offered, on this platform.
 pub fn crx_url(id: &str, chromium_version: &str) -> Option<Url> {
     crx_url_from(id, None, chromium_version)
 }
 
-/// The update-service address of a newer package for `id` than version
-/// `installed`; the service answers with nothing when there is none.
 fn crx_url_from(id: &str, installed: Option<&str>, chromium_version: &str) -> Option<Url> {
     if !crate::crx::is_extension_id(id)
         || installed.is_some_and(|version| {
@@ -98,29 +91,27 @@ fn crx_url_from(id: &str, installed: Option<&str>, chromium_version: &str) -> Op
     Some(url)
 }
 
-/// Whether a download may come from `host`: Google's update service and the
-/// content hosts it redirects to.
 fn trusted_host(host: &str) -> bool {
     [".google.com", ".googleusercontent.com", ".gvt1.com"]
         .iter()
         .any(|suffix| host.ends_with(suffix))
 }
 
-/// Fetch the package for `id`. Blocking; call from a worker thread.
+/// Fetch the package for `id`. Blocking; call from a worker thread. The
+/// package is not verified here.
 ///
 /// # Errors
 ///
-/// Returns [`ExtensionError::Download`] when the address is invalid, the
-/// service redirects off Google's hosts or the request fails,
-/// [`ExtensionError::NoPackage`] when the store has none for this browser,
-/// and [`ExtensionError::TooLarge`] when the package exceeds the size limit.
-/// The package is not verified here.
+/// [`ExtensionError::Download`] when the address or the request fails or the
+/// service redirects off Google's hosts, [`ExtensionError::NoPackage`] when
+/// the store has none for this browser, and [`ExtensionError::TooLarge`] when
+/// the package exceeds the size limit.
 pub fn download(id: &str, chromium_version: &str) -> Result<Vec<u8>, ExtensionError> {
     fetch(id, None, chromium_version)?.ok_or(ExtensionError::NoPackage)
 }
 
-/// The package of a newer version of `id` than `installed`, or `None` when
-/// it is current. Blocking; call from a worker thread.
+/// The package of a newer version of `id` than `installed`, or `None`.
+/// Blocking; call from a worker thread.
 ///
 /// # Errors
 /// As [`download`].
@@ -187,7 +178,6 @@ mod tests {
     #[test]
     fn store_pages_are_recognised_and_lookalikes_are_not() {
         let id = |url: &str| item_from_url(url).map(|item| item.id);
-        // phase: current_and_legacy_item_pages
         assert_eq!(
             id(&format!(
                 "https://chromewebstore.google.com/detail/1password/{ONEPASSWORD}?hl=en"
@@ -206,7 +196,6 @@ mod tests {
             )),
             Some(UBLOCK_LITE.into())
         );
-        // phase: other_pages_and_hosts_are_not_items
         for rejected in [
             format!("http://chromewebstore.google.com/detail/x/{ONEPASSWORD}"),
             format!("https://chromewebstore.google.com.evil.example/detail/x/{ONEPASSWORD}"),

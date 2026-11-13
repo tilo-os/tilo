@@ -37,7 +37,6 @@ mod whats_new;
 use ui::time::{Duration, SystemTime};
 
 use ui::framework::RecordEnv;
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::workspace_activity as wire;
@@ -175,11 +174,11 @@ impl Provider {
 }
 
 pub(crate) fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::locales::CATALOG.t(key)
 }
 
 pub(crate) fn trf(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    I18nManager::format(key, args)
+    crate::locales::CATALOG.t_args(key, args)
 }
 
 /// When `at_ms` was, as "5 minutes ago".
@@ -222,6 +221,7 @@ impl ResourceApp for App {
     type Resource = Filter;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "activity-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

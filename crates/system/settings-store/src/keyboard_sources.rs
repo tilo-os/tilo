@@ -6,11 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::hardware::RichInputConfig;
 
-/// The shared physical-keyboard default and the separate software keyboard.
 pub const ALL: &str = "all";
 pub const OSK: &str = "osk";
 
-/// Editing a configured source changes its options, not the source being typed.
 #[cfg_attr(
     feature = "model",
     derive(tilo_resource::Model, tilo_resource::JsonSchema)
@@ -53,7 +51,6 @@ impl KeyboardProfile {
         }
     }
 
-    /// Invalid physical assignments fall back through the existing migration rules.
     #[must_use]
     pub fn effective(&self, input: &RichInputConfig) -> RichInputConfig {
         let mut result = input.clone();
@@ -77,7 +74,6 @@ impl KeyboardProfile {
     }
 }
 
-/// Decode profiles individually: one obsolete assignment cannot erase its siblings.
 pub fn lenient_profiles<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, KeyboardProfile>, D::Error>
@@ -100,7 +96,6 @@ where
         .collect())
 }
 
-/// Return the configured assignment, falling back without creating or losing an override.
 #[must_use]
 pub fn effective(input: &RichInputConfig, scope: &str) -> RichInputConfig {
     if scope != ALL
@@ -115,7 +110,6 @@ pub fn effective(input: &RichInputConfig, scope: &str) -> RichInputConfig {
     profile.effective(input)
 }
 
-/// Resolve only a currently attached typing keyboard from the compositor's leased snapshot.
 #[must_use]
 pub fn active_scope() -> String {
     crate::hardware::InputHardwareSnapshot::load()
@@ -129,7 +123,6 @@ pub fn active_scope() -> String {
         .unwrap_or_else(|| ALL.into())
 }
 
-/// Effective physical sources follow the keyboard in use, without modifying defaults.
 #[must_use]
 pub fn current(input: &RichInputConfig) -> RichInputConfig {
     effective(input, &active_scope())
@@ -150,28 +143,16 @@ pub fn device_key(base: &str, serial: &str, physical: &str) -> String {
     }
 }
 
-/// The X11 keyboard configuration systemd-localed writes for
-/// `localectl set-x11-keymap`.
 const LOCALED_X11_CONFIG: &str = "/etc/X11/xorg.conf.d/00-keyboard.conf";
-/// The console configuration; systemd-localed also records the X11 layout
-/// here as `XKBLAYOUT`/`XKBVARIANT`.
 const VCONSOLE_CONFIG: &str = "/etc/vconsole.conf";
 /// Both files are a few lines; anything larger is not a keyboard config.
 const SYSTEM_CONFIG_LIMIT: u64 = 64 * 1024;
 
-/// The input sources this machine was set up with, for a person who has not
-/// chosen any. In order: the session's `XKB_DEFAULT_LAYOUT` and
-/// `XKB_DEFAULT_VARIANT` (the installer exports them for every session, and
-/// they are what libxkbcommon applies to a keymap compiled without names),
-/// then systemd-localed's X11 layout, then the console's `XKBLAYOUT`.
-/// Empty when none of them names a valid layout.
 #[must_use]
 pub fn system_sources() -> Vec<String> {
     system_sources_from(&|name| std::env::var(name).ok(), &read_system_config)
 }
 
-/// The sources a person who has chosen none types: the machine's
-/// ([`system_sources`]), else US. Never empty.
 #[must_use]
 pub fn default_sources() -> Vec<String> {
     let mut sources = system_sources();
@@ -181,15 +162,11 @@ pub fn default_sources() -> Vec<String> {
     sources
 }
 
-/// The layout a document falls back to when it names no usable one: the
-/// system's primary layout, else US.
 #[must_use]
 pub fn fallback_layout() -> String {
     default_sources().swap_remove(0)
 }
 
-/// [`system_sources`] over an environment `variable` reader and a
-/// configuration `file` reader.
 fn system_sources_from(
     variable: &dyn Fn(&str) -> Option<String>,
     file: &dyn Fn(&str) -> Option<String>,
@@ -287,7 +264,6 @@ pub const LAYOUT: crate::Key<String> =
         "us".into()
     });
 
-/// The ordered input sources the person switches between.
 pub const LAYOUTS: crate::Key<Vec<String>> =
     crate::Key::new(crate::hardware::INPUT_SECTION, "keyboard_layouts", || {
         vec!["us".into()]

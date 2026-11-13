@@ -116,5 +116,5 @@ pub fn page_stored_blocks(doc: &AutoCommit, id: PageId) -> Vec<StoredBlock> {
 #[must_use]
 pub fn images(doc: &AutoCommit) -> std::collections::HashMap<String, Vec<u8>> {
     let content = crate::notebook::content();
-    crate::notebook::image_snapshot(&notebook(doc).images, |digest| content.read(digest))
+    crate::notebook::image_snapshot(&notebook(doc).images, &content)
 }

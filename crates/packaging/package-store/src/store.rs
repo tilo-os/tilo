@@ -1,24 +1,4 @@
 //! Installing, removing and collecting the device's packages.
-//!
-//! An install streams a `.tapp` through the format codec: the metadata comes
-//! first, the caller's policy accepts or refuses it before a single payload
-//! byte is stored, and each carried blob is ingested into the content store
-//! as it arrives. Blobs a thin package does not carry are looked up in the
-//! store first — an update shares most of its files with the version it
-//! replaces — and only the rest are fetched. The payload tree is then
-//! materialised once from the store (reflinked where the filesystem allows)
-//! and the registry row is replaced atomically; that replacement is the
-//! commit point. The tree of a replaced version is removed afterwards and
-//! every blob no remaining package references is evicted.
-//!
-//! A tree a running app has mounted ([`crate::mounts`]), or that a launch
-//! holds ([`crate::lease`]) because it chose the tree and has not mounted it
-//! yet, is never removed: retiring it leaves it in place, and
-//! [`PackageStore::collect_orphans`] removes it once nothing holds it. The
-//! size sweep never evicts a running app, even one running a build an
-//! update replaced, nor one a launch is opening. A tree leaves `pkgs/` in
-//! one rename into `tmp/` before any of its files is deleted, so a removal
-//! stopped halfway never leaves a partial tree where a launch looks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -41,10 +21,8 @@ use crate::registry::{InstalledPackage, Registry};
 /// `--max-store-bytes` default, and what `tilo-install gc` applies.
 pub const DEFAULT_MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// What [`PackageStore::collect_orphans`] removed and kept.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Orphans {
-    /// Payload trees and records no row or image names, now removed.
     pub removed: Vec<PathBuf>,
     /// Bytes those held.
     pub removed_bytes: u64,
@@ -56,7 +34,6 @@ pub struct Orphans {
     pub staging_bytes: u64,
 }
 
-/// Payload blobs read back from the content store.
 struct StoredBlobs<'a, 'b> {
     content: &'a Content<'b>,
 }
@@ -90,22 +67,16 @@ fn image_install_time(
         .ok_or(StoreError::InvalidImageBuildEpoch)
 }
 
-/// What the caller's policy decided about a package it has seen the
-/// metadata of.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Admission {
-    /// Keep the package under size pressure.
     pub pinned: bool,
     /// Attestor id when an attestor chain vouched for the package.
     pub attested_by: String,
     /// Where the bytes came from, recorded for provenance.
     pub source: String,
-    /// Keep this version in front of a newer one the system image ships;
-    /// see [`InstalledPackage::held`].
     pub held: bool,
 }
 
-/// The outcome of a development install that preserves explicit version holds.
 #[derive(Clone, Debug)]
 pub enum InstallSelection {
     Installed(Box<Installed>),
@@ -115,17 +86,13 @@ pub enum InstallSelection {
 #[derive(Clone, Debug)]
 pub struct Installed {
     pub package: InstalledPackage,
-    /// The row this install replaced (another version of the same app).
     pub replaced: Option<InstalledPackage>,
-    /// Distinct payload blobs the package references.
     pub blobs: usize,
     /// Of those, how many the store already held before this install.
     pub blobs_already_stored: usize,
-    /// How many had to be fetched from a [`BlobFetcher`].
     pub blobs_fetched: usize,
 }
 
-/// What a removal freed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Removed {
     pub package: Option<InstalledPackage>,
@@ -241,7 +208,6 @@ where
     }
 }
 
-/// A sink for fetched blobs: verify, then ingest.
 struct FetchSink<'a, 'c> {
     content: &'a Content<'c>,
     wanted: BTreeSet<BlobHash>,
@@ -298,9 +264,6 @@ fn staging_name(id: PackageId, what: &str) -> String {
     format!("{}.{what}.{}.{nanos}", id.to_hex(), std::process::id())
 }
 
-/// Replace `live` with the fully written `staged` directory, moving what
-/// was there to `retired`. Returns whether anything was; the caller removes
-/// it.
 fn swap_in(staged: &Path, live: &Path, retired: &Path) -> std::io::Result<bool> {
     let had_live = std::fs::symlink_metadata(live).is_ok();
     if had_live {
@@ -327,7 +290,6 @@ fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
 }
 
 impl PackageStore {
-    /// A store rooted at `root`. Nothing is created until the first write.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Self {
             layout: Layout::new(root),
@@ -354,7 +316,6 @@ impl PackageStore {
         StoreLock::acquire(&self.layout)
     }
 
-    /// The registry as it is now.
     pub fn registry(&self) -> Result<Registry, StoreError> {
         Ok(Registry::load(&self.layout.registry())?)
     }
@@ -527,13 +488,10 @@ impl PackageStore {
         })
     }
 
-    /// Every image this store holds.
     pub fn images(&self) -> Result<Vec<PackageMeta>, StoreError> {
         crate::image::list_images(&self.layout)
     }
 
-    /// Remove the image `id` and evict the blobs nothing else references.
-    /// Removing an image that is not held does nothing.
     pub fn remove_image(&self, id: PackageId) -> Result<Removed, StoreError> {
         let _lock = self.lock()?;
         if self.image(id)?.is_some() {
@@ -677,8 +635,6 @@ impl PackageStore {
         Ok((tapp.meta, admission, already.len(), delivered))
     }
 
-    /// Look up the blobs `meta` references in the store and fetch the rest.
-    /// Returns how many were fetched and which are still missing.
     fn fill_missing(
         content: &Content<'_>,
         meta: &PackageMeta,
@@ -732,7 +688,6 @@ impl PackageStore {
         result.map_err(|error| StoreError::Payload(error.to_string()))
     }
 
-    /// Write `meta`'s payload tree and metadata into place from the store.
     pub(crate) fn materialise(
         &self,
         content: &Content<'_>,
@@ -799,8 +754,6 @@ impl PackageStore {
         result
     }
 
-    /// For an image, export its tree file into `tree` and return the checked
-    /// tree it describes; `None` for every other kind.
     fn image_tree(
         content: &Content<'_>,
         meta: &PackageMeta,
@@ -825,7 +778,6 @@ impl PackageStore {
         Ok(Some(spec))
     }
 
-    /// Publish the row for `meta` and retire what it replaced.
     fn commit(
         &self,
         meta: &PackageMeta,
@@ -913,7 +865,6 @@ impl PackageStore {
         Ok((package, replaced))
     }
 
-    /// The registry row of a materialised package.
     pub(crate) fn row_for(
         &self,
         meta: &PackageMeta,
@@ -956,9 +907,6 @@ impl PackageStore {
             .fold(0u64, u64::saturating_add)
     }
 
-    /// Remove the files of a row that is no longer in the registry. A tree
-    /// a running app has mounted or a launch holds stays, with its record,
-    /// until [`Self::collect_orphans`] finds it free.
     pub(crate) fn retire_tree(&self, row: &InstalledPackage) -> Result<(), StoreError> {
         let layout = &self.layout;
         if let Some(id) = layout.materialised_id(&row.payload_root) {
@@ -1017,9 +965,6 @@ impl PackageStore {
             .ok_or_else(|| StoreError::NotInstalled(app_id.to_string()))
     }
 
-    /// Move `path` (`id`'s tree or record) out of `pkgs/` into `tmp/` in one
-    /// rename, then delete it: a deletion stopped halfway leaves nothing a
-    /// launch looks up, and the staging sweep finishes it.
     fn discard(&self, path: &Path, id: PackageId, what: &str) -> Result<(), StoreError> {
         if !std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
             return Ok(());
@@ -1116,8 +1061,6 @@ impl PackageStore {
         Ok(out)
     }
 
-    /// Drop the lease file of every tree that is gone and that no launch
-    /// holds: a launch that found its tree removed leaves one behind.
     fn forget_idle_leases(&self) -> Result<(), StoreError> {
         let leases = self.layout.root().join(crate::layout::LEASES_DIR);
         if !std::fs::symlink_metadata(&leases).is_ok_and(|meta| meta.is_dir()) {
@@ -1186,11 +1129,6 @@ impl PackageStore {
         Ok(bytes)
     }
 
-    /// Set the pin of `app_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::NotInstalled`] or a registry error.
     pub fn set_pinned(&self, app_id: &str, pinned: bool) -> Result<(), StoreError> {
         self.update_row(app_id, |row| row.pinned = pinned)
     }
@@ -1207,21 +1145,11 @@ impl PackageStore {
         leased.map_or(row.last_used, |at| at.max(row.last_used))
     }
 
-    /// Record a launch of `app_id` for least-recently-used eviction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::NotInstalled`] or a registry error.
     pub fn mark_used(&self, app_id: &str) -> Result<(), StoreError> {
         let now = unix_now();
         self.update_row(app_id, |row| row.last_used = now)
     }
 
-    /// Apply `change` to the row of `app_id` and persist it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::NotInstalled`] or a registry error.
     pub fn update_row(
         &self,
         app_id: &str,
@@ -1441,15 +1369,12 @@ struct UsageRow {
     id: String,
     pinned: bool,
     last_used: u64,
-    /// Each payload file's blob and length, in collection order.
     blobs: Vec<(BlobHash, u64)>,
     /// Bytes that belong to no known blob: the tree of a row whose record
     /// cannot be read. Counted as this row's alone.
     loose_bytes: u64,
 }
 
-/// Every row's share, with how many rows reference each blob and the
-/// length each blob is counted at (its first occurrence).
 #[derive(Clone, Debug, Default)]
 struct UsageIndex {
     rows: Vec<UsageRow>,
@@ -1542,8 +1467,6 @@ fn plan_eviction(
     plan
 }
 
-/// On-disk accounting, with blobs shared between packages counted once in
-/// the total and attributed to the first package that references them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DiskUsage {
     pub total_bytes: u64,
@@ -1848,8 +1771,6 @@ type = "gui"
         assert!(result.is_ok(), "{result:?}");
     }
 
-    /// An app of many files: its blobs are written with one database sync,
-    /// not one each.
     #[test]
     fn installing_a_package_syncs_its_blobs_once() {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {

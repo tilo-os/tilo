@@ -18,26 +18,18 @@ use super::wire::{self, ClientHello, Offer, Purpose, close};
 use crate::net::{GATEWAY, Ipv4Net, MAX_MTU, is_client_address};
 use crate::packet::{self, Ipv4Packet};
 
-/// How long a client may take to say why it came.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How often a running session's right to route is checked again.
 const RECHECK: Duration = Duration::from_secs(15);
-/// The exit TUN's MTU: what a path that has found its MTU carries.
 pub const EXIT_MTU: u16 = 1400;
 
-/// Whether a device may route through this one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
     Allow,
-    /// Not one of this person's devices.
     NotYours,
-    /// The person has not turned this device's exit on.
     ExitOff,
 }
 
-/// What the exit asks of the session it runs in.
 pub trait Authority: Send + Sync + 'static {
-    /// Whether `peer` may route through this device now.
     fn decide(&self, peer: &EndpointId) -> Decision;
     /// The networks this device is attached to, offered for "only my home
     /// network".
@@ -52,7 +44,6 @@ pub trait ExitDevices: Send + Sync + 'static {
     fn close(&self) -> impl Future<Output = ()> + Send;
 }
 
-/// A device routing through this one, as the exit's status shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionView {
     pub peer: EndpointId,
@@ -74,9 +65,7 @@ struct Open<D> {
 
 struct State<D> {
     open: Option<Open<D>>,
-    /// By client address.
     sessions: HashMap<Ipv4Addr, Session>,
-    /// Each device keeps its address for as long as the exit runs.
     assigned: HashMap<EndpointId, Ipv4Addr>,
     next_id: u64,
 }
@@ -92,7 +81,6 @@ struct Inner<A: Authority, X: ExitDevices> {
     on_change: Box<dyn Fn() + Send + Sync>,
 }
 
-/// This device as an exit. Cloning shares it.
 pub struct Exit<A: Authority, X: ExitDevices> {
     inner: Arc<Inner<A, X>>,
 }
@@ -149,7 +137,6 @@ impl<A: Authority, X: ExitDevices> Exit<A, X> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The devices routing through this one now.
     pub fn sessions(&self) -> Vec<SessionView> {
         let mut sessions: Vec<SessionView> = self
             .state()
@@ -199,7 +186,6 @@ impl<A: Authority, X: ExitDevices> Exit<A, X> {
     /// Serve one connection on the tunnel ALPN until it ends.
     pub async fn serve(&self, connection: Connection) {
         let peer = connection.remote_id();
-        // Nothing is read from a device that may not route.
         match self.inner.authority.decide(&peer) {
             Decision::Allow => {}
             Decision::NotYours => {
@@ -231,7 +217,6 @@ impl<A: Authority, X: ExitDevices> Exit<A, X> {
             Purpose::Probe => {
                 let offer = self.offer(None);
                 if answer(send, &offer).await.is_ok() {
-                    // The client closes once it has read the offer.
                     let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.closed()).await;
                 }
             }
@@ -267,7 +252,6 @@ impl<A: Authority, X: ExitDevices> Exit<A, X> {
         Some(address)
     }
 
-    /// The exit TUN, opened on first use. Call with `lifecycle` held.
     async fn device(&self) -> io::Result<Arc<X::Device>> {
         let existing = self
             .state()
@@ -367,7 +351,6 @@ impl<A: Authority, X: ExitDevices> Exit<A, X> {
                 datagram = connection.read_datagram() => {
                     let Ok(datagram) = datagram else { return };
                     let Some(packet) = Ipv4Packet::parse(&datagram) else { continue };
-                    // A client sends only from the address it was given.
                     if packet.source() != address {
                         continue;
                     }
@@ -395,7 +378,6 @@ impl<A: Authority, X: ExitDevices> Exit<A, X> {
         }
     }
 
-    /// Close the exit TUN once nobody routes through it.
     async fn close_if_unused(&self) {
         let lifecycle = self.inner.lifecycle.lock().await;
         let open = {
@@ -430,7 +412,6 @@ async fn answer(mut send: SendStream, offer: &Offer) -> Result<(), String> {
     send.finish().map_err(|error| error.to_string())
 }
 
-/// Send what the exit TUN hands back to the client it is for.
 async fn read_exit_device<A: Authority, X: ExitDevices>(exit: Exit<A, X>, device: Arc<X::Device>) {
     let mut buf = vec![0_u8; usize::from(MAX_MTU)];
     loop {

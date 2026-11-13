@@ -42,7 +42,7 @@ pub const COPY: &str = "uninstall-copy";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Uninstall {}
 
-#[resource(kind = "uninstall.question", label = "Uninstall")]
+#[resource(kind = "uninstall.question")]
 impl Uninstall {}
 
 /// Whether the app goes from this computer or only off the person's apps.

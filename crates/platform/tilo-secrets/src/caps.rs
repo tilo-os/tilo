@@ -2,19 +2,15 @@
 
 pub use tilo_platform_caps::{Availability, availability, available};
 
-/// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
-/// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// Storing, reading and deleting an app's secrets.
     Store,
     /// Secrets held by the operating system's keychain rather than wrapped
     /// by the browser ([`Protection::OsKeychain`](crate::Protection::OsKeychain)).
     OsKeychain,
-    /// The `*_blocking` methods.
     Blocking,
 }
 
@@ -23,9 +19,9 @@ pub(crate) const WEB_KEYCHAIN: &str =
 pub(crate) const WEB_BLOCKING: &str = "The browser's storage answers asynchronously.";
 
 impl tilo_platform_caps::Feature for Feature {
-    /// The feature's availability on Linux (and Windows), macOS and the web,
-    /// in that order. A Linux session without a Secret Service provides less;
-    /// the macOS Keychain may ask the user to allow access.
+    /// The feature's availability on Linux (and Windows), macOS and the web, in that
+    /// order. A Linux session without a Secret Service provides less, and the macOS
+    /// Keychain may ask the user to allow access.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {

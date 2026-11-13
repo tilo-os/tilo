@@ -131,8 +131,11 @@ type YouTube {
     search_trouble: Text = ""
     /// How the subscriptions feed stands: `loading`, `done`, `failed` or empty.
     feed_state: Text = ""
-    /// Why the feed could not be fetched; empty while it went through.
-    feed_trouble: Text = ""
+    /// Why the client is not in step now: YouTube cannot be reached, or what it said could not
+    /// be saved; empty while it is.
+    trouble: Text = ""
+    /// Whether YouTube answered the last time it was asked.
+    online: Bool = true
 }
 
 root YouTube
@@ -265,7 +268,7 @@ action like(v: Video, liked: Bool = not v.liked) (
 }
 
 /// Keeps the video to watch later, or takes it off the list.
-action watch_later(v: Video, saved: Bool = not v.watch_later) (
+action watch_later(v: Video, saved: Bool (label: "On the Watch later list") = not v.watch_later) (
     label: if v.watch_later { "Remove from Watch later" } else { "Watch later" },
     icon: .bookmark,
     on: v.watch_later,
@@ -349,7 +352,6 @@ action refresh_feed(yt: YouTube) (icon: .refresh, label: "Refresh") {
         yt.title = "YouTube"
     }
     yt.feed_state = "loading"
-    yt.feed_trouble = ""
     outside("youtube.subscriptions", yt.subscriptions.map(s -> s.key))
 }
 
@@ -359,7 +361,7 @@ action refresh_channel(c: Channel) (icon: .refresh, label: "Refresh") {
 }
 
 /// Asks the service for the videos it lists as trending.
-action load_trending(yt: YouTube) (icon: .flame, label: "Trending") {
+action load_trending(yt: YouTube) (icon: .flame, label: "Refresh trending") {
     if yt.title == "" {
         yt.title = "YouTube"
     }
@@ -428,49 +430,42 @@ view feed(yt: YouTube) {
                     } else if here == "history" {
                         history_list(yt, in_column: false)
                     } else if here == "later" {
-                        video_grid(later, "Nothing kept for later", "The videos you keep are here")
+                        video_grid(later, "Nothing kept for later")
                     } else if here == "liked" {
-                        video_grid(liked, "Nothing liked yet", "The videos you like are here")
+                        video_grid(liked, "Nothing liked yet")
                     } else if here == "trending" {
                         if trending.is_empty() {
                             ui.EmptyState(
                                 "Nothing trending yet",
-                                message: "Ask YouTube what is trending",
                                 icon: .flame,
-                                action: "Trending",
+                                action: "Refresh trending",
                             ) {
                                 on act: load_trending(yt)
                             }
                         } else {
-                            video_grid(trending, "", "")
+                            video_grid(trending, "")
                         }
                     } else if subs.is_empty() {
                         if yt.subscriptions.is_empty() {
-                            ui.EmptyState(
-                                "No subscriptions yet",
-                                message: "A channel's page subscribes to it, and its newest videos arrive here",
-                                icon: .rss,
-                            )
+                            ui.EmptyState("No subscriptions yet", icon: .rss)
                         } else {
-                            ui.EmptyState(
-                                "Nothing new yet",
-                                message: "Ask YouTube for the newest videos of the channels you follow",
-                                icon: .rss,
-                                action: "Refresh",
-                            ) {
+                            ui.EmptyState("Nothing new yet", icon: .rss, action: "Refresh") {
                                 on act: refresh_feed(yt)
                             }
                         }
                     } else {
-                        stack(gap: .section) {
-                            if yt.feed_trouble != "" {
-                                ui.Banner(
-                                    "YouTube could not be reached",
-                                    message: yt.feed_trouble,
-                                    kind: .warning,
-                                )
-                            }
-                            video_grid(subs, "", "")
+                        // The videos under it are what was last fetched: the notice says why
+                        // YouTube does not stand well, in YouTube's own words, and `Try again`
+                        // reads the feed again. The column's own gap holds the notice over the
+                        // grid, so the card keeps its distance above and below alike.
+                        stack(gap: .group) {
+                            std.service_banner(
+                                "YouTube",
+                                yt.online,
+                                yt.trouble,
+                                retry: refresh_feed(yt),
+                            )
+                            video_grid(subs, "")
                         }
                     }
                 }
@@ -480,9 +475,9 @@ view feed(yt: YouTube) {
 }
 
 /// The videos as cards in a grid, or what the place says while it holds none.
-view video_grid(videos: List<Video>, empty: Text, message: Text) {
+view video_grid(videos: List<Video>, empty: Text) {
     if videos.is_empty() {
-        ui.EmptyState(empty, message: message)
+        ui.EmptyState(empty)
     } else {
         ui.MediaGrid(size: .regular) {
             for v in videos {
@@ -500,7 +495,7 @@ view video_grid(videos: List<Video>, empty: Text, message: Text) {
 
 /// How long the video runs, as a card says it.
 fn item_clock(v: Video) -> Text {
-    if v.live { "Live" } else { clock(v.duration) }
+    if v.live { std.say("Live") } else { clock(v.duration) }
 }
 
 /// What the last search found: the channels, the playlists, then the videos. The field at the
@@ -569,7 +564,7 @@ view search_found(yt: YouTube) {
                 }
                 if not videos.is_empty() {
                     ui.Section("Videos") {
-                        video_grid(videos, "", "")
+                        video_grid(videos, "")
                     }
                 }
             }
@@ -605,7 +600,7 @@ view watched_page(h: WatchEntry) {
 view history_list(yt: YouTube, in_column: Bool) {
     let entries = yt.history.sort_by(.watched, desc)
     if entries.is_empty() {
-        ui.EmptyState("Nothing watched yet", message: "The videos you watch are listed here")
+        ui.EmptyState("Nothing watched yet")
     } else {
         std.list(entries, in_column: in_column) { (entry, at) ->
             ui.ListItem(item: entry, presence: at) {
@@ -669,7 +664,7 @@ view channel_page(c: Channel) {
             }
         }
         ui.Section("Videos") {
-            video_grid(videos, "No videos here yet", "Ask YouTube for this channel's videos")
+            video_grid(videos, "No videos here yet")
         }
     }
 }
@@ -759,6 +754,8 @@ view video_page(v: Video) {
                     on press: watch_later(v)
                 }
             }
+        }
+        stack(gap: .group) {
             ui.Facts {
                 ui.Fact(views_text(v.views), icon: .eye)
                 ui.Fact(v.published, icon: .calendar)
@@ -792,7 +789,7 @@ view playlist_page(p: Playlist) {
                 text("{p.video_count} videos", role: .caption)
             }
         }
-        video_grid(videos, "Nothing here yet", "The playlist's videos arrive when it is opened")
+        video_grid(videos, "Nothing here yet")
     }
 }
 
@@ -1204,6 +1201,50 @@ scenario "search results" -> YouTube {
 scenario "no subscriptions yet" {
     let yt = root YouTube
     yt.title = "YouTube"
+}
+
+/// YouTube that cannot be reached: the feed under the notice is what was last fetched, and the
+/// notice says why in YouTube's words.
+scenario "YouTube cannot be reached" -> YouTube {
+    let yt = root YouTube
+    yt.title = "YouTube"
+    let c = yt.channels.insert(
+        Channel(
+            key: "UCmkbhd",
+            name: "MKBHD",
+            handle: "@mkbhd",
+            subscribers: 19800000,
+            verified: true,
+        ),
+    )
+    yt.subscriptions.insert(Subscription(key: c.key, name: c.name))
+    yt.videos.insert(
+        Video(
+            key: "v-phone",
+            title: "The phone that finally lasts a week",
+            channel_key: c.key,
+            channel_name: c.name,
+            views: 1840000,
+            published: 2026-10-28T14:00Z,
+            duration: 921,
+            likes: 96000,
+        ),
+    )
+    yt.videos.insert(
+        Video(
+            key: "v-camera",
+            title: "Three cameras, one question",
+            channel_key: c.key,
+            channel_name: c.name,
+            views: 963000,
+            published: 2026-10-25T14:00Z,
+            duration: 1148,
+            likes: 51000,
+        ),
+    )
+    yt.online = false
+    yt.trouble = "connection refused"
+    yt
 }
 
 /// The watch history on its own: three videos watched, two of them left part way, as a place on

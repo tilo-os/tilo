@@ -36,7 +36,6 @@ fn change_hashes_list_the_log_in_get_changes_order_and_only_grow() {
     let before = ours.committed_document().change_hashes().to_vec();
     assert_eq!(before, logged(&mut ours));
 
-    // Concurrent changes merged in land after everything already there.
     ours.apply_incoming(theirs.get_changes(&[])).unwrap();
     edit(&mut ours, "e", 5);
     let after = ours.committed_document().change_hashes().to_vec();
@@ -44,7 +43,6 @@ fn change_hashes_list_the_log_in_get_changes_order_and_only_grow() {
     assert_eq!(after.len(), 5);
     assert_eq!(after.get(..before.len()), Some(before.as_slice()));
 
-    // A loaded copy lists its own log, whatever order that is.
     let mut loaded = AutoCommit::load(&ours.save()).unwrap();
     assert_eq!(
         loaded.committed_document().change_hashes().to_vec(),

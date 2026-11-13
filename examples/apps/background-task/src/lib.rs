@@ -61,7 +61,7 @@ impl Search {
 
 /// The limit is its only state, edited at `Search::paths().limit`; the work
 /// is an effect, not a change of the document.
-#[resource(kind = "example.prime-search", label = "Prime search")]
+#[resource(kind = "example.prime-search")]
 impl Search {}
 
 /// Whether `n` is prime, by trial division.
@@ -227,7 +227,7 @@ impl ResourceApp for App {
 
         Box::new(ui::column![
             Text::new("task-title").with_role(TextRole::Title),
-            labeled_field(crate::locales::keys::TASK_LIMIT_LABEL, limit),
+            labeled_field("task-limit-label", limit),
             run,
             body,
         ])

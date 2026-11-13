@@ -239,8 +239,6 @@ impl DevicePipeline {
     pub(super) fn failure(&self) -> Option<AudioError> {
         (self.stop.0.failure.load(Ordering::Acquire) != 0).then_some(AudioError::DeviceLost)
     }
-    /// Whether the startup deadline had passed at `now` without the device
-    /// becoming ready.
     pub(super) fn startup_expired(&self, now: Instant) -> bool {
         !self.ready() && self.stop.startup_deadline_passed(now)
     }

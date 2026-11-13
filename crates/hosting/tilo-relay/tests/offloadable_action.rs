@@ -407,11 +407,18 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
 
     // Photos' handler runs it here, and the door reports how long it took.
     let app_content = tilo_content::ContentStore::memory();
-    for bytes in &photographs {
-        app_content.put(bytes).unwrap();
-    }
+    let held: Vec<tilo_resource::Bytes> = photographs
+        .iter()
+        .zip(&hashes)
+        .map(|(bytes, hash)| {
+            app_content.put(bytes).unwrap();
+            tilo_resource::Bytes::kept_as(bytes, hash)
+        })
+        .collect();
+    let mut here_named = held.clone();
+    here_named.push(held[0].clone());
     let started = Instant::now();
-    let here = photos::actions::make_thumbnails(&named, &app_content).unwrap();
+    let here = photos::actions::make_thumbnails(&here_named, &app_content).unwrap();
     let took = started.elapsed();
     assert_eq!(here.resources.len(), IMAGES, "one thumbnail per photograph");
     route.ran_here(&request, took);

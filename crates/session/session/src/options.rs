@@ -11,10 +11,7 @@ use crate::BeforeDesk;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
-use crate::{
-    capture, controllers, desktop_services, engine, fabric, mount, portal_link, surfaces, sync,
-    unlock,
-};
+use crate::{capture, controllers, desktop_services, engine, portal_link, surfaces, sync, unlock};
 use tilo_desktop_surface::DesktopHandle;
 
 /// What a session starts with.
@@ -65,18 +62,24 @@ pub struct Options {
     pub apps: Option<Rc<dyn AppActions>>,
     /// The apps this session starts: what the desktop asks for, by name, and what a search row or a
     /// file opens.
-    pub launch: Option<Rc<mount::apps::Apps>>,
+    pub launch: Option<Rc<crate::apps::Apps>>,
     /// The apps this session started, which its broker admits a connection for: the app, workspace
     /// and process it launched itself. The apps it starts record their launch here; a session whose
     /// apps run in its own process (a test) records one itself.
     pub launches: std::sync::Arc<Launches>,
     /// The drives the person plugs in, which this session announces and acts on when they open or
     /// eject one.
-    pub drives: Option<Rc<mount::drives::Drives>>,
+    pub drives: Option<Rc<crate::drives::Drives>>,
     /// What stands over everything before the desktop is used: the setup the person goes through
     /// once (the first use of this device, or the recovery of its identity), or the wait for the
     /// clock to admit this device's certificate.
     pub setup: Option<BeforeDesk>,
+    /// The workspace's Browser this session holds, when a host started it for one: the device,
+    /// workspace and record it was handed, and what it reports of the window it holds
+    /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
+    /// nothing a hosted Browser's session is spared.
+    #[cfg(target_os = "linux")]
+    pub hosted_browser: Option<crate::hosted_browser::HostedBrowser>,
     /// Carries out what the person chose in the power menu (log out,
     /// suspend, restart, shut down, switch user); the session locks the
     /// screen itself. Without one, the choice is only logged.
@@ -84,6 +87,9 @@ pub struct Options {
     /// Whose session this is, as the system knows them: the user a password unlocks the lock screen
     /// for.
     pub user: String,
+    /// The ids the person went by before this device had an identity — the login account among
+    /// them — under which a desk they kept, and the workspaces it holds, are still theirs.
+    pub earlier: Vec<String>,
     /// Whether a password unlocks the session; without one nothing does.
     pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
     /// The login's lock record, when a session wrapper started this session: the lock a crashed
@@ -124,10 +130,6 @@ pub struct Options {
     /// on it. Without one, the session starts on a fresh desk and keeps nothing (tests and
     /// screenshots).
     pub state: Option<std::path::PathBuf>,
-    /// The desk the shell this session replaced kept on this device ([`crate::shell_state_path`]),
-    /// which the first start that has no desk of its own brings over. `None` : there is none to
-    /// look for (tests and screenshots).
-    pub old_desk: Option<std::path::PathBuf>,
     /// Whether the session takes part in the collaboration plane: who is here in each workspace,
     /// over Iroh. Off, this desktop has no collaborators but its own person.
     pub collab: bool,
@@ -135,10 +137,14 @@ pub struct Options {
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
+    /// What this device's endpoint relays through. `None` : the person's setting
+    /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their desk uses. `Some`
+    /// is a test's own: a relay on this machine's loopback, so nothing it does leaves the machine.
+    pub relays: Option<tilo_endpoint_reachability::EndpointRelays>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.
-    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
-    pub wake_seams: mount::wake::Seams,
+    pub fabric: Option<crate::platform::fabric::SharedLink>,
+    pub wake_seams: crate::wake::Seams,
     /// The device VPN, when this session runs on a machine with the helper: a VPN profile set to
     /// connect and not connected blocks traffic while its kill switch is on, and this device routes
     /// through another of the person's devices while they choose one. Without one, nothing does.
@@ -155,6 +161,14 @@ pub struct Options {
     /// without the sheet. Only a connection whose executable is one of these and that asks to act
     /// as the person is; any other is asked about as before.
     pub admit_repl: Vec<std::path::PathBuf>,
+    /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
+    /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
+    /// certifies an agent's grant for it, listed with their devices. A program presenting the key
+    /// at the agent door ([`tilo_runtime::session_door::AGENT_KEY_ENV`]) is admitted as that
+    /// grant's agent without asking them: what a session started for an agent, with no one to
+    /// answer the door, lets the agent in by. Revoking the grant, as a device or from the agent's
+    /// card, ends it.
+    pub agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens ([`crate::test_control`]), which
     /// `tilo-control` drives the session over: `tilo-session --test-control PATH` , honoured by
     /// development builds only. `None` : there is none.
@@ -243,7 +257,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// devices the person's own store holds, and dialing theirs from it ([`crate::remote_door`]).
 pub(crate) fn start_collaboration(
     options: &Options,
-    continuity: fabric::Continuity,
+    continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     (beside, remote): (
         tilo_network_actor::local_host::Protocols,
@@ -284,7 +298,11 @@ pub(crate) fn start_collaboration(
         beside.push(remote.protocol(std::sync::Arc::clone(devices)));
     }
     let own = sync::OwnPresence {
-        label: options.person.clone(),
+        // What everyone here calls them: the name they gave, else their account's, never their key.
+        label: crate::platform::person::desk_person_name(
+            ui::local_identity::load().map(|identity| identity.display_name),
+            &options.person,
+        ),
         user: identity
             .as_ref()
             .map(|identity| hex::encode(identity.device_cert.user_public_key)),
@@ -297,6 +315,11 @@ pub(crate) fn start_collaboration(
             hosts: sync::configured_hosts(),
             continuity,
             wake: options.wake.handle(),
+            fabric: tilo_paths::state_dir().map(|root| root.join("tilo/fabric")),
+            relays: options
+                .relays
+                .clone()
+                .unwrap_or_else(tilo_endpoint_reachability::relays),
         },
         engine,
         options.questions.clone(),
@@ -337,7 +360,11 @@ pub(crate) fn open_engine(
             .map(|workspace| (workspace.slot, workspace.id()))
             .collect()
     });
-    match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
+    match engine::Engine::for_this_device(
+        options.state.as_deref(),
+        workspaces,
+        crate::platform::custody::of_this_desk(),
+    ) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
             tracing::warn!(%error, "this session holds no workspaces");
@@ -356,6 +383,7 @@ impl Default for Options {
             presentation: ComponentRunnerInputs::from_native_process,
             shell: false,
             sync: None,
+            relays: None,
             controllers: None,
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),
@@ -367,8 +395,11 @@ impl Default for Options {
             apps: None,
             launch: None,
             setup: None,
+            #[cfg(target_os = "linux")]
+            hosted_browser: None,
             session_actions: no_session_actions,
             user: String::new(),
+            earlier: Vec::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             recovery: None,
             wake: tilo_service::LoopWake::default(),
@@ -382,14 +413,14 @@ impl Default for Options {
             machine: Machine::default(),
             power: None,
             state: None,
-            old_desk: None,
             collab: true,
             fabric: None,
-            wake_seams: mount::wake::Seams::default(),
+            wake_seams: crate::wake::Seams::default(),
             vpn: None,
             action_plane: ActionPlane::default(),
             agent_door: None,
             admit_repl: Vec::new(),
+            agent_key: None,
             test_control: None,
             admin_control: None,
             launches: std::sync::Arc::default(),

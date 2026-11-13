@@ -39,6 +39,13 @@ record, so its branches would all keep its device key and be one device.
 vm start`, or `tilo-vm vm upgrade` and let it reboot). tilo-vm cannot see
 which image a stopped VM last booted, so it does not check this for you.
 
+A workspace admits a new device only through its host, and the source hosts
+the workspaces it made, so `vm branch` boots the source and each new branch
+once, waits until the branch re-keyed and those workspaces took it in, and
+stops them again (`--no-admit` skips it; the quickstart's "Set up once,
+branch many" says more). A branch tilo-vm has not seen taken in is marked
+`awaits_host = "<source>"` in `vms.toml`.
+
 **Slot.** Your private piece of a VM: Linux user `tds-<slot>`, session unit
 `tilo-vm-session@<slot>`, and an ordered list of layers. Your default slot
 is named after your branch; `TILO_VM_SLOT` or `slot = "<name>"` in the

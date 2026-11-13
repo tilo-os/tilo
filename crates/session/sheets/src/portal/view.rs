@@ -2,29 +2,40 @@
 //! dialog, so what is drawn, what is pressed and what a reader meets are
 //! one layout.
 
-use ui::framework::Dispatcher;
+use ui::BLOB_SCHEME;
 use ui::prelude::*;
+use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Element, FieldRole, FieldSpec, ListRow, ModalDialog, SecretKind,
-    SecretPrompt, Text, TextInput, TextInputKind, Widget,
+    Button, ButtonRole, Column, Container, Element, FieldRole, FieldSpec, IconSize, IconWidget,
+    Image, ImageFit, ListRow, ModalDialog, PictureSource, Property, PropertyList, Row, SecretKind,
+    SecretPrompt, Text, TextInput, TextInputKind, Tone, Widget,
 };
 
 use super::{
-    Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalSeat,
-    PortalSheet, Prompt, PromptKind, Shortcut, Shown,
+    Ask, Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalSeat,
+    Prompt, PromptKind, Shortcut, Shown,
 };
 use crate::presentation::presented;
-use crate::t;
+use crate::{t, words};
 
 /// The id of the sheet's dialog, which the shell finds it by.
 pub(super) const DIALOG_ID: &str = "portal-sheet";
 /// The id of the secret prompt.
 pub(super) const PROMPT_ID: &str = "portal-secret-prompt";
+/// How many facts a review lists before it counts the rest.
+const LISTED_FACTS: usize = 6;
+/// How tall the picture of what a question allows stands: one screen's
+/// shape, narrower than the sheet it sits in.
+const PICTURE_HEIGHT: f32 = 180.0;
+/// The corner the picture is cut to.
+const PICTURE_RADIUS: f32 = 8.0;
 
 /// What every part of the view acts through.
 #[derive(Clone)]
 pub(super) struct Parts {
-    pub(super) dispatch: Dispatcher<PortalSheet>,
+    /// Where every press goes: the app's door, or the seat of a host that
+    /// draws the sheet itself.
+    pub(super) ask: Ask,
     pub(super) shown: LocalState<Shown>,
     pub(super) seat: PortalSeat,
 }
@@ -41,7 +52,7 @@ impl Parts {
     }
 
     fn send(&self, effect: &PortalEffect) {
-        self.dispatch.effect(effect);
+        (self.ask)(effect);
     }
 
     pub(super) fn select(&self, at: usize) {
@@ -151,7 +162,12 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         return secret(dialog, prompt, parts);
     }
     let gap = ui::tokens::Spacing::BASE.s3;
-    let mut body = Column::new().with_gap(gap);
+    // As tall as what it says, on the dialog's own inset: a short question
+    // is a short card.
+    let mut body = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(gap);
     if !dialog.heading.is_empty() {
         body = body.push(Box::new(
             Text::new(&dialog.heading).with_role(TextRole::Label),
@@ -162,6 +178,9 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
             Text::new(&dialog.detail).with_role(TextRole::Body),
         ));
     }
+    if !dialog.facts.is_empty() {
+        body = body.push(facts(dialog));
+    }
     if let Some(code) = &dialog.code {
         body = body.push(Box::new(
             Text::new(code)
@@ -169,7 +188,17 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
                 .with_id("portal-code"),
         ));
     }
-    body = body.push(rows(dialog, shown.focus, parts));
+    if let Some(picture) = dialog.picture.as_ref().and_then(|held| picture(held)) {
+        body = body.push(picture);
+    }
+    // A review has nothing to choose: nothing stands between its words and
+    // its buttons.
+    if !matches!(dialog.body, Body::Review) {
+        body = body.push(rows(dialog, shown.focus, parts));
+    }
+    if let Some(caution) = &dialog.caution {
+        body = body.push(caution_line(caution));
+    }
     if let Some(error) = &dialog.error {
         body = body.push(Box::new(
             Text::new(error)
@@ -180,9 +209,15 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     let mut sheet = ModalDialog::new(dialog.title.clone(), body)
         .with_test_id(DIALOG_ID)
         .with_description(t("portal-sheet-description"))
-        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet));
+        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+        // On a phone it rises from the foot as tall as what it asks.
+        .with_foot_sheet();
     let cancel = parts.clone();
     sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel());
+    if let Some(label) = &dialog.alternate_label {
+        let alternate = parts.clone();
+        sheet = sheet.tertiary_action(label.clone(), move || alternate.answer(1));
+    }
     if let Some((page, _)) = dialog.page.filter(|(page, _)| *page > 0) {
         let back = parts.clone();
         let _ = page;
@@ -204,6 +239,79 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     // refused by a press that missed.
     let sheet = sheet.dismiss_on_scrim(false);
     Box::new(presented(Some(&parts.seat.presentation), sheet))
+}
+
+/// The rows a review weighs: each label in one column, aligned to the
+/// longest, its value beside it in the primary ink; the first few, then
+/// how many more it leaves out.
+fn facts(dialog: &Dialog) -> Element {
+    let listed: Vec<Property> = dialog
+        .facts
+        .iter()
+        .take(LISTED_FACTS)
+        .map(|(label, value)| Property::new(label.clone(), value.clone()))
+        .collect();
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(ui::tokens::Spacing::BASE.s1)
+        .push(Box::new(
+            PropertyList::new(listed)
+                .compact()
+                .with_id("portal-sheet-facts"),
+        ));
+    let more = dialog.facts.len().saturating_sub(LISTED_FACTS);
+    if more > 0 {
+        column = column.push(Box::new(
+            Text::new(&words("portal-more-facts", &[("count", &more.to_string())]))
+                .with_role(TextRole::Caption)
+                .with_id("portal-sheet-facts-more"),
+        ));
+    }
+    Box::new(column)
+}
+
+/// The picture of what the person is allowing, by the content address the
+/// host named it under: the filled page a departure leaves from, as wide as
+/// the sheet and one screen's shape tall. `None` for an address that names no
+/// content, which no sheet here reads.
+fn picture(address: &str) -> Option<Element> {
+    let hash = ui::tilo_actions::content_hash(address)?;
+    let source = PictureSource {
+        src: format!("{BLOB_SCHEME}{hash}"),
+    };
+    Some(Box::new(
+        Container::new()
+            .with_id("portal-sheet-picture")
+            .with_size(ui::tokens::Metrics::BASE.panel_width_sheet, PICTURE_HEIGHT)
+            .with_child(Box::new(
+                Image::from_picture(ui::Pictures::window(), source)
+                    .with_fit(ImageFit::Contain)
+                    .with_corner_radius(PICTURE_RADIUS)
+                    .filling(),
+            )),
+    ))
+}
+
+/// What allowing it risks, apart from the words above it: the theme's
+/// caution ink and its warning mark, one quiet line.
+fn caution_line(line: &str) -> Element {
+    Box::new(
+        Row::new()
+            .with_id("portal-sheet-caution")
+            .with_rhythm(Rhythm::Related)
+            .with_align_items(ui::taffy::AlignItems::Start)
+            .push(Box::new(
+                IconWidget::new(ui::icons::Icon::TriangleAlert)
+                    .sized(IconSize::Small)
+                    .tone(Tone::Warning),
+            ))
+            .push(Box::new(
+                Text::new(line)
+                    .with_role(TextRole::Caption)
+                    .tone(Tone::Warning),
+            )),
+    )
 }
 
 /// What the person chooses or types, under the detail.

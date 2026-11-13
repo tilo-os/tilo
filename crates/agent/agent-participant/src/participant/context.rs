@@ -3,13 +3,13 @@
 //! apps can do; and the workspace's records the planner may search.
 
 use std::collections::BTreeMap;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::ReadDoc as _;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::unopened::Reading;
 use super::{
     AgentParticipant, MOST_OPENED_BY_TITLE, MOST_REFERENCED_APPS, MOST_SNAPSHOT_CHARS,
     MOST_SNAPSHOT_READS, MOST_SNAPSHOTS, MOST_SNAPSHOTS_CHARS, SNAPSHOT_READS, actions,
@@ -18,6 +18,7 @@ use crate::apps::Seed;
 use crate::planner::{PlanContext, observation_within, readable};
 use crate::profile::Catalog;
 use crate::worker::ConfinedReplica;
+use crate::workspace_records::Reading;
 
 impl AgentParticipant {
     /// The workspace's records the agent has not opened, those people have open
@@ -75,7 +76,7 @@ impl AgentParticipant {
         let mut open: Vec<(DocumentRoute, Vec<ActionDescriptor>)> = self
             .apps
             .iter()
-            .map(|(route, app)| (route.clone(), app.survey()))
+            .map(|(route, app)| (route.clone(), super::record_door::offered(route, app)))
             .collect();
         // The records the task names, by title or by app, are what it is
         // about, and only theirs are offered: a record open from an earlier
@@ -281,7 +282,7 @@ impl AgentParticipant {
                 Ok(route) => {
                     // A new record publishes nothing until its first edit:
                     // ask for its channel's keys now.
-                    if let Err(error) = self.peer.open_route(route.clone()) {
+                    if let Err(error) = self.peer.send(Cmd::OpenRoute(route.clone())) {
                         tracing::warn!(%error, "agent: keys for a new record were not asked for");
                     }
                     // The task's to fill: an import naming no record goes
@@ -496,6 +497,9 @@ impl AgentParticipant {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String> {
+        if super::record_door::reads(route, address) {
+            return self.read_record(route);
+        }
         let app = self
             .apps
             .get(route)
@@ -520,25 +524,34 @@ impl AgentParticipant {
     }
 }
 
+impl AgentParticipant {
+    /// The open record `route` read through the record door, with what its app keeps beside it.
+    pub(super) fn read_record(&self, route: &DocumentRoute) -> Result<ActionOutput, String> {
+        let replica = self
+            .apps
+            .get(route)
+            .ok_or_else(|| "that document is not open".to_string())?;
+        super::record_door::read(
+            route,
+            replica,
+            crate::control::agent_id(&self.identity.delegation),
+        )
+    }
+}
+
 /// What the task's `tilo.content:` addresses hold, as far as a plan needs
 /// it without reading them: a picture's format and size, a video's length,
 /// frame, rate, sound and weight.
 pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) -> Vec<String> {
-    const PREFIX: &str = "tilo.content:";
     let mut facts = Vec::new();
-    for (at, _) in task.match_indices(PREFIX) {
-        let hash: String = task
-            .get(at.saturating_add(PREFIX.len())..)
-            .unwrap_or_default()
-            .chars()
-            .take_while(char::is_ascii_hexdigit)
-            .collect();
-        let fact = content.read(&hash).and_then(|bytes| {
+    for reference in crate::vision::addresses(task) {
+        let address = crate::vision::content_address(&reference);
+        let fact = content.read(&reference).and_then(|bytes| {
             crate::vision::picture_size(&bytes)
                 .map(|(format, width, height)| {
-                    format!("{PREFIX}{hash} is a {format} picture {width}×{height} pixels.")
+                    format!("{address} is a {format} picture {width}×{height} pixels.")
                 })
-                .or_else(|| video_facts(&bytes).map(|video| format!("{PREFIX}{hash} {video}")))
+                .or_else(|| video_facts(&bytes).map(|video| format!("{address} {video}")))
         });
         if let Some(fact) = fact
             && !facts.contains(&fact)

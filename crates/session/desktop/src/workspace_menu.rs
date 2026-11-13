@@ -33,8 +33,8 @@ pub struct WorkspaceAction {
 }
 
 impl WorkspaceAction {
-    /// The row this command is, with its own picture.
-    fn item(&self) -> MenuItem {
+    /// The row this command is, with its own picture, choosing it.
+    fn row(&self) -> Row {
         let mut item = if self.destructive {
             MenuItem::destructive_selection(&self.title)
         } else {
@@ -43,7 +43,7 @@ impl WorkspaceAction {
         if let Some(icon) = self.icon {
             item = item.with_icon(icon);
         }
-        item
+        Row::new(item, Some(WorkspaceMenuChoice::Action(self.id.clone())))
     }
 }
 
@@ -160,20 +160,17 @@ impl WorkspaceMenu {
     }
 
     /// What the bar's menu offers: where the person is hosted, the workspace's
-    /// commands, and what changes them.
+    /// commands, and what changes them. Losing the workspace — deleting it, leaving it — stands
+    /// last and apart, where a slip of the pointer does not land on it.
     fn bar_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
         if let Some(host) = &model.host {
             rows.push(Self::hosted_by(host));
         }
-        if !model.actions.is_empty() {
+        let (leaving, staying) = Self::leaving(model);
+        if !staying.is_empty() {
             rows.push(Row::rule());
-            for action in &model.actions {
-                rows.push(Row::new(
-                    action.item(),
-                    Some(WorkspaceMenuChoice::Action(action.id.clone())),
-                ));
-            }
+            rows.extend(staying.into_iter().map(WorkspaceAction::row));
         }
         rows.push(Row::rule());
         if model.can_rename {
@@ -183,11 +180,19 @@ impl WorkspaceMenu {
         if model.can_add_strip {
             rows.push(Self::new_strip());
         }
-        if model.can_delete {
+        if model.can_delete || !leaving.is_empty() {
             rows.push(Row::rule());
+        }
+        rows.extend(leaving.into_iter().map(WorkspaceAction::row));
+        if model.can_delete {
             rows.push(Self::delete());
         }
         rows
+    }
+
+    /// The host's workspace commands that lose the workspace (leaving it), and the rest.
+    fn leaving(model: &WorkspaceMenuModel) -> (Vec<&WorkspaceAction>, Vec<&WorkspaceAction>) {
+        model.actions.iter().partition(|action| action.destructive)
     }
 
     /// What a press on the desk offers: the place's own commands, then what makes the place, and
@@ -195,12 +200,7 @@ impl WorkspaceMenu {
     /// person is already in: a menu on the desk says what the desk does, not where they are.
     fn desk_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
-        for action in model.desk.iter().take(DESK_ROWS) {
-            rows.push(Row::new(
-                action.item(),
-                Some(WorkspaceMenuChoice::Action(action.id.clone())),
-            ));
-        }
+        rows.extend(model.desk.iter().take(DESK_ROWS).map(WorkspaceAction::row));
         if !rows.is_empty() {
             rows.push(Row::rule());
         }
@@ -213,18 +213,12 @@ impl WorkspaceMenu {
         workspace.extend(host);
         // Losing the workspace goes last, apart from what joins or renames it: a row a slip of the
         // pointer must not land on.
-        let (leaving, staying): (Vec<&WorkspaceAction>, Vec<&WorkspaceAction>) =
-            model.actions.iter().partition(|action| action.destructive);
+        let (leaving, staying) = Self::leaving(model);
         if !staying.is_empty() {
             if !workspace.is_empty() {
                 workspace.push(Row::rule());
             }
-            for action in staying {
-                workspace.push(Row::new(
-                    action.item(),
-                    Some(WorkspaceMenuChoice::Action(action.id.clone())),
-                ));
-            }
+            workspace.extend(staying.into_iter().map(WorkspaceAction::row));
         }
         if model.can_rename {
             if !workspace.is_empty() {
@@ -236,12 +230,7 @@ impl WorkspaceMenu {
             if !workspace.is_empty() {
                 workspace.push(Row::rule());
             }
-            for action in leaving {
-                workspace.push(Row::new(
-                    action.item(),
-                    Some(WorkspaceMenuChoice::Action(action.id.clone())),
-                ));
-            }
+            workspace.extend(leaving.into_iter().map(WorkspaceAction::row));
         }
         if !workspace.is_empty() {
             rows.push(Row::submenu(t("workspace-menu-workspace"), workspace));
@@ -524,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_lists_the_host_its_actions_overview_and_a_new_strip() {
+    fn the_menu_lists_the_host_its_actions_overview_a_new_strip_and_leaving_last() {
         let menu = opened(&model());
         assert!(menu.is_open());
         let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
@@ -533,10 +522,20 @@ mod tests {
             [
                 "Hosted by tilo.sh",
                 "Join a workspace",
-                "Leave workspace",
                 "Overview",
                 "New strip",
+                "Leave workspace",
             ]
+        );
+        let deleting = opened(&WorkspaceMenuModel {
+            can_delete: true,
+            ..model()
+        });
+        let labels: Vec<String> = deleting.labels().into_iter().flatten().collect();
+        assert_eq!(
+            labels[labels.len() - 2..],
+            ["Leave workspace", "Delete workspace"],
+            "losing the workspace stands last, together"
         );
         assert!(
             !labels.iter().any(|label| label == "Rename workspace"),

@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The account type id of an email account in the person's accounts.
 pub const TYPE_ID: &str = "email";
 
 /// The app that keeps email accounts: the one the session's custody
@@ -17,7 +16,6 @@ pub const KEEPER: &str = "so.tilo.mail";
 /// providers preset to [`AuthMethod::OAuth`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AuthMethod {
-    /// Username + password (the field the setup form collects).
     #[default]
     Password,
     /// `OAuth2` authorization-code + PKCE; the account holds a bearer token
@@ -147,7 +145,6 @@ impl AccountConfig {
             "icloud.com" | "me.com" => ("imap.mail.me.com", "smtp.mail.me.com"),
             "proton.me" | "protonmail.com" => ("127.0.0.1", "127.0.0.1"), // bridge
             other => {
-                // Generic guess: imap./smtp. + domain.
                 self.imap_host = format!("imap.{other}");
                 self.smtp_host = format!("smtp.{other}");
                 self.imap_port = 993;
@@ -161,7 +158,6 @@ impl AccountConfig {
         self.smtp_host = smtp.to_string();
         self.imap_port = 993;
         self.imap_tls = true;
-        // Office365 / Gmail prefer 587 STARTTLS; both also accept 465.
         self.smtp_port = 587;
         self.smtp_tls = true;
         true

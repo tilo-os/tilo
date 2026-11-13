@@ -1,21 +1,12 @@
 //! The install's status log: what the installer reports, newest last.
-//!
-//! The log is a card holding the reported lines as text, in a scroll region
-//! a few lines tall that keeps to its end as lines arrive, so the newest
-//! progress is always in view and the person can scroll back through the
-//! rest. The newest line is a live region: assistive technology hears each
-//! step as it is reported, at once for an error or a request to touch the
-//! security key.
 
 use ui::a11y::Politeness;
 use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{Card, Column, Element, Scrollable, Text};
 
-/// How many lines of the log are in view.
 const VISIBLE_LINES: u16 = 8;
 
-/// The politeness the newest `line` is announced with.
 fn politeness(line: &str) -> Politeness {
     let lower = line.to_ascii_lowercase();
     if lower.contains("error")
@@ -28,7 +19,6 @@ fn politeness(line: &str) -> Politeness {
     }
 }
 
-/// The log of `lines`, laid out for `theme`.
 pub fn status_log(lines: &[String], theme: &Theme) -> Element {
     let newest = lines.iter().rposition(|line| !line.trim().is_empty());
     let mut column = Column::new()

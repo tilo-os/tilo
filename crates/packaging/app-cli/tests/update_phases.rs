@@ -1,16 +1,4 @@
-//! What `app update` costs when little changed, phase by phase, on a
-//! loopback registry: the device has many apps installed, each the size of a
-//! real one, and the registry offers either nothing new or one newer app.
-//!
-//! The work must follow what changed: one catalogue request however many
-//! apps are installed, answered `304 Not Modified` when nothing is new, a
-//! download only for the app that changed, and nothing re-read or
-//! re-verified for the apps that did not. The test pins those
-//! counts and reports where the time goes (catalogue, comparison, download
-//! and verification, install, and the collection an install runs after it)
-//! without judging the wall time, which depends on the machine.
-//!
-//! `cargo test -p app-cli --test it update_phases -- --nocapture`
+//! What `app update` costs when little changed, phase by phase.
 
 #![allow(
     clippy::unwrap_used,
@@ -31,7 +19,6 @@ use crate::registry_to_installed::{
 };
 use crate::update_latency::{FarRegistry, snapshot};
 
-/// Installed apps.
 const APPS: usize = 40;
 /// Files in each app's payload besides its entrypoint, and their size: about
 /// what a real app ships.
@@ -55,7 +42,6 @@ fn app_id(index: usize) -> String {
     format!("so.tilo.update-phases-{index}")
 }
 
-/// Publish `versions[i]` of app `i` and return the registry entries.
 fn publish(
     registry: &FarRegistry,
     base: &str,
@@ -139,7 +125,6 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
         &[("XDG_DATA_HOME", data.path())],
     );
 
-    // The device: every app installed at 1.0.0.
     let mut versions = vec!["1.0.0"; APPS];
     let first = snapshot(publish(&registry, &base, &versions), &owner, None);
     registry.put_catalogue(&first);
@@ -154,7 +139,6 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     assert_eq!(package_store::list_installed().unwrap().len(), APPS);
     registry.take_seen();
 
-    // Nothing new: the catalogue is the whole of the network traffic.
     let nothing = app_update();
     let seen = registry.take_seen();
     eprintln!("perf app update with nothing to update ({APPS} apps installed): {nothing:?}");
@@ -163,11 +147,8 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
         ["/entries"],
         "an update with nothing new fetched {seen:?}"
     );
-    // And the catalogue is not downloaded again: the registry answers that
-    // the one this device holds is current.
     assert_eq!(registry.not_modified(), 1);
 
-    // One app is newer, measured phase by phase as `app update` runs them.
     versions[0] = "1.0.1";
     let second = snapshot(publish(&registry, &base, &versions), &owner, Some(&first));
     registry.put_catalogue(&second);
@@ -225,7 +206,6 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     );
     assert_eq!(artifacts(&seen).len(), 1, "{seen:?}");
 
-    // Another app is newer, end to end.
     versions[1] = "1.0.1";
     let third = snapshot(publish(&registry, &base, &versions), &owner, Some(&second));
     registry.put_catalogue(&third);

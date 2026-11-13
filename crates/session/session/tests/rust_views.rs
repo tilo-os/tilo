@@ -16,8 +16,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use serde_json::{Map, Value, json};
 use tilo_actions::DoorError;
 use tilo_actions::ResourceSpec;
@@ -106,15 +104,15 @@ impl Service for Channels {
 /// `root` , the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless_on(
         &[OutputConfig::new(
             "HEADLESS-1",
-            common::WIDTH,
-            common::HEIGHT,
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
         )],
         Options {
-            person: common::PERSON.to_owned(),
+            person: crate::common::PERSON.to_owned(),
             shell: true,
             collab: false,
             services: vec![Box::new(apps), Box::new(Channels::new())],
@@ -126,9 +124,9 @@ fn session(root: &std::path::Path) -> Session {
             ..Options::default()
         },
     );
-    common::show_preset(&mut session, "Frames");
-    common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+    crate::common::show_preset(&mut session, "Frames");
+    crate::common::until(&mut session, "the canvas", |session| {
+        crate::common::on_screen(session, crate::common::CANVAS_ENTRY).is_some()
     });
     session
 }
@@ -177,7 +175,7 @@ fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
     std::fs::create_dir_all(&dir).expect("the shots directory");
     let png = dir.join(name);
     let socket = root.join("test-control.sock");
-    let answer = common::control(
+    let answer = crate::common::control(
         session,
         &socket,
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
@@ -191,10 +189,10 @@ fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
 #[test]
 fn a_tube_channel_placed_on_the_canvas_draws_its_own_page() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(NAME)
     });
     // The channel's own view is on the canvas: its name, its handle and its videos, each the
@@ -209,7 +207,7 @@ fn a_tube_channel_placed_on_the_canvas_draws_its_own_page() {
         "the page shows its handle: {:?}",
         session.accessible_labels()
     );
-    common::until(&mut session, "a video of the channel's", |session| {
+    crate::common::until(&mut session, "a video of the channel's", |session| {
         session.shell_says(VIDEO)
     });
     assert!(
@@ -231,26 +229,26 @@ fn a_tube_channel_placed_on_the_canvas_draws_its_own_page() {
 #[test]
 fn pressing_a_videos_row_places_the_video() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(VIDEO)
     });
     // Pressing the video's row shows the video: the place the press asks for stands on the
     // arrangement, as a press on a tilolang view's row does.
-    common::press(&mut session, VIDEO);
-    common::until(&mut session, "the video is placed", |session| {
-        common::places(session)
+    crate::common::press(&mut session, VIDEO);
+    crate::common::until(&mut session, "the video is placed", |session| {
+        crate::common::places(session)
             .iter()
             .any(|place| place.record.starts_with("tube.video:"))
     });
     assert!(
-        common::places(&session)
+        crate::common::places(&session)
             .iter()
             .any(|place| place.record.starts_with("tube.video:")),
         "a video's row places the video: {:?}",
-        common::places(&session)
+        crate::common::places(&session)
             .iter()
             .map(|place| place.record.clone())
             .collect::<Vec<_>>()

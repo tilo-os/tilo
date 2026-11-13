@@ -1,8 +1,11 @@
 //! The workspace's own settings: its name, its saved grant sets and their
-//! assignment, the actions its apps may use of each other and its apps'
-//! sandbox capabilities, which every member reads from the workspace's
-//! governance document ([`tilo_desktop_model::projection::workspace_presets_of`],
-//! [`tilo_desktop_model::projection::workspace_sandbox_of`]).
+//! assignment, the actions its apps may use of each other, its apps' sandbox
+//! capabilities, its door and its saved shortcuts, which every member reads
+//! from the workspace's governance document
+//! ([`tilo_desktop_model::projection::workspace_presets_of`],
+//! [`tilo_desktop_model::projection::workspace_sandbox_of`],
+//! [`tilo_desktop_model::projection::workspace_door_of`],
+//! [`tilo_desktop_model::projection::workspace_shortcuts_of`]).
 //!
 //! A member's device writes a change to them itself, signed with its own
 //! key; the workspace's admission decides it against the writer's own grants
@@ -11,7 +14,7 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
 use crate::workspace_membership::SettingsChange;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, roles};
 use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
@@ -23,12 +26,12 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         change: &SettingsChange,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
@@ -82,7 +85,7 @@ impl StatePeer {
                 // Enough for any action that at most changes the workspace
                 // undoably: an outside effect still asks.
                 let grant = Grant::new(
-                    format!("app-action:{}", uuid::Uuid::new_v4().simple()),
+                    action.grant_id().as_str(),
                     Subject::App(action.app.clone()),
                     action.node(&workspace.node()),
                     KindSet::READ_UNDOABLE,
@@ -118,6 +121,13 @@ impl StatePeer {
                 self.governance_mut()
                     .put_governed_sandbox(&workspace.sandbox, key, now)
             }
+            SettingsChange::Door(door) => {
+                let door = door.clone().checked().map_err(|error| error.to_string())?;
+                self.governance_mut().put_governed_door(&door, key, now)
+            }
+            SettingsChange::Shortcuts(change) => self
+                .workspace_mut()
+                .apply_shortcut_change(caller, change, key, now),
         }
     }
 
@@ -183,6 +193,19 @@ fn grant_sandbox(
 }
 
 impl PeerGovernance<'_> {
+    /// The workspace's door, as its governance records it: whether a directory
+    /// lists it, and whom it lets in. Every host serving the workspace answers
+    /// its door from this one record.
+    #[must_use]
+    pub fn governed_door(self) -> tilo_action_policy::DoorPolicy {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map(projection::workspace_door_of)
+            .unwrap_or_default()
+    }
+
     /// The grant sets the workspace has saved, as its governance records them.
     #[must_use]
     pub fn governed_presets(self) -> Vec<tilo_action_policy::Preset> {
@@ -196,6 +219,24 @@ impl PeerGovernance<'_> {
 }
 
 impl PeerGovernanceMut<'_> {
+    /// Settle the workspace's door as `door`, written by `key`: whether a
+    /// directory lists it, whether it takes people by invitation only, and how
+    /// many requests it keeps. Answers whether governance changed.
+    ///
+    /// # Errors
+    ///
+    /// `key` is not a member's device, or governance cannot be updated.
+    pub fn put_governed_door(
+        self,
+        door: &tilo_action_policy::DoorPolicy,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.author(key, now, |doc| {
+            projection::project_workspace_door(doc, door)
+        })
+    }
+
     /// Make the workspace's saved grant sets `presets`, written by `key`. A set
     /// grants nothing itself; assigning it writes grants.
     /// Answers whether governance changed.
@@ -206,7 +247,7 @@ impl PeerGovernanceMut<'_> {
     pub fn put_governed_presets(
         self,
         presets: &[tilo_action_policy::Preset],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
@@ -223,7 +264,7 @@ impl PeerGovernanceMut<'_> {
     pub fn put_governed_sandbox(
         self,
         sandbox: &[collab_types::caps::CapOverride],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
@@ -235,7 +276,7 @@ impl PeerGovernanceMut<'_> {
     /// admit it the way every member admits it.
     pub(super) fn author(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
         edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), automerge::AutomergeError>,
     ) -> Result<bool, String> {
@@ -259,7 +300,7 @@ impl PeerGovernanceMut<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{NeighbourMsg, SigningKey, StatePeer, SystemTime, TransportOrigin};
+    use super::super::{NeighbourMsg, SigningKey, StatePeer, TransportOrigin};
     use automerge::{ROOT, ScalarValue, transaction::Transactable as _};
     use tilo_desktop_model::projection::WORKSPACE_NAME_KEY;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -288,7 +329,7 @@ mod tests {
     /// the owner's other device `[13; 32]` is on its roster.
     fn governor() -> (DeviceCert, SigningKey, StatePeer) {
         let (cert, device) = device(12);
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let roster = vec![cert.clone(), self::device(13).0];
         let mut peer = StatePeer::new(
             WORKSPACE,
@@ -322,7 +363,7 @@ mod tests {
     #[test]
     fn the_governor_saves_the_workspaces_grant_sets_and_members_read_them() {
         let (_, key, mut peer) = governor();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         assert!(
             peer.governance_mut()
                 .put_governed_presets(&[preset("Reviewers")], &key, now)
@@ -349,12 +390,12 @@ mod tests {
         let (_, _, mut peer) = governor();
         let other = SigningKey::from_bytes(&[13; 32]);
         peer.governance_mut()
-            .put_governed_sandbox(&[], &other, SystemTime::now())
+            .put_governed_sandbox(&[], &other, tilo_clock::wall())
             .unwrap();
         let stranger = SigningKey::from_bytes(&[99; 32]);
         assert!(
             peer.governance_mut()
-                .put_governed_sandbox(&[], &stranger, SystemTime::now())
+                .put_governed_sandbox(&[], &stranger, tilo_clock::wall())
                 .is_err()
         );
     }
@@ -385,7 +426,7 @@ mod tests {
                 room: WORKSPACE.into(),
                 changes,
             },
-            SystemTime::now(),
+            tilo_clock::wall(),
         )
         .map(|_| ())
     }

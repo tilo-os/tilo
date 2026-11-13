@@ -1,7 +1,7 @@
 //! The tilolang apps a development session installs, for the tests that start one: each
 //! `apps/tl/<name>` built with `tilolang build` into a signed `.tapp` , and installed with
 //! `package-store` into the test's own app store, the way `tilo-install` installs a person's app
-//! and `dist/dev/shell-run.sh` installs a dev session's.
+//! and `tilolang run` installs a dev session's.
 //! The session then reads the apps the way it reads any installed app: the payload from its store
 //! row, the manifest the launcher opens it with, and the origins the connector planning plans from.
 //! Nothing here compiles a package into a session; the only thing a test seeds is each app's first
@@ -18,16 +18,10 @@ use tilolang_cli::package::{self, BuildOptions};
 /// The tilolang packages a development session installs, by the directory under `apps/tl` : the
 /// package ids [`tilo_session::seeded_apps::APPS`] names are these, and the shell is the first:
 /// the session loads `so.tilo.shell` from the store as it loads any app, and this build's copy
-/// stands in only where the store holds none (docs/designs/app-language/shell.md §6).
-pub const APPS: [&str; 7] = [
-    "shell",
-    "discussion",
-    "notes",
-    "tasks",
-    "chat",
-    "mail",
-    "tube",
-];
+/// stands in only where the store holds none (docs/designs/app-language/shell.md §6). Discussion
+/// is no app of the session's: Tasks and Notes are made with it, and it is installed as no app
+/// of its own, so their comments stay in their own records.
+pub const APPS: [&str; 6] = ["shell", "notes", "tasks", "chat", "mail", "tube"];
 
 /// The tree's `apps/tl` .
 fn packages() -> PathBuf {
@@ -88,14 +82,16 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
             &publisher,
         )
         .unwrap_or_else(|error| panic!("{app} builds: {error}"));
-        for app in built {
-            // A build of one app is a build of every package it uses too, and each is an app of its
-            // own: install each once, so a package two of them use is not installed twice.
-            if installed.contains(&app.app) {
-                continue;
-            }
-            let tapp = std::fs::File::open(&app.tapp).expect("the built .tapp reads");
-            let source = app.tapp.display().to_string();
+        // The build answers the packages the app is made with first, and the app itself last:
+        // the app is what is installed, as a person installs an app and not the packages it is
+        // made with (Discussion among them, whose records Tasks and Notes keep in their own).
+        let named = built
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| panic!("{app} builds no package"));
+        if !installed.contains(&named.app) {
+            let tapp = std::fs::File::open(&named.tapp).expect("the built .tapp reads");
+            let source = named.tapp.display().to_string();
             package_store::PackageStore::at(store)
                 .install(
                     std::io::BufReader::new(tapp),
@@ -109,8 +105,8 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
                     },
                     None,
                 )
-                .unwrap_or_else(|error| panic!("{}: {error}", app.app));
-            installed.push(app.app);
+                .unwrap_or_else(|error| panic!("{}: {error}", named.app));
+            installed.push(named.app);
         }
     }
     std::fs::remove_dir_all(&out).ok();

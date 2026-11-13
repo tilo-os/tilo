@@ -1,18 +1,12 @@
-//! Bounded, device-local download history.
-//!
-//! Download bytes and destination capabilities belong to one device, so this
-//! model is intentionally not copied into the collaborative Automerge doc: it
-//! is the app's device-local setting, never synced.
-//! Stable engine-issued IDs still make every row addressable by global search,
-//! action history, agents, and the Files hand-off on this device.
+//! Bounded, device-local download history: the bytes and destinations belong to
+//! one device, so the document never syncs it.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 pub const MAX_DOWNLOADS: usize = 500;
-/// What the stored list may take of the app's device-local settings; the
-/// oldest rows give way first.
+/// Bytes; the oldest rows give way first.
 const MAX_STORED_BYTES: usize = 192 * 1024;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 
@@ -54,8 +48,6 @@ impl DownloadEntry {
     }
 }
 
-/// The download list as stored in the app's device-local settings, kept as
-/// raw rows [`Downloads::load`] validates one by one.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Stored {
     #[serde(default)]
@@ -68,15 +60,13 @@ impl ui::storage::SettingsSchema for Stored {
 
 #[derive(Clone, Debug, Default)]
 pub struct Downloads {
-    /// Where the list is kept. `None` keeps it in memory only: a private
-    /// window, a screenshot.
+    /// `None` keeps the list in memory: a private window, a screenshot.
     store: Option<ui::storage::Settings<Stored>>,
     entries: Vec<DownloadEntry>,
     revision: u64,
 }
 
 impl Downloads {
-    /// The list kept in `store`, which [`Self::save`] writes back to.
     pub fn load(store: ui::storage::Settings<Stored>) -> Self {
         let stored = Self::from_stored(store.get());
         Self {
@@ -85,7 +75,6 @@ impl Downloads {
         }
     }
 
-    /// Checkpoint the bounded download history in the device's settings.
     pub fn save(&self) -> std::io::Result<()> {
         match &self.store {
             Some(store) => store.set(&self.stored()),
@@ -93,7 +82,6 @@ impl Downloads {
         }
     }
 
-    /// The rows to keep, newest last, within [`MAX_STORED_BYTES`].
     fn stored(&self) -> Stored {
         let mut rows: Vec<serde_json::Value> = self
             .entries
@@ -119,8 +107,8 @@ impl Downloads {
         self.entries.iter().find(|entry| entry.id == id)
     }
 
-    /// An offer nobody has answered yet: the engine is fetching, but nothing is
-    /// kept until the person says where it goes.
+    /// An offer nobody has answered yet: nothing is kept until the person says
+    /// where it goes.
     pub fn awaiting_offer(&self, id: &str) -> bool {
         self.get(id)
             .is_some_and(|entry| entry.status == DownloadStatus::AwaitingDestination)
@@ -191,9 +179,8 @@ impl Downloads {
 
     pub fn failed(&mut self, id: &str, error: String, cancelled: bool) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
-            // A portal/setup failure is recorded before cancelling WebKit's
-            // paused object. Its resulting cancellation signal must not erase
-            // the actionable reason the user needs to see.
+            // A portal failure is recorded before WebKit's cancellation, whose
+            // signal must not erase the reason.
             if cancelled && entry.status == DownloadStatus::Failed && entry.error.is_some() {
                 return;
             }
@@ -249,8 +236,8 @@ impl Downloads {
     }
 }
 
-/// A name for one engine session's downloads, unlike any other's: the
-/// engine numbers its downloads from 1 again at every start.
+/// A name no other engine session uses: the engine numbers its downloads from 1
+/// at every start.
 pub fn new_session() -> String {
     uuid::Uuid::new_v4()
         .simple()
@@ -269,9 +256,8 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn valid_source(source: &str) -> bool {
-    // A page's own export arrives as a blob: or data: URL as well as over http.
-    // Any of them is a download the person can be asked about and read once it
-    // is saved; only an address with no scheme at all is no record at all.
+    // A page's export can be a blob: or data: URL; an address with no scheme is
+    // no record at all.
     url::Url::parse(source).is_ok()
 }
 
@@ -300,7 +286,6 @@ fn safe_name(name: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Download store lifecycle, bounds, restore and destinations.
     #[test]
     fn download_rows_are_bounded_restart_safe_and_truthful() {
         {

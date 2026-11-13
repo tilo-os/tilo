@@ -1,6 +1,4 @@
 //! Installed root admission on the existing mutually authenticated native stream.
-//! Caller labels select a request, never credentials, source paths or authority.
-//! No public dispatcher, process spawn or positive launch status lives here.
 use super::{
     home_capture::{RetainedSourceAuthority, RetainedSourceProjection},
     prepared_setup::{AuthenticatedInstalledRetained, IdentityKind, InstalledPersonAnchor},
@@ -56,15 +54,13 @@ fn launch_binding(
     Ok(value)
 }
 
-/// Implemented ONLY by the paired root-native installed custody adapter.
-/// There is no CLI constructor/default and no wire-selected certificate store.
-/// Every current() must reopen/revalidate its canonical installed certificate
-/// and CURRENT revocations; errors cannot fall back to an old snapshot.
+/// Implemented only by the paired root-native installed custody adapter; no default and no
+/// wire-selected certificate store. `current()` reopens the installed certificate and current
+/// revocations.
 pub(in crate::setup) trait RootInstalledPersonAnchor: Send + Sync {
     fn current(&self) -> io::Result<(DeviceCert, RevocationList)>;
-    /// Only entries extracted after fresh exact proof/device/root-signature
-    /// verification reach this seam. The real adapter must validate signatures
-    /// again and preserve every previously authenticated entry monotonically.
+    /// Only entries extracted after fresh exact proof, device and root-signature verification; the
+    /// adapter validates again and keeps earlier entries monotonic.
     fn refresh_verified(&self, entries: &[tilo_user_identity::RevocationEntry]) -> io::Result<()>;
 }
 
@@ -82,9 +78,7 @@ fn challenge() -> [u8; 32] {
 }
 const PROOF_TOTAL_LIMIT: Duration = Duration::from_secs(10);
 
-pub use crate::retained_source::deadline::{
-    ProofInterrupt as InstalledProofInterrupt, with_proof_deadline_at,
-};
+pub use crate::retained_source::deadline::with_proof_deadline_at;
 fn with_proof_deadline<T>(
     stream: &UnixStream,
     cancel: &AtomicBool,
@@ -115,7 +109,6 @@ impl ProofClient {
             let binding = launch_binding(request, &peer)?;
             stream.write_all(&[1])?;
             // The Shell pins this exact root task before it signs any fresh reply.
-            process_binding::complete(&mut stream)?;
             // complete() clears its handshake timeouts: restore bounded proof I/O.
             stream.set_read_timeout(Some(Duration::from_secs(10)))?;
             stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -160,8 +153,8 @@ impl ProofClient {
             .map_err(io::Error::other)?
             .ok_or_else(refused)?;
         let proof = SignedRetainedPersonProof::decode(&bytes)?;
-        // Extract only after authenticating this exact fresh response against
-        // the installed certificate and already protected root revocations.
+        // Extract only after authenticating this fresh response against the installed certificate and
+        // the protected root revocations.
         let entries = proof.authenticated_revocations(
             &self.binding,
             &nonce,
@@ -171,8 +164,8 @@ impl ProofClient {
         )?;
         anchor.refresh_verified(&entries)?;
         let (current, current_revocations) = anchor.current()?;
-        // Refresh is monotonic and reload is mandatory. Newly learned device
-        // revocation or replaced certificate must refuse BEFORE epoch admission.
+        // Refresh is monotonic and reload is mandatory: a newly learned device revocation or a
+        // replaced certificate refuses before epoch admission.
         match &self.epoch {
             Some(epoch) => {
                 epoch.revalidate(&proof, &nonce, &self.peer, &current, &current_revocations)?;
@@ -191,24 +184,12 @@ impl ProofClient {
     }
 }
 
-fn check_editor_origin(
-    origin: &super::retained_open_selection::SelectedOriginCustody,
-    cancel: &AtomicBool,
-) -> io::Result<()> {
-    super::migration::check_cancel(cancel)?;
-    // New-editor cancellation cannot become Files actor revocation. Actual
-    // Files peer/certificate/source checks still latch their own failures.
-    origin.check(&AtomicBool::new(false))?;
-    super::migration::check_cancel(cancel)
-}
-
-/// Private constructor; request JSON, a serialized declaration, FD or signer
-/// labels cannot mint this admission. It is not Serialize/Deserialize/Clone.
+/// Private constructor: request JSON, a serialized declaration, an FD or signer labels cannot mint
+/// this admission, and it is not Serialize, Deserialize or Clone.
 pub struct ReviewedInstalledRetainedLaunch {
     installed: Arc<AuthenticatedInstalledRetained>,
     source: Arc<RetainedSourceAuthority>,
     proof: Mutex<ProofClient>,
-    proof_interrupt: Arc<InstalledProofInterrupt>,
     anchor: Arc<dyn RootInstalledPersonAnchor>,
     observed: Option<tilo_identity_host::enrolled_transport::RootObservedCurrentDevice>,
     binding: RetainedLaunchBinding,
@@ -219,37 +200,11 @@ impl ReviewedInstalledRetainedLaunch {
         RetainedSourceAuthority::unknown_retirement()
     }
 
-    /// The caller supplies only the EXISTING connected Shell/root stream and
-    /// closed scope. Root custody is opened internally from authenticated A;
-    /// callers cannot inject an anchor. Nothing is launched or advertised.
+    /// The caller supplies only the existing connected Shell/root stream and closed scope; the
+    /// anchor is opened internally and nothing is launched.
     pub(in crate::setup) fn review(
         stream: UnixStream,
         request: LaunchRequest,
-        cancel: &AtomicBool,
-    ) -> io::Result<Arc<Self>> {
-        Self::review_current(stream, request, None, cancel)
-    }
-    /// Fresh editor certificate/QPE admission derives physical source custody
-    /// only from a genuine still-live Files selection, never a mounted path.
-    pub(in crate::setup) fn review_editor(
-        stream: UnixStream,
-        request: LaunchRequest,
-        origin: &super::retained_open_selection::SelectedOriginCustody,
-        cancel: &AtomicBool,
-    ) -> io::Result<Arc<Self>> {
-        if !request
-            .resource_record()
-            .strip_prefix("selected-open-v2:edit-in-parent:")
-            .is_some_and(crate::is_operation_id)
-        {
-            return Err(refused());
-        }
-        Self::review_current(stream, request, Some(origin), cancel)
-    }
-    fn review_current(
-        stream: UnixStream,
-        request: LaunchRequest,
-        origin: Option<&super::retained_open_selection::SelectedOriginCustody>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
         root()?;
@@ -262,9 +217,8 @@ impl ReviewedInstalledRetainedLaunch {
             .retained_home()
             .ok_or_else(refused)?
             .as_plan();
-        // Original credentials remain authenticated source facts. The target
-        // identity is independently verified from the actual executing Shell
-        // and installed certified personal session, not inferred from this UID.
+        // Original credentials remain authenticated source facts; the target identity is verified from
+        // the executing Shell and its installed certified session, not inferred from this UID.
         if plan.home_uid() == 0 {
             return Err(refused());
         }
@@ -272,17 +226,8 @@ impl ReviewedInstalledRetainedLaunch {
             return Err(refused());
         }
         let person = manifest.identity_public_key;
-        if let Some(origin) = origin {
-            check_editor_origin(origin, cancel)?;
-            if origin.input.reviewed.installed.manifest() != manifest
-                || origin.input.binding().operation_id != request.operation_id()
-                || origin.input.person_public_key() != person
-            {
-                return Err(refused());
-            }
-        }
-        // B's initial retained group route is exclusively the canonical personal
-        // room. Reject shared-workspace context BEFORE opening any RW source.
+        // B's initial retained group route is exclusively the canonical personal workspace. Reject
+        // shared-workspace context BEFORE opening any RW source.
         if request.room() != runtime_collab::retained_person::personal_cluster(&person) {
             return Err(refused());
         }
@@ -325,18 +270,8 @@ impl ReviewedInstalledRetainedLaunch {
             return Err(refused());
         }
         installed.revalidate()?;
-        // Pin the exact new proof socket before allocating any source lease;
-        // descriptor failure cannot abandon freshly mounted physical custody.
-        let proof_interrupt = Arc::new(InstalledProofInterrupt::observe(&proof.stream)?);
-        let source = if let Some(origin) = origin {
-            check_editor_origin(origin, cancel)?;
-            origin
-                .input
-                .projection
-                .derive_installed(Arc::clone(&installed), &person, cancel)?
-        } else {
-            RetainedSourceAuthority::review_installed(Arc::clone(&installed), &person, cancel)?
-        };
+        let source =
+            RetainedSourceAuthority::review_installed(Arc::clone(&installed), &person, cancel)?;
         if source.identity_public_key() != &person {
             source.revoke();
             source.retire()?;
@@ -347,26 +282,12 @@ impl ReviewedInstalledRetainedLaunch {
             installed,
             source,
             proof: Mutex::new(proof),
-            proof_interrupt,
             anchor,
             observed,
             binding,
             revoked: AtomicBool::new(false),
         });
-        let result = value.revalidate(cancel).and_then(|()| {
-            if let Some(origin) = origin {
-                check_editor_origin(origin, cancel)?;
-                if origin.input.reviewed.installed.manifest() != value.installed.manifest()
-                    || origin.input.binding().operation_id != value.binding.operation_id
-                    || origin.input.person_public_key()
-                        != value.installed.manifest().identity_public_key
-                {
-                    return Err(refused());
-                }
-            }
-            Ok(())
-        });
-        if let Err(error) = result {
+        if let Err(error) = value.revalidate(cancel) {
             value.retire()?;
             return Err(error);
         }
@@ -375,8 +296,8 @@ impl ReviewedInstalledRetainedLaunch {
     pub fn binding(&self) -> &RetainedLaunchBinding {
         &self.binding
     }
-    /// Share only the kernel peer authenticated by this actor's fresh certified
-    /// context. Routing a consuming child never rewrites the original Shell PID.
+    /// Routes a consuming child from the kernel peer this actor authenticated; the original Shell
+    /// PID is never rewritten.
     pub fn target_peer(&self, cancel: &AtomicBool) -> io::Result<Arc<ExecutingPeer>> {
         self.revalidate(cancel)?;
         let peer = {
@@ -396,8 +317,8 @@ impl ReviewedInstalledRetainedLaunch {
         Ok(peer)
     }
     fn target_credentials(&self, cancel: &AtomicBool) -> io::Result<(u32, u32)> {
-        // Target native credentials belong to the authenticated live Shell peer,
-        // never the original filesystem owner or a target-side NSS lookup.
+        // Target native credentials belong to the authenticated live Shell peer, never the original
+        // filesystem owner or a target-side NSS lookup.
         self.revalidate(cancel)?;
         let credentials = {
             let proof = self.proof.lock().map_err(|_| refused())?;
@@ -461,8 +382,8 @@ impl ReviewedInstalledRetainedLaunch {
         }
         Ok(())
     }
-    /// The canonical namespace owner MUST retain this inseparable input until
-    /// actual namespace death. No cloned directory alone is a valid handoff.
+    /// The canonical namespace owner must keep this inseparable input until actual namespace death;
+    /// no cloned directory alone is a valid handoff.
     pub fn launch_input(
         self: &Arc<Self>,
         cancel: &AtomicBool,
@@ -475,42 +396,32 @@ impl ReviewedInstalledRetainedLaunch {
             projection,
         })
     }
-    /// Call only AFTER supervised namespace death and input/launcher custody
-    /// have actually been dropped. Outstanding custody refuses retirement.
+    /// Call only after supervised namespace death and after input and launcher custody were dropped;
+    /// outstanding custody refuses retirement.
     pub fn retire(self: Arc<Self>) -> io::Result<()> {
         let value = Arc::try_unwrap(self).map_err(|_| refused())?;
         let Self {
             installed,
             source,
             proof,
-            proof_interrupt,
             anchor,
             observed,
             binding,
             revoked,
         } = value;
-        drop((
-            installed,
-            proof,
-            proof_interrupt,
-            anchor,
-            observed,
-            binding,
-            revoked,
-        ));
+        drop((installed, proof, anchor, observed, binding, revoked));
         source.retire()
     }
 }
 
 /// Native launcher adapter only. No wire constructor and no positive status;
-/// retain in the actual NamespaceOwner through observation of namespace death.
 pub struct InstalledRetainedLaunchInput {
     reviewed: Arc<ReviewedInstalledRetainedLaunch>,
     projection: RetainedSourceProjection,
 }
 impl InstalledRetainedLaunchInput {
-    /// Canonical enrolled material from the held installed anchor; a daemon
-    /// certificate or public verifier record can never select these keys.
+    /// Canonical enrolled material from the held installed anchor; a daemon certificate or public
+    /// verifier record can never select these keys.
     pub fn current_history_material(
         &self,
         cancel: &AtomicBool,
@@ -530,9 +441,6 @@ impl InstalledRetainedLaunchInput {
         let owner = self.projection.native_owner_sha256(cancel)?;
         self.revalidate(cancel)?;
         Ok(owner)
-    }
-    pub fn proof_interrupt(&self) -> Arc<InstalledProofInterrupt> {
-        Arc::clone(&self.reviewed.proof_interrupt)
     }
     pub fn removal_namespace(&self, cancel: &AtomicBool) -> io::Result<File> {
         self.revalidate(cancel)?;
@@ -565,70 +473,6 @@ impl InstalledRetainedLaunchInput {
     ) -> io::Result<&launcher::retained_view::OriginalHomeAlias> {
         self.revalidate(cancel)?;
         self.projection.original_home_alias(cancel)
-    }
-    /// A current ordinary Files launch may request independently enrolled
-    /// history Read. Original source consent is separate from the source kernel
-    /// Read checked when a readable native subject is actually opened.
-    pub fn check_home_history_read(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.revalidate(cancel)?;
-        let binding = self.binding();
-        let plan = self
-            .reviewed
-            .installed
-            .manifest()
-            .units
-            .retained_home()
-            .ok_or_else(refused)?
-            .as_plan();
-        if binding.app_id != "so.tilo.file-explorer"
-            || binding.resource_record != "retained-home"
-            || binding.room
-                != runtime_collab::retained_person::personal_cluster(&self.person_public_key())
-            || !plan.categories.home
-            || !matches!(
-                plan.home_policy,
-                super::migration_handoff::HomePolicy::AccessReadOnly
-                    | super::migration_handoff::HomePolicy::AccessReadWrite
-            )
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)
-    }
-    /// Zero-effect enrollment context for a selected editor Reader. Native Read
-    /// rights and actual target Author are checked by the later opaque Reader
-    /// refinement and source-held readable subject, never this context string.
-    pub fn check_selected_editor_history_read(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.check_selected_parent_write(cancel)?;
-        let binding = self.binding();
-        let id = binding
-            .resource_record
-            .strip_prefix("selected-open-v2:edit-in-parent:")
-            .ok_or_else(refused)?;
-        if !crate::is_operation_id(id)
-            || binding.room
-                != runtime_collab::retained_person::personal_cluster(&self.person_public_key())
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)
-    }
-    /// Only the independently authenticated installed source record determines
-    /// write consent; reported transfer/resize DTOs and Home mode cannot grant it.
-    pub fn check_selected_parent_write(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.revalidate(cancel)?;
-        let manifest = self.reviewed.installed.manifest();
-        let plan = manifest
-            .units
-            .retained_home()
-            .ok_or_else(refused)?
-            .as_plan();
-        if !plan.categories.home
-            || plan.home_policy != super::migration_handoff::HomePolicy::AccessReadWrite
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)
     }
     pub fn revoke(&self) {
         self.reviewed.revoke();
@@ -717,13 +561,12 @@ mod tests {
         .unwrap_err();
         writer.join().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        // The payload trickles in over more than a second, so a deadline
-        // renewed by progress would have read it whole.
+        // The payload trickles in over more than a second, so a deadline renewed by progress would
+        // have read it whole.
         assert!(
             progress.load(Ordering::Acquire) >= 2,
             "actual partial payload arrived"
         );
-        // Shutdown is confined to the held proof socket, not another transport.
         peer.write_all(&[9]).unwrap();
         let mut byte = [0];
         unrelated.read_exact(&mut byte).unwrap();
@@ -770,7 +613,6 @@ mod tests {
             let mut nonce = [0; 32];
             peer.read_exact(&mut nonce).unwrap();
             assert_ne!(nonce, [0; 32]);
-            // No credentials, certificate, ACK or positive authority is forged.
             peer_cancel.store(true, Ordering::Release);
             assert_eq!(peer.read(&mut [0]).unwrap(), 0);
         });
@@ -850,9 +692,8 @@ mod different_uid_native {
         let executable =
             File::open("/proc/self/exe").expect("exact running executable, including memfd");
         let (mut root_stream, child_stream) = UnixStream::pair().expect("owned private stream");
-        // Keep originals above both fixed destinations so dup2 ordering cannot
-        // overwrite either source descriptor. No ambient executable path enters
-        // the credential-dropped child.
+        // Keep originals above both fixed destinations so dup2 ordering cannot overwrite either
+        // source descriptor.
         fn duplicate(file: &impl AsRawFd) -> File {
             let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
             assert!(raw >= 64, "owned descriptor duplication");
@@ -923,7 +764,7 @@ mod different_uid_native {
         };
         assert!(status.success());
         assert!(!peer.current(), "kernel task lifetime cannot be replayed");
-        // This is kernel observation only. No InstalledRetainedLaunchInput,
-        // person proof, file grant, projection or successful edit is minted.
+        // Kernel observation only: no launch input, person proof, file grant, projection or successful
+        // edit is minted.
     }
 }

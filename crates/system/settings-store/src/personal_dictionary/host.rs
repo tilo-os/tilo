@@ -1,5 +1,5 @@
-//! Authenticated settings-channel projection of the one local dictionary.
-//! The projection is never written to app settings or exported room records.
+//! The settings channel's projection of the one local dictionary. It is never written to app
+//! settings or exported to workspace records.
 
 use super::{Edit, Service, Snapshot, Vocabulary};
 use crate::{ChangeSignal, Listener, SettingsSource};
@@ -23,8 +23,6 @@ pub struct Command {
     pub edit: Edit,
 }
 
-/// Wrap the session's existing settings source with host-only dictionary
-/// authority. The owner callback resolves the host's authenticated identity.
 pub struct Host {
     source: Arc<dyn SettingsSource>,
     service: Arc<Service>,
@@ -114,9 +112,6 @@ impl SettingsSource for Host {
     }
 }
 
-/// Add a virtual read view only for a host-certified local person. `owner`
-/// comes from the admitted descriptor, never from app JSON. No dictionary
-/// bytes are placed in `source.load()` or a persisted settings document.
 pub fn project(
     source: &dyn SettingsSource,
     app: &str,
@@ -151,9 +146,6 @@ pub fn project(
     }
 }
 
-/// Handle a dictionary command within the app's already-authorized own
-/// device-local entry. Local app owners may add explicit words; only Settings
-/// and Writer can edit/remove/reset. Commands never change permissions or stores.
 pub fn command(
     source: &dyn SettingsSource,
     app: &str,

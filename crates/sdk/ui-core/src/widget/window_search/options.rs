@@ -21,10 +21,11 @@ use crate::widget::find_bar::{FindAbilities, FindMode, FindOptions};
 use crate::widget::floating_surface;
 use crate::widget::{
     Button, ButtonFace, Checkbox, CheckboxFace, ControlSize, SearchField, SegmentedFace,
-    ToggleGroup, Widget,
+    ToggleGroup,
 };
 
 use super::tr;
+use crate::widget::DrawChild;
 
 /// One choice in the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -296,7 +297,8 @@ impl OptionsPanel {
         if abilities.replace {
             y += gap;
             self.replace_rect = Rect::new(x0 + pad, y, x1 - pad, y + control);
-            self.replace_field.apply_layout_external(self.replace_rect);
+            self.replace_field
+                .apply_layout_external(self.replace_rect, theme);
             y += control + gap;
             let all = Rect::new(x1 - pad - replace_all_w, y, x1 - pad, y + control);
             let one = Rect::new(all.x0 - gap - replace_w, y, all.x0 - gap, y + control);
@@ -356,7 +358,7 @@ impl OptionsPanel {
             floating_surface::paint(scene, transform, rect, theme);
             paint_choices(scene, transform, text, &on_panel, &choices);
             if replace_rect.area() > 0.0 {
-                field.draw(scene, transform, text, &on_panel, presence);
+                field.draw_child(scene, transform, text, &on_panel, presence);
             }
         });
     }

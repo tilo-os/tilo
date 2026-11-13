@@ -58,6 +58,28 @@ fn row_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
     out
 }
 
+/// The resource each row of the view's tree presents, and the change mark the host placed on it,
+/// if any.
+fn tree_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
+    view.set_lazy_rows(false).unwrap();
+    view.poll_patches().unwrap();
+    all(view.tree(), "ui.TreeViewNode")
+        .into_iter()
+        .map(|node| {
+            let of = match node.props.get("item") {
+                Some(Value::Ref(r)) => r.target.id_string(),
+                other => panic!("a row presents its item: {other:?}"),
+            };
+            let mark = node
+                .children
+                .iter()
+                .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("change")))
+                .and_then(|slot| slot.children.first().cloned());
+            (of, mark)
+        })
+        .collect()
+}
+
 fn principal(node: &UiNode, prop: &str) -> Option<String> {
     match node.props.get(prop) {
         Some(Value::Principal(who)) => Some(who.0.clone()),
@@ -106,7 +128,7 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
     // The notebook: the rows the run made or changed carry its mark, with who and which run;
     // no app code asked for it.
     let mut notebook = ada.view(NOTES_APP);
-    let marks = row_marks(&mut notebook);
+    let marks = tree_marks(&mut notebook);
     for (at, kind) in [(&made, "created"), (&groceries, "changed")] {
         let mark = marked(&marks, &at.id_string())
             .unwrap_or_else(|| panic!("{at:?} is marked: {marks:?}"));
@@ -174,7 +196,7 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
 
     // Mark all seen on the run: every mark goes, live.
     assert!(ada.host.runtime().mark_run_seen("ada", RUN));
-    let marks = row_marks(&mut notebook);
+    let marks = tree_marks(&mut notebook);
     assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
     assert!(
         all(notebook.tree(), "ui.ChangeMark").is_empty(),
@@ -217,11 +239,15 @@ fn the_header_names_everyone_who_changed_it() {
     );
 }
 
-/// The rows the host placed in `list` for removed items: each one's title and mark.
+/// The rows the host placed in `tree`'s lists and trees for removed items: each one's title and
+/// mark.
 fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
     let mut out = Vec::new();
-    for list in all(tree, "ui.VirtualList") {
-        let Some(slot) = list
+    for holder in all(tree, "ui.VirtualList")
+        .into_iter()
+        .chain(all(tree, "ui.TreeView"))
+    {
+        let Some(slot) = holder
             .children
             .iter()
             .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("removed")))
@@ -230,9 +256,11 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
         };
         for item in &slot.children {
             assert_eq!(item.props.get("removed"), Some(&Value::Bool(true)));
+            // A list's row is a list row under it; a tree's node says what it was called.
             let title = all(item, "ui.ListRow")
                 .first()
-                .and_then(|row| row.props.get("title").cloned());
+                .and_then(|row| row.props.get("title").cloned())
+                .or_else(|| item.props.get("label").cloned());
             let mark = all(item, "ui.ChangeMark").first().map(|m| (*m).clone());
             if let (Some(Value::Text(title)), Some(mark)) = (title, mark) {
                 out.push((title, mark));
@@ -254,14 +282,18 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     assert_eq!(title, "Stale", "the row says what was removed");
     assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
     assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
-    // The notebook's list shows the note it removed too; nothing else lists either.
+    // The notebook's tree stands the note it removed in too, as a node of its own
+    // (`a_note_the_run_removed_stands_struck_in_the_tree`).
     let mut notebook = ada.view(NOTES_APP);
     notebook.poll_patches().unwrap();
-    assert_eq!(removed_rows(notebook.tree()).len(), 1);
+    let note_rows = removed_rows(notebook.tree());
+    assert_eq!(note_rows.len(), 1, "{note_rows:?}");
     // Seen, the row goes.
     assert!(ada.host.runtime().mark_run_seen("ada", RUN));
     inbox.poll_patches().unwrap();
     assert!(removed_rows(inbox.tree()).is_empty());
+    notebook.poll_patches().unwrap();
+    assert!(removed_rows(notebook.tree()).is_empty());
 }
 
 /// A list built over a record that already holds the removal shows the row struck too: the
@@ -721,4 +753,46 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
         small.reads, large.reads,
         "the header's reads at ten thousand items ({large:?}) are the reads at a thousand ({small:?})"
     );
+}
+
+/// A note the run removed stands struck in the notebook's tree until the person has seen it go:
+/// a node of the tree, standing after its rows, with who removed it.
+#[test]
+fn a_note_the_run_removed_stands_struck_in_the_tree() {
+    let Tidied { ada, old, .. } = a_run_in_notes_and_tasks();
+    let mut notebook = ada.view(NOTES_APP);
+    notebook.poll_patches().unwrap();
+    let struck = |view: &mut ViewInstance| -> Vec<UiNode> {
+        view.poll_patches().unwrap();
+        all(view.tree(), "ui.TreeView")
+            .into_iter()
+            .flat_map(|tree| tree.children.iter())
+            .filter(|child| {
+                child.kind == "slot" && child.props.get("name") == Some(&Value::text("removed"))
+            })
+            .flat_map(|slot| slot.children.iter().cloned())
+            .collect()
+    };
+    let rows = struck(&mut notebook);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let node = &rows[0];
+    assert_eq!(
+        node.kind, "ui.TreeViewNode",
+        "it stands as a row of the tree"
+    );
+    assert_eq!(node.props.get("removed"), Some(&Value::Bool(true)));
+    assert!(
+        matches!(node.props.get("item"), Some(Value::Ref(r)) if r.target.id_string() == old.id_string()),
+        "it says the note it stood for: {node:?}"
+    );
+    let mark = all(node, "ui.ChangeMark")
+        .into_iter()
+        .find(|mark| mark.props.get("window") != Some(&Value::Bool(true)))
+        .cloned()
+        .expect("who removed it");
+    assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
+    assert_eq!(principal(&mark, "by").as_deref(), Some(AGENT));
+    // Seen, the row goes.
+    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+    assert!(struck(&mut notebook).is_empty());
 }

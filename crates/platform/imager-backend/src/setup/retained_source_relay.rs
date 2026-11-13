@@ -1,11 +1,6 @@
-//! Root-owned relay for an already admitted selected-file source capability.
-//! The target receives only the existing filesystem RPC, never the worker fd.
+//! Root-owned relay for an already admitted selected-file source capability; the target receives
+//! only the existing filesystem RPC, never the worker fd.
 use super::installed_retained_actor::InstalledRetainedLaunchInput;
-use super::retained_selected_edit::RootSelectedEditor;
-#[path = "retained_selected_parent.rs"]
-pub mod selected_parent;
-#[path = "retained_source_origin.rs"]
-mod source_origin;
 use launcher::owned_service::{TargetProjectionEndpoint, TargetProjectionMode};
 use runtime_fs::{
     DirEntry, EntryKind, EntryName, Metadata, OpenMode,
@@ -17,7 +12,6 @@ use runtime_fs::{
     selected_client::SelectedFileConnection,
     workspace_server::{self, ConnectedWorkspaceServer, WorkspaceBackend, WorkspaceFileBackend},
 };
-pub(in crate::setup) use source_origin::{SourceHistoryReadOrigin, SourceSelectedOrigin};
 use std::{
     io,
     os::unix::net::UnixStream,
@@ -34,11 +28,9 @@ fn refused() -> io::Error {
         "Retained source relay refused",
     )
 }
-// Constructor private: neither RPC labels nor caller-selected callbacks can
-// replace installed custody. The lock serializes proof challenges and source
-// calls; the connected server admits only eight pending backend callbacks.
-// This is native owned-child delegation, not a second person proof. The
-// originating certified Shell binding is never rewritten to the worker PID.
+// Constructor private: neither RPC labels nor caller-selected callbacks can replace installed
+// custody. The lock serializes proof challenges and source calls, the connected server admits eight
+// pending callbacks, and the certified Shell binding is never rewritten to the worker PID.
 struct RetainedProjectionConsumer {
     endpoint: Arc<TargetProjectionEndpoint>,
 }
@@ -54,7 +46,6 @@ impl RetainedProjectionConsumer {
     }
 }
 enum Consumer {
-    SelectedEditor(Arc<RootSelectedEditor>),
     Projection(RetainedProjectionConsumer),
 }
 #[derive(Clone)]
@@ -149,40 +140,26 @@ struct Custody {
     source: Mutex<Option<Source>>,
     interrupt: Source,
     consumer: Consumer,
-    history: Mutex<Option<Arc<super::retained_history_read::RootHistoryReadSession>>>,
 }
-/// Destruction of one already-owned capability; never an effect or access request.
 #[derive(Clone, Copy)]
 enum ControllerRelease {
     Job(u64),
-    Pin(u64),
-    Pending(u64),
-    Read(u64),
 }
 impl ControllerRelease {
     fn release(self, home: &DirectoryConnection) -> io::Result<()> {
         match self {
             Self::Job(id) => home.release_job(id),
-            Self::Pin(id) => home.release_replacement_pin(id),
-            Self::Pending(id) => home.release_pending_replacement(id),
-            Self::Read(id) => home.release_history_read(id),
         }
     }
 }
 enum ControllerCleanup {
     Release(ControllerRelease),
-    PendingHandoff { id: u64, ticket: [u8; 16] },
-    ReadHandoff { id: u64, ticket: [u8; 16] },
     Barrier,
 }
 impl ControllerCleanup {
     fn perform(self, home: &DirectoryConnection) -> io::Result<()> {
         match self {
             Self::Release(release) => release.release(home),
-            Self::PendingHandoff { id, ticket } => home.retire_pending_handoff(id, ticket),
-            Self::ReadHandoff { id, ticket } => home.retire_history_read_handoff(id, ticket),
-            // Fixed original-channel ordering observation, with no path supplied
-            // by the consumer and no metadata returned to it.
             Self::Barrier => home.metadata(ROOT_DIRECTORY).map(|_| ()),
         }
     }
@@ -190,8 +167,6 @@ impl ControllerCleanup {
 impl Custody {
     fn revoke(&self) {
         self.revoked.store(true, Ordering::Release);
-        // No source-call lock: close the exact channel immediately even when
-        // a backend callback holds custody while awaiting an actual effect.
         self.interrupt.revoke();
         self.input.revoke();
     }
@@ -203,16 +178,12 @@ impl Custody {
             return Err(refused());
         }
         self.input.revalidate(&self.cancel)?;
-        match &self.consumer {
-            Consumer::SelectedEditor(editor) => editor.check()?,
-            Consumer::Projection(consumer) => consumer.current()?,
-        }
+        let Consumer::Projection(consumer) = &self.consumer;
+        consumer.current()?;
         Ok(())
     }
-    /// Cleanup outlives the target's role/process proof. It may only release
-    /// constructor-minted aliases/tickets on this exact still-owned connection.
-    /// Native scope and observed callback retirement remain enforced remotely;
-    /// any transport error is unknown and never acknowledged or replayed as IO.
+    /// May only release constructor-minted aliases and tickets on this exact still-owned connection;
+    /// a transport error is unknown and is never acknowledged or replayed.
     fn cleanup(&self, request: ControllerCleanup) -> io::Result<()> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
@@ -225,8 +196,6 @@ impl Custody {
             let source = self.source.lock().map_err(|_| refused())?;
             self.current()?;
             let value = call(source.as_ref().ok_or_else(refused)?);
-            // A write followed by failed authority has an unknown outcome; it
-            // is refused and terminal, and is never replayed by this relay.
             self.current()?;
             value
         })();
@@ -247,8 +216,6 @@ struct Handle {
 }
 impl Drop for Handle {
     fn drop(&mut self) {
-        // Revoked custody cannot issue further RPC. Connection retirement
-        // below drops every remaining remote handle in either case.
         let _ = self.custody.call(|source| source.release(self.id));
     }
 }
@@ -392,38 +359,16 @@ impl WorkspaceFileBackend for Handle {
     }
 }
 
-/// Keep alongside the actual target namespace owner, then explicitly retire
-/// after observed target death. This object has no wire/public constructor.
+/// Keep alongside the target namespace owner, then explicitly retire after observed target death;
+/// no wire or public constructor.
 pub struct RetainedSourceRelay {
     custody: Option<Arc<Custody>>,
     server: Option<ConnectedWorkspaceServer>,
     runtime: Option<tokio::runtime::Runtime>,
 }
 impl RetainedSourceRelay {
-    /// Metadata-only native provenance from this original Home relay. The
-    /// caller retains its actual projection/Files lease and endpoint alongside
-    /// the pin; an unrelated endpoint or FUSE identity cannot construct it.
-    pub(in crate::setup) fn pin_home_selection(
-        &self,
-        components: &[EntryName],
-    ) -> io::Result<Arc<SourceSelectedOrigin>> {
-        let custody = self.custody.as_ref().ok_or_else(refused)?;
-        custody.call(|source| {
-            source.home()?;
-            if source.metadata()?.kind != EntryKind::Directory {
-                return Err(refused());
-            }
-            Ok(())
-        })?;
-        let root = Arc::new(HomeDirectory {
-            custody: custody.clone(),
-            id: ROOT_DIRECTORY,
-        });
-        SourceSelectedOrigin::pin(root, components)
-    }
-    /// The endpoint is minted only by the canonical launcher owner for its
-    /// fixed root projection child. Caller streams or child PID labels cannot
-    /// substitute for it. The caller retains that owner through relay retirement.
+    /// Minted only by the canonical launcher owner for its fixed root projection child; caller
+    /// streams or child PID labels cannot substitute, and the caller retains that owner.
     pub fn serve_projection(
         source: SelectedFileConnection,
         input: Arc<InstalledRetainedLaunchInput>,
@@ -440,23 +385,6 @@ impl RetainedSourceRelay {
     ) -> io::Result<Self> {
         Self::build(Source::Home(source), input, cancel, endpoint)
     }
-    pub fn serve_home_projection_with_history(
-        source: DirectoryConnection,
-        input: Arc<InstalledRetainedLaunchInput>,
-        cancel: Arc<AtomicBool>,
-        endpoint: Arc<TargetProjectionEndpoint>,
-        history: Arc<super::retained_history_read::RootHistoryReadSession>,
-    ) -> io::Result<Self> {
-        if !history.uses_input(&input) {
-            return Err(refused());
-        }
-        let relay = Self::serve_home_projection(source, input, cancel, endpoint)?;
-        let custody = relay.custody.as_ref().ok_or_else(refused)?;
-        custody.current()?;
-        *custody.history.lock().map_err(|_| refused())? = Some(history);
-        custody.current()?;
-        Ok(relay)
-    }
     fn build(
         source: Source,
         input: Arc<InstalledRetainedLaunchInput>,
@@ -471,7 +399,6 @@ impl RetainedSourceRelay {
             interrupt: source.clone(),
             source: Mutex::new(Some(source)),
             consumer,
-            history: Mutex::new(None),
         });
         let mut relay = Self {
             custody: Some(custody),
@@ -481,20 +408,16 @@ impl RetainedSourceRelay {
         let result: io::Result<()> = (|| {
             let custody = relay.custody.as_ref().ok_or_else(refused)?;
             custody.current()?;
-            let target = match &custody.consumer {
-                Consumer::Projection(consumer) => consumer.connect()?,
-                _ => return Err(refused()),
-            };
+            let Consumer::Projection(consumer) = &custody.consumer;
+            let target = consumer.connect()?;
             custody.call(|source| {
-                if let Consumer::Projection(consumer) = &custody.consumer {
-                    if consumer.endpoint.projection_mode() != source.mode() {
-                        return Err(refused());
-                    }
+                if consumer.endpoint.projection_mode() != source.mode() {
+                    return Err(refused());
                 }
                 let expected = match source.mode() {
                     TargetProjectionMode::SelectedFile => EntryKind::File,
                     TargetProjectionMode::HomeDirectory => EntryKind::Directory,
-                    TargetProjectionMode::SelectedParent => return Err(refused()),
+                    TargetProjectionMode::RetiredSelectedParent => return Err(refused()),
                 };
                 if source.metadata()?.kind != expected {
                     return Err(refused());
@@ -524,17 +447,6 @@ impl RetainedSourceRelay {
         }
         Ok(relay)
     }
-    pub fn retire_history(&self) -> io::Result<()> {
-        let Some(custody) = self.custody.as_ref() else {
-            return Ok(());
-        };
-        let mut reader = custody.history.lock().map_err(|_| refused())?;
-        if let Some(history) = reader.as_ref() {
-            history.retire()?;
-            reader.take();
-        }
-        Ok(())
-    }
     pub fn retire(mut self) -> io::Result<()> {
         self.stop()
     }
@@ -542,25 +454,12 @@ impl RetainedSourceRelay {
         let Some(custody) = self.custody.clone() else {
             return Ok(());
         };
-        // Break the read-subject custody cycle before closing the original
-        // source connection. Unknown query work remains owned until this lock
-        // and the actual bounded daemon exchange have finished.
-        {
-            let mut reader = custody.history.lock().map_err(|_| refused())?;
-            if let Some(history) = reader.as_ref() {
-                history.retire()?;
-                reader.take();
-            }
-        }
-        // Retain the complete relay on any Reader retirement failure.
         self.custody.take();
         custody.revoke();
         let server_result = self
             .server
             .take()
             .map_or(Ok(()), ConnectedWorkspaceServer::retire);
-        // Runtime drop waits for already spawned blocking callbacks. Do not
-        // use shutdown_background/timeout: source custody must remain held.
         drop(self.runtime.take());
         let custody = Arc::try_unwrap(custody).map_err(|_| refused())?;
         let (mut source, lock_result) = match custody.source.into_inner() {
@@ -575,8 +474,6 @@ impl RetainedSourceRelay {
 impl Drop for RetainedSourceRelay {
     fn drop(&mut self) {
         if self.stop().is_err() {
-            // Unknown Reader/source retirement must not erase source epoch or
-            // current proof custody when this cleanup owner unwinds.
             std::mem::forget(self.custody.take());
             std::mem::forget(self.server.take());
             std::mem::forget(self.runtime.take());
@@ -596,75 +493,12 @@ impl Drop for HomeDirectory {
     }
 }
 impl WorkspaceDirectoryBackend for HomeDirectory {
-    fn history_query(
-        &self,
-        name: &EntryName,
-        expected: [u64; 2],
-        query: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        let result = (|| {
-            self.custody.current()?;
-            let history = self
-                .custody
-                .history
-                .lock()
-                .map_err(|_| refused())?
-                .as_ref()
-                .ok_or_else(refused)?
-                .clone();
-            let subject = self.history_read_subject(name).map_err(io::Error::other)?;
-            // Do not hold Custody.source here: subject.check/observe themselves
-            // use the same source-call gate, and daemon adoption calls them too.
-            let bytes = history.query(subject, expected, query)?;
-            self.custody.current()?;
-            Ok(bytes)
-        })();
-        result.map_err(|error: io::Error| error.to_string())
-    }
-    fn history_read_subject(
-        &self,
-        name: &runtime_fs::EntryName,
-    ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspaceHistoryReadSubjectBackend>, String>
-    {
-        let id = self
-            .custody
-            .call(|source| source.home()?.history_read_subject(self.id, name))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomeHistoryReadSubject {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-
     fn sync_directory(&self) -> Result<(), String> {
         self.custody
             .call(|source| source.home()?.sync_directory(self.id))
             .map_err(|error| error.to_string())
     }
 
-    fn prepare_replace(
-        &self,
-        temporary: &EntryName,
-        expected: [u64; 2],
-        victim: &EntryName,
-        old: [u64; 2],
-    ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspacePendingReplacementBackend>, String>
-    {
-        let id = self
-            .custody
-            .call(|source| {
-                source
-                    .home()?
-                    .prepare_replacement(self.id, temporary, expected, victim, old)
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomePendingReplacement {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
     fn statfs(&self) -> Result<runtime_fs::directory_backend::DirectoryFilesystemStats, String> {
         self.custody
             .call(|s| s.home()?.statfs(self.id))
@@ -794,35 +628,6 @@ impl WorkspaceDirectoryBackend for HomeDirectory {
             id,
         }))
     }
-    fn atomic_save(
-        &self,
-        temporary: &EntryName,
-        expected: [u64; 2],
-        target: &EntryName,
-    ) -> Result<(), String> {
-        self.custody
-            .call(|source| {
-                source
-                    .home()?
-                    .atomic_save(self.id, temporary, expected, target)
-            })
-            .map_err(|error| error.to_string())
-    }
-    fn rename_replace(
-        &self,
-        name: &EntryName,
-        new: EntryName,
-    ) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
-        let id = self
-            .custody
-            .call(|s| s.home()?.rename_replace(self.id, name, &new))
-            .map_err(|e| e.to_string())?;
-        Ok(Arc::new(HomeJob {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
     fn rename_no_replace(
         &self,
         name: &EntryName,
@@ -886,8 +691,8 @@ impl Drop for HomeMetadata {
         let _ = self.custody.call(|s| s.home()?.release_pin(self.id));
     }
 }
-/// Exact constructor-minted map alias release, with progress kept across an
-/// unknown barrier reply. State1 has removed the map; only state2 is an ACK.
+/// Exact constructor-minted map alias release, with progress kept across an unknown barrier reply:
+/// state1 has removed the map and only state2 is an ACK.
 #[derive(Default)]
 struct ControllerCache(Mutex<u8>);
 impl ControllerCache {
@@ -902,8 +707,6 @@ impl ControllerCache {
                 .map_err(|error| error.to_string())?;
             *state = 1;
         }
-        // SAME ordered original source channel, after the actual local cap drop.
-        // Unknown reply retains state1; retry only the fixed observation barrier.
         custody
             .cleanup(ControllerCleanup::Barrier)
             .map_err(|error| error.to_string())?;
@@ -933,34 +736,6 @@ impl WorkspaceJobBackend for HomeJob {
             .retire(&self.custody, ControllerRelease::Job(self.id))
     }
 
-    fn created_temporary(
-        &self,
-    ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspaceCreatedTemporaryBackend>, String>
-    {
-        let id = self
-            .custody
-            .call(|source| source.home()?.created_temporary(self.id))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomeCreatedTemporary {
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-
-    fn pin_replacement(
-        &self,
-    ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspaceReplacementPinBackend>, String>
-    {
-        let id = self
-            .custody
-            .call(|s| s.home()?.pin_replacement(self.id))
-            .map_err(|e| e.to_string())?;
-        Ok(Arc::new(HomeReplacementPin {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
     fn live_scope(&self) -> Option<Result<(), String>> {
         Some(
             self.custody
@@ -977,482 +752,5 @@ impl WorkspaceJobBackend for HomeJob {
         self.custody
             .call(|s| s.home()?.cancel(self.id))
             .map_err(|e| e.to_string())
-    }
-}
-
-/// A connected target service receives only the admitted selected inode and
-/// this editor's own completed CreateFile temporaries. Plain Home backends and
-/// public caller callbacks cannot construct this relay.
-pub struct RetainedSelectedEditRelay {
-    owner: Option<Arc<Mutex<selected_parent::RootSelectedEditSource>>>,
-    admission: Option<Arc<super::retained_selected_edit::RootSelectedEditAdmission>>,
-    endpoint: Option<Arc<TargetProjectionEndpoint>>,
-    filtered: Option<Arc<selected_parent::SelectedParent>>,
-    server: Option<ConnectedWorkspaceServer>,
-    runtime: Option<tokio::runtime::Runtime>,
-    stopped: bool,
-    callbacks_unknown: bool,
-    retirement: Option<Result<(), String>>,
-}
-struct SelectedEditBackend {
-    filtered: Arc<selected_parent::SelectedParent>,
-}
-impl WorkspaceBackend for SelectedEditBackend {
-    fn directory(&self) -> Result<Option<Arc<dyn WorkspaceDirectoryBackend>>, String> {
-        self.filtered.check()?;
-        Ok(Some(self.filtered.clone()))
-    }
-    fn open(&self, _: &str, _: OpenMode) -> Result<Option<Arc<dyn WorkspaceFileBackend>>, String> {
-        self.filtered.check()?;
-        Err("Selected-parent legacy paths refused".into())
-    }
-    fn list(&self, _: &str) -> Result<Vec<DirEntry>, String> {
-        self.filtered.check()?;
-        Err("Selected-parent legacy paths refused".into())
-    }
-    fn stat(&self, _: &str) -> Result<Metadata, String> {
-        self.filtered.check()?;
-        Err("Selected-parent legacy paths refused".into())
-    }
-    fn read(&self, _: &str, _: u64, _: u32) -> Result<Vec<u8>, String> {
-        self.filtered.check()?;
-        Err("Selected-parent legacy paths refused".into())
-    }
-}
-impl RetainedSelectedEditRelay {
-    pub(in crate::setup) fn serve(
-        owner: Arc<Mutex<selected_parent::RootSelectedEditSource>>,
-        source: Arc<selected_parent::SourceSelectedParent>,
-        admission: Arc<super::retained_selected_edit::RootSelectedEditAdmission>,
-        endpoint: Arc<TargetProjectionEndpoint>,
-    ) -> io::Result<Self> {
-        let mut relay = Self {
-            owner: Some(owner.clone()),
-            admission: Some(admission.clone()),
-            endpoint: Some(endpoint),
-            filtered: None,
-            server: None,
-            runtime: None,
-            stopped: false,
-            callbacks_unknown: false,
-            retirement: None,
-        };
-        let result: io::Result<()> = (|| {
-            if !admission.uses_source(&source) {
-                return Err(refused());
-            }
-            let filtered = Arc::new(
-                selected_parent::SelectedParent::new(source, admission, owner)
-                    .map_err(io::Error::other)?,
-            );
-            relay.filtered = Some(filtered.clone());
-            relay.current()?;
-            let stream = relay
-                .endpoint
-                .as_ref()
-                .ok_or_else(refused)?
-                .connect_control()?;
-            relay.current()?;
-            relay.runtime = Some(
-                tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()?,
-            );
-            relay.server = Some(workspace_server::serve_workspace_connected(
-                stream,
-                Arc::new(SelectedEditBackend { filtered }),
-                relay.runtime.as_ref().ok_or_else(refused)?.handle().clone(),
-            )?);
-            relay.current()?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let cleanup = relay.retire();
-            return Err(cleanup.err().unwrap_or(error));
-        }
-        Ok(relay)
-    }
-    fn current(&self) -> io::Result<()> {
-        if self.stopped {
-            return Err(refused());
-        }
-        let admission = self.admission.as_ref().ok_or_else(refused)?;
-        admission.check()?;
-        {
-            let owner = self
-                .owner
-                .as_ref()
-                .ok_or_else(refused)?
-                .lock()
-                .map_err(|_| refused())?;
-            if !owner.uses_editor(admission.editor()) {
-                return Err(refused());
-            }
-            owner.check_current()?;
-        }
-        let endpoint = self.endpoint.as_ref().ok_or_else(refused)?;
-        if endpoint.projection_mode() != TargetProjectionMode::SelectedParent {
-            return Err(refused());
-        }
-        endpoint.check()?;
-        self.filtered
-            .as_ref()
-            .ok_or_else(refused)?
-            .check()
-            .map_err(io::Error::other)?;
-        admission.check()
-    }
-    /// Observe only connected RPC/callback teardown. This is not evidence that
-    /// either target or source namespace has stopped.
-    pub fn observed_stop(&self) -> bool {
-        self.stopped
-    }
-    /// Parent retires target namespace first; this method drains relay work and
-    /// releases its filter capabilities. Parent then drops remaining target
-    /// authority/admission/source refs before source_owner.retire, off UI.
-    pub fn retire(&mut self) -> io::Result<()> {
-        if self.callbacks_unknown {
-            return Err(io::Error::other(
-                "Selected edit callbacks have unknown retirement custody",
-            ));
-        }
-        if let Some(result) = &self.retirement {
-            return result
-                .as_ref()
-                .copied()
-                .map_err(|error| io::Error::other(error.clone()));
-        }
-        if let Some(filtered) = &self.filtered {
-            filtered.revoke();
-        }
-        if let Some(admission) = &self.admission {
-            admission.editor().revoke();
-        }
-        // Runtime drop waits for native blocking calls and cannot be performed
-        // from inside an async runtime. Refusal retains all exact custody.
-        if self.runtime.is_some() && tokio::runtime::Handle::try_current().is_ok() {
-            return Err(io::Error::other(
-                "Retire selected edit relay outside async runtime",
-            ));
-        }
-        let server_result = self
-            .server
-            .take()
-            .map_or(Ok(()), ConnectedWorkspaceServer::retire);
-        let runtime_result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(self.runtime.take())));
-        if runtime_result.is_err() {
-            self.callbacks_unknown = true;
-            return Err(io::Error::other(
-                "Selected edit callback runtime retirement was not observed",
-            ));
-        }
-        // The connected thread has joined (including an error/panic outcome)
-        // and all supplied-runtime blocking callbacks have actually returned.
-        self.stopped = true;
-        self.filtered.take();
-        self.endpoint.take();
-        self.admission.take();
-        self.owner.take();
-        self.retirement = Some(server_result.as_ref().copied().map_err(ToString::to_string));
-        server_result
-    }
-}
-impl Drop for RetainedSelectedEditRelay {
-    fn drop(&mut self) {
-        if self.stopped {
-            return;
-        }
-        if let Some(filtered) = &self.filtered {
-            filtered.revoke();
-        }
-        if let Some(admission) = &self.admission {
-            admission.editor().revoke();
-        }
-        // A dropped owner cannot claim stopped callbacks or release namespace
-        // custody. The root driver must retain and explicitly retire this relay.
-        if let Some(server) = self.server.take() {
-            std::mem::forget(server);
-        }
-        if let Some(runtime) = self.runtime.take() {
-            std::mem::forget(runtime);
-        }
-        if let Some(filtered) = self.filtered.take() {
-            std::mem::forget(filtered);
-        }
-        if let Some(endpoint) = self.endpoint.take() {
-            std::mem::forget(endpoint);
-        }
-        if let Some(admission) = self.admission.take() {
-            std::mem::forget(admission);
-        }
-        if let Some(owner) = self.owner.take() {
-            std::mem::forget(owner);
-        }
-    }
-}
-
-/// Same authenticated source channel and same installed/consumer epoch as the job.
-/// This wrapper cannot commit history ownership; that requires daemon enrollment.
-struct HomeReplacementPin {
-    cache: ControllerCache,
-    custody: Arc<Custody>,
-    id: u64,
-}
-impl Drop for HomeReplacementPin {
-    fn drop(&mut self) {
-        if !self.cache.open() {
-            return;
-        }
-        let _ = self
-            .custody
-            .call(|s| s.home()?.release_replacement_pin(self.id));
-    }
-}
-impl runtime_fs::directory_backend::WorkspaceReplacementPinBackend for HomeReplacementPin {
-    fn retire_controller_cache(&self) -> Result<(), String> {
-        self.cache
-            .retire(&self.custody, ControllerRelease::Pin(self.id))
-    }
-
-    fn commit_with_history(&self, receipt: &[u8]) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.commit_replacement_pin(self.id, receipt))
-            .map_err(|error| error.to_string())
-    }
-
-    fn check(&self) -> Result<(), String> {
-        self.custody
-            .call(|s| s.home()?.check_replacement_pin(self.id))
-            .map_err(|e| e.to_string())
-    }
-    fn observe(&self) -> Result<runtime_fs::directory_backend::ReplacementObservation, String> {
-        self.custody
-            .call(|s| s.home()?.observe_replacement_pin(self.id))
-            .map_err(|e| e.to_string())
-    }
-}
-
-/// Holds only the real pending source capability through the same root custody.
-/// No source stream, native grant, signer or serialized authority is handed out.
-struct HomePendingReplacement {
-    cache: ControllerCache,
-    custody: Arc<Custody>,
-    id: u64,
-}
-impl runtime_fs::directory_backend::WorkspacePendingReplacementBackend for HomePendingReplacement {
-    fn retire_controller_cache(&self) -> Result<(), String> {
-        self.cache
-            .retire(&self.custody, ControllerRelease::Pending(self.id))
-    }
-
-    fn acknowledged_committed_job(&self) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
-        let id = self
-            .custody
-            .call(|source| source.home()?.acknowledged_committed_job(self.id))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomeJob {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-
-    fn acknowledged_committed_pin(
-        &self,
-    ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspaceReplacementPinBackend>, String>
-    {
-        let id = self
-            .custody
-            .call(|source| source.home()?.acknowledged_committed_pin(self.id))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomeReplacementPin {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-    fn retire_daemon_handoff(&self, ticket: [u8; 16]) -> Result<(), String> {
-        self.custody
-            .cleanup(ControllerCleanup::PendingHandoff {
-                id: self.id,
-                ticket,
-            })
-            .map_err(|error| error.to_string())
-    }
-    fn arm_daemon_handoff(&self, challenge: [u8; 32]) -> Result<[u8; 16], String> {
-        self.custody
-            .call(|source| source.home()?.arm_pending_handoff(self.id, challenge))
-            .map_err(|error| error.to_string())
-    }
-
-    fn check(&self) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.check_pending_replacement(self.id))
-            .map_err(|error| error.to_string())
-    }
-    fn observe(
-        &self,
-    ) -> Result<runtime_fs::directory_backend::PendingReplacementObservation, String> {
-        self.custody
-            .call(|source| source.home()?.observe_pending_replacement(self.id))
-            .map_err(|error| error.to_string())
-    }
-    fn start_with_history(&self, receipt: &[u8]) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
-        let id = self
-            .custody
-            .call(|source| source.home()?.start_pending_replacement(self.id, receipt))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomeJob {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-    fn cancel(&self) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.cancel_pending_replacement(self.id))
-            .map_err(|error| error.to_string())
-    }
-}
-impl Drop for HomePendingReplacement {
-    fn drop(&mut self) {
-        if !self.cache.open() {
-            return;
-        }
-        let _ = self
-            .custody
-            .call(|source| source.home()?.release_pending_replacement(self.id));
-    }
-}
-
-// Source-resident, actual creator-job capability; no path/receipt constructor.
-struct HomeCreatedTemporary {
-    custody: Arc<Custody>,
-    id: u64,
-}
-impl Drop for HomeCreatedTemporary {
-    fn drop(&mut self) {
-        let _ = self
-            .custody
-            .call(|source| source.home()?.release_created_temporary(self.id));
-    }
-}
-impl runtime_fs::directory_backend::WorkspaceCreatedTemporaryBackend for HomeCreatedTemporary {
-    fn set_permissions(&self, mode: u32) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.set_temporary_permissions(self.id, mode))
-            .map_err(|error| error.to_string())
-    }
-
-    fn prepare_atomic_save(
-        &self,
-    ) -> runtime_fs::directory_backend::AtomicSavePreparation<
-        Arc<dyn runtime_fs::directory_backend::WorkspacePendingReplacementBackend>,
-    > {
-        use runtime_fs::directory_backend::AtomicSavePreparation as Outcome;
-        match self
-            .custody
-            .call(|source| Ok(source.home()?.prepare_created_atomic_save(self.id)))
-        {
-            Ok(Outcome::Prepared(id)) => Outcome::Prepared(Arc::new(HomePendingReplacement {
-                cache: ControllerCache::default(),
-                custody: self.custody.clone(),
-                id,
-            })),
-            Ok(Outcome::Refused(error)) => Outcome::Refused(error),
-            Ok(Outcome::Unknown(error)) => Outcome::Unknown(error),
-            Err(error) => Outcome::Unknown(error.to_string()),
-        }
-    }
-
-    fn prepare_replace(
-        &self,
-    ) -> Result<Arc<dyn runtime_fs::directory_backend::WorkspacePendingReplacementBackend>, String>
-    {
-        let id = self
-            .custody
-            .call(|source| source.home()?.prepare_created_replacement(self.id))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomePendingReplacement {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-
-    fn live_scope(&self) -> Option<Result<(), String>> {
-        Some(self.check())
-    }
-    fn check(&self) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.check_created_temporary(self.id))
-            .map_err(|error| error.to_string())
-    }
-    fn retire(&self) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
-        let id = self
-            .custody
-            .call(|source| source.home()?.retire_created_temporary(self.id))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(HomeJob {
-            cache: ControllerCache::default(),
-            custody: self.custody.clone(),
-            id,
-        }))
-    }
-}
-
-/// Actual source capability retained under the same installed Files custody.
-/// This does not admit the daemon receiver or derive a canonical record ID.
-struct HomeHistoryReadSubject {
-    cache: ControllerCache,
-    custody: Arc<Custody>,
-    id: u64,
-}
-impl Drop for HomeHistoryReadSubject {
-    fn drop(&mut self) {
-        if !self.cache.open() {
-            return;
-        }
-        let _ = self
-            .custody
-            .call(|source| source.home()?.release_history_read(self.id));
-    }
-}
-impl runtime_fs::directory_backend::WorkspaceHistoryReadSubjectBackend for HomeHistoryReadSubject {
-    fn retire_controller_cache(&self) -> Result<(), String> {
-        self.cache
-            .retire(&self.custody, ControllerRelease::Read(self.id))
-    }
-
-    fn retire_daemon_handoff(&self, ticket: [u8; 16]) -> Result<(), String> {
-        self.custody
-            .cleanup(ControllerCleanup::ReadHandoff {
-                id: self.id,
-                ticket,
-            })
-            .map_err(|error| error.to_string())
-    }
-    fn arm_daemon_handoff(&self, challenge: [u8; 32]) -> Result<[u8; 16], String> {
-        self.custody
-            .call(|source| source.home()?.arm_history_read_handoff(self.id, challenge))
-            .map_err(|error| error.to_string())
-    }
-
-    fn check_scope(&self) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.check_history_read(self.id, false))
-            .map_err(|error| error.to_string())
-    }
-    fn check(&self) -> Result<(), String> {
-        self.custody
-            .call(|source| source.home()?.check_history_read(self.id, true))
-            .map_err(|error| error.to_string())
-    }
-    fn observe(&self) -> Result<runtime_fs::directory_backend::HistoryReadObservation, String> {
-        self.custody
-            .call(|source| source.home()?.observe_history_read(self.id))
-            .map_err(|error| error.to_string())
     }
 }

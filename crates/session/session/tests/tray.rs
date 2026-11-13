@@ -17,8 +17,6 @@
               failed step is the assertion"
 )]
 
-mod common;
-
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -150,7 +148,7 @@ impl FakeMenu {
 /// rather than for a while.
 #[track_caller]
 fn until<T>(session: &mut Session, what: &str, mut asked: impl FnMut(&Session) -> Option<T>) -> T {
-    common::wait_for(session, what, |session| asked(session))
+    crate::common::wait_for(session, what, |session| asked(session))
 }
 
 /// The resource published for the tray menu entry labelled `label` .

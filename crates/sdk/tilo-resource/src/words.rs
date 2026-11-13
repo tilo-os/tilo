@@ -13,11 +13,12 @@
 //! publishes a type none registered (a test's, a tool's) gets its app's name
 //! from [`tilo_actions::in_words`] of that part.
 //!
-//! **A noun is refined in the app's catalogue, never in code.** A type whose
-//! name English cannot derive a noun for (`Person` is a `person` and
-//! `people`) writes the kind's message with `$count` in its
-//! `locales/<lang>.ftl`, the same catalogue entry that names the type
-//! ([`crate::label`]); a noun no catalogue of theirs holds is the derived one.
+//! **A noun an app words its own way is refined in the app's catalogue, never in
+//! code.** A type called by an ordinary English noun says it already (`Person` is a
+//! `person` and `people`, `Videos` a `video` and `videos`); one an app calls
+//! something else (a `Note` it calls a `notebook`) writes the kind's message with
+//! `$count` in its `locales/<lang>.ftl`, the same catalogue entry that names the
+//! type ([`crate::label`]); a noun no catalogue of theirs holds is the derived one.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -180,11 +181,11 @@ mod tests {
         assert_eq!(words.app, Noun::new("Tube", "tubes"));
         assert!(!words.root);
         assert!(type_words("tube.library", "Tube").root);
-        // A noun English cannot derive is the catalogue's, not code's.
+        // A noun an app words otherwise is its catalogue's, never code's.
         assert_eq!(
             type_words("tube.person", "Person").noun,
-            Noun::new("person", "persons"),
-            "the derived noun, until a catalogue refines it"
+            Noun::new("person", "people"),
+            "an irregular plural English writes is derived"
         );
     }
 

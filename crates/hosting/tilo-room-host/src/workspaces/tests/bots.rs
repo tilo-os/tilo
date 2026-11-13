@@ -5,7 +5,7 @@ use super::*;
 
 /// A one-step program posting to chat, as canonical text.
 #[cfg(feature = "agents")]
-fn bridge_program() -> String {
+pub(crate) fn bridge_program() -> String {
     let rule = tilo_action_policy::Rule::new(
         tilo_action_policy::TreePath::root()
             .any(tilo_action_policy::Level::Workspace)
@@ -54,16 +54,7 @@ fn bot_device(
         user_public_key: installer.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
         device_label: "Bot: Bridge".into(),
-        capabilities: DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
-        },
+        capabilities: DeviceCapabilities::nothing(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -100,25 +91,7 @@ fn install_bot(
     (id, seed): (&str, u8),
     appearance: tilo_peer_state::AppearancePolicy,
 ) {
-    use tilo_peer_state::workspace_membership::{BotInstall, WorkspaceMembershipCommand};
-    let command = WorkspaceMembershipCommand::InstallBot(Box::new(BotInstall {
-        installation: tilo_peer_state::Installation {
-            id: tilo_peer_state::InstallationId::parse(id).unwrap(),
-            program: tilo_automation::program::program_hash(program.as_bytes()),
-            name: "Bridge".into(),
-            icon: None,
-            installed_by: hex::encode(cert.user_public_key),
-            installed_at_ms: 1,
-            appearance,
-            source: None,
-            armed_at: vec![],
-            connector_cursors_from_ms: 1,
-            inputs: BTreeMap::default(),
-            paused: false,
-        },
-        program: program.into(),
-        device: Some(bot_device(id, peer.workspace_id(), seed)),
-    }));
+    let command = install_command(peer.workspace_id(), program, (id, seed), appearance);
     assert_eq!(
         peer.workspace_mut().apply_workspace_membership_command(
             cert,
@@ -128,6 +101,37 @@ fn install_bot(
         ),
         Ok(true)
     );
+}
+
+/// The command installing `program` as bot `id` with `appearance` in
+/// `workspace`, its device of seed `seed`, whose key the fixture derives from
+/// that seed.
+#[cfg(feature = "agents")]
+pub(crate) fn install_command(
+    workspace: &str,
+    program: &str,
+    (id, seed): (&str, u8),
+    appearance: tilo_peer_state::AppearancePolicy,
+) -> tilo_peer_state::workspace_membership::WorkspaceMembershipCommand {
+    use tilo_peer_state::workspace_membership::{BotInstall, WorkspaceMembershipCommand};
+    WorkspaceMembershipCommand::InstallBot(Box::new(BotInstall {
+        installation: tilo_peer_state::Installation {
+            id: tilo_peer_state::InstallationId::parse(id).unwrap(),
+            program: tilo_automation::program::program_hash(program.as_bytes()),
+            name: "Bridge".into(),
+            icon: None,
+            installed_by: hex::encode(SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes()),
+            installed_at_ms: 1,
+            appearance,
+            source: None,
+            armed_at: vec![],
+            connector_cursors_from_ms: 1,
+            inputs: BTreeMap::default(),
+            paused: false,
+        },
+        program: program.into(),
+        device: Some(bot_device(id, workspace, seed)),
+    }))
 }
 
 /// A bot installed with personas shows other names; one installed to post

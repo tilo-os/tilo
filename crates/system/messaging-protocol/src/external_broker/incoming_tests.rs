@@ -670,7 +670,6 @@ async fn sdk_durability_hook_refuses_foreign_replaced_and_lost_supervisors() {
     assert!(hook.on_messages(foreign, batch).await.is_err());
     assert!(fixture.broker.client().supports(&fixture.route));
     drop(broker);
-    // Current grants and a client loan remain valid; only the supervisor is gone.
     assert!(fixture.broker.client().supports(&fixture.route));
     assert!(
         hook.on_messages(fixture.source.clone(), batch)

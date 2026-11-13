@@ -85,3 +85,210 @@ fn reset_clears_the_marks() {
     scene.reset();
     assert!(scene.encoding().resources.marks.is_empty());
 }
+
+/// Every widget a container draws itself, not only those drawn through the
+/// flow containers, carries a key of its own: a card grid draws its cards and
+/// each card its body.
+#[test]
+fn a_container_that_draws_its_children_itself_keys_each_of_them() {
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::widget::{Button, Card, CardGrid, DrawChild, Element, Widget};
+
+    let cards: Vec<Element> = (0..3)
+        .map(|i| {
+            Box::new(Card::new(Box::new(Button::new(
+                &format!("card-{i}"),
+                &format!("Card {i}"),
+            )))) as Element
+        })
+        .collect();
+    let mut grid: Element = Box::new(CardGrid::new(cards));
+    let theme = Theme::default();
+    let mut text = TextRenderer::new();
+    crate::widget::layout::lay_out_detached(
+        grid.as_mut(),
+        Rect::new(0.0, 0.0, 800.0, 600.0),
+        &theme,
+        &mut text,
+    )
+    .unwrap();
+
+    key_widgets(Some(keyer()));
+    begin_frame();
+    let mut scene = Scene::new();
+    grid.draw_child(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+
+    fn keys(widget: &dyn Widget, out: &mut Vec<(&'static str, Option<String>)>) {
+        out.push((widget.concrete_type_name(), painted_key(widget)));
+        widget.for_each_child(&mut |child: &dyn Widget| keys(child, out));
+    }
+    let mut drawn = Vec::new();
+    keys(grid.as_ref(), &mut drawn);
+    key_widgets(None);
+
+    let unkeyed: Vec<_> = drawn.iter().filter(|(_, key)| key.is_none()).collect();
+    assert!(unkeyed.is_empty(), "drawn without a key: {unkeyed:?}");
+    let distinct: HashSet<_> = drawn.iter().map(|(_, key)| key.clone()).collect();
+    assert_eq!(distinct.len(), drawn.len(), "{drawn:?}");
+    assert!(
+        drawn.len() >= 7,
+        "the grid, three cards and their buttons: {drawn:?}"
+    );
+}
+
+/// A frame's root widgets keep their keys when something else is drawn at
+/// the root of another scene first in the same frame (a measuring pass, a
+/// drag's picture): an element replaced by key would take the page's
+/// selection of its text with it.
+#[test]
+fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::widget::{Button, DrawChild as _, Element};
+
+    let theme = Theme::default();
+    let mut text = TextRenderer::new();
+    let mut panel: Element = Box::new(Button::new("panel", "Panel"));
+    let mut aside: Element = Box::new(Button::new("aside", "Aside"));
+    let mut scratch = Scene::new();
+    let mut draw = |extra: bool| {
+        begin_frame();
+        if extra {
+            aside.draw_child(
+                &mut scratch,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+        }
+        let mut scene = Scene::new();
+        panel.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        begins(&scene)
+    };
+    key_widgets(Some(keyer()));
+    let alone = draw(false);
+    let after_another = draw(true);
+    assert_eq!(alone, after_another);
+    // Nor when the frame's own scene is drawn, reset and drawn again.
+    begin_frame();
+    let mut scene = Scene::new();
+    panel.draw_child(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+    scene.reset();
+    panel.draw_child(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+    key_widgets(None);
+    assert_eq!(begins(&scene), alone);
+}
+
+/// A leaf that paints its rect.
+struct Leaf {
+    rect: Rect,
+}
+
+impl Widget for Leaf {
+    crate::testing::inert_widget_methods!(leaf_layout, name = "leaf");
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+/// A container that draws the children it is told to and says nothing about
+/// the ones it leaves out, as a list showing one page of its rows does.
+struct Skips {
+    rect: Rect,
+    leaves: Vec<Leaf>,
+}
+
+impl Skips {
+    fn new(count: usize) -> Self {
+        Self {
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            leaves: (0..count)
+                .map(|index| Leaf {
+                    rect: Rect::new(0.0, index as f64 * 10.0, 10.0, index as f64 * 10.0 + 10.0),
+                })
+                .collect(),
+        }
+    }
+
+    fn draw(&self, scene: &mut Scene, drawn: &[usize]) {
+        let begun = begin_widget(scene, self, None, Affine::IDENTITY);
+        for &index in drawn {
+            let leaf = begin_widget(scene, &self.leaves[index], None, Affine::IDENTITY);
+            square(scene, Affine::IDENTITY);
+            end_widget(scene, leaf);
+        }
+        end_widget(scene, begun);
+    }
+}
+
+impl Widget for Skips {
+    crate::testing::inert_widget_methods!(leaf_layout, name = "skips");
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.leaves.iter().map(|leaf| leaf as &dyn Widget).collect()
+    }
+}
+
+/// One frame of `container` drawing `drawn`, and the keys its children drew
+/// under, as the page names them.
+fn frame(container: &Skips, drawn: &[usize]) -> Vec<String> {
+    key_widgets(Some(keyer()));
+    begin_frame();
+    let mut scene = Scene::new();
+    container.draw(&mut scene, drawn);
+    let keys = drawn
+        .iter()
+        .map(|&index| painted_key(&container.leaves[index]).expect("a drawn leaf is keyed"))
+        .collect();
+    key_widgets(None);
+    // What the host does with every frame it shows.
+    retain_shown(&scene);
+    keys
+}
+
+#[test]
+fn a_container_that_skips_a_child_keeps_the_keys_of_the_children_it_draws() {
+    let container = Skips::new(3);
+    let all = frame(&container, &[0, 1, 2]);
+    // The child between the two comes back: it takes the slot it would have
+    // had all along, and the others keep theirs.
+    let skipped = frame(&container, &[0, 2]);
+    assert_eq!(skipped, vec![all[0].clone(), all[2].clone()]);
+    assert_eq!(frame(&container, &[0, 1, 2]), all);
+    // One child alone keeps the key it had among its siblings.
+    assert_eq!(frame(&container, &[1]), vec![all[1].clone()]);
+    assert_eq!(frame(&container, &[0, 1, 2]), all);
+    // Each child has a key of its own.
+    assert_ne!(all[0], all[1]);
+    assert_ne!(all[1], all[2]);
+}

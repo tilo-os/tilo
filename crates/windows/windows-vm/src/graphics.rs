@@ -20,10 +20,7 @@ pub enum GraphicsRecommendation {
     /// A VF already bound to vfio-pci or an already-created mediated device is
     /// present.  It is a candidate for a later explicit assignment review.
     PartitionReadyForExplicitAssignment,
-    /// The kernel driver exposes a partitioning interface, but no assignable
-    /// partition has been prepared.
     PartitionCapableNotConfigured,
-    /// No safe partition interface is visible. Keep the Tilo GPU on the host.
     Paravirtual2d,
 }
 
@@ -86,7 +83,6 @@ pub enum GraphicsProbeError {
 }
 
 impl GraphicsCapabilities {
-    /// Probe Linux's documented PCI SR-IOV and VFIO mdev sysfs interfaces.
     pub fn probe() -> Result<Self, GraphicsProbeError> {
         Self::probe_sysfs(Path::new("/sys"))
     }

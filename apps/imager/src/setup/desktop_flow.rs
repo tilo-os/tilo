@@ -1,8 +1,4 @@
-//! UI-facing orchestration for the native Tilo Desktop installation.
-//!
-//! Slow host discovery, download, and helper tracking stay on workers. This
-//! coordinator only consumes bounded channel events and publishes explicit UI
-//! state. The privileged helper remains the final authority for installation.
+//! Orchestration for the native Tilo Desktop installation, as the window sees it.
 
 use std::path::PathBuf;
 use std::sync::{
@@ -132,8 +128,6 @@ impl DesktopFlow {
         }
     }
 
-    /// Deterministic state for screenshots and controller-level UI tests.
-    /// Live setup always uses [`Self::new_live`] and the bundled catalog.
     #[must_use]
     pub(crate) fn from_fixture_state(state: DesktopFlowState) -> Self {
         let mut flow = Self::without_start(DesktopRuntime::default());
@@ -196,7 +190,6 @@ impl DesktopFlow {
         self.diagnostic_log.as_deref()
     }
 
-    /// Begin a fresh non-mutating readiness check.
     pub fn start_check(&mut self) -> Result<(), String> {
         self.cancel = None;
         self.cancel_requested = false;
@@ -213,7 +206,6 @@ impl DesktopFlow {
         self.service_session_protocol = protocol;
     }
 
-    /// Recheck the exact reviewed release before starting a download.
     pub fn start_install(&mut self) -> Result<(), String> {
         let DesktopFlowState::Ready(selection) = &self.state else {
             return Err("Desktop installation is not ready for authorization.".into());
@@ -228,7 +220,6 @@ impl DesktopFlow {
         self.start_check()
     }
 
-    /// Retry always re-probes; prior UI state never authorizes another attempt.
     pub fn retry(&mut self) -> Result<(), String> {
         self.approved_selection = None;
         self.start_check()
@@ -246,7 +237,6 @@ impl DesktopFlow {
         true
     }
 
-    /// Consume at most a small fixed number of worker events on one UI tick.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         for _ in 0..POLL_BUDGET {
@@ -496,7 +486,6 @@ fn selection_identity(selection: &DesktopSelection) -> (String, String, String) 
     )
 }
 
-/// The host as people know it: "Fedora Linux 44 (x86-64)".
 fn host_label(host: &DesktopHost) -> String {
     match (&host.os_release, &host.architecture) {
         (Ok(os), Ok(architecture)) => {
@@ -689,8 +678,6 @@ mod tests {
         flow.state = DesktopFlowState::Ready(selection(supported.clone()));
         flow.start_install().unwrap();
         assert!(flow.has_pending_operation());
-        // Even the same release ID/version/digest cannot lose its authenticated
-        // consumer declaration between selection and the fresh host check.
         flow.apply_probe(Ok(DesktopProbeSnapshot {
             host: host(InstalledPackage::Absent),
             releases: vec![legacy.clone()],
@@ -710,7 +697,6 @@ mod tests {
             releases: vec![supported],
         }));
         assert!(matches!(flow.state(), DesktopFlowState::Downloading(_)));
-        // Fresh setup with no protected grants remains compatible with legacy packages.
         let mut fresh = DesktopFlow::with_runtime_and_state(
             runtime(),
             DesktopFlowState::Ready(selection(legacy)),

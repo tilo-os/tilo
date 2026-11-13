@@ -22,7 +22,7 @@ say() { printf 'hosted-init: %s\n' "$*"; }
 # that a host that passed `ro` still gets a guest whose home is writable.
 mount -o remount,rw / 2>/dev/null || say 'left / as the kernel mounted it'
 
-# /proc and /sys first: the rest of this reads them, and apt, rustup and node
+# /proc and /sys first: the rest of this reads them, and dnf, rustup and node
 # all read them later. What is mounted is decided from /proc/self/mounts, so
 # nothing here needs a tool the image might not carry.
 [ -e /proc/self/mounts ] || mount -t proc -o nosuid,nodev,noexec proc /proc

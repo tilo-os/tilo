@@ -1,5 +1,5 @@
-//! Privacy-minimal, bounded power history shared by the compositor sampler
-//! and Settings reader.
+//! Privacy-minimal, bounded power history shared by the compositor's sampler and
+//! the Settings reader.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -43,9 +43,8 @@ pub struct BatteryHistory {
 }
 
 impl BatteryHistory {
-    /// Add a sample if the cadence allows it. Returns whether durable state
-    /// changed, so a frequent `UPower` poll does not become a frequent disk
-    /// write.
+    /// Add a sample if the cadence allows it. Returns whether durable state changed,
+    /// so a frequent `UPower` poll does not become a frequent disk write.
     pub fn record(&mut self, point: BatteryHistoryPoint) -> bool {
         self.points
             .retain(|p| point.unix_minute.saturating_sub(p.unix_minute) <= MAX_AGE_MINUTES);
@@ -103,9 +102,9 @@ fn history_path_in(state_home: &Path, kind: PowerSourceKind) -> PathBuf {
     state_home.join("tilo").join(name)
 }
 
-/// The power service's history writer. It reads each history file once,
-/// keeps it, and rewrites a file only when a point lands in it — so sampling
-/// costs no disk I/O between points.
+/// The power service's history writer: it reads each history file once, keeps
+/// it, and rewrites a file only when a point lands in it, so sampling costs no
+/// disk I/O between points.
 #[derive(Debug)]
 pub struct PowerHistoryWriter {
     state_home: Option<PathBuf>,
@@ -120,7 +119,6 @@ impl Default for PowerHistoryWriter {
 }
 
 impl PowerHistoryWriter {
-    /// Write under the user's private state directory.
     pub fn new() -> Self {
         Self::in_state_home(tilo_paths::xdg::state_home())
     }
@@ -134,8 +132,8 @@ impl PowerHistoryWriter {
         }
     }
 
-    /// Record a point for `kind` at `point.unix_minute` when the cadence
-    /// allows it; `Ok(true)` when it landed and the file was rewritten.
+    /// Record a point for `kind` at `point.unix_minute` when the cadence allows it;
+    /// `Ok(true)` when it landed and the file was rewritten.
     pub fn record(
         &mut self,
         kind: PowerSourceKind,
@@ -154,8 +152,8 @@ impl PowerHistoryWriter {
         Ok(true)
     }
 
-    /// The first minute at which a point for `kind` can land, or `None`
-    /// before one has been recorded or read.
+    /// The first minute at which a point for `kind` can land, or `None` before one
+    /// has been recorded or read.
     pub fn next_due_minute(&self, kind: PowerSourceKind) -> Option<u64> {
         let history = match kind {
             PowerSourceKind::Battery => self.battery.as_ref(),
@@ -289,8 +287,8 @@ mod tests {
             Some(1_000 + MIN_INTERVAL_MINUTES)
         );
 
-        // Kept in memory: a file that vanished is not re-read, and a sample
-        // that does not land writes nothing.
+        // Kept in memory: a file that vanished is not re-read, and a sample that does
+        // not land writes nothing.
         std::fs::remove_file(&path).unwrap();
         assert!(
             !writer

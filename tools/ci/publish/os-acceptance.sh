@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The OS image and its dev image as devices get them, as root in a micro-VM step with a
-# /dev/kvm of its own. Nothing here holds a secret or publishes. The stable channel's gate, and
-# the dev disk's; main's dev images need only os-dev-gate-ARCH.
+# /dev/kvm of its own. Nothing here holds a secret or publishes. A release's gate, and the dev
+# disk's; main's dev images need only os-dev-gate-ARCH.
 #
 #   os-acceptance.sh ARCH IMAGE DISK OUT   IMAGE: os-image-ARCH's layout, DISK: os-dev-disk-ARCH's
 #                                          output (the dev image installed); reports and logs into

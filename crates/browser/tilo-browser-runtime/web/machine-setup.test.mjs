@@ -1,15 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {installSecret, readInstallSecret, setUpFailure, setUpMachine} from './machine-setup.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const TOKEN = 'provisioned-install-token-0123';
 const person = {userPublicKey: 'aa'.repeat(32), sign: async () => new Uint8Array(64), locked: false};
 // Certificates as a stand-in runtime issues them: the canonical encoding is the JSON.
-const runtime = {
+const runtime = runtimeFake({
   issueDeviceCert: async (_, key, label, role) => JSON.stringify({key, role}),
   deviceCertCanonical: json => new TextEncoder().encode(json),
   nodeSessionVouched: () => true,
-};
+});
 
 /** A node waiting for its owner, as `tilo-relay`'s install route answers;
  * once installed it serves as a host, which has no install route. */

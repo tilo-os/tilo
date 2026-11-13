@@ -133,10 +133,10 @@ impl<P: Resource> PersonRecord<P> {
     }
 
     /// Apply `action` now: one change of the record, attributed to the
-    /// person, recorded in its history and — for content the person made —
+    /// person (or to whoever the invocation carried out here is for), recorded in its history and — for content the person made —
     /// one undo step of theirs.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        self.apply_as(action, &ActionInvoker::actor(&self.shared.me))
+        self.apply_as(action, &super::record::acting(&self.shared.me))
     }
 
     /// [`Self::apply`] by `invoker`: the person, or software acting for
@@ -409,9 +409,9 @@ fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::A
     )
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(if undo {
-        format!("Take back your last change to your {label}.")
+        crate::copy_catalogue::t_args("tilo-app-undo-description", &[("label", label.into())])
     } else {
-        format!("Make again the change to your {label} you last took back.")
+        crate::copy_catalogue::t_args("tilo-app-redo-description", &[("label", label.into())])
     })
 }
 
@@ -678,7 +678,7 @@ impl PersonState {
         let records = self
             .records
             .as_ref()?
-            .of_package(owner)
+            .of_app(owner)
             .map_err(|error| {
                 tracing::warn!(owner, %error, "the person's records of another app are unavailable");
             })
@@ -764,8 +764,7 @@ impl PersonState {
 
     /// Answer an undo or redo of an open record: how many steps it took.
     pub(crate) fn answer(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
-        let invoker = ui_core::invocation_scope::current_invoker()
-            .unwrap_or_else(|| ActionInvoker::actor(&self.me));
+        let invoker = super::record::acting(&self.me);
         self.answer_for(payload, &invoker)
     }
 
@@ -838,6 +837,7 @@ fn open_record(
 fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     let following = Rc::downgrade(shared);
     let applying = Rc::downgrade(shared);
+    let reading = Rc::downgrade(shared);
     Held::new(
         resource_id(P::KIND),
         format!("Your {}", P::LABEL.to_lowercase()),
@@ -855,6 +855,11 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
             PersonRecord { shared }.apply_as(action, invoker)
         },
     )
+    .reading(move |read| {
+        if let Some(shared) = reading.upgrade() {
+            shared.record.read(|doc| read(doc));
+        }
+    })
 }
 
 impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {

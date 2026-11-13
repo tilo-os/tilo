@@ -1,5 +1,3 @@
-// One test binary: files stay separate, #[path] pulls them in as modules.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"

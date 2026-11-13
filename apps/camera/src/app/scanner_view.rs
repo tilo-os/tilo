@@ -1,6 +1,7 @@
 //! The code scanner: the viewfinder with a scan guide, the decoded code's
 //! outline, its result card beside or below the guide, and the recent scans.
 
+use crate::CATALOG;
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -21,18 +22,10 @@ use ui::theme::Theme;
 
 /// Where the scanner's parts sit for one window size.
 pub(super) struct ScannerLayout {
-    /// The column beside the guide on a wide window.
     pub side: Option<Rect>,
-    /// The square the code is held in.
     pub guide: Rect,
-    /// The result card, when a code is decoded and not dismissed.
     pub card: Option<Rect>,
-    /// Where the recent scans may grow: under the card in the side column
-    /// on a wide window, under the card or the guide otherwise. `None`
-    /// when not even one scan fits.
     pub recent: Option<Rect>,
-    /// The band above the guide that holds the hint, or the tag naming a
-    /// detected code.
     pub hint: Rect,
 }
 
@@ -48,7 +41,6 @@ pub(super) fn code_icon(kind: &CodeKind) -> Icon {
     }
 }
 
-/// The tag over a code detected in the viewfinder, e.g. "QR code detected".
 pub(super) fn detected_label(symbology: &str) -> String {
     let name = if symbology.eq_ignore_ascii_case("QR Code") {
         "QR code"
@@ -66,7 +58,6 @@ struct CardContent {
     actions: Vec<&'static str>,
 }
 
-/// The first action a code offers is the card's main one.
 fn action_role(index: usize) -> ButtonRole {
     if index == 0 {
         ButtonRole::Primary
@@ -86,7 +77,6 @@ impl CardContent {
 }
 
 impl CameraApp {
-    /// Paint the scanner.
     pub(super) fn draw_scanner(
         &mut self,
         scene: &mut Scene,
@@ -116,7 +106,7 @@ impl CameraApp {
             if code.is_some() {
                 self.draw_detected_overlay(scene, t, tr, theme, full, layout.hint);
             } else {
-                let hint = ui::i18n!("Point the camera at a QR code or barcode");
+                let hint = CATALOG.t("Point the camera at a QR code or barcode");
                 let local = theme.on_ground(theme.tokens.colors.media.scrim);
                 let mut ctx = PaintCtx::new(scene, t, tr, &local);
                 let size = ctx.measure_role(&hint, TextRole::Label, None);
@@ -404,7 +394,6 @@ impl CameraApp {
             .paint(scene, t, tr, theme);
     }
 
-    /// No camera: scan a code from a saved image instead.
     fn draw_scanner_offline(
         &mut self,
         scene: &mut Scene,
@@ -437,7 +426,6 @@ impl CameraApp {
         );
     }
 
-    /// The height of the result card for `code` at `width`.
     fn scan_card_height(
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -581,11 +569,12 @@ impl CameraApp {
             body.x1,
             header_mid + control / 2.0,
         );
-        let close = ButtonFace::icon_only(close, Icon::X, "Dismiss");
+        let dismiss = crate::CATALOG.t("camera-a11y-dismiss-scan");
+        let close = ButtonFace::icon_only(close, Icon::X, &dismiss);
         let hit = close.hit_rect(theme);
         let hovered = close.contains(theme, self.last_mouse);
         Button::paint(scene, t, tr, theme, &close.hovered(hovered));
-        self.tooltip_targets.push((hit, "Dismiss".to_owned()));
+        self.tooltip_targets.push((hit, dismiss.clone()));
         self.push_region(hit, Action::DismissScan);
         for (i, (label, rect)) in content.actions.iter().zip(actions).enumerate() {
             let rect = rect + body.origin().to_vec2();
@@ -597,14 +586,13 @@ impl CameraApp {
         }
     }
 
-    /// The height of the recent scans holding their heading and one scan.
     fn recent_scans_min_height(tr: &mut TextRenderer, theme: &Theme) -> f64 {
         let local = on_panel(theme);
         let spacing = &theme.tokens.spacing;
         let heading = f64::from(local.text(TextRole::Subheading).line_height_px())
             + 2.0 * f64::from(spacing.s3);
         let row = ListRowFace::new("Scan")
-            .secondary("Kind")
+            .secondary(&CATALOG.t("camera-scan-kind"))
             .meta("now")
             .leading(RowLeading::Icon(Icon::Link))
             .height(tr, &local);
@@ -626,7 +614,7 @@ impl CameraApp {
         let local = on_panel(theme);
         let entries = self.scan_history();
         let now = super::now_secs();
-        let heading = ui::i18n!("Recent scans");
+        let heading = CATALOG.t("Recent scans");
         let heading_h = f64::from(local.text(TextRole::Subheading).line_height_px());
         let header = heading_h + 2.0 * f64::from(spacing.s3);
         // Measure the rows that fit, then size the panel to them.

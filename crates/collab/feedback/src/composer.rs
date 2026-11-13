@@ -500,7 +500,7 @@ mod tests {
     fn composer(store: Rc<MemoryStore>, calls: Rc<RefCell<Calls>>) -> Composer {
         Composer::new(
             destination(),
-            Outbox::open(store, StorageKey::package("feedback")).unwrap(),
+            Outbox::open(store, StorageKey::app("feedback")).unwrap(),
             Box::new(Host(calls)),
         )
         .unwrap()
@@ -802,7 +802,7 @@ mod tests {
     fn rejecting_the_first_local_write_preserves_the_approved_retry_identity() {
         let store = Rc::new(crate::test_store::RejectOnceStore::new());
         let calls = Rc::new(RefCell::new(Calls::default()));
-        let outbox = Outbox::open(store.clone(), StorageKey::package("feedback")).unwrap();
+        let outbox = Outbox::open(store.clone(), StorageKey::app("feedback")).unwrap();
         let mut composer =
             Composer::new(destination(), outbox, Box::new(Host(calls.clone()))).unwrap();
         let id = "0123456789abcdef0123456789abcdef".to_owned();
@@ -826,7 +826,7 @@ mod tests {
         let submitted = calls.borrow().sent.first().unwrap().clone();
         assert_eq!(submitted.id, id);
         drop(composer);
-        let outbox = Outbox::open(store, StorageKey::package("feedback")).unwrap();
+        let outbox = Outbox::open(store, StorageKey::app("feedback")).unwrap();
         let mut restored =
             Composer::new(destination(), outbox, Box::new(Host(calls.clone()))).unwrap();
         restored.pump().unwrap();

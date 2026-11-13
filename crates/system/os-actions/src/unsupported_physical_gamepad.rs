@@ -1,4 +1,4 @@
-//! Explicit absence of Linux evdev on other hosts; remote forwarding remains available.
+//! No evdev on other hosts; forwarding from a device that has it remains available.
 use crate::ForwardedGamepadEvent;
 use std::{io, os::fd::OwnedFd, path::PathBuf};
 fn unsupported() -> io::Error {
@@ -10,7 +10,6 @@ fn unsupported() -> io::Error {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalGamepadId(PathBuf);
 impl PhysicalGamepadId {
-    /// The controller at `path`, the way discovery names the ones it finds.
     #[must_use]
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self(path.into())

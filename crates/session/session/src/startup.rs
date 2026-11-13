@@ -264,7 +264,7 @@ pub fn before_desk(identity: &Identity, host_desktop: bool) -> Option<BeforeDesk
 /// found it unusable; `None` when there is nothing left to set up.
 #[must_use]
 pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
-    use crate::mount::firstboot::setup_due;
+    use crate::firstboot::setup_due;
     let store = match DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => {

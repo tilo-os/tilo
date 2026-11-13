@@ -1,6 +1,5 @@
-//! Verification commands, run with bounded output and a deadline, and
-//! killed (and reaped) on every way out, including the service being
-//! stopped.
+//! Verification commands, run with bounded output and a deadline, and killed (and
+//! reaped) on every way out, including the service being stopped.
 
 use std::ffi::OsString;
 use std::os::unix::process::ExitStatusExt;

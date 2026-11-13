@@ -1,10 +1,7 @@
-//! What `tilo-hosted-jail` does as root. It runs single-threaded, so it
-//! forks freely.
-//!
-//! Every input is the service's: the slot number (bounded by the
-//! configuration), the VM's size, and three directory descriptors the
-//! service opened itself. Paths come only from the root-owned
-//! configuration.
+//! What `tilo-hosted-jail` does as root. It runs single-threaded, so it forks
+//! freely. Every input is the service's: the slot number (bounded by the
+//! configuration), the VM's size, and three directory descriptors the service
+//! opened itself. Paths come only from the root-owned configuration.
 
 use std::ffi::CString;
 use std::fs::File;
@@ -18,15 +15,17 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::{GUEST_DIR, GUEST_FD, JailConfig, SOCKETS_DIR, SOCKETS_FD, VMM_DIR, VMM_FD};
-use crate::hosted::network::{self, BRIDGE, TAP, UPLINK};
+use crate::hosted::network::{self, BRIDGE, Endpoint, TAP, UPLINK};
 
-/// What `start` needs besides the configuration.
 pub struct Start {
     pub slot: u32,
     pub vcpus: u32,
     pub memory_mib: u32,
     /// Boot from `/vm/firecracker.json`; else wait for a snapshot.
     pub boot: bool,
+    /// The one destination besides the internet the VM's network allows: the relay its browser
+    /// session joins through.
+    pub relay: Option<Endpoint>,
 }
 
 fn os(what: &str) -> io::Error {
@@ -88,8 +87,8 @@ pub fn enter(config: &JailConfig) -> io::Result<()> {
     ))
 }
 
-/// A directory descriptor the service passed, checked: a directory, owned
-/// by the service or (left by a crash) by the slot's VM.
+/// A directory descriptor the service passed, checked: a directory, owned by the service or (left
+/// by a crash) by the slot's VM.
 fn passed_dir(fd: RawFd, owners: &[u32], what: &str) -> io::Result<File> {
     // SAFETY: the service passed `fd` open for this process; nothing else
     // here owns it.
@@ -108,10 +107,10 @@ fn passed_dir(fd: RawFd, owners: &[u32], what: &str) -> io::Result<File> {
     Ok(file)
 }
 
-/// Make `dir` and the regular files directly in it `uid`'s, group `gid`,
-/// readable and writable by both; the directory set-group-id so what is
-/// made in it is `gid`'s too. Symbolic links and anything else are left
-/// alone, and never followed.
+/// Make `dir` and the regular files directly in it `uid`'s, group `gid`, readable and writable by
+/// both, set-group-id so what is made in it is `gid`'s too. Symbolic links and a file with another
+/// name are left alone and never followed: a clone's memory is its template's, which no VM may
+/// write.
 fn hand_over(dir: &File, uid: u32, gid: u32) -> io::Result<()> {
     use rustix::fs::{Mode, OFlags};
     let fd = dir.as_raw_fd();
@@ -131,7 +130,9 @@ fn hand_over(dir: &File, uid: u32, gid: u32) -> io::Result<()> {
             continue;
         };
         let stat = rustix::fs::fstat(&file).map_err(io::Error::from)?;
-        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile
+            || stat.st_nlink > 1
+        {
             continue;
         }
         rustix::fs::fchown(
@@ -167,7 +168,6 @@ fn fresh_dir(path: &Path, mode: u32, owner: Option<u32>) -> io::Result<()> {
     Ok(())
 }
 
-/// `/sys/fs/cgroup/<cgroup>`, with the controllers the jailer sets.
 fn cgroup_parent(config: &JailConfig) -> io::Result<()> {
     let dir = config.cgroup_dir();
     std::fs::create_dir_all(&dir)?;
@@ -233,7 +233,7 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     }
     cgroup_parent(config).step("making the VMs' cgroup")?;
     if let Some(net) = &config.network {
-        connect(config, net, slot)?;
+        connect(config, net, slot, start.relay)?;
     }
 
     // The jail's directories, in a mount namespace of this process's: the
@@ -306,11 +306,9 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     Ok(jailer)
 }
 
-/// Bind the directory `source` names at `target`. A descriptor opened
-/// before this process made its own mount namespace names a mount of the
-/// old one, which `mount` refuses, so the bind goes by the directory's
-/// path, and the result must be the very directory the service opened: a
-/// directory swapped in between is refused.
+/// Bind the directory `source` names at `target`. A descriptor opened before this process made its
+/// own mount namespace names a mount of the old one, which `mount` refuses, so the bind goes by the
+/// directory's path, and the result must be the very directory the service opened.
 fn bind(source: &File, target: &Path, read_only: bool) -> io::Result<()> {
     let path = std::fs::read_link(format!("/proc/self/fd/{}", source.as_raw_fd()))?;
     let from = CString::new(path.as_os_str().as_bytes())?;
@@ -357,10 +355,12 @@ fn bind(source: &File, target: &Path, read_only: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// The VM's network ([`network`]): a namespace owned by the slot's network
-/// uid, holding the VM's tap and `pasta`'s, bridged and filtered. Leaves
-/// this process in that namespace, so the jailer and Firecracker are.
-fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Result<()> {
+fn connect(
+    config: &JailConfig,
+    net: &super::NetworkConfig,
+    slot: u32,
+    relay: Option<Endpoint>,
+) -> io::Result<()> {
     let (vm, net_uid) = (config.vm_uid(slot), config.net_uid(slot));
     let net_dir = config.net_dir(slot);
     std::fs::DirBuilder::new()
@@ -408,7 +408,7 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
     };
     let blocked = config.blocked().map_err(io::Error::other)?;
     tilo_egress::nft::Netfilter::new(netfilter)?
-        .install_guest(&network::guest_filter(&blocked))
+        .install_guest(&network::guest_filter(&blocked, relay))
         .map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -420,7 +420,15 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
         })?;
 
     let pid_file = net_dir.join("pasta.pid");
-    let pasta = spawn_pasta(&net.pasta, &host, net_uid, holder, &pid_file, net.resolver)?;
+    let pasta = spawn_pasta(
+        &net.pasta,
+        &host,
+        net_uid,
+        holder,
+        &pid_file,
+        net.resolver,
+        relay,
+    )?;
     std::fs::write(cgroup.join("cgroup.procs"), pasta.to_string())
         .step("moving pasta into its cgroup")?;
     control.enslave(BRIDGE, UPLINK)?;
@@ -430,9 +438,9 @@ fn connect(config: &JailConfig, net: &super::NetworkConfig, slot: u32) -> io::Re
     Ok(())
 }
 
-/// A process of the network uid's, holding a user namespace it owns and a
-/// network namespace in it, until killed. It keeps no capability outside
-/// that namespace and dies with this process's successor (Firecracker).
+/// A process of the network uid's, holding a user namespace it owns and a network namespace in it,
+/// until killed. It keeps no capability outside that namespace and dies with this process's
+/// successor (Firecracker).
 fn spawn_holder(net_uid: u32) -> io::Result<u32> {
     let (ready_r, ready_w) = pipe()?;
     // SAFETY: this process is single-threaded; the child only makes system
@@ -441,8 +449,6 @@ fn spawn_holder(net_uid: u32) -> io::Result<u32> {
     check(pid, "fork")?;
     if pid == 0 {
         drop(ready_r);
-        // It outlives everything here: it keeps no descriptor of the
-        // helper's (the VM's directories among them) but its status pipe.
         let keep = ready_w.as_raw_fd().unsigned_abs();
         // SAFETY: closing descriptors only.
         unsafe {
@@ -488,9 +494,8 @@ fn holder_child(uid: u32) -> io::Result<()> {
         check(libc::setresgid(uid, uid, uid), "setresgid")?;
         check(libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0), "keepcaps")?;
         check(libc::setresuid(uid, uid, uid), "setresuid")?;
-        // Changing ids made this process undumpable, which makes its own
-        // /proc files root's: it could not write its uid map, nor could
-        // `pasta`, the same uid, open its namespaces.
+        // Changing ids made this process undumpable, which makes its own /proc files root's: it
+        // could not write its uid map, nor could `pasta`, the same uid, open its namespaces.
         check(libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0), "dumpable")?;
         // Kept capabilities are not effective after the switch: make them
         // so for `unshare`, which then makes the user namespace this uid's.
@@ -563,8 +568,8 @@ unsafe fn set_capabilities(keep: bool) -> io::Result<()> {
     }
 }
 
-/// `pasta` as the network uid, in the host's network namespace, attached
-/// to the holder's. Returns its pid once the namespace is connected.
+/// `pasta` as the network uid, in the host's network namespace, attached to the holder's. Returns
+/// its pid once the namespace is connected.
 fn spawn_pasta(
     binary: &Path,
     host: &File,
@@ -572,8 +577,9 @@ fn spawn_pasta(
     holder: u32,
     pid_file: &Path,
     resolver: Ipv4Addr,
+    relay: Option<Endpoint>,
 ) -> io::Result<u32> {
-    let args = network::pasta_args(holder, &pid_file.display().to_string(), resolver);
+    let args = network::pasta_args(holder, &pid_file.display().to_string(), resolver, relay);
     let host = host.as_raw_fd();
     let mut command = std::process::Command::new(binary);
     command
@@ -779,7 +785,6 @@ fn interface_index(name: &str) -> io::Result<libc::c_int> {
     libc::c_int::try_from(index).map_err(|_| io::Error::other("interface index out of range"))
 }
 
-/// Kill everything in the slot's cgroups.
 pub fn stop(config: &JailConfig, slot: u32) -> io::Result<()> {
     for cgroup in [vm_cgroup(config, slot), net_cgroup(config, slot)] {
         let kill = cgroup.join("cgroup.kill");
@@ -790,8 +795,8 @@ pub fn stop(config: &JailConfig, slot: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// After the VM is gone: end its network, remove its cgroups and jail, and
-/// give its files back to the service.
+/// After the VM is gone: end its network, remove its cgroups and jail, and give its files back to
+/// the service.
 pub fn release(config: &JailConfig, slot: u32) -> io::Result<()> {
     let owners = [config.service_uid, config.vm_uid(slot)];
     let vmm = passed_dir(VMM_FD, &owners, "VM's state")?;

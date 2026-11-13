@@ -1269,8 +1269,6 @@ mod tests {
         #[cfg(feature = "spotify-native")]
         {
             seal_test_streaming_grant(&backend);
-            // This is account identity only. The native output gate separately
-            // refuses missing/unknown protocol eligibility before any PCM.
             assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
             assert_eq!(api.next_request().target, "/me");
         }

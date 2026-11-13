@@ -450,8 +450,6 @@ fn a_failed_verdict_still_carries_its_report() {
     );
 }
 
-// Fonts are hidden by pointing the XDG directories at an empty one; macOS
-// keeps its fonts in system folders no environment variable moves.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn missing_fonts_are_reported_before_any_cargo_quality_command() {

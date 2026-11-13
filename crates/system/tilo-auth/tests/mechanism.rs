@@ -1,9 +1,6 @@
 //! The wrappers, the LUKS2 token and keyslot, and the boot sign-in against an
 //! emulated TPM and a LUKS2 header on a plain file: no root, no loop device,
 //! never the machine's own TPM or disks.
-//!
-//! Needs `swtpm`, `tpm2-tools` and `cryptsetup` (`TILO_REQUIRE_SWTPM=1` makes
-//! their absence a failure). The handoff test also needs the kernel keyring.
 
 #![allow(
     clippy::unwrap_used,
@@ -36,7 +33,6 @@ use tilo_test_env::swtpm::{Swtpm, contains};
 const DISK_PASSPHRASE: &[u8] = b"the installer's disk passphrase";
 const UID: u32 = 1000;
 
-/// Cheap enough for a test; the shipped cost is the contract's.
 const FAST: PasswordParams = PasswordParams {
     m_cost_kib: 8 * 1024,
     t_cost: 1,
@@ -360,7 +356,6 @@ fn a_wrong_secret_costs_one_try_and_the_lockout_refuses_even_the_right_one() {
         _ => panic!("five wrong secrets should lock the TPM out"),
     }
 
-    // Sealing costs no try, so a new secret can be set while the lockout lasts.
     let renewed = Wrapper::tpm(f.tpm(), &key, &Secret::new("2468")).unwrap();
     assert!(matches!(
         renewed
@@ -489,7 +484,6 @@ fn the_sign_in_keyslot_and_token_join_the_header_without_touching_the_rest() {
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens[0].1, SigninToken::mirror(&record, slot));
 
-    // Mirroring again replaces the person's token rather than adding one.
     let mut renamed = record;
     renamed.display_name = "Ada King".into();
     luks::write_token(
@@ -650,7 +644,6 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
     f.throttle();
     let device = f.luks_image();
     let (_, key) = f.enrolled_admin(&device, "123456");
-    // Not there yet, as in an initrd before anything else wrote a key.
     let keys_dir = f.scratch.path().join("run/cryptsetup-keys.d");
     let secret_file = f.scratch.path().join("secret");
     let handoff = format!("tilo-signin-test-cli-{}", std::process::id());
@@ -715,7 +708,6 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
 mod keyring {
     use super::*;
 
-    /// Where a skipped test runs after all.
     const COVERED: &str = "the tilo-auth-keyring check runs it in a micro-VM";
 
     fn keyring_usable() -> Result<(), String> {

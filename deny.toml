@@ -66,8 +66,9 @@ ignore = [
     # this exact advisory acknowledged while tests reject RSA decryption and
     # regressions to RustCrypto private signing in tilo-crypto.
     "RUSTSEC-2023-0071",
-    # crypto-bigint timing variability: 0.7.6 fixes it and the 0.7 line is
-    # pinned there, but no patched 0.5 release exists as of 2026-10-23.
+    # crypto-bigint timing variability: 0.7.6 fixes it and the 0.7 line
+    # carries a non-yanked release, but no patched 0.5 release exists as of
+    # 2026-10-23.
     # crypto-bigint 0.5 arrives only through elliptic-curve 0.13 for the NIST
     # curves hpke-rs-rust-crypto 0.7 (behind openmls_rust_crypto and tilo-seal)
     # compiles in. Tilo never selects them: tilo-seal uses DhKem25519 and
@@ -81,9 +82,12 @@ ignore = [
 unmaintained = "workspace"
 
 [licenses]
-# The desktop/host default is AGPL; the app SDK and its linked support libraries
-# are MIT (LICENSING.md). This policy covers the whole workspace. The narrower
-# app-distribution graph is also checked by tools/sdk/check_licenses.py.
+# The desktop/host default is AGPL; the app SDK and the client side that reaches
+# a workspace are MIT (LICENSING.md). This policy covers the whole workspace, so
+# AGPL is allowed here. The narrower graphs are checked by their own tools:
+# tools/sdk/check_licenses.py for an app distribution, and
+# tools/sdk/check_client_licenses.py for everything an SDK or a script builds on
+# to reach a workspace — no AGPL crate may appear in that one.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

@@ -6,7 +6,7 @@ use ::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use bytes::Bytes;
 use js_sys::{Reflect, Uint8Array};
 use send_wrapper::SendWrapper;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 use url::Url;
 use wasm_bindgen::{JsCast as _, JsValue};
 use web_sys::{
@@ -43,7 +43,6 @@ impl Backend {
     }
 }
 
-/// Where a request goes: the target itself, or the host's proxy.
 struct Route {
     url: Url,
     headers: HeaderMap,
@@ -80,7 +79,7 @@ async fn send(redirects: Redirects, request: Request) -> Result<RawResponse, Net
     init.set_method(request.method.as_str());
     let headers = web_sys::Headers::new().map_err(|error| NetError::Protocol(message(&error)))?;
     for (name, value) in &route.headers {
-        // The browser drops the headers it will not let a page set.
+        // The browser silently drops the headers it will not let a page set.
         if let Ok(value) = value.to_str() {
             let _ = headers.append(name.as_str(), value);
         }
@@ -93,19 +92,18 @@ async fn send(redirects: Redirects, request: Request) -> Result<RawResponse, Net
         Redirects::Follow(_) => RequestRedirect::Follow,
         Redirects::None => RequestRedirect::Manual,
     });
-    // The host (and its proxy) authenticates the page by its own session:
-    // its cookies on the page's origin, the session header on the workspace
-    // host's. Other sites never see the page's cookies.
+    // The host (and its proxy) knows the page by its own cookies on the page's
+    // origin, or by the session header on the workspace host's; other sites never
+    // see the page's cookies.
     init.set_credentials(if route.proxied || !route.cross_origin {
         RequestCredentials::SameOrigin
     } else {
         RequestCredentials::Omit
     });
-    // The page sends no referrer, since its address can carry secrets (an
-    // invite, a ticket). A site called directly still learns which origin
-    // calls it, as CORS's `Origin` already says, and some require it: the
-    // OpenStreetMap tile servers answer a request without one with a
-    // "blocked" tile.
+    // The page sends no referrer, since its address can carry secrets (an invite,
+    // a ticket). A cross-origin site still learns the origin from CORS's `Origin`,
+    // but some require a referrer: the OpenStreetMap tile servers answer without
+    // one with a blocked tile.
     if route.cross_origin {
         init.set_referrer_policy(ReferrerPolicy::StrictOrigin);
     }
@@ -113,7 +111,7 @@ async fn send(redirects: Redirects, request: Request) -> Result<RawResponse, Net
     let outgoing = web_sys::Request::new_with_str_and_init(route.url.as_str(), &init)
         .map_err(|error| NetError::InvalidRequest(message(&error)))?;
 
-    let started = Instant::now();
+    let started = tilo_clock::now();
     let fetched = deadline(request.timeout, async {
         let global = global().ok_or_else(|| NetError::connect("this page has no fetch"))?;
         let fetch: js_sys::Function = get(&global, "fetch")
@@ -168,8 +166,8 @@ async fn send(redirects: Redirects, request: Request) -> Result<RawResponse, Net
     })
 }
 
-/// A rejected `fetch`: an abort from our timeout, or a `TypeError` that the
-/// browser gives for every network failure, CORS refusals included.
+/// A rejected `fetch`: our timeout's abort, or the `TypeError` a browser
+/// gives for every network failure, CORS refusals included.
 fn fetch_error(error: &JsValue, cross_origin: bool) -> NetError {
     if super::is_named(error, "AbortError") || super::is_named(error, "TimeoutError") {
         return NetError::Timeout;
@@ -219,7 +217,7 @@ impl Body {
         Self(SendWrapper::new(Stream {
             reader,
             controller,
-            deadline: remaining.and_then(|remaining| Instant::now().checked_add(remaining)),
+            deadline: remaining.and_then(|remaining| tilo_clock::now().checked_add(remaining)),
         }))
     }
 
@@ -245,7 +243,7 @@ impl Stream {
         };
         let remaining = self
             .deadline
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            .map(|deadline| deadline.saturating_duration_since(tilo_clock::now()));
         let read = deadline(remaining, async {
             promise(reader.read())
                 .await

@@ -1,5 +1,3 @@
-//! What the player remembers: the recent list and the position a clip was left at, the queue entry a finished clip advances past, and the source that is open now.
-
 use super::{
     LocalMediaEntry, PlayerState, RESUME_END_MARGIN_MS, RESUME_WRITE_INTERVAL_MS, RecentMedia,
     RecentVideos, ResumeWrite, Widget, configured_player, local_source_token, resume_key,
@@ -42,11 +40,9 @@ impl PlayerState {
             .map_err(std::io::Error::other)
     }
 
-    /// The row `entry` is kept as, or `None` when it cannot be kept: a page's
-    /// `blob:` source dies with the page, so an entry is kept by its kept
-    /// copy, while that copy is retained, or not at all. The row carries where
-    /// the video stood, which is the only place a resume point outlives the
-    /// session.
+    /// The Recent row `entry` is kept as, or `None` when it cannot be: a page's `blob:`
+    /// source dies with the page, so the entry is kept by its kept copy, while that copy
+    /// is retained.
     pub(super) fn saved_recent_row(&self, entry: &LocalMediaEntry) -> Option<RecentMedia> {
         let source = match self.kept.get(&entry.id) {
             Some(token) => crate::kept::source(token),
@@ -62,15 +58,14 @@ impl PlayerState {
         })
     }
 
-    /// Where `source` left off here, `0` when it has nothing to resume.
+    /// Where `source` left off here; `0` when there is nothing to resume.
     pub(super) fn position_of(&self, source: &media::Source) -> u64 {
         self.resume
             .point(&resume_key(source))
             .map_or(0, |(position_ms, _)| position_ms)
     }
 
-    /// Write where the videos stand into their Recent rows: one edit for
-    /// each row whose position moved, leaving the rest as they are.
+    /// Write where the videos stand into their Recent rows, one edit per moved row.
     pub(super) fn persist_resume_position(&self) -> std::io::Result<()> {
         let Some((record, device)) = &self.recents else {
             return Ok(());
@@ -93,19 +88,13 @@ impl PlayerState {
         Ok(())
     }
 
-    /// Remember where the open video stands, so opening it again resumes
-    /// there. A playing video writes every few seconds; `settled` writes at
-    /// once, for the moments playback pauses, the item closes and another
-    /// item replaces it. A video within [`RESUME_END_MARGIN_MS`] of its end
-    /// has finished, so its point is cleared and replaying starts at the
-    /// beginning.
-    ///
-    /// A source whose length the decoder never reports (a live stream) has no
-    /// place to seek back to, so it keeps no point: the pending seek of the
-    /// point it was opened with is never spent, and nothing is written.
+    /// Remember where the open video stands. A playing video writes every few seconds;
+    /// `settled` writes at once, for a pause, a close or a replacement. Within
+    /// [`RESUME_END_MARGIN_MS`] of the end the point is cleared, so replay starts at the
+    /// beginning. A source whose length is never reported keeps no point.
     pub(super) fn remember_position(&mut self, settled: bool) {
-        // While a stored point is still waiting for the decoder's length, the
-        // playhead means nothing yet: writing it would forget that point.
+        // While a stored point waits for the decoder's length, the playhead means nothing
+        // yet: writing it would forget that point.
         if self.pending_resume.is_some() {
             return;
         }
@@ -126,9 +115,8 @@ impl PlayerState {
         }) {
             return;
         }
-        // A drag across the timeline, or a video playing on, is one write
-        // every few seconds, not one per frame. The newest value still lands:
-        // playback comes to rest with a `settled` write.
+        // A drag across the timeline, or a video playing on, is one write every few
+        // seconds; the newest value lands with a `settled` write.
         if !settled
             && playing
             && written.is_some_and(|written| {
@@ -161,10 +149,8 @@ impl PlayerState {
         }
     }
 
-    /// Move a just-opened video to where it left off, once the decoder knows
-    /// how long it is: a seek is clamped to the length the player knows, and
-    /// until the decoder answers, that is only the placeholder length it was
-    /// built with.
+    /// Move a just-opened video to where it left off, once the decoder knows its length: a
+    /// seek before then is clamped to the placeholder length.
     pub(super) fn apply_pending_resume(&mut self) {
         let Some(pending) = self.pending_resume.clone() else {
             return;
@@ -182,8 +168,7 @@ impl PlayerState {
             return;
         };
         if self.player.duration_ms() != duration {
-            // The player has not picked the length up yet: a seek now would be
-            // clamped to the placeholder it still holds.
+            // The player has not picked the length up yet: a seek now would be clamped.
             return;
         }
         self.pending_resume = None;
@@ -242,9 +227,8 @@ impl PlayerState {
         }
     }
 
-    /// Assign the next never-reused source identity. Once the u64 namespace is
-    /// exhausted the app refuses a new source rather than making an action
-    /// address from the start of the process current again.
+    /// The next never-reused source identity. With the namespace exhausted the app refuses
+    /// a new source rather than making an old action address current again.
     pub(super) fn set_current_source(&mut self, source: &media::Source) -> Result<(), String> {
         let generation = self.source_generation.checked_add(1).ok_or_else(|| {
             "video source identity generation exhausted; restart Video Player".to_string()
@@ -258,7 +242,7 @@ impl PlayerState {
     pub(super) fn close_media(&mut self) {
         self.missing_codec = None;
         self.fail_open("video was closed before decoding a first frame".into());
-        // Closing is one of the moments the video rests: keep where it stood.
+        // Closing is a moment the video rests: keep where it stood.
         self.remember_position(true);
         self.pending_resume = None;
         self.resume_write = None;

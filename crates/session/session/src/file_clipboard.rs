@@ -6,7 +6,7 @@
 //! checked against the object the window showed. A copy keeps those objects
 //! for as long as the offer lives; a paste hands them, with the folder it
 //! takes them into, to the same engine the desktop's own file paste runs
-//! ([`crate::mount::clipboard_files`]): staged beside their names, synced,
+//! ([`crate::clipboard::paste`]): staged beside their names, synced,
 //! written down in a receipt, and only then renamed into place, so a paste
 //! that is killed leaves every file whole and its source where it was.
 //!
@@ -34,7 +34,7 @@ use tilo_actions::ActionKind;
 use tilo_lock::MutexRecover as _;
 use ui::dnd::CopiedFiles;
 
-use crate::mount::clipboard_files::{self, Conflict};
+use crate::clipboard::paste::{self, Conflict};
 
 /// The most entries one copy holds, as one command may capture.
 const MAX_ENTRIES: usize = runtime_collab::file_clipboard::MAX_ENTRIES;
@@ -129,7 +129,7 @@ struct Running {
     workspace: String,
     offer: String,
     destination: String,
-    paste: clipboard_files::Paste,
+    paste: paste::Paste,
     /// The answer once the worker finished, so a reply lost on the way is answered again from here
     /// instead of starting a second paste.
     settled: Option<(usize, Option<String>)>,
@@ -472,7 +472,7 @@ impl NativeFileClipboard {
             paths: entries.iter().map(|held| held.path.clone()).collect(),
             cut,
         };
-        let Some(paste) = clipboard_files::Paste::start(
+        let Some(paste) = paste::Paste::start(
             &files,
             &folder,
             conflict,
@@ -593,8 +593,8 @@ impl FileClipboardServices for NativeFileClipboard {
 }
 
 /// What a finished paste has to tell the window of what did not land.
-fn pasting_error(outcome: &clipboard_files::Outcome) -> Option<String> {
-    use clipboard_files::Refused;
+fn pasting_error(outcome: &paste::Outcome) -> Option<String> {
+    use paste::Refused;
     if let Some(refusal) = &outcome.refusal {
         return Some(match refusal {
             Refused::Nothing => "the folder already has every one of them".to_owned(),

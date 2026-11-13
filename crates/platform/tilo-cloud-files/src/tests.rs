@@ -76,7 +76,6 @@ fn unsupported_cloud_client_fails_without_a_native_socket() {
             .kind(),
         std::io::ErrorKind::Unsupported,
     );
-    // The portable view keeps the native service's persisted entry encoding.
     let native = cloud::ImportEntry {
         id: "opaque".into(),
         name: "document".into(),

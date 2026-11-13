@@ -27,16 +27,14 @@ service.
 
 ## Developer tools and fixtures
 
-- `dev/frame-link`: encoded-frame network simulator and `flatpak-share-demo`.
 - `dev/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
   private session bus of a nested session on hosts without one.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
-  `scripts/sandboxed-app-collab.py`.
+  `scripts/headless-examples/tilolang-e2e.py`.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
 - `dev/copy-lint`: the source scan that keeps English copy literals out of UI builders,
   run from the shell's and desktop's tests with their own allow-lists.
-- `collab/collab-fixtures`: shared collaboration test fixtures.
 - `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
   packaging/SDK examples used by walkthroughs and integration scripts.
 - `packaging/launcher/tests/fixtures/hello`: independent launcher test fixture.

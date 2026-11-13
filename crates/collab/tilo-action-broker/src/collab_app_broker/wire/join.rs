@@ -122,6 +122,10 @@ impl AppConnection {
         // The app is the worker of its own route whichever principal joins it:
         // a person posting in Chat, and the workspace's kept agent opening the
         // route its package declares, both speak for that app's records.
+        // An app reading another app's record it declares it reads is no
+        // worker of that route: it changes nothing there and publishes nothing
+        // on it, so its attested launch and the person's read of the record
+        // admit it without the route's worker descriptor.
         let packaged_app = self
             .worker
             .is_none()
@@ -154,6 +158,7 @@ impl AppConnection {
             }
         } else if state.durable_owner_required
             && !route.app_id.is_empty()
+            && matches!(route_access, RouteAccess::Own)
             && packaged_app.is_none()
             && !kept_for_every_app_of_the_workspace(&record_route)
         {

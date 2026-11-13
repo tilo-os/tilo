@@ -38,7 +38,7 @@ pub const BOOKKEEPING_PREFIX: &str = "tilo:";
 /// Longest checkpoint name.
 pub const MAX_CHECKPOINT_NAME: usize = 80;
 /// The group kind of an agent connection's invocations.
-pub const AGENT_RUN: &str = "agent-run";
+pub const AGENT_RUN: &str = tilo_actions::context::AGENT_RUN_GROUP;
 /// The group kind of a workspace task's invocations: an agent working a
 /// native task stamps its steps with the task, so that is the run undo names.
 pub const TASK_RUN: &str = tilo_actions::context::TASK_RUN_GROUP;

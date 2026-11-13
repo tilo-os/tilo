@@ -10,7 +10,7 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::view::BindTarget;
 use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
@@ -41,13 +41,6 @@ fn call(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     {
         InvokeOutcome::Done(v) => v,
         other => panic!("{action}: {other:?}"),
-    }
-}
-
-fn target(value: &Value) -> ResourceRef {
-    match value {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
     }
 }
 

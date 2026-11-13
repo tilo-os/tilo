@@ -26,7 +26,6 @@ const GROUNDS: [u32; 7] = [
     0xf4_ef_e3, 0xff_ff_ff, 0xec_e4_d0, 0xd9_cc_b0, 0xb8_a0_7e, 0x3a_3a_38, 0x1f_24_30,
 ]; // document colours
 
-/// Showing a chosen swatch while building a picker.
 trait Selecting {
     fn selecting(self, index: Option<usize>) -> Self;
 }
@@ -42,7 +41,6 @@ impl Selecting for ColorSwatchPicker {
 /// inspector.
 const SWATCH: f32 = ui::tokens::Metrics::BASE.bar_control_height;
 
-/// `#rrggbb` as `0xrrggbb`.
 fn packed(hex: &str) -> Option<u32> {
     let digits = hex.strip_prefix('#')?;
     u32::from_str_radix(digits.get(..6)?, 16).ok()
@@ -129,7 +127,6 @@ pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     })
 }
 
-/// Groups of controls, kept apart so each reads as one thing.
 pub(super) fn spaced(groups: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
@@ -141,7 +138,6 @@ pub(super) fn spaced(groups: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-/// A label and the control it names, close together.
 pub(super) fn tight(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
@@ -164,7 +160,6 @@ pub(super) fn section(children: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-/// A label on the left and its value on the right.
 pub(super) fn labelled(label: &str, value: Element) -> Element {
     Box::new(
         Row::new()
@@ -190,7 +185,6 @@ fn field(label: &str, control: Element) -> Element {
     )
 }
 
-/// A control taking the width a row leaves.
 pub(super) fn grow(control: Element) -> Element {
     Box::new(
         Container::new()
@@ -244,7 +238,6 @@ fn brush_and_artwork(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     ])
 }
 
-/// The chosen layer's colour and tone, folded away until asked for.
 fn layer_adjust(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str) -> Element {
     let chosen = layer.to_owned();
     let state = cx.value(move |art: &Artwork| {
@@ -269,7 +262,7 @@ fn layer_adjust(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str) -> Element {
             } else {
                 (Icon::ChevronDown, "canvas-layer-adjust-show")
             };
-            let name = ui::i18n::I18nManager::lookup_plain(name);
+            let name = crate::locales::CATALOG.t(name);
             let header = Row::new()
                 .with_gap(ui::tokens::Spacing::BASE.s2)
                 .no_wrap()
@@ -336,11 +329,11 @@ fn brush(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str, tool: Tool) -> Elemen
             },
         ));
         parts.push(field(
-            &ui::i18n::I18nManager::lookup_plain("canvas-colour"),
+            &crate::locales::CATALOG.t("canvas-colour"),
             Box::new(
                 TextInput::from_state(&tools.colour)
                     .with_id("canvas-brush-colour")
-                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-colour")),
+                    .with_accessible_name(crate::locales::CATALOG.t("canvas-colour")),
             ),
         ));
     }
@@ -353,13 +346,13 @@ fn brush(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str, tool: Tool) -> Elemen
     }
     parts.push(tight(vec![
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-brush-size"),
+            &crate::locales::CATALOG.t("canvas-brush-size"),
             Box::new(size_label),
         ),
         Box::new(
             Slider::from_state(&tools.size)
                 .with_id("canvas-brush-size")
-                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
+                .with_accessible_name(&crate::locales::CATALOG.t("canvas-brush-size")),
         ),
     ]));
     if !brushing {
@@ -393,11 +386,9 @@ fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: 
     } else {
         let preset = tools.preset.clone();
         Box::new(
-            Text::dynamic(move || {
-                ui::i18n::I18nManager::lookup_plain(&preset.with(|preset| preset.label()))
-            })
-            .with_role(TextRole::Caption)
-            .dimmed(),
+            Text::dynamic(move || crate::locales::CATALOG.t(&preset.with(|preset| preset.label())))
+                .with_role(TextRole::Caption)
+                .dimmed(),
         )
     };
     Box::new(
@@ -411,7 +402,6 @@ fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: 
     )
 }
 
-/// How much paint a painted layer's brush carries, starting at `load`.
 fn load_slider(tools: &Tools, load: f64) -> Element {
     tools.load.set(load);
     let load_label = {
@@ -420,13 +410,13 @@ fn load_slider(tools: &Tools, load: f64) -> Element {
     };
     tight(vec![
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-brush-load"),
+            &crate::locales::CATALOG.t("canvas-brush-load"),
             Box::new(load_label),
         ),
         Box::new(
             Slider::from_state(&tools.load)
                 .with_id("canvas-brush-load")
-                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-load")),
+                .with_accessible_name(&crate::locales::CATALOG.t("canvas-brush-load")),
         ),
     ])
 }
@@ -457,7 +447,7 @@ fn fraction(label: &str, state: &LocalState<f64>, id: &str) -> Element {
         let state = state.clone();
         Text::dynamic(move || percent(state.with(|value| *value))).with_role(TextRole::Caption)
     };
-    let name = ui::i18n::I18nManager::lookup_plain(label);
+    let name = crate::locales::CATALOG.t(label);
     tight(vec![
         labelled(&name, Box::new(shown)),
         Box::new(
@@ -509,9 +499,8 @@ fn dynamics_sliders(tools: &Tools, preset: Preset) -> Element {
 /// Where the magic wand or the bucket find colour: in every layer as the
 /// artwork shows, or in the chosen layer alone.
 fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
-    let segment = |key: &str| {
-        ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(key))
-    };
+    let segment =
+        |key: &str| ui::widget::toggle_group::Segment::new(crate::locales::CATALOG.t(key));
     let choices = vec![
         (Sampling::All, segment("canvas-sample-all")),
         (Sampling::Layer, segment("canvas-sample-layer")),
@@ -533,7 +522,7 @@ fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
 /// A selecting tool: how it adds to and takes from the selection, and for
 /// the magic wand how alike the colours it takes in are.
 fn area_tool(cx: &ViewCx<Artwork>, tools: &Tools, tool: Tool) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut parts: Vec<Element> = vec![heading(tool.label())];
     // The photo's subject in one click, found on this device: off the
     // window's thread, so the window keeps drawing; the canvas says it is
@@ -568,7 +557,6 @@ fn area_tool(cx: &ViewCx<Artwork>, tools: &Tools, tool: Tool) -> Element {
     section(parts)
 }
 
-/// How unlike a colour the magic wand and the bucket still take in.
 fn tolerance(tools: &Tools) -> Element {
     fraction("canvas-tolerance", &tools.tolerance, "canvas-tolerance")
 }
@@ -579,15 +567,13 @@ fn eraser(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let choices = vec![
         (
             Erasing::Paint,
-            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(
-                "canvas-erase-paint",
-            )),
+            ui::widget::toggle_group::Segment::new(crate::locales::CATALOG.t("canvas-erase-paint")),
         ),
         (
             Erasing::Strokes,
-            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(
-                "canvas-erase-strokes",
-            )),
+            ui::widget::toggle_group::Segment::new(
+                crate::locales::CATALOG.t("canvas-erase-strokes"),
+            ),
         ),
     ];
     let mode = ui::widget::ToggleGroup::from_state(choices, &tools.erasing)
@@ -599,13 +585,13 @@ fn eraser(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     };
     let size = tight(vec![
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-brush-size"),
+            &crate::locales::CATALOG.t("canvas-brush-size"),
             Box::new(size_label),
         ),
         Box::new(
             Slider::from_state(&tools.size)
                 .with_id("canvas-brush-size")
-                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
+                .with_accessible_name(&crate::locales::CATALOG.t("canvas-brush-size")),
         ),
     ]);
     let paint_only = {
@@ -688,7 +674,6 @@ fn brush_palette(
     )
 }
 
-/// The pigment whose masstone is nearest `colour`.
 fn nearest(
     colour: ui::vello::peniko::Color,
     pigments: &[crate::media::PigmentSpec],
@@ -720,7 +705,7 @@ fn artwork(cx: &ViewCx<Artwork>) -> Element {
                     .with_range(16.0, crate::model::MAX_SIDE)
                     .with_step(10.0)
                     .with_precision(0)
-                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(name))
+                    .with_accessible_name(crate::locales::CATALOG.t(name))
             },
             read,
             action,
@@ -740,7 +725,7 @@ fn artwork(cx: &ViewCx<Artwork>) -> Element {
         .iter()
         .map(|texture| {
             let name = texture.name().to_owned();
-            let label = ui::i18n::I18nManager::lookup_plain(&format!("canvas-ground-{name}"));
+            let label = crate::locales::CATALOG.t(&format!("canvas-ground-{name}"));
             (name, label)
         })
         .collect();
@@ -748,7 +733,7 @@ fn artwork(cx: &ViewCx<Artwork>) -> Element {
         |state| {
             let mut dropdown = Dropdown::from_state(Vec::new(), state)
                 .with_id("canvas-ground-texture")
-                .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-ground"));
+                .with_accessible_name(crate::locales::CATALOG.t("canvas-ground"));
             dropdown.set_value_options(textures);
             dropdown
         },
@@ -766,27 +751,25 @@ fn artwork(cx: &ViewCx<Artwork>) -> Element {
     section(vec![
         heading("canvas-artwork"),
         field(
-            &ui::i18n::I18nManager::lookup_plain("canvas-label-artwork-width"),
+            &crate::locales::CATALOG.t("canvas-label-artwork-width"),
             Box::new(width),
         ),
         field(
-            &ui::i18n::I18nManager::lookup_plain("canvas-label-artwork-height"),
+            &crate::locales::CATALOG.t("canvas-label-artwork-height"),
             Box::new(height),
         ),
         field(
-            &ui::i18n::I18nManager::lookup_plain("canvas-ground"),
+            &crate::locales::CATALOG.t("canvas-ground"),
             Box::new(texture),
         ),
         Box::new(grounds),
     ])
 }
 
-/// The selected marks, read again whenever one of them changes so every
-/// control starts from what is there now.
-/// The selection's heading, a picture's controls, then the rest. The rest
-/// is built again whenever a selected mark changes; a picture's controls
-/// follow the artwork in place, built again only when the selection is, so
-/// a drag begun as another slider's edit lands is not lost.
+/// The selection's heading, a picture's controls, then the rest. The rest is
+/// built again whenever a selected mark changes; a picture's controls follow
+/// the artwork in place, so a drag begun as another slider's edit lands is
+/// not lost.
 fn selection(cx: &ViewCx<Artwork>, ids: Vec<String>, tools: &Tools) -> Element {
     let summary = {
         let ids = ids.clone();
@@ -842,16 +825,14 @@ fn selection(cx: &ViewCx<Artwork>, ids: Vec<String>, tools: &Tools) -> Element {
 /// or how many marks; and the one mark's name, when it has one.
 fn summary(marks: &[Mark], erasers: bool) -> (String, Option<String>) {
     let [mark] = marks else {
-        let count = ui::i18n::I18nManager::format(
-            "canvas-marks-selected",
-            &[("count", marks.len().into())],
-        );
+        let count = crate::locales::CATALOG
+            .t_args("canvas-marks-selected", &[("count", marks.len().into())]);
         return (count, None);
     };
     let kind = if erasers {
-        ui::i18n::I18nManager::lookup_plain("canvas-eraser")
+        crate::locales::CATALOG.t("canvas-eraser")
     } else {
-        ui::i18n::I18nManager::lookup_plain(&format!("canvas-kind-{}", mark.shape.kind()))
+        crate::locales::CATALOG.t(&format!("canvas-kind-{}", mark.shape.kind()))
     };
     (
         kind,
@@ -977,7 +958,6 @@ fn marks_inspector(cx: &ViewCx<Artwork>, marks: &[Mark], tools: &Tools) -> Eleme
 enum Paint {
     Fill,
     Stroke,
-    /// One stop of the fill's gradient, by index.
     Stop(crate::model::Gradient, usize),
 }
 
@@ -1028,7 +1008,6 @@ impl Paint {
     }
 }
 
-/// Swatches of the layer's paints (or inks) and the colour as text.
 fn paints(
     cx: &ViewCx<Artwork>,
     ids: &[String],
@@ -1065,7 +1044,7 @@ fn paints(
     let text = LocalState::new(current.unwrap_or("none").to_owned());
     let input = TextInput::from_state(&text)
         .with_id(paint.id())
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(paint.id()));
+        .with_accessible_name(crate::locales::CATALOG.t(paint.id()));
     let field: Element = match paint {
         Paint::Fill => Box::new(cx.actions().bind(
             input,
@@ -1144,14 +1123,14 @@ fn stroke_brush(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark, plain: bool) 
             .with_step(1.0)
             .with_precision(1)
             .with_id("canvas-stroke-size")
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
+            .with_accessible_name(crate::locales::CATALOG.t("canvas-brush-size")),
         Artwork::SET_SIZE.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), value)
         }),
     );
     rows.push(labelled(
-        &ui::i18n::I18nManager::lookup_plain("canvas-brush-size"),
+        &crate::locales::CATALOG.t("canvas-brush-size"),
         Box::new(width),
     ));
     if plain {
@@ -1183,7 +1162,7 @@ fn dynamic(cx: &ViewCx<Artwork>, ids: &[String], name: &'static str, value: f64)
     let slider = cx.actions().bind(
         Slider::from_state(&state)
             .with_id(&format!("canvas-stroke-{name}"))
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(&label))
+            .with_accessible_name(&crate::locales::CATALOG.t(&label))
             .commits_on_release(),
         Artwork::SET_PARAMS.map({
             let ids = ids.to_vec();
@@ -1199,17 +1178,14 @@ fn dynamic(cx: &ViewCx<Artwork>, ids: &[String], name: &'static str, value: f64)
         }),
     );
     tight(vec![
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain(&label),
-            Box::new(shown),
-        ),
+        labelled(&crate::locales::CATALOG.t(&label), Box::new(shown)),
         Box::new(slider),
     ])
 }
 
 /// Smooth or simplify strokes' paths, or join them into one.
 fn path_tools(cx: &ViewCx<Artwork>, ids: &[String], size: f64) -> Element {
-    let lookup = |id: &str| ui::i18n::I18nManager::lookup_plain(id);
+    let lookup = |id: &str| crate::locales::CATALOG.t(id);
     let mut row = Row::new()
         .with_gap(ui::tokens::Spacing::BASE.s2)
         .no_wrap()
@@ -1240,7 +1216,7 @@ fn stroke_style(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
             .with_step(1.0)
             .with_precision(1)
             .with_id("canvas-stroke-width")
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-stroke-width")),
+            .with_accessible_name(crate::locales::CATALOG.t("canvas-stroke-width")),
         Artwork::SET_STROKE_WIDTH.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), value)
@@ -1290,21 +1266,12 @@ fn stroke_style(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     );
     section(vec![
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-stroke-width"),
+            &crate::locales::CATALOG.t("canvas-stroke-width"),
             Box::new(width),
         ),
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-dash"),
-            grow(dash),
-        ),
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-cap"),
-            grow(cap),
-        ),
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-join"),
-            grow(join),
-        ),
+        labelled(&crate::locales::CATALOG.t("canvas-dash"), grow(dash)),
+        labelled(&crate::locales::CATALOG.t("canvas-cap"), grow(cap)),
+        labelled(&crate::locales::CATALOG.t("canvas-join"), grow(join)),
     ])
 }
 
@@ -1319,14 +1286,14 @@ fn choice(
     let state = LocalState::new(current.to_owned());
     let mut dropdown = Dropdown::from_state(Vec::new(), &state)
         .with_id(id)
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(id));
+        .with_accessible_name(crate::locales::CATALOG.t(id));
     dropdown.set_value_options(
         values
             .iter()
             .map(|value| {
                 (
                     (*value).to_owned(),
-                    ui::i18n::I18nManager::lookup_plain(&format!("canvas-value-{value}")),
+                    crate::locales::CATALOG.t(&format!("canvas-value-{value}")),
                 )
             })
             .collect(),
@@ -1334,7 +1301,6 @@ fn choice(
     Box::new(cx.actions().bind(dropdown, action))
 }
 
-/// Opacity, blend and shadow.
 fn appearance(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     let style = &mark.style;
     let opacity = LocalState::new(style.opacity());
@@ -1345,7 +1311,7 @@ fn appearance(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     let slider = cx.actions().bind(
         Slider::from_state(&opacity)
             .with_id("canvas-opacity")
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-opacity"))
+            .with_accessible_name(&crate::locales::CATALOG.t("canvas-opacity"))
             .commits_on_release(),
         Artwork::SET_OPACITY.map({
             let ids = ids.to_vec();
@@ -1371,7 +1337,7 @@ fn appearance(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     let shadow = cx.actions().bind(
         Toggle::from_state(&shadowed)
             .with_id("canvas-shadow")
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-shadow")),
+            .with_accessible_name(&crate::locales::CATALOG.t("canvas-shadow")),
         Artwork::SET_SHADOW.map({
             let ids = ids.to_vec();
             move |on: bool| {
@@ -1395,17 +1361,14 @@ fn appearance(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     section(vec![
         tight(vec![
             labelled(
-                &ui::i18n::I18nManager::lookup_plain("canvas-opacity"),
+                &crate::locales::CATALOG.t("canvas-opacity"),
                 Box::new(label),
             ),
             Box::new(slider),
         ]),
+        labelled(&crate::locales::CATALOG.t("canvas-blend"), grow(blend)),
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-blend"),
-            grow(blend),
-        ),
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-shadow"),
+            &crate::locales::CATALOG.t("canvas-shadow"),
             Box::new(shadow),
         ),
     ])
@@ -1454,7 +1417,7 @@ fn text_style(cx: &ViewCx<Artwork>, mark: &Mark) -> Element {
                 .with_step(2.0)
                 .with_precision(0)
                 .with_id("canvas-text-size")
-                .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-text-size")),
+                .with_accessible_name(crate::locales::CATALOG.t("canvas-text-size")),
             Artwork::SET_SHAPE.map(move |value: f64| {
                 let mut shape = shape.clone();
                 if let Shape::Text { size, .. } = &mut shape {
@@ -1471,7 +1434,7 @@ fn text_style(cx: &ViewCx<Artwork>, mark: &Mark) -> Element {
         cx.actions().bind(
             Toggle::from_state(&state)
                 .with_id(id)
-                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(id)),
+                .with_accessible_name(&crate::locales::CATALOG.t(id)),
             Artwork::SET_SHAPE.map(move |value: bool| {
                 let mut shape = shape.clone();
                 change(&mut shape, value);
@@ -1503,24 +1466,20 @@ fn text_style(cx: &ViewCx<Artwork>, mark: &Mark) -> Element {
                 .push(grow(family))
                 .push(Box::new(size_field)),
         ),
+        labelled(&crate::locales::CATALOG.t("canvas-bold"), Box::new(bold)),
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-bold"),
-            Box::new(bold),
-        ),
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-italic"),
+            &crate::locales::CATALOG.t("canvas-italic"),
             Box::new(slanted),
         ),
     ])
 }
 
-/// Bring to the front or send to the back, and remove.
 fn arrange(cx: &ViewCx<Artwork>, ids: &[String]) -> Element {
     let to = |icon, name: &str, to: &str| {
         Box::new(icon_button(
             cx,
             icon,
-            &ui::i18n::I18nManager::lookup_plain(name),
+            &crate::locales::CATALOG.t(name),
             Artwork::ARRANGE_TO.with((ids.to_vec(), to.to_owned())),
         )) as Element
     };
@@ -1536,7 +1495,7 @@ fn arrange(cx: &ViewCx<Artwork>, ids: &[String]) -> Element {
             .push(Box::new(icon_button(
                 cx,
                 Icon::Trash2,
-                &ui::i18n::I18nManager::lookup_plain("canvas-command-remove-marks"),
+                &crate::locales::CATALOG.t("canvas-command-remove-marks"),
                 Artwork::REMOVE_MARKS_BY_ID.with(ids.to_vec()),
             ))),
     )

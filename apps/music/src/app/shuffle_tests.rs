@@ -1,10 +1,5 @@
-//! Music's shuffled order across queue edits: the songs already heard stay
-//! heard, and a song put next plays next.
-
 use super::*;
 
-/// A shuffled queue of the four seeded tracks, playing `tk_g1` with the
-/// order g1, g4, g2, g3.
 fn shuffled_four() -> (Music, AutoCommit) {
     let (mut app, doc) = app_with_doc();
     app.disconnect();
@@ -19,8 +14,6 @@ fn shuffled_four() -> (Music, AutoCommit) {
     (app, doc)
 }
 
-/// The tracks `advance` reaches from here until playback stops at the end
-/// of the shuffled order.
 fn rest_of_shuffle(app: &mut Music) -> Vec<String> {
     let mut heard = Vec::new();
     app.pb.playing = true;
@@ -36,8 +29,6 @@ fn rest_of_shuffle(app: &mut Music) -> Vec<String> {
 
 #[test]
 fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
-    // Play next, from the person's menu: the song plays next, and the
-    // shuffled rest follows without the songs already heard.
     {
         let (mut app, mut doc) = shuffled_four();
         app.advance(false);
@@ -48,8 +39,6 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         );
         assert_eq!(rest_of_shuffle(&mut app), ["tk_p1", "tk_g2", "tk_g3"]);
     }
-    // Also before the shuffled order is drawn: picking a queued song starts
-    // a new one, drawn when it is next needed.
     {
         let (mut app, mut doc) = shuffled_four();
         app.shuffle_order.clear();
@@ -61,7 +50,6 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         assert_eq!(heard.first().map(String::as_str), Some("tk_p1"));
         assert_eq!(heard.len(), 4, "every other song once: {heard:?}");
     }
-    // Add to queue: the song is heard once the shuffled songs are.
     {
         let (mut app, mut doc) = shuffled_four();
         app.advance(false);
@@ -71,7 +59,6 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         );
         assert_eq!(rest_of_shuffle(&mut app), ["tk_g2", "tk_g3", "tk_p1"]);
     }
-    // Moving the playing song to the top changes no song that follows.
     {
         let (mut app, mut doc) = shuffled_four();
         app.advance(false);
@@ -82,7 +69,6 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         assert_eq!(app.pb.current.as_deref(), Some("tk_g4"));
         assert_eq!(rest_of_shuffle(&mut app), ["tk_g2", "tk_g3"]);
     }
-    // Removing a song still to come leaves the rest of the order as it was.
     {
         let (mut app, mut doc) = shuffled_four();
         app.advance(false);
@@ -92,8 +78,6 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         );
         assert_eq!(rest_of_shuffle(&mut app), ["tk_g3"]);
     }
-    // Removing the playing song moves on to the next shuffled one, not to
-    // the song beside it in the queue.
     {
         let (mut app, mut doc) = shuffled_four();
         app.dispatch(
@@ -103,7 +87,6 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         assert_eq!(app.pb.current.as_deref(), Some("tk_g4"));
         assert_eq!(rest_of_shuffle(&mut app), ["tk_g2", "tk_g3"]);
     }
-    // The same edits through the action surface, as an agent makes them.
     {
         use crate::actions::MusicEffect;
         let (mut app, _) = shuffled_four();
@@ -130,14 +113,9 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
     }
 }
 
-/// A queue can hold one song twice side by side. An edit an agent makes
-/// through the action surface then moves the copy it names in the shuffled
-/// order, not the one beside it, so a copy already heard is not heard again.
 #[test]
 fn an_agents_queue_edit_moves_the_copy_it_names_under_shuffle() {
     use crate::actions::MusicEffect;
-    // Play next on the song queued right after the playing one, which has
-    // already played: the new copy plays next and the heard one stays heard.
     {
         let (mut app, _) = shuffled_four();
         app.shuffle_order = vec![1, 0, 2, 3];
@@ -150,8 +128,6 @@ fn an_agents_queue_edit_moves_the_copy_it_names_under_shuffle() {
         .unwrap();
         assert_eq!(rest_of_shuffle(&mut app), ["tk_g2", "tk_g3", "tk_g4"]);
     }
-    // Removing the playing song, queued twice side by side, moves on to the
-    // next shuffled song instead of starting its other copy over.
     {
         let (mut app, _) = shuffled_four();
         app.pb.queue = ["tk_g1", "tk_g2", "tk_g2", "tk_g3"]

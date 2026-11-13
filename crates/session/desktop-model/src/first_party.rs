@@ -38,12 +38,12 @@ fn is_pascal_case_of(label: &str, kebab: &str) -> bool {
     label.next().is_none()
 }
 
-/// The first-party package a desktop built-in label names, if one exists:
+/// The first-party app a desktop built-in label names, if one exists:
 /// `Notes` → `so.tilo.notes`, `Files` → `so.tilo.file-explorer`, `Editor` →
-/// `so.tilo.code-editor`. `None` for a label no package answers to (test
+/// `so.tilo.code-editor`. `None` for a label no app answers to (test
 /// fixtures).
 #[must_use]
-pub fn package_id_for_builtin_label(label: &str) -> Option<&'static str> {
+pub fn app_id_for_builtin_label(label: &str) -> Option<&'static str> {
     FIRST_PARTY_PACKAGES.iter().copied().find(|package| {
         BUILTIN_LABELS
             .iter()
@@ -75,22 +75,22 @@ mod tests {
 
     #[test]
     fn builtin_labels_name_their_packages() {
-        assert_eq!(package_id_for_builtin_label("Notes"), Some("so.tilo.notes"));
+        assert_eq!(app_id_for_builtin_label("Notes"), Some("so.tilo.notes"));
         assert_eq!(
-            package_id_for_builtin_label("PdfViewer"),
+            app_id_for_builtin_label("PdfViewer"),
             Some("so.tilo.pdf-viewer")
         );
         assert_eq!(
-            package_id_for_builtin_label("Files"),
+            app_id_for_builtin_label("Files"),
             Some("so.tilo.file-explorer")
         );
-        assert_eq!(package_id_for_builtin_label("FileExplorer"), None);
+        assert_eq!(app_id_for_builtin_label("FileExplorer"), None);
         assert_eq!(
-            package_id_for_builtin_label("Editor"),
+            app_id_for_builtin_label("Editor"),
             Some("so.tilo.code-editor")
         );
-        assert_eq!(package_id_for_builtin_label("Scratch"), None);
-        assert_eq!(package_id_for_builtin_label("notes"), None);
+        assert_eq!(app_id_for_builtin_label("Scratch"), None);
+        assert_eq!(app_id_for_builtin_label("notes"), None);
     }
 
     #[test]

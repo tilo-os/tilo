@@ -1,5 +1,5 @@
-//! Password-sealed portable migration. Export never stages a plaintext home.
-//! Imported trees remain quarantined until the caller explicitly assigns them.
+//! Password-sealed portable migration: export never stages a plaintext home, and imported trees
+//! stay quarantined until the caller assigns them.
 use super::{
     migration::{PinnedDirectory, changed, check_cancel},
     migration_durability as durability,
@@ -84,7 +84,6 @@ pub struct ExportReview {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PackageInfo {
     pub purpose: Purpose,
-    /// Total regular-file logical length; sparse holes consume no archive payload.
     pub logical_bytes: u64,
     pub plaintext_bytes: u64,
     pub sealed_bytes: u64,
@@ -147,7 +146,6 @@ impl ExportReview {
     ) -> io::Result<PackageInfo> {
         self.export_inner(password, cancel, None, &mut |_| Ok(()))
     }
-    /// Bind a separately purposed package to its authenticated prepared setup.
     pub fn export_bound(
         &self,
         password: Zeroizing<Vec<u8>>,
@@ -238,7 +236,6 @@ impl ExportReview {
     }
 }
 
-/// Shared canonical exporter; callers hold the destination inode and grant.
 pub struct ExportWork<'a, 'b> {
     pub password: &'a [u8],
     pub cancel: &'a AtomicBool,
@@ -347,14 +344,13 @@ pub fn verify_export_stream_reporting(
     })
 }
 
-/// Size of data extents emitted by fixed GNU seek-hole sparse encoding.
-/// Inodes are deduplicated exactly as GNU tar's hardlink handling; source
-/// metadata is checked before/after every held member open.
+/// Size of data extents emitted by fixed GNU seek-hole sparse encoding. Inodes are deduplicated as
+/// GNU tar does for hardlinks, and source metadata is checked around every held member open.
 pub fn stored_bytes(root: &Arc<PinnedDirectory>, inventory: &SourceInventory) -> io::Result<u64> {
     source_sizes(root, inventory, &AtomicBool::new(false)).map(|(stored, _)| stored)
 }
-/// Check the exact reviewed Linux ACL policy before presenting Home as ready.
-/// Metadata-only admission: no ciphertext, file-content reads or source writes.
+/// Checks the exact reviewed Linux ACL policy before presenting Home as ready, from metadata only:
+/// no ciphertext, content reads or source writes.
 #[cfg(target_os = "linux")]
 pub fn validate_home_metadata(
     root: &Arc<PinnedDirectory>,
@@ -446,8 +442,6 @@ impl ImportReview {
         }
         Ok(())
     }
-    /// Retain the independently approved scratch allocation through review,
-    /// extraction, ACL restoration and every subsequent verification pass.
     pub fn review_in(
         package: &Path,
         password: &[u8],
@@ -478,8 +472,8 @@ impl ImportReview {
         parent.validate()?;
         Self::review_file_in(file, password, purpose, limits, cancel, scratch)
     }
-    /// Authenticate the full stream from an already received descriptor. Paths,
-    /// receipts and sender completion flags do not substitute for this scan.
+    /// Authenticates the full stream from an already received descriptor; paths, receipts and sender
+    /// completion flags do not substitute for this scan.
     pub fn review_file_in(
         mut file: File,
         password: &[u8],
@@ -534,19 +528,15 @@ impl ImportReview {
     pub fn info(&self) -> &PackageInfo {
         &self.info
     }
-    /// Digest authenticated during review. Delivery revalidates the held bytes.
     pub fn ciphertext_digest(&self) -> [u8; 32] {
         self.ciphertext
     }
-    /// Revalidate the held ciphertext before accepting an existing delivery.
     pub fn verify_held_ciphertext(&mut self, cancel: &AtomicBool) -> io::Result<()> {
         if hash_file(&mut self.file, cancel)? != self.ciphertext {
             return Err(changed("Reviewed migration package changed"));
         }
         Ok(())
     }
-    /// Copy only the already authenticated ciphertext to a caller-owned output.
-    /// The output is never plaintext and the source descriptor stays pinned.
     pub fn copy_ciphertext(
         &mut self,
         output: &mut File,
@@ -606,7 +596,6 @@ impl ImportReview {
         }
         Ok(self.ciphertext)
     }
-    /// `quarantine` must name a new private container, never a live home or overlay.
     pub fn verify_existing_tree(&mut self, root: &Path, cancel: &AtomicBool) -> io::Result<()> {
         self.verify_held_ciphertext(cancel)?;
         let pin = PinnedDirectory::open_absolute(root)?;
@@ -684,8 +673,8 @@ impl ImportReview {
             info: self.info.clone(),
         })
     }
-    /// Extract into `root`, a new private directory. Only the authenticated and
-    /// verified tree itself is published under that name; no container wraps it.
+    /// Extracts into `root`, a new private directory. Only the authenticated and verified tree itself
+    /// is published under that name; no container wraps it.
     pub fn extract_root(
         &mut self,
         password: Zeroizing<Vec<u8>>,
@@ -715,9 +704,8 @@ impl ImportReview {
         let name = destination
             .file_name()
             .ok_or_else(|| changed("Quarantine name missing"))?;
-        // Only a fully authenticated and verified tree gets the requested
-        // name. An interrupted attempt cannot masquerade as completed custody
-        // or prevent a later attempt from using the same quarantine path.
+        // Only a fully authenticated and verified tree gets the requested name, so an interrupted
+        // attempt cannot masquerade as completed custody or block a later one.
         match super::nofollow::metadata_nofollow(&parent.file, Path::new(name)) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -758,10 +746,9 @@ impl ImportReview {
             target: name.to_owned(),
         })
     }
-    /// Verify `root` after the applications phase deployed into its user
-    /// installation: every archived entry is unchanged, except the repository
-    /// metadata the deployment rewrites, and new entries appear only inside
-    /// `.local/share/flatpak`.
+    /// Verifies `root` after the applications phase deployed into its user installation: every
+    /// archived entry is unchanged except the repository metadata the deployment rewrites, and new
+    /// entries appear only inside `.local/share/flatpak`.
     pub fn verify_existing_tree_after_applications(
         &mut self,
         root: &Path,
@@ -776,7 +763,6 @@ impl ImportReview {
         self.verify_held_ciphertext(cancel)
     }
 }
-/// An extracted, verified attempt that is not yet published under its name.
 struct Attempt {
     parent: Arc<PinnedDirectory>,
     container: Arc<PinnedDirectory>,
@@ -784,8 +770,8 @@ struct Attempt {
     name: String,
     target: std::ffi::OsString,
 }
-/// Publish the attempt's tree itself under the requested name, then remove
-/// its now empty container. Existing names are never overwritten.
+/// Publishes the attempt's tree itself under the requested name, then removes its now empty
+/// container. Existing names are never overwritten.
 fn publish_root(attempt: &Attempt, cancel: &AtomicBool) -> io::Result<()> {
     use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
     check_cancel(cancel)?;
@@ -833,8 +819,8 @@ fn publish_root(attempt: &Attempt, cancel: &AtomicBool) -> io::Result<()> {
     durability::sync_directory(&attempt.parent.file)?;
     attempt.parent.validate_destination()
 }
-/// Publish only this held, verified private attempt. Existing names are never
-/// overwritten. Failed attempts remain private siblings for explicit cleanup.
+/// Publishes only this held, verified attempt; existing names are never overwritten and failed
+/// attempts stay private siblings for explicit cleanup.
 fn publish_import(
     parent: &Arc<PinnedDirectory>,
     container: &Arc<PinnedDirectory>,

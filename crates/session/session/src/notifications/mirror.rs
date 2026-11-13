@@ -15,14 +15,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
+use crate::platform::fabric::{
+    ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
+};
+use crate::platform::fabric::{DeviceId, PersonalFabricAction};
+use crate::platform::fabric::{FabricLink as _, SharedLink};
 use tilo_desktop_surface::notifications::{
     ContinuityNotificationId, Notification, NotificationSeverity, RemoteNotificationRoute,
 };
-use tilo_device_fabric::link::{FabricLink as _, SharedLink};
-use tilo_device_fabric::notification::{
-    ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
-};
-use tilo_device_fabric::{DeviceId, PersonalFabricAction};
 
 /// The most projections one session keeps bookkeeping for: what fits on the other devices' desks
 /// and centres anyway.
@@ -66,7 +66,7 @@ impl Mirroring {
         Rc::new(Self {
             link: RefCell::new(None),
             state: RefCell::new(State {
-                epoch: tilo_device_fabric::random::nonzero::<16>(),
+                epoch: crate::platform::fabric::nonzero::<16>(),
                 ..State::default()
             }),
         })
@@ -106,7 +106,7 @@ impl Mirroring {
             None if state.out.len() >= MAX_PROJECTED => return None,
             None => ContinuityNotificationId {
                 epoch: state.epoch,
-                token: tilo_device_fabric::random::nonzero::<16>(),
+                token: crate::platform::fabric::nonzero::<16>(),
             },
         };
         let redact = !previews;

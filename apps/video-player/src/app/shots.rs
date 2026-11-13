@@ -1,14 +1,11 @@
-//! The source and view a review capture stages before it draws.
-
 use super::{
     CaptureAwaits, DEMO_POSITION_MS, DEMO_QUEUE, DEMO_TITLE, DecoderMetadata, LibraryTab,
     LocalMediaEntry, PlayerState, demo_source, source_for_argument, source_title,
 };
 
 impl PlayerState {
-    /// Stage a capture of `scenario` (`None` for a plain `--shots`): the
-    /// video the launch named, else a synthesized demo clip, the scenario's
-    /// view state, and what the capture waits for before it is taken.
+    /// Stage a capture of `scenario`: the video the launch named, else the demo clip, the
+    /// scenario's view state, and what the capture waits for.
     pub(crate) fn stage_capture(&mut self, launched: Option<&str>, scenario: Option<&str>) {
         self.stage_shot_source(launched, scenario);
         self.stage_shot_scenario(scenario);
@@ -17,7 +14,6 @@ impl PlayerState {
         }
     }
 
-    /// A player staged as a capture of `scenario` over the demo clip.
     #[cfg(test)]
     pub(crate) fn for_shot_open(launch: Option<&str>, scenario: Option<&str>) -> Self {
         let mut app = Self::new(super::RunMode::Capture);
@@ -34,9 +30,8 @@ impl PlayerState {
         if matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             return;
         }
-        // A capture shows a real video decoded, the launch's or the demo
-        // clip, never a synthesized stand-in: without the system decoder it
-        // waits for a picture that cannot come and refuses to capture.
+        // A capture shows a real decoded video, never a synthesized stand-in: without the
+        // system decoder it refuses to capture.
         let engine = media::MediaEngine::new();
         if !engine.is_real_decode() {
             self.open_error =
@@ -50,8 +45,7 @@ impl PlayerState {
             let title = source_title(&source);
             let queue_id = self.ensure_queued(source.clone(), title.clone());
             let _ = self.open_local_source(source, title, Some(queue_id));
-            // Held still for a stable picture, as the demo clip is; the
-            // `playing` scenario starts it.
+            // Held still for a stable picture; the `playing` scenario starts it.
             self.player.pause();
             self.capture_awaits = match scenario {
                 Some("native-error") => CaptureAwaits::Outcome,
@@ -66,9 +60,8 @@ impl PlayerState {
         self.player.open(source);
         self.title = DEMO_TITLE.to_string();
         self.current_queue_id = Some(queue_id);
-        // Park at a fixed position for a stable reference frame. The
-        // explicit `playing` fixture starts the engine below; default and
-        // `paused` deliberately stay deterministic.
+        // Park at a fixed position for a stable reference frame; `playing` starts the
+        // engine below.
         self.player.seek_to_ms(DEMO_POSITION_MS);
         self.player.pause();
         if scenario != Some("loading") {
@@ -76,7 +69,6 @@ impl PlayerState {
         }
     }
 
-    /// Whether a capture still waits for what it shows.
     pub(super) fn capture_pending(&self) -> bool {
         let pictured = self.player.latest_frame().is_some();
         match self.capture_awaits {
@@ -94,8 +86,8 @@ impl PlayerState {
                 self.fail_playback();
                 self.missing_codec = Some("HEVC".into());
             }
-            // A video opened and the decoder then gave up on it: the title
-            // stays in the window's bar, the picture is the failure.
+            // A video opened and the decoder then gave up: the title stays, the picture is
+            // the failure.
             Some("native-error") => {
                 self.shot_loading = true;
                 self.fail_playback();

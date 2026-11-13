@@ -50,7 +50,7 @@ const MAX_ARTWORK_BYTES: u64 = 8 * 1024 * 1024;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct AddToApps {}
 
-#[resource(kind = "add-app.question", label = "Add to apps")]
+#[resource(kind = "add-app.question")]
 impl AddToApps {}
 
 /// What the person is asked about: a program that just started and has no

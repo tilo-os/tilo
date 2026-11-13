@@ -216,12 +216,11 @@ fn plain_text_at(
 /// The edit that makes a field read `plain` as rich text: the field's body brought to those
 /// words, a paragraph per line and no marks ([`tilo_document::ClipBlock`]).
 fn plain_text_edit(plain: &str) -> tilo_resource::EditOp {
-    let blocks: Vec<tilo_document::ClipBlock> = tilo_document::blocks_of_plain(plain)
+    let blocks = tilo_document::blocks_of_plain(plain);
+    let blocks = blocks
         .iter()
         .map(tilo_document::ClipBlock::from_view)
         .collect();
-    let action = tilo_document::RichTextAction::SyncClips { blocks };
     // ignored-failure: a `RichTextAction` always serializes
-    let rich = serde_json::to_value(&action).unwrap_or(Json::Null);
-    tilo_resource::EditOp::Rich { rich }
+    super::rich_edit(blocks, None, 0).unwrap_or(tilo_resource::EditOp::Rich { rich: Json::Null })
 }

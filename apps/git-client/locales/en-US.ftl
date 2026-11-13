@@ -1,6 +1,6 @@
 git-remote-running = Working with remote…
 git-remote-busy = Wait for the current remote operation to finish.
-git-remote-worker-stopped = The remote worker stopped unexpectedly. Check repository state before retrying.
+git-remote-worker-stopped = The remote operation stopped unexpectedly. Check the repository before trying again.
 
 # Screens
 git-screen-changes = Changes
@@ -27,7 +27,7 @@ git-confirm-discard-body = Your edits are lost. This can't be undone.
 git-confirm-delete-branch-body = Commits that only this branch holds are lost.
 git-confirm-discard = Discard
 git-confirm-switch-title = Switch to { $name }?
-git-confirm-switch-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
+git-confirm-switch-body = You have uncommitted changes. Stash them and switch, or keep them; switching fails when a change would be overwritten.
 git-switch-stash = Stash and switch
 git-switch-carry = Keep my changes
 git-cancel = Cancel
@@ -72,7 +72,7 @@ git-split-needs-width = Two columns need a wider window, so this is one.
 git-binary-file = Binary file
 git-binary-file-detail = There is no text to compare.
 git-mode-only = No changes to show
-git-mode-only-detail = Only the file's mode changed.
+git-mode-only-detail = Only the file's permissions changed.
 
 # History
 git-no-commits = No commits yet
@@ -191,3 +191,40 @@ git-show-commit-file = Show this file's changes in the commit
 # Diff controls in the window bar
 git-whitespace-name = Show whitespace
 git-wrap-name = Wrap long lines
+git-window-name = Git
+
+## Actions
+
+git-client-effect-open-repository = Open repository
+git-client-effect-choose-repository = Choose repository
+git-client-effect-run-approved-check = Run approved project check
+git-client-effect-show-changes = Show changes
+git-client-effect-show-history = Show history
+git-client-effect-show-branches = Show branches and remotes
+git-client-effect-open-change = Open diff
+git-client-effect-read-change = Read change
+git-client-effect-open-commit = Open commit
+git-client-effect-stage-all = Stage all changes
+git-client-effect-unstage-all = Unstage all changes
+git-client-effect-stage-file = Stage file
+git-client-effect-unstage-file = Unstage file
+git-client-effect-discard-file = Discard file changes
+git-client-effect-commit = Commit staged changes
+git-client-effect-create-branch = Create branch
+git-client-effect-create-worktree = Create linked worktree
+git-client-effect-checkout-branch = Check out branch
+git-client-effect-delete-branch = Delete branch
+git-client-effect-save-stash = Stash working changes
+git-client-effect-apply-stash = Apply stash
+git-client-effect-fetch = Fetch remote
+git-client-effect-pull = Pull from remote
+git-client-effect-push = Push to remote
+git-client-effect-diff-layout = Switch diff layout
+git-client-effect-syntax-highlight = Turn syntax highlighting on or off
+git-client-effect-show-whitespace = Show or hide whitespace
+git-client-effect-wrap-lines = Wrap long lines
+git-client-repo = Repository
+git-client-repo-record-repository = Record the repository's state
+
+## What the app is called in a window and in the launcher
+git-client-app-title = Git

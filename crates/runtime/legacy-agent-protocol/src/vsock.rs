@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use crate::Duplex;
 
-/// `VMADDR_CID_ANY`: listen on every context id this side owns.
 pub const CID_ANY: u32 = libc::VMADDR_CID_ANY;
 
 fn address(cid: u32, port: u32) -> libc::sockaddr_vm {
@@ -37,7 +36,6 @@ fn socket() -> io::Result<OwnedFd> {
 #[allow(clippy::cast_possible_truncation, reason = "a 16-byte struct")]
 const ADDRESS_LEN: libc::socklen_t = std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t;
 
-/// A connected vsock stream.
 #[derive(Debug)]
 pub struct VsockStream {
     file: File,
@@ -66,7 +64,6 @@ impl VsockStream {
         })
     }
 
-    /// Bound every later read; `None` waits forever.
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         let value = timeout.map_or(
             libc::timeval {
@@ -141,14 +138,12 @@ impl Duplex for VsockStream {
     }
 }
 
-/// A listening vsock socket.
 #[derive(Debug)]
 pub struct VsockListener {
     fd: OwnedFd,
 }
 
 impl VsockListener {
-    /// Listen on `port` for any context id this side owns.
     pub fn bind(port: u32) -> io::Result<Self> {
         let fd = socket()?;
         let address = address(CID_ANY, port);
@@ -170,7 +165,6 @@ impl VsockListener {
         Ok(Self { fd })
     }
 
-    /// The next connection and the context id it came from.
     pub fn accept(&self) -> io::Result<(VsockStream, u32)> {
         let mut peer = address(0, 0);
         let mut length = ADDRESS_LEN;
@@ -202,13 +196,10 @@ mod tests {
     use super::*;
     use crate::{HostMessage, recv, send};
 
-    /// `VMADDR_CID_LOCAL`: this machine's own loopback context.
     const CID_LOCAL: u32 = 1;
 
     #[test]
     fn a_stream_carries_frames_over_vsock_loopback() {
-        // A host without the vsock loopback transport (no `vsock_loopback`
-        // module, or no AF_VSOCK in a container) has nothing to test against.
         let port = 40_000 + std::process::id() % 20_000;
         let Ok(listener) = VsockListener::bind(port) else {
             return;

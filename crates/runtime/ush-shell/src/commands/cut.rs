@@ -53,7 +53,6 @@ impl Ranges {
         self.0.iter().any(|&(lo, hi)| lo <= n && n <= hi)
     }
 
-    /// Which run `n` falls in.
     fn run_of(&self, n: usize) -> Option<usize> {
         self.0.iter().position(|&(lo, hi)| lo <= n && n <= hi)
     }
@@ -135,7 +134,6 @@ pub fn cut(ctx: &Ctx<'_>, args: &[String]) -> i32 {
             "--complement" => complement = true,
             "--output-delimiter" => output_delimiter = Some(val.into_bytes()),
             "-z" | "--zero-terminated" => terminator = 0,
-            // GNU accepts and ignores it.
             "-n" => {}
             other => return ctx.unsupported(other),
         }
@@ -386,7 +384,6 @@ fn parse_set(text: &str) -> Result<Vec<Item>, String> {
     Ok(items)
 }
 
-/// A set's bytes in order; `fill` is how long a `[c*]` repeat makes it.
 fn expand(items: &[Item], fill: usize) -> Vec<u8> {
     let fixed: usize = items
         .iter()

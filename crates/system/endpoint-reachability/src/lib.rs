@@ -16,31 +16,15 @@
 //! public [`Endpoint::insert_relay`]: the endpoint, its key and its live
 //! connections stay as they are. Outbound dials work while dormant too: a
 //! peer address that names a relay gets an on-demand connection to it.
-//!
-//! Who can dial in? Only a party that already knows this device: a member
-//! of a room it is in, someone holding an invite it minted, one of the
-//! person's own devices (continuity, the device fabric, disk unlock), a
-//! Messages contact, a host. Each of those relationships starts the relays
-//! when it begins ([`Reachability::wake`]: a dial, a peer reaching a topic,
-//! an invite, the invite composer opening) and holds them up for as long as
-//! it lasts ([`Reachability::need`]): the network actor reports the remote
-//! parties it is connected to or keeps dialling, the session what it has
-//! recorded (a shared room, an open invitation, another of the person's
-//! devices).
-//!
-//! When nothing needs them any more, the relays rest again, a delay
-//! ([`REST_AFTER`] in a session) after the last thing that did, through [`Endpoint::remove_relay`]: with
-//! the map empty, net report, QAD and port mapping stop, and the vendored
-//! iroh gives up its home relay (`vendor/iroh/TILO-PATCH.md`): the address
-//! stops naming it, and the connection and its keep-alive close once it has
-//! been idle a minute. The next wake picks a home relay afresh. A handle
-//! deferred without a delay never rests: the filesystem daemon wakes its
-//! relays for conditions that last as long as the process.
 
 pub mod directory;
 pub mod lan;
+pub mod own_address;
+pub mod relays;
 pub use directory::{Gate, Watchonly, collaborating};
 pub use lan::lan;
+pub use own_address::{RELAY_WAIT, await_relay, follow, relay_addr};
+pub use relays::{EndpointRelays, relays};
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -80,27 +64,21 @@ pub struct Reachability {
 type Cell = Arc<Mutex<Option<Held>>>;
 
 struct Held {
-    /// This state's own cell, for the tasks it spawns.
     cell: Weak<Mutex<Option<Self>>>,
     endpoint: Endpoint,
     relays: Vec<Arc<RelayConfig>>,
     runtime: tokio::runtime::Handle,
-    /// `None`: once woken, the relays stay up.
     rest_after: Option<Duration>,
     /// Whether the relays should be in the endpoint's map.
     awake: bool,
-    /// What holds them up now, by [`Need`].
     needs: Needs,
-    /// When something last needed them: a wake, or a need that ended.
     needed_at: Instant,
-    /// Whether a task is waiting to rest them.
     rest_pending: bool,
     /// Whether they are in the map, as the last settle left it. Settling
     /// holds this lock, so inserts and removals land in order.
     applied: Arc<tokio::sync::Mutex<bool>>,
 }
 
-/// What holds the relays up now, by [`Need`].
 #[derive(Default)]
 struct Needs {
     transport: Option<&'static str>,
@@ -164,7 +142,6 @@ impl Reachability {
         }
     }
 
-    /// Whether relays are held back now.
     #[must_use]
     pub fn is_dormant(&self) -> bool {
         with_held(&self.held, |held| !held.awake).unwrap_or(false)
@@ -219,40 +196,22 @@ impl Reachability {
     /// `within` for one: an invite that carries it lets the invitee reach
     /// this device from behind any NAT at once, instead of after address
     /// lookup finds the relay. `None` when this handle holds nothing back
-    /// (the endpoint's own address is as good as it gets) or no home relay
-    /// arrived in time. Blocks the calling thread, which must not be one of
-    /// the network runtime's.
+    /// (the endpoint's own address is as good as it gets); a home relay that
+    /// arrives too late answers with the address the endpoint has, as a
+    /// device with no way out does ([`own_address::relay_addr`]). Blocks the
+    /// calling thread, which must not be one of the network runtime's.
     #[must_use]
     pub fn relay_addr_within(&self, within: Duration) -> Option<EndpointAddr> {
         let (endpoint, runtime) = with_held(&self.held, |held| {
             (held.endpoint.clone(), held.runtime.clone())
         })?;
-        let addr = endpoint.addr();
-        if addr.relay_urls().next().is_some() {
-            return Some(addr);
-        }
         let (found, answer) = std::sync::mpsc::sync_channel(1);
         runtime.spawn(async move {
-            use iroh::Watcher as _;
-            let mut watch = endpoint.watch_addr();
-            let relayed = async {
-                loop {
-                    let addr = watch.get();
-                    if addr.relay_urls().next().is_some() {
-                        return Some(addr);
-                    }
-                    if watch.updated().await.is_err() {
-                        return None;
-                    }
-                }
-            };
-            let _ = found.send(tokio::time::timeout(within, relayed).await.ok().flatten());
+            let _ = found.send(own_address::relay_addr(&endpoint, within).await);
         });
-        // The task answers by `within`; the margin covers its scheduling.
         answer
             .recv_timeout(within.saturating_add(Duration::from_millis(250)))
             .ok()
-            .flatten()
     }
 }
 
@@ -262,7 +221,6 @@ fn with_held<T>(cell: &Cell, f: impl FnOnce(&mut Held) -> T) -> Option<T> {
 }
 
 impl Held {
-    /// Mark the relays needed now, starting them if they rest.
     fn wake(&mut self, why: &'static str) -> bool {
         self.needed_at = Instant::now();
         if self.awake {
@@ -477,7 +435,6 @@ mod tests {
         endpoint.close().await;
     }
 
-    /// Without a delay, a wake lasts for the life of the handle.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn relays_deferred_without_a_delay_never_rest() {
         let (endpoint, relays) = endpoint_without_relays().await;
@@ -580,7 +537,8 @@ mod tests {
     /// so the address stops naming it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_woken_endpoint_names_its_home_relay_within_the_wait() {
-        let (_server, own) = super::test_support::local_relay().await;
+        let relay = tilo_test_env::relay::relay().await;
+        let own = relay.relays();
         let relays = RelayMap::empty();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Custom(relays.clone()))
@@ -598,11 +556,16 @@ mod tests {
         assert_eq!(endpoint.addr().relay_urls().count(), 0);
         let waiting = reachability.clone();
         let named = tokio::task::spawn_blocking(move || {
-            waiting.relay_addr_within(Duration::ZERO).is_none()
+            waiting
+                .relay_addr_within(Duration::ZERO)
+                .is_some_and(|addr| addr.relay_urls().count() == 0)
         })
         .await
         .unwrap();
-        assert!(named, "a dormant endpoint has no home relay to name");
+        assert!(
+            named,
+            "a dormant endpoint names the address it has, no relay in it"
+        );
 
         // The open invitation holds the relays up while the endpoint picks
         // its home relay: a bare wake would rest them after the 300 ms
@@ -631,41 +594,5 @@ mod tests {
         })
         .await;
         endpoint.close().await;
-    }
-}
-
-/// A relay of a test's own, for tests that need a home relay to appear.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    #![allow(
-        clippy::expect_used,
-        reason = "a test fixture that cannot start fails the test that needs it"
-    )]
-
-    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
-
-    /// A relay on loopback and a map naming it. It offers no QUIC address
-    /// discovery, so a net report needs only its HTTP probe: an endpoint
-    /// picks it as its home relay in a fraction of a second, where a probe
-    /// waiting on QAD that never answers takes about three.
-    ///
-    /// # Panics
-    ///
-    /// If the loopback relay cannot start.
-    pub async fn local_relay() -> (Server, iroh::RelayMap) {
-        let mut config = ServerConfig::default();
-        config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
-        let server = Server::spawn(config)
-            .await
-            .expect("a loopback relay starts");
-        let url: iroh::RelayUrl = format!(
-            "http://{}",
-            server.http_addr().expect("the relay serves HTTP")
-        )
-        .parse()
-        .expect("a loopback relay URL");
-        let mut relay = iroh::RelayConfig::from(url);
-        relay.quic = None;
-        (server, std::iter::once(relay).collect())
     }
 }

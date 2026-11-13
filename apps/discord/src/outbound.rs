@@ -141,7 +141,7 @@ fn shared_line(message: &Message, context: &Context) -> Option<String> {
 #[must_use]
 pub fn plan_post(
     guild: &Guild,
-    chat: &serde_json::Value,
+    chat: &crate::tilo::ChatRead,
     message: &str,
     context: &Context,
 ) -> PostPlan {
@@ -360,7 +360,7 @@ fn human_size(bytes: u64) -> String {
 #[must_use]
 pub fn plan_edit(
     guild: &Guild,
-    chat: &serde_json::Value,
+    chat: &crate::tilo::ChatRead,
     message: &str,
     context: &Context,
 ) -> Vec<EditOp> {
@@ -444,7 +444,7 @@ pub fn plan_delete(guild: &Guild, channel: &str, message: &str) -> Vec<DeleteIte
 #[must_use]
 pub fn plan_reaction(
     guild: &Guild,
-    chat: &serde_json::Value,
+    chat: &crate::tilo::ChatRead,
     message: &str,
     emoji: &str,
     added: bool,

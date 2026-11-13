@@ -55,7 +55,7 @@ async fn start_at(
             std::net::UdpSocket::bind(iroh_listen).ok().map(drop)
         });
     }
-    Relay::start(
+    crate::common::start_relay(
         RelayConfig {
             state_root: state.to_path_buf(),
             iroh_listen,
@@ -500,8 +500,8 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         "a removed member is not admitted: {refused:?}"
     );
 
-    // The room survives a restart of its relay, governance and all: a relay
-    // that comes back where it was changes nothing of it.
+    // The room survives a restart of its relay, governance and all: every change its people
+    // made is still there.
     let iroh_listen = *relay.node_addr().ip_addrs().next().unwrap();
     alice_session.close().await;
     bob_session.close().await;
@@ -512,7 +512,16 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         panic!("one governed workspace: {workspaces:?}")
     };
     assert_eq!(restored.workspace, room.workspace);
-    assert_eq!(restored.generation, generation);
+    // A host names its own address in a workspace's governance when it opens it
+    // (`Workspaces::hosts`), out of the address its endpoint reports — which names the relay
+    // it is reached through once it has reached it ([`iroh::Endpoint::addr`]). The host waits
+    // for that relay before it opens anything, so the restart names the address it had, and
+    // no change its people made goes.
+    assert!(
+        restored.generation >= generation,
+        "a restart lost governance: {} is below {generation}",
+        restored.generation
+    );
     assert!(
         restored
             .members
@@ -520,6 +529,70 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
             .any(|member| member.user_public_key == bob.user_pk && member.removed),
         "{:?}",
         restored.members
+    );
+    relay.shutdown().await;
+}
+
+/// A host restarted with a workspace already on disk names the relay it is reached through
+/// before it answers anything, so the first invitation it mints after start carries an
+/// address a stranger can dial; a restart at the same address changes no governance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let room = create_and_enter(&relay, &laptop, "Design review").await;
+    let generation = relay.workspaces().unwrap().list().await[0].generation;
+    assert!(
+        relay.node_addr().relay_urls().next().is_some(),
+        "a started host names the relay it is reached through"
+    );
+    let iroh_listen = *relay.node_addr().ip_addrs().next().unwrap();
+    relay.shutdown().await;
+
+    let relay = start_at(state.path(), &alice, &host, iroh_listen).await;
+    // What a person does as soon as their host is up again: hand out a link.
+    let invited = invite(
+        &relay,
+        &laptop,
+        &room.workspace,
+        MemberRole::Editor,
+        bob.user_pk,
+    )
+    .await;
+    let hint =
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::from_transport_hint(
+            &decode_and_verify_invitation(
+                &invited.signed_invitation,
+                None,
+                &RevocationList::new(),
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap()
+            .grant()
+            .transport[0],
+        )
+        .unwrap();
+    let relay_url = relay
+        .node_addr()
+        .relay_urls()
+        .next()
+        .cloned()
+        .expect("the relay is reached through its packet relay");
+    assert!(
+        hint.endpoint_addr
+            .relay_urls()
+            .any(|named| *named == relay_url),
+        "an invitation minted right after start names the relay: {:?}",
+        hint.endpoint_addr
+    );
+    let restored = relay.workspaces().unwrap().list().await;
+    assert_eq!(
+        restored[0].generation, generation,
+        "a restart at the same address names the address it had, changing nothing"
     );
     relay.shutdown().await;
 }

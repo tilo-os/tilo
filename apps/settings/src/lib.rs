@@ -1,32 +1,6 @@
-//! The Tilo native Personal Settings app — the device and account settings
-//! hub: the window, its effect vocabulary, its resource, the panes and
-//! everything they share. Workspace-owned policy stays in the shell's
-//! contextual Workspace Settings surface; cross-cutting domains share a
-//! resolver instead of letting either UI write the other's state.
-//!
-//! The window ([`window`]) is the view of the [`Settings`] resource: a
-//! categorized sidebar plus a content pane per category, responsive between
-//! a two-pane desktop layout and a single-pane narrow layout, over the
-//! [`SettingsApp`] it shares with its effects and rows. The binary in
-//! `main.rs` runs [`SettingsShell`] on the app framework: the live window,
-//! or one of the screenshot [`scenarios`].
-//!
-//! ## Module map
-//!
-//! - [`categories`] — the sidebar's [`categories::Section`]s and
-//!   [`categories::Category`]s.
-//! - [`sidebar`] — the sidebar's navigation list of categories.
-//! - [`panes`] — one module per category's content pane, and the part
-//!   ([`area::Part`]) they bring to the window.
-//! - [`widgets`] — small composition helpers (section, setting row, item row,
-//!   caption) shared across panels.
-//! - [`accounts`] — the **shared external-accounts store** Settings owns
-//!   and Mail / Calendar / file apps consume.
-//! - the **shared region & formats store** (global user locale) is the
-//!   `tilo-locale` crate: Settings owns it and Sheets / Weather consume it.
-//! - [`prefs`] — the **shared system-preferences store** (device sounds,
-//!   display comfort, pointer/keyboard behaviour, update policy) Settings
-//!   owns and the compositor / update service consume.
+//! The Tilo native Personal Settings app — the device and account settings hub:
+//! the window, its effect vocabulary, its resource, the panes and everything
+//! they share.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -48,7 +22,6 @@ thread_local! {
         std::cell::RefCell::default();
 }
 
-/// Capture the launcher's explicit administration grant, independently of model selection.
 pub fn enable_provider_administration() {
     LAUNCHER_PROVIDER_ADMIN.with(|slot| {
         *slot.borrow_mut() =
@@ -68,7 +41,9 @@ pub mod categories;
 pub mod channel;
 pub mod resource;
 pub mod scenarios;
+#[cfg(feature = "tilo-os")]
 pub use os_actions::codec_pack;
+#[cfg(feature = "tilo-os")]
 pub use os_actions::windows_compat;
 pub mod continuity;
 pub mod device_read;
@@ -87,19 +62,31 @@ pub mod setting;
 pub mod settings_app;
 pub mod sidebar;
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 pub(crate) mod stall;
 #[cfg(test)]
+#[cfg_attr(
+    not(feature = "tilo-os"),
+    allow(dead_code, reason = "some helpers serve only the device panes' tests")
+)]
 pub(crate) mod testing;
+#[cfg(feature = "tilo-os")]
 pub mod watch;
 pub mod window;
 
+#[cfg(feature = "tilo-os")]
 pub mod account_probe;
 pub mod device_fleet;
+#[cfg(feature = "tilo-os")]
 pub mod dispatcher;
+#[cfg(feature = "tilo-os")]
 pub(crate) mod input_sources;
+#[cfg(feature = "tilo-os")]
 pub mod keyboard_preview;
+#[cfg(feature = "tilo-os")]
 pub(crate) mod keyboard_watch;
 pub mod panes;
+#[cfg(feature = "tilo-os")]
 pub mod speaker_setup;
 
 pub use settings_app::SettingsApp;
@@ -107,7 +94,6 @@ pub use window::Inspected;
 
 pub use resource::{Settings, SettingsShell, parse_settings_uri};
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(SettingsShell)
 }

@@ -1,10 +1,4 @@
-//! Device-private account review. No field, hint or command is document-backed.
-//!
-//! The owner drains commands into its account actor and publishes only a bounded
-//! status here. Rebuild `view` after provider/status/source changes; text inputs
-//! and checkboxes keep their two-way bindings across rebuilds. Tokens never
-//! enter this form. The prepared-medium password uses only a masked external
-//! buffer, never document state or public actions. Hints are not authorization grants.
+//! The account review page, whose fields and hints stay on this device.
 
 use std::collections::VecDeque;
 
@@ -55,7 +49,6 @@ pub enum FormError {
     StaleSource,
 }
 
-/// Standalone form/controller. Handles and the queue stay in this process only.
 #[derive(Clone)]
 pub struct AccountsForm {
     pub provider: LocalState<Provider>,
@@ -104,8 +97,6 @@ impl AccountsForm {
         Self::default()
     }
 
-    /// Consume structural changes without rebuilding for text or consent edits.
-    /// Include the public provider binding so direct selections are observed too.
     pub(crate) fn take_structure_changed(&self) -> bool {
         let current = (
             self.provider.with(|provider| *provider),
@@ -138,8 +129,6 @@ impl AccountsForm {
         self.notice.set(String::new());
     }
 
-    /// Replace the private selected-account list from the actor's stored grants.
-    /// Imported suggestions and pending authorizations must never call this.
     pub fn set_connected(&self, accounts: Vec<ConnectedAccount>) {
         if self.connected.with(|previous| *previous != accounts) {
             self.connected.set(accounts);
@@ -195,7 +184,6 @@ impl AccountsForm {
         Ok(())
     }
 
-    /// Copy a suggestion into the editable form without granting mail consent.
     pub fn choose_hint(&self, index: usize) -> Result<(), FormError> {
         if self.status.with(|s| {
             matches!(
@@ -249,12 +237,6 @@ impl AccountsForm {
         })
     }
 
-    /// Same entry point for local widgets and the owner's semantic actions.
-    /// Retry takes a fresh snapshot, so corrections to email/server are honored.
-    ///
-    /// # Errors
-    /// Rejects pending authorization, retries outside the failed state, invalid
-    /// fields, or a full command queue.
     pub fn submit(&self, retry: bool) -> Result<(), FormError> {
         let status = self.status.with(|s| *s);
         if status == AccountsStatus::SigningIn || (retry && status != AccountsStatus::Failed) {
@@ -323,7 +305,6 @@ impl AccountsForm {
         Ok(())
     }
 
-    /// Escape controls supersede queued starts and remain available when full.
     pub fn cancel(&self) {
         self.escape(AccountsCommand::Cancel);
     }
@@ -338,7 +319,6 @@ impl AccountsForm {
             commands.clear();
             commands.push_back(command);
         });
-        // Stay pending until the actor acknowledges cancellation/skip.
         self.set_status(AccountsStatus::SigningIn);
     }
 

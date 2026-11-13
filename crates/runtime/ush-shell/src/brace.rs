@@ -28,7 +28,6 @@ pub(crate) fn expand(text: &str) -> Vec<String> {
     vec![text.to_string()]
 }
 
-/// The words of the brace expression opening at `open`, if it is one.
 fn at(chars: &[char], open: usize) -> Option<Vec<String>> {
     let close = matching(chars, open)?;
     let pre: String = chars.get(..open)?.iter().collect();
@@ -54,7 +53,6 @@ fn at(chars: &[char], open: usize) -> Option<Vec<String>> {
     )
 }
 
-/// Past the quote that opens at `i`.
 fn skip_quote(chars: &[char], i: usize, quote: char) -> usize {
     let mut j = i.saturating_add(1);
     while let Some(&c) = chars.get(j) {
@@ -70,7 +68,6 @@ fn skip_quote(chars: &[char], i: usize, quote: char) -> usize {
     chars.len()
 }
 
-/// The `}` that closes the `{` at `open`.
 fn matching(chars: &[char], open: usize) -> Option<usize> {
     let mut depth = 0_usize;
     let mut j = open;
@@ -122,7 +119,6 @@ fn top_level_commas(inner: &[char]) -> Vec<usize> {
     out
 }
 
-/// `1..5`, `5..1..2`, `a..e`, `01..10`.
 fn sequence(inner: &str) -> Option<Vec<String>> {
     let parts: Vec<&str> = inner.split("..").collect();
     let (start, end, step) = match parts.as_slice() {

@@ -1,18 +1,15 @@
 //! Why a codec ran on the CPU, said once per process.
 //!
-//! Software decode or encode is a legitimate outcome — a codec the chip has no
-//! block for, a stream larger than the block takes, a user who turned
-//! hardware off — but it is never a silent one. Each path that ends in
-//! software asks [`explain`] for the reason and hands it to [`report_once`],
-//! which logs one warning per (direction, codec, reason) and stays quiet for
-//! every later stream that falls back for the same reason.
+//! Software is a legitimate outcome — a codec the chip has no block for, a stream
+//! larger than the block takes, hardware turned off — but never a silent one: each
+//! path asks [`explain`] and hands it to [`report_once`], which logs one warning per
+//! (direction, codec, reason).
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use super::v4l2::{self, V4l2Device, V4l2Role};
 
-/// Which way the codec runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
     Decode,
@@ -31,22 +28,25 @@ impl Direction {
 /// The reason a stream did not reach video hardware.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FallbackReason {
-    /// `TILO_MEDIA_HWDEC` / `TILO_MEDIA_HWENC` asked for software.
     PolicyOff,
-    /// The stream is larger than the kernel's codec takes.
     ExceedsHardware {
         size: (u32, u32),
         limit: (u32, u32),
         device: String,
     },
-    /// A hardware element was tried and refused this stream.
-    HardwareRefused { element: String, detail: String },
+    HardwareRefused {
+        element: String,
+        detail: String,
+    },
     /// No hardware element for this codec is installed. `devices` names the
     /// V4L2 codec nodes that do exist, so "this chip's decoder has no VP9" is
     /// distinguishable from "this machine has no video hardware at all".
-    NoHardware { devices: Vec<String> },
-    /// Hardware for the codec is installed but a forced family outranked it.
-    NotChosen { installed: Vec<String> },
+    NoHardware {
+        devices: Vec<String>,
+    },
+    NotChosen {
+        installed: Vec<String>,
+    },
 }
 
 impl FallbackReason {
@@ -62,7 +62,6 @@ impl FallbackReason {
         }
     }
 
-    /// One sentence for the log and for an error shown to the user.
     pub fn describe(&self, direction: Direction, media_type: &str) -> String {
         let codec = v4l2::codec_label(media_type);
         let dir = direction.as_str();
@@ -76,7 +75,6 @@ impl FallbackReason {
         )
     }
 
-    /// The reason alone, without the "runs in software" framing.
     pub fn why(&self, direction: Direction, media_type: &str) -> String {
         let codec = v4l2::codec_label(media_type);
         let dir = direction.as_str();
@@ -126,7 +124,6 @@ pub fn explain(
     if policy_software {
         return FallbackReason::PolicyOff;
     }
-    // The kernel's own limit is the most precise answer when it applies.
     if let Some((w, h)) = size {
         let limit = devices
             .iter()
@@ -170,8 +167,6 @@ fn role_matches(role: V4l2Role, direction: Direction) -> bool {
     }
 }
 
-/// Log `reason` once per process for this direction, codec and kind of
-/// reason. Returns whether this call logged.
 pub fn report_once(direction: Direction, media_type: &str, reason: &FallbackReason) -> bool {
     static SEEN: Mutex<BTreeSet<(Direction, String, &'static str)>> = Mutex::new(BTreeSet::new());
     let key = (direction, media_type.to_string(), reason.key());
@@ -182,9 +177,6 @@ pub fn report_once(direction: Direction, media_type: &str, reason: &FallbackReas
     fresh
 }
 
-/// Log, once per codec, that a stream cannot be decoded at all: no hardware
-/// takes it (`hardware_why`) and no software decoder is installed. Returns
-/// the sentence, for the error shown to the user.
 pub fn report_unplayable(media_type: &str, hardware_why: &str) -> String {
     static SEEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     let codec = v4l2::codec_label(media_type);
@@ -201,11 +193,6 @@ pub fn report_unplayable(media_type: &str, hardware_why: &str) -> String {
     text
 }
 
-/// Explain and report a real-time codec that settled on a software element.
-///
-/// `table` is the codec's full preference table, `installed` answers whether
-/// an element is in the registry, and `tried` holds the `"element: error"`
-/// lines of candidates that failed before the chosen one.
 pub fn report_realtime(
     direction: Direction,
     codec: super::realtime::StreamCodec,
@@ -284,8 +271,6 @@ mod tests {
         let devices = hantro();
         let installed = vec!["v4l2slh264dec".to_string()];
 
-        // 4K H.264 on the G1: the kernel's limit is the reason, even though
-        // the decoder also failed when tried.
         let refused = vec![(
             "v4l2slh264dec".to_string(),
             "Failed to configure H264 decoder".to_string(),
@@ -325,7 +310,6 @@ mod tests {
         );
         assert!(matches!(r, FallbackReason::HardwareRefused { .. }), "{r:?}");
 
-        // HEVC: no decoder at all, and the log says what hardware there is.
         let r = explain(
             Direction::Decode,
             MEDIA_HEVC,
@@ -390,7 +374,6 @@ mod tests {
         let reason = FallbackReason::NoHardware { devices: vec![] };
         assert!(report_once(Direction::Decode, MEDIA_AV1, &reason));
         assert!(!report_once(Direction::Decode, MEDIA_AV1, &reason));
-        // A different reason for the same codec is news.
         assert!(report_once(
             Direction::Decode,
             MEDIA_AV1,

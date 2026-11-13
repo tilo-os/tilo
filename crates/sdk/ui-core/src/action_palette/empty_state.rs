@@ -3,6 +3,7 @@
 //! query and saying what to try instead.
 
 use super::ActionPalette;
+use crate::i18n::{widget_format, widget_text};
 
 impl ActionPalette {
     /// What the empty result list says now, as a person reads it.
@@ -25,14 +26,14 @@ impl ActionPalette {
     pub(crate) fn sync_plain_empty_state(&mut self, query: &str, searching: bool) {
         let named = !query.trim().is_empty();
         let title = if searching {
-            crate::i18n!("palette-searching")
+            widget_text("palette-searching")
         } else if named {
-            crate::i18n!("palette-no-results", "query" => query)
+            widget_format("palette-no-results", &[("query", query.into())])
         } else {
-            crate::i18n!("palette-empty")
+            widget_text("palette-empty")
         };
         self.results.set_empty_text(title);
         self.results
-            .set_empty_hint((!searching && named).then(|| crate::i18n!("palette-no-results-hint")));
+            .set_empty_hint((!searching && named).then(|| widget_text("palette-no-results-hint")));
     }
 }

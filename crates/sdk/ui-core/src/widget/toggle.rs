@@ -51,11 +51,10 @@ pub struct Toggle {
 }
 
 /// What a switch leaves for the one a rebuild puts in its place: its knob,
-/// and the value it held, so a successor showing another switch's value
+/// and the value it shows, so a successor showing another switch's value
 /// (another page, a row that moved) does not slide.
 struct KeptSwitch {
     switch: SwitchMotion,
-    on: bool,
 }
 
 /// What a switch's paint depends on besides its place and the theme:
@@ -137,11 +136,16 @@ impl Toggle {
     }
 
     /// Go on from the switch a rebuild dropped: its knob, on its way or at
-    /// rest. Showing what it showed, a change since moves from there, as
-    /// the input that made it asks; showing something else, it rests.
+    /// rest. Showing what it showed, a change since moves from there as the
+    /// input that made it asks; showing something else, it rests where it
+    /// is.
     fn take_up(&mut self, kept: KeptSwitch) {
         self.switch = kept.switch;
-        if kept.on != self.control.is_checked {
+        // What the switch was going to, not how it was found, says whether it
+        // is this switch changed since: a value the one it replaces was
+        // heading for carries on as the input asks, and one it was not is
+        // another switch's — another page's, a row that moved — which rests.
+        if self.switch.shown != Some(self.control.is_checked) {
             self.switch.snap(self.control.is_checked);
         }
     }
@@ -239,8 +243,10 @@ impl Toggle {
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
         let mut toggle = Self::new("toggle", "");
-        toggle.control =
-            BoolControl::local(state, Some(crate::widget::humanize_control_id("toggle")));
+        // A switch built over state alone says nothing of itself: the kind it
+        // is ("Toggle") is what its role already says, so what holds it (a
+        // row's caption) names it instead.
+        toggle.control = BoolControl::local(state, None);
         toggle
     }
 
@@ -642,19 +648,17 @@ impl ToggleFace {
 
 /// Build the accessibility node shared by retained toggles and
 /// context-specific toggle controls that own a different mutation channel.
+/// `accessible_name` is the name a reader hears, already in the language
+/// this thread reads.
 pub fn toggle_accessibility(
     on: bool,
     focused: bool,
     enabled: bool,
-    accessible_name: Option<&str>,
+    accessible_name: Option<String>,
 ) -> crate::a11y::AccessNode {
     use crate::a11y::{AccessNode, AccessState, Role};
     AccessNode::new(Role::Switch)
-        .with_optional_name(
-            accessible_name
-                .map(|name| crate::i18n!(name))
-                .filter(|name| !name.is_empty()),
-        )
+        .with_optional_name(accessible_name.filter(|name| !name.is_empty()))
         .with_state(
             AccessState::new()
                 .focusable(enabled)
@@ -756,7 +760,7 @@ impl Widget for Toggle {
             ..Default::default()
         };
         let identity = self.identity().map(str::to_owned);
-        if let Some(kept) = self.hand_on.build(identity.as_deref()) {
+        if let Some((kept, _)) = self.hand_on.build(identity.as_deref()) {
             self.take_up(kept);
         }
         taffy.widget_leaf(style, node_map, self)
@@ -764,7 +768,7 @@ impl Widget for Toggle {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(kept) = self.hand_on.place(self.control.rect) {
+        if let Some((kept, _)) = self.hand_on.place(self.control.rect) {
             self.take_up(kept);
         }
     }
@@ -902,7 +906,7 @@ impl Widget for Toggle {
             self.control.is_checked,
             self.is_focused(),
             self.is_enabled(),
-            self.control.accessible_name.as_deref(),
+            self.control.spoken_name(),
         )
         .with_semantic_key(&self.semantic_id);
         if self.control.is_bare() {
@@ -918,8 +922,7 @@ bool_control_capabilities!(Toggle, "toggle");
 impl Drop for Toggle {
     fn drop(&mut self) {
         let switch = std::mem::take(&mut self.switch);
-        let on = self.control.is_checked;
-        self.hand_on.leave(KeptSwitch { switch, on });
+        self.hand_on.leave(KeptSwitch { switch });
     }
 }
 
@@ -975,6 +978,21 @@ mod tests {
             assert_eq!(
                 Widget::accessibility(&named).unwrap().name.as_deref(),
                 Some("Airplane mode"),
+            );
+
+            // A row's caption is text, never a message id: naming a switch by
+            // the toolkit's own key says the caption, while the message-id
+            // setter resolves it in the catalogue.
+            let caption =
+                Toggle::new("any", "path").with_resolved_accessible_name("window-root-name");
+            assert_eq!(
+                Widget::accessibility(&caption).unwrap().name.as_deref(),
+                Some("window-root-name"),
+            );
+            let key = Toggle::new("any", "path").with_accessible_name("window-root-name");
+            assert_eq!(
+                Widget::accessibility(&key).unwrap().name.as_deref(),
+                Some("Tilo application window"),
             );
         }
     }

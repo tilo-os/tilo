@@ -225,7 +225,6 @@ fn blocking_acquisition_completes_after_another_process_releases() {
     let waiter_path = path;
     let waiter = std::thread::spawn(move || {
         let waiter_file = open(&waiter_path);
-        // The kernel's id for this thread, where the platform has one.
         let tid = tilo_test_env::idle::current_thread_id().ok();
         attempting_tx.send(tid).unwrap();
         acquired_tx

@@ -19,7 +19,6 @@ fn replace(doc: &mut AutoCommit, key: &str, text: &str) {
 }
 #[test]
 fn diagnostics_cache_reuses_only_identical_committed_inputs() {
-    // Each phase builds a fresh sample fixture; read counts must not leak between phases.
     unchanged_diagnostics_reuse_local_lint();
     pending_edits_never_cache_or_commit();
     heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not();
@@ -93,8 +92,6 @@ fn unchanged_diagnostics_reuse_local_lint() {
     }
     assert_eq!(app.diagnostics_buffer_reads, 1);
     assert_eq!(app.panel.problems(), expected);
-    // The uncached path preserves the prior read/lint behavior and provides
-    // a deterministic work-count comparison on identical authoritative text.
     let (mut baseline, baseline_doc, _) = fixture();
     for _ in 0..11 {
         baseline.refresh_diagnostics_at(&baseline_doc, None);
@@ -199,7 +196,6 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
         lint::Scope::TextualOnly,
     );
     assert_eq!(app.panel.problems(), expected);
-    // A restored historical checkout has different heads even in this same widget.
     doc = doc.fork_at(&historical).unwrap();
     app.refresh_diagnostics(&doc);
     assert_eq!(
@@ -229,7 +225,6 @@ fn equal_pending_counts_with_different_text_never_alias() {
 
 #[test]
 fn diagnostics_leave_transactions_history_and_patch_cursor_untouched() {
-    // Each phase builds its own document and actor setup.
     diagnostics_leave_zero_operation_transactions_and_patch_history_untouched();
     diagnostics_preserve_active_patch_cursor();
 }
@@ -253,10 +248,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
         "diagnostics must not close the empty transaction or alter patch/history state"
     );
     assert!(doc.diff_cursor().is_empty());
-    // The transaction's owner discards its empty transaction. Diagnostics
-    // must not have committed it first and poisoned the actor table.
     assert_eq!(doc.rollback(), 0);
-    // Match the owner's safe empty-transaction cleanup in tilo_resource::history.
     doc.reset_diff_cursor();
     doc.set_actor(ActorId::from(vec![0x20]));
     write_body(&mut doc, "edited");
@@ -322,8 +314,6 @@ fn diagnostics_preserve_active_patch_cursor() {
     app.refresh_diagnostics(&doc);
     assert_eq!(doc.diff_cursor(), before);
     assert_eq!(doc.pending_ops(), 0);
-    // Keep the transaction's actor: actor migration after rollback is an
-    // independent upstream patch-log issue, outside diagnostic observation.
     write_body(&mut doc, "edited");
     doc.commit();
     let patches = doc.diff_incremental();
@@ -332,7 +322,6 @@ fn diagnostics_preserve_active_patch_cursor() {
     }] if key == "body" && value.0.as_str() == Some("edited")));
 }
 
-/// Write the scalar `body` a record field holds, as one put.
 fn write_body(doc: &mut AutoCommit, body: &str) {
     ui::tilo_resource::write_key(
         doc,

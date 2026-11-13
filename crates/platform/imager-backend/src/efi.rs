@@ -1,11 +1,8 @@
-//! `EFI_LOAD_OPTION` encoding for the owned installer boot entry, shared by
-//! both platforms so one tested encoder produces the bytes firmware sees.
+//! `EFI_LOAD_OPTION` encoding for the owned installer boot entry, shared by both platforms so one
+//! tested encoder produces the bytes firmware sees.
 //!
-//! Layout (UEFI 2.10 §3.1.3): `u32 Attributes`, `u16 FilePathListLength`,
-//! NUL-terminated UTF-16LE `Description`, `FilePathList`, `OptionalData`.
-//! The device path is `HD` (§10.3.5.1: type 4, subtype 1, length 42),
-//! `File` (§10.3.5.4: type 4, subtype 4, NUL-terminated UTF-16LE path) and
-//! `End Entire Device Path` (type 0x7f, subtype 0xff, length 4).
+//! Layout (UEFI 2.10 §3.1.3): `u32 Attributes`, `u16 FilePathListLength`, NUL-terminated UTF-16LE
+//! `Description`, `FilePathList`, `OptionalData`.
 
 /// `EFI_GLOBAL_VARIABLE` vendor GUID.
 pub const GLOBAL_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
@@ -45,9 +42,7 @@ pub fn format_boot_number(number: u16) -> String {
     format!("{number:04X}")
 }
 
-/// Parse four hex digits (`0004`, case-insensitive).
-/// # Errors
-/// Returns an error unless the input is exactly four hexadecimal digits.
+/// Four hex digits, case-insensitive.
 pub fn parse_boot_number(text: &str) -> Result<u16, String> {
     if text.len() != 4 || !text.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("invalid boot number {text:?}"));
@@ -72,8 +67,8 @@ pub fn encode_u16(number: u16) -> Vec<u8> {
     number.to_le_bytes().to_vec()
 }
 
-/// The lowest free `Boot####` at or above [`FIRST_OWNED_BOOT_NUMBER`] that is
-/// neither referenced by `boot_order` nor present (`exists` asks firmware).
+/// The lowest free `Boot####` at or above [`FIRST_OWNED_BOOT_NUMBER`] that is neither referenced by
+/// `boot_order` nor present (`exists` asks firmware).
 pub fn allocate_boot_number(
     boot_order: &[u16],
     mut exists: impl FnMut(u16) -> Result<bool, String>,
@@ -126,8 +121,7 @@ fn valid_file_path(path: &str) -> bool {
             .all(|c| c.is_ascii_graphic() && c != b'/' && c != b'"')
 }
 
-/// Encode an `EFI_LOAD_OPTION` (attributes ACTIVE, HD + File + End device
-/// path, no optional data).
+/// Attributes ACTIVE, an HD + File + End device path, no optional data.
 pub fn encode_load_option(option: &HardDriveLoadOption) -> Result<Vec<u8>, String> {
     if option.partition_number == 0 || option.size_lba == 0 || option.start_lba == 0 {
         return Err("invalid HD() partition fields".into());
@@ -188,11 +182,9 @@ fn read_utf16z(bytes: &[u8]) -> Result<(String, usize), String> {
     ))
 }
 
-/// Decode what [`encode_load_option`] produces (and firmware-written HD/File
-/// options): an `HD` node, one or more `File` nodes (joined as firmware
-/// concatenates them), then `End`. Trailing optional data is permitted and
-/// ignored. Options whose device path starts elsewhere (`PciRoot`, URI, ...)
-/// are rejected; callers compare those by bytes only.
+/// Decodes an `HD` node, one or more `File` nodes (joined as firmware concatenates them) and
+/// `End`; trailing optional data is ignored. A device path that starts elsewhere (`PciRoot`, URI)
+/// is rejected, and callers compare those by bytes only.
 pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
     let ([_, _, _, _, low, high], rest) = bytes
         .split_first_chunk::<6>()
@@ -283,8 +275,7 @@ pub fn load_option_attributes(bytes: &[u8]) -> Option<u32> {
 mod tests {
     use super::*;
 
-    /// UTF-16LE of ASCII text, NUL-terminated — written out by hand below
-    /// where the fixture must not depend on the encoder.
+    /// Hand-written, so the fixture does not depend on the encoder.
     fn fixture_option() -> HardDriveLoadOption {
         HardDriveLoadOption {
             description: "Tilo installer".into(),
@@ -296,13 +287,8 @@ mod tests {
         }
     }
 
-    /// Hand-assembled from the UEFI 2.10 structure definitions (§3.1.3
-    /// `EFI_LOAD_OPTION`, §10.3.5.1 Hard Drive, §10.3.5.4 File Path,
-    /// §10.3.1 End). Field order and widths match efivar's
-    /// `efidp_make_hd`/`efidp_make_file`, which `efibootmgr -c -d DISK -p 5
-    /// -L "Tilo installer" -l '\EFI\BOOT\BOOTX64.EFI'` uses; efibootmgr adds no
-    /// optional data unless `-@`/`-u` is given. The GUID is stored
-    /// mixed-endian as in `efi_guid_t`.
+    /// Hand-assembled from UEFI 2.10 (load option, hard drive, file path, end), matching what
+    /// efibootmgr writes for `-l '\EFI\BOOT\BOOTX64.EFI'`; the GUID is stored mixed-endian.
     const FIXTURE: &[u8] = &[
         0x01, 0x00, 0x00, 0x00, //
         // FilePathListLength = 42 (HD) + 48 (File: 4 + 22 units * 2) + 4 (End) = 94
@@ -403,7 +389,6 @@ mod tests {
         }
     }
 
-    /// GUID layout and boot number allocation.
     #[test]
     fn efi_guids_and_boot_numbers_follow_firmware_layout() {
         {

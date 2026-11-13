@@ -70,7 +70,7 @@ impl<R: Resource> BarActions<R> {
         let declarations = tilo_resource::vocabulary::<R>().declarations();
         let declared = declarations.iter().find(|decl| decl.id == id);
         let (name, icon) = declared.map_or_else(Default::default, |decl| {
-            (decl.label.clone(), decl.icon.clone().unwrap_or_default())
+            (decl.shown_label(), decl.icon.clone().unwrap_or_default())
         });
         let mut entry = match submit.into_invoke() {
             Ok(invoke) => {
@@ -93,10 +93,7 @@ impl<R: Resource> BarActions<R> {
     pub fn effect<E: Effect>(&self, effect: &E) -> ToolbarAction {
         let declared = E::declaration(effect.id());
         let (name, icon) = declared.as_ref().map_or_else(Default::default, |decl| {
-            (
-                decl.label.to_owned(),
-                decl.icon.unwrap_or_default().to_owned(),
-            )
+            (decl.label.read(), decl.icon.unwrap_or_default().to_owned())
         });
         let enabled = declared.as_ref().is_some_and(|decl| {
             self.dispatcher.may(&ActionNeed {

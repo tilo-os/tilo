@@ -2,25 +2,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-/// The embedded English word list.
-///
-/// Source: the system `hunspell` `en_US` spelling dictionary
-/// (`/usr/share/hunspell/en_US.dic`, the SCOWL-derived list shipped by Fedora),
-/// used as an oracle to validate a lowercased/normalised pass over the much
-/// larger but noisier `/usr/share/dict/words` (`linux.words`). Every candidate
-/// that `hunspell -d en_US` accepted — which expands the dictionary's affix
-/// rules, so it includes inflected forms like `jumps`, `jumping`, `foxes` that
-/// the bare `.dic` stems omit — was kept. The result was lowercased, restricted
-/// to ASCII letters with optional internal apostrophes, length 1..=15, and sorted
-/// unique. The dictionary's own stems were then added the same way: each stem
-/// of `en_US.dic` with the common English suffixes (plural, past, `-ing`,
-/// `-er`, `-ly`, `-ness`, `-ment`, `-ion`, and their spelling changes), kept
-/// where `hunspell -d en_US -G` accepted it, so the words `linux.words` lacks
-/// ("website", "smartphone", "blog") are known too.
-///
-/// Size: ~89,000 words, ~820 KB. See `spellcheck/data/words.txt`. It is the
-/// fallback: where the system has a Hunspell dictionary for the language,
-/// English is checked with that ([`crate::spans_for_language`]).
+/// The embedded English word list, from the system `hunspell` `en_US` list (the
+/// SCOWL-derived one Fedora ships): generated, never edited by hand.
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 
 /// Product names included in the built-in dictionary, and known beside a
@@ -130,60 +113,39 @@ const CONVERSATIONAL_WORDS: &[&str] = &[
     "ctrl",
 ];
 
-/// Whether `word` is one of the product names or conversational words the
-/// embedded list adds, which a system dictionary may not hold.
 pub(crate) fn is_extra_word(word: &str) -> bool {
     let lower = word.to_lowercase();
     PRODUCT_WORDS.contains(&lower.as_str()) || CONVERSATIONAL_WORDS.contains(&lower.as_str())
 }
 
-/// A set of known words for spell checking.
-///
-/// Membership is **case-insensitive**: words are stored lowercased and
-/// [`Dictionary::contains`] lowercases its argument before looking it up. The
-/// dictionary also keeps a length-bucketed index used by the suggester to avoid
-/// scanning words whose length alone puts them out of edit-distance range.
-///
-/// On top of the built-in word list, a [`Dictionary`] carries a small,
-/// runtime-mutable **user dictionary** ([`Dictionary::add_word`]) — words the
-/// user has explicitly accepted (e.g. via "Add to dictionary" in the word
-/// processor). User words participate in [`contains`](Dictionary::contains)
-/// exactly like built-in ones, so an added word is no longer flagged.
+/// A set of known words for spell checking, matched case-insensitively: words are stored
+/// lowercased and a lookup lowercases its argument.
 #[derive(Debug, Clone, Default)]
 pub struct Dictionary {
     words: HashSet<String>,
     /// `by_len[n]` holds every word of `char`-length `n` (lowercased), so the
     /// suggester can restrict its scan to lengths within +-max of the query.
     by_len: Vec<Vec<String>>,
-    /// Runtime-added user words, keyed case-insensitively while retaining the
-    /// spelling explicitly accepted by the person. Kept separate from `words` so the
-    /// built-in list stays a clean compile-time set and the user words can be
-    /// persisted independently. Consulted by [`contains`](Self::contains).
+    /// Runtime-added user words, keyed case-insensitively while keeping the spelling the
+    /// person accepted, apart from `words` so the built-in list stays compile-time data.
     user_words: BTreeMap<String, String>,
 }
 
 impl Dictionary {
-    /// Build the dictionary embedded in the binary at compile time.
     pub fn builtin() -> Self {
-        // Through the one builder that reads the embedded list, which a web
-        // build's split keeps out of its start module.
         let mut builder = BuiltinBuilder::default();
         builder.step(&mut || true);
         builder.finish()
     }
 
-    /// Load any persisted user words from the user-config file into this
-    /// dictionary's runtime user set. Best-effort: a missing / unreadable file
-    /// is a silent no-op. Lets a caller that already holds a built-in dictionary
-    /// (e.g. cloned from a process-wide shared copy to avoid re-parsing the 75k
-    /// word list) layer in the persisted user words without re-parsing.
+    /// Load the persisted user words into this dictionary's runtime set; a missing or
+    /// unreadable file is a silent no-op.
     pub fn load_user_dict(&mut self) {
         if let Some(path) = user_dict_path() {
             self.load_user_dict_from(&path);
         }
     }
 
-    /// [`Self::load_user_dict`] from an explicit word-list file.
     pub fn load_user_dict_from(&mut self, path: &std::path::Path) {
         if let Ok(contents) = std::fs::read_to_string(path) {
             for line in contents.lines() {
@@ -197,12 +159,8 @@ impl Dictionary {
         }
     }
 
-    /// Build a dictionary from any iterator of word-like strings.
-    ///
-    /// Each entry is trimmed and lowercased; empty entries are ignored.
-    /// Duplicate words collapse. This is the constructor used both by
-    /// [`Dictionary::builtin`] and by callers supplying a custom list (e.g. a
-    /// per-document allow-list).
+    /// Build a dictionary from any iterator of word-like strings: each entry trimmed and
+    /// lowercased, empty entries and duplicates dropped.
     pub fn from_words<I, S>(words: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -215,8 +173,6 @@ impl Dictionary {
         building.finish()
     }
 
-    /// Returns `true` if `word` is in the dictionary (built-in list **or** the
-    /// runtime user dictionary), compared case-insensitively.
     pub fn contains(&self, word: &str) -> bool {
         let apostrophe_normalized;
         let word = if word.contains('\u{2019}') {
@@ -225,7 +181,6 @@ impl Dictionary {
         } else {
             word
         };
-        // Fast path: a word that is already lowercase needs no allocation.
         if word.chars().all(|c| !c.is_uppercase()) {
             self.words.contains(word) || self.user_words.contains_key(word)
         } else {
@@ -247,7 +202,6 @@ impl Dictionary {
             return false;
         }
         if self.words.contains(&normalized) {
-            // Already a built-in word — nothing to record.
             return false;
         }
         if let std::collections::btree_map::Entry::Vacant(entry) = self.user_words.entry(normalized)
@@ -259,16 +213,8 @@ impl Dictionary {
         }
     }
 
-    /// Persist the runtime user dictionary to the user-config file
-    /// (`$XDG_CONFIG_HOME/tilo/userdict.txt`). Best-effort: returns `Ok(())` and
-    /// no-ops when no config path is resolvable; surfaces I/O errors otherwise so
-    /// a caller *can* report them, but the typical caller ignores the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying [`std::io::Error`] if the config directory cannot
-    /// be created (`create_dir_all`) or the word list cannot be written
-    /// (`write`) — e.g. permission denied, or a read-only filesystem.
+    /// Persist the runtime user dictionary to `$XDG_CONFIG_HOME/tilo/userdict.txt`; no-ops
+    /// when no config path is resolvable and surfaces I/O errors.
     pub fn save_user_dict(&self) -> std::io::Result<()> {
         match user_dict_path() {
             Some(path) => self.save_user_dict_to(&path),
@@ -276,48 +222,33 @@ impl Dictionary {
         }
     }
 
-    /// [`Self::save_user_dict`] to an explicit word-list file, creating its
-    /// directory.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::save_user_dict`].
     pub fn save_user_dict_to(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Stable case-insensitive order; the same existing file carries the
-        // person's accepted spelling without creating another dictionary.
         let words: Vec<&str> = self.user_words.values().map(String::as_str).collect();
         let body = words.join("\n");
         std::fs::write(path, body)
     }
 
-    /// The runtime user-added words, lowercased and unsorted. Mostly useful for
-    /// tests and persistence.
     pub fn user_words(&self) -> impl Iterator<Item = &str> {
         self.user_words.keys().map(String::as_str)
     }
 
-    /// Personal spellings as explicitly accepted, in stable lookup order.
-    /// Readers such as prediction and speech biasing must use these spellings
-    /// rather than changing recognised proper names with a fuzzy rewrite.
+    /// Personal spellings as explicitly accepted, in stable lookup order: readers such as
+    /// prediction and speech biasing use these rather than changing recognised names.
     pub fn user_spellings(&self) -> impl Iterator<Item = &str> {
         self.user_words.values().map(String::as_str)
     }
 
-    /// Number of distinct words in the dictionary.
     pub fn len(&self) -> usize {
         self.words.len()
     }
 
-    /// Returns `true` if the dictionary has no words.
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
 
-    /// Iterate over all words whose `char`-length is within `[min_len, max_len]`
-    /// (inclusive). Used by the suggester to bound its scan.
     pub(crate) fn words_in_len_range(
         &self,
         min_len: usize,
@@ -363,10 +294,8 @@ impl Building {
     }
 }
 
-/// The built-in dictionary built a slice at a time: a browser page has no
-/// thread to build its 89,000 words on, and building them at once holds the
-/// page for longer than several frames. [`Self::step`] takes words while
-/// its budget lasts, so the page builds the dictionary in idle time.
+// The built-in dictionary is built a slice at a time: a browser page has no thread to
+// build its 89,000 words on, and building them at once holds the page for frames.
 pub(crate) struct BuiltinBuilder {
     words: Box<dyn Iterator<Item = &'static str> + Send>,
     building: Building,
@@ -392,11 +321,8 @@ impl Default for BuiltinBuilder {
 }
 
 impl BuiltinBuilder {
-    /// Words taken between two asks of the budget.
     const SLICE: usize = 256;
 
-    /// Take words while `more` answers true (asked every few hundred words);
-    /// true once every word is in.
     pub(crate) fn step(&mut self, more: &mut dyn FnMut() -> bool) -> bool {
         loop {
             for _ in 0..Self::SLICE {
@@ -411,18 +337,14 @@ impl BuiltinBuilder {
         }
     }
 
-    /// The dictionary, once [`Self::step`] answered true.
     #[must_use]
     pub(crate) fn finish(self) -> Dictionary {
         self.building.finish()
     }
 }
 
-/// Resolve the path of the persisted user dictionary:
-/// `$XDG_CONFIG_HOME/tilo/userdict.txt`, falling back to
-/// `$HOME/.config/tilo/userdict.txt`. Returns `None` when neither environment
-/// variable is set (e.g. a locked-down sandbox), in which case the user
-/// dictionary lives only in memory.
+/// Resolve the path of the persisted user dictionary: `$XDG_CONFIG_HOME/tilo/userdict.txt`,
+/// else `$HOME/.config/tilo/userdict.txt`, else `None`.
 pub fn user_dict_path() -> Option<std::path::PathBuf> {
     let base = tilo_paths::xdg::config_home()?;
     Some(base.join("tilo").join("userdict.txt"))
@@ -492,7 +414,6 @@ mod tests {
             assert!(d.add_word("Tilo"), "first add records the word");
             assert!(d.contains("tilo"), "added word is now known");
             assert!(d.contains("TILO"), "membership stays case-insensitive");
-            // Re-adding is a no-op, and adding a built-in word records nothing.
             assert!(
                 !d.add_word("tilo"),
                 "re-adding an existing user word is a no-op"
@@ -517,12 +438,6 @@ mod product_vocabulary_tests {
 
     #[test]
     fn product_nouns_are_known_but_ordinary_misspellings_are_caught() {
-        // Phase `the_products_own_nouns_are_not_misspellings`.
-        // The assistant this OS ships is not a misspelling.
-        //
-        // A red underline beneath `Claude` in a Tilo document is the system
-        // reporting itself as an error, and it turned up in a document where
-        // somebody had simply addressed the agent by name.
         {
             let d = Dictionary::builtin();
             for word in ["Claude", "claude", "Tilo", "TILO", "tilo", "tilo"] {

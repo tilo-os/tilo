@@ -1,19 +1,4 @@
 //! Headless redraw-cycle benchmark over a representative widget tree.
-//!
-//! Builds a Column of common widgets (no overlays or percent-height
-//! widgets, which don't compose into a bare Column), then runs N synthetic click → redraw cycles on the
-//! Day/Week/Month `ToggleGroup`. Each cycle measures the cost of:
-//!
-//!   - `handle_event` (click + hover)
-//!   - `compute_layout_with_measure` (taffy re-flow + measure callbacks)
-//!   - `apply_layout` (writes rects into widgets)
-//!   - `draw` (widget → vello scene)
-//!   - `OffscreenRenderer::render`     (vello → wgpu, includes GPU submit)
-//!
-//! Output is a per-phase mean / min / max across iterations, plus a
-//! sum that approximates the click-to-pixels latency a user feels
-//! when they switch tab segments in a long widget gallery.
-//!
 //! Run with:
 //! ```
 //! cargo run -p ui-examples --release --example ui-perf -- widget_perf_bench
@@ -31,6 +16,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::{
@@ -86,7 +72,8 @@ fn build_tree() -> Box<dyn Widget> {
                 node("main.rs", 3, Some(2), false),
                 node("lib.rs", 4, Some(2), false),
                 node("README.md", 5, Some(1), false),
-            ],
+            ]
+            .into(),
             expanded: Some(vec![ResourceId("1".into()), ResourceId("2".into())]),
             ..TreeViewProps::default()
         },
@@ -235,7 +222,7 @@ impl Bench {
 
         let t_draw = tilo_ui::time::now();
         scene.reset();
-        root.draw(scene, Affine::IDENTITY, text_renderer, theme, presence);
+        root.draw_child(scene, Affine::IDENTITY, text_renderer, theme, presence);
         times.draw_us = t_draw.elapsed().as_micros();
 
         let t_render = tilo_ui::time::now();
@@ -340,10 +327,6 @@ pub fn run(_args: &[String]) {
 }
 
 impl Bench {
-    /// One click → redraw cycle: a cursor-moved + mouse-press + mouse-release
-    /// sequence through `handle_event` (what the App calls in the live window
-    /// on real input), then a full `full_redraw`. Split out of `run` to keep
-    /// that under the line cap.
     fn run_one_cycle(
         &mut self,
         click: (f64, f64),
@@ -440,7 +423,6 @@ fn stats<F: Fn(&Phases) -> u128>(hist: &[Phases], f: F) -> (u128, u128, u128) {
 }
 
 /// Prints the min/mean/max table plus the approximate click-to-pixels
-/// latency. Split out of `run` to keep that under the line cap.
 fn print_results(hist: &[Phases], iters: usize) {
     let (hmin, hmean, hmax) = stats(hist, |p| p.handle_us);
     let (cmin, cmean, cmax) = stats(hist, |p| p.compute_us);

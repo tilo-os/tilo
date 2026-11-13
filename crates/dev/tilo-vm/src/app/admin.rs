@@ -1,11 +1,8 @@
-//! Enrolling this machine as one of the owner's devices, so it may
-//! administer their devices over the peer network (`vm enrol-admin`).
-//!
-//! The identity lives beside the registry ([`config::admin_identity_root`]):
-//! a device key `tilo-device-admin key` makes, and the certificate the
-//! owner's root issues for it with `tilo-enroll certify --capability admin`
-//! on the device that holds the identity. That command also lists this
-//! machine in the owner's fleet, so Settings shows it and can remove it.
+//! Enrolling this machine as one of the owner's devices, so it may administer
+//! their devices over the peer network (`vm enrol-admin`). The identity lives
+//! beside the registry ([`config::admin_identity_root`]): a device key the owner
+//! certifies with `tilo-enroll certify --capability admin`, which also lists the
+//! machine in the owner's fleet.
 
 use std::path::Path;
 
@@ -18,7 +15,6 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, DEVICE, Runner as _};
 use crate::remote;
 
-/// This machine's name in the owner's device list when none is given.
 fn default_label() -> String {
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
@@ -48,7 +44,6 @@ pub fn certify_line(device: &str, label: &str, as_root: bool) -> String {
     )
 }
 
-/// The same certification for the owner to run by hand.
 pub fn certify_by_hand(device: &str, label: &str) -> String {
     format!(
         "tilo-enroll certify --identity-dir ~/.config/tilo/identity --device {} --label {} --capability admin --out admin.cert",
@@ -57,7 +52,6 @@ pub fn certify_by_hand(device: &str, label: &str) -> String {
     )
 }
 
-/// What `tilo-device-admin key` and `install-cert` print.
 #[derive(Debug, Default, serde::Deserialize)]
 struct Enrolment {
     device: String,
@@ -148,7 +142,6 @@ impl App {
         self.admin_tool(&["install-cert", "--cert", &cert])
     }
 
-    /// Have `via` certify this machine's key over SSH; the certificate's path.
     fn certify_via(
         &mut self,
         via: &str,
@@ -195,8 +188,6 @@ impl App {
 mod tests {
     use super::*;
 
-    /// The owner's account certifies with its own identity record; root only
-    /// with a root key file.
     #[test]
     fn the_certify_line_signs_as_the_identitys_owner() {
         let owner = certify_line("ab12", "work (tilo-vm)", false);

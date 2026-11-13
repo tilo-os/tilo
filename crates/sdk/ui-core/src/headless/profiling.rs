@@ -37,6 +37,7 @@ impl FrameHarness {
     }
 
     /// Discard captured frames (e.g. warmup) without stopping capture.
+    /// Quiet: drains the profiler's samples; nothing a frame reads.
     pub fn clear_profile_samples(&mut self) {
         self.pump_component_wakes();
         if let Some(p) = self.profiler.as_mut() {
@@ -45,6 +46,7 @@ impl FrameHarness {
     }
 
     /// Take every captured frame so far, draining the buffer.
+    /// Quiet: drains the profiler's samples; nothing a frame reads.
     pub fn take_profile_samples(&mut self) -> Vec<crate::profiling::FrameTiming> {
         self.pump_component_wakes();
         self.profiler

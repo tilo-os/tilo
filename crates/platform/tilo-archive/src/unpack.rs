@@ -7,49 +7,32 @@ use std::path::{Path, PathBuf};
 use crate::stream::{Flow, walk};
 use crate::{Entry, Kind, Observer, cancelled, link_stays_inside, safe_relative, unsafe_name};
 
-/// What an extraction wrote.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Extracted {
     pub files: usize,
     pub directories: usize,
-    /// Symbolic and hard links.
     pub links: usize,
-    /// Device nodes, pipes and sockets the archive holds, never created;
-    /// and, where the host has no symbolic links, the archive's links.
+    /// Device nodes, pipes and sockets the archive holds, never created; and, where
+    /// the host has no symbolic links, the archive's links.
     pub skipped: usize,
     pub bytes: u64,
 }
 
-/// The largest read or write of a file's contents at once.
 const CHUNK: usize = 1 << 20;
 
 /// The most permission an extracted file or folder gets: `rwxr-xr-x`, never
 /// setuid, setgid, sticky or writable by others.
 const MODE_CAP: u32 = 0o755;
 
-/// Extract the archive at `archive` into `root`, an empty folder the caller
-/// made for it, and nowhere else.
+/// Extract the archive at `archive` into `root`, an empty folder the caller made
+/// for it, and nowhere else.
 ///
-/// Every entry lands below `root`:
-/// - a name that is absolute or climbs out with `..` refuses the archive
-///   ([`crate::is_unsafe`]), before anything of that entry is written;
-/// - links are made last, after every file and folder, so nothing is ever
-///   written through one; a symlink must point inside `root` without
-///   following anything, and may not sit below another symlink; a hard link
-///   must name a file extracted before it;
-/// - device nodes, pipes and sockets are skipped;
-/// - permissions keep at most `rwxr-xr-x`, and the owner can always read
-///   and write what was extracted.
-///
-/// A later entry of the same name replaces an earlier file, as tar does.
-/// On an error, what was written so far stays in `root` for the caller to
-/// remove with it.
-///
-/// # Errors
-///
-/// As [`walk`]; an unsafe name or link ([`crate::is_unsafe`]); a file and a
-/// folder of the same name; the observer's [`Observer::wrote`] error or
-/// cancel ([`crate::is_cancelled`]); or the filesystem's error.
+/// Every entry lands below `root`: links are made last, after every file and
+/// folder, so nothing is ever written through one; a symlink must point inside
+/// `root` without following anything, and may not sit below another symlink; a
+/// hard link must name a file extracted before it; device nodes, pipes and
+/// sockets are skipped; permissions keep at most `rwxr-xr-x`, and the owner can
+/// always read and write what was extracted.
 pub fn extract_into(archive: &Path, root: &Path, observer: &dyn Observer) -> io::Result<Extracted> {
     let mut done = Extracted::default();
     let mut directories: Vec<(PathBuf, Option<u32>)> = Vec::new();
@@ -132,7 +115,6 @@ fn conflict(path: &Path) -> io::Error {
     )
 }
 
-/// The parent folder of `path` below `root`, made when missing.
 fn make_parent(root: &Path, path: &Path) -> io::Result<()> {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => make_directory(root, parent),
@@ -140,8 +122,6 @@ fn make_parent(root: &Path, path: &Path) -> io::Result<()> {
     }
 }
 
-/// Clear `path` below `root` for a new file or link: an earlier file or
-/// link of that name goes, a folder refuses.
 fn clear(root: &Path, path: &Path) -> io::Result<()> {
     let full = root.join(path);
     match fs::symlink_metadata(&full) {
@@ -170,14 +150,11 @@ fn write_file(
         set_mode(&full, (mode & MODE_CAP) | 0o600)?;
     }
     if let Some(modified) = entry.modified {
-        // A time the filesystem cannot keep is not worth failing over.
         let _ = file.set_modified(modified);
     }
     Ok(written)
 }
 
-/// Copy `from` to `to` in chunks, telling the observer and stopping when it
-/// asks.
 fn copy(from: &mut dyn Read, to: &mut File, observer: &dyn Observer) -> io::Result<u64> {
     let mut buffer = vec![0_u8; CHUNK];
     let mut copied = 0_u64;
@@ -197,8 +174,6 @@ fn copy(from: &mut dyn Read, to: &mut File, observer: &dyn Observer) -> io::Resu
     }
 }
 
-/// Make `path` a second name for the file `target` extracted before it; a
-/// copy where the filesystem cannot link.
 fn link_file(root: &Path, path: &Path, target: &Path, observer: &dyn Observer) -> io::Result<()> {
     let source = root.join(target);
     if !fs::symlink_metadata(&source)?.is_file() {
@@ -218,10 +193,6 @@ fn link_file(root: &Path, path: &Path, target: &Path, observer: &dyn Observer) -
     copy(&mut from, &mut to, observer).map(drop)
 }
 
-/// Make the symlink `path` to `target`, already known to point inside;
-/// `false` where the host has none. A symlink below another symlink is
-/// refused: its target was checked from where its name says, not from where
-/// the outer link would put it.
 fn make_symlink(root: &Path, path: &Path, target: &Path) -> io::Result<bool> {
     let mut walked = PathBuf::new();
     if let Some(parent) = path.parent() {

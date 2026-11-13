@@ -1,26 +1,17 @@
-//! Which way up a convertible is held, from the kernel IIO accelerometer.
-//!
-//! The reader finds an `in_accel_*` device under `/sys/bus/iio/devices`,
-//! applies its mount matrix and hands samples to [`OrientationTracker`],
-//! which classifies them the way `iio-sensor-proxy` does (the dominant
-//! tilt axis, nothing while the device lies flat) and adds the two things
-//! that stop a screen from flapping in the hand: hysteresis, so a device
-//! held near 45° stays where it is, and a debounce of consecutive samples.
-//! [`RotationControl`] layers the user's rotation lock on top.
+//! Which way up a convertible is held, from the kernel IIO accelerometer under
+//! `/sys/bus/iio/devices`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const IIO_DEVICES: &str = "/sys/bus/iio/devices";
 
-/// How the device is held, named by the edge of the built-in panel that
-/// points up.
+/// Named by the edge of the built-in panel that points up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DeviceOrientation {
-    /// The panel's top edge is up — the laptop/landscape default.
+    /// The panel's top edge up, the landscape default.
     #[default]
     Normal,
-    /// Upside down.
     BottomUp,
     /// Turned clockwise: the panel's left edge is up.
     LeftUp,
@@ -36,7 +27,6 @@ pub struct AccelSample {
     pub z: f64,
 }
 
-/// The first IIO device under `root` exposing an accelerometer.
 pub fn accelerometer_in(root: &Path) -> Option<PathBuf> {
     let mut devices: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
@@ -56,14 +46,12 @@ pub fn accelerometer() -> Option<PathBuf> {
     accelerometer_in(Path::new(IIO_DEVICES))
 }
 
-/// Whether this machine can tell which way up it is held. The rotation
-/// lock only makes sense when this is true.
+/// The rotation lock only makes sense when this is true.
 pub fn has_accelerometer() -> bool {
     accelerometer().is_some()
 }
 
-/// Read one sample from an accelerometer device: `raw × scale` per axis,
-/// rotated into the panel's frame by the driver's mount matrix.
+/// `raw × scale` per axis, rotated into the panel's frame by the driver's mount matrix.
 pub fn read_accel(device: &Path) -> Option<AccelSample> {
     let shared_scale = read_f64(&device.join("in_accel_scale")).unwrap_or(1.0);
     let axis = |name: &str| -> Option<f64> {
@@ -93,7 +81,7 @@ fn read_f64(path: &Path) -> Option<f64> {
         .filter(|v: &f64| v.is_finite())
 }
 
-/// Parse the IIO `"x1, x2, x3; y1, y2, y3; z1, z2, z3"` mount matrix.
+/// The IIO `"x1, x2, x3; y1, y2, y3; z1, z2, z3"` mount matrix.
 fn parse_mount_matrix(text: &str) -> Option<[[f64; 3]; 3]> {
     let mut rows = text.trim().split(';');
     let mut matrix = [[0.0; 3]; 3];
@@ -118,17 +106,15 @@ fn apply_matrix(m: &[[f64; 3]; 3], s: AccelSample) -> AccelSample {
     }
 }
 
-/// Tilt, in degrees, below which the device counts as lying flat and its
-/// orientation is left alone.
+/// Tilt below which the device counts as lying flat and its orientation is left alone.
 const FLAT_DEGREES: f64 = 35.0;
-/// How much further a new orientation's axis must tilt than the current
-/// one's before the screen turns.
+/// How much further a new orientation's axis must tilt than the current one's before the screen turns.
 const HYSTERESIS_DEGREES: f64 = 15.0;
 /// Consecutive agreeing samples required before a turn.
 const DEBOUNCE_SAMPLES: u8 = 3;
 
-/// How far the device leans towards each orientation, in degrees. IIO
-/// reports the reaction to gravity, so an upright panel reads negative `y`.
+/// How far the device leans towards each orientation, in degrees. IIO reports the reaction to gravity,
+/// so an upright panel reads negative `y`.
 fn tilts(s: AccelSample) -> [(DeviceOrientation, f64); 4] {
     let bottom_up = s.y.atan2(s.x.hypot(s.z)).to_degrees();
     let left_up = s.x.atan2(s.y.hypot(s.z)).to_degrees();
@@ -140,9 +126,8 @@ fn tilts(s: AccelSample) -> [(DeviceOrientation, f64); 4] {
     ]
 }
 
-/// The orientation `sample` suggests given the one currently shown, or
-/// `None` when it suggests keeping it (flat, ambiguous, or not tilted far
-/// enough past the hysteresis band).
+/// `None` when the sample suggests keeping the orientation shown: flat, ambiguous, or not tilted far
+/// enough.
 pub fn classify(sample: AccelSample, current: DeviceOrientation) -> Option<DeviceOrientation> {
     if !(sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite()) {
         return None;
@@ -159,7 +144,6 @@ pub fn classify(sample: AccelSample, current: DeviceOrientation) -> Option<Devic
     (best_tilt - current_tilt >= HYSTERESIS_DEGREES).then_some(best)
 }
 
-/// Debounced orientation from a stream of samples.
 #[derive(Clone, Debug, Default)]
 pub struct OrientationTracker {
     current: DeviceOrientation,
@@ -178,7 +162,6 @@ impl OrientationTracker {
         self.current
     }
 
-    /// Feed one sample; returns the new orientation when it changes.
     pub fn update(&mut self, sample: AccelSample) -> Option<DeviceOrientation> {
         let Some(suggested) = classify(sample, self.current) else {
             self.candidate = None;
@@ -199,8 +182,7 @@ impl OrientationTracker {
     }
 }
 
-/// Device orientation with the user's rotation lock applied: the panel
-/// follows the device unless locked, and catches up when unlocked.
+/// The panel follows the device unless locked, and catches up when unlocked.
 #[derive(Clone, Debug, Default)]
 pub struct RotationControl {
     tracker: OrientationTracker,
@@ -216,7 +198,6 @@ impl RotationControl {
         }
     }
 
-    /// The orientation the panel should show.
     pub fn shown(&self) -> DeviceOrientation {
         self.shown
     }
@@ -225,14 +206,12 @@ impl RotationControl {
         self.locked
     }
 
-    /// Feed one sample; returns the orientation to show when it changes.
     pub fn sample(&mut self, sample: AccelSample) -> Option<DeviceOrientation> {
         self.tracker.update(sample);
         self.follow()
     }
 
-    /// Lock or unlock rotation; unlocking returns the device's orientation
-    /// when it differs from what the panel shows.
+    /// Unlocking returns the device's orientation when it differs from what the panel shows.
     pub fn set_locked(&mut self, locked: bool) -> Option<DeviceOrientation> {
         self.locked = locked;
         self.follow()
@@ -279,7 +258,6 @@ mod tests {
         }
     }
 
-    /// A reading `degrees` of the way from upright towards left-up.
     fn tilted_left(degrees: f64) -> AccelSample {
         let r = degrees.to_radians();
         AccelSample {
@@ -332,8 +310,8 @@ mod tests {
 
     #[test]
     fn hysteresis_holds_the_orientation_near_forty_five_degrees() {
-        // Just past the diagonal: tilted more left than up, but not by the
-        // hysteresis margin — the screen must not turn.
+        // Just past the diagonal: tilted more left than up, but not by the hysteresis margin — the
+        // screen must not turn.
         assert_eq!(classify(tilted_left(50.0), DeviceOrientation::Normal), None);
         assert_eq!(classify(tilted_left(40.0), DeviceOrientation::LeftUp), None);
         // Clearly turned: rotate.

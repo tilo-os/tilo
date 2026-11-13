@@ -24,16 +24,7 @@ fn ns(at: SystemTime) -> u64 {
 }
 
 const fn no_capabilities() -> DeviceCapabilities {
-    DeviceCapabilities {
-        can_own_workspaces: false,
-        can_admit_devices: false,
-        can_act_as_host: false,
-        can_read_all_workspaces: false,
-        foreign: false,
-        can_administer_devices: false,
-        agent: None,
-        stand_in: false,
-    }
+    DeviceCapabilities::nothing()
 }
 
 /// An agent device of `person`: its key and its certificate, as an approver
@@ -526,11 +517,12 @@ fn identities_without_an_agent_keep_their_bytes() {
         delegate: None,
         workspace_delegations: vec![],
     };
-    let bytes = serde_json::to_string(&identity).unwrap();
-    assert!(
-        !bytes.contains("delegate\""),
-        "an ordinary identity's governed bytes are unchanged: {bytes}"
-    );
-    let back: crate::state::GovernedIdentity = serde_json::from_str(&bytes).unwrap();
+    let bytes = identity.encode().unwrap();
+    let back = crate::state::GovernedIdentity::decode(&bytes).unwrap();
     assert!(back.delegate.is_none());
+    assert_eq!(
+        back.encode().unwrap(),
+        bytes,
+        "an ordinary identity's governed bytes read and write back alike"
+    );
 }

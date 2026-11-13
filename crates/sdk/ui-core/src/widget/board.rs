@@ -35,6 +35,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
+use crate::widget::DrawChild;
 use crate::widget::{CardWidth, Column, Container, Element, EventCtx, Row, Scrollable, Widget};
 
 /// Where a dragged card was dropped.
@@ -719,7 +720,7 @@ impl crate::widget::Decorator for Board {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        Widget::draw(
+        DrawChild::draw_child(
             &mut self.row,
             scene,
             transform,

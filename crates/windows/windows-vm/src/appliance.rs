@@ -54,7 +54,6 @@ impl PortalDocumentAccess {
     }
 }
 
-/// A document the user selected through Tilo's file portal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortalDocumentGrant {
     /// An unguessable, broker-owned portal document handle.  It is never a
@@ -80,8 +79,6 @@ pub struct ShareBinding {
     pub read_only: bool,
 }
 
-/// Short-lived resources materialised by the existing Tilo capability service.
-/// Dropping or explicitly revoking `lease_id` is the broker's responsibility.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrokeredLaunch {
     pub lease_id: String,
@@ -375,8 +372,6 @@ where
         Ok(status)
     }
 
-    /// Starts one allow-listed `RemoteApp`. The capability lease is revoked on
-    /// every error after it is created and when `FreeRDP` exits normally.
     pub fn launch(&self, request: &LaunchRequest) -> Result<RunningRemoteApp, LaunchError> {
         validate_request(request)?;
         let state = self.ensure_ready()?;

@@ -1,9 +1,8 @@
-//! Micro-VM steps, end to end: a guest boots from layers shared over virtio-fs, runs a command
-//! as root (a loop mount, here), streams its output and returns its exit code and outputs.
-//! Needs root (its virtiofsd runs as a helper), a delegated cgroup, `/dev/kvm`, QEMU,
-//! virtiofsd, `mkfs.ext4` and a guest: `TILO_VM_GUEST` naming a directory with `kernel` and
-//! `busybox` (the outputs of t's `vm-guest-<arch>` check). Without them each test says why it
-//! skipped and passes.
+//! Micro-VM steps, end to end: a guest boots from layers shared over virtio-fs, runs a command as
+//! root (a loop mount, here), streams its output and returns its exit code and outputs. Needs root
+//! (its virtiofsd runs as a helper), a delegated cgroup, `/dev/kvm`, QEMU, virtiofsd, `mkfs.ext4`
+//! and a guest: `TILO_VM_GUEST` naming a directory with `kernel` and `busybox` (the outputs of t's
+//! `vm-guest-<arch>` check). Without them each test says why it skipped and passes.
 
 use std::io::Read;
 use std::os::fd::OwnedFd;
@@ -38,7 +37,6 @@ fn guest() -> Result<Guest, String> {
     Ok(guest)
 }
 
-/// The first of `names` that exists, or the one `var` names.
 fn program(var: &str, names: &[&str]) -> Option<PathBuf> {
     std::env::var_os(var)
         .map(PathBuf::from)
@@ -82,8 +80,8 @@ impl Rig {
         self.dir.path().join(rel)
     }
 
-    /// A busybox root at `rel`: busybox and its applets the tests use, and the directories
-    /// steps mount on.
+    /// A busybox root at `rel`: busybox and its applets the tests use, and the directories steps
+    /// mount on.
     pub fn busybox_root(&self, rel: &str) -> PathBuf {
         let at = self.path(rel);
         std::fs::create_dir_all(at.join("bin")).unwrap();
@@ -100,8 +98,8 @@ impl Rig {
         at
     }
 
-    /// Serve `dirs` (name, host directory) as a share tagged `tag`: a virtiofsd helper in the
-    /// rig's cgroup, each directory a mount of its own under the shared directory.
+    /// Serve `dirs` (name, host directory) as a share tagged `tag`: a virtiofsd helper in the rig's
+    /// cgroup, each directory a mount of its own under the shared directory.
     pub fn share<P: AsRef<Path>>(
         &self,
         tag: &str,
@@ -239,8 +237,8 @@ fn a_step_runs_as_root_in_its_vm_and_brings_back_its_outputs() {
     let src = rig.path("src");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("hello.txt"), "from the host\n").unwrap();
-    // A filesystem for the guest to loop-mount: made here, as busybox builds differ in which
-    // mkfs they carry.
+    // A filesystem for the guest to loop-mount: made here, as busybox builds differ in which mkfs
+    // they carry.
     let fs = std::fs::File::create(src.join("disk.img")).unwrap();
     fs.set_len(16 << 20).unwrap();
     drop(fs);

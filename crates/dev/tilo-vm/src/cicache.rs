@@ -1,11 +1,5 @@
-//! Layers extracted on this host from CI images (`swap --from sha:`/`ci:`
-//! on a device), kept so a repeat swap of the same build skips the pull.
-//!
-//! The image itself is deleted after each extraction; what stays is the
-//! layer archive and what the image said about itself ([`Pulled`]), keyed
-//! by the image's digest for the device's architecture and the component.
-//! The digest is looked up in the registry first, so a moved tag is a miss.
-//! Only the most recently used [`KEEP`] layers stay.
+//! Layers extracted on this host from CI images, kept so a repeat swap of the
+//! same build skips the pull. Only the most recently used [`KEEP`] layers stay.
 //!
 //! ```text
 //! <cache>/tilo-vm/ci-layers/<digest hex>-<component>/layer.tar
@@ -21,7 +15,6 @@ pub const KEEP: usize = 6;
 
 const ARCHIVE: &str = "layer.tar";
 const PULLED: &str = "pulled.json";
-/// The content hash tilo-vmd gave the layer when it was imported.
 const HASH: &str = "layer.hash";
 
 pub struct CiCache {
@@ -34,7 +27,6 @@ impl CiCache {
         Self { dir, keep }
     }
 
-    /// `<cache>/tilo-vm/ci-layers`, keeping [`KEEP`] layers.
     pub fn at_home() -> Self {
         Self::new(
             tilo_paths::cache_dir()
@@ -56,8 +48,6 @@ impl CiCache {
         (safe(hex) && safe(component)).then(|| self.dir.join(format!("{hex}-{component}")))
     }
 
-    /// The cached layer archive of `component` from the image `digest`, and
-    /// what that image said about itself; marks it used.
     pub fn get(&self, digest: &str, component: &str) -> Option<(PathBuf, Pulled)> {
         let entry = self.entry(digest, component)?;
         let pulled: Pulled =
@@ -70,8 +60,6 @@ impl CiCache {
         Some((archive, pulled))
     }
 
-    /// The content hash a device gave this layer on import, once known: a
-    /// device that lists it needs no upload.
     pub fn layer_hash(&self, digest: &str, component: &str) -> Option<String> {
         let entry = self.entry(digest, component)?;
         let hash = std::fs::read_to_string(entry.join(HASH)).ok()?;
@@ -79,10 +67,6 @@ impl CiCache {
         (!hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hash.to_owned())
     }
 
-    /// Note the content hash a device gave the kept layer on import.
-    ///
-    /// # Errors
-    /// I/O failures, or no such kept layer.
     pub fn record_hash(&self, digest: &str, component: &str, hash: &str) -> std::io::Result<()> {
         let entry = self
             .entry(digest, component)
@@ -91,12 +75,6 @@ impl CiCache {
         std::fs::write(entry.join(HASH), hash)
     }
 
-    /// Keep `archive` as `component` from the image `pulled` names, then
-    /// drop the least recently used layers beyond the bound.
-    ///
-    /// # Errors
-    /// I/O failures; the cache is only an optimisation, so callers may
-    /// ignore them.
     pub fn put(&self, component: &str, archive: &Path, pulled: &Pulled) -> std::io::Result<()> {
         let Some(entry) = pulled
             .digest
@@ -121,7 +99,6 @@ impl CiCache {
         Ok(())
     }
 
-    /// Remove all but the `keep` most recently used layers.
     fn evict(&self) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;
@@ -156,8 +133,6 @@ mod tests {
         }
     }
 
-    /// A repeat swap finds the layer by digest and component; a moved tag
-    /// (another digest) misses; the cache keeps only the newest layers.
     #[test]
     fn ci_layers_are_found_by_digest_and_bounded() {
         let dir = tempfile::tempdir().unwrap();

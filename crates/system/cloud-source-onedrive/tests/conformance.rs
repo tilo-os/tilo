@@ -1,17 +1,6 @@
-//! The cloud-source conformance suite for `OneDrive`, in two layers:
-//!
-//! - the in-process fake Graph drive (always): consumer `OneDrive` mounted
-//!   at the drive root and at a folder, `OneDrive` for Business mounted at a
-//!   folder;
-//! - a live account when `TILO_LIVE_ONEDRIVE_CLIENT_ID` and
-//!   `TILO_LIVE_ONEDRIVE_REFRESH_TOKEN` are set (optional:
-//!   `TILO_LIVE_ONEDRIVE_TENANT`, default `common`;
-//!   `TILO_LIVE_ONEDRIVE_CLIENT_SECRET`; `TILO_LIVE_ONEDRIVE_DRIVE_ID` for a
-//!   `SharePoint` library or another drive; `TILO_LIVE_ONEDRIVE_SCOPE`).
-//!   Each check works in its own `conformance-<uuid>` folder, deleted
-//!   afterwards; skipped when the variables are absent.
-//!
-//! There is no container layer: Graph has no self-hostable server.
+//! The cloud-source conformance suite for `OneDrive`: the in-process fake Graph drive
+//! always, and a live account when `TILO_LIVE_ONEDRIVE_CLIENT_ID` and
+//! `TILO_LIVE_ONEDRIVE_REFRESH_TOKEN` are set, each run in its own folder.
 
 #![allow(
     clippy::unwrap_used,
@@ -37,7 +26,6 @@ fn bearer(token: &str) -> Credential {
     }
 }
 
-/// The in-process fake drive.
 struct FakeFixture {
     server: FakeGraph,
     credentials: Arc<SwitchableCredential>,
@@ -245,7 +233,6 @@ impl CredentialSource for RefreshingCredential {
     }
 }
 
-/// One refreshing credential shared by every live check.
 struct Shared(Arc<RefreshingCredential>);
 
 impl CredentialSource for Shared {

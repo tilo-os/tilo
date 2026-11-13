@@ -19,6 +19,7 @@ use tilo_resource::{ActionKey, Binds, Resource};
 use ui_core::LocalState;
 use ui_core::icons::Icon;
 use ui_core::presence::{ParticipantKind, PresenceCtx};
+use ui_core::tokens::PresenceHue;
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
 use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
 
@@ -41,6 +42,9 @@ pub struct People {
 struct Roster {
     /// Each participant the workspace names, as presence labels them.
     names: HashMap<String, String>,
+    /// The colour each of them wears, as presence paints them: the one they
+    /// chose, or the one their identity derives.
+    hues: HashMap<String, PresenceHue>,
     /// The label this session's participant goes by, when the workspace said.
     own: Option<String>,
     /// Everyone the workspace names, by name, as `@` offers them.
@@ -67,12 +71,9 @@ impl People {
         Self {
             roster: Rc::default(),
             revision: LocalState::new(0),
-            local: me.and_then(|_| {
-                ui_core::local_identity::bound()
-                    .map(|identity| identity.display_name.trim().to_owned())
-                    .filter(|name| !name.is_empty())
-                    .map(Rc::from)
-            }),
+            local: me
+                .and_then(|_| ui_core::local_identity::own_name())
+                .map(Rc::from),
             me: me.map(Rc::from),
         }
     }
@@ -92,6 +93,18 @@ impl People {
             return own.to_owned();
         }
         id.to_owned()
+    }
+
+    /// The hue `id` wears: the one the workspace announced for them, else the
+    /// one their identity derives, so a view paints a face, a card or a chip
+    /// in the same colour presence paints their caret and their byline.
+    pub fn hue(&self, id: &str) -> PresenceHue {
+        self.roster
+            .borrow()
+            .hues
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| PresenceHue::of_identity(id))
     }
 
     /// The workspace's people and agents, this window's own participant among
@@ -151,6 +164,11 @@ impl People {
                 .names
                 .keys()
                 .map(|user| (user.0.clone(), presence.display_name(user)))
+                .collect(),
+            hues: presence
+                .names
+                .keys()
+                .map(|user| (user.0.clone(), presence.hue_of(&user.0)))
                 .collect(),
             own: presence.self_label(),
             members: merged_roster(presence, &[]),
@@ -241,7 +259,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         who.name.clone(),
                         who.agent,
                         Button::new(id, &who.name)
-                            .with_avatar(&who.name, &who.id)
+                            .with_avatar(&who.name, &who.id, people.hue(&who.id))
                             .showing_choice(),
                     ),
                     None => (
@@ -273,7 +291,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     ) -> Element {
         let mut button = Button::new(id, label).role(ButtonRole::Plain);
         button = match face {
-            Some((name, identity)) => button.with_avatar(name, identity),
+            Some((name, identity)) => {
+                button.with_avatar(name, identity, self.people().hue(identity))
+            }
             None => button.with_icon(Icon::User).with_placeholder(),
         };
         if agent {

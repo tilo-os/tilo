@@ -32,7 +32,7 @@ pub enum WindowsEffect {
     /// It is the application row's read: what discloses the row, so
     /// launching, publishing, uninstalling and its other operations are
     /// offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read application")]
+    #[effect(view, row, returns, idempotent)]
     ReadApp {
         #[param("The application id")]
         app: String,

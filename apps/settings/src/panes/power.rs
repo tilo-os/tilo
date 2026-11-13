@@ -1,28 +1,5 @@
 //! Power pane — battery status, the active power profile, and session-idle
-//! preferences.
-//!
-//! Every surface here is real or honestly absent:
-//! - **Battery** is read from `/sys/class/power_supply` (`capacity`,
-//!   `status`, `cycle_count`) and the AC adapter's `online` flag, so the card
-//!   reflects the machine's real charge. A device with no battery shows an
-//!   honest "running on AC power" state rather than a fabricated level.
-//! - **Power profile** (Saver / Balanced / Performance) and the **charge
-//!   cap** are this device's, changed by [`PowerEffect`] jobs through
-//!   `powerprofilesctl` and the battery driver. Unavailable profiles are
-//!   never presented as working.
-//! - **Automatic suspend**, the idle timeouts and the lid, power-key and
-//!   critical-battery actions are the device's `power` settings, which the
-//!   compositor's idle layer reads. There is one suspend timer per power
-//!   source (on battery, plugged in); only where the stored profile timers
-//!   truly differ is the selected profile's timer the one, shown with the
-//!   profile. While "Suspend when idle" is off, every timer that depends on
-//!   it is disabled and says why.
-//! - **Password after sleep** lives beside the lock timer because it is the
-//!   other way the lock screen appears: off, a machine that went to sleep
-//!   unlocked comes back to what its owner left on screen, while a lock from
-//!   the idle timer or the lock command is kept as it was.
-//!
-//! The page is view code over the `power` section ([`view`]).
+//! preferences. Every surface here is real or honestly absent.
 
 mod history_chart;
 
@@ -46,7 +23,7 @@ use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Item, SettingsSection, block, error_caption, note, row, rows, section, value_row,
+    Item, SettingsSection, block, error_caption, note, row, rows, section, thing_row, value_row,
 };
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
@@ -66,12 +43,10 @@ crate::area::pane_area! {
     }
 }
 
-/// The window's [`PowerArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PowerArea> {
     app.areas().find()
 }
 
-/// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
     ("5 minutes", 5),
     ("10 minutes", 10),
@@ -99,7 +74,6 @@ fn duration_shown(english: &str) -> String {
     t(duration_ftl(english))
 }
 
-/// The minutes a suspend option shown as `label` stands for.
 fn suspend_minutes_of(label: &str) -> u32 {
     SUSPEND_OPTIONS
         .iter()
@@ -118,7 +92,6 @@ fn suspend_label(minutes: u32) -> String {
     duration_shown(english)
 }
 
-/// The field holding `profile`'s own suspend timer.
 fn profile_suspend_field(profile: PowerProfile) -> tilo_resource::Path<PowerPrefs, Option<u32>> {
     let paths = PowerPrefs::paths();
     match profile {
@@ -128,8 +101,6 @@ fn profile_suspend_field(profile: PowerProfile) -> tilo_resource::Path<PowerPref
     }
 }
 
-/// The action options offered for the lid / power-key / critical-battery
-/// dropdowns, in display order.
 const ACTION_OPTIONS: &[PowerActionPref] = &[
     PowerActionPref::Suspend,
     PowerActionPref::Lock,
@@ -148,8 +119,6 @@ fn action_shown(pref: PowerActionPref) -> String {
     t(action_ftl(pref))
 }
 
-/// The power-profile options, as `(display label, profile)`. The label is what
-/// the dropdown shows and stores; the profile is what the dispatcher applies.
 const PROFILES: &[(&str, PowerProfile)] = &[
     ("Power Saver", PowerProfile::Saver),
     ("Balanced", PowerProfile::Balanced),
@@ -183,8 +152,6 @@ pub(crate) fn profile_from_label(label: &str) -> Option<PowerProfile> {
         .map(|(_, p)| *p)
 }
 
-/// The screen-blank timeout options, as `(display label, minutes)`. `0`
-/// minutes means "Never".
 const BLANK_OPTIONS: &[(&str, u32)] = &[
     ("1 minute", 1),
     ("5 minutes", 5),
@@ -202,8 +169,6 @@ fn blank_label(minutes: u32) -> String {
     duration_shown(english)
 }
 
-/// Idle-lock timeout options. `0` is the explicit "Never" value persisted
-/// by Settings; manual locking and pre-suspend locking are unaffected.
 const LOCK_OPTIONS: &[(&str, u32)] = &[
     ("1 minute", 1),
     ("5 minutes", 5),
@@ -221,8 +186,6 @@ fn lock_label(minutes: u32) -> String {
     duration_shown(english)
 }
 
-/// What the battery is doing, and how long that lasts: "On battery, 3 hr
-/// 20 min left", "Charging, full in 45 min", "Fully charged".
 fn battery_state_shown(battery: &BatteryInfo) -> String {
     if let Some(left) = battery.time_to_empty() {
         return t_args(
@@ -255,7 +218,6 @@ fn health_explanation_shown(battery: &BatteryInfo) -> String {
     }
 }
 
-/// "44.6 Wh of 70 Wh": what the battery holds when full against when new.
 fn capacity_shown(battery: &BatteryInfo) -> Option<String> {
     let (full, design) = battery.full_and_design_wh()?;
     Some(t_args(
@@ -267,7 +229,6 @@ fn capacity_shown(battery: &BatteryInfo) -> Option<String> {
     ))
 }
 
-/// "44.6 Wh", "70 Wh": a tenth where there is one.
 fn watt_hours_shown(wh: f64) -> String {
     let tenths = (wh * 10.0).round();
     let digits = usize::from(tenths % 10.0 != 0.0);
@@ -280,57 +241,35 @@ fn watt_hours_shown(wh: f64) -> String {
     )
 }
 
-/// This device's power hardware, as the pane and the effects reach it.
 pub trait PowerControl: Send + Sync {
-    /// The battery now.
     fn battery(&self) -> BatteryInfo;
-    /// Every power supply, for a device with more than one.
     fn devices(&self) -> Vec<os_actions::PowerDevice>;
-    /// Recent charge, written by the shell's monitor.
     fn history(&self) -> os_actions::BatteryHistory;
-    /// Now, in minutes since the Unix epoch: where the history chart ends.
     fn now_minute(&self) -> u64 {
         tilo_clock::unix_now() / 60
     }
-    /// The active profile and the ones offered, or why they are unknown.
     fn profiles(
         &self,
     ) -> (
         Result<PowerProfile, String>,
         Result<Vec<PowerProfile>, String>,
     );
-    /// # Errors
-    ///
-    /// Why the profile was not changed.
     fn set_profile(&self, profile: PowerProfile) -> Result<(), String>;
-    /// The battery's charge cap, where the driver offers one.
     fn charge_cap(&self) -> Option<ChargeCapCapability>;
-    /// # Errors
-    ///
-    /// Why the cap was not applied.
     fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String>;
-    /// Follow the power services: `changed` is called, on another thread,
-    /// each time the battery, a power supply or the power profile changes,
-    /// for as long as the answer is held. `None` when nothing can be
-    /// followed.
     fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
         None
     }
 }
 
-/// The device's power hardware.
 pub struct SystemPower;
 
 impl SystemPower {
-    /// The session's `power:battery` resource, opened now: what the pack
-    /// reads and the action that sets its charge limit. Blocking: call it off
-    /// the UI thread.
     fn battery() -> Result<ui::collaboration::SessionResource, String> {
         crate::device_read::off_ui_thread();
         ui::collaboration::SessionResource::open(tilo_session_power::BATTERY)
     }
 
-    /// The battery as the session publishes it, once.
     fn reading(resource: &ui::collaboration::SessionResource) -> Option<BatteryReading> {
         let Some(Ok(reading)) = resource.latest() else {
             return None;
@@ -339,16 +278,12 @@ impl SystemPower {
     }
 }
 
-/// What the session's `power:battery` resource says that this pane reads:
-/// the charge limit the pack's driver offers.
 #[derive(serde::Deserialize)]
 struct BatteryReading {
     #[serde(default)]
     charge_limit: Option<ChargeCapCapability>,
 }
 
-/// The services reporting the battery, the power supplies and the power
-/// profile.
 const POWER_SERVICES: &[&str] = &[
     "org.freedesktop.UPower",
     "org.freedesktop.UPower.PowerProfiles",
@@ -377,7 +312,6 @@ impl PowerControl for SystemPower {
 
     fn history(&self) -> os_actions::BatteryHistory {
         crate::device_read::off_ui_thread();
-        // The shell-owned UPower monitor is the single history writer.
         os_actions::load_battery_history()
     }
 
@@ -411,17 +345,12 @@ impl PowerControl for SystemPower {
             return Err("the action's arguments are not an object".to_owned());
         };
         resource.invoke("set-charge-limit", &arguments)?;
-        // The action answers with the capability the hardware confirmed;
-        // the reading the resource now stands at carries it too, so the pane
-        // holds one shape of it.
         Self::reading(&Self::battery()?)
             .and_then(|reading| reading.charge_limit)
             .ok_or_else(|| "the pack no longer reports a charge limit".to_owned())
     }
 }
 
-/// The power hardware a capture shows: a laptop battery on Balanced, which
-/// the effects change in memory only.
 pub struct SamplePower {
     profile: Mutex<PowerProfile>,
     cap: Mutex<ChargeCapCapability>,
@@ -470,7 +399,6 @@ impl PowerControl for SamplePower {
     }
 
     fn now_minute(&self) -> u64 {
-        // 2023-03-15 13:05 UTC, the captures' clock.
         1_678_885_500 / 60
     }
 
@@ -506,19 +434,13 @@ impl PowerControl for SamplePower {
     }
 }
 
-/// A week of a laptop's charge for a capture: working days on battery,
-/// charged to its 80 % limit at lunch every other day and in the evening,
-/// asleep overnight (no points), and at 72 % now, as the capture's battery
-/// reads.
 fn sample_history(now: u64) -> os_actions::BatteryHistory {
     const LIMIT_PERCENT: u8 = 80;
     let start = now - 7 * 24 * 60;
     let mut points = Vec::new();
     let mut capacity: f64 = 70.0;
-    // On the quarter hour, from the start of the week on.
     let mut minute = start.div_ceil(15) * 15;
     while minute <= now {
-        // The captures' clock is an hour ahead of UTC.
         let hour = (minute / 60 + 1) % 24;
         let day = (minute - start) / (24 * 60);
         if hour < 8 {
@@ -534,7 +456,6 @@ fn sample_history(now: u64) -> os_actions::BatteryHistory {
         }
         minute += 15;
     }
-    // Meet the battery's reading now.
     let shift = points
         .last()
         .map_or(0.0, |(_, last, _)| 72.0 - last.round());
@@ -552,22 +473,15 @@ fn sample_history(now: u64) -> os_actions::BatteryHistory {
     history
 }
 
-/// What the device's power hardware reports. `powerprofilesctl` asks
-/// power-profiles-daemon over the system bus, so this is read off the UI
-/// thread ([`Reading`]) when the pane first opens.
 #[derive(Clone)]
 struct PowerState {
     battery: BatteryInfo,
     devices: Vec<os_actions::PowerDevice>,
     history: os_actions::BatteryHistory,
-    /// When it was read, in minutes since the Unix epoch.
     now_minute: u64,
     profile: PowerProfile,
     available_profiles: Vec<PowerProfile>,
-    /// Why the profiles could not be read.
     profiles_unavailable: Option<String>,
-    /// The active profile could not be read; `profile` is then only the
-    /// first choice offered, never shown as the active one.
     profile_unread: bool,
     charge_cap: Option<ChargeCapCapability>,
 }
@@ -596,8 +510,6 @@ impl PowerState {
                 if let Some(error) = capability_error {
                     details.push(format!("capabilities: {error}"));
                 }
-                // What failed is for the log; the person learns only that
-                // profiles cannot be chosen here.
                 tracing::warn!(details = %details.join("; "), "power profiles are unavailable");
                 Some(t("power-profile-unavailable"))
             }
@@ -616,45 +528,30 @@ impl PowerState {
     }
 }
 
-/// What the last profile and charge-cap changes said.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Notices {
     profile: Option<String>,
     charge: Option<String>,
 }
 
-/// What the power area keeps for the window: the hardware, what it last
-/// reported, and what the last changes said.
 pub struct PowerArea {
     control: Arc<dyn PowerControl>,
-    /// What the hardware last reported, and what the changes it took made
-    /// of that.
     state: Reading<PowerState>,
     notices: LocalState<Notices>,
-    /// Which span the charge chart shows, kept while the window is open.
     span: LocalState<usize>,
-    /// What tells the area the hardware changed while a page shows it.
     following: std::cell::RefCell<std::rc::Weak<crate::watch::Counted>>,
-    /// The change count the hardware was last read for.
     changes_seen: std::cell::Cell<Option<u64>>,
-    /// Moves whenever what the page shows of the area does: a new reading,
-    /// a notice, the chart's span.
     shown: LocalState<u64>,
-    /// What [`Self::shown`] last moved for.
     seen: std::cell::RefCell<Option<(u64, Notices, usize)>>,
 }
 
 impl PowerArea {
-    /// Read the hardware in the background unless it has been, so the
-    /// page opens on what it last reported.
     pub(crate) fn warm(&self) {
         if self.state.get().is_none() {
             self.state.refresh();
         }
     }
 
-    /// The area over this device's power hardware, or a stand-in for a
-    /// capture. Nothing is read until the pane or an effect needs it.
     pub fn new(cx: &AreaContext) -> Self {
         let control: Arc<dyn PowerControl> = if cx.devices {
             Arc::new(SystemPower)
@@ -678,8 +575,6 @@ impl PowerArea {
         }
     }
 
-    /// Take in what moved since the last frame: the hardware changed while
-    /// a page follows it (it is read again), and what the page shows.
     pub(crate) fn poll(&self) {
         if let Some(following) = self.following.borrow().upgrade() {
             let changes = following.changes();
@@ -695,17 +590,12 @@ impl PowerArea {
         }
     }
 
-    /// Whether a page shows the hardware's first reading as on its way:
-    /// none has landed, or one landed that the page has not taken yet
-    /// ([`Self::poll`]).
     pub(crate) fn first_read(&self) -> bool {
         self.following.borrow().upgrade().is_some()
             && (self.state.get().is_none()
                 || self.seen.borrow().as_ref().map(|seen| seen.0) != Some(self.state.revision()))
     }
 
-    /// Follow the hardware while a pane shows it; panes share one follow.
-    /// Whether it starts now: nothing was followed before.
     fn follow(&self) -> (std::rc::Rc<crate::watch::Counted>, bool) {
         if let Some(held) = self.following.borrow().upgrade() {
             return (held, false);
@@ -717,9 +607,6 @@ impl PowerArea {
         (started, true)
     }
 
-    /// Take in what a change the hardware took made of it. Before the
-    /// first reading lands, the hardware is read again instead, so a read
-    /// that started before the change cannot show what it replaced.
     fn changed(&self, change: impl FnOnce(&mut PowerState)) {
         if self.state.get().is_some() {
             self.state.update(change);
@@ -729,8 +616,6 @@ impl PowerArea {
     }
 }
 
-/// The power profile and charge cap of this device, and its idle and button
-/// preferences.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum PowerEffect {
@@ -748,8 +633,6 @@ pub enum PowerEffect {
     },
 }
 
-/// Answer `effect`: hardware changes run off the UI thread. The idle and
-/// button preferences are field edits of the `power` section.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PowerEffect,
@@ -762,8 +645,6 @@ pub(crate) fn answer(
             let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
             let unsupported =
                 move || format!("{} is not supported by this device", profile_label(profile));
-            // What the hardware offers, as last read; the job asks it when
-            // the pane has not read it yet.
             let offered = area
                 .state
                 .get()
@@ -815,8 +696,6 @@ pub(crate) fn answer(
                 cap.is_some_and(|cap| cap.choices.contains(&percent))
             };
             let not_offered = move || format!("this battery offers no {percent}% charge cap");
-            // What the battery offers, as last read; the job asks it when
-            // the pane has not read it yet.
             let offered = area
                 .state
                 .get()
@@ -860,17 +739,9 @@ pub(crate) fn answer(
     }
 }
 
-/// The Power page as view code over this device's `power` section and what
-/// its area reads of the hardware: the battery, its history and charge cap,
-/// the power profile, the idle timers and what the buttons do. The page is
-/// built again when the section changes, when the hardware reports
-/// something new, and when a change of the hardware says how it went; the
-/// hardware is followed while the page is open.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let (following, started) = held.follow();
-    // Nothing was followed while no page showed it: what was read before is
-    // read again once.
     if started || held.state.get().is_none() {
         held.state.refresh();
     }
@@ -888,7 +759,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
         );
         cx.switch(&cx.value(|prefs: &PowerPrefs| *prefs), move |cx, prefs| {
             let (app, actions, prefs) = (Rc::clone(&app), actions.clone(), *prefs);
-            // The part keeps the hardware followed while it is shown.
             let following = Rc::clone(&following);
             cx.switch(&shown, move |cx, _| {
                 let _followed = &following;
@@ -901,7 +771,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     })
 }
 
-/// The page over the section as it is now (`prefs`) and what `area` read.
 fn page(
     cx: &ViewCx<PowerPrefs>,
     actions: &Actions<Settings>,
@@ -1009,8 +878,6 @@ fn battery_card(
     vec![section(&t("power-battery-title"), rows(battery_rows))]
 }
 
-/// The charge in large type, what the battery is doing and for how long,
-/// and the chart's span (`span`, kept in `spans`) on the trailing edge.
 fn battery_head(battery: &BatteryInfo, spans: &LocalState<usize>, span: usize) -> Box<dyn Widget> {
     let charge = ui::widget::Column::new()
         .with_no_padding()
@@ -1087,8 +954,6 @@ fn profile_card(
                 ),
         ]
     };
-    // Truly different profile timers: the selected profile's is the one,
-    // and it is shown here, with the profile.
     if prefs.timers().profiles_differ() && !state.profile_unread {
         let field = profile_suspend_field(state.profile);
         profile_rows.push(
@@ -1104,7 +969,6 @@ fn profile_card(
             ),
         );
     }
-    profile_rows.push(note(&t("power-profile-caption")));
     if let Some(notice) = &notices.profile {
         profile_rows.push(note(notice));
     } else if let Some(unavailable) = &state.profiles_unavailable {
@@ -1117,8 +981,6 @@ fn profile_card(
     section(&t("power-profile-title"), rows(profile_rows))
 }
 
-/// `row` choosing the timeout at `field` among `options`, each named as
-/// `label` names it.
 fn timeout(
     row: Setting<'_, PowerPrefs>,
     options: &'static [(&'static str, u32)],
@@ -1132,8 +994,6 @@ fn timeout(
     )
 }
 
-/// `row`, a suspend timer: disabled, saying why, while "Suspend when idle"
-/// is off.
 fn suspend_row<'a>(row: Setting<'a, PowerPrefs>, prefs: &PowerPrefs) -> Setting<'a, PowerPrefs> {
     let on = prefs.auto_suspend;
     let row = row.enabled(on);
@@ -1144,7 +1004,6 @@ fn suspend_row<'a>(row: Setting<'a, PowerPrefs>, prefs: &PowerPrefs) -> Setting<
     }
 }
 
-/// `row` choosing a suspend timer through `verb`, now at `minutes`.
 fn suspend_timer(
     row: Setting<'_, PowerPrefs>,
     prefs: &PowerPrefs,
@@ -1159,9 +1018,6 @@ fn suspend_timer(
     suspend_row(row, prefs).choice_verb(options, move |_| shown.clone(), verb)
 }
 
-/// The suspend timers: one per power source this device has, unless the
-/// profile timers truly differ (the selected profile's is then shown with
-/// the profile).
 fn suspend_timers(cx: &ViewCx<PowerPrefs>, prefs: &PowerPrefs, has_battery: bool) -> Vec<Item> {
     let timers = prefs.timers();
     if timers.profiles_differ() {
@@ -1210,12 +1066,10 @@ fn idle_card(cx: &ViewCx<PowerPrefs>, prefs: &PowerPrefs, has_battery: bool) -> 
             paths.lock_minutes,
         ),
         lock_on_sleep(cx),
-        note(&t("power-idle-caption")),
     ]);
     section(&t("power-idle-title"), rows(body))
 }
 
-/// `row` choosing what a button or a critical battery does.
 fn action_choice(
     row: Setting<'_, PowerPrefs>,
     field: tilo_resource::Path<PowerPrefs, PowerActionPref>,
@@ -1269,15 +1123,21 @@ fn devices_card(state: &PowerState) -> Option<SettingsSection> {
             os_actions::PowerSupplyKind::Battery => "power-device-battery",
             os_actions::PowerSupplyKind::Ups => "power-device-ups",
         });
-        let line = t_args(
-            "power-device-line",
-            &[
-                ("kind", ArgValue::from(kind.as_str())),
-                ("capacity", ArgValue::from(i64::from(d.capacity))),
-                ("status", ArgValue::from(d.status.as_str())),
-            ],
-        );
-        entries.push(value_row(d.model.as_deref().unwrap_or(&d.id), &line));
+        let name = d.model.as_deref().unwrap_or(&d.id);
+        let details = vec![
+            kind,
+            t_args(
+                "power-device-charge",
+                &[("capacity", ArgValue::from(i64::from(d.capacity)))],
+            ),
+            d.status.clone(),
+        ];
+        entries.push(row(Box::new(thing_row(
+            &format!("power.device.{name}"),
+            name,
+            &details,
+            None,
+        ))));
     }
     Some(section(&t("power-devices-title"), rows(entries)))
 }
@@ -1290,8 +1150,6 @@ pub(crate) fn auto_suspend(cx: &ViewCx<PowerPrefs>) -> Item {
         .toggle(PowerPrefs::paths().auto_suspend)
 }
 
-/// Whether waking from sleep asks for the password, as this page's own row
-/// (and Settings' search) shows it.
 pub(crate) fn lock_on_sleep(cx: &ViewCx<PowerPrefs>) -> Item {
     cx.setting(t("power-lock-on-sleep"))
         .id("power.lock_on_sleep")
@@ -1306,8 +1164,6 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    /// A capture's week of charge ends at the battery's own reading, keeps
-    /// to its charge limit and breaks overnight.
     #[test]
     fn the_sample_week_ends_at_the_batterys_reading() {
         let power = SamplePower::default();
@@ -1326,7 +1182,6 @@ mod tests {
         );
     }
 
-    /// Power hardware whose services' changes are followed by hand.
     #[derive(Default)]
     struct FollowedPower {
         sample: SamplePower,
@@ -1369,8 +1224,6 @@ mod tests {
         }
     }
 
-    /// The open page reads the hardware again when a power service reports
-    /// a change, and only then: a profile chosen elsewhere shows.
     #[test]
     fn the_shown_page_reads_the_hardware_again_when_a_service_reports_a_change() {
         let control = Arc::new(FollowedPower::default());
@@ -1410,9 +1263,6 @@ mod tests {
         assert_eq!(reads(), 2, "nothing reads while nothing changes");
     }
 
-    /// The battery shows its charge large, how long it lasts at the rate
-    /// it drains, and its charge over the last day (or week) drawn from the
-    /// history, not a bar.
     #[test]
     fn the_battery_shows_time_left_and_its_charge_history() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1450,8 +1300,6 @@ mod tests {
         );
     }
 
-    /// The pane and the session's system-settings actions offer the same
-    /// timeouts, so a value one accepts is never refused by the other.
     #[test]
     fn the_pane_offers_the_timeouts_the_system_actions_validate() {
         let minutes = |options: &[(&str, u32)]| options.iter().map(|(_, m)| *m).collect::<Vec<_>>();
@@ -1533,7 +1381,6 @@ mod tests {
         }
     }
 
-    /// Battery facts from sysfs, honest degradation without a battery, and the pane layout.
     #[test]
     fn battery_reads_sysfs_and_the_pane_lays_out() {
         {
@@ -1573,9 +1420,6 @@ mod tests {
         }
 
         {
-            // A fresh profile shows "Suspend when idle" off: the same value
-            // the compositor's policy and the `power.auto-suspend` action
-            // read from the untouched document.
             let profile = tempfile::tempdir().unwrap();
             let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
             let area = PowerArea::new(&cx);
@@ -1592,8 +1436,6 @@ mod tests {
         }
     }
 
-    /// The profile and the charge cap reach the hardware off the UI thread;
-    /// an unsupported cap is refused before it does.
     #[test]
     fn hardware_effects_reach_the_device() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1617,8 +1459,6 @@ mod tests {
             },
         ))
         .unwrap();
-        // The hardware is read off the UI thread: its cards, with what the
-        // changes said, are shown once the reading lands.
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
@@ -1630,9 +1470,6 @@ mod tests {
         );
     }
 
-    /// Power hardware that does not answer until it is let go, as
-    /// `powerprofilesctl` does when power-profiles-daemon is slow to start
-    /// on the system bus.
     struct StalledPower(Arc<crate::stall::Stall>);
 
     impl StalledPower {
@@ -1674,9 +1511,6 @@ mod tests {
         }
     }
 
-    /// Opening Power while power-profiles-daemon takes its time is
-    /// answered and drawn at once, its preferences already changeable: the
-    /// hardware cards say they are being read, and fill in once it answers.
     #[test]
     fn a_stalled_power_daemon_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
@@ -1709,8 +1543,6 @@ mod tests {
         );
     }
 
-    /// The idle and button preferences are the device's `power` section,
-    /// which the compositor's idle layer reads.
     #[test]
     fn idle_and_button_preferences_write_the_power_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -1750,8 +1582,6 @@ mod tests {
         );
     }
 
-    /// The control `id` the open Power pane shows, and whether it takes
-    /// input; `None` when the pane does not show it.
     fn shown(app: &mut TestApp<SettingsShell>, id: &str) -> Option<bool> {
         ui::widget::find_test_id(app.harness().root_widget(), id).map(|control| {
             !control
@@ -1781,8 +1611,6 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         app.harness().resize((1200, 2400)).unwrap();
         open_power(&mut app);
-        // A fresh machine: idle-suspend off, so both timers are shown,
-        // disabled, and say why.
         assert_eq!(shown(&mut app, "power.suspend_battery"), Some(false));
         assert_eq!(shown(&mut app, "power.suspend"), Some(false));
         assert_eq!(shown(&mut app, "power.profile_suspend"), None);
@@ -1803,7 +1631,6 @@ mod tests {
                 .contains(&t("power-suspend-needs-idle"))
         );
 
-        // On: both take input; each writes its own source's timer.
         crate::testing::edit_field(&mut app, crate::testing::POWER, "auto_suspend", true).unwrap();
         for _ in 0..5 {
             app.settle();
@@ -1844,8 +1671,6 @@ mod tests {
             "only the offered timers"
         );
 
-        // Profile timers that truly differ: the selected profile's timer is
-        // the one, shown with the profile, and the source timers go.
         crate::testing::edit_field(&mut app, crate::testing::POWER, "saver_suspend_minutes", 10)
             .unwrap();
         for _ in 0..5 {

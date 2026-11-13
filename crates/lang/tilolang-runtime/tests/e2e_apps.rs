@@ -5,12 +5,8 @@
 //! and a wide space.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use serde_json::json;
     use tilolang::IdsLock;
     use tilolang_runtime::{
@@ -321,6 +317,45 @@ mod cases {
             .into_iter()
             .map(|row| text_prop(row, "title"))
             .collect()
+    }
+
+    /// The tree a window holds its items as, in its sidebar: the shelf of the ones a filter
+    /// names, when it stands, is a tree of its own before the items' own.
+    fn the_tree(view: &ViewInstance) -> &UiNode {
+        of_kind(view.tree(), "ui.TreeView")
+            .last()
+            .copied()
+            .unwrap_or_else(|| panic!("no tree in\n{}", dump(view.tree())))
+    }
+
+    /// The row of a tree that says `label`, with the key it reports its events by and the
+    /// resource it stands for.
+    fn tree_item_labelled(tree: &UiNode, label: &str) -> (String, ResourceRef) {
+        let node = of_kind(tree, "ui.TreeViewNode")
+            .into_iter()
+            .find(|node| text_prop(node, "label") == label)
+            .unwrap_or_else(|| panic!("no tree row `{label}` in\n{}", dump(tree)));
+        let Some(Value::Ref(item)) = node.props.get("item") else {
+            panic!("a tree row stands for its resource: {node:?}");
+        };
+        (node.key.clone(), ResourceRef::clone(&item.target))
+    }
+
+    /// The note a window shows beside its tree: the one its page's title field edits.
+    fn opened_note(view: &ViewInstance) -> ResourceRef {
+        let page = content(view.tree());
+        let field = of_kind(page, "ui.TextInput")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("no page in\n{}", dump(view.tree())));
+        match field
+            .binding
+            .as_ref()
+            .and_then(tilolang_runtime::Binding::field)
+        {
+            Some((note, _)) => note.clone(),
+            None => panic!("the page edits the note it shows: {field:?}"),
+        }
     }
 
     /// The node of `kind` whose `prop` is `value`.
@@ -1079,21 +1114,22 @@ mod cases {
 
     // ----- windows: open(r), view state ------------------------------------------
 
-    // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, list rows
-    // that `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
-    // anymore". In the native vocabulary a list item carries its resource, and activating its
-    // row opens it: the platform's list does what `on: open(n)` did.
+    // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, rows that
+    // `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
+    // anymore". The notebook's window is a tree of its notes with the chosen one beside it, and
+    // a note still has a window of its own (`note_editor`) wherever one is opened on its own.
     #[test]
-    fn a_notebook_row_opens_its_note_in_a_window_of_its_own() {
+    fn a_notebook_row_opens_its_note_beside_the_tree() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notebook");
-        let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
-        w.call(
-            &apps.notes,
-            "retitle",
-            vec![res(&note), Value::text("Plans")],
-        );
+        let titled = |title: &str| {
+            let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
+            w.call(&apps.notes, "retitle", vec![res(&note), Value::text(title)]);
+            note
+        };
+        let note = titled("Plans");
+        let later = titled("Later");
         assert!(
             apps.notes
                 .meta()
@@ -1102,12 +1138,28 @@ mod cases {
                 .all(|t| t.fields.iter().all(|f| f.name != "open")),
             "the notebook keeps no open note"
         );
-        let list = w.view(&apps.notes, "notebook", vec![res(&nb)]);
+        let mut list = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         assert_eq!(list.window(), nb.id_string(), "a window is its resource's");
+        let (_, shows) = tree_item_labelled(list.tree(), "Plans");
+        assert_eq!(shows, note, "the row stands for this note");
         assert_eq!(
-            item_titled(list.tree(), "Plans"),
+            opened_note(&list),
             note,
-            "the row opens this note"
+            "the window opens the first note of the tree beside it"
+        );
+
+        // Choosing a row brings that note forward beside the tree, in the window's own column.
+        let tree = the_tree(&list).key.clone();
+        let (_, shows) = tree_item_labelled(list.tree(), "Later");
+        assert_eq!(shows, later);
+        list.fire_with(&tree, "select", Some(&Value::resource(&shows)))
+            .unwrap();
+        assert!(list.is_stale(), "the window read the note it shows");
+        list.poll_patches().unwrap();
+        assert_eq!(
+            opened_note(&list),
+            later,
+            "the row's note stands beside the tree"
         );
 
         let editor = w.rt.open_resource(&me(), &note, None).unwrap();
@@ -1131,17 +1183,20 @@ mod cases {
     }
 
     // View state is how one person's window shows its resource (workspace-model.md, "The
-    // pieces"): two people with the same window open sort it for themselves, and neither
-    // moves the other's view.
+    // pieces"): two people with the same window open each read it where they left it — the note
+    // one of them brought forward stands forward for them alone.
     #[test]
-    fn two_people_in_one_window_sort_it_for_themselves() {
+    fn two_people_in_one_window_each_see_it_as_they_left_it() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notebook");
+        let mut notes = Vec::new();
         for title in ["b", "a"] {
             let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
             w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
+            notes.push(n);
         }
+        let (b, a) = (notes[0].clone(), notes[1].clone());
         let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
         let open = |who: &Principal| {
             let mut view =
@@ -1157,32 +1212,34 @@ mod cases {
             view
         };
         let (mut va, mut vb) = (open(&ada), open(&bo));
-        assert_eq!(row_titles(va.tree()), ["b", "a"]);
-        assert_eq!(row_titles(vb.tree()), ["b", "a"]);
+        assert_eq!(
+            opened_note(&va),
+            b,
+            "the window opens the first of the tree"
+        );
+        assert_eq!(opened_note(&vb), b);
 
-        // Ada sorts the window she looks at, and Bo's view of it stays where he left it.
-        let by_title = node_with(va.tree(), "ui.MenuItem", "label", "Title")
-            .key
-            .clone();
-        va.fire(&by_title, "choose").unwrap();
-        assert!(va.is_stale(), "Ada's window read the order she chose");
+        // Ada brings the other note forward, and Bo's view of the window stays where he left it.
+        let tree = the_tree(&va).key.clone();
+        va.fire_with(&tree, "select", Some(&Value::resource(&a)))
+            .unwrap();
+        assert!(va.is_stale(), "Ada's window read the note she chose");
         assert!(
             !vb.is_stale(),
-            "Bo's window never read Ada's order, so it does not run again"
+            "Bo's window never read Ada's choice, so it does not run again"
         );
         va.poll_patches().unwrap();
         vb.poll_patches().unwrap();
-        assert_eq!(row_titles(va.tree()), ["a", "b"]);
-        assert_eq!(row_titles(vb.tree()), ["b", "a"], "Bo is where he was");
+        assert_eq!(opened_note(&va), a);
+        assert_eq!(opened_note(&vb), b, "Bo is where he was");
 
-        // Bo sorts his own window too: each keeps the order its person chose.
-        let by_title = node_with(vb.tree(), "ui.MenuItem", "label", "Title")
-            .key
-            .clone();
-        vb.fire(&by_title, "choose").unwrap();
+        // Bo brings the same note forward in his own window: each keeps the note it chose.
+        let tree = the_tree(&vb).key.clone();
+        vb.fire_with(&tree, "select", Some(&Value::resource(&a)))
+            .unwrap();
         vb.poll_patches().unwrap();
-        assert_eq!(row_titles(vb.tree()), ["a", "b"]);
-        assert_eq!(row_titles(va.tree()), ["a", "b"]);
+        assert_eq!(opened_note(&vb), a);
+        assert_eq!(opened_note(&va), a);
 
         // Another window over the same notebook has state of its own.
         let mut elsewhere =
@@ -1194,7 +1251,7 @@ mod cases {
             )
             .unwrap();
         elsewhere.set_lazy_rows(false).unwrap();
-        assert_eq!(row_titles(elsewhere.tree()), ["b", "a"]);
+        assert_eq!(opened_note(&elsewhere), b);
     }
 
     #[test]
@@ -1691,11 +1748,9 @@ mod cases {
             asked,
             [
                 apps.todo.action("clear_done"),
-                apps.notes.action("new_note"),
-                apps.notes.action("retitle"),
-                apps.notes.action("tag"),
+                apps.notes.action("file_note"),
             ],
-            "one question for the clear, then one per note action, in the order Today wrote them"
+            "one question for the clear, then one for the note, in the order Today wrote them"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
         let notes = items(&m.w, &m.notebook, "notes");
@@ -1771,11 +1826,7 @@ mod cases {
         assert_eq!(finished, Value::Int(0), "nothing was finished");
         assert_eq!(
             asked,
-            [
-                apps.notes.action("new_note"),
-                apps.notes.action("retitle"),
-                apps.notes.action("tag"),
-            ],
+            [apps.notes.action("file_note")],
             "no question for a clear that would do nothing"
         );
         assert_eq!(
@@ -2392,7 +2443,7 @@ mod cases {
     }
 
     #[test]
-    fn notes_list_rows_carry_the_title_and_a_preview() {
+    fn notes_tree_rows_carry_the_title_and_the_note_is_edited_beside_them() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notebook");
@@ -2400,13 +2451,20 @@ mod cases {
         let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
-            let rows = of_kind(tree, "ui.ListRow");
-            assert_eq!(rows.len(), 1);
-            assert_eq!(text_prop(rows[0], "title"), "Untitled");
-            assert!(rows[0].props.contains_key("secondary"));
+            let (_, note) = tree_item_labelled(tree, "Untitled");
+            assert_eq!(
+                of_kind(tree, "ui.ListRow").len(),
+                0,
+                "a notebook lists its notes as a tree, not a column of rows"
+            );
+            assert_eq!(
+                opened_note(&v),
+                note,
+                "the note the tree holds stands beside it, edited in its page"
+            );
             assert!(
                 of_kind(tree, "split").is_empty(),
-                "list and detail are two windows, not a split"
+                "the tree and the note are the window's two columns, not a split"
             );
         }
     }

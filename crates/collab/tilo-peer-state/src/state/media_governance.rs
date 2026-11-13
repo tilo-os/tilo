@@ -1,6 +1,7 @@
 //! Native governance transactions. Public policy data is never an authority proof.
 use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
-use super::{ROOT, RevocationList, Route, SigningKey, SystemTime, Transactable, err, workspace};
+use super::{ROOT, RevocationList, Route, SystemTime, Transactable, err, workspace};
+use collab_types::signer::DeviceSigner;
 use workspace::media::{self, WorkspaceMediaV1};
 
 impl PeerMediaGovernance<'_> {
@@ -91,7 +92,7 @@ impl PeerMediaGovernanceMut<'_> {
     /// refreshed.
     pub fn reconcile_media_governance(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let policy = self.peer.validate_present_media_policy()?;
@@ -170,7 +171,7 @@ impl PeerMediaGovernanceMut<'_> {
     pub fn author_media_policy(
         self,
         policy: &WorkspaceMediaV1,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         self.peer.require_governance_action(

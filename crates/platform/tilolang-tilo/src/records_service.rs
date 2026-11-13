@@ -14,16 +14,22 @@
 //!
 //! An invocation is the published action's own: the door builds it through the action's spec,
 //! which plans it in the runtime, and it is committed to the record as a step of the person
-//! seated here.
+//! seated here, or of the agent acting for them, in the run it is a step of.
+//!
+//! Each record's root carries the history verbs every app's record answers ([`crate::history`]):
+//! its steps are listed, and taken back by step or by run, here as in an app's instance, so a
+//! record no app's process holds still offers its History and its undo.
 
 use std::sync::Arc;
 
+use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, ActionContext, ActionOutput, DoorError, ResourceSpec};
 use tilo_service::{Service, Started};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use crate::history::{HostHistoryEdit, HostWords};
 use crate::host::Host;
 use crate::publish::{Planner, Publications, edit_action, publish_package, resource_id};
 
@@ -38,6 +44,8 @@ pub struct RecordService {
     watch: crate::store::Watch,
     /// Who the changes made here are steps of.
     person: String,
+    /// The words the record's history verbs speak in.
+    words: HostWords,
     /// What `now` reads: the system time, or what a test fixes.
     clock: Box<dyn Fn() -> String>,
     /// The resources whose readings moved since [`Service::moved`] was last asked, by their
@@ -63,7 +71,7 @@ pub struct RecordService {
     /// ([`crate::notices::Notices`]).
     notices: crate::notices::Notices,
     /// Where they are shown: the session's notifications. Until it is set, nothing is shown.
-    tell: Option<Box<dyn crate::notices::Tell>>,
+    tell: Option<Box<dyn tilo_session_core::notice::Notices>>,
     /// The places a resource's `open` asked the session for since [`Service::take_open`] last
     /// took them, each with the actor that asked: opening is the session's arranging step
     /// (`docs/designs/app-language/one-app-model.md` §3), never the record's change.
@@ -94,6 +102,7 @@ impl RecordService {
             notices: crate::notices::Notices::new(person.clone()),
             tell: None,
             person,
+            words: HostWords::new("en-US"),
             clock: Box::new(crate::host::system_time),
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
@@ -354,58 +363,6 @@ impl RecordService {
         any
     }
 
-    /// The reading of the record or item `path` of `app`.
-    fn reading(&self, app: &str, path: &str) -> Option<Json> {
-        use tilolang_runtime::store::Store as _;
-        let probe = ResourceRef::parse_id(path, String::new())?;
-        let ty = self.host.store().type_of(&probe).ok()?;
-        let schema = crate::schema::lookup(&ty)?;
-        if schema.app != app {
-            return None;
-        }
-        let at = ResourceRef::parse_id(path, ty)?;
-        let runtime = self.host.runtime();
-        let mut fields = Map::new();
-        for field in &schema.fields {
-            let Ok(value) = runtime.read(&at, &field.id) else {
-                continue;
-            };
-            let Ok(mut json) = tilolang_runtime::value::to_json(&value) else {
-                continue;
-            };
-            published_refs(&mut json);
-            fields.insert(field.id.clone(), json);
-        }
-        // What links to it, each with how: a view composed elsewhere draws them as this app's
-        // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.
-        if let Ok(links) = self.host.store().linked(&at) {
-            let links: Vec<Json> = links
-                .into_iter()
-                .filter_map(|link| {
-                    let schema = crate::schema::lookup(&link.of.ty)?;
-                    Some(Json::Object(Map::from_iter([
-                        (
-                            "ref".to_owned(),
-                            Json::String(resource_id(&schema.app, &link.of.id_string())),
-                        ),
-                        (
-                            "ty".to_owned(),
-                            Json::String(format!("{}#{}", schema.app, schema.name)),
-                        ),
-                        ("how".to_owned(), Json::String(link.how.word().to_owned())),
-                    ])))
-                })
-                .collect();
-            if !links.is_empty() {
-                fields.insert(
-                    tilolang_runtime::store::LINKS.to_owned(),
-                    Json::Array(links),
-                );
-            }
-        }
-        Some(Json::Object(fields))
-    }
-
     /// The direct edit (a bound control's) of the field `arguments` name in the record or item
     /// `resource`: what a view composed over its reading elsewhere sends when the person types
     /// into it. Both publish these edits, and the same ones: an item is edited in its record by
@@ -451,6 +408,16 @@ impl RecordService {
         action: &DynAction,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
+        self.commit_in(action, invoker, None)
+    }
+
+    /// [`Self::commit`] as a step of the run `run`, when it is one of a run's.
+    fn commit_in(
+        &mut self,
+        action: &DynAction,
+        invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
+    ) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
             // The workspace root's path, as a grant's tree path names it (`room/app:todo/**`),
@@ -458,9 +425,22 @@ impl RecordService {
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
-        )
-        .with_invoker(invoker.clone());
-        let actor = invoker.actor.as_bytes();
+        );
+        self.apply(action, encoded, in_run(context, invoker, run))
+    }
+
+    /// Apply `action` (`encoded`) to the record as the step `context` describes, and hand the
+    /// change to the parts that share the record.
+    fn apply(
+        &mut self,
+        action: &dyn tilo_actions::Action,
+        encoded: tilo_actions::EncodedAction,
+        context: ActionContext,
+    ) -> Result<(), String> {
+        let actor = context
+            .invoker
+            .as_ref()
+            .map(|invoker| invoker.actor.clone().into_bytes());
         let record = &mut self.record;
         self.host
             .with_schemas(|| {
@@ -468,7 +448,7 @@ impl RecordService {
                     record,
                     action,
                     encoded,
-                    Some(actor),
+                    actor.as_deref(),
                     context,
                 )
             })
@@ -487,8 +467,8 @@ impl RecordService {
     }
 
     /// Run the published `action` of `resource` with `arguments`, planned on the record as it
-    /// is and committed as `invoker`'s step: the one path [`Service::invoke`] and
-    /// [`Service::invoke_as`] share.
+    /// is and committed as `invoker`'s step, of the run `run` when it is one of a run's: the one
+    /// path [`Service::invoke`], [`Service::invoke_as`] and [`Service::invoke_in_run`] share.
     ///
     /// A resource's `open` is not a change of the record: the record publishes it so a caller —
     /// an agent reading the catalogue, a view offering it — finds it at the resource, and the
@@ -503,6 +483,7 @@ impl RecordService {
         resource: &str,
         arguments: &Map<String, Json>,
         invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
     ) -> Result<Started, DoorError> {
         let address = ActionAddress::new(resource, action);
         // The place this invocation is asked in, taken as this one's: a note from the step that
@@ -521,13 +502,32 @@ impl RecordService {
                 self.opens.push((invoker.clone(), open));
                 return Ok(Started::Done(ActionOutput::default()));
             }
+            if encoded.type_id == EDIT_TYPE {
+                let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
+                    .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+                return self
+                    .history(&edit, resource, invoker, run)
+                    .map(|value| {
+                        Started::Done(ActionOutput {
+                            value,
+                            resources: Vec::new(),
+                        })
+                    })
+                    .map_err(DoorError::Failed);
+            }
+            if encoded.type_id == VIEW_TYPE {
+                return verbs::answer(&self.record, &encoded.payload, &self.words)
+                    .map(Started::Done)
+                    .map_err(DoorError::Failed);
+            }
             if encoded.type_id != ACTION_TYPE {
                 return Err(DoorError::Unknown(address));
             }
             serde_json::from_slice(&encoded.payload)
                 .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
         };
-        self.commit(&planned, invoker).map_err(DoorError::Failed)?;
+        self.commit_in(&planned, invoker, run)
+            .map_err(DoorError::Failed)?;
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a record changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
@@ -556,6 +556,118 @@ fn open_asked(payload: &[u8], resource: &str) -> Result<tilo_service::Open, Stri
         view: open.view().unwrap_or_default().to_owned(),
         beside: String::new(),
     })
+}
+
+impl RecordService {
+    /// Apply the history verb `edit`, invoked on the record root `resource` by `invoker` (in the
+    /// run `run`), to the record as one step of its own, as an app's instance applies it
+    /// ([`HostHistoryEdit`]): what the verb did, as its caller is answered ([`verbs::result`]).
+    fn history(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
+    ) -> Result<Option<Json>, String> {
+        let kind = self
+            .publications
+            .trees()
+            .values()
+            .find(|tree| tree.id.as_str() == resource)
+            .map(|tree| tree.kind.clone())
+            .ok_or_else(|| format!("{resource} keeps no history here"))?;
+        let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
+        let encoded = action.encoded()?;
+        let before = self.record.get_heads();
+        let context = ActionContext::for_resource(resource, &kind, &kind);
+        self.apply(&action, encoded, in_run(context, invoker, run))?;
+        self.publications.settle(&self.host, &self.planner);
+        self.told();
+        let after = self.record.get_heads();
+        let patches = self.record.diff(&before, &after);
+        Ok(verbs::result(
+            edit.verb(),
+            &self.record,
+            &patches,
+            &self.words,
+        ))
+    }
+}
+
+/// `context` as a step of `invoker`, of the run `run` when it is one of a run's.
+fn in_run(
+    context: ActionContext,
+    invoker: &tilo_actions::ActionInvoker,
+    run: Option<&tilo_actions::WorkGroup>,
+) -> ActionContext {
+    let context = context.with_invoker(invoker.clone());
+    match run {
+        Some(run) => context.with_group(run.id.clone(), run.label.clone(), run.kind.clone()),
+        None => context,
+    }
+}
+
+/// The reading of the record or item `resource` (its published id, `tl:<app>:<id>`) that `host`
+/// holds: its fields as the runtime reads them, each by its field id, and what links to it. What a
+/// runtime that loads its package as another app's reads back
+/// ([`tilolang_runtime::Runtime::set_reading`]). `None` for a resource `host` holds none of.
+#[must_use]
+pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
+    use tilolang_runtime::store::Store as _;
+    let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
+    host.package(app)?;
+    let probe = ResourceRef::parse_id(path, String::new())?;
+    let ty = host.store().type_of(&probe).ok()?;
+    let schema = crate::schema::lookup(&ty)?;
+    if schema.app != app {
+        return None;
+    }
+    let at = ResourceRef::parse_id(path, ty)?;
+    let runtime = host.runtime();
+    let mut fields = Map::new();
+    for field in &schema.fields {
+        let Ok(value) = runtime.read(&at, &field.id) else {
+            continue;
+        };
+        let Ok(mut json) = tilolang_runtime::value::to_json(&value) else {
+            continue;
+        };
+        published_refs(&mut json);
+        fields.insert(field.id.clone(), json);
+    }
+    // What the person it is read for has not seen of its items: a view composed elsewhere
+    // counts it as this app's own views do ([`tilolang_runtime::store::UNSEEN`]).
+    if let Some(unseen) = runtime.unseen_reading(&host.viewer().0, &at) {
+        fields.insert(tilolang_runtime::store::UNSEEN.to_owned(), unseen);
+    }
+    // What links to it, each with how: a view composed elsewhere draws them as this app's
+    // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.
+    if let Ok(links) = host.store().linked(&at) {
+        let links: Vec<Json> = links
+            .into_iter()
+            .filter_map(|link| {
+                let schema = crate::schema::lookup(&link.of.ty)?;
+                Some(Json::Object(Map::from_iter([
+                    (
+                        "ref".to_owned(),
+                        Json::String(resource_id(&schema.app, &link.of.id_string())),
+                    ),
+                    (
+                        "ty".to_owned(),
+                        Json::String(format!("{}#{}", schema.app, schema.name)),
+                    ),
+                    ("how".to_owned(), Json::String(link.how.word().to_owned())),
+                ])))
+            })
+            .collect();
+        if !links.is_empty() {
+            fields.insert(
+                tilolang_runtime::store::LINKS.to_owned(),
+                Json::Array(links),
+            );
+        }
+    }
+    Some(Json::Object(fields))
 }
 
 /// Each reference in `json` named as the session publishes it: by its published id, and its
@@ -640,7 +752,7 @@ impl RecordService {
 
     /// Where the notices the workspace holds for this device's person are shown: the session's
     /// notifications, the ones every app's notification goes through.
-    pub fn set_tell(&mut self, tell: impl crate::notices::Tell + 'static) {
+    pub fn set_tell(&mut self, tell: impl tilo_session_core::notice::Notices + 'static) {
         self.tell = Some(Box::new(tell));
     }
 
@@ -668,16 +780,16 @@ impl RecordService {
     }
 
     /// Mark seen the notices the person dismissed on this device since the last look: their
-    /// notification closed because they dismissed it ([`crate::notices::Closed::Dismissed`]),
+    /// notification closed because they dismissed it ([`tilo_session_core::notice::Closed::Dismissed`]),
     /// not because it ran out or because another device of theirs saw it.
     fn dismissed(&mut self) {
         let Some(tell) = &self.tell else {
             return;
         };
         let ids: Vec<String> = tell
-            .closed()
+            .take_closed()
             .into_iter()
-            .filter(|(_, reason)| *reason == crate::notices::Closed::Dismissed)
+            .filter(|(_, reason)| *reason == tilo_session_core::notice::Closed::Dismissed)
             .filter_map(|(tag, _)| self.notices.shown_as(&tag).map(str::to_owned))
             .collect();
         for id in ids {
@@ -726,7 +838,9 @@ impl Service for RecordService {
             .map(|tree| {
                 let mut tree = (**tree).clone();
                 kept_by_its_app(&mut tree);
-                tree
+                // The record's root offers the record's history, as an app's own resource does
+                // in its instance.
+                crate::history::with_verbs(tree)
             })
             .collect();
         let words = self.host.runtime().words();
@@ -739,40 +853,8 @@ impl Service for RecordService {
         out
     }
 
-    /// The address this host publishes `app`'s record at: this service keeps every loaded
-    /// package's records, so a launch it makes for the app names one and the app's process opens
-    /// no record of its own (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-    ///
-    /// It names the app's root: the resource every view of the package reads its state from
-    /// (`root YouTube`, `root Tasklist`), by its published id. An app whose package this host
-    /// loaded but which declares no root names none, so a launch of it opens its own record.
-    fn hosted(&self, app: &str) -> Option<String> {
-        let package = self.host.package(app)?;
-        let root = package.meta.roots.first()?;
-        Some(crate::publish::resource_id(app, &format!("root-{root}")))
-    }
-
-    /// Every package this host runs, by its app, with the resource its record is published at:
-    /// what [`Self::hosted`] answers, for a host that asks about them all at once.
-    fn served(&self) -> Vec<(String, String)> {
-        self.host
-            .packages()
-            .into_iter()
-            .filter_map(|package| {
-                let root = package.meta.roots.first()?;
-                let app = package.meta.app;
-                Some((
-                    app.clone(),
-                    crate::publish::resource_id(&app, &format!("root-{root}")),
-                ))
-            })
-            .collect()
-    }
-
     fn read(&self, resource: &str) -> Option<Json> {
-        let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
-        self.host.package(app)?;
-        self.reading(app, path)
+        reading_of(&self.host, resource)
     }
 
     fn invoke(
@@ -782,7 +864,7 @@ impl Service for RecordService {
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
         let invoker = tilo_actions::ActionInvoker::actor(self.person.clone());
-        self.run(action, resource, arguments, &invoker)
+        self.run(action, resource, arguments, &invoker, None)
     }
 
     /// [`Service::invoke`] as `invoker` (an agent acting for its person): the change is
@@ -795,7 +877,20 @@ impl Service for RecordService {
         action: &str,
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
-        self.run(action, resource, arguments, invoker)
+        self.run(action, resource, arguments, invoker, None)
+    }
+
+    /// [`Service::invoke_as`] as a step of the run `run`: History groups it under the run, and
+    /// an undo of the run takes it back with the run's other steps.
+    fn invoke_in_run(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        run: &tilo_actions::WorkGroup,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Json>,
+    ) -> Result<Started, DoorError> {
+        self.run(action, resource, arguments, invoker, Some(run))
     }
 
     /// The places a resource's `open` asked this service for since the last pass: the session
@@ -862,6 +957,33 @@ impl Service for RecordService {
         apps.dedup();
         apps.iter()
             .filter_map(|app| self.service_record(app))
+            .collect()
+    }
+
+    /// Every app's record this service publishes, each with the document all of them live in: the
+    /// workspace record, whose roots are the records. One document holds every app's, so each
+    /// entry names the kind of that app's records and the activity keeps its own steps out of it.
+    fn history_records(&self) -> Vec<tilo_service::HistoryRecord> {
+        // The first root of each app names the kind its records are of; a later one of the same
+        // app would list the same steps again.
+        let mut apps: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for tree in self.publications.trees().values() {
+            let Some(app) = tree
+                .kind
+                .strip_prefix("tl.")
+                .and_then(|kind| kind.rsplit_once('.'))
+                .map(|(app, _)| app)
+            else {
+                continue;
+            };
+            apps.entry(app).or_insert(tree.kind.as_str());
+        }
+        apps.into_iter()
+            .map(|(app, kind)| tilo_service::HistoryRecord {
+                app: app.to_owned(),
+                kind: kind.to_owned(),
+                document: self.record.clone(),
+            })
             .collect()
     }
 
@@ -938,6 +1060,31 @@ fn kept_by_its_app(resource: &mut ResourceSpec) {
 pub fn reading_type(kind: &str) -> Option<String> {
     let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
     Some(format!("{app}#{ty}"))
+}
+
+/// The app of a resource whose type the shell's runtime names `<app>#<Type>`.
+#[must_use]
+pub fn app_of(ty: &str) -> Option<&str> {
+    ty.split_once('#').map(|(app, _)| app)
+}
+
+/// Each resource `records` (the ids a shell's places name) that `resources`, the session's
+/// catalogue, holds as a tilolang record: its id, and its type as the shell's runtime names
+/// another app's (`<app>#<Type>`). A place naming nothing the catalogue holds keeps its well.
+#[must_use]
+pub fn placed_records<'a>(
+    records: impl IntoIterator<Item = &'a str>,
+    resources: &[ResourceSpec],
+) -> std::collections::BTreeMap<String, String> {
+    records
+        .into_iter()
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let ty =
+                tilo_actions::door::find_resource(resources, record).and_then(reading_type_of)?;
+            Some((record.to_owned(), ty))
+        })
+        .collect()
 }
 
 /// The type the shell's runtime names a resource of `spec` by (`<app>#<Type>`): a tilolang

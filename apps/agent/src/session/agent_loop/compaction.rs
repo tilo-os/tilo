@@ -65,6 +65,12 @@ pub(crate) struct Context {
     fill_tokens: usize,
     /// The handle each result put aside is kept under, by call id.
     handles: std::collections::HashMap<String, String>,
+    /// The results answered so far, as they were before any compaction, kept
+    /// by extending them with the turns added since: a turn costs what it
+    /// answered, never the whole run again.
+    answered: Vec<crate::model::Answered>,
+    /// History messages `answered` already holds the results of.
+    answered_at: usize,
 }
 
 impl Context {
@@ -83,6 +89,8 @@ impl Context {
         Self {
             fill_tokens: usable.saturating_mul(FILL_PERCENT) / 100,
             handles: std::collections::HashMap::new(),
+            answered: Vec::new(),
+            answered_at: 0,
         }
     }
 
@@ -109,10 +117,18 @@ impl Context {
         // Each result put aside saves what it was less what replaces it,
         // counted without building the request again.
         let mut aside = 0;
-        let answered = conversation.answered();
+        let fill_tokens = self.fill_tokens;
+        // The results answered so far, extended by the turns since: each is
+        // read off the history once, not once per turn.
+        self.answered
+            .extend(conversation.answered_since(self.answered_at));
+        self.answered_at = conversation.len();
+        let Self {
+            answered, handles, ..
+        } = self;
         let older = answered.len().saturating_sub(KEEP_RECENT);
         for call in answered.iter().take(older) {
-            if tokens <= self.fill_tokens {
+            if tokens <= fill_tokens {
                 break;
             }
             if conversation.is_aside(&call.call_id)
@@ -120,7 +136,7 @@ impl Context {
             {
                 continue;
             }
-            let handle = self.handle(pages, call);
+            let handle = handle_of(handles, pages, call);
             let replacement = put_aside(call, &handle);
             tokens = tokens.saturating_sub(
                 call.result
@@ -144,11 +160,11 @@ impl Context {
             .saturating_sub(KEEP_RECENT_TURNS.saturating_sub(1));
         let step = foldable.div_ceil(8).max(1);
         let mut next = step;
-        while tokens > self.fill_tokens && next <= foldable && foldable > 0 {
+        while tokens > fill_tokens && next <= foldable && foldable > 0 {
             let Some(&through) = starts.get(next.min(foldable) - 1) else {
                 break;
             };
-            let note = self.note(pages, &answered, through);
+            let note = note_of(handles, pages, answered, through);
             conversation.fold(through, note);
             tokens = measure(conversation);
             next += step;
@@ -161,49 +177,53 @@ impl Context {
         );
         aside
     }
+}
 
-    /// The handle `call`'s result is kept under, keeping it now if it is
-    /// not yet.
-    fn handle(&mut self, pages: &mut Pages, call: &crate::model::Answered) -> String {
-        self.handles
-            .entry(call.call_id.clone())
-            .or_insert_with(|| pages.keep_aside(&call.result))
-            .clone()
-    }
+/// The handle `call`'s result is kept under, keeping it now if it is not
+/// yet.
+fn handle_of(
+    handles: &mut std::collections::HashMap<String, String>,
+    pages: &mut Pages,
+    call: &crate::model::Answered,
+) -> String {
+    handles
+        .entry(call.call_id.clone())
+        .or_insert_with(|| pages.keep_aside(&call.result))
+        .clone()
+}
 
-    /// The note the turns before `through` fold into: a line per step with
-    /// its result's handle, the newest [`MOST_NOTED`].
-    fn note(
-        &mut self,
-        pages: &mut Pages,
-        answered: &[crate::model::Answered],
-        through: usize,
-    ) -> String {
-        let folded: Vec<&crate::model::Answered> =
-            answered.iter().filter(|call| call.at < through).collect();
-        let earlier = folded.len().saturating_sub(MOST_NOTED);
-        let mut note = format!(
-            "Earlier steps of this task, put aside to keep the conversation short. Each \
-             result is kept: call `{READ_RESULT}` with its `result` and `from` 0 to read it \
-             again."
-        );
-        if earlier > 0 {
-            let _ = write!(note, "\n- {earlier} earlier steps");
-        }
-        for call in folded.into_iter().skip(earlier) {
-            let handle = self.handle(pages, call);
-            let what = call
-                .input
-                .get("operation")
-                .and_then(Value::as_str)
-                .map_or_else(
-                    || call.tool.clone(),
-                    |operation| format!("{} {operation}", call.tool),
-                );
-            let _ = write!(note, "\n- {what}: result {handle}");
-        }
-        note
+/// The note the turns before `through` fold into: a line per step with its
+/// result's handle, the newest [`MOST_NOTED`].
+fn note_of(
+    handles: &mut std::collections::HashMap<String, String>,
+    pages: &mut Pages,
+    answered: &[crate::model::Answered],
+    through: usize,
+) -> String {
+    let folded: Vec<&crate::model::Answered> =
+        answered.iter().filter(|call| call.at < through).collect();
+    let earlier = folded.len().saturating_sub(MOST_NOTED);
+    let mut note = format!(
+        "Earlier steps of this task, put aside to keep the conversation short. Each \
+         result is kept: call `{READ_RESULT}` with its `result` and `from` 0 to read it \
+         again."
+    );
+    if earlier > 0 {
+        let _ = write!(note, "\n- {earlier} earlier steps");
     }
+    for call in folded.into_iter().skip(earlier) {
+        let handle = handle_of(handles, pages, call);
+        let what = call
+            .input
+            .get("operation")
+            .and_then(Value::as_str)
+            .map_or_else(
+                || call.tool.clone(),
+                |operation| format!("{} {operation}", call.tool),
+            );
+        let _ = write!(note, "\n- {what}: result {handle}");
+    }
+    note
 }
 
 /// What a result put aside is sent as: its handle, what it answered and the

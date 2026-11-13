@@ -11,16 +11,11 @@ use tokio::sync::Semaphore;
 use crate::net::GATEWAY;
 use crate::packet::{self, Ipv4Packet};
 
-/// The DNS port.
 pub const PORT: u16 = 53;
-/// The most queries in flight at once, from all clients together.
 const MAX_IN_FLIGHT: usize = 64;
-/// How long a resolver may take to answer.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
-/// The largest answer relayed: the largest a UDP packet in the tunnel carries.
 const MAX_ANSWER_BYTES: usize = 1400;
 
-/// A query to the gateway's DNS port, taken apart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     pub client: SocketAddrV4,
@@ -43,7 +38,6 @@ impl Query {
     }
 }
 
-/// Asks this machine's resolver on behalf of the tunnel's clients.
 #[derive(Clone)]
 pub struct DnsRelay {
     resolver: SocketAddr,
@@ -105,7 +99,6 @@ async fn ask(resolver: SocketAddr, payload: &[u8]) -> Option<Vec<u8>> {
     (answer.get(..2) == payload.get(..2)).then_some(answer)
 }
 
-/// The first `nameserver` of a resolv.conf, or the local stub.
 fn resolver_of(text: &str) -> SocketAddr {
     text.lines()
         .filter_map(|line| line.trim().strip_prefix("nameserver"))

@@ -14,8 +14,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
@@ -32,12 +30,12 @@ use tilo_desktop::desk_verbs::{
 use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
+use tilo_session_core::door::Published;
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
-use tilo_surface_host::Published;
 use tilo_test_env::{PrivateBus, ScopedEnv};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -257,10 +255,7 @@ fn session() -> Session {
 fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     crate::common::headless(Options {
         collab: false,
-        search: tilo_session::SearchOptions {
-            apps: Some(std::sync::Arc::new(tilo_session::Lists::fixed(lists))),
-            ..tilo_session::SearchOptions::default()
-        },
+        lists: tilo_session::Lists::fixed(lists),
         ..Options::default()
     })
 }
@@ -864,7 +859,7 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
     // The repeat is one per turn the compositor dispatches, however long a turnaround takes on a
     // busy machine: the test holds the key until the sound has been raised more than once, rather
     // than for a span of the host's clock.
-    common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
+    crate::common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
         (repeats(&asked) > 3).then_some(())
     });
     key(&mut session, keys::VOLUME_UP, false);
@@ -919,7 +914,7 @@ impl Published for Player {
         &mut self,
         address: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(
@@ -1387,7 +1382,24 @@ fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
 #[test]
 fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
+    // A device with the apps the empty desk's cards open: what its launchpad offers is drawn from
+    // the apps installed here.
+    let mut session = session_with_lists(tilo_session::AppLists {
+        applications: [
+            ("so.tilo.chat", "Chat"),
+            ("so.tilo.notes", "Notes"),
+            ("so.tilo.tasks", "Tasks"),
+        ]
+        .into_iter()
+        .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
+            id: id.into(),
+            title: title.into(),
+            category: None,
+            description: None,
+        })
+        .collect(),
+        ..tilo_session::AppLists::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     for card in [
         "chat", "notes", "tasks", "meet", "invite", "activity", "apps",
@@ -1715,7 +1727,7 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
     let names: Vec<String> = session
         .controls()
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|control| control.name)
         .collect();
     let skip = "onboarding.tour.skip.button";
     assert!(
@@ -2580,8 +2592,8 @@ fn the_desk_starts_on_the_picture_the_person_chose() {
         .expect("the choice is cleared");
 }
 
-/// The workspace menu offers joining, leaving and settings, and choosing join lists the workspaces
-/// this computer holds.
+/// The workspace menu offers making, branching, joining, leaving and settings, and choosing join
+/// lists the workspaces this computer holds.
 #[test]
 fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let _settled = ui::motion::testing::settled();
@@ -2591,6 +2603,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let menu = session.accessible_labels().join("\n");
     for row in [
         "New workspace",
+        "Branch workspace",
         "Join a workspace",
         "Leave workspace",
         "Workspace settings",
@@ -2605,6 +2618,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
         .collect();
     for id in [
         "new-workspace",
+        "branch-workspace",
         "join-workspace",
         "leave-workspace",
         "workspace-settings",
@@ -2703,7 +2717,7 @@ fn a_copy_is_kept_across_a_restart_and_pasted_into_the_app_in_front() {
 
     // A new session — the person's next login — still has the copy: the history is in this device's
     // settings, not in the session's memory.
-    let mut session = crate::session();
+    let mut session = crate::session::session();
     assert_eq!(copy_key(&session, copy), key);
     let mut client = mapped(&mut session, "org.example.Terminal");
     pump(&mut session, &mut [&mut client], |_, clients| {

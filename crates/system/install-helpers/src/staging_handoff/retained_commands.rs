@@ -1,7 +1,7 @@
 //! Retained-source commands invoked by the authenticated root supervisor.
 //!
-//! Receipt stdin carries authenticated choices, not actor authority. The
-//! supervisor owns authentication; no JSON field can substitute for it.
+//! Receipt stdin carries authenticated choices, not actor authority: the
+//! supervisor owns authentication, and no JSON field can substitute for it.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -64,9 +64,8 @@ fn present(value: &Value, key: &str) -> bool {
 }
 
 fn prepared_transport(arguments: &[&str], receipt: Option<&Value>) -> Result<Vec<u8>> {
-    // Resolve the installed sibling from the executable itself, never argv[0],
-    // the working directory, PATH or a caller-controlled environment override.
-    // In the image both helpers live in /usr/libexec.
+    // Resolve the installed sibling from the executable itself, never argv[0], the
+    // working directory, PATH or a caller-controlled environment override.
     let executable = std::env::current_exe()
         .map_err(|_| Fail::Refusal("prepared setup transport is unavailable".into()))?;
     let transport = executable.with_file_name(PREPARED_TRANSPORT);
@@ -89,9 +88,9 @@ fn prepared_transport(arguments: &[&str], receipt: Option<&Value>) -> Result<Vec
     Ok(output.stdout)
 }
 
-/// Extract choices already authenticated by the root CLI supervisor.
-/// This JSON is public metadata, never proof of actor identity or mount authority.
-/// The callback must parse the shared Migration model and call `validate_standalone`.
+/// Extract choices already authenticated by the root CLI supervisor. This JSON
+/// is public metadata, never proof of actor identity or mount authority. The
+/// callback must parse the shared Migration model and call `validate_standalone`.
 pub fn authenticated_retained_plan(
     input: impl Read,
     validate_migration: impl Fn(&Value) -> Result<Value>,
@@ -131,8 +130,8 @@ pub fn authenticated_retained_plan(
             return refuse("authenticated completed Home lineage differs");
         }
     }
-    // Use the existing native closed parser for pending Computer-app scope,
-    // without claiming a completed archive or opening a source directory.
+    // Use the existing native closed parser for pending Computer-app scope, without
+    // claiming a completed archive or opening a source directory.
     let mut metadata = serde_json::Map::new();
     metadata.insert("schema".into(), json!(1));
     for key in [
@@ -173,8 +172,8 @@ pub fn authenticated_retained_plan(
                 field(&receipt, "pending_computer_applications_scope").clone(),
             );
     }
-    // Python canonical adds one newline. serde's UTF-8 output can be shorter
-    // than ensure_ascii JSON; measure its escaped canonical representation.
+    // Python canonical adds one newline; serde's UTF-8 output can be shorter than
+    // ensure_ascii JSON, so measure its escaped canonical representation.
     if super::canonical(&plan).len() > HANDOFF_MAX_BYTES {
         return refuse("authenticated original-files plan exceeds reboot delivery bound");
     }
@@ -419,7 +418,8 @@ fn read_plan_at(
     validate_migration(&value).map(Some)
 }
 
-/// Atomically publish private migration intent without overwriting existing intent.
+/// Atomically publish private migration intent without overwriting existing
+/// intent.
 pub fn deliver_retained(
     plan: Option<&Value>,
     target_var: &Path,
@@ -453,8 +453,8 @@ pub fn deliver_retained(
         return Ok(());
     }
     // /proc/self/fd resolves only our pinned, still-owned directory descriptor.
-    // tempfile provides an unpredictable O_EXCL, mode-0600 temporary and removes
-    // it on every failure path; publication itself is descriptor-relative.
+    // tempfile provides an unpredictable O_EXCL, mode-0600 temporary and removes it
+    // on every failure path; publication itself is descriptor-relative.
     let pinned = format!("/proc/self/fd/{}", directory.as_fd().as_raw_fd());
     let mut temporary = tempfile::Builder::new()
         .prefix(".retained-")
@@ -477,11 +477,10 @@ pub fn deliver_retained(
     Ok(())
 }
 
-/// Run a retained CLI command with bounded stdin.
-///
-/// The validator must deserialize the shared Migration model and invoke its
-/// `validate_standalone()` method, returning the original JSON after validation.
-/// This explicit callback avoids coupling these commands to handoff geometry.
+/// Run a retained CLI command with bounded stdin. The validator must
+/// deserialize the shared Migration model and invoke its `validate_standalone()`
+/// method, returning the original JSON after validation; the callback keeps
+/// these commands free of handoff geometry.
 pub fn run(
     host: &dyn Host,
     command: &str,

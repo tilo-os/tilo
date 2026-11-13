@@ -1,11 +1,10 @@
 //! Capture epochs: an atomic snapshot of a workspace, compared against the
 //! previous epoch's snapshot, producing one ordered changeset.
 //!
-//! Writers are never paused. The snapshot is the crash image of the workspace at
-//! one instant, and every byte
-//! that is hashed is read from it, never from the live file. Only records the
-//! journal names are examined, and within a changed file only the extents
-//! that differ from the previous snapshot are re-chunked.
+//! Writers are never paused. The snapshot is the crash image of the workspace
+//! at one instant, and every byte that is hashed is read from it, never from
+//! the live file. Only records the journal names are examined, and within a
+//! changed file only the extents that differ are re-chunked.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
@@ -38,11 +37,9 @@ pub enum NodeKind {
     Symlink(PathBuf),
 }
 
-/// The replicated state of one path, as captured in an epoch.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub kind: NodeKind,
-    /// Permission bits (`0o7777`, setuid excluded).
     pub mode: u32,
     pub size: u64,
     pub mtime_ns: i128,
@@ -69,7 +66,6 @@ impl Node {
         }
     }
 
-    /// Whether a peer would see any difference between the two.
     fn same_replicated(&self, other: &Self) -> bool {
         if self.kind != other.kind || self.mode != other.mode {
             return false;
@@ -97,7 +93,6 @@ impl Node {
         }
     }
 
-    /// Whether nothing about the inode changed at all since `base`.
     fn untouched_since(&self, base: &Self) -> bool {
         self.ino == base.ino
             && self.size == base.size
@@ -116,15 +111,14 @@ pub enum ChangeOp {
         path: PathBuf,
         is_dir: bool,
     },
-    /// The inode at `from` now lives at `path`, and a directory brings
-    /// everything below it. The record keeps its identity: history, access
-    /// and references follow it. `changed` says the moved node's replicated
-    /// state (content, size, mtime, mode) also changed; `node` is its state
-    /// at `path`.
+    /// The inode at `from` now lives at `path`, and a directory brings everything
+    /// below it. The record keeps its identity: history, access and references
+    /// follow it. `changed` says the moved node's replicated state (content, size,
+    /// mtime, mode) also changed; `node` is its state at `path`.
     ///
-    /// `from` is in the coordinates of the tree as the preceding operations
-    /// of the changeset left it; every other path is where the node is at
-    /// the end of the changeset.
+    /// `from` is in the coordinates of the tree as the preceding operations of
+    /// the changeset left it; every other path is where the node is at the end of
+    /// the changeset.
     Move {
         from: PathBuf,
         path: PathBuf,
@@ -143,12 +137,10 @@ impl ChangeOp {
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct CaptureStats {
-    /// Time to take the atomic snapshot (the only step with any effect on
-    /// writers: one Btrfs transaction commit).
+    /// Time to take the atomic snapshot: the only step with any effect on writers,
+    /// one Btrfs transaction commit.
     pub snapshot: Duration,
-    /// Time to decide what changed.
     pub scan: Duration,
-    /// Time spent comparing extents and hashing.
     pub hash: Duration,
     pub total: Duration,
     pub paths_examined: u64,
@@ -164,13 +156,13 @@ pub struct Changeset {
     /// Journal position the changeset covers.
     pub through: u64,
     pub ops: Vec<ChangeOp>,
-    /// Placeholder or partially resident files that were written locally.
-    /// Their content can only be captured once they are fully resident;
-    /// they are examined again in the next epoch.
+    /// Placeholder or partially resident files that were written locally. Their
+    /// content can only be captured once they are fully resident; they are
+    /// examined again in the next epoch.
     pub deferred: Vec<PathBuf>,
-    /// Placeholders now tracked without a published change: their content
-    /// is fixed by the version they were created from, but a later local
-    /// delete or rename of them must still be captured.
+    /// Placeholders now tracked without a published change: their content is fixed
+    /// by the version they were created from, but a later local delete or rename
+    /// of them must still be captured.
     pub tracked: Vec<PathBuf>,
     pub stats: CaptureStats,
 }
@@ -187,8 +179,8 @@ pub struct NodeState {
     pub ino: u64,
 }
 
-/// What a restart needs to continue from the last epoch: the retained
-/// snapshot and the captured state of every path in it.
+/// What a restart needs to continue from the last epoch: the retained snapshot
+/// and the captured state of every path in it.
 #[derive(Clone, Debug)]
 pub struct CaptureState {
     pub next_epoch: u64,
@@ -198,20 +190,16 @@ pub struct CaptureState {
 
 #[derive(Clone, Debug)]
 pub struct CaptureConfig {
-    /// The workspace subvolume.
     pub live: PathBuf,
-    /// Where epoch snapshots are created; same filesystem as `live`.
     pub epochs: PathBuf,
     pub hash_threads: usize,
-    /// Build content manifests for changed files. A consumer that hashes
-    /// the snapshot itself in another format turns this off; changes are
-    /// then detected from size, mtime and mode, and the snapshot file is
-    /// what it reads.
+    /// Build content manifests for changed files. A consumer that hashes the
+    /// snapshot itself in another format turns this off; changes are then detected
+    /// from size, mtime and mode, and the snapshot file is what it reads.
     pub hash_content: bool,
     /// Keep the previous epoch's snapshot until
-    /// [`EpochCapture::release_retired`] is called, so a consumer can
-    /// persist the new epoch before the one a restart would fall back to
-    /// disappears.
+    /// [`EpochCapture::release_retired`] is called, so a consumer can persist the
+    /// new epoch before the one a restart would fall back to disappears.
     pub defer_release: bool,
 }
 
@@ -232,17 +220,14 @@ struct EpochState {
     nodes: BTreeMap<PathBuf, Node>,
 }
 
-/// Cuts epochs of one workspace.
 pub struct EpochCapture {
     cfg: CaptureConfig,
     prev: Option<EpochState>,
     next_epoch: u64,
-    /// Paths to examine in the next epoch even if the journal does not name
-    /// them (deferred placeholders, paths a consumer asks for).
+    /// Paths to examine in the next epoch even if the journal does not name them
+    /// (deferred placeholders, paths a consumer asks for).
     dirty: HashSet<PathBuf>,
-    /// Snapshots of earlier epochs kept alive by `defer_release`.
     retired: Vec<PathBuf>,
-    /// Compare the whole workspace in the next epoch.
     rescan_next: bool,
 }
 
@@ -258,7 +243,6 @@ struct Classified {
 struct HashJob {
     path: PathBuf,
     node: Node,
-    /// The previous version to diff against: its snapshot file and manifest.
     base: Option<(PathBuf, Arc<Manifest>)>,
 }
 
@@ -275,11 +259,10 @@ impl EpochCapture {
         })
     }
 
-    /// Continues from a persisted epoch. The next capture compares the
-    /// whole workspace against `state.snapshot`, which finds everything that
-    /// changed while nothing was journaling (a crash, a stopped daemon) by
-    /// its metadata; only files whose inode, size, mtime or ctime moved are
-    /// read.
+    /// Continues from a persisted epoch. The next capture compares the whole
+    /// workspace against `state.snapshot`, which finds everything that changed
+    /// while nothing was journaling (a crash, a stopped daemon) by its metadata;
+    /// only files whose inode, size, mtime or ctime moved are read.
     pub fn resume(cfg: CaptureConfig, state: CaptureState) -> io::Result<Self> {
         fs::create_dir_all(&cfg.epochs)?;
         if !state.snapshot.is_dir() {
@@ -319,7 +302,6 @@ impl EpochCapture {
         })
     }
 
-    /// The state a restart continues from, while an epoch is retained.
     pub fn state(&self) -> Option<CaptureState> {
         let prev = self.prev.as_ref()?;
         Some(CaptureState {
@@ -341,10 +323,10 @@ impl EpochCapture {
         self.prev.as_ref()?.nodes.get(rel).map(Node::state)
     }
 
-    /// Records the live state of `rel` as already captured, without
-    /// publishing it: for changes the consumer made itself (applying a
-    /// remote version), which the journal does not report. A later local
-    /// change or removal of the path is then diffed against it.
+    /// Records the live state of `rel` as already captured, without publishing it:
+    /// for changes the consumer made itself (applying a remote version), which the
+    /// journal does not report. A later local change or removal of the path is then
+    /// diffed against it.
     pub fn track(&mut self, rel: &Path) -> io::Result<()> {
         let Some(prev) = self.prev.as_mut() else {
             // The first epoch compares the whole workspace anyway.
@@ -374,9 +356,8 @@ impl EpochCapture {
         Ok(())
     }
 
-    /// Records that `from` and everything below it now live at `to`, for
-    /// renames the consumer made itself (a remote move). A later local
-    /// change is diffed against the moved nodes.
+    /// Records that `from` and everything below it now live at `to`, for renames
+    /// the consumer made itself (a remote move).
     pub fn track_move(&mut self, from: &Path, to: &Path) {
         if let Some(prev) = self.prev.as_mut() {
             move_nodes(&mut prev.nodes, None, from, to);
@@ -397,17 +378,15 @@ impl EpochCapture {
         })
     }
 
-    /// Forgets `rel` and everything below it, for removals the consumer
-    /// made itself.
     pub fn untrack(&mut self, rel: &Path) {
         if let Some(prev) = self.prev.as_mut() {
             untrack_in(&mut prev.nodes, rel);
         }
     }
 
-    /// Keeps `rel` tracked but forgets that its current state was captured,
-    /// for a change the consumer failed to publish: the next epoch captures
-    /// the path again if it still exists, and its removal if it does not.
+    /// Keeps `rel` tracked but forgets that its current state was captured, for a
+    /// change the consumer failed to publish: the next epoch captures the path
+    /// again if it still exists, and its removal if it does not.
     pub fn invalidate(&mut self, rel: &Path) {
         if let Some(node) = self.prev.as_mut().and_then(|p| p.nodes.get_mut(rel)) {
             // No real inode matches these, so neither the unchanged-inode
@@ -419,12 +398,10 @@ impl EpochCapture {
         self.dirty.insert(rel.to_path_buf());
     }
 
-    /// Examines `rel` in the next epoch even if the journal does not name it.
     pub fn mark_dirty(&mut self, rel: &Path) {
         self.dirty.insert(rel.to_path_buf());
     }
 
-    /// Deletes the snapshots of earlier epochs kept by `defer_release`.
     pub fn release_retired(&mut self) -> io::Result<()> {
         while let Some(s) = self.retired.pop() {
             if let Err(e) = btrfs::delete_subvolume(&s) {
@@ -435,14 +412,12 @@ impl EpochCapture {
         Ok(())
     }
 
-    /// Captured state of every synced path after the last epoch.
     pub fn nodes(&self) -> impl Iterator<Item = (&Path, &Node)> {
         self.prev
             .iter()
             .flat_map(|p| p.nodes.iter().map(|(k, v)| (k.as_path(), v)))
     }
 
-    /// The snapshot of the last epoch, while it is retained.
     pub fn last_snapshot(&self) -> Option<&Path> {
         self.prev.as_ref().map(|p| p.snapshot.as_path())
     }
@@ -451,10 +426,9 @@ impl EpochCapture {
     /// rescan, the whole workspace is compared; otherwise only what the journal
     /// names.
     ///
-    /// `batch` must name every change that completed before the snapshot is
-    /// taken, which holds only when nothing writes while this runs. With
-    /// live writers use [`Self::capture_from`], which splits the journal at
-    /// the snapshot.
+    /// `batch` must name every change that completed before the snapshot is taken,
+    /// which holds only when nothing writes while this runs. With live writers use
+    /// [`Self::capture_from`], which splits the journal at the snapshot.
     pub fn capture(&mut self, batch: &JournalBatch) -> io::Result<Changeset> {
         let t0 = Instant::now();
         let (epoch, snapshot) = self.take_snapshot()?;
@@ -462,11 +436,11 @@ impl EpochCapture {
         self.finish(t0, t_snap, epoch, snapshot, batch)
     }
 
-    /// Cuts one epoch while writers keep running: barriers placed in the
-    /// journal just before and just after the snapshot decide which
-    /// entries the snapshot can contain. Entries from the window between
-    /// the two are examined now and again in the next epoch, so no change
-    /// is published before the journal entries of the changes it depends on.
+    /// Cuts one epoch while writers keep running: barriers placed in the journal
+    /// just before and just after the snapshot decide which entries the snapshot
+    /// can contain. Entries from the window between the two are examined now and
+    /// again in the next epoch, so no change is published before the journal
+    /// entries of the changes it depends on.
     pub fn capture_from(&mut self, journal: &mut ChangeJournal) -> io::Result<Changeset> {
         let before = journal.barrier(&self.cfg.epochs)?;
         let t0 = Instant::now();
@@ -558,8 +532,6 @@ impl EpochCapture {
         })
     }
 
-    /// Sorts candidates into directory/symlink upserts, removals, files to
-    /// hash and deferred placeholders.
     fn classify(
         &self,
         snapshot: &Path,
@@ -657,8 +629,6 @@ impl EpochCapture {
         })
     }
 
-    /// Paths to examine and, with a journal, each one's last journal
-    /// position.
     fn candidates(
         &self,
         snapshot: &Path,
@@ -744,8 +714,8 @@ impl EpochCapture {
         Ok((candidates, order))
     }
 
-    /// Deletes the retained snapshot. Call before dropping the capture
-    /// when the snapshot is not needed for a restart.
+    /// Deletes the retained snapshot. Call before dropping the capture when the
+    /// snapshot is not needed for a restart.
     pub fn release(&mut self) -> io::Result<()> {
         self.release_retired()?;
         if let Some(old) = self.prev.take() {
@@ -766,8 +736,6 @@ fn untrack_in(nodes: &mut BTreeMap<PathBuf, Node>, rel: &Path) {
     }
 }
 
-/// Whether two nodes are the same kind of thing, so one can be the other
-/// renamed.
 fn same_class(a: &NodeKind, b: &NodeKind) -> bool {
     matches!(
         (a, b),
@@ -777,7 +745,6 @@ fn same_class(a: &NodeKind, b: &NodeKind) -> bool {
     )
 }
 
-/// `path` with its `from` prefix replaced by `to`, if it lies below `from`.
 fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     path.strip_prefix(from).ok().map(|rest| {
         if rest.as_os_str().is_empty() {
@@ -790,16 +757,12 @@ fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 
 type Paired = (Vec<(PathBuf, Node)>, Vec<(PathBuf, bool)>, Vec<ChangeOp>);
 
-/// Turns a removal and an upsert of the same inode into a move.
-///
-/// A renamed file or directory keeps its inode, so the previous epoch's
-/// node at the old path and the new node at the new path share it. Only a
-/// path that is gone is a rename source: an inode still present at its old
-/// path as well is a hard link, captured as a separate file. Moves implied
-/// by a directory's move (its descendants, at the same relative path) are
-/// not repeated; a descendant that also changed stays an upsert at its new
-/// path. A removal below a moved directory is rewritten to where the
-/// directory went, since that is where peers will have it.
+/// Turns a removal and an upsert of the same inode into a move. A renamed file
+/// or directory keeps its inode, so the previous epoch's node at the old path
+/// and the new node at the new path share it. Only a path that is gone is a
+/// rename source: an inode still present at its old path as well is a hard
+/// link, captured as a separate file. Moves implied by a directory's move are
+/// not repeated.
 fn pair_moves(
     upserts: Vec<(PathBuf, Node)>,
     removes: Vec<(PathBuf, bool)>,
@@ -885,7 +848,6 @@ fn pair_moves(
                 .find_map(|(from, to)| rebase(&path, from, to).filter(|_| path != *from));
             match target {
                 Some(new) => {
-                    // It keeps its journal position.
                     if let Some(seq) = order.get(&path).copied() {
                         order.insert(new.clone(), seq);
                     }
@@ -899,8 +861,8 @@ fn pair_moves(
 }
 
 /// Applies a move to a node table: `from` and everything below it now live
-/// under `to`. Entries are taken from `source` (the table being built, or
-/// the previous epoch's after a full comparison, which starts empty).
+/// under `to`. Entries are taken from `source` (the table being built, or the
+/// previous epoch's after a full comparison, which starts empty).
 fn move_nodes(
     next: &mut BTreeMap<PathBuf, Node>,
     source: Option<&BTreeMap<PathBuf, Node>>,
@@ -925,9 +887,8 @@ fn move_nodes(
     }
 }
 
-/// The captured state after applying `ops`. A full rescan starts from
-/// nothing but keeps the previous node of every path that still exists
-/// and did not change, so unchanged manifests are carried over.
+/// The captured state after applying `ops`. A full rescan starts from nothing
+/// but keeps the previous node of every path that still exists and did not
 fn next_state(
     prev: &BTreeMap<PathBuf, Node>,
     ops: &[ChangeOp],
@@ -952,7 +913,6 @@ fn next_state(
                 from, path, node, ..
             } => {
                 if full {
-                    // Back to the previous table's coordinates.
                     let original = moved_prev
                         .iter()
                         .filter(|(_, t)| from.starts_with(t))
@@ -999,7 +959,6 @@ fn is_placeholder(abs: &Path) -> bool {
     matches!(sys::get_xattr(abs, RESIDENCY_XATTR), Ok(Some(_)))
 }
 
-/// Recursively lists `rel` (relative to `root`) and everything below it.
 fn walk(root: &Path, rel: &Path, out: &mut HashSet<PathBuf>) -> io::Result<()> {
     let abs = root.join(rel);
     let meta = match fs::symlink_metadata(&abs) {
@@ -1025,7 +984,6 @@ fn walk(root: &Path, rel: &Path, out: &mut HashSet<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-/// Which paths are device-local, decided from the snapshot.
 struct LocalOnly<'a> {
     snapshot: &'a Path,
     dirs: HashMap<PathBuf, bool>,
@@ -1174,12 +1132,11 @@ fn run_jobs(
 
 /// Orders a changeset for application.
 ///
-/// With a journal, operations follow the position of each path's last
-/// journal entry (the writer's order). After a rescan there is no journal
-/// order, and change time stands in for it. In both cases a directory is
-/// created (or moved into place) before anything inside it and removed
-/// after everything inside it. A move's source is then rewritten to where
-/// the moves before it left it.
+/// With a journal, operations follow the position of each path's last journal
+/// entry (the writer's order); after a rescan change time stands in for it. In
+/// both cases a directory is created (or moved into place) before anything
+/// inside it and removed after everything inside it, and a move's source is
+/// rewritten to where the moves before it left it.
 fn order_ops(
     upserts: Vec<(PathBuf, Node)>,
     removes: Vec<(PathBuf, bool)>,
@@ -1254,7 +1211,6 @@ fn order_ops(
     out
 }
 
-/// Emits operation `i` after everything it depends on.
 fn place(
     i: usize,
     slots: &mut Vec<Option<ChangeOp>>,
@@ -1325,10 +1281,9 @@ fn rewrite_move_sources(ops: &mut [ChangeOp]) {
 /// When to cut the next epoch.
 ///
 /// Epochs are cut at quiescence (no event for `quiescence`), at the latest
-/// `max_interval` after the first unpublished event, and later — up to
-/// `grace_limit` — while a file created less than `fresh` ago is still open
-/// for write. That keeps short-lived lock files out of most epochs with a
-/// generic signal rather than a tool rule.
+/// `max_interval` after the first unpublished event, and later, up to
+/// `grace_limit`, while a file created less than `fresh` ago is still open for
+/// write: that keeps short-lived lock files out of most epochs.
 #[derive(Clone, Debug)]
 pub struct EpochScheduler {
     pub quiescence: Duration,
@@ -1337,7 +1292,6 @@ pub struct EpochScheduler {
     pub grace_limit: Duration,
     first_dirty: Option<Instant>,
     last_event: Option<Instant>,
-    /// Files created in this epoch that have not been closed after writing.
     open_fresh: HashMap<PathBuf, Instant>,
 }
 
@@ -1356,8 +1310,6 @@ impl Default for EpochScheduler {
 }
 
 impl EpochScheduler {
-    /// A scheduler with explicit tunables (the defaults are 500 ms, 2 s,
-    /// 1 s and 5 s).
     pub fn new(
         quiescence: Duration,
         max_interval: Duration,
@@ -1388,7 +1340,6 @@ impl EpochScheduler {
         }
     }
 
-    /// Whether an epoch should be cut at `now`.
     pub fn due(&self, now: Instant) -> bool {
         let (Some(first), Some(last)) = (self.first_dirty, self.last_event) else {
             return false;
@@ -1404,7 +1355,7 @@ impl EpochScheduler {
         now.saturating_duration_since(last) >= self.quiescence || dirty_for >= self.max_interval
     }
 
-    /// Resets after an epoch was cut. Files still open stay tracked.
+    /// Resets after an epoch was cut; files still open stay tracked.
     pub fn cut(&mut self) {
         self.first_dirty = None;
         self.last_event = None;

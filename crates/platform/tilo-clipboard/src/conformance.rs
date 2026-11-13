@@ -10,9 +10,6 @@
 
 use crate::{Availability, ClipboardBackend, ClipboardTarget, Feature, availability, available};
 
-/// A backend that keeps everything in the process ([`InProcessClipboard`](crate::InProcessClipboard)
-/// or a test double): round trips, independent targets, and no false claim of
-/// a shared copy or an image.
 pub fn check_local(backend: &dyn ClipboardBackend) {
     round_trips(backend);
     rich_round_trips(backend);
@@ -76,8 +73,6 @@ fn round_trips(backend: &dyn ClipboardBackend) {
     );
 }
 
-/// A formatted copy pastes its formatting where it is read, its words
-/// everywhere else, and a later plain copy leaves no stale formatting.
 fn rich_round_trips(backend: &dyn ClipboardBackend) {
     let html = "<p>plain <b>bold</b></p>";
     assert!(

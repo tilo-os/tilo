@@ -128,6 +128,86 @@ pub struct HeaderRows {
     pub rows: [Option<HeaderRowLayout>; 4],
 }
 
+/// Where a window's shell stood its sidebar against the content (`layout.md`, "Responding to
+/// space").
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarStanding {
+    /// The window shows no sidebar.
+    None,
+    /// Beside the content, as a column of the window's own.
+    Docked,
+    /// Over the content, as a drawer the bar's toggle brings forward.
+    Over,
+    /// As a screen of the window's own, taking turns with the content.
+    Alone,
+}
+
+/// One window's shell as its last layout left it: where its sidebar stood, the class of the
+/// content beside it, and how the shell held each column's header row.
+///
+/// An audit reads this to hold the shell to the rule that decides it: a sidebar stands beside a
+/// pane of the class the content asks for there ([`ShellLayout::needs`]) and folds behind the bar's
+/// toggle where the pane beside it would be a phone's screen instead.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct ShellLayout {
+    /// How the sidebar stood.
+    pub sidebar: SidebarStanding,
+    /// The class of the pane standing beside the sidebar, by its own width.
+    pub beside: crate::widget::arrange::WidthClass,
+    /// The class that pane is in at the least: a column of text asks for a column, a grid of
+    /// tiles or a surface drawn on for less.
+    pub needs: crate::widget::arrange::WidthClass,
+    /// That pane's width in logical pixels; zero where the window shows none.
+    pub beside_width: f32,
+    /// Each column's header row, `[sidebar, overview, content, inspector]`.
+    pub rows: HeaderRows,
+}
+
+/// Where a field's text stands in it, as the field paints it: the band its first line occupies
+/// (in window coordinates, scrolled in), how tall that line is, how many rows the text takes,
+/// and how many rows the field asked to stand of its own.
+///
+/// An audit reads this to hold a field to what a person reads: one that follows the line it
+/// holds stands that line in the middle of the control, however much room the band around it
+/// takes, while a document's own text and a box given rows of its own start at the top inset
+/// and grow down.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct TextLayout {
+    /// The top of the first line's band.
+    pub top: f32,
+    /// The line's height.
+    pub line: f32,
+    /// The rows the text takes, never less than one.
+    pub rows: u32,
+    /// The rows the field was given of its own: none for a field that follows its text.
+    pub lines: u32,
+    /// The height a single-line field of this size stands at: the control's band, grown to the
+    /// target a coarse pointer reaches. One line stands centred in a field that tall, and starts
+    /// at its inset in a field given more room than a band's.
+    pub band: f32,
+    /// The text is a document's own, written as prose is: a note's page, a block editor's line.
+    pub document: bool,
+}
+
+/// A list as its last layout left it: whether its first row names a group, and the room the
+/// list keeps over the first band it draws.
+///
+/// An audit reads this to hold a list to the rule its groups lay it out by: a list whose rows
+/// name groups starts its first band — the heading over the first run, or the first row where
+/// the list leaves that heading out, saying what the title above already says — on the column's
+/// content gutter, where a page's first block stands, rather than against the box over the list.
+/// A list whose rows name no group is one block and leads with its rows.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct ListLayout {
+    /// Whether the list's first row names a group, so a heading or the first of the rows leads
+    /// it.
+    pub heads_rows: bool,
+    /// The room the list keeps over the first band it draws, in logical pixels: over the heading
+    /// over its first row, or over that row where the list leaves the heading out.
+    pub lead: f32,
+}
+
 /// Concrete layout policies. Manual layout information can extend this enum.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
@@ -138,7 +218,9 @@ pub enum LayoutInfo {
     Manual(ManualLayout),
     Scroll(ScrollLayout),
     Row(RowLayout),
-    Headers(HeaderRows),
+    List(ListLayout),
+    Shell(ShellLayout),
+    Text(TextLayout),
 }
 
 /// Which way a scroll view lets its content go on past its own box.

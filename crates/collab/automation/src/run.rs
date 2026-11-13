@@ -34,14 +34,16 @@ use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId};
 use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, CatalogueRow, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RECORD_READS_UNAVAILABLE,
+    ReceiptStatus, RecordAddress, RecordAsk, read_records,
 };
 use uuid::Uuid;
 
 use crate::StepPolicy;
 use crate::catalog::{ResourceTarget, find_row};
 use crate::grant::{
-    EDIT_PARAM, FIELD_EDIT, StepGrant, edit_reach, grant_answer, step_node, step_node_at,
+    EDIT_PARAM, FIELD_EDIT, READ_STEP, StepGrant, edit_reach, grant_answer, read_nodes, step_node,
+    step_node_at,
 };
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
@@ -49,7 +51,7 @@ use crate::template::{self, Piece, render_value};
 use crate::{
     AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
-use tilo_action_policy::Answer;
+use tilo_action_policy::{ActionKind, Answer};
 
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;
@@ -283,7 +285,7 @@ pub struct StopWatch<'a> {
     /// shortcut's output binding.
     pub path: &'a StepPath,
     /// When the run reached this step.
-    pub since: std::time::Instant,
+    pub since: tilo_clock::time::Instant,
 }
 
 impl StopWatch<'_> {
@@ -915,6 +917,11 @@ fn reads(step: &Step) -> Vec<String> {
         }
         StepKind::SetVar { value, .. } => binding(value),
         StepKind::Ai { input, .. } => input.as_ref().into_iter().for_each(&mut binding),
+        StepKind::Read { record, .. } => {
+            if let Some(record) = crate::shortcut::read_record_binding(record) {
+                binding(&record);
+            }
+        }
         StepKind::Ask { .. } | StepKind::Task { .. } => {}
     }
     if let StepPolicy::Fallback { steps } = &step.on_error {
@@ -990,7 +997,7 @@ where
     let mut stopped_done = false;
     let mut left = left;
     loop {
-        let mut clock = std::pin::pin!(WaitUntil(std::time::Instant::now().checked_add(left)));
+        let mut clock = std::pin::pin!(WaitUntil(tilo_clock::now().checked_add(left)));
         let outcome = std::future::poll_fn(|waker| {
             if !moved_done && let Poll::Ready(outcome) = moved.as_mut().poll(waker) {
                 return Poll::Ready(match outcome {
@@ -1033,14 +1040,14 @@ where
 /// Resolve once `at` has passed, on the waker that looks at it: the timer
 /// belongs to whoever waits, so the interpreter needs none of its own.
 /// `None` is a deadline already gone.
-struct WaitUntil(Option<std::time::Instant>);
+struct WaitUntil(Option<tilo_clock::time::Instant>);
 
 impl Future for WaitUntil {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
         match self.0 {
-            Some(at) if std::time::Instant::now() >= at => std::task::Poll::Ready(()),
+            Some(at) if tilo_clock::now() >= at => std::task::Poll::Ready(()),
             _ => std::task::Poll::Pending,
         }
     }
@@ -1292,7 +1299,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         // needs none of its own.
         let stopped = self.hooks.stopped(StopWatch {
             path,
-            since: std::time::Instant::now(),
+            since: tilo_clock::now(),
         });
         matches!(
             wait_for(
@@ -1583,7 +1590,70 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 Ok(Done::local(result))
             }
             StepKind::Ask { param } => Ok(Done::local(self.ask(step, path, param).await)),
+            StepKind::Read {
+                app,
+                record,
+                joined,
+            } => Ok(Done::local(self.read(app, record, *joined))),
         }
+    }
+
+    /// Read `record` of `app` (joined, its chain of parts; named from the run,
+    /// with placeholders) through the host's record door, as the run's caller
+    /// reads it, inside the shortcut's grant.
+    fn read(&self, app: &str, record: &str, joined: bool) -> Result<Option<Value>, StepFailure> {
+        let record = match crate::shortcut::read_record_binding(record) {
+            None => record.to_owned(),
+            Some(named) => match self.evaluate(&named)? {
+                Some(Value::String(record)) => record,
+                _ => {
+                    return Err(StepFailure::Binding {
+                        reason: format!("`{record}` names no record"),
+                    });
+                }
+            },
+        };
+        let record = record.as_str();
+        for node in read_nodes(self.caller.workspace(), app, record, joined) {
+            let (app_id, action) = (app.to_owned(), READ_STEP.to_owned());
+            match (
+                grant_answer(&self.shortcut.grant, &node, ActionKind::Read).answer,
+                self.mode,
+            ) {
+                (Answer::Deny, _) => return Err(StepFailure::OutsideGrant { app_id, action }),
+                (Answer::Ask, RunMode::Unattended) => {
+                    return Err(StepFailure::AsksFirst { app_id, action });
+                }
+                _ => {}
+            }
+        }
+        let host = |error: ActionHostError| StepFailure::Host {
+            error: Box::new(error),
+        };
+        let reads = self.host.record_reads().ok_or_else(|| {
+            host(ActionHostError::Unavailable {
+                reason: RECORD_READS_UNAVAILABLE.into(),
+            })
+        })?;
+        let ask = RecordAsk {
+            address: RecordAddress {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            joined,
+        };
+        let readings = read_records(
+            reads.as_ref(),
+            &self.caller,
+            &[ask],
+            None,
+            tilo_clock::now(),
+        )
+        .map_err(host)?;
+        readings
+            .readable()
+            .map(Some)
+            .map_err(|reason| StepFailure::Contract { reason })
     }
 
     /// A loop step: bind `item` to each element of `items` in turn and run
@@ -2003,7 +2073,10 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     /// The row offering `action` on `app_id` at `target`, fetched now so the
-    /// run acts on what the person is offered at this moment.
+    /// run acts on what the person is offered at this moment. An exact
+    /// resource is resolved where it stands; a kind is looked for as the
+    /// catalogue lists it, a level at a time, from the top down into each
+    /// resource that holds more.
     async fn find(
         &self,
         key: &ActionKey,
@@ -2014,31 +2087,53 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             action: key.action.clone(),
             reason,
         };
-        let mut query = CatalogueQuery {
-            target: match target {
-                ResourceTarget::Id(id) => Some(ActionAddress::new(id, key.action.as_str())),
-                ResourceTarget::Kind(_) | ResourceTarget::Any => None,
-            },
-            max_results: MAX_CATALOGUE_PAGE,
-            ..CatalogueQuery::default()
+        let exact = match target {
+            ResourceTarget::Id(id) => Some(ActionAddress::new(id, key.action.as_str())),
+            ResourceTarget::Kind(_) | ResourceTarget::Any => None,
         };
-        for _ in 0..MAX_CATALOGUE_PAGES {
-            let page = self
-                .host
-                .query(&self.caller, query.clone())
-                .await
-                .ok_or(StepFailure::Abandoned)?
-                .map_err(|error| StepFailure::Host {
-                    error: Box::new(error),
-                })?;
-            if let Some(row) = find_row(&page.rows, key, target) {
-                return Ok(row.clone());
+        let descend = exact.is_none();
+        let mut levels = std::collections::VecDeque::from([None::<String>]);
+        let mut entered = BTreeSet::new();
+        let mut pages = 0usize;
+        'levels: while let Some(parent) = levels.pop_front() {
+            let mut query = CatalogueQuery {
+                app_id: Some(key.app.clone()),
+                parent_resource: parent,
+                target: exact.clone(),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            };
+            loop {
+                if pages == MAX_CATALOGUE_PAGES {
+                    break 'levels;
+                }
+                pages = pages.saturating_add(1);
+                let page = self
+                    .host
+                    .query(&self.caller, query.clone())
+                    .await
+                    .ok_or(StepFailure::Abandoned)?
+                    .map_err(|error| StepFailure::Host {
+                        error: Box::new(error),
+                    })?;
+                if let Some(row) = find_row(&page.rows, key, target) {
+                    return Ok(row.clone());
+                }
+                if descend {
+                    levels.extend(
+                        page.rows
+                            .iter()
+                            .filter(|row| row.has_children)
+                            .filter(|row| entered.insert(row.resource.id.clone()))
+                            .map(|row| Some(row.resource.id.clone())),
+                    );
+                }
+                if page.exhausted || page.next_cursor.is_empty() {
+                    break;
+                }
+                query.cursor = page.next_cursor;
+                query.revision = Some(page.revision);
             }
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            query.cursor = page.next_cursor;
-            query.revision = Some(page.revision);
         }
         Err(unresolved(match target {
             ResourceTarget::Id(id) => format!("`{id}` is not offered"),
@@ -2057,7 +2152,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         request: InvokeRequest,
         path: &StepPath,
     ) -> Result<ActionOutput, StepFailure> {
-        let deadline = std::time::Instant::now().checked_add(self.timeout);
+        let deadline = tilo_clock::now().checked_add(self.timeout);
         let id = request.invocation;
         let mut status = match self.host.observe(&self.caller, &id) {
             Some(state) => state.receipt().status,
@@ -2089,9 +2184,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     return Err(StepFailure::Cancelled { message });
                 }
                 ReceiptStatus::Accepted => {
-                    let left = deadline.and_then(|deadline| {
-                        deadline.checked_duration_since(std::time::Instant::now())
-                    });
+                    let left = deadline
+                        .and_then(|deadline| deadline.checked_duration_since(tilo_clock::now()));
                     let Some(left) = left else {
                         return Err(self.timed_out());
                     };
@@ -2109,7 +2203,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     };
                     let stopped = self.hooks.stopped(StopWatch {
                         path,
-                        since: std::time::Instant::now(),
+                        since: tilo_clock::now(),
                     });
                     match wait_for(moved, stopped, left, refreshing).await {
                         Wait::Moved(Ok(())) => {}
@@ -2141,16 +2235,37 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         self.hooks
             .stopped(StopWatch {
                 path,
-                since: std::time::Instant::now(),
+                since: tilo_clock::now(),
             })
             .await
             .unwrap_or(Ok(()))
     }
 
+    /// What a condition tests of `binding`: its value, a part the value it
+    /// points into lacks reading as absent, so a condition asks whether an
+    /// event carries a field.
+    fn tested(&self, binding: &Binding) -> Result<Option<Value>, StepFailure> {
+        let (whole, pointer) = match binding {
+            Binding::Input(name) => {
+                let (name, pointer) = Binding::named_part(name);
+                (Binding::Input(name.to_owned()), pointer)
+            }
+            Binding::Var(name) => {
+                let (name, pointer) = Binding::named_part(name);
+                (Binding::Var(name.to_owned()), pointer)
+            }
+            Binding::StepOutput { step, pointer } => (Binding::step(step, ""), pointer.clone()),
+            _ => return self.evaluate(binding),
+        };
+        Ok(self
+            .evaluate(&whole)?
+            .and_then(|value| value.pointer(&pointer).cloned()))
+    }
+
     fn condition(&self, condition: &Condition) -> Result<bool, StepFailure> {
         Ok(match condition {
-            Condition::Truthy(value) => self.evaluate(value)?.as_ref().is_some_and(truthy),
-            Condition::Equals { left, right } => self.evaluate(left)? == self.evaluate(right)?,
+            Condition::Truthy(value) => self.tested(value)?.as_ref().is_some_and(truthy),
+            Condition::Equals { left, right } => self.tested(left)? == self.tested(right)?,
             Condition::Not(inner) => !self.condition(inner)?,
             Condition::All(all) => {
                 for inner in all {

@@ -1,5 +1,4 @@
-//! What the `tilo-install` end-to-end tests share: the binary they drive, the
-//! keys they sign with, and the `.tapp` they build.
+//! What the `tilo-install` end-to-end tests share: the binary, the keys and the `.tapp` builder.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,7 +14,6 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::{Manifest, SigningIdentity, pack};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-/// Path to the compiled `tilo-install` binary.
 pub fn install_bin() -> PathBuf {
     tilo_test_env::package_binary!("tilo-install")
 }
@@ -28,8 +26,8 @@ pub fn fresh_key() -> (SigningKey, String) {
     (sk, pub_hex)
 }
 
-/// Build a `.tapp` at `tapp_path` with the layout the package CLI writes:
-/// `manifest`, signed by `publisher_sk`, over the files in `payload_dir`.
+/// A `.tapp` with the layout the package CLI writes: `manifest`, signed by `publisher_sk`, over the
+/// files in `payload_dir`.
 pub fn build_tapp(
     tapp_path: &Path,
     manifest: &Manifest,
@@ -43,9 +41,8 @@ pub fn build_tapp(
     packed.id()
 }
 
-/// The `tilo-install` binary pointed at the data and config dirs under `home`:
-/// nothing of the ambient environment, the user's XDG dirs or their HOME leaks
-/// in.
+/// `tilo-install` pointed at the data and config dirs under `home`: nothing of the ambient
+/// environment, the XDG dirs or `HOME` gets in.
 pub fn cmd(home: &Path) -> Command {
     let mut cmd = Command::new(install_bin());
     cmd.env_clear();
@@ -56,7 +53,6 @@ pub fn cmd(home: &Path) -> Command {
     cmd
 }
 
-/// [`cmd`]'s output: whether it succeeded, and its stdout and stderr.
 pub fn run(mut cmd: Command) -> (bool, String, String) {
     let out = cmd.output_locked().expect("spawn tilo-install");
     (

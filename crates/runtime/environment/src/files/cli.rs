@@ -1,24 +1,16 @@
-//! Parsing the GNU command lines into a [`FileAction`].
+//! The GNU command lines a guest answers, parsed into a [`FileAction`]: the
+//! same short flags, clustered (`rm -rf`) or attached (`rm -f`), the long flags
+//! that matter, `--` ending the flags, and `-` alone as a name.
 //!
-//! Drop-in means the line a script or a model already writes keeps working:
-//! the same short flags, clustered (`rm -rf`) and attached (`rm -f`), the same
-//! long flags that matter, `--` ending the flags, and `-` alone as a name.
 //! A flag this runtime does not implement is refused by name rather than
-//! ignored, because ignoring `-i` (ask before overwriting) or `-a`
-//! (preserve attributes) would silently do something other than what was
-//! asked.
-//!
-//! `append` and `touch` extend the same reading to querying and creating
-//! text: `append FILE TEXT…` is `>>`, and `touch FILE` creates without
-//! truncating, the two things a script or a model does to a text file that
-//! `truncate` and `cp` cannot say.
+//! ignored: ignoring `-i` (ask before overwriting) or `-a` (preserve
+//! attributes) would do something other than what was asked.
 
 use std::path::PathBuf;
 
 use super::{
     AppendFileOp, CopyOp, FileAction, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp, TruncateOp,
 };
-/// Which command a line was written for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Cp,
@@ -33,7 +25,6 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// The tool `name` spells, if this runtime answers for it.
     #[must_use]
     pub fn of(name: &str) -> Option<Self> {
         match name {
@@ -50,7 +41,6 @@ impl Tool {
         }
     }
 
-    /// The name it answers to.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -79,7 +69,6 @@ impl Tool {
 pub enum ParseError {
     /// A flag this runtime does not implement, by its own spelling.
     Unsupported { tool: &'static str, flag: String },
-    /// The operands are missing or of the wrong number.
     Operands {
         tool: &'static str,
         usage: &'static str,
@@ -124,7 +113,6 @@ pub fn take_json(args: &[String]) -> (bool, Vec<String>) {
     (json, rest)
 }
 
-/// Read `args` (the operands and flags after the tool's name) as `tool`.
 pub fn parse(tool: Tool, args: &[String]) -> Result<FileAction, ParseError> {
     let parsed = Flags::read(tool, args);
     if let Some(flag) = parsed.unsupported.first() {
@@ -226,7 +214,6 @@ fn parse_touch(operands: Vec<PathBuf>) -> Result<FileAction, ParseError> {
     }))
 }
 
-/// `append TEXT FILE...`: the text comes first, then every file it goes into.
 fn parse_append(mut operands: Vec<PathBuf>) -> Result<FileAction, ParseError> {
     if operands.len() < 2 {
         return Err(ParseError::Operands {
@@ -272,8 +259,6 @@ fn parse_truncate(
 fn parse_ln(operands: &[PathBuf], seen: &[String]) -> Result<FileAction, ParseError> {
     let has = |flag: &str| seen.iter().any(|s| s == flag);
     let (target, path, into_directory) = match operands {
-        // `ln -s TARGET` links into the current directory, under the
-        // target's own name, as GNU does.
         [target] => {
             let name = target
                 .file_name()
@@ -301,7 +286,6 @@ fn parse_ln(operands: &[PathBuf], seen: &[String]) -> Result<FileAction, ParseEr
     }))
 }
 
-/// The operands GNU takes as `SOURCES… DESTINATION`.
 fn split_destination(mut operands: Vec<PathBuf>) -> (PathBuf, Vec<PathBuf>) {
     let destination = operands.pop().unwrap_or_default();
     (destination, operands)
@@ -310,11 +294,8 @@ fn split_destination(mut operands: Vec<PathBuf>) -> (PathBuf, Vec<PathBuf>) {
 #[derive(Debug, Default)]
 struct Flags {
     operands: Vec<PathBuf>,
-    /// Every short flag and long flag seen, as it was written: `-r`, `-f`.
     seen: Vec<String>,
-    /// Flags that take a value (`-s 512`), with it.
     values: Vec<(&'static str, String)>,
-    /// Flags that mean something this runtime does not do, refused by name.
     unsupported: Vec<String>,
 }
 
@@ -382,9 +363,6 @@ impl Flags {
     }
 }
 
-/// The short flags the file actions implement, and the long spellings of
-/// them. Anything else — `-i`, `-a`, `-L`, `-Z`, `--preserve`, … — is
-/// refused by name rather than quietly ignored.
 fn supported(short: char) -> bool {
     matches!(
         short,
@@ -392,7 +370,6 @@ fn supported(short: char) -> bool {
     )
 }
 
-/// The short flag a long one stands for, if this runtime implements it.
 fn long_flag(name: &str) -> Option<&'static str> {
     Some(match name {
         "recursive" => "-r",
@@ -408,9 +385,6 @@ fn long_flag(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Say what a file command did, on `out`: as one line of JSON with
-/// `--json`, else in words. `entry` names it in the environment's History
-/// when it was the record's action. Answers the command's status.
 pub fn answer_done(
     out: &mut dyn std::io::Write,
     json: bool,

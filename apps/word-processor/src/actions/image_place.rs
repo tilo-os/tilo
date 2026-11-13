@@ -1,22 +1,17 @@
-//! Where `place-image` puts a picture named by the text of the heading (or
-//! paragraph) it goes after: an exact heading wins over a contents line or
-//! a mention of the same words earlier, and a heading written loosely (other
-//! case, punctuation, a typo, words running on past it) still finds its
-//! place. Nothing like the text is refused with the headings to retry with.
+//! Where `place-image` puts a picture named by the text of the heading it goes after: an
+//! exact heading wins over a contents line, a loose one (case, punctuation, a typo) still
+//! finds its place, and text like nothing in the body is refused with the headings.
 
 use automerge::AutoCommit;
 use ui::tilo_resource::Place;
 
-/// The paragraph kinds an image is placed after.
 const TEXT_BLOCKS: &[&str] = &["paragraph", "heading", "list_item"];
 /// How many headings a refusal lists.
 const LISTED_HEADINGS: usize = 20;
 /// How alike an anchor and a paragraph must be for a loose match, 0 to 1.
 const LOOSE_MATCH: f64 = 0.75;
-/// The longest anchor compared character by character.
 const MAX_COMPARED_CHARS: usize = 200;
 
-/// A body paragraph an image may go after.
 struct Paragraph {
     id: String,
     text: String,
@@ -47,10 +42,6 @@ pub(crate) fn after_paragraph(doc: &AutoCommit, after: &str) -> Result<Place, St
     })
 }
 
-/// The paragraph `after` names: a heading that is exactly it (ignoring
-/// case, spacing and punctuation); else the first containing it as written;
-/// else the first containing it loosely; else the longest one it begins
-/// with; else the most alike above [`LOOSE_MATCH`].
 fn named<'a>(paragraphs: &'a [Paragraph], after: &str) -> Option<&'a Paragraph> {
     let wanted = normalized(after);
     if wanted.is_empty() {
@@ -96,7 +87,6 @@ fn named<'a>(paragraphs: &'a [Paragraph], after: &str) -> Option<&'a Paragraph> 
     paragraphs.get(at)
 }
 
-/// Why nothing matched `after`, with the headings to retry with.
 fn unmatched(paragraphs: &[Paragraph], after: &str) -> String {
     let headings: Vec<String> = paragraphs
         .iter()
@@ -116,7 +106,6 @@ fn unmatched(paragraphs: &[Paragraph], after: &str) -> String {
     }
 }
 
-/// `text` lowercased, each run of spaces and punctuation one space.
 fn normalized(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for word in text
@@ -131,9 +120,6 @@ fn normalized(text: &str) -> String {
     out
 }
 
-/// How alike normalized `wanted` is to normalized `text`, 0 to 1: the
-/// larger of the share of its words `text` has and how few edits make it
-/// `text`'s opening.
 fn likeness(wanted: &str, text: &str) -> f64 {
     let words: Vec<&str> = wanted.split(' ').collect();
     let present = words
@@ -148,14 +134,12 @@ fn likeness(wanted: &str, text: &str) -> f64 {
     overlap.max(close)
 }
 
-/// `part / whole` as a fraction.
 fn ratio(part: usize, whole: usize) -> f64 {
     let part = u32::try_from(part).unwrap_or(u32::MAX);
     let whole = u32::try_from(whole.max(1)).unwrap_or(u32::MAX);
     f64::from(part) / f64::from(whole)
 }
 
-/// The Levenshtein distance between `a` and `b`.
 fn edits(a: &[char], b: &[char]) -> usize {
     let mut previous: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.iter().enumerate() {

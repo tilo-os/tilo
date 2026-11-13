@@ -13,16 +13,11 @@
 
 use vello::kurbo::Rect;
 
-/// One suggestion chip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Suggestion {
-    /// The word the chip inserts.
     pub word: String,
-    /// Decode/prediction score in `0.0..=1.0` (for ordering / future styling).
     pub score: f32,
-    /// The chip inserts an emoji the word stands for rather than a word.
     pub emoji: bool,
-    /// An explicit personal hint, revalidated before insertion.
     pub personal: bool,
 }
 
@@ -36,7 +31,6 @@ impl Suggestion {
         }
     }
 
-    /// A chip inserting `emoji` for the word being typed.
     pub fn emoji(emoji: impl Into<String>) -> Self {
         Self {
             word: emoji.into(),
@@ -68,7 +62,6 @@ pub fn suggestion_rects(suggestions: &[Suggestion], area: Rect) -> Vec<(usize, R
     let mut out = Vec::with_capacity(n);
     let mut x = area.x0;
     for i in 0..n {
-        // Accumulate to avoid rounding gaps; last chip ends exactly at x1.
         let x1 = if i + 1 == n { area.x1 } else { x + unit_w };
         out.push((i, Rect::new(x, area.y0, x1, area.y1)));
         x += unit_w;

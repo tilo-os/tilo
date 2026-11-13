@@ -4,8 +4,8 @@ use so.tilo.lang.notes as notes
 use so.tilo.lang.tasks as todo
 use so.tilo.lang.chat as chat
 
-/// The day at a glance, over other apps' roots: it draws their resources with their views, so
-/// each part keeps its own app's authority.
+/// The day at a glance, over other apps' roots: each part is a place of its own app, drawn by
+/// that app.
 type Today {
 }
 
@@ -13,17 +13,14 @@ root Today
 
 default view today for Today
 
-/// Clears the finished todos, when there are any, and files a note saying how many went. The
-/// changes belong to the todo and notes apps, so each one asks until Today is trusted.
+/// Clears the finished tasks, when there are any, and files a note saying how many were done.
+/// Both changes are the Tasks and Notes apps' own, asked at their doors: what they did comes
+/// back as their records' next readings.
 action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
-    let n = 0
+    let n = list.items.count(x -> x.done)
     // The clear is refused while nothing is done, so it is asked only then.
-    if list.items.any(x -> x.done) {
-        n = todo.clear_done(list)
-    }
-    let note = notes.new_note(nb)
-    notes.retitle(note, "Morning: {n} done")
-    notes.tag(note, "morning")
+    if n > 0 { todo.clear_done(list) }
+    notes.file_note(nb, std.say("Morning: {n} done"), "morning")
     n
 }
 

@@ -1,8 +1,5 @@
-//! Strict Linux evdev source for locally attached game controllers.
-//!
-//! Raw evdev details stop at this module boundary. Callers can discover an
-//! opaque local device id and receive only the fixed [`ForwardedGamepadEvent`]
-//! vocabulary used by Tilo's peripheral-forwarding broker.
+//! Linux evdev for locally attached controllers. Raw evdev details stop here: callers
+//! see typed events.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -19,38 +16,32 @@ use crate::{ForwardedGamepadEvent, GamepadAxis};
 
 const SYN_DROPPED: u16 = 3;
 
-// Nintendo's Joy-Con halves as the kernel hid-nintendo driver exposes them.
-// joycond claims exactly these (os/usr/lib/udev/rules.d/72-joycond.rules).
+// Joy-Con halves as hid-nintendo exposes them; joycond claims exactly these by its udev rule.
 const NINTENDO_VENDOR: u16 = 0x057e;
 const JOYCON_LEFT_PRODUCT: u16 = 0x2006;
 const JOYCON_RIGHT_PRODUCT: u16 = 0x2007;
 const JOYCON_GRIP_PRODUCT: u16 = 0x200e;
 const JOYCOND_UDEV_TAG: &str = "joycond";
 
-/// Opaque device-local identifier. It is never serialized or sent to a peer.
+/// Opaque device-local identifier; never serialized or sent to a peer.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalGamepadId(PathBuf);
 
 impl PhysicalGamepadId {
-    /// The controller at `path`, the way discovery names the ones it finds.
     #[must_use]
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
     }
 }
 
-/// A controller approved by the strict local udev classifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalGamepadInfo {
     pub id: PhysicalGamepadId,
     pub name: String,
-    /// USB/Bluetooth vendor id, when the kernel reports one. It names the
-    /// printed button legends more reliably than the product string.
+    /// Names the printed button legends more reliably than the product string.
     pub vendor_id: Option<u16>,
 }
 
-/// Production discovery roots. Custom roots exist only to make classification
-/// independently testable without real input hardware.
 #[derive(Clone, Debug)]
 pub struct LinuxPhysicalGamepadCatalog {
     input: PathBuf,
@@ -69,8 +60,7 @@ impl Default for LinuxPhysicalGamepadCatalog {
 }
 
 impl LinuxPhysicalGamepadCatalog {
-    /// Enumerate only evdev character devices classified exclusively as a
-    /// joystick/game controller by udev.
+    /// Only evdev character devices udev classifies exclusively as a joystick or game controller.
     pub fn discover(&self) -> io::Result<Vec<PhysicalGamepadInfo>> {
         let mut controllers = Vec::new();
         let entries = match fs::read_dir(&self.input) {
@@ -122,8 +112,7 @@ impl LinuxPhysicalGamepadCatalog {
         Ok(controllers)
     }
 
-    /// Open a previously discovered controller, rechecking its identity and
-    /// udev classification to close replacement races.
+    /// Rechecks its identity and udev classification to close replacement races.
     pub fn open(&self, id: &PhysicalGamepadId) -> io::Result<LinuxPhysicalGamepadSource> {
         if id.0.parent() != Some(self.input.as_path())
             || !id
@@ -147,9 +136,8 @@ impl LinuxPhysicalGamepadCatalog {
         LinuxPhysicalGamepadSource::open(&id.0)
     }
 
-    /// Watch udev's device database, which is written once a newly attached
-    /// input device has been classified, so callers rescan on hotplug
-    /// instead of polling.
+    /// Watches udev's device database, which is written once a newly attached input device has been
+    /// classified.
     pub fn hotplug_watch(&self) -> io::Result<PhysicalGamepadHotplug> {
         use rustix::fs::inotify;
         let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
@@ -167,8 +155,7 @@ impl LinuxPhysicalGamepadCatalog {
         self.controller_udev_properties(rdev).is_some()
     }
 
-    /// The udev database record of an exclusive controller, or `None` when
-    /// the device is not one.
+    /// `None` when the device is not an exclusive controller.
     fn controller_udev_properties(&self, rdev: u64) -> Option<String> {
         let major = libc::major(rdev as libc::dev_t);
         let minor = libc::minor(rdev as libc::dev_t);
@@ -179,7 +166,6 @@ impl LinuxPhysicalGamepadCatalog {
     }
 }
 
-/// Nonblocking readiness source for input-device hotplug.
 pub struct PhysicalGamepadHotplug {
     fd: OwnedFd,
 }
@@ -190,8 +176,8 @@ impl PhysicalGamepadHotplug {
         self.fd.try_clone()
     }
 
-    /// Consume every queued notification. Returns whether any of them
-    /// concerned an input device (udev records `c13:<minor>` for evdev).
+    /// Whether any queued notification concerned an input device (udev records `c13:<minor>` for
+    /// evdev).
     pub fn take_changes(&mut self) -> bool {
         use rustix::fs::inotify;
         let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
@@ -211,7 +197,6 @@ impl PhysicalGamepadHotplug {
     }
 }
 
-/// Nonblocking typed reader for one classified physical controller.
 pub struct LinuxPhysicalGamepadSource {
     file: File,
     calibrations: BTreeMap<u16, AxisCalibration>,
@@ -219,8 +204,7 @@ pub struct LinuxPhysicalGamepadSource {
     hat_y: i8,
 }
 
-/// One bounded nonblocking read. `saturated` means the raw kernel-event
-/// budget was fully consumed and more input may remain queued.
+/// `saturated` means the kernel-event budget was fully used and more input may remain queued.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalGamepadDrain {
     pub events: Vec<ForwardedGamepadEvent>,
@@ -256,16 +240,14 @@ impl LinuxPhysicalGamepadSource {
         })
     }
 
-    /// A duplicate of the evdev descriptor for an event loop to poll. Reads
-    /// still go through [`Self::drain`].
+    /// A duplicate of the evdev descriptor for an event loop to poll; reads still go through
+    /// [`Self::drain`].
     pub fn wake_fd(&self) -> io::Result<OwnedFd> {
         self.file.as_fd().try_clone_to_owned()
     }
 
-    /// Consume at most `limit` raw kernel events. Unknown event types and
-    /// codes are discarded inside this module and cannot cross the API.
-    /// `SYN_DROPPED`, short reads, EOF and I/O errors fail closed so the
-    /// caller can revoke the forwarding lease and neutralize the target.
+    /// Consumes at most `limit` raw kernel events; unknown types and codes are discarded here and
+    /// cannot cross the API.
     pub fn drain(&mut self, limit: usize) -> io::Result<PhysicalGamepadDrain> {
         let mut events = Vec::with_capacity(limit.min(32));
         let mut consumed = 0;
@@ -414,33 +396,24 @@ fn is_exclusive_controller(properties: &str) -> bool {
     joystick && !forbidden
 }
 
-/// What discovery knows about one exclusive-controller evdev node.
 struct EvdevDescriptor<'a> {
     vendor_id: Option<u16>,
     product_id: Option<u16>,
     /// The node's udev database record (`E:` properties, `G:`/`Q:` tags).
     udev_properties: &'a str,
-    /// The node's `st_mode`.
     mode: u32,
 }
 
-/// Whether a classified controller is one a person in this room holds, as
-/// opposed to another component's input.
+/// Whether a classified controller belongs to a person at this machine rather than to another
+/// component.
 fn is_room_controller(device: &EvdevDescriptor<'_>) -> bool {
-    // A granted lease re-creates a remote controller here for one app. It is
-    // that app's input, never a controller in this room.
+    // A granted lease re-creates a remote controller here for one app: that is the app's input, not a
+    // controller at this machine.
     !is_forwarded_gamepad(device.vendor_id, device.product_id) && !held_by_joycond(device)
 }
 
-/// joycond grabs every raw Joy-Con half udev tags for it (on the device's
-/// "add" event) and keeps the node root-only until the person decides how to
-/// hold it. Pressing both halves' shoulder buttons folds them into one uinput
-/// "Nintendo Switch Combined Joy-Cons" device (057e:2008, virtual bus) while
-/// both halves stay grabbed. A half used on its own is released: joycond opens
-/// its node to everyone and re-announces it with a "change" event, whose rule
-/// pass no longer applies the tag. Only the combined device and released
-/// halves are controllers; a held half yields no events, and listing it would
-/// count one pair as three.
+/// joycond grabs every raw Joy-Con half udev tags for it and keeps the node root-only until the person
+/// decides, so a half it holds is not offered as a controller here.
 fn held_by_joycond(device: &EvdevDescriptor<'_>) -> bool {
     let joycon_half = device.vendor_id == Some(NINTENDO_VENDOR)
         && matches!(
@@ -453,9 +426,8 @@ fn held_by_joycond(device: &EvdevDescriptor<'_>) -> bool {
         && !opened_to_everyone
 }
 
-/// Whether udev's latest rule pass applied `tag`. The database lists those
-/// tags as `Q:` lines and every tag the device ever had as sticky `G:` lines;
-/// a record without `Q:` lines predates that split, so `G:` is all there is.
+/// Whether udev's latest rule pass applied `tag`: current tags are `Q:` lines, every tag the device
+/// ever had a sticky `G:` line.
 fn has_current_udev_tag(properties: &str, tag: &str) -> bool {
     let tags = |prefix: &str| {
         properties
@@ -492,9 +464,9 @@ fn sanitize_local_name(name: &str) -> Option<String> {
 }
 
 fn query_abs_info(fd: libc::c_int, code: u16) -> io::Result<libc::input_absinfo> {
-    // SAFETY: `input_absinfo` is a C POD with a valid all-zero state. The
-    // request is the kernel EVIOCGABS read ioctl for one fixed axis code, and
-    // the pointer remains valid and uniquely borrowed for the call.
+    // SAFETY: `input_absinfo` is a C POD with a valid all-zero state. The request is the kernel
+    // EVIOCGABS read ioctl for one fixed axis code, and the pointer remains valid and uniquely
+    // borrowed for the call.
     let mut info: libc::input_absinfo = unsafe { std::mem::zeroed() };
     let number = u8::try_from(0x40_u16.saturating_add(code))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "axis outside EVIOCGABS"))?;
@@ -508,8 +480,8 @@ fn query_abs_info(fd: libc::c_int, code: u16) -> io::Result<libc::input_absinfo>
 }
 
 fn read_event(file: &mut File) -> io::Result<Option<libc::input_event>> {
-    // SAFETY: `input_event` is a C POD. The mutable byte view covers exactly
-    // this initialized value and exists only for the duration of `read`.
+    // SAFETY: `input_event` is a C POD. The mutable byte view covers exactly this initialized value
+    // and exists only for the duration of `read`.
     let mut event: libc::input_event = unsafe { std::mem::zeroed() };
     let bytes = unsafe {
         slice::from_raw_parts_mut(
@@ -592,8 +564,8 @@ mod tests {
             HELD,
             0o020_600
         )));
-        // A half released to be used alone is a controller of its own,
-        // whether or not udev's change pass reset the node's mode.
+        // A half released to be used alone is a controller of its own, whether or not udev's change
+        // pass reset the node's mode.
         assert!(is_room_controller(&device(
             JOYCON_LEFT_PRODUCT,
             RELEASED,
@@ -616,8 +588,8 @@ mod tests {
             JOYSTICK,
             0o020_600
         )));
-        // The Pro Controller stays with hid-nintendo and Steam; a stray tag
-        // on it must not hide it either.
+        // The Pro Controller stays with hid-nintendo and Steam; a stray tag on it must not hide it
+        // either.
         assert!(is_room_controller(&device(0x2009, HELD, 0o020_600)));
         assert!(!has_current_udev_tag(
             "E:TAGS=:joycond:\nQ:joycondx\n",

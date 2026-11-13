@@ -11,8 +11,6 @@
     reason = "test assertions"
 )]
 
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 
@@ -44,7 +42,7 @@ fn said(app: &mut TestApp<TlApp>) -> String {
 
 #[test]
 fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
-    support::installed_beside("views", &["tasks"]);
+    crate::support::installed_beside("views", &["tasks"]);
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("views-shots");
     for (size, viewport) in [("desktop", (1280, 800)), ("phone", (420, 860))] {
         for (theme, dark) in [("light", false), ("dark", true)] {
@@ -79,7 +77,7 @@ fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
 #[test]
 fn the_recorded_answer_is_a_view_declaration_over_the_installed_apps() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dirs = support::ordered(&["tasks", "notes", "chat", "views"]);
+    let dirs = crate::support::ordered(&["tasks", "notes", "chat", "views"]);
     let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
         .expect("the packages compile");
     let metas: Vec<tilolang::PackageMeta> = built.iter().map(|b| b.compiled.meta.clone()).collect();

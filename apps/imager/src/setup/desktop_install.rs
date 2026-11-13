@@ -1,10 +1,10 @@
-//! Narrow authenticated Desktop package transaction; no disk authority.
+//! Installing the Desktop packages: one authenticated transaction, from the
+//! request's re-verified authority to its bounded diagnostics.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-/// Data-only request; all authority comes from the helper's embedded catalog.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesktopInstallRequest {
@@ -26,7 +26,6 @@ pub enum DesktopInstallEvent {
     Preparing,
     Installing,
     Verifying,
-    /// Location of bounded diagnostics readable only by the privileged host.
     DiagnosticLog(PathBuf),
     Complete(InstalledDesktop),
     Failed(String),
@@ -134,8 +133,6 @@ mod transaction_core {
         )
     }
 
-    // The only production caller supplies authorize() above. Test-only native
-    // proof injects a local artifact policy here, never into the shipped helper.
     pub(super) fn run_transaction(
         bytes: &[u8],
         digest: &str,
@@ -155,8 +152,6 @@ mod transaction_core {
             File::open(&staging.path).map_err(|_| "Cannot reopen private package.")?,
             &release,
         )?;
-        // Re-read all authority just before the mutation; cached UI readiness
-        // and the unprivileged input pathname never authorize a package command.
         let request = parse_request(bytes, digest)?;
         let host = backend.probe()?;
         let (current, installed) = authorize_host(&host, &request.release_id)?;
@@ -170,8 +165,6 @@ mod transaction_core {
         let manager = host.package_manager?;
         let mut diagnostic_channel = Ok(());
         if !installed {
-            // A disconnected sink before mutation aborts. After this point a
-            // sink failure is remembered, but MUST NOT cancel the transaction.
             events(DesktopInstallEvent::Installing)?;
             staging.preserve_diagnostics();
             let outcome = backend.install(manager, &staging.path);
@@ -208,7 +201,6 @@ mod transaction_core {
     impl Drop for StagedPackage {
         fn drop(&mut self) {
             if self.retain_diagnostics {
-                // Keep the small protected log, not a second package cache.
                 let _ = std::fs::remove_file(&self.path);
                 if let Some(directory) = self.directory.take() {
                     let _ = directory.keep();
@@ -243,8 +235,6 @@ mod transaction_core {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            // This branch exists only for Unix unit tests; production helper
-            // execution is Linux-only and always uses O_PATH above.
             let file = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -282,7 +272,6 @@ mod transaction_core {
             .path()
             .symlink_metadata()
             .map_err(|_| "Cannot inspect private staging.")?;
-        // Production calls this only after asserting effective uid zero.
         if metadata.uid() != tilo_process::effective_uid()
             || metadata.permissions().mode() & 0o077 != 0
         {
@@ -335,7 +324,6 @@ mod transaction_core {
     }
 
     fn verify_bytes(mut input: File, release: &DesktopRelease) -> Result<(), String> {
-        /// `sha2` hashers do not implement `io::Write`; stream into one here.
         struct HashWriter<'a>(&'a mut Sha256);
         impl std::io::Write for HashWriter<'_> {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -590,8 +578,6 @@ mod native {
         staged: &Path,
     ) -> (&'static str, Vec<OsString>) {
         let (program, flags): (&str, &[&str]) = match manager {
-            // Clearing key sources is restrictive: preserve every configured
-            // signature-check setting but refuse importing new trust with -y.
             PackageManager::Dnf => (
                 "/usr/bin/dnf",
                 &["--assumeyes", "--setopt=*.gpgkey=", "install", "--"],
@@ -646,7 +632,6 @@ mod native {
             || !wrapper
                 .lines()
                 .any(|line| line.trim() == "SESSION_RUNNER=/usr/libexec/tilo-session-runner")
-            // A login starts the session the package installs.
             || !wrapper
                 .lines()
                 .any(|line| line.trim() == "session_bin=$TILO_SESSION")
@@ -716,8 +701,6 @@ mod native {
         read_only: bool,
         mut capture_check: impl FnMut() -> Result<(), String>,
     ) -> Result<Output, String> {
-        // Configure capture before spawning: a setup failure must never leave
-        // a begun package transaction with closed or undrained output sinks.
         let (mut stdout, stdout_writer) =
             std::io::pipe().map_err(|_| "Cannot create native stdout capture.")?;
         let (mut stderr, stderr_writer) =
@@ -742,9 +725,6 @@ mod native {
             .stderr(stderr_writer)
             .spawn()
             .map_err(|_| format!("Cannot execute {program}."))?;
-        // Readers belong to this outer scope, not the fallible capture work.
-        // Keep draining after errors and do not close either pipe until the
-        // child is reaped: closing is an implicit SIGPIPE/EPIPE cancellation.
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut overflow = false;
@@ -796,8 +776,6 @@ mod native {
             std::thread::sleep(Duration::from_millis(10));
         };
         if capture.is_err() {
-            // Only read-only queries may be killed. Native errors reach this
-            // point only after try_wait has established the terminal status.
             if read_only {
                 let _ = child.kill();
             }
@@ -812,7 +790,6 @@ mod native {
         overflow: &mut bool,
     ) -> Result<(), String> {
         let mut buffer = [0; 4096];
-        // Bound each pass even if the writer emits continuously.
         for _ in 0..64 {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
@@ -835,8 +812,6 @@ mod native {
         log: &Path,
     ) -> Result<(), String> {
         use std::io::Write;
-        // The path is derived solely from the helper-created private operation
-        // directory. Exclusive creation prevents overwriting any existing name.
         let mut log_file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -844,9 +819,6 @@ mod native {
             .open(log)
             .map_err(|_| "Cannot create protected native diagnostics.")?;
         if let Ok(output) = run_command(program, args, false) {
-            // Both captures are independently bounded at OUTPUT_LIMIT;
-            // excess output is drained/discarded, never used to kill a
-            // transaction or grow the protected log without bound.
             let saved = log_file
                 .write_all(b"stdout (bounded):\n")
                 .and_then(|()| log_file.write_all(output.stdout.as_bytes()))
@@ -876,8 +848,6 @@ pub(super) fn run_native_helper(bytes: &[u8], digest: &str) -> i32 {
     if tilo_process::effective_uid() != 0 {
         return 1;
     }
-    // A stopped/lost UI must not block the privileged transaction on progress.
-    // SAFETY: fd 1 is the process's stdout. Failure refuses before mutation.
     let flags = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_GETFL) };
     if flags < 0
         || unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
@@ -1032,7 +1002,6 @@ mod tests {
             })
         }
     }
-    /// Refusals, production catalog, package identity and pacman policy.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1150,8 +1119,6 @@ mod tests {
                 PackageManager::Pacman,
                 Path::new("/private/package.pkg.tar.zst"),
             );
-            // Upstream cb_question inverses defaults for the --ask mask. These
-            // bits are IMPORT_KEY(64), REPLACE_PKG(2), INSTALL_IGNOREPKG(1).
             assert_eq!(
                 args,
                 [
@@ -1193,7 +1160,6 @@ mod tests {
         }
     }
 
-    /// Lost progress/diagnostic channels and final probe ordering.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1427,8 +1393,6 @@ mod tests {
                 )
                 .is_err()
             );
-            // A wrapper that starts something else, or a runner instead of
-            // the wrapper, is not this contract.
             assert!(
                 native::validate_session(
                     "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
@@ -1459,9 +1423,6 @@ mod tests {
         }
     }
 
-    /// Real native mutation: controller runs this only in a disposable guest.
-    /// No runtime evidence is invented; the production catalog refusal is also
-    /// checked. This test-only injection cannot be called by the binary helper.
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires disposable Linux guest, root and explicit local artifact metadata"]
@@ -1519,32 +1480,26 @@ mod tests {
                 println!("{}", serde_json::to_string(&event).unwrap());
                 Ok(())
             },
-            &|host, id| {
-                // Reuse every production host/metadata gate, accepting ONLY the
-                // deliberately absent runtime record for this local proof fixture.
-                match super::super::desktop_probe::desktop_readiness(
-                    host,
-                    std::slice::from_ref(&release),
-                ) {
-                    super::super::desktop_probe::DesktopReadiness::Blocked(reasons)
-                        if reasons
-                            == [
-                                "This package has no verified native graphical-session evidence.",
-                            ]
-                            && id == release.id =>
-                    {
-                        Ok((
-                            release.clone(),
-                            matches!(
-                                host.installed_package,
-                                Ok(InstalledPackage::Installed { .. })
-                            ),
-                        ))
-                    }
-                    state => Err(format!(
-                        "Native proof fixture failed other readiness gates: {state:?}"
-                    )),
+            &|host, id| match super::super::desktop_probe::desktop_readiness(
+                host,
+                std::slice::from_ref(&release),
+            ) {
+                super::super::desktop_probe::DesktopReadiness::Blocked(reasons)
+                    if reasons
+                        == ["This package has no verified native graphical-session evidence."]
+                        && id == release.id =>
+                {
+                    Ok((
+                        release.clone(),
+                        matches!(
+                            host.installed_package,
+                            Ok(InstalledPackage::Installed { .. })
+                        ),
+                    ))
                 }
+                state => Err(format!(
+                    "Native proof fixture failed other readiness gates: {state:?}"
+                )),
             },
         )
         .unwrap();

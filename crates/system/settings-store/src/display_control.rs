@@ -1,6 +1,7 @@
 //! Typed requests to the session that owns display configuration. An app
 //! supplies intent and the output set it observed; the host owns prior state,
 //! transaction identity and persistence. Admission belongs to the broker.
+
 use crate::SettingsSource;
 use crate::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction, DisplayTransactionState,
@@ -171,8 +172,6 @@ fn decide(
     Ok(())
 }
 
-/// Execute admitted intent against the host's fresh runtime snapshot and
-/// settings source. The host derives prior state and transaction identity.
 pub fn execute(
     source: &dyn SettingsSource,
     observed: DisplayHardwareSnapshot,
@@ -322,8 +321,6 @@ mod tests {
 
     #[test]
     fn host_identify_uses_the_existing_request_section_without_creating_a_preview() {
-        // Freshness is judged in wall time; it stands still on this thread and
-        // leaves the other tests of the process their own clock.
         tilo_clock::testing::with_wall(tilo_clock::wall(), || {
             let source = HostDocument::new(
                 serde_json::json!({"unrelated":{"keep":true}})
@@ -455,8 +452,6 @@ mod tests {
         assert!(source.load().get("display_transaction").is_none());
     }
 
-    /// The confirmation deadline is wall time: it stands still on this thread
-    /// alone, and the other tests of the process keep their own clock.
     #[test]
     fn decisions_require_the_current_host_transaction_and_connected_outputs() {
         tilo_clock::testing::with_wall(tilo_clock::wall(), || {

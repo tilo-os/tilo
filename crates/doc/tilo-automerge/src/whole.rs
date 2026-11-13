@@ -105,8 +105,6 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT};
 
-    /// A document with one change, and the change after it as an incremental
-    /// payload: it depends on the first, which the payload does not carry.
     fn delta() -> (AutoCommit, Vec<u8>) {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "k", "v").unwrap();

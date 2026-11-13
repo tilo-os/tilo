@@ -5,7 +5,7 @@
 //! shows its window's own title again.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::{ElementState, WindowEvent};
 
 use super::TabBar;
@@ -13,6 +13,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{EditOutcome, EditableLabel, Widget};
 
 /// A tab being named: which one, and its field.
@@ -27,14 +28,15 @@ pub(super) struct TabRename {
 impl TabBar {
     /// Turn tab `id`'s title into a field holding it, all of it selected,
     /// where the title stands. `name` is what a reader announces the field
-    /// as. Returns whether the edit is open; a tab drawn as an icon alone
-    /// has no title to edit.
+    /// as. Returns whether the edit is open; a pinned tab, drawn as its icon
+    /// alone, has no title to edit. A window's one tab drawn as its icon
+    /// shows its title while it is named.
     pub fn begin_rename(&mut self, id: u64, name: &str) -> bool {
         self.touch();
         let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) else {
             return false;
         };
-        if self.icon_only(id) {
+        if self.pinned_ids.contains(&id) {
             return false;
         }
         if self.renaming() == Some(id) {
@@ -59,15 +61,6 @@ impl TabBar {
     #[must_use]
     pub fn renaming(&self) -> Option<u64> {
         self.rename.as_ref().map(|rename| rename.tab)
-    }
-
-    /// Whether `p` is on the name field: a press there places the caret
-    /// rather than ending the edit.
-    #[must_use]
-    pub fn rename_hit(&self, p: Point) -> bool {
-        self.rename
-            .as_ref()
-            .is_some_and(|rename| rename.label.get_rect().contains(p))
     }
 
     /// The name field's text while it is edited.
@@ -128,18 +121,6 @@ impl TabBar {
         took
     }
 
-    /// Commit the name being edited, as Enter does. Returns whether a tab
-    /// was being named.
-    pub fn commit_rename(&mut self) -> bool {
-        self.touch();
-        let Some(rename) = self.rename.as_mut() else {
-            return false;
-        };
-        rename.label.commit();
-        self.settle_rename();
-        true
-    }
-
     /// Put the title back, ending the edit, as Escape does. Returns whether
     /// a tab was being named.
     pub fn cancel_rename(&mut self) -> bool {
@@ -156,6 +137,28 @@ impl TabBar {
     /// (empty when the person cleared it).
     pub fn take_rename(&mut self) -> Option<(u64, String)> {
         self.pending_rename.take()
+    }
+
+    /// The tab a person double-clicked since the last call, asking to name
+    /// it: the host opens the field where naming it is theirs to do.
+    pub fn take_rename_ask(&mut self) -> Option<u64> {
+        self.rename_ask.take()
+    }
+
+    /// A press on tab `id`'s pill: the second one soon after the first asks
+    /// to name the tab.
+    pub(super) fn note_tab_press(&mut self, id: u64) {
+        self.touch();
+        let now = crate::time::now();
+        let second = self.last_tab_press.is_some_and(|(tab, at)| {
+            tab == id && now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+        });
+        if second {
+            self.last_tab_press = None;
+            self.rename_ask = Some(id);
+        } else {
+            self.last_tab_press = Some((id, now));
+        }
     }
 
     /// Read how the edit ended, if it did: a committed name that differs
@@ -222,7 +225,7 @@ impl TabBar {
         if let Some(rename) = self.rename.as_mut() {
             rename
                 .label
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 }
@@ -230,7 +233,7 @@ impl TabBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthetic_input::{char_key, cursor_moved, mouse_press, named_key};
+    use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
     use crate::testing::dispatch;
     use crate::widget::TabDescriptor;
     use winit::keyboard::NamedKey;
@@ -268,9 +271,6 @@ mod tests {
         assert!(bar.begin_rename(1, "Tab name"));
         assert_eq!(bar.renaming(), Some(1));
         assert_eq!(bar.rename_text(), Some("~/src"));
-        let pill = bar.tab_rects[0];
-        assert!(bar.rename_hit(pill.center()), "the field is in the pill");
-        assert!(!bar.rename_hit(bar.tab_rects[1].center()));
         assert!(!bar.begin_rename(9, "Tab name"), "no such tab");
     }
 
@@ -315,6 +315,35 @@ mod tests {
         assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
         assert_eq!(bar.renaming(), None);
         assert_eq!(bar.take_rename(), None);
+    }
+
+    #[test]
+    fn a_double_click_on_a_tab_asks_to_name_it() {
+        let mut bar = bar();
+        let first = bar.tab_rects[0].center();
+        let second = bar.tab_rects[1].center();
+        let click = |bar: &mut TabBar, at: vello::kurbo::Point| {
+            dispatch(bar, &cursor_moved(at.x, at.y));
+            dispatch(bar, &mouse_press());
+            dispatch(bar, &mouse_release());
+        };
+        click(&mut bar, first);
+        assert_eq!(bar.take_rename_ask(), None, "one click selects");
+        click(&mut bar, second);
+        assert_eq!(
+            bar.take_rename_ask(),
+            None,
+            "a click on another tab is no double click"
+        );
+        click(&mut bar, second);
+        assert_eq!(
+            bar.take_rename_ask(),
+            Some(2),
+            "the second click asks to name it"
+        );
+        assert_eq!(bar.take_rename_ask(), None, "once");
+        click(&mut bar, second);
+        assert_eq!(bar.take_rename_ask(), None, "a third click starts over");
     }
 
     #[test]

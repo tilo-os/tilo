@@ -26,8 +26,8 @@ const ISSUE_PREVIEW: usize = 8;
 const MAX_ISSUE_BYTES: u64 = 128 * 1024;
 static NEXT_REPORT: AtomicU64 = AtomicU64::new(0);
 
-// Display snapshots have their own identity. Equal counts/previews must never
-// let an acknowledgement attach a previous attempt's full issue details.
+// Display snapshots have their own identity: equal counts or previews must never let an
+// acknowledgement attach a previous attempt's issue details.
 fn report_identity() -> String {
     format!(
         "{}-{:?}-{}",
@@ -163,8 +163,8 @@ impl StoredReport {
     }
 }
 
-/// A local display/restart record. The journal remains the authority for every
-/// resumed byte and root identity; this index never authorizes overwrite.
+/// A local display and restart record. The journal stays the authority for every resumed byte and
+/// root identity; this index never authorizes overwrite.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationRecord {
@@ -408,15 +408,13 @@ struct StoreDocument {
     operations: Vec<OperationRecord>,
 }
 
-/// Handle-pinned, owner-private local operation storage.
 pub struct MigrationStore {
     root_path: PathBuf,
     root: Arc<PinnedDirectory>,
-    // The descriptor lock survives while any live worker owns this store.
+    // The descriptor lock survives while any live worker owns this store, and fields drop in
+    // declaration order, so the report is released after the lock closes.
     ownership: advisory_lock::FileLock,
     ownership_identity: Metadata,
-    // Fields drop in declaration order: report release after the descriptor
-    // lock closes, even when detached readers or writers own the final Arc.
     #[cfg(any(test, feature = "test-support"))]
     ownership_released: test_support::OwnershipReleased,
 }
@@ -436,8 +434,8 @@ impl MigrationStore {
             )
         })?;
         let name = Path::new("ownership.lock");
-        // Never remove the lock pathname: unlinking a held lock allows a second
-        // inode/owner. A dead process releases its OS lock automatically.
+        // Never remove the lock pathname: unlinking a held lock allows a second inode or owner, and
+        // a dead process releases its OS lock automatically.
         if matches!(metadata_nofollow(&root.file, name), Err(e) if e.kind() == io::ErrorKind::NotFound)
         {
             let temporary = OwnedTemporary::create(&root, OsStr::new("ownership.lock"))
@@ -504,7 +502,6 @@ impl MigrationStore {
         Ok(())
     }
 
-    /// Continuation shares the index's pinned root and exclusive ownership.
     pub fn load_continuation_bytes(&self) -> Result<Option<Vec<u8>>, String> {
         self.validate_ownership()?;
         self.root
@@ -817,9 +814,8 @@ type SaveRequest = (
     std::sync::mpsc::Sender<Result<Vec<OperationRecord>, String>>,
 );
 
-/// All index writes are serialized off the event thread. The writer owns the
-/// store lock until every client (including a detached copy worker) exits and
-/// every queued checkpoint has completed.
+/// All index writes are serialized off the event thread; the writer owns the store lock until every
+/// client, including a detached copy worker, exits and every queued checkpoint completed.
 #[derive(Clone)]
 pub struct StoreWriter {
     sender: std::sync::mpsc::Sender<SaveRequest>,
@@ -833,9 +829,8 @@ impl StoreWriter {
                 let mut failure: Option<String> = None;
                 let mut previous = Vec::new();
                 while let Ok((mut operations, reply)) = receiver.recv() {
-                    // A queued snapshot may predate the preceding save's ACK.
-                    // Preserve immutable detail references created by that save;
-                    // never carry forward operation state or copy authority.
+                    // A queued snapshot may predate the preceding save's ACK: keep the immutable
+                    // detail references that save created, never operation state or copy authority.
                     for (operation, saved) in operations.iter_mut().zip(&previous) {
                         operation.retain_detail_reference(saved);
                     }
@@ -1147,7 +1142,6 @@ mod tests {
         }
     }
 
-    /// Store lock ownership.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1212,16 +1206,14 @@ mod tests {
         }
     }
 
-    /// Interrupted reopen, grants, incomplete reports, retries and native names.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn operation_records_reopen_review_and_round_trip_truthfully() {
-        // Phase `running_operation_reopens_as_interrupted`.
-        // Catches treating an operation index's stale Running marker as evidence
-        // that work completed while the application was closed.
+        // An operation index's stale Running marker is not evidence that work completed while the
+        // application was closed.
         {
             let (_temp, store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1235,9 +1227,8 @@ mod tests {
             assert_ne!(reopened[0].state(), OperationState::Complete);
         }
 
-        // Phase `changed_grants_require_a_fresh_review`.
-        // Catches changing a reviewed root while retaining approval for the old
-        // source/destination pair.
+        // A reviewed root may not change while approval for the old source and destination pair is
+        // kept.
         {
             let (temp, _store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1260,9 +1251,7 @@ mod tests {
             assert!(changed_operation.start_job().is_err());
         }
 
-        // Phase `incomplete_report_round_trips_with_paths_and_disclosures`.
-        // Catches loss of terminal detail needed to distinguish partial failure
-        // from verified completion after restart.
+        // Terminal detail must survive restart, to tell partial failure from verified completion.
         {
             let (_temp, store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1297,9 +1286,7 @@ mod tests {
             assert_eq!(reopened.metadata_limitations(), &["ACLs are not preserved"]);
         }
 
-        // Phase `retry_progress_replaces_the_prior_incomplete_attempt`.
-        // Catches a retry continuing to display the previous attempt's counts,
-        // issues and current path after the new worker reports fresh progress.
+        // A retry replaces the previous attempt's counts, issues and current path.
         {
             let (_temp, _store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1338,7 +1325,6 @@ mod tests {
             assert!(operation.metadata_limitations().is_empty());
         }
 
-        // Phase `native_non_utf8_grants_round_trip_losslessly`.
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;

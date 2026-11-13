@@ -79,7 +79,6 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
             .side_panel(side_panel_width(&ui::theme::Theme::dark()))
             .is_none()
     );
-    // Options and closing where it does not show change nothing.
     assert!(!asked(
         &mut controller,
         &notes,
@@ -88,7 +87,6 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
     assert!(!asked(&mut controller, &notes, Change::Close));
     assert_eq!(window.created_tabs().len(), 1);
 
-    // A click on its button opens it, and the next one closes it.
     assert!(asked(
         &mut controller,
         &notes,
@@ -102,7 +100,6 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
     ));
     assert_eq!(controller.side_panel_shown(), None);
 
-    // One side panel at a time: another extension's takes its place.
     asked(
         &mut controller,
         &notes,
@@ -120,7 +117,6 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
     );
     assert!(asked(&mut controller, &other, Change::Close));
 
-    // Its page closed itself (window.close()): the panel goes.
     asked(
         &mut controller,
         &notes,
@@ -131,7 +127,6 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
     assert!(controller.sync(&shared, ""));
     assert_eq!(controller.side_panel_shown(), None);
 
-    // An extension turned off shows none.
     controller.installed[0].enabled = false;
     let before = window.created_tabs().len();
     assert!(!asked(
@@ -157,7 +152,6 @@ fn the_person_opens_and_closes_a_side_panel_from_the_window_and_the_door() {
             toolbar::Access::default(),
         ),
     ];
-    // Only an extension that may show one offers its side panel.
     let toggles = |controller: &ExtensionController| {
         controller
             .bar_items()
@@ -194,12 +188,10 @@ fn the_person_opens_and_closes_a_side_panel_from_the_window_and_the_door() {
         .expect("the bar closes the side panel");
     assert!(close.on);
 
-    // The bar's button closes it.
     assert!(controller.bar_action(&close.id));
     controller.sync(&shared, "");
     assert_eq!(controller.side_panel_shown(), None);
 
-    // A script or an agent does the same through the extension's actions.
     let actions = |controller: &ExtensionController| {
         controller
             .resources()
@@ -299,7 +291,6 @@ fn a_side_panel_asks_for_more_access_through_the_window() {
             .collect::<Vec<_>>(),
         [7]
     );
-    // What the engine then granted it, told on the panel's page, is kept.
     panel.push_event(WebViewEvent::ExtensionPermissions {
         id: notes.clone(),
         granted: set(&["tabs"]),
@@ -336,16 +327,13 @@ fn a_side_panel_is_as_wide_as_the_person_dragged_it_within_the_themes_bounds() {
     controller.installed = vec![with_side_panel(&notes), with_side_panel(&other)];
     controller.attach_side_panel_widths(store());
     let room = 2000.0;
-    // Nothing shows: nothing to widen.
     assert!(!controller.set_side_panel_width(500.0));
 
-    // At first the theme's width; dragged, the width the person chose.
     open(&mut controller, &notes);
     assert!((controller.side_panel_extent(&theme, room) - side_panel_width(&theme)).abs() < 0.01);
     assert!(controller.set_side_panel_width(500.0));
     assert!(!controller.set_side_panel_width(500.2), "the same width");
     assert!((controller.side_panel_extent(&theme, room) - 500.0).abs() < 0.5);
-    // Never past its bounds, and the page keeps a readable column.
     controller.set_side_panel_width(10_000.0);
     assert!((controller.side_panel_extent(&theme, room) - widest).abs() < 0.01);
     controller.set_side_panel_width(1.0);
@@ -364,7 +352,6 @@ fn a_side_panel_is_as_wide_as_the_person_dragged_it_within_the_themes_bounds() {
     open(&mut controller, &other);
     assert!((controller.side_panel_extent(&theme, room) - side_panel_width(&theme)).abs() < 0.01);
 
-    // A later window finds the width kept on this device.
     let mut later = ExtensionController::new(true);
     later.refresh = false;
     later.installed = controller.installed.clone();
@@ -387,7 +374,6 @@ fn a_shortcut_pressed_in_the_address_runs_the_command_that_holds_it() {
         ..KeyModifiers::default()
     };
     let key = |text: &str| KeyInput::Character(text.into());
-    // Nothing held yet: the field keeps every key.
     assert!(!controller.command_key(&key("K"), alt_shift, &shared));
     controller.on_engine_event(
         WebViewEvent::ExtensionShortcuts(vec![ExtensionShortcut {
@@ -413,7 +399,6 @@ fn a_shortcut_pressed_in_the_address_runs_the_command_that_holds_it() {
             .count(),
         1
     );
-    // Another key, or the same with other modifiers, stays the field's.
     assert!(!controller.command_key(&key("J"), alt_shift, &shared));
     assert!(!controller.command_key(
         &key("K"),
@@ -423,7 +408,6 @@ fn a_shortcut_pressed_in_the_address_runs_the_command_that_holds_it() {
         },
         &shared
     ));
-    // Told none are held any more, it runs none.
     controller.on_engine_event(WebViewEvent::ExtensionShortcuts(Vec::new()), &shared);
     assert!(!controller.command_key(&key("K"), alt_shift, &shared));
 }

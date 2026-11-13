@@ -6,13 +6,10 @@
 use super::side_part;
 use super::styles::attr_val;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use tilo_doc::model::{DocMut, DocRef, NoteKind, materialize_notes};
 use tilo_doc::snapshot::NoteView;
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
-/// The fixed part names + relationship ids qdoc writes for footnotes/endnotes.
 pub(super) const FOOTNOTES_PART: &str = "word/footnotes.xml";
 pub(super) const ENDNOTES_PART: &str = "word/endnotes.xml";
 
@@ -53,20 +50,15 @@ pub(super) fn import_notes_part(
     map
 }
 
-/// A note assigned a stable `w:id` for the body references, paired with its view.
 pub(super) struct ExportNote<'a> {
     pub docx_id: i64,
     pub note: &'a NoteView,
 }
 
-/// The exported footnote/endnote parts + the per-kind id maps the body exporter uses;
-/// `None` when a kind has no notes.
 pub(super) struct ExportedNotes {
     pub footnotes_xml: Option<Vec<u8>>,
     pub endnotes_xml: Option<Vec<u8>>,
-    /// qdoc note id → the docx numeric id emitted in the reference + part.
     pub id_map: BTreeMap<String, i64>,
-    /// qdoc note id → kind, so the body emits the right reference element.
     pub kind_map: BTreeMap<String, NoteKind>,
 }
 
@@ -99,7 +91,6 @@ fn collect_kind<'a>(
     let want = kind.as_str();
     let mut out = Vec::new();
     for (i, n) in notes.iter().filter(|n| n.kind == want).enumerate() {
-        // Footnote/endnote ids are 1-based.
         let next = i64::try_from(i).unwrap_or(i64::MAX).saturating_add(1);
         id_map.insert(n.id.clone(), next);
         kind_map.insert(n.id.clone(), kind);
@@ -111,14 +102,11 @@ fn collect_kind<'a>(
     out
 }
 
-/// The full footnotes/endnotes part bytes, or `None` when empty; includes the reserved
-/// separator notes ahead of the content notes.
 fn part_xml(notes: &[ExportNote], root: &str, item: &str) -> Option<Vec<u8>> {
     if notes.is_empty() {
         return None;
     }
     let mut inner = String::new();
-    // Reserved separator notes (no user content; Word expects them).
     let _ = write!(
         inner,
         r#"<w:{item} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{item}>"#

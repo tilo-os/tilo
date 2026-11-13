@@ -1,32 +1,24 @@
 //! Bounded RFC 4918 `multistatus` parsing.
 //!
-//! A DAV server is an untrusted peer: the parser caps input size, node count
-//! and nesting depth, rejects any DTD (so no entity expansion happens), and
-//! insists on a `multistatus` root, so an HTML error page answered with a 2xx
-//! status is an error rather than an empty — and therefore "authoritative" —
-//! listing.
+//! A DAV server is an untrusted peer: the parser caps input size, node count and
+//! nesting depth, rejects any DTD (so no entity expansion happens), and insists on a
+//! `multistatus` root, so an HTML error page answered with a 2xx status is an error
+//! rather than an empty, and therefore "authoritative", listing.
 //!
-//! Elements are matched by local name. Servers pick their own namespace
-//! prefixes and a few omit the `DAV:` namespace entirely; the local names are
-//! what stays stable. Each [`Property`] keeps its namespace for callers that
-//! need to tell `DAV:` and extension properties apart.
+//! Elements are matched by local name: servers pick their own namespace prefixes and a
+//! few omit the `DAV:` namespace entirely. Each [`Property`] keeps its namespace for
+//! callers that need to tell `DAV:` and extension properties apart.
 
 use std::fmt;
 
 use roxmltree::{Document, Node, ParsingOptions};
 
-/// Caps applied to one multistatus document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Largest accepted document, in bytes.
     pub max_bytes: usize,
-    /// Most `response` elements accepted.
     pub max_responses: usize,
-    /// Deepest element nesting accepted.
     pub max_depth: usize,
-    /// Most XML nodes (elements, text, comments) accepted.
     pub max_nodes: u32,
-    /// Longest accepted `href`, in bytes.
     pub max_href_bytes: usize,
 }
 
@@ -44,27 +36,16 @@ impl Default for Limits {
     }
 }
 
-/// Why a document was refused. Nothing partial is returned with an error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum XmlError {
-    /// The document exceeds [`Limits::max_bytes`].
     TooLarge,
-    /// The document is not UTF-8.
     NotUtf8,
-    /// The document carries a DTD, which is never processed.
     Doctype,
-    /// The document exceeds [`Limits::max_nodes`].
     TooManyNodes,
-    /// The document nests deeper than [`Limits::max_depth`].
     TooDeep,
-    /// The document holds more than [`Limits::max_responses`] responses.
     TooManyResponses,
-    /// A response has no `href`, an empty one, or one over
-    /// [`Limits::max_href_bytes`].
     InvalidHref,
-    /// The root element is not `multistatus`.
     NotMultistatus,
-    /// The document is not well-formed XML.
     Malformed,
 }
 
@@ -86,17 +67,14 @@ impl fmt::Display for XmlError {
 
 impl std::error::Error for XmlError {}
 
-/// A parsed `multistatus` document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Multistatus {
     /// The RFC 6578 `sync-token` that is a direct child of the root, as a
     /// `sync-collection` REPORT returns it. Trimmed; `None` when absent/empty.
     pub sync_token: Option<String>,
-    /// Every `response`, in document order.
     pub responses: Vec<Response>,
 }
 
-/// One `response` element.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
     /// The first `href`, trimmed and exactly as the server spelled it.
@@ -104,25 +82,18 @@ pub struct Response {
     /// The response-level status code (a whole-resource status such as the
     /// 404 a `sync-collection` report uses for removed members).
     pub status: Option<u16>,
-    /// Every `propstat`, in document order.
     pub propstats: Vec<Propstat>,
 }
 
-/// One `propstat` element.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Propstat {
-    /// The propstat status code.
     pub status: Option<u16>,
-    /// The properties inside its `prop` element(s).
     pub props: Vec<Property>,
 }
 
-/// One property element inside a `prop`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Property {
-    /// Namespace URI, if the element has one.
     pub namespace: Option<String>,
-    /// Local name.
     pub name: String,
     /// The element's text content, untrimmed (`calendar-data` and
     /// `address-data` are payloads where whitespace matters).
@@ -133,7 +104,6 @@ pub struct Property {
 }
 
 impl Property {
-    /// The text trimmed of surrounding whitespace, or `None` when empty.
     pub fn trimmed_text(&self) -> Option<&str> {
         self.text
             .as_deref()
@@ -141,7 +111,6 @@ impl Property {
             .filter(|text| !text.is_empty())
     }
 
-    /// Whether a child element with this local name is present.
     pub fn has_child(&self, name: &str) -> bool {
         self.children.iter().any(|child| child == name)
     }
@@ -158,7 +127,6 @@ impl Propstat {
 }
 
 impl Response {
-    /// The first successfully returned property with this local name.
     pub fn prop(&self, name: &str) -> Option<&Property> {
         self.propstats
             .iter()
@@ -167,18 +135,16 @@ impl Response {
             .find(|prop| prop.name == name)
     }
 
-    /// Trimmed, non-empty text of a successfully returned property.
+    /// Trimmed, non-empty text of a returned property.
     pub fn prop_text(&self, name: &str) -> Option<&str> {
         self.prop(name).and_then(Property::trimmed_text)
     }
 
-    /// Whether `resourcetype` marks this resource as a collection.
     pub fn is_collection(&self) -> bool {
         self.prop("resourcetype")
             .is_some_and(|prop| prop.has_child("collection"))
     }
 
-    /// Whether any propstat returned successfully.
     pub fn has_success(&self) -> bool {
         self.propstats.iter().any(Propstat::is_success)
     }
@@ -196,10 +162,6 @@ pub fn parse_bytes(bytes: &[u8], limits: &Limits) -> Result<Multistatus, XmlErro
     parse(text, limits)
 }
 
-/// Parse a multistatus document.
-///
-/// # Errors
-/// See [`XmlError`].
 pub fn parse(xml: &str, limits: &Limits) -> Result<Multistatus, XmlError> {
     if xml.len() > limits.max_bytes {
         return Err(XmlError::TooLarge);
@@ -237,11 +199,11 @@ pub fn parse(xml: &str, limits: &Limits) -> Result<Multistatus, XmlError> {
     })
 }
 
-/// Refuse deep nesting before the tree parser sees the document: its
-/// recursion is bounded only by the stack, so a hostile server could crash
-/// the client with a few hundred KiB of `<x>`. This is a linear scan of tag
-/// delimiters (skipping comments, CDATA, processing instructions and quoted
-/// attribute values); well-formedness is still the parser's job.
+/// Refuse deep nesting before the tree parser sees the document: its recursion is
+/// bounded only by the stack, so a hostile server could crash the client with a few
+/// hundred KiB of `<x>`. This is a linear scan of tag delimiters (skipping comments,
+/// CDATA, processing instructions and quoted attribute values); well-formedness is
+/// still the parser's job.
 fn check_depth(xml: &str, max_depth: usize) -> Result<(), XmlError> {
     let bytes = xml.as_bytes();
     let mut depth = 0_usize;
@@ -403,7 +365,6 @@ END:VCALENDAR
 
     #[test]
     fn server_multistatus_documents_parse_props_changes_and_payloads() {
-        // Phase `nextcloud_listing_keeps_successful_props_and_ignores_404_propstats`.
         {
             let parsed = parse_default(NEXTCLOUD_PROPFIND).unwrap();
             assert_eq!(parsed.responses.len(), 2);

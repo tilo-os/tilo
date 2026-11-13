@@ -5,57 +5,42 @@
 //! library was imported from, an image placed in a document, a mail attachment. Those are
 //! *binary inputs*. A resource refers to one by its content hash, and the bytes live here, once,
 //! however many documents and versions refer to them.
-//!
-//! This crate is that store, and the one supported way for an app to keep opaque bytes:
-//!
-//! - [`ContentStore`] is a cheap handle an app creates at startup (`tilo_content_device::for_app`)
-//!   and passes to whatever needs it; nothing here is process-global. Writes and reads stream
-//!   ([`ContentStore::put_reader`], [`ContentStore::open`]) and every read is verified against the
-//!   hash that named it.
-//! - [`ContentBackend`] is what a store runs on. The device content store behind the filesystem
-//!   daemon, reached through the capability the launcher hands the app
-//!   (`tilo_content_device::DeviceBackend`), is what makes content reach an app's other devices
-//!   and collaborators; [`DirBackend`] keeps content in a local directory for a process started
-//!   without one. The device backend lives in its own crate so this one depends on no daemon
-//!   protocol: the resource layer, and the low-level types it stores, can name content without
-//!   sitting above the filesystem.
-//! - [`ContentSource`] is the read side pure code takes (an exporter embedding images), and
-//!   [`ContentInputs`] is what pure code hands back (an importer that found images) for the caller
-//!   to persist. Neither does I/O of its own.
-//!
-//! Content is kept until someone who knows every reference collects the rest
-//! ([`ContentStore::collect_unreferenced`]): a store never guesses what is garbage, so content a
-//! version of a document still names is never lost.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
-#[cfg(feature = "dir")]
-use std::path::PathBuf;
+use std::io::{Read, Seek as _, Write as _};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "dir")]
 mod dir;
 #[cfg(feature = "dir")]
 mod files;
 mod memory;
+mod reference;
+#[cfg(feature = "dir")]
+mod workspaces;
 
 #[cfg(feature = "dir")]
 pub use dir::DirBackend;
 #[cfg(feature = "dir")]
 pub use files::FilesBackend;
 pub use memory::MemoryBackend;
+pub use reference::{ContentRef, content_address, is_sealed, valid_reference};
 pub use tilo_content_types::{
     ContentMeta, DocumentFormat, ImageFormat, RECORDING, RECORDING_MAGIC, document_format,
     image_format, image_size, opened_as, opened_by, sniff, valid_hash,
 };
+#[cfg(feature = "dir")]
+pub use workspaces::WorkspaceStores;
 
-/// The app-files owner of a page's content store (see [`ContentStore::local_for_app`]).
 #[cfg(feature = "dir")]
 const PAGE_STORE_OWNER: &str = "so.tilo.content";
-/// A page's largest content item and whole store: the page holds its app files in memory.
+/// A page's largest content item: the largest a device keeps of a record's
+/// content, which a page holds whole while it stores it.
 #[cfg(feature = "dir")]
-const PAGE_MAX_ITEM_BYTES: usize = 32 * 1024 * 1024;
+const PAGE_MAX_ITEM_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(feature = "dir")]
 const PAGE_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 
@@ -63,9 +48,125 @@ const PAGE_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 /// shell sets it for the apps it hosts), so content one app stores another can open.
 pub const SHARED_STORE_ENV: &str = "TILO_BLOB_STORE";
 
+/// The media type sealed content is stored as: its bytes say nothing of what they hold.
+const SEALED_MIME: &str = "application/octet-stream";
+
+/// The address `reference` names, or `reference` itself when it is none (a backend refuses it).
+fn address_of(reference: &str) -> String {
+    content_address(reference).unwrap_or_else(|| reference.to_owned())
+}
+
 /// Hash `bytes` the way every content address in the system is derived: BLAKE3, lower-case hex.
 pub fn hash_bytes(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
+}
+
+/// Whether `bytes` are the content `reference` names: the bytes its address hashes, or for a
+/// sealed reference the bytes whose sealing under its key that address hashes.
+pub fn names(reference: &str, bytes: &[u8]) -> bool {
+    let Some(parsed) = ContentRef::parse(reference) else {
+        return false;
+    };
+    match parsed.key() {
+        None => verify(parsed.address(), bytes),
+        Some(key) => tilo_seal::content::seal(key, bytes)
+            .is_ok_and(|sealed| verify(parsed.address(), &sealed)),
+    }
+}
+
+/// The hash the members' items are keyed by: BLAKE3, keyed by a key derived from the content
+/// secret ([`ContentBackend::content_secret`]).
+fn convergent_hasher(secret: &tilo_seal::SymmetricKey) -> blake3::Hasher {
+    blake3::Hasher::new_keyed(&blake3::derive_key(
+        "tilo record content key v1",
+        secret.expose_secret(),
+    ))
+}
+
+const KEEP_PLAINTEXT: usize = 1024 * 1024;
+
+static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The plaintext a sealing store hashes before it seals it: in memory while it is small, and
+/// past [`KEEP_PLAINTEXT`] bytes in a file beside the store's own content, so a large item costs
+/// disk while it is sealed rather than the memory to hold it whole. A store with no directory of
+/// its own ([`ContentBackend::scratch_dir`]) keeps all of it in memory.
+struct Gathered {
+    kept: Vec<u8>,
+    spill: Option<Spill>,
+}
+
+impl Gathered {
+    const fn new() -> Self {
+        Self {
+            kept: Vec::new(),
+            spill: None,
+        }
+    }
+
+    /// Keep `chunk`, spilling what is kept so far and the rest to a file in `scratch` once the
+    /// plaintext no longer fits memory.
+    fn keep(&mut self, chunk: &[u8], scratch: Option<&Path>) -> Result<(), ContentError> {
+        if self.spill.is_none()
+            && let Some(dir) = scratch
+            && self.kept.len().saturating_add(chunk.len()) > KEEP_PLAINTEXT
+        {
+            self.spill = Some(Spill::open(dir, &self.kept)?);
+            self.kept = Vec::new();
+        }
+        if let Some(spill) = &mut self.spill {
+            return spill.write(chunk);
+        }
+        self.kept.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
+        if let Some(spill) = &mut self.spill {
+            return spill.source();
+        }
+        Ok(Box::new(self.kept.as_slice()))
+    }
+}
+
+/// The file the plaintext of an item larger than memory waits in while it is hashed and sealed:
+/// beside the store's own content, never in a system temporary directory, which a device may
+/// hold in RAM. Removed when the write ends, however it ends.
+struct Spill {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Spill {
+    fn open(dir: &Path, kept: &[u8]) -> Result<Self, ContentError> {
+        std::fs::create_dir_all(dir)?;
+        let serial = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!(".sealing-{}-{serial}", std::process::id()));
+        let file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let mut spill = Self { file, path };
+        spill.write(kept)?;
+        Ok(spill)
+    }
+
+    fn write(&mut self, chunk: &[u8]) -> Result<(), ContentError> {
+        self.file.write_all(chunk)?;
+        Ok(())
+    }
+
+    fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
+        self.file.rewind()?;
+        Ok(Box::new(&mut self.file))
+    }
+}
+
+impl Drop for Spill {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// True when `bytes` really are the content named by `hash`.
@@ -79,9 +180,7 @@ pub fn verify(hash: &str, bytes: &[u8]) -> bool {
 /// flight and one that will never complete; the two must be distinguishable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ContentState {
-    /// The content is here; [`ContentStore::read`] returns it.
     Resolved,
-    /// Not here yet, and the backend is fetching it from somewhere that has it.
     Pending,
     /// Not here, and none of the devices that could hand it over is connected right now. It is
     /// fetched the moment one connects; nothing waits on a timer.
@@ -95,7 +194,6 @@ pub enum ContentState {
 /// of tiny items must not be able to turn a bounded byte budget into an unbounded index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentLimits {
-    /// Largest accepted individual item.
     pub max_item_bytes: usize,
     /// Largest aggregate payload retained.
     pub max_total_bytes: usize,
@@ -134,6 +232,11 @@ pub enum ContentError {
     ScanLimitExceeded { limit: usize },
     #[error("this store cannot collect unreferenced content")]
     CollectionUnsupported,
+    #[error(
+        "the disk holding this content has {free} bytes free, under the {keep_free} it keeps \
+         for the host's own state: nothing new is kept until there is room"
+    )]
+    DiskLow { free: u64, keep_free: u64 },
     #[error("content store I/O: {0}")]
     Io(String),
 }
@@ -144,14 +247,12 @@ impl From<std::io::Error> for ContentError {
     }
 }
 
-/// Content stored under its address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stored {
     pub hash: String,
     pub len: u64,
 }
 
-/// What a collection pass removed, in lexical order of address.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Collected {
     pub hashes: Vec<String>,
@@ -174,10 +275,8 @@ pub trait ContentBackend: Send + Sync {
     /// Quota, integrity or I/O failures. Nothing is stored on error.
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError>;
 
-    /// A streaming, verifying read of the content at `hash`, or `None` when it is not here.
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError>;
 
-    /// Whether the content at `hash` is here and intact.
     fn has(&self, hash: &str) -> bool;
 
     /// Where the content at `hash` has got to. A backend that can fetch from elsewhere reports
@@ -201,6 +300,19 @@ pub trait ContentBackend: Send + Sync {
         Err(ContentError::CollectionUnsupported)
     }
 
+    /// Remove the item `hash`, when the one who keeps it here knows nothing it is responsible
+    /// for references it any longer (a quota letting the oldest item go). Content kept for
+    /// another reason under the same address goes with it, so a caller sharing a store removes
+    /// only what it alone keeps.
+    ///
+    /// # Errors
+    /// [`ContentError::CollectionUnsupported`] for backends whose retention is governed elsewhere,
+    /// or an I/O failure.
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        let _ = hash;
+        Err(ContentError::CollectionUnsupported)
+    }
+
     /// Whether content stored here reaches beyond this device's own copy: the device content
     /// store serves it to the app's other devices and collaborators. A document may then refer
     /// to content by address alone; with a store that is not shared, a collaborator would be left
@@ -215,6 +327,35 @@ pub trait ContentBackend: Send + Sync {
     /// a store, so naming a hash never reaches content from elsewhere on this machine.
     fn workspace_scoped(&self) -> bool {
         false
+    }
+
+    /// The secret the members who read what this store keeps hold, when it is at hand: a
+    /// sealing store ([`ContentStore::sealing`]) then seals each item under a key derived from
+    /// it and the item's bytes, rather than a fresh one, so the same bytes stored twice are the
+    /// same ciphertext under the same reference, kept and carried once.
+    ///
+    /// Whoever holds the secret learns which items are the same bytes, and can tell whether a
+    /// given item is among them; the members can tell that anyway, by opening both. Whoever does
+    /// not hold it (the hosts that keep and carry the ciphertext, a device removed before the
+    /// secret was derived) learns nothing: without the secret no key, and no address, follows
+    /// from any bytes. The key never leaves the reference, which travels inside the sealed
+    /// record, so a reader who joins later opens the item as before, and a reference sealed
+    /// under a fresh key opens as it always did.
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        None
+    }
+
+    /// The largest item this store accepts: a write that hashes before it seals refuses a larger
+    /// one as it reads it, rather than holding it whole first ([`ContentStore::put_reader`]).
+    fn max_item_bytes(&self) -> usize {
+        ContentLimits::default().max_item_bytes
+    }
+
+    /// A directory beside the content this store keeps, where a sealing write may keep the
+    /// plaintext it hashes in a file rather than in memory. `None` for a store with no directory
+    /// of its own: one that keeps content on a host, or holds it in memory.
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        None
     }
 }
 
@@ -243,6 +384,10 @@ impl ContentBackend for OneWorkspace {
         self.0.collect_unreferenced(live)
     }
 
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.0.release(hash)
+    }
+
     fn shared(&self) -> bool {
         self.0.shared()
     }
@@ -250,12 +395,29 @@ impl ContentBackend for OneWorkspace {
     fn workspace_scoped(&self) -> bool {
         true
     }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        self.0.content_secret()
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        self.0.max_item_bytes()
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        self.0.scratch_dir()
+    }
 }
 
 /// An app's handle to binary content: cheap to clone, passed to whatever needs it.
+///
+/// Everything here takes a reference ([`ContentRef`]) where it names content: a plain address, or a
+/// sealed reference, which reads through its key. What a store hands back for what it stored is the
+/// reference to keep: sealed when the store seals ([`Self::sealing`]).
 #[derive(Clone)]
 pub struct ContentStore {
     backend: Arc<dyn ContentBackend>,
+    seals: bool,
 }
 
 impl std::fmt::Debug for ContentStore {
@@ -265,24 +427,49 @@ impl std::fmt::Debug for ContentStore {
 }
 
 impl ContentStore {
-    /// A store over `backend`.
     pub fn new(backend: impl ContentBackend + 'static) -> Self {
+        Self::from_backend(Arc::new(backend))
+    }
+
+    pub fn from_backend(backend: Arc<dyn ContentBackend>) -> Self {
         Self {
-            backend: Arc::new(backend),
+            backend,
+            seals: false,
         }
     }
 
-    /// A store over a shared backend.
-    pub fn from_backend(backend: Arc<dyn ContentBackend>) -> Self {
-        Self { backend }
+    /// This store, sealing what it stores: each item under a key of its own, kept under the
+    /// address of its ciphertext, and named by a reference that carries the key. The key derives
+    /// from the members' content secret and the bytes when the backend holds one
+    /// ([`ContentBackend::content_secret`]), and is fresh otherwise. The store a record's content
+    /// travels through seals, so the record's readers alone open it.
+    #[must_use]
+    pub fn sealing(self) -> Self {
+        Self {
+            seals: true,
+            ..self
+        }
     }
 
-    /// Content that lives and dies with this handle and its clones: tests, headless tools.
+    /// This store, keeping what it stores under its own address, unsealed: for code that must name
+    /// content alike wherever it runs (an action applying on every replica). Sealed references
+    /// still read.
+    #[must_use]
+    pub fn unsealed(self) -> Self {
+        Self {
+            seals: false,
+            ..self
+        }
+    }
+
+    pub const fn seals(&self) -> bool {
+        self.seals
+    }
+
     pub fn memory() -> Self {
         Self::new(MemoryBackend::default())
     }
 
-    /// Content in the directory `root`, created on first write.
     #[cfg(feature = "dir")]
     pub fn in_dir(root: impl Into<PathBuf>) -> Self {
         Self::new(DirBackend::new(root))
@@ -305,7 +492,7 @@ impl ContentStore {
             return Self::in_dir(PathBuf::from(shared));
         }
         if !tilo_files::available(tilo_files::Feature::NativePaths) {
-            return Self::in_page_files();
+            return Self::page_files();
         }
         let Some(data) = tilo_paths::data_dir() else {
             tracing::warn!("no data directory; binary content is kept in memory only");
@@ -319,89 +506,237 @@ impl ContentStore {
     }
 
     /// Where files have no native path (a browser page): content in the profile's app files,
-    /// which outlive the page. Every app of the profile shares the one store, as native apps
-    /// share `tilo/content`. The page holds those files in memory, so the store is kept
-    /// smaller than a native one.
+    /// which outlive the page, so an upload a page stored is still here after a reload. Every
+    /// app of the profile shares the one store, as native apps share `tilo/content`. The page
+    /// holds those files in memory, so the store is bounded: an item or store past the bound is
+    /// refused, never dropped, and nothing collects what the page stored on its own. A page whose
+    /// host loaded no app files keeps content in memory, under the same bounds, as a tab alone can.
+    ///
+    /// This is the store a page host lends each window it opens, as the framework's native
+    /// process host lends `tilo_content_device::for_app`'s: a window keeps content in the store
+    /// its host lent it (`cx.content()`), never in one it opens itself.
     #[cfg(feature = "dir")]
-    fn in_page_files() -> Self {
-        let Ok(content) = tilo_files::VPath::new("content") else {
-            return Self::memory();
+    #[must_use]
+    pub fn page_files() -> Self {
+        let limits = ContentLimits {
+            max_item_bytes: PAGE_MAX_ITEM_BYTES,
+            max_total_bytes: PAGE_MAX_TOTAL_BYTES,
+            ..ContentLimits::default()
         };
-        let location = tilo_paths::AppPaths::for_app(PAGE_STORE_OWNER)
-            .data()
-            .join(&content);
-        Self::new(FilesBackend::new(
-            location,
-            ContentLimits {
-                max_item_bytes: PAGE_MAX_ITEM_BYTES,
-                max_total_bytes: PAGE_MAX_TOTAL_BYTES,
-                ..ContentLimits::default()
-            },
-        ))
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let mirrored = tilo_files::web::is_mirrored(&tilo_paths::default_profile());
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let mirrored = true;
+        match tilo_files::VPath::new("content") {
+            Ok(content) if mirrored => Self::new(FilesBackend::new(
+                tilo_paths::AppPaths::for_app(PAGE_STORE_OWNER)
+                    .data()
+                    .join(&content),
+                limits,
+            )),
+            _ => Self::new(MemoryBackend::new(limits)),
+        }
     }
 
-    /// Store `bytes`, returning their address. The media type is sniffed from the content.
+    /// Store `bytes`, returning the reference to keep: sealed when this store seals. The media
+    /// type is sniffed from the content.
     ///
     /// # Errors
     /// See [`ContentBackend::put`].
     pub fn put(&self, bytes: &[u8]) -> Result<String, ContentError> {
         let mime = sniff(bytes).mime;
         let mut reader = bytes;
-        self.backend
-            .put(&mut reader, &mime)
+        self.put_reader(&mut reader, &mime)
             .map(|stored| stored.hash)
     }
 
-    /// Store everything `reader` yields without holding it in memory: the device store sends it
-    /// to the daemon one `runtime_fs::blobs::MAX_PUT_CHUNK` at a time.
+    /// Store `bytes` as they are, under their own address, even in a store that seals: content
+    /// that is public by nature (an app's surface, which whoever decides its changes reads).
     ///
     /// # Errors
     /// See [`ContentBackend::put`].
-    pub fn put_reader(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
-        self.backend.put(reader, mime)
+    pub fn put_public(&self, bytes: &[u8]) -> Result<String, ContentError> {
+        let mut reader = bytes;
+        self.backend
+            .put(&mut reader, &sniff(bytes).mime)
+            .map(|stored| stored.hash)
     }
 
-    /// Store every input `inputs` collected (an import's images, say).
+    /// Keep `bytes` as the content `reference` names: sealed under its key when it carries one, so
+    /// a device that holds the bytes keeps exactly what the writer stored. Refused when `bytes`
+    /// are not that content.
+    ///
+    /// # Errors
+    /// [`ContentError::HashMismatch`] for other bytes, else see [`ContentBackend::put`].
+    pub fn put_as(&self, reference: &str, bytes: &[u8]) -> Result<(), ContentError> {
+        let parsed = ContentRef::parse(reference)
+            .ok_or_else(|| ContentError::InvalidHash(reference.to_owned()))?;
+        let stored = match parsed.key() {
+            None => self.put_public(bytes)?,
+            Some(key) => {
+                let sealed = tilo_seal::content::seal(key, bytes)
+                    .map_err(|error| ContentError::Io(error.to_string()))?;
+                let mut reader = sealed.as_slice();
+                self.backend.put(&mut reader, SEALED_MIME)?.hash
+            }
+        };
+        if stored == parsed.address() {
+            Ok(())
+        } else {
+            Err(ContentError::HashMismatch)
+        }
+    }
+
+    /// Store everything `reader` yields without holding it in memory: the device store sends it
+    /// to the daemon one `runtime_fs::blobs::MAX_PUT_CHUNK` at a time. [`Stored::hash`] is the
+    /// reference to keep, sealed when this store seals.
+    ///
+    /// A sealing store with the members' secret hashes the plaintext in a first pass and seals it
+    /// in a second, and refuses it once it is past [`ContentBackend::max_item_bytes`]: a large
+    /// item waits in a file beside the store's own content
+    /// ([`ContentBackend::scratch_dir`]) rather than whole in memory, and an oversized one is
+    /// refused without being held at all.
+    ///
+    /// # Errors
+    /// See [`ContentBackend::put`], and [`ContentError::ItemTooLarge`] for an item past the
+    /// store's limit.
+    pub fn put_reader(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
+        if !self.seals {
+            return self.backend.put(reader, mime);
+        }
+        // With the members' secret the key is the bytes' keyed hash, so they are read once to
+        // hash them, kept in memory while they are small and in a file beside the store's own
+        // content past that, then read again to seal them. Such a key seals the one plaintext it
+        // was derived from, as a fresh one does, so the nonces sealing derives from a chunk's
+        // position never repeat under it.
+        let mut gathered = None;
+        let key = match self.backend.content_secret() {
+            Some(secret) => {
+                let mut hasher = convergent_hasher(&secret);
+                gathered = Some(self.gather(reader, &mut hasher)?);
+                tilo_seal::SymmetricKey::from_bytes(*hasher.finalize().as_bytes())
+            }
+            None => tilo_seal::SymmetricKey::generate()
+                .map_err(|error| ContentError::Io(error.to_string()))?,
+        };
+        let source: Box<dyn Read + '_> = match &mut gathered {
+            Some(gathered) => gathered.source()?,
+            None => Box::new(reader),
+        };
+        let mut sealed = tilo_seal::content::SealReader::new(&key, source)
+            .map_err(|error| ContentError::Io(error.to_string()))?;
+        let stored = self.backend.put(&mut sealed, SEALED_MIME)?;
+        Ok(Stored {
+            hash: ContentRef::sealed(&stored.hash, key).to_string(),
+            len: stored.len,
+        })
+    }
+
+    /// Read `reader` to its end, hashing what it yields into `hasher`, and refuse it the moment
+    /// it is past what the store accepts: what it yields waits in memory while it is small, and
+    /// past that in a file beside the store's own content.
+    fn gather(
+        &self,
+        reader: &mut dyn Read,
+        hasher: &mut blake3::Hasher,
+    ) -> Result<Gathered, ContentError> {
+        let limit = self.backend.max_item_bytes();
+        let scratch = self.backend.scratch_dir();
+        let mut gathered = Gathered::new();
+        let mut buf = vec![0_u8; 64 * 1024];
+        let mut read = 0_usize;
+        loop {
+            // Never ask for more than the byte past the limit that refuses the item.
+            let want = limit.saturating_add(1).saturating_sub(read).min(buf.len());
+            let n = match reader.read(buf.get_mut(..want).unwrap_or_default()) {
+                Ok(0) => return Ok(gathered),
+                Ok(n) => n.min(want),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            read = read.saturating_add(n);
+            if read > limit {
+                return Err(ContentError::ItemTooLarge {
+                    actual: read,
+                    limit,
+                });
+            }
+            let chunk = buf.get(..n).unwrap_or_default();
+            hasher.update(chunk);
+            gathered.keep(chunk, scratch.as_deref())?;
+        }
+    }
+
+    /// Store every input `inputs` collected (an import's images, say), answering the reference to
+    /// keep for each input's address: the address itself, or a sealed reference when this store
+    /// seals, which the document naming the input names instead.
     ///
     /// # Errors
     /// The first refusal; inputs stored before it stay stored.
-    pub fn put_inputs(&self, inputs: &ContentInputs) -> Result<(), ContentError> {
+    pub fn put_inputs(
+        &self,
+        inputs: &ContentInputs,
+    ) -> Result<BTreeMap<String, String>, ContentError> {
+        let mut references = BTreeMap::new();
         for (hash, bytes) in inputs.iter() {
-            let mut reader = bytes;
-            let stored = self.backend.put(&mut reader, &sniff(bytes).mime)?;
-            if stored.hash != hash {
+            let reference = self.put(bytes)?;
+            if content_address(&reference).as_deref() != Some(hash) && !self.seals {
                 return Err(ContentError::HashMismatch);
             }
+            references.insert(hash.to_owned(), reference);
         }
-        Ok(())
+        Ok(references)
     }
 
-    /// The verified content at `hash`, or `None` when it is not here (or not intact).
-    pub fn read(&self, hash: &str) -> Option<Vec<u8>> {
-        let mut reader = self.backend.open(hash).ok()??;
+    /// Store again, sealed, the plain content `reference` names, when this store seals and it is
+    /// here: the sealed reference a record keeps in its place. `None` for a reference already
+    /// sealed, a store that does not seal, or content not here yet. The plain copy stays until
+    /// nothing references it ([`Self::collect_unreferenced`]), so a reader still holding the old
+    /// reference reads it meanwhile.
+    pub fn reseal(&self, reference: &str) -> Option<String> {
+        if !self.seals || is_sealed(reference) {
+            return None;
+        }
+        let bytes = self.read(reference)?;
+        self.put(&bytes)
+            .inspect_err(|error| tracing::warn!(%error, "content could not be sealed"))
+            .ok()
+    }
+
+    /// The verified content `reference` names, opened when sealed, or `None` when it is not here
+    /// (or not intact).
+    pub fn read(&self, reference: &str) -> Option<Vec<u8>> {
+        let mut reader = self.open(reference)?;
         let mut bytes = Vec::new();
         match reader.read_to_end(&mut bytes) {
             Ok(_) => Some(bytes),
             Err(error) => {
-                tracing::warn!(%hash, %error, "content store: unreadable content");
+                tracing::warn!(%error, "content store: unreadable content");
                 None
             }
         }
     }
 
-    /// A streaming, verifying read of the content at `hash`; see [`ContentReader`].
-    pub fn open(&self, hash: &str) -> Option<ContentReader> {
-        self.backend.open(hash).ok().flatten()
+    /// A streaming, verifying read of the content `reference` names, opened as it streams when
+    /// sealed; see [`ContentReader`].
+    pub fn open(&self, reference: &str) -> Option<ContentReader> {
+        let parsed = ContentRef::parse(reference);
+        let address = parsed.as_ref().map_or(reference, ContentRef::address);
+        let reader = self.backend.open(address).ok().flatten()?;
+        match parsed.as_ref().and_then(ContentRef::key) {
+            None => Some(reader),
+            Some(key) => tilo_seal::content::OpenReader::new(key, reader)
+                .ok()
+                .map(|reader| Box::new(reader) as ContentReader),
+        }
     }
 
-    /// Whether the content at `hash` is here.
-    pub fn has(&self, hash: &str) -> bool {
-        self.backend.has(hash)
+    pub fn has(&self, reference: &str) -> bool {
+        self.backend.has(&address_of(reference))
     }
 
-    /// Where the content at `hash` has got to.
-    pub fn state(&self, hash: &str) -> ContentState {
-        self.backend.state(hash)
+    pub fn state(&self, reference: &str) -> ContentState {
+        self.backend.state(&address_of(reference))
     }
 
     /// Whether content stored here reaches the app's other devices and collaborators; see
@@ -416,12 +751,21 @@ impl ContentStore {
         self.backend.workspace_scoped()
     }
 
+    /// A directory beside the content this store keeps, where a sealing write may keep the
+    /// plaintext it hashes in a file rather than in memory; see [`ContentBackend::scratch_dir`].
+    pub fn scratch_dir(&self) -> Option<PathBuf> {
+        self.backend.scratch_dir()
+    }
+
     /// This store, declared as one workspace's ([`Self::workspace_scoped`]): for a host that
     /// keeps a store for one workspace alone, so everything in it is that workspace's (a
     /// test's profile, one workspace's headless drive).
     #[must_use]
     pub fn for_one_workspace(self) -> Self {
-        Self::new(OneWorkspace(self.backend))
+        Self {
+            backend: Arc::new(OneWorkspace(self.backend)),
+            seals: self.seals,
+        }
     }
 
     /// Content in memory, as one workspace's store
@@ -431,12 +775,22 @@ impl ContentStore {
         Self::memory().for_one_workspace()
     }
 
-    /// Remove every item not named in `live`; see [`ContentBackend::collect_unreferenced`].
+    /// Remove every item not named in `live`, references or addresses; see
+    /// [`ContentBackend::collect_unreferenced`].
     ///
     /// # Errors
     /// See [`ContentBackend::collect_unreferenced`].
     pub fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
-        self.backend.collect_unreferenced(live)
+        let addresses = live.iter().map(|reference| address_of(reference)).collect();
+        self.backend.collect_unreferenced(&addresses)
+    }
+
+    /// Remove the item `reference` names ([`ContentBackend::release`]).
+    ///
+    /// # Errors
+    /// As [`ContentBackend::release`].
+    pub fn release(&self, reference: &str) -> Result<Collected, ContentError> {
+        self.backend.release(&address_of(reference))
     }
 }
 
@@ -465,14 +819,12 @@ impl<T: ContentSource + ?Sized> ContentSource for &T {
     }
 }
 
-/// The first source that has the content wins.
 impl<A: ContentSource, B: ContentSource> ContentSource for (A, B) {
     fn content(&self, hash: &str) -> Option<Cow<'_, [u8]>> {
         self.0.content(hash).or_else(|| self.1.content(hash))
     }
 }
 
-/// A source with no content at all, for documents known to reference none.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoContent;
 
@@ -514,14 +866,12 @@ impl ContentInputs {
         self.entries.is_empty()
     }
 
-    /// Every input, in address order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.entries
             .iter()
             .map(|(hash, bytes)| (hash.as_str(), bytes.as_slice()))
     }
 
-    /// Move every input of `other` into this set.
     pub fn append(&mut self, other: &mut Self) {
         self.entries.append(&mut other.entries);
     }
@@ -554,7 +904,6 @@ pub struct Verifying<R> {
 
 #[cfg(feature = "dir")]
 impl<R> Verifying<R> {
-    /// Verify what `inner` yields against the address `expected`.
     pub fn new(inner: R, expected: &str) -> Self {
         Self {
             inner,

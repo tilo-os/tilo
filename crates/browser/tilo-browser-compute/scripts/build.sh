@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Assemble lazy worker assets; also used by the canonical runtime/desktop builder.
+# Compiles with `cargo`, or with the cargo `$CARGO` names.
 # usage: build.sh [OUT] [--profile P] [--[no-]wasm-opt] [--module-only | --assets-only]
 # `--module-only` builds pkg/compute alone, `--assets-only` copies the worker's
 # modules alone: the runtime builder caches the module apart from the pages.
@@ -22,18 +23,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$profile" in
-  release) cargo_profile=wasm-release artifact=wasm-release ;;
-  assert) cargo_profile=wasm-assert artifact=wasm-assert ;;
-  dev) cargo_profile=dev artifact=debug ;;
+  release) cargo_profile=wasm-release ;;
+  assert) cargo_profile=wasm-assert ;;
+  dev) cargo_profile=dev ;;
+  # The development loop's: the light profile the runtime's page module is
+  # built in too, so a development bundle's worker is shaped like it.
+  quick) cargo_profile=wasm-dev ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
+# Cargo writes a profile's output under the profile's own name, but dev's
+# under `debug`.
+artifact=$cargo_profile
+[[ $artifact != dev ]] || artifact=debug
 assets() { cp crates/browser/tilo-browser-compute/web/compute-{worker,domains,protocol}.mjs "$out/"; }
 if [[ $parts == assets ]]; then mkdir -p "$out"; assets; exit 0; fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
+cargo=${CARGO:-cargo}
 pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/browser/tilo-browser-compute/Cargo.toml)
 [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || { echo "compute needs wasm-bindgen $pinned" >&2; exit 2; }
-cargo build --locked -p tilo-browser-compute --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
-target_dir=$(cargo metadata --format-version 1 --no-deps --offline | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+"$cargo" build --locked -p tilo-browser-compute --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
+target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg/compute"
 "$bindgen" "$target_dir/wasm32-unknown-unknown/$artifact/tilo_browser_compute.wasm" --target web --out-dir "$out/pkg/compute" --out-name tilo_browser_compute
 if [[ $optimize == 1 ]]; then
@@ -45,5 +54,5 @@ fi
 node --input-type=module - "$out/pkg/compute/tilo_browser_compute_bg.wasm" "$profile" <<'JS'
 import {readFileSync} from 'node:fs';
 import {inspectArtifact} from './crates/browser/tilo-browser-compute/scripts/artifact.mjs';
-console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:process.argv[3] !== 'dev'}));
+console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:['release','assert'].includes(process.argv[3])}));
 JS

@@ -1,9 +1,5 @@
-//! `WordProcessor` — a rich-text editor over a `tilo-doc` document living in a host
-//! `AutoCommit` (e.g. `ui::State.doc`). This module holds the **editing model**:
-//! a caret `(block_id, char_offset)` and the keyboard edit operations
-//! (insert / Enter-split / Backspace-merge / caret motion) expressed as
-//! mutations of the canonical document. Rendering + the `ui::Widget` impl live
-//! in `widget.rs`; click-to-caret needs layout and is wired there.
+//! The editing model over a `tilo-doc` document: a caret of `(block id, character offset)`
+//! and the keyboard edits, as mutations of the canonical document.
 
 use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
@@ -17,22 +13,16 @@ use ui::widget::Edits;
 #[cfg(test)]
 mod fixtures;
 
-/// One block's `(block_id, start, end)` character range, as returned by the
-/// selection/format-span readers below.
 pub type BlockSpans = Vec<(String, usize, usize)>;
 
-/// Caret position: a block id plus a character offset within that block's text.
+/// A caret: a block id and a character offset into that block's text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Caret {
     pub block: String,
     pub offset: usize,
 }
 
-/// Order a caret/anchor pair in document order using block indices.
-///
-/// Shared by the editing model (CRDT block order) and the page widget (its
-/// cached `BlockView` list), so draw-time and mutation-time selection cannot
-/// disagree on the comparison rule.
+/// Order a caret and anchor by block index, as both the model and the widget compare them.
 pub(crate) fn ordered_selection_span(
     anchor: Option<&Caret>,
     caret: &Caret,
@@ -54,7 +44,6 @@ pub(crate) fn ordered_selection_span(
     }
 }
 
-/// Per-block `(id, start, end)` char ranges spanning an ordered selection.
 pub(crate) fn selection_block_ranges(
     start: &Caret,
     end: &Caret,
@@ -76,8 +65,6 @@ pub(crate) fn selection_block_ranges(
 
 pub use tilo_document::ClipBlock;
 
-/// One entry of the document outline / navigation pane: a heading block's id,
-/// its `level` (1-based; defaults to 1), and its current text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Heading {
     pub id: String,
@@ -85,22 +72,17 @@ pub struct Heading {
     pub text: String,
 }
 
-/// True when a materialized block was generated as part of the table of contents
-/// (carries a truthy `toc` attr). Used to find the old TOC for replacement and to
-/// keep TOC lines out of the heading outline.
+/// Whether a block is a generated table-of-contents line.
 pub(crate) fn block_is_toc(b: &tilo_doc::snapshot::BlockView) -> bool {
     b.flag("toc")
 }
 
-/// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
-/// with near-duplicates collapsed. Blank / malformed entries are skipped.
+/// The `tab_stops` attr as sorted px positions; malformed entries are skipped.
 pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
     let mut v: Vec<f64> = raw
         .split(',')
         .filter_map(|s| s.trim().parse::<f64>().ok())
-        // `parse` accepts "nan"/"inf" as valid floats; a non-finite stop would
-        // draw off-screen forever and corrupt ruler-position math, so reject it
-        // like any other malformed entry.
+        // `parse` takes nan and inf; a stop that is not finite would corrupt the ruler math.
         .filter(|p| p.is_finite() && *p >= 0.0)
         .collect();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -108,46 +90,28 @@ pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
     v
 }
 
-/// The editing core. `bind` resolves/initialises the document; the edit ops
-/// mutate the host `AutoCommit` and keep the caret consistent.
 pub struct WordProcessor {
     pub(crate) containers: Option<Containers>,
     pub(crate) ids: Option<IdGen>,
     pub(crate) caret: Caret,
-    /// Selection anchor; a selection exists when this is set and differs from
-    /// the caret (within the same block, for v1).
+    /// The selection anchor: a selection exists while it is set and differs from the caret.
     pub(crate) selection_anchor: Option<Caret>,
-    /// The active **edit context** — which page region the caret + edit ops
-    /// address. `Body` is the default canonical flow; `Header`/`Footer` route
-    /// every text/structure op to the page header / footer container instead (so
-    /// clicking into a running-head band lets the user type there). Per-region
-    /// caret state is stashed in `region_carets` so switching contexts (and back)
-    /// restores where the caret was.
+    /// Which page region the caret and the edits address: the body, or a page band.
     pub(crate) region: Region,
-    /// Stashed `(caret, anchor)` for the regions not currently active, so e.g.
-    /// returning to the body re-seats the caret where it was. Indexed by region.
+    /// The `(caret, anchor)` of each region not active, so returning to it restores the caret.
     body_caret: Option<(Caret, Option<Caret>)>,
     header_caret: Option<(Caret, Option<Caret>)>,
     footer_caret: Option<(Caret, Option<Caret>)>,
-    /// Shared byte-safe horizontal edit core for the active block. The
-    /// surrounding model still owns block splits/merges and tilo-doc structure.
     edit_core: EditCore,
-    /// Where the document's binary inputs (its images) live. The document only references them
-    /// by content address. In memory until the app hands over its store.
+    /// The document's images, by content address; in memory until the app hands over its store.
     content: tilo_content::ContentStore,
-    /// Where every edit goes: the framework's dispatcher, which checks the
-    /// participant's permission, attributes the edit and groups typing into
-    /// undo steps. Without one (a view that was never attached) nothing is
-    /// written.
+    /// Where every edit goes: checks the participant's permission, attributes the edit and
+    /// groups typing into undo steps. A view that was never attached writes nothing.
     dispatch: Option<ui::framework::Dispatcher<crate::framework::Document>>,
-    /// The body's order as the window's kept state holds it, in step with
-    /// the document, while a motion runs: finding a block's neighbours then
-    /// costs `O(log n)` instead of listing the body.
+    /// The body order while a motion runs, so a block's neighbours cost `O(log n)`, not a listing.
     kept_body: Option<std::rc::Rc<tilo_document::BodyOrder>>,
 }
 
-/// The active region's blocks in order: the kept body order, or the region
-/// listed.
 enum Order<'a> {
     Kept(&'a tilo_document::BodyOrder),
     Listed(Vec<String>),
@@ -200,7 +164,6 @@ impl WordProcessor {
         }
     }
 
-    /// Submit every edit through `dispatch` from now on.
     pub(crate) fn attach(
         &mut self,
         dispatch: ui::framework::Dispatcher<crate::framework::Document>,
@@ -208,22 +171,18 @@ impl WordProcessor {
         self.dispatch = Some(dispatch);
     }
 
-    /// Keep the document's binary inputs in `content` (the app's store) from now on.
     pub fn set_content_store(&mut self, content: tilo_content::ContentStore) {
         self.content = content;
     }
 
-    /// The store holding the document's binary inputs.
     pub fn content_store(&self) -> &tilo_content::ContentStore {
         &self.content
     }
 
-    /// The region the caret + edit ops currently address.
     pub fn region(&self) -> Region {
         self.region
     }
 
-    /// True when editing the page header or footer (not the body flow).
     pub fn in_running_region(&self) -> bool {
         !matches!(self.region, Region::Body)
     }
@@ -236,25 +195,17 @@ impl WordProcessor {
         }
     }
 
-    /// Switch the active edit context to `region`, stashing the current caret +
-    /// selection under the old region and restoring (or seeding) the new one.
-    /// For Header/Footer this lazily creates an empty paragraph if the region is
-    /// empty, so there is always a block to type into. Returns the caret block id
-    /// the context lands on (empty string only if the doc isn't bound).
+    /// Switch the edit context to `region`, stashing the caret on the way out and restoring it
+    /// on the way back; a header or footer starts with one block. Answers its caret block id.
     pub fn focus_region(&mut self, state: &mut ui::widget::Edits<'_>, region: Region) -> String {
         if region == self.region {
-            // Already here — still guarantee a block exists (header/footer may be
-            // empty) and the caret is valid.
             return self.ensure_region_block(state);
         }
-        // Stash the outgoing region's caret/selection.
         let prev = (self.caret.clone(), self.selection_anchor.clone());
         let prev_region = self.region;
         *self.caret_slot(prev_region) = Some(prev);
 
         self.region = region;
-        // Restore the incoming region's caret if we have one and it still exists;
-        // otherwise fall back to its first block.
         let restored = self.caret_slot(region).take();
         if let Some((c, anchor)) = restored {
             self.caret = c;
@@ -266,14 +217,10 @@ impl WordProcessor {
         self.ensure_region_block(state)
     }
 
-    /// Convenience: focus the body context (Esc / clicking the body).
     pub fn focus_body(&mut self, state: &mut ui::widget::Edits<'_>) -> String {
         self.focus_region(state, Region::Body)
     }
 
-    /// Guarantee the active region has at least one block and the caret sits on a
-    /// real one (clamped). Creates an empty paragraph in an empty header/footer.
-    /// Returns the resolved caret block id.
     fn ensure_region_block(&mut self, state: &mut ui::widget::Edits<'_>) -> String {
         if self.containers.is_none() {
             return String::new();
@@ -303,14 +250,12 @@ impl WordProcessor {
         self.caret.block.clone()
     }
 
-    /// Begin (or keep) a selection anchored at the current caret.
     pub fn set_anchor(&mut self) {
         if self.selection_anchor.is_none() {
             self.selection_anchor = Some(self.caret.clone());
         }
     }
 
-    /// Put a collapsed caret at `offset` in `block`, dropping any selection.
     fn collapse_at(&mut self, block: String, offset: usize) {
         self.caret = Caret { block, offset };
         self.selection_anchor = None;
@@ -326,10 +271,8 @@ impl WordProcessor {
             .is_some_and(|a| a != &self.caret)
     }
 
-    /// Selection endpoints in document order, if non-empty.
     pub fn selection_span(&self, state: &AutoCommit) -> Option<(Caret, Caret)> {
-        // Bail before `ordered_blocks`: a lone caret must not scan the body
-        // list (see `framework_host` keystroke-cost test).
+        // Bail before `ordered_blocks`: a lone caret must not scan the body.
         let anchor = self.selection_anchor.as_ref()?;
         if anchor == &self.caret {
             return None;
@@ -340,7 +283,6 @@ impl WordProcessor {
         })
     }
 
-    /// Per-block selected ranges `(block, start, end)` spanning the selection.
     pub fn selection_blocks(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
         let Some((start, end)) = self.selection_span(state) else {
             return vec![];
@@ -357,9 +299,7 @@ impl WordProcessor {
         )
     }
 
-    /// Build a rich fragment of the selection: `(plain_text, blocks)`. The plain
-    /// text doubles as a clipboard key so paste knows the system clipboard still
-    /// holds this fragment.
+    /// The selection as `(plain text, blocks)`; the plain text is the clipboard key.
     pub fn copy_fragment(&self, state: &AutoCommit) -> (String, Vec<ClipBlock>) {
         let Some(containers) = self.containers.as_ref() else {
             return (String::new(), vec![]);
@@ -406,8 +346,6 @@ impl WordProcessor {
         (plain.join("\n"), blocks)
     }
 
-    /// Check that `bytes` import as `format`, and keep any images they name.
-    /// Does not write `state`. The returned action is what Open submits.
     pub fn stage_replacement(
         &mut self,
         bytes: &[u8],
@@ -418,8 +356,6 @@ impl WordProcessor {
             .ok()
     }
 
-    /// Move the caret to the start of the document after a replacement action
-    /// has been applied.
     pub fn seat_after_replacement(&mut self, state: &AutoCommit) {
         let Some(containers) = self.containers.clone() else {
             return;
@@ -438,9 +374,7 @@ impl WordProcessor {
         self.clear_anchor();
     }
 
-    /// Load the document's stylesheet from the **CRDT styles container** (the
-    /// field-level-mergeable, ODF-round-trippable source of truth), or the
-    /// built-in defaults when it holds none.
+    /// The document's stylesheet from its CRDT container, or the built-in defaults.
     pub fn stylesheet(&self, state: &AutoCommit) -> StyleSheet {
         let Some(c) = self.containers.as_ref() else {
             return StyleSheet::default();
@@ -449,14 +383,10 @@ impl WordProcessor {
         if ids.is_empty() {
             return StyleSheet::default();
         }
-        // Built-in defaults are the base layer so plain blocks always resolve to a
-        // real style (an imported `.odt` only writes the *named* styles its blocks
-        // reference into the container, not the built-ins); container styles —
-        // imported, user-defined, or edited built-ins — overlay them.
+        // Built-in defaults are the base layer, so a plain block always resolves to a real style;
+        // the container's styles overlay them.
         let mut sheet = StyleSheet::default();
         for id in ids {
-            // Typed style actions persist individual fields. Missing fields
-            // keep the resolved base style instead of becoming zero metrics.
             let mut props = sheet.get(&id).to_attrs();
             props.extend(tilo_doc::model::style_props(state, c, &id));
             sheet.styles.insert(id, StyleProps::from_attrs(&props));
@@ -464,10 +394,7 @@ impl WordProcessor {
         sheet
     }
 
-    /// The document's persisted page margins as `[top, right, bottom, left]` (px),
-    /// or `None` when the document does not record them (a fresh / legacy doc, so
-    /// the widget keeps its defaults). Stored as four document-level meta strings
-    /// so page setup survives save/reopen — part of the document, not the widget.
+    /// The document's page margins `[top, right, bottom, left]` in px, `None` when it records none.
     pub fn page_margins(&self, state: &AutoCommit) -> Option<[f64; 4]> {
         let c = self.containers.as_ref()?;
         let get =
@@ -480,8 +407,6 @@ impl WordProcessor {
         ])
     }
 
-    /// The explicit `(width, height)` display size of an `image` block, if both
-    /// attrs are set. Lets the panel seed its resize field from the live doc.
     pub fn image_size(&self, state: &AutoCommit, block_id: &str) -> Option<(f64, f64)> {
         let c = self.containers.as_ref()?;
         let b = tilo_doc::model::materialize(state, c)
@@ -533,8 +458,7 @@ impl WordProcessor {
         }
     }
 
-    /// Char ranges to apply an inline font mark to: the selection, or — with no
-    /// selection — the whole caret block.
+    /// The selection's ranges, or the whole caret block when there is none.
     fn font_ranges(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
         if self.has_selection() {
             self.selection_blocks(state)
@@ -544,7 +468,6 @@ impl WordProcessor {
         }
     }
 
-    /// Whether a named boolean run mark covers the whole of `ranges`.
     fn mark_over_ranges(
         &self,
         state: &AutoCommit,
@@ -563,29 +486,15 @@ impl WordProcessor {
             .all(|(b, s, e)| tilo_doc::model::has_mark_over(state, containers, b, *s, *e, name))
     }
 
-    // ---- action planning (pure reads shared with the action model) ----------
-    //
-    // These expose the selection/mark resolution the private edit ops use, so
-    // the widget can build the matching `RichTextAction` and dispatch it
-    // through the Tilo executor instead of mutating the document directly. They
-    // never mutate — the action's `apply` performs the write.
-
-    /// The active [`RegionKind`](crate::actions::RegionKind) the caret + edit ops
-    /// address (body / header / footer).
     pub fn region_kind(&self) -> crate::actions::RegionKind {
         crate::actions::RegionKind::from_region(self.region)
     }
 
-    /// The blocks a block-level format targets: the selection, or the caret
-    /// block when there is no selection.
     pub fn target_block_ids(&self, state: &AutoCommit) -> Vec<String> {
         self.selected_block_ids(state)
     }
 
-    /// Plan a **toggle** inline mark (bold/italic/…): the selection spans and
-    /// whether the mark is already active over them (so the caller removes
-    /// rather than adds). Returns `None` when there is no active selection — a
-    /// toggle mark with no selection is a no-op, matching the live editor.
+    /// A toggle mark's ranges and whether it already covers them; `None` without a selection.
     pub fn plan_toggle_mark(&self, state: &AutoCommit, name: &str) -> Option<(BlockSpans, bool)> {
         let sel = self.selection_blocks(state);
         if self.containers.is_none() || sel.iter().all(|(_, s, e)| s >= e) {
@@ -598,8 +507,6 @@ impl WordProcessor {
         Some((sel, all_marked))
     }
 
-    /// Plan a **mutually-exclusive** toggle mark (super/sub): the ranges (over
-    /// the selection or whole caret block) and whether it is already active.
     pub fn plan_exclusive_mark(
         &self,
         state: &AutoCommit,
@@ -610,16 +517,7 @@ impl WordProcessor {
         (ranges, on)
     }
 
-    // ---- ruler: per-block indents + tab stops --------------------------------
-    // The horizontal ruler edits three per-paragraph block attrs (so they merge
-    // field-by-field and survive save/reload): `indent` (left/hanging indent px,
-    // added on top of the style's indent), `first_line_indent` (extra indent on
-    // the paragraph's first line only — a v1 layout limitation), and `tab_stops`
-    // (a comma-separated px-position list, since tilo-doc's attr map stores only
-    // scalars).
-
-    /// The tab stops (px positions from the left text margin) of an arbitrary
-    /// block, sorted ascending. Empty when the `tab_stops` attr is unset/blank.
+    /// The block's tab stops in px from the left text margin, sorted.
     pub fn block_tab_stops(&self, state: &AutoCommit, block: &str) -> Vec<f64> {
         let Some(c) = self.containers.as_ref() else {
             return vec![];
@@ -634,12 +532,10 @@ impl WordProcessor {
         parse_tab_stops(&raw)
     }
 
-    /// Tab stops on the caret's block (convenience for the widget).
     pub fn caret_tab_stops(&self, state: &AutoCommit) -> Vec<f64> {
         self.block_tab_stops(state, &self.caret.block.clone())
     }
 
-    /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
     fn caret_table(&self, state: &AutoCommit) -> Option<(String, BlockSpans)> {
         let containers = self.containers.as_ref()?;
         let at = |id: &str| {
@@ -657,8 +553,7 @@ impl WordProcessor {
         };
         let order = self.order(state);
         let cells = match (&order, order.position(&self.caret.block)) {
-            // A table is a run of consecutive cells: read outward from the
-            // caret's cell to the run's ends.
+            // A table is a run of consecutive cells: read outward from the caret's cell.
             (Order::Kept(_), Some(pos)) => {
                 let mut run = std::collections::VecDeque::from([cur]);
                 for i in (0..pos).rev() {
@@ -696,18 +591,11 @@ impl WordProcessor {
             .map_or((0, 0), |(_, r, c)| (*r, *c))
     }
 
-    /// Tab / Shift-Tab cell navigation. `forward` moves to the next cell in
-    /// row-major order (wrapping to the first cell of the next row). At the
-    /// table's **last** cell it stays put; the widget publishes a typed absolute
-    /// row-insertion action before calling this navigation helper. `!forward`
-    /// moves to the previous cell
-    /// (staying put at the very first cell). Returns `true` when the caret was in
-    /// a cell and was handled here (so the caller should not insert a tab).
+    /// Move the caret a cell forward or back in row-major order, staying put at each end.
     pub fn tab_cell(&mut self, state: &mut ui::widget::Edits<'_>, forward: bool) -> bool {
         let Some((_, cells)) = self.caret_table(state) else {
             return false;
         };
-        // Cells in row-major order (row, then col) — the navigation order.
         let mut ordered: Vec<(String, usize, usize)> = cells;
         ordered.sort_by_key(|(_, r, c)| (*r, *c));
         let Some(pos) = ordered
@@ -721,17 +609,14 @@ impl WordProcessor {
                 self.collapse_at(next, 0);
             }
         } else if let Some((prev, ..)) = pos.checked_sub(1).and_then(|i| ordered.get(i).cloned()) {
-            // Land at the end of the previous cell's text (natural Shift-Tab feel).
+            // Land at the end of the previous cell's text.
             let off = self.block_len(state, &prev);
             self.collapse_at(prev, off);
         }
         true
     }
 
-    /// Vertical cell navigation (Up/Down) when the caret is at the top/bottom text
-    /// edge of a cell: move to the vertically-adjacent cell (same column, row
-    /// ±1). Returns `true` when it moved between cells; `false` lets the caller
-    /// fall back to ordinary block-relative motion.
+    /// Move the caret to the cell above or below, once its text edge is reached.
     pub fn cell_vertical(&mut self, state: &AutoCommit, down: bool) -> bool {
         let Some((_, cells)) = self.caret_table(state) else {
             return false;
@@ -745,9 +630,6 @@ impl WordProcessor {
         if target_row == usize::MAX {
             return false;
         }
-        // Prefer the cell directly above/below; if that column is absent in the
-        // target row (ragged tables shouldn't happen, but be safe), pick the
-        // nearest column there.
         let in_row: Vec<&(String, usize, usize)> =
             cells.iter().filter(|(_, r, _)| *r == target_row).collect();
         if in_row.is_empty() {
@@ -765,36 +647,24 @@ impl WordProcessor {
         false
     }
 
-    /// Reconcile caret state without authoring document changes.
     pub fn reconcile(&mut self, state: &AutoCommit) {
-        // The caret's block has to exist in the *active region's* blocks, not
-        // the body's — otherwise a caret seated in a header or footer reads as
-        // stray on every body-only check and gets dragged back to the body.
+        // The caret must be in the active region's blocks, or a header caret reads as stray.
         let mut blocks = self.region_blocks_in_order(state);
         if blocks.is_empty() {
-            // The running head being edited has lost its last block, so there
-            // is nothing there to type into and the body is the context again.
             self.region = Region::Body;
             blocks = self.region_blocks_in_order(state);
         }
         if blocks.contains(&self.caret.block) {
-            // clamp offset to the (possibly remotely-shrunk) block length
             let len = self.block_len(state, &self.caret.block);
             if self.caret.offset > len {
                 self.caret.offset = len;
             }
         } else if let Some(first) = blocks.first().cloned() {
-            // Nothing seated yet, or the block the caret was on is gone. The
-            // first position of this region is where to be, and an anchor
-            // into a vanished block must not survive it.
             self.collapse_at(first, 0);
         }
     }
 
-    /// Resolve the document model under `root` (initialising the schema if
-    /// absent), guarantee at least one block, and keep the caret on a real block.
-    /// Bind to a document this participant may only view: resolve it and
-    /// seat the caret, writing nothing.
+    /// Resolve the document, guarantee a block, keep the caret on a real block; writes nothing.
     pub fn bind_view_only(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
             let Some(c) = crate::model::body_at(state, root)
@@ -823,9 +693,7 @@ impl WordProcessor {
     }
 
     pub fn bind(&mut self, state: &AutoCommit, root: &ObjId) {
-        // A canonical body caret proves that the body is nonempty. Resolve
-        // only its block instead of sorting the entire body twice per sync.
-        // Match ordered_keys membership exactly; a map key alone is not enough.
+        // A body caret proves the body is nonempty: resolve its block, not the whole order.
         if self.region == Region::Body
             && self.containers.as_ref().is_some_and(|c| {
                 tilo_doc::model::region_block_len(state, c, Region::Body, &self.caret.block)
@@ -839,27 +707,18 @@ impl WordProcessor {
             return;
         }
         if self.containers.is_none() {
-            // The record's genesis made the document; a view never creates it.
             let Some(c) = crate::model::body_at(state, root)
                 .and_then(|body| tilo_doc::model::open(state, &body).ok())
             else {
                 return;
             };
-            // Seed past existing block ids so editing a loaded/imported document
-            // never re-mints (and overwrites) an existing block.
+            // Seed past existing block ids, so an edit never re-mints one.
             self.ids = Some(tilo_doc::model::seeded_id_gen(state, &c));
             self.containers = Some(c);
         }
         self.reconcile(state);
     }
 
-    // ---- region-aware primitives -------------------------------------------
-    // The caret/edit machinery below addresses whichever region is active
-    // (`self.region`), dispatching each op to the body or region-aware (`*_in`)
-    // tilo-doc ops, so `insert_str`/`enter`/`backspace`/motion/marks are written once
-    // and work in body, header, and footer alike.
-
-    /// Block ids of the **active region**, in order.
     fn region_blocks_in_order(&self, state: &AutoCommit) -> Vec<String> {
         let Some(c) = self.containers.as_ref() else {
             return vec![];
@@ -875,8 +734,6 @@ impl WordProcessor {
         }
     }
 
-    /// Run `motion` with `body` as the body's order; `body` must be in step
-    /// with `state`.
     pub(crate) fn with_kept_body<T>(
         &mut self,
         body: Option<std::rc::Rc<tilo_document::BodyOrder>>,
@@ -888,9 +745,7 @@ impl WordProcessor {
         out
     }
 
-    /// Text of a block in the **active region** (body uses the body reader;
-    /// header/footer scan the materialized region — the body-only `block_text`
-    /// reader hard-codes the body container).
+    /// Text of a block in the active region; the body reader hard-codes the body container.
     fn region_block_text(&self, state: &AutoCommit, block: &str) -> Option<String> {
         let c = self.containers.as_ref()?;
         match self.region {
@@ -907,7 +762,6 @@ impl WordProcessor {
             .map_or(0, |t| t.chars().count())
     }
 
-    /// Whether a boolean mark covers `[start,end)` of a block in the active region.
     fn region_has_mark_over(
         &self,
         state: &AutoCommit,
@@ -932,14 +786,10 @@ impl WordProcessor {
         }
     }
 
-    // ---- region-aware writes (dispatch body vs. header/footer) -------------
-    // Each goes through the region-aware tilo-doc op (`*_in`) for the active region.
-
     fn block_len(&self, state: &AutoCommit, block: &str) -> usize {
         self.region_block_len(state, block)
     }
 
-    /// Text of the block the caret is in (in the active region).
     pub fn current_text(&self, state: &AutoCommit) -> String {
         self.region_block_text(state, &self.caret.block)
             .unwrap_or_default()
@@ -949,7 +799,6 @@ impl WordProcessor {
         self.region_blocks_in_order(state)
     }
 
-    /// Select the whitespace-delimited word under the caret (double-click).
     pub fn select_word(&mut self, state: &AutoCommit) {
         let text = self.current_text(state);
         let byte = text
@@ -1009,26 +858,19 @@ impl WordProcessor {
         });
     }
 
-    /// Show `text` as the input method's composition at the caret; it is
-    /// not part of the document until committed.
+    /// The input method's composition at the caret; not in the document until committed.
     pub fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         self.edit_core.set_preedit(text, cursor);
     }
 
-    /// Drop the composition.
     pub fn clear_preedit(&mut self) {
         self.edit_core.clear_preedit();
     }
 
-    /// The composition in progress (empty when none).
     pub fn preedit(&self) -> &str {
         self.edit_core.preedit()
     }
 
-    /// The composition in progress as an edit core over the caret block's
-    /// committed `text`, its caret at the document caret, or `None` while
-    /// nothing is being composed. Its display mapping lays the composition
-    /// out inside the paragraph.
     pub fn composition(&self, text: &str) -> Option<EditCore> {
         if !self.edit_core.has_preedit() {
             return None;
@@ -1118,7 +960,6 @@ impl WordProcessor {
         self.caret.offset = self.block_len(state, &self.caret.block);
     }
 
-    /// Move the caret up/down by `delta` blocks (block-granular Up/Down).
     pub fn move_block_relative(&mut self, state: &AutoCommit, delta: i32) {
         let order = self.order(state);
         if order.len() == 0 {
@@ -1132,9 +973,6 @@ impl WordProcessor {
         }
     }
 
-    /// Move the caret to the block at `index` (clamped), preserving a target
-    /// column where possible. Used by Up/Down once layout is available; here it
-    /// is the block-granular fallback.
     pub fn move_to_block(&mut self, state: &AutoCommit, index: usize) {
         let order = self.order(state);
         if order.len() == 0 {
@@ -1149,10 +987,7 @@ impl WordProcessor {
         self.caret = Caret { block, offset };
     }
 
-    /// The active selection as `((block, start), (block, end))`, ordered, **only**
-    /// when it is a single-block selection (the header/footer band's v1 case) —
-    /// `None` for no selection or a multi-block one. Used by the widget to paint
-    /// the band selection without depending on layout.
+    /// The selection when it lies in one block, for the band to paint without layout.
     pub fn band_selection_range(&self) -> Option<((String, usize), (String, usize))> {
         let anchor = self.selection_anchor.as_ref()?;
         if anchor == &self.caret || anchor.block != self.caret.block {
@@ -1212,7 +1047,6 @@ mod tests {
         assert_eq!(state.pending_ops(), before_pending);
         assert_eq!(state.clone().save(), before_bytes);
 
-        // The failed attempt must not poison the block-id/order bookkeeping.
         wp.clear_anchor();
         wp.enter(&mut Edits::lend(&mut state));
         wp.insert_str(&mut Edits::lend(&mut state), "still editable");
@@ -1223,27 +1057,20 @@ mod tests {
         );
     }
 
-    /// Corrupt docx and odt imports preserve the document; a successful import preserves the live document
-    /// identity and commit boundary; bind creates the initial paragraph and caret, refreshes the body caret
-    /// without order scans while clamping remote Unicode edits, accepts an empty byte order and recovers after
-    /// the last body deletion, and rejects non-canonical body carets keeping region fallbacks.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn imports_and_binding_keep_the_live_document_and_its_caret() {
-        // Phase: corrupt_docx_import_preserves_document.
         {
             assert_failed_import_preserves_document(crate::WpFormat::Docx);
         }
 
-        // Phase: corrupt_odt_import_preserves_document.
         {
             assert_failed_import_preserves_document(crate::WpFormat::Odt);
         }
 
-        // Phase: successful_format_import_preserves_live_document_identity.
         {
             for format in [crate::WpFormat::Docx, crate::WpFormat::Odt] {
                 let (mut source, mut source_state) = bound();
@@ -1286,7 +1113,6 @@ mod tests {
             }
         }
 
-        // Phase: bind_creates_initial_paragraph_and_caret.
         {
             let (wp, state) = bound();
             assert_eq!(wp.block_texts(&state), vec![String::new()]);
@@ -1294,7 +1120,6 @@ mod tests {
             assert!(!wp.caret.block.is_empty());
         }
 
-        // Phase: bound_body_caret_refresh_avoids_order_scans_and_clamps_remote_unicode_edits.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "abcdef");
@@ -1342,7 +1167,6 @@ mod tests {
             assert_eq!(wp.current_text(&state), "é🦀");
         }
 
-        // Phase: bind_accepts_empty_byte_order_and_recovers_after_last_body_deletion.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "text");
@@ -1376,7 +1200,6 @@ mod tests {
             );
         }
 
-        // Phase: bind_rejects_noncanonical_body_carets_and_keeps_region_fallbacks.
         {
             for damage in ["deleted", "scalar_block", "missing_order", "scalar_order"] {
                 let (mut wp, mut state) = bound();
@@ -1446,10 +1269,8 @@ mod tests {
         }
     }
 
-    /// A new document resolves the built-in styles without writing them.
     #[test]
     fn stylesheets_resolve_builtins_without_writing_them() {
-        // Phase: a_new_document_resolves_builtin_styles_without_writing_them.
         {
             let (wp, mut state) = bound();
             let heads = state.get_heads();
@@ -1472,32 +1293,26 @@ mod tests {
         }
     }
 
-    /// Caret motion crosses blocks and extends an active selection; a selection spans the anchored range;
-    /// select word picks the word under the caret.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn caret_and_selection_move_across_blocks() {
-        // Phase: caret_motion_crosses_blocks.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "ab");
             wp.enter(&mut Edits::lend(&mut state));
             wp.insert_str(&mut Edits::lend(&mut state), "cd");
-            // caret at end of "cd"; move_right at end → no-op (last block)
             wp.move_right(&state);
             assert_eq!(wp.current_text(&state), "cd");
             assert_eq!(wp.caret.offset, 2);
-            // move_left from offset 0 of "cd" → end of "ab"
             wp.move_home();
             wp.move_left(&state);
             assert_eq!(wp.current_text(&state), "ab");
             assert_eq!(wp.caret.offset, 2);
         }
 
-        // Phase: caret_motion_extends_an_active_selection.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "abcd");
@@ -1520,11 +1335,9 @@ mod tests {
             );
         }
 
-        // Phase: selection_spans_the_anchored_range.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "hello world");
-            // select "hello" (0..5)
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
@@ -1537,7 +1350,6 @@ mod tests {
             );
         }
 
-        // Phase: select_word_picks_word_under_caret.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "hello world foo");
@@ -1549,15 +1361,12 @@ mod tests {
         }
     }
 
-    /// Inline colour and font-size marks, highlight and toggled marks apply to the selection; alignment
-    /// applies across selected paragraphs and cells; set align and paragraph style.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn marks_and_paragraph_attributes_apply_to_the_selection() {
-        // Phase: align_applies_across_selected_paragraphs.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "one");
@@ -1586,7 +1395,6 @@ mod tests {
             }
         }
 
-        // Phase: align_applies_across_selected_cells.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
@@ -1617,7 +1425,6 @@ mod tests {
             }
         }
 
-        // Phase: toggle_mark_adds_then_removes.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "hello");
@@ -1639,7 +1446,6 @@ mod tests {
             );
         }
 
-        // Phase: set_align_and_paragraph_style.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "Title");
@@ -1659,14 +1465,12 @@ mod tests {
         }
     }
 
-    /// A multi-block selection copies across blocks; rich copy/paste preserves formatting.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn clipboard_copies_keep_structure_and_formatting() {
-        // Phase: multi_block_selection_copies_across_blocks.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "first");
@@ -1677,7 +1481,6 @@ mod tests {
             let blocks = wp.ordered_blocks(&state);
             assert_eq!(blocks.len(), 3);
 
-            // Select from "rst" of block 0 through "thi" of block 2.
             wp.set_caret(Caret {
                 block: blocks[0].clone(),
                 offset: 2,
@@ -1691,17 +1494,14 @@ mod tests {
             assert_eq!(wp.copy_fragment(&state).0, "rst\nsecond\nthi");
         }
 
-        // Phase: rich_copy_paste_preserves_formatting.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "hello world");
-            // bold "hello"
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
             toggle_mark(&wp, &mut state, "strong");
 
-            // re-select "hello" and copy a rich fragment
             wp.caret.offset = 0;
             wp.clear_anchor();
             wp.set_anchor();
@@ -1716,7 +1516,6 @@ mod tests {
                     .any(|m| m.name == "strong" && m.start == 0 && m.end == 5)
             );
 
-            // paste rich at the end → the pasted run keeps its bold
             wp.clear_anchor();
             wp.move_end(&state);
             let at = wp.caret.clone();
@@ -1742,8 +1541,6 @@ mod tests {
         }
     }
 
-    /// Toggle a boolean mark over the selection as the toolbar does: plan it,
-    /// then apply the one `SetMark` action.
     fn toggle_mark(wp: &WordProcessor, state: &mut AutoCommit, name: &str) {
         let (spans, active) = wp.plan_toggle_mark(state, name).expect("a selection");
         let action = crate::actions::set_mark_action(
@@ -1756,7 +1553,6 @@ mod tests {
         assert!(wp.apply_rich(&mut Edits::lend(state), action));
     }
 
-    /// Align the target blocks as the paragraph panel does.
     fn set_align(wp: &WordProcessor, state: &mut AutoCommit, align: &str) {
         let action = crate::actions::set_block_attr_action(
             wp.region_kind(),
@@ -1767,7 +1563,6 @@ mod tests {
         assert!(wp.apply_rich(&mut Edits::lend(state), action));
     }
 
-    /// Restyle the target paragraphs (table cells keep their kind).
     fn set_paragraph_style(
         wp: &WordProcessor,
         state: &mut AutoCommit,
@@ -1793,15 +1588,12 @@ mod tests {
             .and_then(|b| b.str_attr("align").map(str::to_owned))
     }
 
-    /// Table rows and columns add and delete; an inserted table has editable cells; inserted rows and
-    /// columns keep the table rectangular; deleting the last row removes the table.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn tables_stay_rectangular_and_editable() {
-        // Phase: table_add_and_delete_rows_cols.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
@@ -1825,7 +1617,6 @@ mod tests {
             assert_eq!(count(&wp, &state), 0);
         }
 
-        // Phase: insert_table_creates_editable_cells.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "before");
@@ -1833,7 +1624,6 @@ mod tests {
             let snap = tilo_doc::model::materialize(&state, wp.containers.as_ref().unwrap());
             let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
             assert_eq!(cells.len(), 6, "2x3 = 6 cells");
-            // every cell shares one table id; rows/cols are tagged
             let tid = match cells[0].attrs.get("table") {
                 Some(tilo_doc::AttrVal::Str(s)) => s.clone(),
                 other => panic!("cell missing table attr: {other:?}"),
@@ -1843,7 +1633,6 @@ mod tests {
                     .iter()
                     .all(|c| c.attrs.get("table") == Some(&tilo_doc::AttrVal::Str(tid.clone())))
             );
-            // caret landed in the first cell; typing edits it
             assert!(cells.iter().any(|c| c.id == wp.caret.block));
             wp.insert_str(&mut Edits::lend(&mut state), "A1");
             let snap2 = tilo_doc::model::materialize(&state, wp.containers.as_ref().unwrap());
@@ -1855,12 +1644,10 @@ mod tests {
             assert_eq!(first.text, "A1");
         }
 
-        // Phase: insert_row_grows_table_and_stays_rectangular.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 3);
             assert_rectangular(&table_grid(&wp, &state), 2, 3);
-            // Caret is in the first cell (row 0) after insert_table.
             edit_caret_table(&wp, &mut state, TableEdit::InsertRow { at: 1 });
             let grid = table_grid(&wp, &state);
             let rows = grid.iter().map(|(r, _)| *r).max().unwrap() + 1;
@@ -1868,7 +1655,6 @@ mod tests {
             assert_rectangular(&grid, 3, 3);
         }
 
-        // Phase: insert_row_between_rows_stays_rectangular.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
@@ -1876,7 +1662,6 @@ mod tests {
             assert_rectangular(&table_grid(&wp, &state), 3, 2);
         }
 
-        // Phase: delete_col_removes_one_cell_per_row.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 3, 3);
@@ -1888,7 +1673,6 @@ mod tests {
             assert_rectangular(&grid, 3, 2);
         }
 
-        // Phase: insert_col_left_and_right_stay_rectangular.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
@@ -1898,7 +1682,6 @@ mod tests {
             assert_rectangular(&table_grid(&wp, &state), 2, 4);
         }
 
-        // Phase: delete_last_row_removes_table.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 1, 2);
@@ -1912,7 +1695,6 @@ mod tests {
         }
     }
 
-    /// Apply a structural edit to the table the caret is in.
     fn edit_caret_table(wp: &WordProcessor, state: &mut AutoCommit, edit: TableEdit) {
         let (table, _) = wp.caret_table(state).expect("the caret is in a table");
         let action = crate::actions::edit_table_action(&table, edit);
@@ -1922,9 +1704,6 @@ mod tests {
         );
     }
 
-    /// The materialized `(row, col)` grid coordinates of every cell in the single
-    /// table the snapshot contains, sorted row-major. Reads the production
-    /// snapshot path so tests assert on what collaborators/exporters actually see.
     fn table_grid(wp: &WordProcessor, state: &AutoCommit) -> Vec<(usize, usize)> {
         let c = wp.containers.as_ref().unwrap();
         let snap = tilo_doc::model::materialize(state, c);
@@ -1943,8 +1722,6 @@ mod tests {
         g
     }
 
-    /// Assert a grid is a full `rows × cols` rectangle (every coordinate present
-    /// exactly once) — the table-rectangularity invariant.
     fn assert_rectangular(grid: &[(usize, usize)], rows: usize, cols: usize) {
         let mut expected: Vec<(usize, usize)> = (0..rows)
             .flat_map(|r| (0..cols).map(move |c| (r, c)))
@@ -1957,15 +1734,11 @@ mod tests {
         );
     }
 
-    /// Tab walks cells leaving structural append to the action host, Shift-Tab walks backwards, and vertical
-    /// arrows move between cells.
     #[test]
     fn table_navigation_walks_cells_and_leaves_structure_to_the_host() {
-        // Phase: tab_walks_cells_but_leaves_structural_append_to_the_action_host.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2); // caret in (0,0)
-            // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
             for expect in [(0, 1), (1, 0), (1, 1)] {
                 assert!(
                     wp.tab_cell(&mut Edits::lend(&mut state), true),
@@ -1973,9 +1746,6 @@ mod tests {
                 );
                 assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
             }
-            // The editing core deliberately does not perform a hidden structural
-            // mutation at the edge. The widget detects this position and dispatches
-            // an absolute `EditTable::InsertRow` through the shared action host.
             assert!(wp.tab_cell(&mut Edits::lend(&mut state), true));
             let grid = table_grid(&wp, &state);
             assert_rectangular(&grid, 2, 2);
@@ -1986,7 +1756,6 @@ mod tests {
             );
         }
 
-        // Phase: shift_tab_walks_backwards.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
@@ -2009,7 +1778,6 @@ mod tests {
             );
         }
 
-        // Phase: vertical_arrows_move_between_cells.
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2); // caret in (0,0)
@@ -2017,7 +1785,6 @@ mod tests {
             assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0));
             assert!(wp.cell_vertical(&state, false), "up moved back");
             assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (0, 0));
-            // Up from the top row has no cell above → not handled here.
             assert!(
                 !wp.cell_vertical(&state, false),
                 "no cell above the top row"
@@ -2048,22 +1815,17 @@ mod tests {
             .collect()
     }
 
-    /// Focusing the header routes typing into it and switching back edits the body; header bold routes to
-    /// the header block; a page number in the footer writes a field mark; body editing is unchanged by the
-    /// region machinery.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn header_and_footer_regions_edit_independently_of_the_body() {
-        // Phase: focusing_header_and_typing_writes_into_header_not_body.
         {
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "body-content");
             assert_eq!(wp.region(), Region::Body);
 
-            // Focus the header context — an empty header paragraph is created lazily.
             wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
             assert_eq!(wp.region(), Region::Header);
             assert!(wp.in_running_region());
@@ -2073,24 +1835,20 @@ mod tests {
             assert_eq!(body_texts(&wp, &state), vec!["body-content".to_string()]);
         }
 
-        // Phase: switching_back_to_body_edits_the_body_again.
         {
             let (mut wp, mut state) = bound();
             wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
             wp.insert_str(&mut Edits::lend(&mut state), "Head");
-            // Return to the body and type — edits go to the body, header preserved.
             wp.focus_body(&mut Edits::lend(&mut state));
             assert_eq!(wp.region(), Region::Body);
             wp.insert_str(&mut Edits::lend(&mut state), "Body");
             assert_eq!(body_texts(&wp, &state), vec!["Body".to_string()]);
             assert_eq!(header_texts(&wp, &state), vec!["Head".to_string()]);
-            // Returning to the header restores its caret (end of "Head") and appends.
             wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
             wp.insert_str(&mut Edits::lend(&mut state), "er");
             assert_eq!(header_texts(&wp, &state), vec!["Header".to_string()]);
         }
 
-        // Phase: header_bold_mark_routes_to_the_header_block.
         {
             let (mut wp, mut state) = bound();
             wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
@@ -2107,7 +1865,6 @@ mod tests {
                     .any(|m| m.name == "strong" && m.start == 0 && m.end >= 5),
                 "bold mark applied to the header run: {marks:?}"
             );
-            // Toggling again clears it (uses the region-aware unmark path).
             wp.select_all(&state);
             toggle_mark(&wp, &mut state, "strong");
             let hv2 = tilo_doc::model::materialize_region(
@@ -2121,7 +1878,6 @@ mod tests {
             );
         }
 
-        // Phase: insert_page_number_in_footer_writes_a_field_mark.
         {
             let (mut wp, mut state) = bound();
             wp.focus_region(&mut Edits::lend(&mut state), Region::Footer);
@@ -2148,10 +1904,7 @@ mod tests {
             );
         }
 
-        // Phase: body_editing_is_unchanged_by_the_region_machinery.
         {
-            // Regression guard: with the default Body context the ops behave exactly
-            // as before (the body path must stay intact).
             let (mut wp, mut state) = bound();
             wp.insert_str(&mut Edits::lend(&mut state), "helloworld");
             for _ in 0..5 {
@@ -2162,7 +1915,6 @@ mod tests {
                 wp.block_texts(&state),
                 vec!["hello".to_string(), "world".to_string()]
             );
-            // No header/footer were created by body editing.
             assert!(header_texts(&wp, &state).is_empty());
             assert!(footer_texts(&wp, &state).is_empty());
         }

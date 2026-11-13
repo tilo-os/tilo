@@ -67,13 +67,9 @@ fn rect(node: &InspectionNode) -> Rect {
 }
 
 fn find<'a>(node: &'a InspectionNode, widget: &str) -> &'a InspectionNode {
-    fn walk<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
-        if node.widget == widget {
-            return Some(node);
-        }
-        node.children.iter().find_map(|child| walk(child, widget))
-    }
-    walk(node, widget).unwrap_or_else(|| panic!("no {widget} in the inspection tree"))
+    (node.nodes().into_iter())
+        .find(|node| node.widget == widget)
+        .unwrap_or_else(|| panic!("no {widget} in the inspection tree"))
 }
 
 fn luma(p: [u8; 4]) -> f64 {

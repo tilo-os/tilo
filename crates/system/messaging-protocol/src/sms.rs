@@ -5,7 +5,6 @@
 use crate::{Error, Route, Service};
 use zeroize::Zeroizing;
 
-/// Typed create properties, sent in a D-Bus body rather than command arguments.
 pub struct CreateText {
     pub number: String,
     pub text: Zeroizing<String>,

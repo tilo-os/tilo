@@ -21,9 +21,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_desktop_surface::{DesktopHandle, DesktopNotifications, HostAction};
+use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_files::native::Watched;
 use ui::local_identity::{LocalIdentity, LocalIdentitySource, RuntimeIdentity};
+
+use crate::platform::notice::{Notice, Notices};
 
 /// Who sits at this device, as the loop asks for it.
 #[derive(Clone)]
@@ -171,7 +173,7 @@ pub(crate) fn rename_to(name: &str) -> Result<(), String> {
 /// them arrives from what the session hosts rather than from the session itself.
 pub fn offer(
     handle: &DesktopHandle,
-    notices: &DesktopNotifications,
+    notices: &dyn Notices,
     action: HostAction,
     title: impl Into<String>,
     body: impl Into<String>,
@@ -179,7 +181,7 @@ pub fn offer(
     if action.is_personal() {
         handle.ask_personally(action, title.into(), body.into());
     } else {
-        notices.post(action.notice(title, body));
+        notices.show(&Notice::asks(&action, title, body));
     }
 }
 

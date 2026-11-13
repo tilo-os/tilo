@@ -149,7 +149,7 @@ fn populate_source(root: &Path, source: &Path) {
         assert!(!public.is_empty());
         std::fs::write(source.join(name), public).unwrap();
     }
-    // Synthetic private keys never cross the capsule boundary. Reap their agents.
+    // Synthetic private keys never cross the capsule boundary.
     for home in [&approved, &wrong] {
         command(
             "/usr/bin/gpgconf",

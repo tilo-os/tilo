@@ -16,7 +16,6 @@
 //! record is the one truth the tab shows.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_action_policy::{Standing, Subject};
@@ -32,17 +31,15 @@ use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_resource::Id;
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::RecordOwners;
-use ui::record::workspace::WorkspaceRecords;
 
 /// How workspace settings' history names where a change came from.
 const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 
 /// The workspace's agents as the Agents tab holds them.
 pub(crate) struct Agents {
-    /// Where this device keeps its apps' records: the one store Chat keeps the agents in too, which
-    /// every app of the workspace opens.
-    owners: RecordOwners,
+    /// The workspace's records as the workspace holds them: the copy Chat and every app of the
+    /// workspace read.
+    records: crate::engine_records::EngineRecords,
     /// Wakes the session's loop when another replica's change arrives.
     wake: ui::WakeScope,
     /// The record, once the tab showed it: the workspace, the person and the grants it was opened
@@ -84,15 +81,18 @@ struct Review<'a> {
 }
 
 impl Agents {
-    /// The workspace's agents in the store rooted at `root` , waking the session's loop through
+    /// The workspace's agents in the workspaces' copy of them (`records`), waking the session's loop through
     /// `wake` when a change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(
+        records: crate::engine_records::EngineRecords,
+        wake: tilo_service::Wake,
+    ) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
             tracing::warn!(%error, "the workspace's agents are not woken");
         }
         Self {
-            owners: RecordOwners::new(root),
+            records,
             wake: scope,
             open: RefCell::default(),
             shown: RefCell::default(),
@@ -302,13 +302,12 @@ impl Agents {
             same_person(&kept.keeper, record.me()).then(|| t("workspace-settings-agent-yours"));
         // What the turn admits it to, before the answers the person set for its apps: the cap's
         // grants, narrowed by the bound its record keeps.
-        let admission = tilo_action_policy::roles::agent_turn(
+        let admission = tilo_action_policy::roles::agent_grants(
             &workspace.policy.workspace,
             agent,
             &kept.keeper,
             &kept.bound_rules().unwrap_or_default(),
-        )
-        .grants;
+        );
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
         let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
         // What an agent plans with is its keeper's to choose, alone, and the record holds the
@@ -418,11 +417,9 @@ impl Agents {
             Standing::person(workspace.policy.clone(), person.clone()),
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = WorkspaceRecords::in_workspace(
-            self.owners.clone(),
-            workspace_id.clone(),
-            ui::permissions::UserId(person.clone()),
-        );
+        let records = self
+            .records
+            .in_workspace(&workspace_id, ui::permissions::UserId(person.clone()));
         let record = WorkspaceRecord::<Record>::open(
             &records,
             OWNER,

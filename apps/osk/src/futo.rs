@@ -20,8 +20,6 @@ use vello::kurbo::{Point, Rect};
 use crate::layout::{KeyId, KeyboardLayout};
 use crate::swipe::{Candidate, SwipeModel};
 
-/// FUTO model file layout (the HF `futo-org/futo-swipe` tree + the
-/// `en_w2.combined` dictionary fetched alongside it).
 const ENCODER: &str = "honorable_sturgeon/model_fp32.pte";
 const DECODER: &str = "magic_macaw/model_fp32.pte";
 const LM_MODEL: &str = "hungry_jellyfish/context_lm.pte";
@@ -33,9 +31,6 @@ pub struct FutoSwipeModel {
 }
 
 impl FutoSwipeModel {
-    /// Load the engine from a directory containing the FUTO model assets.
-    /// Returns `None` if the FUTO backend isn't compiled in or the encoder
-    /// fails to load.
     pub fn load(models_dir: &Path) -> Option<Self> {
         let d = models_dir;
         let lm_model = d.join(LM_MODEL);
@@ -52,8 +47,6 @@ impl FutoSwipeModel {
             .map(|engine| Self { engine })
     }
 
-    /// Resolve the model directory from the environment / known install
-    /// locations and load. `None` if nothing is found or FUTO isn't linked.
     pub fn default_load() -> Option<Self> {
         for dir in candidate_dirs() {
             if dir.join(ENCODER).exists()
@@ -65,7 +58,6 @@ impl FutoSwipeModel {
         None
     }
 
-    /// Next-word prediction via the context LM (empty if no LM loaded).
     pub fn predict_next(&self, context: &[&str], k: usize) -> Vec<Candidate> {
         self.engine
             .predict_next(context, k as i32)
@@ -83,9 +75,7 @@ fn candidate_dirs() -> Vec<PathBuf> {
     if let Some(p) = std::env::var_os("TILO_SWIPE_MODELS") {
         v.push(PathBuf::from(p));
     }
-    // System install path (shipped in the OS image).
     v.push(PathBuf::from("/usr/share/tilo/swipe-models"));
-    // Dev: vendored next to the crate.
     v.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models"));
     v
 }
@@ -101,8 +91,6 @@ impl SwipeModel for FutoSwipeModel {
         if path.len() < 2 || key_geom.is_empty() || top_n == 0 {
             return Vec::new();
         }
-        // Bounding box of the on-screen letter keys → normalize the gesture
-        // into the model's [0,1] layout space.
         let mut min_pt = Point::new(f64::MAX, f64::MAX);
         let mut max_pt = Point::new(f64::MIN, f64::MIN);
         for (id, rect) in key_geom {
@@ -140,9 +128,6 @@ impl SwipeModel for FutoSwipeModel {
     }
 }
 
-// Self-skips unless the FUTO libs are linked (real `swipe` backend) AND
-// the model dir is resolvable (env `TILO_SWIPE_MODELS` or an install path) —
-// i.e. `FutoSwipeModel::default_load()` returns `Some`.
 #[cfg(test)]
 mod tests {
     use super::*;

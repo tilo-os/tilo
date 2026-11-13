@@ -14,7 +14,6 @@ use crate::host::{DirEntry, Host, Metadata, Program, WriteMode};
 use crate::io::Stdio;
 use crate::shell::{Fd, Flow, Shell};
 
-/// The shell, as the commands it runs see it.
 pub(crate) struct ShellDispatch<'a> {
     shell: &'a Shell,
 }
@@ -24,8 +23,6 @@ impl<'a> ShellDispatch<'a> {
         Self { shell }
     }
 
-    /// A copy of the shell for one command: its own directory and streams,
-    /// and no functions, which a utility never names.
     fn copy(&self, cwd: &Path, io: &Stdio) -> Shell {
         let mut shell = self.shell.clone();
         shell.functions.clear();
@@ -106,9 +103,6 @@ impl Dispatch for ShellDispatch<'_> {
 }
 
 impl Shell {
-    /// Run `argv` as a utility: a regular built-in that is also a
-    /// utility (`echo`, `printf`, `test`), one of Tilo's own commands, a file
-    /// action, or a program. Never a function or a special built-in.
     pub(crate) fn run_utility(&mut self, argv: &[String]) -> i32 {
         let Some(name) = argv.first() else {
             return 0;
@@ -140,8 +134,6 @@ impl Shell {
     }
 }
 
-/// The host, as a command under `timeout` sees it: interrupted once its
-/// time is up.
 struct Deadline {
     inner: Arc<dyn Host>,
     at: i64,
@@ -225,7 +217,6 @@ impl Host for Deadline {
         self.inner.utc_offset(at)
     }
     fn sleep(&self, millis: u64) {
-        // Sleep no further than the deadline.
         let left = u64::try_from(self.at.saturating_sub(self.inner.now_ms())).unwrap_or(0);
         self.inner.sleep(millis.min(left));
         let _ = self.passed();

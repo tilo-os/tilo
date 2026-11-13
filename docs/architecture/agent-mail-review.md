@@ -16,9 +16,9 @@ For each of about 8 mails, the agent:
 2. Reads the mail and lists its attachments.
 3. Turns the CV attachment into workspace content and reads it through the PDF
    viewer: text per page, plus page images when the model has vision.
-4. Reads the candidate's GitHub and portfolio. Without a window, through
-   web-search `fetch` (JSON and HTML are text, and a PDF becomes content). With
-   a window, through Browser.
+4. Reads the candidate's GitHub and portfolio. Without a window, through the agent's
+   own `read_page` (JSON and HTML are text, and a PDF becomes content). With a
+   window, through Browser.
 5. Writes a critical review into the draft's notes and drafts a reply. It never
    sends.
 6. Opens three windows:
@@ -66,7 +66,7 @@ What breaks:
      invokes.
    - The workspace `open` takes a hash or an action, but not a resource or a
      URL, and doesn't say which window it opened.
-6. **web-search `fetch` refuses PDFs** and other non-text bodies.
+6. **`read_page` refuses PDFs** and other non-text bodies.
 7. **The run budget is too small** for about 8 × 15 steps. The run has a hard
    cap of 30 model turns and a 300 s default, and no context management for a
    long run.

@@ -1,0 +1,494 @@
+//! Transport-neutral collaboration governance state: both the desktop service and the peer
+//! network's drain validate against it, so no socket, framing or RPC type appears here and a
+//! transport change cannot fork authorization and audit behavior.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+
+use collab_types::{
+    ArtifactId, ChannelId, ChannelState, Ed25519PublicKey, EncryptionMetadata, OpId, SignedOp,
+    ValidationError, parse_redact_payload,
+};
+
+use crate::collab_history::Unsynced;
+
+const AUDIT_LOG_RING_CAPACITY: usize = 256;
+
+#[derive(Clone, Debug)]
+pub struct AuditEntry {
+    pub envelope: Box<SignedOp>,
+    pub rejection: Option<ValidationError>,
+    pub at: tilo_clock::time::SystemTime,
+}
+
+#[derive(Default)]
+pub struct AuditLog {
+    pub entries: HashMap<ArtifactId, VecDeque<AuditEntry>>,
+}
+
+impl AuditLog {
+    pub fn record(&mut self, artifact: ArtifactId, entry: AuditEntry) {
+        let buf = self.entries.entry(artifact).or_default();
+        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(entry);
+    }
+
+    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
+        self.entries
+            .get(&artifact)
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RedactionRecord {
+    pub redact_envelope: Box<SignedOp>,
+    pub target_op_id: OpId,
+    pub target_op_hash: [u8; 32],
+    pub redactor_pk: Ed25519PublicKey,
+    pub reason: String,
+    pub redacted_at: tilo_clock::time::SystemTime,
+}
+
+#[derive(Default)]
+pub struct RedactionLog {
+    pub entries: HashMap<ArtifactId, VecDeque<RedactionRecord>>,
+}
+
+impl RedactionLog {
+    pub fn record(&mut self, artifact: ArtifactId, record: RedactionRecord) {
+        let buf = self.entries.entry(artifact).or_default();
+        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(record);
+    }
+
+    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
+        self.entries
+            .get(&artifact)
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Default)]
+pub struct BrokerChannels {
+    pub states: HashMap<ArtifactId, ChannelState>,
+    pub audit: AuditLog,
+    pub redactions: RedactionLog,
+    /// Ingress gates of the channels this device's channel encryption service takes part in,
+    /// consulted on every local and peer document ingress. Registered before the first op of a
+    /// channel is accepted and refreshed on every membership change; the broker holds the gate,
+    /// never a key.
+    pub gates: tilo_channels::Gates,
+    /// Durable history of content-key ciphertext, so members (including
+    /// ones added later) can page back past the in-memory window.
+    pub history: Option<crate::collab_history::CollabHistoryStore>,
+    /// History pages this device asked its peers for, by artifact: the
+    /// `before_seq` bound and when the request left. Answers are accepted
+    /// only while a request is outstanding.
+    pub peer_history_requests: HashMap<ArtifactId, (u64, tilo_clock::time::Instant)>,
+    /// The route (app, workspace, record) each artifact's ops were validated on
+    /// this session. A history page is only ever answered to that workspace.
+    pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
+    /// The records a sealed write of entered here: from it on, a write to
+    /// one in the clear is a downgrade ([`Self::document_order_allowed`]).
+    pub sealed: std::collections::HashSet<ArtifactId>,
+}
+
+/// How long a peer history request stays open for answers.
+const PEER_HISTORY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+/// Minimum spacing between repeats of the same peer history request.
+const PEER_HISTORY_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl BrokerChannels {
+    pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
+        self.states.entry(artifact).or_default()
+    }
+
+    pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
+        self.states.insert(artifact, state);
+    }
+
+    /// Install or refresh a channel's ingress gate.
+    pub fn register_channel_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+        self.gates.register(channel, gate);
+    }
+
+    /// A route with no gate has not been opened encrypted on this device
+    /// yet. Once its gate closes plaintext, this device writes none to it,
+    /// including after a restart. Content sealed under any of the channel's
+    /// epochs passes: a member's write reaches this device after the
+    /// channel's next membership change.
+    pub fn document_encryption_allowed(
+        &self,
+        workspace: &str,
+        channel: ChannelId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> bool {
+        self.gates.allows_document(workspace, channel, encryption)
+    }
+
+    /// Whether another device's write of `artifact`'s record may enter, by
+    /// its place in the record's order. A record seals from some write on,
+    /// and its cleartext writes before that are the base its sealed writes
+    /// are changes over: a device that was away while the record sealed, or
+    /// joins it later, reads the record only by taking that base in first,
+    /// however it arrives. So a write in the clear enters until a sealed
+    /// write of the record has, and never after; a sealed one enters when
+    /// the channel's gate takes its epoch.
+    pub fn document_order_allowed(
+        &self,
+        workspace: &str,
+        channel: ChannelId,
+        artifact: ArtifactId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> bool {
+        match encryption {
+            None => !self.sealed.contains(&artifact),
+            Some(_) => self.gates.allows_document(workspace, channel, encryption),
+        }
+    }
+
+    /// The verdict on an op for `channel` from the gate governing it
+    /// ([`channel_crypto::admission`]). This broker holds every channel's
+    /// whole governance state, so a channel with no gate is one that is not
+    /// encrypted.
+    pub fn document_admission(
+        &self,
+        workspace: &str,
+        channel: ChannelId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> collab_types::inbound::OpAdmission {
+        self.gates.admission(workspace, channel, encryption)
+    }
+
+    /// Append an op validated on `route` to durable history when it belongs
+    /// there, bound to its record and workspace. Failure is logged, never fatal:
+    /// the op is still delivered live. The caller syncs what this wrote once
+    /// it has released the channels' lock, and before it delivers the op
+    /// ([`Unsynced`]).
+    pub fn record_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) -> Unsynced {
+        if self.routes.get(&op.artifact) != Some(route) {
+            self.routes.insert(op.artifact, route.clone());
+        }
+        let Some(history) = self.history.as_mut() else {
+            return Unsynced::default();
+        };
+        let mut unsynced = Unsynced::default();
+        if crate::collab_history::CollabHistoryStore::retains(op) {
+            match history.bind_record(
+                op.artifact,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+            ) {
+                Ok(binding) => unsynced = unsynced.join(binding),
+                Err(error) => {
+                    tracing::warn!(%error, artifact = ?op.artifact, "collab history: record binding failed");
+                }
+            }
+        }
+        match history.record(op) {
+            Ok(appended) => unsynced.join(appended),
+            Err(error) => {
+                tracing::warn!(%error, artifact = ?op.artifact, "collab history: append failed");
+                unsynced
+            }
+        }
+    }
+
+    /// One scrollback page for `artifact`: the in-memory window merged with
+    /// durable history, newest `max` ops below `before_seq`, ascending, plus
+    /// whether nothing older remains. Redacted ops keep their marker.
+    pub fn scrollback_page(
+        &mut self,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) -> (Vec<SignedOp>, bool) {
+        let (memory, memory_exhausted) = self
+            .state_for(artifact)
+            .scrollback_for(artifact, before_seq, max);
+        let Some(history) = self.history.as_mut() else {
+            return (memory, memory_exhausted);
+        };
+        let (durable, durable_exhausted) = match history.page_before(artifact, before_seq, max) {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::warn!(%error, ?artifact, "collab history: read failed");
+                return (memory, memory_exhausted);
+            }
+        };
+        let mut seen = std::collections::HashSet::new();
+        let union: Vec<SignedOp> = memory
+            .into_iter()
+            .chain(durable)
+            .filter(|op| seen.insert((op.author.0, op.seq)))
+            .collect();
+        let (mut page, union_exhausted) =
+            collab_types::history::page_before(&union, artifact, before_seq, max);
+        if let Some(state) = self.states.get(&artifact)
+            && let Ok(marker) = collab_types::RedactedMarker::v1().canonical()
+        {
+            for op in &mut page {
+                if state.is_redacted(OpId::from_op(op))
+                    && op.kind != collab_types::OpKind::Redaction
+                {
+                    op.payload.clone_from(&marker);
+                }
+            }
+        }
+        (
+            page,
+            union_exhausted && memory_exhausted && durable_exhausted,
+        )
+    }
+
+    /// The records of trees ([`ui::record::RecordId::tree`]: a chain's
+    /// parts, a container's children) of the app `subscriber` names in its
+    /// workspace that this device holds: ops of them were admitted here this
+    /// session ([`Self::record_history`]), or their history is kept on disk
+    /// from an earlier one. An app window that subscribes is told them, so
+    /// it holds what its workspace held before it ran, such as a chat's messages
+    /// a joining device was replayed before any Chat window was open. Empty
+    /// for a route that is not an app's in a workspace.
+    pub fn tree_records_held(&mut self, subscriber: &crate::route::CrdtRoute) -> Vec<String> {
+        if subscriber.app_id.is_empty()
+            || !subscriber.record_id.is_empty()
+            || !crate::route::CrdtRoute::is_addressable(&subscriber.cluster_id)
+        {
+            return Vec::new();
+        }
+        let (app_id, workspace) = (&subscriber.app_id, &subscriber.cluster_id);
+        let admitted = self
+            .routes
+            .values()
+            .filter(|route| route.app_id == *app_id && route.cluster_id == *workspace)
+            .map(|route| route.record_id.clone());
+        let kept = self
+            .history
+            .as_mut()
+            .map(|history| history.records_in(app_id, workspace))
+            .unwrap_or_default();
+        let mut held: Vec<String> = admitted
+            .chain(kept)
+            .filter(|record| {
+                ui::record::RecordId::parse(record)
+                    .and_then(|id| id.tree())
+                    .is_some()
+            })
+            .collect();
+        held.sort();
+        held.dedup();
+        held
+    }
+
+    /// The workspace `artifact`'s ops were validated in, this session or, for
+    /// durable history, an earlier one. An artifact never bound has no workspace
+    /// whose members may page through it.
+    pub fn workspace_of(&self, artifact: ArtifactId) -> Option<String> {
+        self.routes
+            .get(&artifact)
+            .map(|route| route.cluster_id.clone())
+            .or_else(|| {
+                self.history
+                    .as_ref()
+                    .and_then(|history| history.workspace_of(artifact))
+            })
+    }
+
+    /// Whether to ask peers for history of `artifact` below `before_seq`:
+    /// only with durable history to receive it into, and not again while an
+    /// identical request is fresh. Records the request when it says yes.
+    pub fn request_peer_history(&mut self, artifact: ArtifactId, before_seq: u64) -> bool {
+        if self.history.is_none() {
+            return false;
+        }
+        let now = tilo_clock::now();
+        if let Some((bound, at)) = self.peer_history_requests.get(&artifact)
+            && *bound == before_seq
+            && now.saturating_duration_since(*at) < PEER_HISTORY_RETRY
+        {
+            return false;
+        }
+        self.peer_history_requests
+            .insert(artifact, (before_seq, now));
+        true
+    }
+
+    /// Take history ops a peer sent in answer to an outstanding request into
+    /// durable history. Only signed content-key ciphertext of the requested
+    /// artifact below the requested bound is kept; returns how many ops were
+    /// new. The broker still holds no key: these are opaque to it. The
+    /// caller syncs what this wrote once it has released the channels' lock
+    /// ([`Unsynced`]).
+    pub fn accept_peer_history(
+        &mut self,
+        artifact: ArtifactId,
+        ops: &[SignedOp],
+    ) -> (usize, Unsynced) {
+        let Some((bound, at)) = self.peer_history_requests.get(&artifact).copied() else {
+            return (0, Unsynced::default());
+        };
+        if tilo_clock::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
+            self.peer_history_requests.remove(&artifact);
+            return (0, Unsynced::default());
+        }
+        let workspace = self
+            .routes
+            .get(&artifact)
+            .map(|route| route.cluster_id.clone());
+        let Some(history) = self.history.as_mut() else {
+            return (0, Unsynced::default());
+        };
+        let mut unsynced = Unsynced::default();
+        if let Some(workspace) = workspace {
+            match history.bind_workspace(artifact, &workspace) {
+                Ok(binding) => unsynced = binding,
+                Err(error) => {
+                    tracing::warn!(%error, ?artifact, "collab history: workspace binding failed");
+                }
+            }
+        }
+        let page: Vec<&SignedOp> = ops
+            .iter()
+            .filter(|op| {
+                op.artifact == artifact
+                    && op.seq < bound
+                    && crate::collab_history::CollabHistoryStore::retains(op)
+                    && collab_types::verify_op(op).is_ok()
+            })
+            .collect();
+        // One data sync for the whole page rather than one per op.
+        match history.record_all_if_new(artifact, &page) {
+            Ok((stored, appended)) => (stored, unsynced.join(appended)),
+            Err(error) => {
+                tracing::warn!(%error, ?artifact, "collab history: peer page not stored");
+                (0, unsynced)
+            }
+        }
+    }
+}
+
+/// Apply a validated Redact envelope to the shared state and durable audit
+/// record. All ingress transports call this same mutation.
+pub fn apply_redaction_from_envelope(
+    envelope: &SignedOp,
+    artifact: ArtifactId,
+    channels: &Arc<Mutex<BrokerChannels>>,
+) {
+    let req = match parse_redact_payload(envelope) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(?artifact, %error, "malformed Redact payload after validation");
+            return;
+        }
+    };
+    if let Ok(mut channels) = channels.lock() {
+        let state = channels.state_for(artifact);
+        match state.apply_redaction(&req) {
+            Ok(rewritten) => {
+                tracing::info!(?artifact, target = ?req.target_op_id, rewritten, "applied redaction");
+            }
+            Err(error) => {
+                tracing::warn!(?artifact, target = ?req.target_op_id, %error, "apply_redaction failed");
+                return;
+            }
+        }
+        channels.redactions.record(
+            artifact,
+            RedactionRecord {
+                redact_envelope: Box::new(envelope.clone()),
+                target_op_id: req.target_op_id,
+                target_op_hash: req.target_op_hash,
+                redactor_pk: req.redacted_by,
+                reason: req.reason,
+                redacted_at: req.redacted_at,
+            },
+        );
+    }
+}
+
+/// Where a channel service registers the gates this broker refuses plaintext with.
+#[derive(Clone, Default)]
+pub struct BrokerGates(pub Arc<Mutex<BrokerChannels>>);
+
+impl tilo_channels::ChannelGates for BrokerGates {
+    fn register_channel_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+        if let Ok(mut channels) = self.0.lock() {
+            channels.register_channel_gate(channel, gate);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
+
+    use super::*;
+
+    fn envelope(artifact: ArtifactId, seq: u64) -> SignedOp {
+        SignedOp::new_unsigned(
+            // Test fixture payload byte — truncation is fine here (only
+            // used as an opaque marker below AUDIT_LOG_RING_CAPACITY+3).
+            vec![u8::try_from(seq % 256).unwrap_or(0)],
+            artifact,
+            Ed25519PublicKey([7; 32]),
+            AttestationId::default(),
+            OpKind::Change,
+            SystemTime::UNIX_EPOCH,
+            seq,
+        )
+    }
+
+    #[test]
+    fn audit_is_bounded_per_artifact_and_keeps_the_newest_entries() {
+        let artifact = ArtifactId::new();
+        let other = ArtifactId::new();
+        let mut audit = AuditLog::default();
+
+        for seq in 0..(AUDIT_LOG_RING_CAPACITY as u64 + 3) {
+            audit.record(
+                artifact,
+                AuditEntry {
+                    envelope: Box::new(envelope(artifact, seq)),
+                    rejection: None,
+                    at: SystemTime::UNIX_EPOCH,
+                },
+            );
+        }
+        audit.record(
+            other,
+            AuditEntry {
+                envelope: Box::new(envelope(other, 99)),
+                rejection: None,
+                at: SystemTime::UNIX_EPOCH,
+            },
+        );
+
+        let entries = audit.for_artifact(artifact);
+        assert_eq!(entries.len(), AUDIT_LOG_RING_CAPACITY);
+        assert_eq!(entries.first().unwrap().envelope.seq, 3);
+        assert_eq!(entries.last().unwrap().envelope.seq, 258);
+        assert_eq!(audit.for_artifact(other)[0].envelope.seq, 99);
+    }
+
+    #[test]
+    fn channel_state_is_shared_by_artifact_not_transport() {
+        let artifact = ArtifactId::new();
+        let mut channels = BrokerChannels::default();
+
+        let first = std::ptr::from_mut(channels.state_for(artifact));
+        let second = std::ptr::from_mut(channels.state_for(artifact));
+
+        assert_eq!(first, second);
+        assert_eq!(channels.states.len(), 1);
+    }
+}

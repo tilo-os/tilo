@@ -2,10 +2,29 @@
 //! file its verdict on the ones admission refused, and write the copy through
 //! to the workspace file.
 
-use super::{GovernedWorkspace, publisher};
+use super::{GovernedWorkspace, Workspaces, publisher};
 use ed25519_dalek::SigningKey;
+use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
-use web_time::SystemTime;
+
+/// A member's write to a record of a governed workspace, after the governor's
+/// copy took it in: what wakes the workspace's installed bots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordWrite {
+    /// The workspace's UUID.
+    pub workspace: String,
+    /// The record's app.
+    pub app: String,
+    /// The record's id on the wire (`""` for the app's primary).
+    pub record: String,
+    /// What the write carried that the record's repair could take in
+    /// ([`super::repaired_records::Carried`]): the changes it carried, when the
+    /// record's kept changes could wait for one of them. Nothing when the
+    /// record's archive says nothing it keeps waits for a write like this, so
+    /// reading the record for it would be work for nothing.
+    #[cfg(feature = "agents")]
+    pub carried: super::repaired_records::Carried,
+}
 
 /// What taking a member's write into the governor's copy did.
 #[derive(Clone, Debug, Default)]
@@ -47,7 +66,7 @@ impl GovernedWorkspace {
                 self.record.workspace_id,
                 Some(self.record.published),
                 crate::workspace_records::HostCommit {
-                    body: entry.bytes.clone(),
+                    body: entry.bytes.to_vec(),
                     channel,
                     checkpoint: entry.checkpoint,
                 },
@@ -103,7 +122,7 @@ impl GovernedWorkspace {
             peer.receive_from(
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
                 message,
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
         };
         match received {
@@ -117,6 +136,53 @@ impl GovernedWorkspace {
                 ..Followed::default()
             },
         }
+    }
+
+    /// The verdict [`Self::follow`] would give `message`, `author`'s write,
+    /// without taking it in: why the workspace refuses the write, or `None`
+    /// when it takes it. The relay asks before it keeps the write, so a
+    /// refused change is never stored and never served to a reader, and a
+    /// writer numbering its next change the refused one's sequence again
+    /// never meets it. `None` for a record the governor's copy does not hold:
+    /// that write founds one, which is no refusal.
+    pub(super) fn refuses(
+        &self,
+        author: [u8; 32],
+        message: &neighbour_wire::NeighbourMsg,
+    ) -> Option<String> {
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return None;
+        };
+        // A write too large for one frame travels in segments, and is decided
+        // a segment at a time: no segment is a record write on its own, so
+        // the workspace has no verdict to give on one. Its last segment is the
+        // whole write, and that is refused or taken as this one would be.
+        if matches!(
+            collab_types::DocumentFrame::decode(&envelope.payload),
+            Ok(collab_types::DocumentFrame::Segment(_))
+        ) {
+            return None;
+        }
+        let mut decided = {
+            let peer = self.peer();
+            if !peer.holds_document(app_id, record_id) {
+                return None;
+            }
+            peer.clone()
+        };
+        decided
+            .receive_from(
+                TransportOrigin::RetainedRelayDelta(author),
+                message.clone(),
+                tilo_clock::wall(),
+            )
+            .err()
     }
 
     /// File this device's verdict on the write admission refused because
@@ -134,7 +200,7 @@ impl GovernedWorkspace {
             message,
             reason,
             key,
-            SystemTime::now(),
+            tilo_clock::wall(),
         );
         match filed {
             Ok(filed) => Followed {
@@ -151,5 +217,35 @@ impl GovernedWorkspace {
                 Followed::default()
             }
         }
+    }
+}
+
+impl Workspaces {
+    /// Why this workspace refuses `body`, `author`'s write, decided before the
+    /// relay keeps or forwards it; `None` when it takes the write, when this
+    /// relay does not govern the workspace, or when the write founds the
+    /// record rather than changing one. The verdict is the one the governor
+    /// would give the write ([`GovernedWorkspace::refuses`]), so the change is
+    /// never stored for a later reader to meet, and a writer numbering its
+    /// next change the refused one's sequence again writes on cleanly.
+    pub(crate) async fn refuses_write(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+    ) -> Option<String> {
+        // This device's own writes reach its copy as its own: nothing a
+        // member's write is decided by decides them.
+        if author == self.inner.host.cert.device_public_key {
+            return None;
+        }
+        // A body that is not a message is reported where the governor takes
+        // it in; and one that is no record write is decided elsewhere.
+        let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
+        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+            return None;
+        }
+        let state = self.workspace(workspace).await.ok()?;
+        state.lock().await.refuses(author, &message)
     }
 }

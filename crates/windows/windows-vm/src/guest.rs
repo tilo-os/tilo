@@ -50,7 +50,6 @@ pub struct AgentHealth {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestSession {
-    /// Opaque session identifier issued by the mutually authenticated bridge.
     pub id: String,
     pub health: AgentHealth,
 }
@@ -63,7 +62,6 @@ pub struct RdpEndpoint {
     pub certificate_sha256: String,
 }
 
-/// One single-use `RemoteApp` launch prepared by the guest bridge.
 #[derive(Debug)]
 pub struct GuestLaunch {
     pub endpoint: RdpEndpoint,

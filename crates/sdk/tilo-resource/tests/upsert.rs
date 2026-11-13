@@ -34,7 +34,7 @@ pub struct Party {
     pub badges: Keyed<Badge>,
 }
 
-#[resource(kind = "test.party", label = "Party")]
+#[resource(kind = "test.party", catalogue = "tests/locales")]
 impl Party {}
 
 fn upsert(matching: &serde_json::Value, value: serde_json::Value) -> Edit<Party> {

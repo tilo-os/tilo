@@ -15,10 +15,8 @@ use crate::fake_servers::{FakeImap, FakeSmtp, Layout, server_tls_config};
 use crate::model::{AccountConfig, AuthMethod};
 use crate::resource::MailShell;
 
-/// The account the applications came to.
 pub const ME: &str = "hiring@studio.example";
 
-/// The candidates: name and address.
 pub const CANDIDATES: [(&str, &str); 8] = [
     ("Ada Lovelace", "ada@lovelace.example"),
     ("Grace Hopper", "grace@hopper.example"),
@@ -30,7 +28,6 @@ pub const CANDIDATES: [(&str, &str); 8] = [
     ("Ken Thompson", "ken@thompson.example"),
 ];
 
-/// A one-page PDF whose text is `line`.
 #[must_use]
 pub fn cv_pdf(line: &str) -> Vec<u8> {
     use std::fmt::Write as _;
@@ -66,14 +63,11 @@ pub fn cv_pdf(line: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The line `name`'s CV says.
 #[must_use]
 pub fn cv_line(name: &str) -> String {
     format!("Curriculum vitae of {name}")
 }
 
-/// `name`'s application, as the server holds it: a text part with links,
-/// and the CV attached.
 #[must_use]
 pub fn application(index: usize, name: &str, address: &str) -> String {
     let handle = address.split('@').next().unwrap_or(address);

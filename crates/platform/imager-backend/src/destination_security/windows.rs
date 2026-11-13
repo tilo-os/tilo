@@ -1,5 +1,4 @@
 //! Native handle-based ACL validation and creation-time private descriptors.
-//! No permission changes are made to existing parents or source objects.
 use std::ffi::{OsStr, OsString, c_void};
 use std::fs::File;
 use std::io;
@@ -325,10 +324,8 @@ fn check_volume(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// # Errors
-/// Refuses unsupported volumes, non-directories, untrusted ownership or ACLs,
-/// and unprotected private directory ACLs. Propagates metadata, token and
-/// Windows security-query errors.
+/// Refuses unsupported volumes, non-directories, untrusted ownership or ACLs, and unprotected
+/// private directory ACLs.
 pub fn check_directory(file: &File, _child: Option<&Metadata>, private: bool) -> io::Result<()> {
     check_volume(file)?;
     if !file.metadata()?.is_dir() {
@@ -342,9 +339,7 @@ pub fn check_directory(file: &File, _child: Option<&Metadata>, private: bool) ->
     Ok(())
 }
 
-/// # Errors
-/// Refuses untrusted ownership or ACL access by other accounts; propagates
-/// Windows security-query and current-user token errors.
+/// Refuses untrusted ownership or ACL access by other accounts.
 pub fn check_private_file(file: &File) -> io::Result<()> {
     Security::query(file)?.check(&current_user()?, true)
 }
@@ -367,13 +362,10 @@ fn descriptor(text: &str) -> io::Result<LocalAllocation> {
     Ok(LocalAllocation(output))
 }
 
-/// # Errors
-/// Refuses names that are not one normal path component. Propagates token,
-/// security-descriptor, parent-path and directory-creation errors.
+/// Refuses names that are not one normal path component.
 pub fn create_directory(parent: &File, name: &OsStr) -> io::Result<()> {
-    // The caller holds/revalidates the full cap directory chain. On Windows
-    // those handles deny FILE_SHARE_DELETE, pinning all ancestor names while
-    // CreateDirectoryW uses this handle-derived spelling.
+    // Those handles deny FILE_SHARE_DELETE, pinning all ancestor names while CreateDirectoryW uses
+    // this handle-derived spelling.
     let mut components = Path::new(name).components();
     if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
         return Err(refusal("destination child must have one normal component"));

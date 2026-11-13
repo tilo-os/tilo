@@ -16,6 +16,7 @@
 //! content widgets; the theme owns every colour, size and space, and every
 //! string comes from the Store's fluent catalogue.
 
+use crate::resource::CATALOG;
 use ui::TextRole;
 use ui::framework::TextControl;
 use ui::icons::Icon;
@@ -38,19 +39,13 @@ use crate::resource::{ReportProjection, StoreEffect};
 use crate::widgets::app::{self as app_widget, Primary};
 use crate::widgets::visible_version;
 
-/// How wide a page's content may grow, in lines of body text, so it widens
-/// with the text scale like every other text-sized measure.
 #[derive(Clone, Copy)]
 pub(super) enum Measure {
-    /// Grids of cards and lists use the canvas.
     Catalogue,
-    /// Prose, facts and forms stay at a readable measure.
     Reading,
 }
 
 impl Measure {
-    /// The page column's width in lines of body text: the shell lines the
-    /// title, its actions and the search field up with it.
     pub(super) const CATALOGUE_LINES: u8 = 55;
 
     fn width(self, theme: &Theme) -> f32 {
@@ -64,15 +59,11 @@ impl Measure {
 
 type Element = Box<dyn Widget>;
 
-/// How many cards or rows a long list shows before Show more.
 pub(super) const PAGE: usize = 48;
 
-/// The width of one screenshot in the gallery, in lines of body text.
 const SCREENSHOT_LINES: u8 = 14;
 
 impl StoreState {
-    /// Compose the whole tree. Called from `build_layout`; also used by tests
-    /// to inspect the composition graph directly.
     pub(super) fn compose(&self, theme: &Theme) -> Element {
         if self.safety_open {
             self.build_safety_center(theme)
@@ -137,13 +128,10 @@ impl StoreState {
         )
     }
 
-    /// A quiet paragraph of prose.
     fn prose(text: &str) -> Element {
         Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
     }
 
-    /// The top of every catalogue view: a running operation or a failure.
-    /// The view switcher is the window bar's ([`super::window_bar`]).
     fn catalogue_top(&self) -> Vec<Element> {
         let mut top = Vec::new();
         if !self.items.is_empty()
@@ -154,12 +142,10 @@ impl StoreState {
         top
     }
 
-    /// Persistent operation feedback belongs in document flow: `Banner` is the
-    /// shared alert, readable at large type and announced as a status.
     pub(super) fn operation_notice(&self) -> Option<Element> {
         if self.worker_busy && self.active_operation.is_none() && self.pending_jobs > 0 {
             let detail = if self.status_line.is_empty() {
-                ui::i18n!("store-working")
+                CATALOG.t("store-working")
             } else {
                 visible_operation_status(&self.status_line)
             };
@@ -174,7 +160,7 @@ impl StoreState {
                             .with_no_padding()
                             .with_flex_grow()
                             .with_child(Box::new(
-                                Banner::info(ui::i18n!("store-working-title")).with_message(detail),
+                                Banner::info(CATALOG.t("store-working-title")).with_message(detail),
                             )),
                     )),
             ));
@@ -182,14 +168,19 @@ impl StoreState {
         if let Some(name) = self.expired_repositories.first() {
             // While a repository's catalogue is expired nothing from it can be
             // installed or updated, so that is the one thing to say.
-            let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
+            let mut refresh = Button::new("store.error.refresh", &CATALOG.t("store-error-refresh"));
             if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
                 refresh = refresh.on_action(binding);
             }
             return Some(Box::new(
-                Banner::warning(ui::i18n!("store-catalogue-expired-title", "name" => name.clone()))
-                    .with_message(ui::i18n!("store-catalogue-expired", "name" => name.clone()))
-                    .with_action(refresh),
+                Banner::warning(CATALOG.t_args(
+                    "store-catalogue-expired-title",
+                    &[("name", name.clone().into())],
+                ))
+                .with_message(
+                    CATALOG.t_args("store-catalogue-expired", &[("name", name.clone().into())]),
+                )
+                .with_action(refresh),
             ));
         }
         let source_error = self
@@ -197,15 +188,15 @@ impl StoreState {
             .iter()
             .find_map(|remote| remote.catalogue_error.as_ref());
         self.operation_error.as_ref().or(source_error).map(|error| {
-            let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
+            let mut refresh = Button::new("store.error.refresh", &CATALOG.t("store-error-refresh"));
             if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
                 refresh = refresh.on_action(binding);
             }
             Box::new(
                 (if self.operation_error.is_some() {
-                    Banner::error(ui::i18n!("store-operation-failed"))
+                    Banner::error(CATALOG.t("store-operation-failed"))
                 } else {
-                    Banner::warning(ui::i18n!("store-source-partial"))
+                    Banner::warning(CATALOG.t("store-source-partial"))
                 })
                 .with_message(visible_operation_status(error))
                 .with_action(refresh),
@@ -213,7 +204,6 @@ impl StoreState {
         })
     }
 
-    /// The one action an app offers from a list or its page.
     pub(super) fn primary(&self, item: &StoreItem) -> Primary {
         let action = item.action_kind(self.flatpak_available);
         let busy = self
@@ -225,12 +215,16 @@ impl StoreState {
         Primary {
             key: format!("store.app.{}.{}", item.id, action_code(action)),
             tooltip: unavailable.clone().unwrap_or_else(|| {
-                ui::i18n!("store-action-tooltip", "action" => label.clone(), "name" => item.name.clone())
+                CATALOG.t_args(
+                    "store-action-tooltip",
+                    &[
+                        ("action", label.clone().into()),
+                        ("name", item.name.clone().into()),
+                    ],
+                )
             }),
             label,
             binding: bindings::package(item, action),
-            // One operation no longer freezes the Store: jobs are concurrent
-            // by construction, and each has its own row.
             enabled: unavailable.is_none(),
             progress: busy.then(|| progress_label(action, &item.name)),
         }
@@ -247,7 +241,6 @@ impl StoreState {
         )
     }
 
-    /// An app as a row with `trailing` at its end, opening its page.
     fn row(&self, item: &StoreItem, trailing: Option<Element>, meta: Option<String>) -> Element {
         app_widget::row(
             item,
@@ -258,7 +251,6 @@ impl StoreState {
         )
     }
 
-    /// An app as a row whose end is its one action.
     fn action_row(&self, item: &StoreItem, meta: Option<String>) -> Element {
         if item.not_built_for_this_device() {
             // Nothing to offer: the row says it is not available here, and
@@ -275,7 +267,7 @@ impl StoreState {
             let remove = Button::icon_only(
                 &format!("store.remove.{}", item.id),
                 Icon::Trash2,
-                &ui::i18n!("store-action-remove"),
+                &CATALOG.t("store-action-remove"),
             )
             .control_size(ControlSize::Small)
             .on_action(bindings::uninstall(item));
@@ -297,7 +289,6 @@ impl StoreState {
         ids.iter().filter_map(|id| self.item(id))
     }
 
-    /// A grid of the apps `ids` names under `title`, or nothing without one.
     fn shelf(&self, title: &str, ids: &[String]) -> Option<Element> {
         let cards: Vec<Element> = self.items_of(ids).map(|item| self.card(item)).collect();
         (!cards.is_empty()).then(|| {
@@ -311,7 +302,7 @@ impl StoreState {
     fn show_more(&self, total: usize) -> Option<Element> {
         (total > self.shown).then(|| {
             let mut more =
-                Button::new("store.more", &ui::i18n!("store-show-more")).role(ButtonRole::Plain);
+                Button::new("store.more", &CATALOG.t("store-show-more")).role(ButtonRole::Plain);
             if let Some(binding) = bindings::effect(&StoreEffect::ShowMore) {
                 more = more.on_action(binding);
             }
@@ -319,9 +310,6 @@ impl StoreState {
         })
     }
 
-    /// Home: Updates when there are any, Tilo's apps and Flathub's popular
-    /// ones, the recently updated, and the categories. Real content only; a
-    /// shelf with nothing in it is left out.
     pub(super) fn build_home(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let home = self
@@ -338,20 +326,20 @@ impl StoreState {
                 .take(3)
                 .map(|item| self.action_row(item, Some(update_meta(item))))
                 .collect();
-            let mut all = Button::new("store.updates.all", &ui::i18n!("store-see-all-updates"))
+            let mut all = Button::new("store.updates.all", &CATALOG.t("store-see-all-updates"))
                 .role(ButtonRole::Plain);
             if let Some(binding) = bindings::view_named("updates") {
                 all = all.on_action(binding);
             }
             children.push(Box::new(
                 Section::new(rows).with_header(
-                    SectionHeader::heading(ui::i18n!("store-updates-title"))
+                    SectionHeader::heading(CATALOG.t("store-updates-title"))
                         .count(home.updates.len())
                         .action(all),
                 ),
             ));
         }
-        children.extend(self.shelf(&ui::i18n!("store-featured-title"), &home.featured));
+        children.extend(self.shelf(&CATALOG.t("store-featured-title"), &home.featured));
         let featured: std::collections::HashSet<&str> =
             home.featured.iter().map(String::as_str).collect();
         let recent: Vec<String> = home
@@ -360,7 +348,7 @@ impl StoreState {
             .filter(|id| !featured.contains(id.as_str()))
             .cloned()
             .collect();
-        children.extend(self.shelf(&ui::i18n!("store-recent-title"), &recent));
+        children.extend(self.shelf(&CATALOG.t("store-recent-title"), &recent));
         if !home.categories.is_empty() {
             let rows: Vec<Element> = home
                 .categories
@@ -380,13 +368,12 @@ impl StoreState {
                 })
                 .collect();
             children.push(Box::new(Section::new(rows).with_header(
-                SectionHeader::heading(ui::i18n!("store-categories-title")),
+                SectionHeader::heading(CATALOG.t("store-categories-title")),
             )));
         }
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// Every app in `category`, Tilo first.
     pub(super) fn build_category(&self, theme: &Theme, category: &str) -> Element {
         let mut children = self.catalogue_top();
         let ids = catalogue::in_category(&self.items, &self.blocks, category);
@@ -396,7 +383,7 @@ impl StoreState {
             .map(|item| self.card(item))
             .collect();
         if cards.is_empty() {
-            children.push(Box::new(EmptyState::new(ui::i18n!("store-category-empty"))));
+            children.push(Box::new(EmptyState::new(CATALOG.t("store-category-empty"))));
         } else {
             children.push(Box::new(
                 Section::new(vec![Box::new(CardGrid::new(cards))]).with_header(
@@ -408,19 +395,17 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// The apps of one configured Flatpak repository.
     fn build_repository(&self, theme: &Theme, remote: &str) -> Element {
         let mut children = self.catalogue_top();
         let ids = self.repository_ids(remote);
         if ids.is_empty() {
-            children.push(Box::new(EmptyState::new(ui::i18n!("store-category-empty"))));
+            children.push(Box::new(EmptyState::new(CATALOG.t("store-category-empty"))));
         } else {
             let cards: Vec<Element> = self
                 .items_of(&ids)
                 .take(self.shown)
                 .map(|item| self.card(item))
                 .collect();
-            // The window bar's location names the repository.
             children.push(Box::new(Section::new(vec![Box::new(CardGrid::new(cards))])));
             children.extend(self.show_more(ids.len()));
         }
@@ -443,19 +428,21 @@ impl StoreState {
     fn catalogue_failure(&self) -> Option<EmptyState> {
         if let Some(name) = self.expired_repositories.first() {
             return Some(EmptyState::error(
-                ui::i18n!("store-catalogue-expired-title", "name" => name.clone()),
-                ui::i18n!("store-catalogue-expired", "name" => name.clone()),
+                CATALOG.t_args(
+                    "store-catalogue-expired-title",
+                    &[("name", name.clone().into())],
+                ),
+                CATALOG.t_args("store-catalogue-expired", &[("name", name.clone().into())]),
             ));
         }
         self.catalogue_unreachable().map(|error| {
             EmptyState::error(
-                ui::i18n!("store-offline-title"),
+                CATALOG.t("store-offline-title"),
                 visible_operation_status(error),
             )
         })
     }
 
-    /// Why the catalogue couldn't be read, if it couldn't.
     fn catalogue_unreachable(&self) -> Option<&String> {
         self.operation_error.as_ref().or_else(|| {
             self.remotes
@@ -464,7 +451,6 @@ impl StoreState {
         })
     }
 
-    /// Updates: one list, Update all, and Update on each app.
     pub(super) fn build_updates(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let ids = self.update_ids();
@@ -473,7 +459,7 @@ impl StoreState {
             // "Every app is up to date" would be a guess.
             let state = self
                 .catalogue_failure()
-                .unwrap_or_else(|| EmptyState::new(ui::i18n!("store-updates-none")));
+                .unwrap_or_else(|| EmptyState::new(CATALOG.t("store-updates-none")));
             children.push(Box::new(state));
             return self.page(theme, Measure::Catalogue, true, children);
         }
@@ -481,7 +467,7 @@ impl StoreState {
             .items_of(&ids)
             .map(|item| self.action_row(item, Some(update_meta(item))))
             .collect();
-        let mut update = Button::new("store.update-all", &ui::i18n!("store-update-all"))
+        let mut update = Button::new("store.update-all", &CATALOG.t("store-update-all"))
             .with_icon(Icon::Refresh)
             .with_enabled(self.active_operation.is_none());
         if let Some(binding) = bindings::effect(&StoreEffect::UpdateAll) {
@@ -489,7 +475,7 @@ impl StoreState {
         }
         children.push(Box::new(
             Section::new(rows).with_header(
-                SectionHeader::heading(ui::i18n!("store-updates-title"))
+                SectionHeader::heading(CATALOG.t("store-updates-title"))
                     .count(ids.len())
                     .action(update),
             ),
@@ -497,7 +483,6 @@ impl StoreState {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// On this device: every app here, Tilo first, by name.
     pub(super) fn build_installed(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let mut here: Vec<&StoreItem> = self
@@ -512,7 +497,7 @@ impl StoreState {
             )
         });
         if here.is_empty() {
-            children.push(Box::new(EmptyState::new(ui::i18n!("store-installed-none"))));
+            children.push(Box::new(EmptyState::new(CATALOG.t("store-installed-none"))));
             return self.page(theme, Measure::Catalogue, true, children);
         }
         let rows: Vec<Element> = here
@@ -524,13 +509,15 @@ impl StoreState {
             .filter_map(|item| item.versions.first().map(|version| version.size_bytes))
             .fold(0, u64::saturating_add);
         let heading = if bytes > 0 {
-            ui::i18n!(
+            CATALOG.t_args(
                 "store-installed-total",
-                "count" => here.len().to_string(),
-                "size" => format_size(bytes)
+                &[
+                    ("count", here.len().to_string().into()),
+                    ("size", format_size(bytes).into()),
+                ],
             )
         } else {
-            ui::i18n!("store-view-installed")
+            CATALOG.t("store-view-installed")
         };
         children.push(Box::new(
             Section::new(rows).with_header(SectionHeader::heading(heading).count(here.len())),
@@ -543,22 +530,19 @@ impl StoreState {
         let mut children = self.catalogue_top();
         let ids = catalogue::bots(&self.items, &self.blocks);
         if ids.is_empty() {
-            children.push(Box::new(EmptyState::new(ui::i18n!("store-bots-none"))));
+            children.push(Box::new(EmptyState::new(CATALOG.t("store-bots-none"))));
             return self.page(theme, Measure::Catalogue, true, children);
         }
         let rows: Vec<Element> = self
             .items_of(&ids)
-            .map(|item| self.row(item, None, Some(ui::i18n!("store-bot-kind"))))
+            .map(|item| self.row(item, None, Some(CATALOG.t("store-bot-kind"))))
             .collect();
         children.push(Box::new(Section::new(rows).with_header(
-            SectionHeader::heading(ui::i18n!("store-view-bots")).count(ids.len()),
+            SectionHeader::heading(CATALOG.t("store-view-bots")).count(ids.len()),
         )));
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// Search inside the Store: apps, then bots, found on this device as the
-    /// person types; then what Flathub has that the kept catalogue does not,
-    /// in its own section so nothing above it moves when it arrives.
     pub(super) fn build_search(&self, theme: &Theme) -> Element {
         let mut children = Vec::new();
         if self.items.is_empty() && self.remote_results.is_empty() {
@@ -577,7 +561,7 @@ impl StoreState {
             .collect();
         let bots: Vec<Element> = self
             .items_of(&self.results.bots)
-            .map(|item| self.row(item, None, Some(ui::i18n!("store-bot-kind"))))
+            .map(|item| self.row(item, None, Some(CATALOG.t("store-bot-kind"))))
             .collect();
         let more: Vec<Element> = self
             .remote_results
@@ -586,7 +570,7 @@ impl StoreState {
             .map(|item| {
                 let mut install = Button::new(
                     &format!("store.remote-app.{}", item.id),
-                    &ui::i18n!("store-action-view"),
+                    &CATALOG.t("store-action-view"),
                 )
                 .control_size(ControlSize::Small);
                 if let Some(binding) = bindings::show_details(item) {
@@ -596,9 +580,9 @@ impl StoreState {
             })
             .collect();
         if apps.is_empty() && bots.is_empty() && more.is_empty() {
-            let mut empty = EmptyState::new(ui::i18n!("store-search-empty"))
-                .with_message(ui::i18n!("store-search-empty-help"))
-                .with_action(ui::i18n!("store-search-clear"))
+            let mut empty = EmptyState::new(CATALOG.t("store-search-empty"))
+                .with_message(CATALOG.t("store-search-empty-help"))
+                .with_action(CATALOG.t("store-search-clear"))
                 .with_action_id("store.empty.clear");
             if let Some(binding) = bindings::effect(&StoreEffect::ClearFilters) {
                 empty = empty.on_action(binding);
@@ -609,7 +593,7 @@ impl StoreState {
         if !apps.is_empty() {
             children.push(Box::new(
                 Section::new(apps).with_header(
-                    SectionHeader::heading(ui::i18n!("store-search-apps"))
+                    SectionHeader::heading(CATALOG.t("store-search-apps"))
                         .count(self.results.apps.len()),
                 ),
             ));
@@ -617,23 +601,19 @@ impl StoreState {
         }
         if !bots.is_empty() {
             children.push(Box::new(Section::new(bots).with_header(
-                SectionHeader::heading(ui::i18n!("store-view-bots")).count(self.results.bots.len()),
+                SectionHeader::heading(CATALOG.t("store-view-bots")).count(self.results.bots.len()),
             )));
         }
         if !more.is_empty() {
             children.push(Box::new(Section::new(more).with_header(
-                SectionHeader::heading(ui::i18n!("store-search-more-flathub")),
+                SectionHeader::heading(CATALOG.t("store-search-more-flathub")),
             )));
         }
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// The catalogue has nothing to show: on its way, offline or empty. One
-    /// sentence and at most one action.
     fn empty_catalogue(&self) -> Element {
         if self.worker_busy && self.items.is_empty() {
-            // The catalogue on its way: the framework's placeholder, in the
-            // shape of the cards it brings.
             return Box::new(
                 self.catalogue_read
                     .view(|()| -> Element { Box::new(Spacer::new()) })
@@ -643,10 +623,10 @@ impl StoreState {
         let empty = self
             .catalogue_failure()
             .unwrap_or_else(|| {
-                EmptyState::new(ui::i18n!("store-empty-title"))
-                    .with_message(ui::i18n!("store-empty-help"))
+                EmptyState::new(CATALOG.t("store-empty-title"))
+                    .with_message(CATALOG.t("store-empty-help"))
             })
-            .with_action(ui::i18n!("store-error-refresh"))
+            .with_action(CATALOG.t("store-error-refresh"))
             .with_action_id("store.empty.refresh");
         Box::new(match bindings::effect(&StoreEffect::Refresh) {
             Some(binding) => empty.on_action(binding),
@@ -654,9 +634,6 @@ impl StoreState {
         })
     }
 
-    /// The page of the focused app: who makes it and what it is, its one
-    /// action, its screenshots, what it does and what changed, its facts and
-    /// what it may do, and blocking and reporting it.
     pub(super) fn build_detail(&self, theme: &Theme) -> Option<Element> {
         let id = self.focused_detail.as_ref()?;
         let item = self
@@ -674,16 +651,16 @@ impl StoreState {
             && app == &item.id
         {
             children.push(Box::new(Section::titled(
-                ui::i18n!("store-package-reviewed-file"),
+                CATALOG.t("store-package-reviewed-file"),
                 vec![Box::new(PropertyList::new(vec![
-                    Property::new(ui::i18n!("store-package-reviewed-version"), version),
-                    Property::new(ui::i18n!("store-package-reviewed-root"), root),
+                    Property::new(CATALOG.t("store-package-reviewed-version"), version),
+                    Property::new(CATALOG.t("store-package-reviewed-root"), root),
                     Property::new(
-                        ui::i18n!("store-package-reviewed-state"),
+                        CATALOG.t("store-package-reviewed-state"),
                         if item.installed.is_installed() {
-                            ui::i18n!("store-package-reinstall")
+                            CATALOG.t("store-package-reinstall")
                         } else {
-                            ui::i18n!("store-package-new-install")
+                            CATALOG.t("store-package-new-install")
                         },
                     ),
                 ]))],
@@ -709,7 +686,7 @@ impl StoreState {
                 })
                 .collect();
             children.push(Box::new(Section::titled(
-                ui::i18n!("store-about-app"),
+                CATALOG.t("store-about-app"),
                 paragraphs,
             )));
         }
@@ -717,7 +694,7 @@ impl StoreState {
             children.push(whats_new(&facts.releases));
         }
         children.push(Box::new(Section::titled(
-            ui::i18n!("store-facts-title"),
+            CATALOG.t("store-facts-title"),
             vec![Box::new(PropertyList::new(self.fact_rows(item, &facts)))],
         )));
         if item.bot.is_none() {
@@ -725,7 +702,7 @@ impl StoreState {
         }
         if let Some(notice) = self.local_only_notice(item) {
             children.push(Box::new(Section::titled(
-                ui::i18n!("store-trust-section"),
+                CATALOG.t("store-trust-section"),
                 vec![Self::prose(&notice)],
             )));
         }
@@ -735,8 +712,6 @@ impl StoreState {
         Some(self.page(theme, Measure::Reading, false, children))
     }
 
-    /// The top of the page: the app's icon, name, developer and tag line,
-    /// then what can be done with it.
     fn detail_header(&self, item: &StoreItem) -> Element {
         let mut identity = Column::new()
             .with_no_padding()
@@ -790,7 +765,6 @@ impl StoreState {
         )
     }
 
-    /// Who makes the app: its listing's developer, else its kept details'.
     pub(super) fn developer(&self, item: &StoreItem) -> String {
         if !item.listing.developer.is_empty() {
             return item.listing.developer.clone();
@@ -801,10 +775,6 @@ impl StoreState {
             .unwrap_or_default()
     }
 
-    /// The page's actions: its one primary action (Open for a Tilo app, which
-    /// downloads it when needed; Install for a Flathub app), with its progress
-    /// inline while it runs; then keeping a Tilo app on this device, and
-    /// removing an installed one.
     fn detail_actions(&self, item: &StoreItem) -> Element {
         if self.blocks.is_blocked(&item.id) {
             // A blocked app cannot be opened or installed from here; its
@@ -815,7 +785,7 @@ impl StoreState {
             // No build runs on this processor: say so and why, in place of
             // an action that could only fail.
             return Box::new(
-                Banner::info(ui::i18n!("store-not-for-this-device"))
+                Banner::info(CATALOG.t("store-not-for-this-device"))
                     .with_message(reason)
                     .with_id(format!("store.detail.{}.not-for-this-device", item.id)),
             );
@@ -826,7 +796,7 @@ impl StoreState {
             .is_some_and(|(id, _, _)| id == &item.id);
         let mut primary = self.primary(item);
         if imported {
-            primary.label = ui::i18n!("store-package-install");
+            primary.label = CATALOG.t("store-package-install");
             primary.binding = self.imported_review.as_ref().and_then(|(_, root, _)| {
                 bindings::effect(&StoreEffect::InstallImportedPackage {
                     app: item.id.clone(),
@@ -846,7 +816,13 @@ impl StoreState {
                 &label,
             )
             .control_size(ControlSize::Large)
-            .tooltip(ui::i18n!("store-action-tooltip", "action" => label.clone(), "name" => item.name.clone()));
+            .tooltip(CATALOG.t_args(
+                "store-action-tooltip",
+                &[
+                    ("action", label.clone().into()),
+                    ("name", item.name.clone().into()),
+                ],
+            ));
             if let Some(binding) = bindings::package(item, pin_action) {
                 button = button.on_action(binding);
             }
@@ -857,7 +833,13 @@ impl StoreState {
             let mut button = Button::new(&format!("store.app.{}.remove", item.id), &label)
                 .role(ButtonRole::Destructive)
                 .control_size(ControlSize::Large)
-                .tooltip(ui::i18n!("store-action-tooltip", "action" => label.clone(), "name" => item.name.clone()));
+                .tooltip(CATALOG.t_args(
+                    "store-action-tooltip",
+                    &[
+                        ("action", label.clone().into()),
+                        ("name", item.name.clone().into()),
+                    ],
+                ));
             if let Some(binding) = bindings::package(item, remove_action) {
                 button = button.on_action(binding);
             }
@@ -875,7 +857,7 @@ impl StoreState {
                     .with_rhythm(ui::tokens::Rhythm::Related)
                     .push(Box::new(row))
                     .push(Box::new(
-                        Text::new(&ui::i18n!("store-progress-continues"))
+                        Text::new(&CATALOG.t("store-progress-continues"))
                             .with_role(TextRole::Caption)
                             .dimmed(),
                     )),
@@ -884,8 +866,6 @@ impl StoreState {
         Box::new(row)
     }
 
-    /// What the page shows beyond the catalogue row, from the app's kept or
-    /// fetched details and its listing.
     pub(super) fn page_facts(&self, item: &StoreItem) -> PageFacts {
         let details = self.details.get(&item.id);
         let paragraphs = details
@@ -911,7 +891,6 @@ impl StoreState {
             .map(|details| details.releases.clone())
             .filter(|releases| !releases.is_empty())
             .unwrap_or_else(|| {
-                // A Tilo listing names its versions and when they shipped.
                 item.versions
                     .iter()
                     .filter(|version| version.released_at_unix > 0)
@@ -955,8 +934,6 @@ impl StoreState {
         }
     }
 
-    /// The screenshots as one horizontal gallery, each loading from the disk
-    /// cache or the network on its own.
     fn gallery(&self, item: &StoreItem, shots: &[String], theme: &Theme) -> Option<Element> {
         let store = self.images.as_ref()?;
         if shots.is_empty() {
@@ -984,16 +961,18 @@ impl StoreState {
                             },
                         )
                         .aspect(MediaAspect::Wide)
-                        .seed(ui::i18n!(
+                        .seed(CATALOG.t_args(
                             "store-screenshot-label",
-                            "name" => item.name.clone(),
-                            "number" => (index + 1).to_string()
+                            &[
+                                ("name", item.name.clone().into()),
+                                ("number", (index + 1).to_string().into()),
+                            ],
                         )),
                     )),
             ));
         }
         Some(Box::new(Section::titled(
-            ui::i18n!("store-screenshots-title"),
+            CATALOG.t("store-screenshots-title"),
             vec![Box::new(
                 Scrollable::new(ScrollAxis::Horizontal)
                     .with_height(height)
@@ -1010,7 +989,7 @@ impl StoreState {
         if facts.download_bytes > 0 {
             rows.push(
                 Property::new(
-                    ui::i18n!("store-fact-download"),
+                    CATALOG.t("store-fact-download"),
                     format_size(facts.download_bytes),
                 )
                 .with_kind(TextKind::Numeric),
@@ -1019,54 +998,54 @@ impl StoreState {
         if facts.installed_bytes > 0 {
             rows.push(
                 Property::new(
-                    ui::i18n!("store-fact-installed-size"),
+                    CATALOG.t("store-fact-installed-size"),
                     format_size(facts.installed_bytes),
                 )
                 .with_kind(TextKind::Numeric),
             );
         }
         rows.push(Property::new(
-            ui::i18n!("store-fact-source"),
+            CATALOG.t("store-fact-source"),
             match &item.source {
-                StoreSource::Tilo { registry_name } => ui::i18n!(
+                StoreSource::Tilo { registry_name } => CATALOG.t_args(
                     "store-fact-source-tilo",
-                    "registry" => registry_name.clone()
+                    &[("registry", registry_name.clone().into())],
                 ),
-                StoreSource::Flathub => ui::i18n!("store-source-flathub"),
+                StoreSource::Flathub => CATALOG.t("store-source-flathub"),
                 StoreSource::FlatpakRemote { title, .. } => title.clone(),
             },
         ));
         if !facts.license.is_empty() {
             rows.push(
-                Property::new(ui::i18n!("store-fact-license"), &facts.license)
+                Property::new(CATALOG.t("store-fact-license"), &facts.license)
                     .with_kind(TextKind::Identifier),
             );
         }
         let developer = self.developer(item);
         if !developer.is_empty() {
-            rows.push(Property::new(ui::i18n!("store-fact-developer"), developer));
+            rows.push(Property::new(CATALOG.t("store-fact-developer"), developer));
         } else if item.publisher_pubkey_hex.is_none() {
             rows.push(Property::new(
-                ui::i18n!("store-fact-publisher"),
+                CATALOG.t("store-fact-publisher"),
                 full_publisher(item),
             ));
         }
         let version = visible_version(item);
         if !version.is_empty() {
             rows.push(
-                Property::new(ui::i18n!("store-fact-version"), version)
+                Property::new(CATALOG.t("store-fact-version"), version)
                     .with_kind(TextKind::Numeric),
             );
         }
         if item.listing.updated_at_unix > 0 {
             rows.push(Property::new(
-                ui::i18n!("store-fact-updated"),
+                CATALOG.t("store-fact-updated"),
                 unix_date(item.listing.updated_at_unix),
             ));
         }
         if !item.categories.is_empty() {
             rows.push(Property::new(
-                ui::i18n!("store-fact-categories"),
+                CATALOG.t("store-fact-categories"),
                 item.categories
                     .iter()
                     .map(|category| catalogue::category_label(category))
@@ -1076,7 +1055,7 @@ impl StoreState {
         }
         if !item.supported_languages.is_empty() {
             rows.push(Property::new(
-                ui::i18n!("store-supported-languages"),
+                CATALOG.t("store-supported-languages"),
                 item.supported_languages.join(", "),
             ));
         }
@@ -1085,22 +1064,21 @@ impl StoreState {
         }
         rows.extend(facts.homepage.clone().map(|url| {
             link_row(
-                ui::i18n!("store-fact-homepage"),
+                CATALOG.t("store-fact-homepage"),
                 url,
-                ui::i18n!("store-open-homepage"),
+                CATALOG.t("store-open-homepage"),
             )
         }));
         rows.extend(item.source_url.clone().map(|url| {
             link_row(
-                ui::i18n!("store-fact-source-code"),
+                CATALOG.t("store-fact-source-code"),
                 url,
-                ui::i18n!("store-open-source-code"),
+                CATALOG.t("store-open-source-code"),
             )
         }));
         rows
     }
 
-    /// Who blocked the app, and for the person who did, the way back.
     fn blocked_notice(&self, item: &StoreItem) -> Option<Element> {
         let blockers = self.blocks.blockers(&item.id);
         // A policy's block is the one that matters: lifting the person's own
@@ -1110,20 +1088,21 @@ impl StoreState {
             .find(|by| ***by != Blocker::Person)
             .or_else(|| blockers.first())?;
         let message = match blocker {
-            Blocker::Person => ui::i18n!("store-blocked-by-you"),
-            Blocker::Workspace { workspace } => {
-                ui::i18n!("store-blocked-by-workspace", "workspace" => workspace.clone())
-            }
-            Blocker::Device { admin } if admin.is_empty() => ui::i18n!("store-blocked-by-policy"),
+            Blocker::Person => CATALOG.t("store-blocked-by-you"),
+            Blocker::Workspace { workspace } => CATALOG.t_args(
+                "store-blocked-by-workspace",
+                &[("workspace", workspace.clone().into())],
+            ),
+            Blocker::Device { admin } if admin.is_empty() => CATALOG.t("store-blocked-by-policy"),
             Blocker::Device { admin } => {
-                ui::i18n!("store-blocked-by-admin", "name" => admin.clone())
+                CATALOG.t_args("store-blocked-by-admin", &[("name", admin.clone().into())])
             }
         };
-        let mut banner = Banner::warning(ui::i18n!("store-blocked-title")).with_message(message);
+        let mut banner = Banner::warning(CATALOG.t("store-blocked-title")).with_message(message);
         if catalogue::person_can_unblock(&self.blocks, &item.id) {
             let mut unblock = Button::new(
                 &format!("store.unblock.{}", item.id),
-                &ui::i18n!("store-unblock"),
+                &CATALOG.t("store-unblock"),
             );
             if let Some(binding) = bindings::unblock(item) {
                 unblock = unblock.on_action(binding);
@@ -1133,35 +1112,30 @@ impl StoreState {
         Some(Box::new(banner))
     }
 
-    /// Blocking the app: it then appears in no list and no search, here or in
-    /// the desktop's search.
     fn block_section(&self, item: &StoreItem) -> Element {
         if self.blocks.is_blocked(&item.id) {
             return Box::new(Section::titled(
-                ui::i18n!("store-block-title"),
-                vec![Self::prose(&ui::i18n!("store-blocked-explanation"))],
+                CATALOG.t("store-block-title"),
+                vec![Self::prose(&CATALOG.t("store-blocked-explanation"))],
             ));
         }
         let mut block = Button::new(
             &format!("store.block.{}", item.id),
-            &ui::i18n!("store-block-button"),
+            &CATALOG.t("store-block-button"),
         )
-        .tooltip(ui::i18n!("store-block-tooltip", "name" => item.name.clone()));
+        .tooltip(CATALOG.t_args("store-block-tooltip", &[("name", item.name.clone().into())]));
         if let Some(binding) = bindings::block(item) {
             block = block.on_action(binding);
         }
         Box::new(Section::titled(
-            ui::i18n!("store-block-title"),
+            CATALOG.t("store-block-title"),
             vec![
-                Self::prose(&ui::i18n!("store-block-explanation")),
+                Self::prose(&CATALOG.t("store-block-explanation")),
                 Box::new(Actions::new(block)),
             ],
         ))
     }
 
-    /// What a bot may reach: the apps whose actions it uses or whose changes
-    /// it watches, the connectors it needs, and whether it posts under other
-    /// names.
     fn bot_access(&self, bot: &crate::model::BotListing) -> Element {
         let mut rows: Vec<Element> = Vec::new();
         for app in &bot.apps {
@@ -1171,7 +1145,7 @@ impl StoreState {
             rows.push(Box::new(
                 ListRow::new(format!("store.bot.app.{app}"), name)
                     .icon(ui::icons::app_glyph(app, None))
-                    .secondary(ui::i18n!("store-bot-uses-app")),
+                    .secondary(CATALOG.t("store-bot-uses-app")),
             ));
         }
         for connector in &bot.connectors {
@@ -1184,22 +1158,22 @@ impl StoreState {
                     name,
                 )
                 .icon(Icon::Link)
-                .secondary(ui::i18n!(
+                .secondary(CATALOG.t_args(
                     "store-bot-needs-connector",
-                    "version" => connector.min_version.clone()
+                    &[("version", connector.min_version.clone().into())],
                 )),
             ));
         }
         if bot.appearance {
             rows.push(Box::new(
-                ListRow::new("store.bot.appearance", ui::i18n!("store-bot-appearance"))
+                ListRow::new("store.bot.appearance", CATALOG.t("store-bot-appearance"))
                     .icon(Icon::Users),
             ));
         }
         if rows.is_empty() {
-            rows.push(Self::prose(&ui::i18n!("store-bot-access-none")));
+            rows.push(Self::prose(&CATALOG.t("store-bot-access-none")));
         }
-        Box::new(Section::titled(ui::i18n!("store-bot-access-title"), rows))
+        Box::new(Section::titled(CATALOG.t("store-bot-access-title"), rows))
     }
 
     /// For an installed app no repository describes: whether one may yet
@@ -1212,9 +1186,9 @@ impl StoreState {
             return None;
         }
         Some(if self.unanswered_repositories.is_empty() {
-            ui::i18n!("store-installed-unlisted")
+            CATALOG.t("store-installed-unlisted")
         } else {
-            ui::i18n::I18nManager::format(
+            crate::resource::CATALOG.t_args(
                 "store-installed-unanswered",
                 &[(
                     "repositories",
@@ -1227,14 +1201,14 @@ impl StoreState {
     fn technical_details(&self, item: &StoreItem) -> Element {
         let mut properties = technical_properties(item);
         properties.push(Property::new(
-            ui::i18n!("store-trust-section"),
+            CATALOG.t("store-trust-section"),
             trust_explanation(item),
         ));
         self.technical_properties_section(properties)
     }
 
     fn technical_properties_section(&self, properties: Vec<Property>) -> Element {
-        let label = ui::i18n::I18nManager::lookup_plain(if self.technical_details_open {
+        let label = crate::resource::CATALOG.t(if self.technical_details_open {
             "store-hide-technical-details"
         } else {
             "store-show-technical-details"
@@ -1252,33 +1226,30 @@ impl StoreState {
         };
         Box::new(
             Section::new(items).with_header(
-                SectionHeader::heading(ui::i18n::I18nManager::lookup_plain(
-                    "store-technical-details",
-                ))
-                .action(toggle),
+                SectionHeader::heading(crate::resource::CATALOG.t("store-technical-details"))
+                    .action(toggle),
             ),
         )
     }
 
-    /// Reporting a problem with the app, or reading how decisions are made.
     fn report_section(item: &StoreItem) -> Element {
         let mut report = Button::new(
             &format!("store.report.create.{}", item.id),
-            &ui::i18n!("store-report-create"),
+            &CATALOG.t("store-report-create"),
         )
-        .tooltip(ui::i18n!("store-report-create-tooltip"));
+        .tooltip(CATALOG.t("store-report-create-tooltip"));
         if let Some(binding) = bindings::draft_report(item) {
             report = report.on_action(binding);
         }
-        let mut moderation = Button::new("store.safety.detail", &ui::i18n!("store-report-how"))
+        let mut moderation = Button::new("store.safety.detail", &CATALOG.t("store-report-how"))
             .role(ButtonRole::Plain);
         if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
             moderation = moderation.on_action(binding);
         }
         Box::new(Section::titled(
-            ui::i18n!("store-report-title"),
+            CATALOG.t("store-report-title"),
             vec![
-                Self::prose(&ui::i18n!("store-report-explanation")),
+                Self::prose(&CATALOG.t("store-report-explanation")),
                 Box::new(
                     Row::new()
                         .with_rhythm(ui::tokens::Rhythm::Related)
@@ -1296,8 +1267,8 @@ impl StoreState {
         children.extend(self.operation_notice());
         if self.reports.is_empty() {
             children.push(Box::new(
-                EmptyState::new(ui::i18n!("store-reports-none"))
-                    .with_message(ui::i18n!("store-reports-none-help")),
+                EmptyState::new(CATALOG.t("store-reports-none"))
+                    .with_message(CATALOG.t("store-reports-none-help")),
             ));
         }
         for report in &self.reports {
@@ -1309,22 +1280,20 @@ impl StoreState {
             ("store-trust-guidelines-title", "store-trust-guidelines"),
         ] {
             children.push(Box::new(Section::titled(
-                ui::i18n!(title),
-                vec![Self::prose(&ui::i18n!(text))],
+                CATALOG.t(title),
+                vec![Self::prose(&CATALOG.t(text))],
             )));
         }
         self.page(theme, Measure::Reading, false, children)
     }
 
-    /// One report draft or moderation case: its status, the concern field
-    /// and what can be done with it.
     fn report_form(&self, report: &ReportProjection) -> Element {
         let item = self.item(&report.app_id);
         let mut export = Button::new(
             &format!("{}.export", report.id),
-            &ui::i18n!("store-report-export"),
+            &CATALOG.t("store-report-export"),
         )
-        .tooltip(ui::i18n!("store-report-export-tooltip"));
+        .tooltip(CATALOG.t("store-report-export-tooltip"));
         if let Some(binding) =
             bindings::report(|app| StoreEffect::ExportEvidence { app }, &report.app_id)
         {
@@ -1336,14 +1305,14 @@ impl StoreState {
                 let case_actions = [
                     (
                         "refresh-status",
-                        ui::i18n!("store-report-refresh"),
+                        CATALOG.t("store-report-refresh"),
                         Some(StoreEffect::RefreshStatus {
                             app: report.app_id.clone(),
                         }),
                     ),
                     (
                         "appeal",
-                        ui::i18n!("store-report-appeal"),
+                        CATALOG.t("store-report-appeal"),
                         self.moderation_effect(&report.app_id, true),
                     ),
                 ];
@@ -1357,10 +1326,10 @@ impl StoreState {
             } else {
                 let mut submit = Button::new(
                     &format!("{}.submit", report.id),
-                    &ui::i18n!("store-report-submit"),
+                    &CATALOG.t("store-report-submit"),
                 )
                 .role(ButtonRole::Primary)
-                .tooltip(ui::i18n!("store-report-submit-tooltip"));
+                .tooltip(CATALOG.t("store-report-submit-tooltip"));
                 if let Some(binding) = self
                     .moderation_effect(&report.app_id, false)
                     .as_ref()
@@ -1372,9 +1341,9 @@ impl StoreState {
             }
         }
         let kind = if report.is_case() {
-            ui::i18n!("store-report-case")
+            CATALOG.t("store-report-case")
         } else {
-            ui::i18n!("store-report-draft")
+            CATALOG.t("store-report-draft")
         };
         let name = item.map_or(report.app_id.as_str(), |item| item.name.as_str());
         let mut actions = Row::new()
@@ -1385,10 +1354,10 @@ impl StoreState {
             actions = actions.push(Box::new(button));
         }
         let field = Field::new(
-            ui::i18n!("store-report-note-label"),
+            CATALOG.t("store-report-note-label"),
             self.report_note_field(&report.app_id),
         )
-        .with_help(ui::i18n!("store-report-note-help"));
+        .with_help(CATALOG.t("store-report-note-help"));
         Box::new(Section::titled(
             name,
             vec![
@@ -1410,13 +1379,11 @@ impl StoreState {
         ))
     }
 
-    /// The note of `app_id`'s report: every keystroke one edit of the
-    /// document's text, merging with a collaborator typing in it.
     fn report_note_field(&self, app_id: &str) -> NoteField {
         let input = TextInput::new(vec![])
             .with_id(&format!("store.report.note.{app_id}"))
             .multiline(true)
-            .with_placeholder(ui::i18n!("store-report-note-placeholder"));
+            .with_placeholder(CATALOG.t("store-report-note-placeholder"));
         let path = crate::reports::Reports::note(app_id);
         NoteField(match &self.dispatcher {
             Some(dispatcher) => TextControl::at(input, dispatcher.clone(), path),
@@ -1424,10 +1391,8 @@ impl StoreState {
         })
     }
 
-    /// Flatpak repositories: the form that adds one and the list of those
-    /// configured on this machine.
     pub(super) fn build_remotes(&self, theme: &Theme) -> Element {
-        let mut add = Button::new("store.remote.add", &ui::i18n!("store-remote-add"))
+        let mut add = Button::new("store.remote.add", &CATALOG.t("store-remote-add"))
             .role(ButtonRole::Primary);
         if let Some(binding) = bindings::add_remote(&self.remote_name_state, &self.remote_url_state)
         {
@@ -1435,23 +1400,23 @@ impl StoreState {
         }
         let form = Form::new()
             .section(
-                FormSection::new(ui::i18n!("store-remote-add-title"))
+                FormSection::new(CATALOG.t("store-remote-add-title"))
                     .field(Field::new(
-                        ui::i18n!("store-remote-name"),
+                        CATALOG.t("store-remote-name"),
                         TextInput::from_state(&self.remote_name_state)
                             .with_id("store.remote.name")
                             .with_kind(ui::widget::TextInputKind::Name)
-                            .with_placeholder(ui::i18n!("store-remote-name-placeholder")),
+                            .with_placeholder(CATALOG.t("store-remote-name-placeholder")),
                     ))
                     .field(
                         Field::new(
-                            ui::i18n!("store-remote-url"),
+                            CATALOG.t("store-remote-url"),
                             TextInput::from_state(&self.remote_url_state)
                                 .with_id("store.remote.url")
                                 .with_kind(ui::widget::TextInputKind::Url)
                                 .with_placeholder("https://"),
                         )
-                        .with_help(ui::i18n!("store-remote-url-help")),
+                        .with_help(CATALOG.t("store-remote-url-help")),
                     ),
             )
             .with_actions(Actions::new(add));
@@ -1472,7 +1437,7 @@ impl StoreState {
                 {
                     row = row.disclosure().on_action(binding.clone()).action_binding(
                         Icon::Globe,
-                        ui::i18n!("store-remote-browse"),
+                        CATALOG.t("store-remote-browse"),
                         binding,
                     );
                 }
@@ -1482,7 +1447,7 @@ impl StoreState {
                     row = row.trailing(Box::new(
                         Button::new(
                             &format!("store.{}.enabled", remote.resource_id()),
-                            &ui::i18n!(if remote.disabled {
+                            &CATALOG.t(if remote.disabled {
                                 "store-remote-enable"
                             } else {
                                 "store-remote-disable"
@@ -1495,26 +1460,25 @@ impl StoreState {
                     && let Some(binding) = bindings::remove_remote(remote)
                 {
                     row =
-                        row.action_binding(Icon::Trash, ui::i18n!("store-remote-remove"), binding);
+                        row.action_binding(Icon::Trash, CATALOG.t("store-remote-remove"), binding);
                 }
                 Box::new(row) as Element
             })
             .collect();
         let mut children: Vec<Element> = Vec::new();
         children.extend(self.operation_notice());
-        children.push(Self::prose(&ui::i18n!("store-remotes-description")));
+        children.push(Self::prose(&CATALOG.t("store-remotes-description")));
         children.push(Box::new(form));
         if !rows.is_empty() {
             let count = rows.len();
             children.push(Box::new(Section::new(rows).with_header(
-                SectionHeader::heading(ui::i18n!("store-remotes-configured")).count(count),
+                SectionHeader::heading(CATALOG.t("store-remotes-configured")).count(count),
             )));
         }
         self.page(theme, Measure::Reading, false, children)
     }
 }
 
-/// What an app's page shows beyond its catalogue row.
 #[derive(Clone, Debug, Default)]
 pub(super) struct PageFacts {
     pub paragraphs: Vec<String>,
@@ -1523,12 +1487,10 @@ pub(super) struct PageFacts {
     pub license: String,
     pub download_bytes: u64,
     pub installed_bytes: u64,
-    /// `None` when nobody said what the app may do.
     pub permissions: Option<Vec<Permission>>,
     pub homepage: Option<String>,
 }
 
-/// What a running action says in place of its button.
 pub(super) fn progress_label(action: ActionKind, name: &str) -> String {
     let key = match action {
         ActionKind::Open | ActionKind::FlatpakOpen => "store-progress-opening",
@@ -1540,24 +1502,23 @@ pub(super) fn progress_label(action: ActionKind, name: &str) -> String {
         ActionKind::NeedsFlatpakHost => "store-progress-preparing",
         ActionKind::AddBot => "store-progress-adding",
     };
-    ui::i18n::I18nManager::format(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
+    crate::resource::CATALOG.t_args(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
 }
 
 /// An installed app's row meta in Updates: the version it moves to.
 fn update_meta(item: &StoreItem) -> String {
     match &item.installed {
         crate::model::InstalledState::Installed { available, .. } if !available.is_empty() => {
-            ui::i18n!("store-update-to", "version" => visible_version_of(item, available))
+            CATALOG.t_args(
+                "store-update-to",
+                &[("version", visible_version_of(item, available).into())],
+            )
         }
         _ => catalogue::source_label(item),
     }
 }
 
-/// An installed app's row meta in On this device: whether it is kept.
 fn device_meta(item: &StoreItem) -> String {
-    // What it costs on this device is the question after "can I install
-    // it": the size stands where the row's value stands, and the state the
-    // source gives it when no size is known.
     if let Some(bytes) = item.versions.first().map(|version| version.size_bytes)
         && bytes > 0
     {
@@ -1571,7 +1532,7 @@ fn device_meta(item: &StoreItem) -> String {
                 user_managed,
                 ..
             },
-        ) => ui::i18n!(if !*user_managed {
+        ) => CATALOG.t(if !*user_managed {
             "store-device-system"
         } else if *pinned {
             "store-device-kept"
@@ -1609,9 +1570,10 @@ fn whats_new(releases: &[catalogue::Release]) -> Element {
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(taffy::AlignItems::Baseline)
             .push(Box::new(
-                Text::new(
-                    &ui::i18n!("store-release-version", "version" => release.version.clone()),
-                )
+                Text::new(&CATALOG.t_args(
+                    "store-release-version",
+                    &[("version", release.version.clone().into())],
+                ))
                 .with_id(format!("store.release.{index}"))
                 .with_role(TextRole::Subheading),
             ));
@@ -1632,13 +1594,12 @@ fn whats_new(releases: &[catalogue::Release]) -> Element {
         }
         children.push(Box::new(block));
     }
-    Box::new(Section::titled(ui::i18n!("store-whats-new"), children))
+    Box::new(Section::titled(CATALOG.t("store-whats-new"), children))
 }
 
-/// What the app may do on this device, in plain words, the broad ones first.
 fn permissions_section(item: &StoreItem, permissions: Option<&[Permission]>) -> Element {
     let rows: Vec<Element> = match permissions {
-        Some([]) => vec![StoreState::prose(&ui::i18n!("store-permissions-none"))],
+        Some([]) => vec![StoreState::prose(&CATALOG.t("store-permissions-none"))],
         Some(permissions) => {
             let mut ordered: Vec<&Permission> = permissions.iter().collect();
             ordered.sort_by_key(|permission| !permission.is_broad());
@@ -1657,13 +1618,13 @@ fn permissions_section(item: &StoreItem, permissions: Option<&[Permission]>) -> 
                 .collect()
         }
         None if matches!(item.source, StoreSource::Tilo { .. }) => {
-            vec![StoreState::prose(&ui::i18n!(
-                "store-permissions-tilo-sandbox"
-            ))]
+            vec![StoreState::prose(
+                &CATALOG.t("store-permissions-tilo-sandbox"),
+            )]
         }
-        None => vec![StoreState::prose(&ui::i18n!("store-permissions-unknown"))],
+        None => vec![StoreState::prose(&CATALOG.t("store-permissions-unknown"))],
     };
-    Box::new(Section::titled(ui::i18n!("store-permissions-title"), rows))
+    Box::new(Section::titled(CATALOG.t("store-permissions-title"), rows))
 }
 
 fn permission_icon(permission: &Permission) -> Icon {
@@ -1689,7 +1650,6 @@ fn permission_icon(permission: &Permission) -> Icon {
     }
 }
 
-/// What a directory bot does, as its signed listing says: when it runs.
 fn bot_does(bot: &crate::model::BotListing) -> Element {
     let lines: Vec<Element> = bot
         .triggers
@@ -1704,12 +1664,12 @@ fn bot_does(bot: &crate::model::BotListing) -> Element {
                 "incoming_message" => Some("store-bot-trigger-incoming-message"),
                 _ => None,
             };
-            let text = key.map_or_else(|| trigger.clone(), ui::i18n::I18nManager::lookup_plain);
+            let text = key.map_or_else(|| trigger.clone(), |key| crate::resource::CATALOG.t(key));
             Box::new(ListRow::new(format!("store.bot.trigger.{index}"), text).icon(Icon::Clock))
                 as Element
         })
         .collect();
-    Box::new(Section::titled(ui::i18n!("store-bot-what-it-does"), lines))
+    Box::new(Section::titled(CATALOG.t("store-bot-what-it-does"), lines))
 }
 
 /// A report's note in a form field: the document-bound text control, named
@@ -1739,14 +1699,13 @@ impl ui::widget::FormControl for NoteField {
 /// What a trust claim does and does not promise.
 fn trust_explanation(item: &StoreItem) -> String {
     match item.trust {
-        StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
-        StoreTrust::PublisherSigned => ui::i18n!("store-trust-publisher-signed"),
-        StoreTrust::Flathub => ui::i18n!("store-trust-flathub"),
-        StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust-explanation"),
+        StoreTrust::TrustedAttestor => CATALOG.t("store-package-local-trust"),
+        StoreTrust::PublisherSigned => CATALOG.t("store-trust-publisher-signed"),
+        StoreTrust::Flathub => CATALOG.t("store-trust-flathub"),
+        StoreTrust::ConfiguredRemote => CATALOG.t("store-remote-trust-explanation"),
     }
 }
 
-/// A digest as far as a person compares it: its start and its end.
 fn digest_summary(hash: &str) -> String {
     let head: String = hash.chars().take(12).collect();
     let tail: String = hash
@@ -1760,16 +1719,15 @@ fn digest_summary(hash: &str) -> String {
     format!("BLAKE3 {head}…{tail}")
 }
 
-/// Exact package identity remains inspectable without dominating the page.
 fn technical_properties(item: &StoreItem) -> Vec<Property> {
     let mut rows = vec![
-        Property::new(ui::i18n!("store-app-id"), &item.id)
+        Property::new(CATALOG.t("store-app-id"), &item.id)
             .with_kind(TextKind::Identifier)
             .copyable(),
     ];
     if !item.latest_version().is_empty() {
         rows.push(
-            Property::new(ui::i18n!("store-build-version"), item.latest_version())
+            Property::new(CATALOG.t("store-build-version"), item.latest_version())
                 .with_kind(TextKind::Identifier)
                 .copyable(),
         );
@@ -1777,7 +1735,7 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
     if let Some(version) = item.versions.first()
         && let Some(runtime) = &version.runtime
     {
-        rows.push(Property::new(ui::i18n!("store-runtime-reference"), runtime));
+        rows.push(Property::new(CATALOG.t("store-runtime-reference"), runtime));
     }
     if let Some(hash) = item
         .versions
@@ -1785,14 +1743,14 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
         .and_then(|version| version.root_hash_hex.as_deref())
     {
         rows.push(
-            Property::new(ui::i18n!("store-package-digest"), digest_summary(hash))
+            Property::new(CATALOG.t("store-package-digest"), digest_summary(hash))
                 .with_kind(TextKind::Secret),
         );
     }
     if let Some(key) = item.publisher_pubkey_hex.as_deref() {
         rows.push(
             Property::new(
-                ui::i18n::I18nManager::lookup_plain("store-publisher-key"),
+                crate::resource::CATALOG.t("store-publisher-key"),
                 format!("ed25519:{key}"),
             )
             .with_kind(TextKind::Identifier)
@@ -1802,13 +1760,12 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
     rows
 }
 
-/// What the app is doing on this device.
 pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
     use crate::model::InstalledState;
-    let on_device = ui::i18n!("store-fact-on-device");
+    let on_device = CATALOG.t("store-fact-on-device");
     match (&item.source, &item.installed) {
         (StoreSource::Tilo { .. }, InstalledState::Not) => {
-            vec![(on_device, ui::i18n!("store-device-on-demand"))]
+            vec![(on_device, CATALOG.t("store-device-on-demand"))]
         }
         (
             StoreSource::Tilo { .. },
@@ -1820,7 +1777,7 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
             },
         ) => vec![(
             on_device,
-            ui::i18n!(
+            CATALOG.t_args(
                 if !*user_managed {
                     "store-device-system-version"
                 } else if *pinned {
@@ -1828,11 +1785,11 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
                 } else {
                     "store-device-cached-version"
                 },
-                "version" => visible_version_of(item, version)
+                &[("version", visible_version_of(item, version).into())],
             ),
         )],
         (StoreSource::Flathub | StoreSource::FlatpakRemote { .. }, InstalledState::Not) => {
-            vec![(on_device, ui::i18n!("store-device-not-installed"))]
+            vec![(on_device, CATALOG.t("store-device-not-installed"))]
         }
         (
             StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
@@ -1843,7 +1800,7 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
             },
         ) => vec![(
             on_device,
-            ui::i18n::I18nManager::format(
+            crate::resource::CATALOG.t_args(
                 "store-device-provided-version",
                 &[("version", ui::i18n::ArgValue::Text(version.clone()))],
             ),
@@ -1853,13 +1810,14 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
             InstalledState::Installed { version, .. },
         ) => vec![(
             on_device,
-            ui::i18n!("store-device-installed-version", "version" => version.clone()),
+            CATALOG.t_args(
+                "store-device-installed-version",
+                &[("version", version.clone().into())],
+            ),
         )],
     }
 }
 
-/// A fact row whose value is a web address, with the action that opens it
-/// in the browser.
 fn link_row(label: String, url: String, open: String) -> Property {
     let mut row = Property::new(label, url.clone()).with_kind(TextKind::Identifier);
     if let Some(binding) = crate::bindings::effect(&StoreEffect::OpenLink { url }) {

@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_action_broker::services::{OwnDeviceActions, OwnDeviceOutcome};
 use tilo_actions::offload::ActionOffload;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
@@ -21,6 +20,7 @@ use tilo_actions::remote::{
     Pending, own_device, pending,
 };
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
+use tilo_broker_core::services::{OwnDeviceActions, OwnDeviceOutcome};
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
@@ -69,7 +69,7 @@ impl DeviceActions {
     ) -> Self {
         let dispatch = DeviceDispatch::for_user(identity.device_cert.user_public_key);
         let plane = ActionPlane::over(
-            identity.device_signing_key.clone(),
+            Arc::clone(&identity.signer),
             Arc::new(dispatch.clone()),
             Arc::new(HeldWorkspaces(engine)),
         );
@@ -455,8 +455,9 @@ mod tests {
 
     tilo_automerge_isolate::test_worker!();
 
-    use std::collections::HashMap;
+    use std::future::Future;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::pin::Pin;
     use std::time::Duration;
 
     use ed25519_dalek::SigningKey;
@@ -465,19 +466,19 @@ mod tests {
     use iroh::{Endpoint, RelayMode, SecretKey};
     use neighbour_wire::offer::{Decline, Power, Route, Work};
     use tilo_action_broker::record_content::ContentState;
-    use tilo_action_broker::route::CrdtRoute;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
         InvokeArgument, TestHost, application_action_target, application_provider, own_device,
     };
     use tilo_actions::{ActionAddress, ActionOutput, CONTENT_RESOURCE_KIND, Offload};
+    use tilo_broker_core::route::CrdtRoute;
     use tilo_content::hash_bytes;
     use tilo_network_actor::{HostIdentity, RecordContentDelivery};
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_user_identity::DeviceCert;
 
     use super::*;
-    use crate::platform::plane::Cmd;
+    use crate::sync::Cmd;
 
     const WORKSPACE: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
@@ -499,13 +500,7 @@ mod tests {
     }
 
     fn identity(cert: DeviceCert, key: &SigningKey) -> HostIdentity {
-        HostIdentity {
-            device_cert: cert,
-            device_signing_key: key.clone(),
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        }
+        HostIdentity::kept(cert, key.clone())
     }
 
     /// A loopback endpoint whose identity is the device `key` , as the session's own endpoint is.
@@ -531,56 +526,65 @@ mod tests {
 
     /// The session of the device `key` that answers requests, holding the workspace the person's
     /// device `asking` is in too, and answering through `host` .
-    async fn answering(
-        key: &SigningKey,
-        cert: &DeviceCert,
-        asking: Option<&(SigningKey, DeviceCert)>,
+    ///
+    /// Boxed: setting one up holds an engine, a workspace and another device's admission of it,
+    /// so the future is larger than a test's stack frame should carry.
+    fn answering<'a>(
+        key: &'a SigningKey,
+        cert: &'a DeviceCert,
+        asking: Option<&'a (SigningKey, DeviceCert)>,
         host: Arc<TestHost>,
-    ) -> (Endpoint, Router, DeviceActions) {
-        let directory = tempfile::TempDir::new().expect("a state directory");
-        let id = identity(cert.clone(), key);
-        let engine = Arc::new(
-            Engine::open(id.clone(), Some(directory.path()), std::iter::empty())
+    ) -> Pin<Box<dyn Future<Output = (Endpoint, Router, DeviceActions)> + 'a>> {
+        Box::pin(async move {
+            let directory = tempfile::TempDir::new().expect("a state directory");
+            let id = identity(cert.clone(), key);
+            let engine = Arc::new(
+                Engine::open(
+                    id.clone(),
+                    Some(directory.path()),
+                    std::iter::empty(),
+                    crate::platform::custody::of_this_desk(),
+                )
                 .expect("this device's engine opens"),
-        );
-        // This device makes the workspace, and the other device of the person joins it: the device
-        // certified in the workspace is the one that acts.
-        let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
-            .expect("this device governs its workspace");
-        let governor = testing::enroll_into(governor, engine.owner(), key, cert)
-            .expect("this device's workspace is its own");
-        if let Some(asking) = asking {
-            let joining = tempfile::TempDir::new().expect("the other device's directory");
-            let other = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
-                .expect("the other device's owner opens");
-            let governor = testing::enroll_into(governor, &other, &asking.0, &asking.1)
-                .expect("the workspace admits the other device");
-            // What the workspace's admission of the other device changed reaches this device's own
-            // copy of the workspace, as it would over the person's devices.
-            let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
-            let now = std::time::SystemTime::now();
-            for (bytes, _) in governor.outgoing() {
-                engine
-                    .owner()
-                    .receive(
-                        workspace_id,
-                        tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                            cert.device_public_key,
-                        ),
-                        postcard::from_bytes(bytes).expect("a workspace change"),
-                        Some(key),
-                        now,
-                    )
-                    .expect("this device takes the workspace as its governor has it");
+            );
+            // This device makes the workspace, and the other device of the person joins it: the device
+            // certified in the workspace is the one that acts.
+            let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
+                .expect("this device governs its workspace");
+            let governor = testing::enroll_into(governor, engine.owner(), key, cert)
+                .expect("this device's workspace is its own");
+            if let Some(asking) = asking {
+                let joining = tempfile::TempDir::new().expect("the other device's directory");
+                let other = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
+                    .expect("the other device's owner opens");
+                let governor = testing::enroll_into(governor, &other, &asking.0, &asking.1)
+                    .expect("the workspace admits the other device");
+                // What the workspace's admission of the other device changed reaches this device's own
+                // copy of the workspace, as it would over the person's devices.
+                let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
+                let now = std::time::SystemTime::now();
+                for (bytes, _) in governor.outgoing() {
+                    engine
+                        .owner()
+                        .receive(
+                            workspace_id,
+                            tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                                cert.device_public_key,
+                            ),
+                            postcard::from_bytes(bytes).expect("a workspace change"),
+                            now,
+                        )
+                        .expect("this device takes the workspace as its governor has it");
+                }
             }
-        }
-        let endpoint = endpoint(key).await;
-        let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
-        actions.install(host);
-        let router = Router::builder(endpoint.clone())
-            .accept(tilo_peer_state::actions::ACTIONS_ALPN, actions.plane())
-            .spawn();
-        (endpoint, router, actions)
+            let endpoint = endpoint(key).await;
+            let actions = DeviceActions::start(&id, endpoint.clone(), Some(engine));
+            actions.install(host);
+            let router = Router::builder(endpoint.clone())
+                .accept(tilo_peer_state::actions::ACTIONS_ALPN, actions.plane())
+                .spawn();
+            (endpoint, router, actions)
+        })
     }
 
     /// The session of the device `key` that asks: its own plane, nothing to answer, and where the
@@ -772,7 +776,7 @@ mod tests {
     struct Content {
         plane: Arc<crate::content::Plane>,
         address: EndpointId,
-        said: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+        said: tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
     }
 
     impl Content {
@@ -781,8 +785,8 @@ mod tests {
         fn open(key: &SigningKey) -> Self {
             let address = SecretKey::from_bytes(&key.to_bytes()).public();
             let plane = crate::content::Plane::open(None);
-            let (say, said) = tokio::sync::mpsc::unbounded_channel();
-            plane.bind(say, address);
+            let (say, said) = tokio::sync::mpsc::unbounded_channel::<crate::sync::HostCmd>();
+            plane.bind(crate::sync::HostOutbox::of(say), address);
             Self {
                 plane,
                 address,
@@ -805,15 +809,15 @@ mod tests {
     /// workspace's topic, and an answer to the one device that asked.
     fn carry(
         from: EndpointId,
-        said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+        said: &mut tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
         to: &crate::content::Plane,
     ) {
         while let Ok(outgoing) = said.try_recv() {
             match outgoing {
-                Cmd::Publish { ws, msg } => {
+                crate::sync::HostCmd::Plane(Cmd::Publish { ws, msg }) => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
-                Cmd::Content(RecordContentDelivery { ws, msg, .. }) => {
+                crate::sync::HostCmd::Content(RecordContentDelivery { ws, msg, .. }) => {
                     to.heard(ws, WORKSPACE, from, &msg);
                 }
                 _ => {}

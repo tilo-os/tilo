@@ -8,8 +8,8 @@ use crate::{AGENT_APP_ID, Shortcut, Step, StepKind, TriggerSpec};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProgramRequirements {
-    /// Apps whose actions the steps invoke or whose messages a trigger
-    /// watches, other than connectors.
+    /// Apps whose actions the steps invoke, whose records they read or whose
+    /// messages a trigger watches, other than connectors.
     pub apps: BTreeSet<String>,
     /// Apps the triggers take connector events from. Invoking a connector's
     /// verbs counts here too, never under `apps`.
@@ -58,6 +58,9 @@ fn walk(steps: &[Step], out: &mut ProgramRequirements) {
             }
             StepKind::Ai { .. } | StepKind::Task { .. } => {
                 out.apps.insert(AGENT_APP_ID.to_owned());
+            }
+            StepKind::Read { app, .. } => {
+                out.apps.insert(app.clone());
             }
             StepKind::If {
                 then, otherwise, ..

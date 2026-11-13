@@ -1,5 +1,4 @@
 //! Exact selected-medium read-only custody before original-source registration.
-//! The app never opens a raw device path; only the authenticated root helper does.
 use super::{
     home_capture::{MediaReadSession, Rendezvous, RootMediaReadSession},
     migration_handoff,
@@ -29,7 +28,6 @@ pub(crate) enum ReadMediaPurpose {
     BootPending,
 }
 
-// Private command intent, never a public receipt or credential container.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BootMediaOperation {
     CompleteOriginal,
@@ -77,9 +75,9 @@ impl Request {
     }
 }
 
-/// Nonserializable authority. The retained request and live reverse-authenticated
-/// helper bind a single read-only descriptor to this exact selected medium.
-/// Dropping it closes the socket, lets the helper exit, and reaps that child.
+/// Nonserializable authority: the retained request and live reverse-authenticated helper bind one
+/// read-only descriptor to this exact medium. Dropping it closes the socket, lets the helper exit
+/// and reaps that child.
 pub struct ReadOnlyMediaGrant {
     purpose: ReadMediaPurpose,
     owned: Option<OwnedMedia>,
@@ -133,7 +131,7 @@ impl ReadOnlyMediaGrant {
         self.run_boot_operation(BootMediaOperation::CompleteOriginal, secret, cancel)
     }
     // Kept private to setup until the packaged root helper admits the complete
-    // fixed-destination generation adoption; no public action is added here.
+    // fixed-destination generation adoption.
     pub fn extract_completed(
         &self,
         secret: zeroize::Zeroizing<Vec<u8>>,
@@ -157,8 +155,7 @@ impl ReadOnlyMediaGrant {
             BootMediaOperation::CompleteOriginal => session.complete_original(secret, cancel),
             BootMediaOperation::ExtractCompleted => session.extract_completed(secret, cancel),
         };
-        // EOF retires this exact helper after one job, including errors. Existing
-        // child/raw ownership keeps cleanup custody until confirmed retirement.
+        // EOF retires this exact helper after one job, including errors.
         *held = None;
         result
     }
@@ -184,7 +181,6 @@ impl VerifiedInboxLease<'_> {
     pub fn validate_exact(&self, file: &File) -> io::Result<()> {
         self.grant.validate()?;
         let actual = file.metadata()?;
-        // SAFETY: getuid observes only current process credentials.
         let uid = rustix::process::getuid().as_raw();
         let digest: [u8; 32] =
             Sha256::digest(serde_json::to_vec(&self.layout.source_plans)?).into();
@@ -218,8 +214,7 @@ struct InboxActive<'a> {
 impl Drop for InboxActive<'_> {
     fn drop(&mut self) {
         if !self.released {
-            // EOF retires the exact root-held mount even on panic/error. It
-            // never constitutes a successful pending receipt.
+            // EOF retires the root-held mount even on panic or error; it is never a success receipt.
             *self
                 .grant
                 .session
@@ -300,8 +295,8 @@ impl Drop for ReadOnlyMediaGrant {
     }
 }
 
-// The registry, not an event loop or observer, owns abandoned native custody.
-// Frontends may observe readiness on their runtime and call finish off-thread.
+// The registry owns abandoned native custody; frontends observe readiness on their runtime and
+// may call finish off-thread.
 struct RetiredMedia {
     key: String,
     owned: Mutex<Option<OwnedMedia>>,
@@ -321,7 +316,6 @@ fn retain_retired(owned: OwnedMedia) {
         }));
 }
 
-/// Conservative nonblocking busy check; cleanup is never inferred from EOF.
 pub fn retirement_pending(key: &str) -> bool {
     let entries = match retired().try_lock() {
         Ok(entries) => entries,
@@ -338,7 +332,6 @@ pub fn retirement_pending(key: &str) -> bool {
         })
 }
 
-/// Observe the owned child without waiting or releasing its retained resources.
 pub fn retirement_ready(key: &str) -> bool {
     let entries = match retired().try_lock() {
         Ok(entries) => entries,
@@ -359,8 +352,8 @@ pub fn retirement_ready(key: &str) -> bool {
         })
 }
 
-/// Blocking final retirement, for an off-thread observer or final host teardown.
-/// Wait failures retain the descriptor and private request and keep media busy.
+/// Blocking final retirement, off-thread. A wait failure keeps the descriptor and request and
+/// leaves the media busy.
 pub fn finish_retirement(key: &str) -> io::Result<()> {
     let entries = retired()
         .lock()
@@ -403,8 +396,8 @@ impl ChildOwner {
 }
 impl Drop for ChildOwner {
     fn drop(&mut self) {
-        // Kill only this owned child if authorization has not execed root yet.
-        // After root exec, socket EOF is its bounded teardown signal.
+        // Kill the owned child only if it has not execed root yet; after that, socket EOF is its
+        // bounded teardown signal.
         if let Some(child) = self.0.as_mut() {
             let _ = child.kill();
             let _ = child.wait();
@@ -412,8 +405,7 @@ impl Drop for ChildOwner {
     }
 }
 
-/// Off-thread canonical elevation. No write preparation, unmount, partition
-/// change, or migration completion happens during this permission operation.
+/// Off-thread elevation that changes no partitions, unmounts nothing and completes no migration.
 pub fn admit(
     target: &TargetDrive,
     intent: &MigrationIntent,
@@ -441,8 +433,8 @@ pub fn admit(
     Ok(grant)
 }
 
-/// Apps-only admission derives source scope from its retained selected intent;
-/// medium collision and reverse-authenticated descriptor guards remain identical.
+/// Apps-only admission; the medium collision and reverse-authenticated descriptor guards stay the
+/// same.
 pub fn admit_applications(
     target: &TargetDrive,
     intent: &MigrationIntent,
@@ -554,13 +546,12 @@ fn admit_request(
         super::migration::check_cancel(cancel)?;
         Ok(grant)
     })();
-    // Until the owned grant is assembled, dropping its socket causes the exact
-    // helper to finish. The separate child owner below must be reaped on error.
+    // Dropping the socket before the grant is assembled makes the exact helper finish.
     result
 }
 
-/// Registered before the application starts; malformed invocations never fall
-/// through to a graphical app. The privileged opener receives no output path.
+/// Registered before the app starts, so a malformed invocation never opens a window; the opener
+/// receives no output path.
 pub fn maybe_run(args: &[String]) -> Result<Option<i32>, String> {
     let Some(at) = args.iter().position(|arg| arg == ARG) else {
         return Ok(None);
@@ -575,10 +566,8 @@ fn run_helper(args: &[String], at: usize) -> io::Result<()> {
         at,
         |operation, target, raw, caller, secret, cancel, retirement| match operation {
             BootMediaOperation::CompleteOriginal => {
-                // Normal installed completion needs the protected receipt from
-                // the actual signed export/verifier cohort. The disposable
-                // qualifier invokes the private transaction directly and never
-                // needs this preexisting receipt to qualify a candidate.
+                // Installed completion needs the protected receipt from the signed export cohort; the
+                // disposable qualifier runs the private transaction directly.
                 super::prepared_setup_helper::original_reattest::run(
                     std::iter::empty::<std::ffi::OsString>(),
                     &mut io::sink(),
@@ -595,9 +584,8 @@ fn run_helper(args: &[String], at: usize) -> io::Result<()> {
         },
     )
 }
-// Carrier callback owns the full transaction and must return only after
-// authentication, read mount retirement, reviewed export/verification,
-// reseal/commit and confirmed owned unmount. Unsupported is never success.
+// The carrier callback returns only after authentication, read-mount retirement, verified export,
+// reseal, commit and confirmed unmount. Unsupported is never success.
 pub(crate) fn run_helper_with_boot(
     args: &[String],
     at: usize,
@@ -616,7 +604,6 @@ pub(crate) fn run_helper_with_boot(
     }
     let path = Path::new(args.get(at + 1).ok_or(io::ErrorKind::InvalidInput)?);
     let digest = args.get(at + 2).ok_or(io::ErrorKind::InvalidInput)?;
-    // SAFETY: geteuid has no arguments and observes only current credentials.
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
@@ -701,8 +688,7 @@ pub(crate) fn run_helper_with_boot(
 fn target_eligible(selected: &TargetDrive, purpose: ReadMediaPurpose) -> bool {
     match purpose {
         ReadMediaPurpose::OriginalRegistration => selected.is_media_target(),
-        // The USB/SD medium may now host the booted system. That permits only
-        // read custody, never destructive eligibility or source admission.
+        // The medium may now host the booted system: that permits read custody only.
         ReadMediaPurpose::BootPending => {
             selected.kind.is_removable_class()
                 && (selected.removable
@@ -758,8 +744,8 @@ fn attest_selected_descriptor(
     }
     use std::os::unix::fs::FileTypeExt;
     validate_selected_target(selected, purpose)?;
-    // Root opened O_RDONLY before any marker parse; neither a caller-supplied
-    // path nor a regular file can substitute for this exact rescanned device.
+    // Root opened the device read-only before any marker parse; no caller path or regular file
+    // substitutes for this rescanned device.
     super::home_capture::validate_read_only_block_device(file)?;
     let held = file.metadata()?;
     let current = std::fs::symlink_metadata(selected.dev_path())?;
@@ -815,8 +801,8 @@ mod tests {
             session: Mutex::new(None),
             inbox_active: AtomicBool::new(false),
         };
-        // The child holds the medium until released below, so a drop that
-        // waited for it would never return.
+        // The child holds the medium until released below, so a drop that waited for it would never
+        // return.
         let (dropped, done) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             drop(grant);

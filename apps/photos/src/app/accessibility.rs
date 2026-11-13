@@ -1,5 +1,5 @@
-//! The semantic tree the window exposes, and the actions assistive
-//! technology and agents perform through it.
+//! The semantic tree the window exposes, and the actions assistive technology and agents perform
+//! through it.
 
 use crate::model::PhotoLibrary;
 use crate::strings::{tr, tr_args, tr_count, tr_with};
@@ -18,10 +18,6 @@ use super::{
 };
 
 impl Photos {
-    /// The canvas has no intrinsic source name — it is raw pixel data — so the
-    /// app supplies the file name and current edit state that a sighted person
-    /// gets from the status bar. The status remains a polite live region for
-    /// copy/save/open failures without stealing keyboard focus.
     #[allow(
         clippy::too_many_lines,
         reason = "the synthetic canvas accessibility tree keeps each visual hit target beside its stable semantic route"
@@ -249,10 +245,6 @@ impl Photos {
                         .with_state(AccessState::new().focusable(true))
                         .with_action_target(target)
                 }));
-                // These semantic controls intentionally share the same pure
-                // camera operation as keyboard arrows and pointer drag. They
-                // make panning available to screen readers and agents without
-                // introducing coordinate-only automation.
                 for (name, target) in [
                     ("photos-a11y-pan-left", "photos:places:pan-left"),
                     ("photos-a11y-pan-right", "photos:places:pan-right"),
@@ -467,9 +459,6 @@ impl Photos {
                     );
                 }
                 if self.selection_album_chooser {
-                    // A modal needs one focus scope. Leaving the dimmed grid,
-                    // filters, or card operations in the AT tree would let a
-                    // screen-reader user activate controls a pointer user cannot.
                     cards.clear();
                 }
                 for (hit, bounds) in &self.selection_hits {
@@ -571,10 +560,6 @@ impl Photos {
                     );
                 }
                 if self.metadata_editor {
-                    // The inspector owns the interaction scope. Keeping the
-                    // dimmed grid's cards in the a11y tree would let a screen
-                    // reader activate controls that pointer and keyboard users
-                    // correctly cannot reach while editing details.
                     cards.clear();
                     let fields: &[(&str, &str, &TextInput)] = match self.metadata_editor_section {
                         MetadataEditorSection::Organize => &[
@@ -602,8 +587,6 @@ impl Photos {
                         ],
                     };
                     for (name, target, input) in fields {
-                        // The field's clear toggle, as the field draws it,
-                        // routed to the same command an agent runs.
                         let clear = match *target {
                             "folder" => Some("clear-folder"),
                             "people" => Some("clear-people"),
@@ -788,9 +771,6 @@ impl Photos {
                 } else {
                     if !self.album_editor && !self.metadata_editor {
                         if self.library_items.is_empty() {
-                            // An empty library paints only its empty state:
-                            // read that out, and publish no timeline index
-                            // that is not on screen.
                             let (title, body) = self.library_empty_state_text();
                             cards.push(
                                 AccessNode::new(Role::StaticText)
@@ -1306,7 +1286,6 @@ impl Photos {
         }
         if let Some(command) = target.strip_prefix("photos:metadata:") {
             if let Some(field) = command.strip_prefix("field:") {
-                // Organize and Time & Place fields share the same focus slots.
                 let focus = match field {
                     "folder" | "captured" => 0,
                     "people" | "place" => 1,
@@ -1394,9 +1373,6 @@ impl Photos {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
             }
-            // The sidebar row and the filter card share this route; both open
-            // Favorites as a click does, empty or not, so a reader hears the
-            // same "No favorites yet" a sighted user sees.
             if matches!(action, AccessAction::Activate) {
                 self.open_nav_target(&chrome::NavTarget::Favorites);
             }

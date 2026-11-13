@@ -39,8 +39,6 @@ mod history_and_agents;
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
 mod launch_cli;
-#[path = "legacy_notebook.rs"]
-mod legacy_notebook;
 #[path = "live_block_anchor.rs"]
 mod live_block_anchor;
 #[path = "main_panel_scroll.rs"]
@@ -65,6 +63,8 @@ mod responsive_drawer;
 mod scroll_damage;
 #[path = "scroll_stability.rs"]
 mod scroll_stability;
+#[path = "sealed_pictures.rs"]
+mod sealed_pictures;
 #[path = "sidebar_actions.rs"]
 mod sidebar_actions;
 #[path = "sidebar_collab_growth.rs"]
@@ -87,6 +87,8 @@ mod typed_markdown;
 mod typing_damage;
 #[path = "typing_order.rs"]
 mod typing_order;
+#[path = "typing_while_an_agent_edits.rs"]
+mod typing_while_an_agent_edits;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_notebook.rs"]
@@ -109,6 +111,8 @@ mod canonical_views;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 
+#[path = "empty_desk_new_note.rs"]
+mod empty_desk_new_note;
 #[path = "hosted_header_controls.rs"]
 mod hosted_header_controls;
 #[path = "note_context_menu.rs"]
@@ -117,6 +121,8 @@ mod note_context_menu;
 mod note_header;
 #[path = "note_reactions.rs"]
 mod note_reactions;
+#[path = "semantic_activation.rs"]
+mod semantic_activation;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 
@@ -176,3 +182,8 @@ mod perf_interaction;
 
 #[path = "notion_import.rs"]
 mod notion_import;
+
+#[path = "desk_window_controls.rs"]
+mod desk_window_controls;
+#[path = "html_composition.rs"]
+mod html_composition;

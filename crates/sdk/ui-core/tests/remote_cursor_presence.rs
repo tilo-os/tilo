@@ -76,6 +76,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
                 joined_at: None,
             }],
             permissions: vec![],
+            apps: Vec::new(),
         });
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
             user_id: "agent@release".into(),

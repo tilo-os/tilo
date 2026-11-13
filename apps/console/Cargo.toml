@@ -28,6 +28,9 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The record the app draws: its type, verb and effects, and the module the session's document
+# host runs.
+console-model = { path = "../console-model" }
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

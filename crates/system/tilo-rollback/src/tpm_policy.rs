@@ -1,23 +1,12 @@
 //! TPM 2.0 policy digests, computed without a TPM.
 //!
-//! A policy digest is a SHA-256 chain: each policy command extends the session's running
-//! digest with its own command code and parameters. The rules are in TPM 2.0 Part 3 and are
-//! simple enough to implement directly.
+//! A policy digest is a SHA-256 chain: each policy command extends the session's running digest
+//! with its command code and parameters (TPM 2.0 Part 3).
 //!
-//! # Why this exists rather than "just use a trial session"
-//!
-//! The floor-advance authority holds the signing key and is deliberately not the device. It
-//! has to compute the exact policy digest it is about to authorise — signing a digest it
-//! cannot compute would mean signing whatever a device asked it to — and requiring a TPM (or
-//! emulator) on a build machine to do that is a poor trade, so the digests are computed here.
-//!
-//! # The obligation that comes with that
-//!
-//! An implementation of a spec detail that only runs on one side of a protocol is one that
-//! drifts. So every function here is checked against a real TPM's own trial-session
-//! computation in `tests/mechanism.rs`
-//! (`pure_policy_digests_match_the_tpms_own_arithmetic`) — if the TPM and this module ever
-//! disagree, that test fails rather than a device silently becoming unable to advance.
+//! The floor-advance authority holds the signing key and is not the device, and it must compute
+//! the exact digest it is about to sign; requiring a TPM on the build machine for that is a poor
+//! trade. Every function here is therefore checked against a real TPM's trial-session
+//! computation in `tests/mechanism.rs` (`pure_policy_digests_match_the_tpms_own_arithmetic`).
 
 use sha2::{Digest, Sha256};
 
@@ -96,8 +85,8 @@ pub fn nv_written(prev: Digest256, written: bool) -> Digest256 {
 }
 
 /// `TPM2_PolicyNV`: compare an NV index's contents against an operand. `nv_name` is the
-/// index's TPM Name (`nameAlg` followed by the hash of its marshalled public area), which
-/// binds the policy to one specific index on one specific TPM.
+/// index's TPM Name (`nameAlg` followed by the hash of its marshalled public area), which binds
+/// the policy to one index on one TPM.
 pub fn nv(
     prev: Digest256,
     nv_name: &[u8],
@@ -115,11 +104,10 @@ pub fn nv_counter(prev: Digest256, nv_name: &[u8], value: u64, op: Operation) ->
     nv(prev, nv_name, &value.to_be_bytes(), 0, op)
 }
 
-/// `TPM2_PolicyAuthorize`: accept any policy the named key has signed. This **discards**
-/// whatever digest preceded it — the property that makes a signed policy replaceable, and
-/// that requires `policy_ref` to carry anything the resulting authorisation must stay bound
-/// to (see crate-level notes). The two-step extend is the spec's `PolicyUpdate` helper:
-/// command code + key Name, then the policy reference.
+/// `TPM2_PolicyAuthorize`: accept any policy the named key has signed, **discarding** whatever
+/// digest preceded it. That is what makes a signed policy replaceable, and what requires
+/// `policy_ref` to carry anything the authorisation has to stay bound to. The two-step extend is
+/// the spec's `PolicyUpdate` helper: command code and key Name, then the policy reference.
 pub fn authorize(key_name: &[u8], policy_ref: &[u8]) -> Digest256 {
     let d1 = h(&[&ZERO, &CC_POLICY_AUTHORIZE.to_be_bytes(), key_name]);
     h(&[&d1, policy_ref])
@@ -151,22 +139,20 @@ pub mod nv_attr {
     /// `nt=counter`: the index is a monotonic counter (NT field, bits 4-7).
     pub const NT_COUNTER: u32 = 0x0000_0010;
     pub const AUTHREAD: u32 = 0x0004_0000;
-    /// Set by the TPM once the index has been written. This bit is inside the public area, so
-    /// **an index's Name changes the first time it is written** and is stable afterwards —
-    /// anything computing a policy digest for the index must use the written Name, meaning the
-    /// counter must be materialised before the first token is sealed. Verified against a TPM in
-    /// `tests/mechanism.rs`.
+    /// Set by the TPM once the index has been written. The bit is inside the public area, so an
+    /// index's Name changes the first time it is written and is stable afterwards: a policy
+    /// digest for the index must use the written Name, so the counter has to be materialised
+    /// before the first token is sealed. Verified against a TPM in `tests/mechanism.rs`.
     pub const WRITTEN: u32 = 0x2000_0000;
 }
 
-/// `TPM_ALG_SHA256`.
 pub const ALG_SHA256: u16 = 0x000B;
 
 /// The TPM Name of an NV index, computed from its public area: `Name = nameAlg ||
-/// H_nameAlg(marshal(TPMS_NV_PUBLIC))`, where the marshalled area is `nvIndex ‖ nameAlg ‖
-/// attributes ‖ authPolicy (as a TPM2B) ‖ dataSize`. Computing this rather than only reading
-/// it back from the TPM lets a mismatch be reported as "this is not the index your tokens
-/// were sealed against" instead of surfacing later as an unexplained failure to unseal.
+/// H_nameAlg(marshal(TPMS_NV_PUBLIC))`, the marshalled area being
+/// `nvIndex ‖ nameAlg ‖ attributes ‖ authPolicy (as a TPM2B) ‖ dataSize`. Computing it instead of
+/// only reading it back lets a mismatch be reported as "this is not the index your tokens were
+/// sealed against" rather than surfacing later as an unexplained failure to unseal.
 pub fn nv_index_name(index: u32, attributes: u32, auth_policy: &[u8], data_size: u16) -> Vec<u8> {
     let mut marshalled = Vec::new();
     marshalled.extend_from_slice(&index.to_be_bytes());
@@ -221,8 +207,6 @@ mod tests {
             let k2 = [2u8; 34];
             assert_ne!(authorize(&k1, b""), authorize(&k2, b""));
             assert_ne!(authorize(&k1, b"a"), authorize(&k1, b"b"));
-            // And it does not depend on anything before it — the whole point, and why the generation
-            // lives in the reference.
             assert_eq!(authorize(&k1, b"x"), authorize(&k1, b"x"));
         }
         {
@@ -234,12 +218,9 @@ mod tests {
 
     #[test]
     fn nv_names_and_signed_messages_match_tpm2_tools() {
-        // Phase `nv_attribute_bits_combine_to_the_values_tpm2_tools_reports`.
         {
             use nv_attr::*;
-            // `authread|authwrite|nt=counter` reads as 0x40014.
             assert_eq!(AUTHREAD | AUTHWRITE | NT_COUNTER, 0x0004_0014);
-            // `authread|policywrite|nt=counter` reads as 0x40018.
             assert_eq!(AUTHREAD | POLICYWRITE | NT_COUNTER, 0x0004_0018);
         }
         {

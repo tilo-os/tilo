@@ -1,4 +1,4 @@
-//! Pending source-offline preparation; no restart or export is executed here.
+//! Pending source-offline preparation: what is held until the source is exported.
 #[path = "offline/applications.rs"]
 mod applications;
 use super::*;
@@ -10,9 +10,6 @@ use std::fs::{File, OpenOptions};
 #[cfg(all(test, feature = "native-capture-qualification"))]
 use std::os::unix::fs::PermissionsExt;
 
-/// Retains existing image and media descriptor grants through resealing.
-/// The serialized binding is only an expectation; the privileged writer must
-/// independently recompute and match it before its first media mutation.
 pub(crate) struct OfflineMediaReview {
     admission: Option<super::super::super::read_media::ReadOnlyMediaGrant>,
     image: File,
@@ -255,10 +252,6 @@ impl PreparedMedia {
         }
         media.validate()?;
         let plan = intent.for_pending_offline()?;
-        // The original-source transaction owns this generation lock. Capture
-        // only the selected browser sidecar, without ordinary Home inventory or
-        // publishing an intermediate cached generation. Immutable app carriers
-        // are checked again below against this same authenticated source plan.
         let refreshed;
         let selected = if self.browser.is_some() && !self.browser_frozen {
             refreshed = self.refresh_browser_uncached(&password, cancel)?;
@@ -316,9 +309,6 @@ impl PreparedMedia {
     }
 }
 fn original_budget(prepared: &PreparedMedia, media: &OfflineMediaReview) -> io::Result<u64> {
-    // Capacity comes from this held target's canonical GPT/filesystem plan,
-    // not a guessed live Home inventory. Parent growth is bounded by its actual
-    // archive protocol; sidecar ciphertext sizes are already authenticated.
     original_budget_for_capacity(prepared, media.layout.payload_capacity()?)
 }
 pub(super) fn amended_setup_reservation() -> io::Result<u64> {
@@ -811,8 +801,6 @@ mod tests {
             },
         )
         .unwrap();
-        // Retain the exact source fixture's scoped paths; the producer crypto
-        // fixture does not assert native Flatpak signature qualification.
         let selected = InstalledRef {
             reference: "app/org.example.Paint/x86_64/stable".into(),
             origin: "flathub".into(),
@@ -983,8 +971,6 @@ mod tests {
     }
     #[test]
     fn home_contained_application_consent_does_not_require_a_system_carrier() {
-        // This regression proves selection/crypto on the production producer;
-        // actual kernel/GPT admission is qualified by the separate native case.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         let root = tempfile::tempdir().unwrap();
@@ -1019,8 +1005,6 @@ mod tests {
         plan.categories.flatpak = true;
         plan.categories.home = false;
         assert!(validate_payload_scope(&prepared, &plan, &cancel).is_err());
-        // Actual independently reviewed System selection cannot be silently
-        // covered by the Home activation bit alone.
         assert!(validate_payload_scope(&prepared, declared.source(), &cancel).is_err());
     }
     fn assert_pending_authority_accepts_activity_and_rejects_changes(
@@ -1270,8 +1254,6 @@ pub(crate) struct PreparedOriginalMedia {
     pub review: Arc<OfflineMediaReview>,
 }
 impl PreparedMedia {
-    /// Explicit original-source continuation from the same genuine portable
-    /// directory grant. SourceChanged cannot enter this method implicitly.
     pub(crate) fn prepare_original_on_media(
         self: &Arc<Self>,
         image_review: &super::super::super::original_admission::ReviewedOriginalImage,
@@ -1311,8 +1293,6 @@ impl PreparedMedia {
             super::super::super::read_media::admit(target, &intent, cancel)?
         };
         verified_image.validate()?;
-        // This is the already selected ordinary image file, never a raw device.
-        // review_admitted independently matches its held identity and size.
         let mut review = OfflineMediaReview::review_admitted(
             source,
             target,

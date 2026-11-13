@@ -144,11 +144,15 @@ fn replay_checkpoint<T: ActivityTree>(
     let mut workspaces = Vec::new();
     for workspace in &snapshot.workspaces {
         let multiple_strips = workspace.strips.len() > 1;
-        for strip in &workspace.strips {
+        for (at, strip) in workspace.strips.iter().enumerate() {
+            let workspace_name = crate::names::workspace(&workspace.name);
             let name = if multiple_strips {
-                format!("{} · {}", workspace.name, strip.name)
+                format!(
+                    "{workspace_name} · {}",
+                    crate::names::strip_named(&strip.name, at)
+                )
             } else {
-                workspace.name.clone()
+                workspace_name
             };
             let groups = strip
                 .window_groups

@@ -1,25 +1,21 @@
-//! How a secret is laid out in the Windows Credential Manager, kept apart
-//! from the system calls so every target tests it.
+//! How a secret is laid out in the Windows Credential Manager, kept apart from the
+//! system calls so every target tests it.
 //!
-//! One generic credential holds at most [`BLOB_LIMIT`] bytes. A secret is
-//! stored as a first credential, `tilo:<app>/<key>`, whose blob starts with
-//! a one-byte format and the number of parts that follow, then as many
-//! further credentials, `tilo:<app>/<key>#<n>`, as the secret needs.
+//! One generic credential holds at most [`BLOB_LIMIT`] bytes, so a secret is stored as
+//! a first credential, `tilo:<app>/<key>`, whose blob names the format and the number
+//! of further parts, then as many `tilo:<app>/<key>#<n>` as it needs.
 
-/// `CRED_MAX_CREDENTIAL_BLOB_SIZE`: the most one generic credential holds.
 pub(crate) const BLOB_LIMIT: usize = 5 * 512;
 
-/// The layout's version, the first byte of the first part.
 const FORMAT: u8 = 1;
 
-/// The format byte and the two-byte count of further parts.
 const HEADER: usize = 3;
 
-/// What the first credential holds of the secret itself.
 const FIRST_ROOM: usize = BLOB_LIMIT - HEADER;
 
-/// The credential that holds part `part` of `key` of `app`; part 0 is the
-/// first one, which a person finds in Credential Manager.
+/// The credential that holds part `part` of `key` of `app`; part 0 is the first one,
+/// The credential that holds part `part` of `key` of `app`; part 0 is the first one,
+/// which a person finds in Credential Manager.
 pub(crate) fn target_name(app: &str, key: &str, part: usize) -> String {
     if part == 0 {
         format!("tilo:{app}/{key}")
@@ -28,7 +24,6 @@ pub(crate) fn target_name(app: &str, key: &str, part: usize) -> String {
     }
 }
 
-/// `value` as the blobs of its credentials, first part first.
 pub(crate) fn split(value: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     let (first, rest) = value.split_at(value.len().min(FIRST_ROOM));
     let rest: Vec<Vec<u8>> = rest.chunks(BLOB_LIMIT).map(<[u8]>::to_vec).collect();
@@ -43,7 +38,6 @@ pub(crate) fn split(value: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     Ok(parts)
 }
 
-/// How many further parts the first part's blob says follow it.
 pub(crate) fn further_parts(first: &[u8]) -> Result<usize, String> {
     match first {
         [FORMAT, low, high, ..] => Ok(usize::from(u16::from_le_bytes([*low, *high]))),
@@ -51,8 +45,6 @@ pub(crate) fn further_parts(first: &[u8]) -> Result<usize, String> {
     }
 }
 
-/// The secret from the first part's blob and the further parts' blobs, in
-/// order.
 pub(crate) fn join(first: &[u8], rest: &[Vec<u8>]) -> Result<Vec<u8>, String> {
     let expected = further_parts(first)?;
     if rest.len() != expected {

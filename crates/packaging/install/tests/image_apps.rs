@@ -1,11 +1,8 @@
-//! The system image's apps are installed packages like any other: listed,
-//! updated into the user's store, rolled back, and returned to the image's
-//! version, through the same `tilo-install` a user's own package goes
-//! through.
+//! The image's apps are installed packages like any other: listed, updated into the user's store,
+//! rolled back, and returned to the image's version through the same `tilo-install`.
 //!
-//! The image's store is built the way the image build builds it (an install
-//! with `TILO_APPS_DATA_DIR` naming it), then read as the system store of a
-//! user session (`TILO_APPS_SYSTEM_DIR`, honoured by this debug build).
+//! The image's store is built as the image build builds it (`TILO_APPS_DATA_DIR`) and read as the
+//! system store of a session (`TILO_APPS_SYSTEM_DIR`).
 
 #![allow(
     clippy::unwrap_used,
@@ -24,8 +21,7 @@ use tilo_app_package::{Manifest, SigningIdentity, pack};
 
 const APP: &str = "so.tilo.settings";
 
-/// A manifest that, given `system`, requires that version of the system
-/// interface.
+/// A manifest requiring version `system` of the system interface.
 fn manifest_requiring(version: &str, pub_hex: &str, system: Option<u32>) -> String {
     let services = system
         .map(|system| format!("\n[sandbox.services]\nsystem = \"required@{system}\"\n"))
@@ -110,15 +106,12 @@ impl Machine {
         c
     }
 
-    /// The image's system-interface declaration; absent unless a test
-    /// writes one.
     fn interfaces(&self) -> PathBuf {
         self.root
             .path()
             .join("usr/share/tilo/system-interfaces.toml")
     }
 
-    /// The OS now serves version `system` of the system interface.
     fn serve_system(&self, system: u32) {
         let path = self.interfaces();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -140,14 +133,12 @@ impl Machine {
         )
     }
 
-    /// `tilo-install` building the image's store.
     fn image_build(&self, args: &[&str]) -> (bool, String) {
         let mut c = self.command();
         c.env("TILO_APPS_DATA_DIR", self.image_store());
         Self::run(c, args)
     }
 
-    /// `tilo-install` in the user's session on the booted image.
     fn session(&self, args: &[&str]) -> (bool, String) {
         let mut c = self.command();
         c.env("TILO_APPS_SYSTEM_DIR", self.image_store()).env(
@@ -157,7 +148,6 @@ impl Machine {
         Self::run(c, args)
     }
 
-    /// The version `list` reports for the app, and which store it runs from.
     fn listed(&self) -> (String, String) {
         let (ok, out) = self.session(&["list"]);
         assert!(ok, "{out}");
@@ -198,16 +188,12 @@ fn an_image_app_updates_rolls_back_and_returns_to_the_image() {
         machine.image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");
 
-    // Phase `the_image_app_is_listed_as_installed`.
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
 
-    // Phase `installing_it_again_says_it_is_installed`.
     let (ok, out) = machine.session(&["install", baked.to_str().unwrap(), "--allow-self-signed"]);
     assert!(!ok && out.contains("already installed"), "{out}");
 
-    // Phase `an_update_from_the_registry_installs_beside_the_image`.
-    // The registry signs with its own publisher, which the signed registry
-    // entry authorises (`app update` passes it as --require-publisher).
+    // The registry signs with its own publisher, which the signed entry authorises.
     let newer = machine.tapp("0.1.12", &machine.registry_key);
     let (ok, out) = machine.session(&["update", APP, "--from", newer.to_str().unwrap()]);
     assert!(
@@ -232,7 +218,6 @@ fn an_image_app_updates_rolls_back_and_returns_to_the_image() {
         "the image's store is never written"
     );
 
-    // Phase `a_rollback_below_the_image_is_held`.
     let older = machine.tapp("0.1.9", &machine.registry_key);
     let (ok, out) = machine.session(&[
         "update",
@@ -248,14 +233,12 @@ fn an_image_app_updates_rolls_back_and_returns_to_the_image() {
     assert_eq!(machine.listed(), ("0.1.9".into(), "held".into()));
     assert_eq!(machine.running_payload(), b"0.1.9");
 
-    // Phase `removing_the_user_copy_returns_to_the_image`.
     let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
     assert!(ok, "{out}");
     assert!(out.contains("from the system image"), "{out}");
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
     assert_eq!(machine.running_payload(), b"0.1.10");
 
-    // Phase `the_image_copy_itself_cannot_be_removed`.
     let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
     assert!(!ok && out.contains("ships with the system image"), "{out}");
 }
@@ -280,8 +263,7 @@ fn an_image_update_supersedes_an_older_user_copy() {
     assert!(ok, "{out}");
     assert_eq!(machine.listed(), ("0.1.12".into(), "user".into()));
 
-    // The next image ships an even newer version: it runs, not the user's
-    // older copy, and the next update clears that copy away.
+    // The next image ships a newer version, which runs instead of the user's older copy.
     let next_image = machine.tapp("0.1.20", &machine.image_key);
     let (ok, out) = machine.image_build(&[
         "install",
@@ -294,8 +276,7 @@ fn an_image_update_supersedes_an_older_user_copy() {
     assert_eq!(machine.running_payload(), b"0.1.20");
 
     let (ok, out) = machine.session(&["update"]);
-    // No registries are configured, so updating the image's app itself
-    // fails; the stale copy is gone either way.
+    // No registries are configured, so updating fails; the stale copy is gone either way.
     assert!(
         out.contains("the system image ships a newer version; removed this copy"),
         "{ok} {out}"
@@ -328,7 +309,6 @@ fn an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback()
         ])
     };
 
-    // Phase `a_build_for_an_unserved_interface_is_refused`.
     let for_newer_os = machine.tapp_requiring("0.2.0", &machine.registry_key, Some(2));
     let (ok, out) = update(&for_newer_os);
     assert!(!ok, "{out}");
@@ -338,17 +318,14 @@ fn an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback()
     );
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
 
-    // Phase `an_os_serving_it_installs_and_runs_it`.
     machine.serve_system(2);
     let (ok, out) = update(&for_newer_os);
     assert!(ok, "{out}");
     assert_eq!(machine.listed(), ("0.2.0".into(), "user".into()));
 
-    // Phase `after_an_os_rollback_the_image_copy_runs`.
     machine.serve_system(1);
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
 
-    // Phase `removing_the_update_keeps_the_image_copy`.
     let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
     assert!(ok, "{out}");
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));

@@ -1,16 +1,9 @@
-//! Tilo's grammar set for syntax highlighting, as an engine library beside
-//! the shared runtime (`libtilo_highlight_engine.so`).
+//! Tilo's grammar set for syntax highlighting, as its own library in the runtime
+//! bundle (`libtilo_highlight_engine.so`).
 //!
-//! syntect, its regex engine (fancy-regex) and two-face's packed grammars are
-//! a few megabytes of code and data, with tables the loader relocates. Only
-//! apps that show code (Code Editor, Diffs, Git, Snippets, a code block in a
-//! note) ever use them. Inside `libruntime_dylib.so` every app process mapped
-//! and relocated them; here the toolkit opens them the first time a line of
-//! code is highlighted (tilo-engine-loader), and no app names them. Typst's
-//! engine library chains on this one for the same crates.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crate it provides. Outside
-//! the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
 // Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
 // nothing names, and without it in the crate graph this library would link
@@ -21,9 +14,8 @@ extern crate runtime_dylib;
 #[cfg(feature = "thin")]
 pub use tilo_highlight_grammars;
 
-/// The entry the toolkit opens (`tilo_highlight::ENGINE_ENTRY`): the
-/// grammar set. Its type is checked here against
-/// `tilo_highlight::GrammarsEntry`.
+/// The entry the toolkit opens (`tilo_highlight::ENGINE_ENTRY`): the grammar
+/// set, its type checked here against `tilo_highlight::GrammarsEntry`.
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]
 pub fn tilo_highlight_engine_entry() -> &'static dyn tilo_highlight::Grammars {

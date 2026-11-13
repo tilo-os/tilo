@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::time::{Duration, Instant};
 
 use tilo_compositor::{InputEvent, OutputConfig, Selection};
@@ -50,7 +48,7 @@ fn serving(captures: Option<InputCaptures>) -> (Session, PortalSide) {
 /// Step `session` until `probe` finds what it looks for, however many passes that takes.
 #[track_caller]
 fn until<T>(session: &mut Session, probe: impl FnMut(&mut Session) -> Option<T>) -> T {
-    common::wait_for(
+    crate::common::wait_for(
         session,
         "what the portal's test asked of the session",
         probe,

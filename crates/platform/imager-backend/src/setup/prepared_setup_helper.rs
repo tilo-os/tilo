@@ -1,5 +1,5 @@
-//! Headless target-user consumer. Its only secret input is bounded raw UTF-8
-//! stdin; stdout contains a receipt only after all requested custody is saved.
+//! Headless target-user consumer. Its only secret input is bounded raw UTF-8 stdin, and stdout
+//! carries a receipt only after all requested custody is saved.
 pub mod enrolled;
 use super::{
     destination_security, migration::PinnedDirectory, prepared_setup::PreparedSetupReview,
@@ -17,26 +17,20 @@ pub mod authenticate;
 pub mod completed;
 pub mod original_reattest;
 
-/// Fixed private consuming helper entry, called before controller initialization.
-/// Its sole argument is one inherited decimal descriptor, parsed by the driver.
-/// The driver isolates this child before any worker or runtime starts, then
-/// authenticates the actual owned parent and ordinary Shell launch context.
-/// The original source actor remains in its original namespace.
+/// Fixed private consuming helper entry, called before controller initialization. Its sole argument
+/// is one inherited decimal descriptor; the driver isolates this child before any worker starts and
+/// authenticates the owned parent and Shell launch context.
 pub fn retained_consumer_bootstrap(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run_consuming_bootstrap(args)
 }
 
-/// Fixed installed ordinary-app retained Home consumer.
 pub fn retained_home_consumer(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run(args)
 }
 
-/// Unseal the machine-generated package secret for first boot. Runs as root
-/// before the account's login password exists, writes only the secret to the
-/// caller's private stream, and first verifies with the shared preflight that
-/// the sidecar names this exact package. The unseal below independently
-/// authenticates the signed target policy against the release authority pinned
-/// into this helper before releasing any secret.
+/// Runs as root before the account's login password exists and writes only the secret to the
+/// caller's private stream; the preflight proves the sidecar names this exact package, and the unseal
+/// authenticates the signed target policy against the pinned release authority.
 pub fn unseal_handoff(
     args: impl IntoIterator<Item = OsString>,
     output: &mut impl Write,
@@ -54,9 +48,8 @@ pub fn unseal_handoff(
     }
     let sidecar = sidecar.ok_or_else(failed)?;
     let package = package.ok_or_else(failed)?;
-    // One canonical reader rejects a linked, edited, truncated or growing
-    // sidecar before the TPM is touched, and the returned value is exactly the
-    // policy the unseal below authenticates.
+    // One canonical reader rejects a linked, edited, truncated or growing sidecar before the TPM is
+    // touched, and the value it returns is exactly the policy the unseal authenticates.
     let sealed = crate::setup::prepared_tpm::read_prepared_handoff(&sidecar, &package)?;
     let work = tempfile::tempdir().map_err(|_| failed())?;
     let runner = tilo_rollback::exec::Real::new();
@@ -78,11 +71,8 @@ pub fn unseal_handoff(
     output.flush()
 }
 
-/// Fixed receiving namespace child. This entry accepts no source paths or
-/// caller-produced proof; its own UID/PID1/root-owned scenario and actual root
-/// supervisor route are checked before every target operation.
-/// # Errors
-/// Refuses unrelated callers, mutable artifacts and failed native restore/retry.
+/// Accepts no source paths or caller-produced proof: its own UID, PID1 and root-owned scenario and
+/// the supervisor route are checked before every target operation.
 pub fn applications_consumer_qualification_child(
     args: impl IntoIterator<Item = OsString>,
     output: &mut impl Write,
@@ -90,11 +80,8 @@ pub fn applications_consumer_qualification_child(
     super::home_capture::applications_qualification::run_child(args, output)
 }
 
-/// Dispatch the existing authenticated selected-medium controller before any
-/// prepared-consumer parsing. No alternate helper, channel or source admission.
-/// # Errors
-/// Returns the canonical read-media helper's closed failure on malformed or
-/// unauthenticated registered invocations; unrelated modes remain untouched.
+/// Dispatches the authenticated selected-medium controller before any prepared-consumer parsing; no
+/// alternate helper, channel or source admission.
 pub fn maybe_run_original_controller(args: &[String]) -> Result<Option<i32>, String> {
     super::read_media::maybe_run(args)
 }
@@ -207,9 +194,8 @@ fn private_parent(path: &Path) -> io::Result<()> {
     parent.validate_destination()?;
     destination_security::check_private_file(&parent.file)
 }
-/// Production entry point, independent of any app/widget/runtime event loop.
-/// The caller closes stdin after raw password bytes and uses a fresh quarantine
-/// for each retry. Existing canonical target custody is verified idempotently.
+/// The caller closes stdin after raw password bytes and uses a fresh quarantine for each retry;
+/// existing canonical target custody is verified idempotently.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
     input: &mut impl Read,
@@ -236,8 +222,8 @@ pub fn run_with_home_admission(
     let quarantine = &args["--quarantine"];
     let identity = &args["--identity-dir"];
     let accounts = &args["--config-root"];
-    // The caller must first copy delivered ciphertext into its private grant.
-    // The OS package on public media is never treated as target-user custody.
+    // The caller must copy delivered ciphertext into its private grant; the package on public media
+    // is never treated as target-user custody.
     private_parent(package)?;
     private_parent(quarantine)?;
     let review =
@@ -371,8 +357,8 @@ pub fn run_with_home_admission(
     review.validate()
 }
 
-/// Read-only image-build probe of this packaged executable and GNU tar.
-/// Password input, destination custody, and application startup are unused.
+/// Read-only image-build probe of this packaged executable and GNU tar; password input, custody and
+/// application startup are unused.
 pub fn home_consumer_capability(
     args: impl IntoIterator<Item = OsString>,
     output: &mut impl Write,
@@ -384,7 +370,6 @@ pub fn home_consumer_capability(
         return Err(failed());
     }
     let helper = std::env::current_exe()?;
-    // Only the packaged target executable may attest the installed consumer.
     if helper != Path::new("/usr/libexec/tilo-prepared-setup") {
         return Err(failed());
     }
@@ -470,7 +455,6 @@ pub fn home_consumer_capability(
             return Err(failed());
         }
     };
-    // A bounded stdout alone is not successful exit; never wait without a deadline.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Some(status) = child.try_wait()? {
@@ -537,7 +521,6 @@ fn validate_tar_version(bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests;
 
-/// Fixed installed Copy controller on the existing authenticated helper channel.
 pub fn installed_original_copy_controller(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     super::retained_consumer_driver::run_original_copy(args)
 }

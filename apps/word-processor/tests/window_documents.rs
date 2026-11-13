@@ -1,6 +1,3 @@
-//! Each Word Processor window shows the document it opened: a resource of
-//! its own, never the app's record, so no window mirrors another.
-
 use ui::framework::testing::TestApp;
 use word_processor::framework::WordProcessorApp;
 

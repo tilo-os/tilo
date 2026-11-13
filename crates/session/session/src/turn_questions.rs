@@ -13,11 +13,7 @@
 //! standing answer for an agent's action is a grant, given in the
 //! workspace's settings, never a click on a question.
 
-use std::sync::Arc;
-
-use tilo_action_broker::app_actions::{
-    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
-};
+use tilo_action_broker::app_actions::{AppActionAnswer, AppActionConsent, AppActionConsentRequest};
 use tilo_service::{Answer, Asked, Question, Questions};
 use tokio::sync::oneshot;
 
@@ -25,21 +21,12 @@ use tokio::sync::oneshot;
 /// ([`crate::questions`]), and only a turn's ask is under it.
 pub(crate) const KIND: &str = "session.turn-question";
 
-/// Ask the person on this session's sheet what an agent's step inside a
-/// conversation asks first.
-pub(crate) fn install(
-    broker: Option<&tilo_action_broker::collab_broker::BrokerHandle>,
-    questions: Option<Questions>,
-) {
-    let (Some(broker), Some(questions)) = (broker, questions) else {
-        // No sheet is up here, or no broker runs: the broker refuses the
-        // step with why, and the agent says so in its reply.
-        return;
-    };
-    let Some(actions) = broker.app_action_broker() else {
-        return;
-    };
-    actions.set_app_action_consent(Arc::new(TurnQuestions { questions }));
+/// Whether `request` is a conversation turn's step: never a grant, a run's question or a Store
+/// disclosure. Those name the person and the app asking, and a turn's ask names neither (the
+/// broker holds it for the run's person). The broker has one prompter, the desk's sheet
+/// ([`crate::run_questions::Sheet`]), and it hands such a step here.
+pub(crate) fn is_turn_ask(request: &AppActionConsentRequest) -> bool {
+    request.confirming && request.app_id.is_empty() && request.person.is_empty()
 }
 
 /// What a conversation turn's ask shows: the draft as the person reviews
@@ -51,47 +38,38 @@ pub(crate) struct TurnDetails {
     pub(crate) draft: tilo_actions::Draft,
 }
 
-/// The session's sheet, as an agent's conversation-turn ask reaches it.
-struct TurnQuestions {
-    questions: Questions,
-}
-
-impl AppActionConsentPrompter for TurnQuestions {
-    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionAnswer>> {
-        // Only a conversation turn's step, never a grant or a Store
-        // disclosure: those name the person and the app asking, and a turn's
-        // ask names neither (the broker holds it for the run's person).
-        if !request.confirming || !request.app_id.is_empty() || !request.person.is_empty() {
-            return None;
-        }
-        let draft = request.draft.clone().unwrap_or_default();
-        let details = serde_json::to_value(TurnDetails {
-            resource_label: request.resource_label.clone(),
-            action_label: request.action_label.clone(),
-            draft,
-        })
-        .ok()?;
-        let asked = self.questions.ask(Question {
-            handle: format!("turn-question:{}", uuid::Uuid::new_v4().simple()),
-            kind: KIND.to_owned(),
-            app_id: None,
-            label: request.action_label,
-            details,
+/// Put a conversation turn's step ([`is_turn_ask`]) to the person on the session's sheet.
+pub(crate) fn ask(
+    questions: &Questions,
+    request: AppActionConsentRequest,
+) -> Option<oneshot::Receiver<AppActionAnswer>> {
+    let draft = request.draft.clone().unwrap_or_default();
+    let details = serde_json::to_value(TurnDetails {
+        resource_label: request.resource_label.clone(),
+        action_label: request.action_label.clone(),
+        draft,
+    })
+    .ok()?;
+    let asked = questions.ask(Question {
+        handle: format!("turn-question:{}", uuid::Uuid::new_v4().simple()),
+        kind: KIND.to_owned(),
+        app_id: None,
+        label: request.action_label,
+        details,
+    });
+    let (answer, answered) = oneshot::channel();
+    // The person answers on the sheet in their own time, and the
+    // broker's thread waits for it; nothing here holds the session's
+    // loop.
+    let spawned = std::thread::Builder::new()
+        .name("turn-question-answer".into())
+        .spawn(move || {
+            let _ = answer.send(answer_to(wait(asked).as_ref()));
         });
-        let (answer, answered) = oneshot::channel();
-        // The person answers on the sheet in their own time, and the
-        // broker's thread waits for it; nothing here holds the session's
-        // loop.
-        let spawned = std::thread::Builder::new()
-            .name("turn-question-answer".into())
-            .spawn(move || {
-                let _ = answer.send(answer_to(wait(asked).as_ref()));
-            });
-        if spawned.is_err() {
-            return None;
-        }
-        Some(answered)
+    if spawned.is_err() {
+        return None;
     }
+    Some(answered)
 }
 
 /// `asked`, waited for on this thread until the person answers or the

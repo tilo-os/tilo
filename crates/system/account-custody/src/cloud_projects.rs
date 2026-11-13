@@ -1,10 +1,8 @@
-//! The Google Cloud projects a Vertex AI sign-in can bill, for the Agent
-//! Models picker.
-//!
-//! Listing is a convenience: it needs the Cloud Resource Manager API, which
-//! the user's organisation (or Tilo's client project) may not have enabled.
-//! Callers must still let the user type a project ID by hand when this
-//! fails or comes back empty.
+//! The Google Cloud projects a Vertex AI sign-in can bill, for the Agent Models
+//! picker. Listing is a convenience that needs the Cloud Resource Manager API,
+//! which the user's organisation or Tilo's client project may not have enabled,
+//! so callers must still let the user type a project ID by hand when this fails
+//! or comes back empty.
 
 use std::time::Duration;
 
@@ -14,11 +12,10 @@ use crate::CustodyError;
 pub const GOOGLE_PROJECTS_ENDPOINT: &str =
     "https://cloudresourcemanager.googleapis.com/v1/projects";
 
-/// A user with more projects than this types the ID; the picker is not a
-/// project browser, and every page is a round trip while the user waits.
+/// A user with more projects than this types the ID: the picker is not a project
+/// browser, and every page is a round trip while the person waits.
 const MAX_PAGES: usize = 5;
 
-/// One project the signed-in user can see.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloudProject {
     /// The ID Vertex AI URLs and billing headers name (`my-project-123`).
@@ -27,12 +24,8 @@ pub struct CloudProject {
     pub name: String,
 }
 
-/// The active projects `access_token` (a `cloud-platform` grant) can see,
-/// sorted by ID, from `endpoint` ([`GOOGLE_PROJECTS_ENDPOINT`] outside
-/// tests).
-///
-/// # Errors
-/// [`CustodyError::Offline`] when Google cannot be reached,
+/// The active projects `access_token` (a `cloud-platform` grant) can see, sorted
+/// by ID. Refused as [`CustodyError::Offline`] when Google cannot be reached,
 /// [`CustodyError::NeedsAuthentication`] when it refuses the token, and
 /// [`CustodyError::SignIn`] for any other answer (most often the Resource
 /// Manager API being disabled).
@@ -87,9 +80,8 @@ pub fn google_cloud_projects(
     Ok(projects)
 }
 
-/// The projects of one Resource Manager v1 page and its continuation
-/// token. Entries without a usable ID are skipped rather than failing the
-/// whole list.
+/// The projects of one Resource Manager v1 page and its continuation token.
+/// Entries without a usable ID are skipped rather than failing the whole list.
 fn parse_page(page: &serde_json::Value) -> (Vec<CloudProject>, Option<String>) {
     let projects = page
         .get("projects")

@@ -1,34 +1,7 @@
 //! Tilo application launcher library surface.
 //!
-//! The launcher is implemented mostly as pure functions so the binary
-//! in `main.rs` is just argv parsing + orchestration.
-//!
-//! - [`sandbox`] — bubblewrap argv construction.
-//! - [`appdir`] — the one directory an app may write to, per workspace and
-//!   package; no manifest field feeds it.
-//! - [`profile`] — the fixed set of host paths every app may read.
-//! - [`sandbox_view`] — that set pre-built once as a read-only view, so a
-//!   launch mounts it in a few binds instead of one per path.
-//! - [`gpu`] — which GPU a launched app renders on, resolved into
-//!   loader manifests and a device to expose.
-//! - [`landlock`] / [`landlock_shim`] — FS access planning plus fail-closed
-//!   restriction inside the completed bwrap mount namespace.
-//! - [`loader_preflight`] — whether the sandboxed loader will find every
-//!   library the app links against, checked before `bwrap` runs.
-//! - [`runtime_resident`] — the shared runtime's libraries mapped and locked
-//!   once per boot, so no app start pages them in from disk.
-//! - [`seccomp`] — baseline BPF policy.
-//! - [`services`] — well-known service socket resolution.
-//! - [`capabilities`] — workspace grants resolved into binds; the
-//!   manifest is the packager's ceiling, this is the user's decision.
-//! - [`netgate`] — per-host egress, brokered through a socket the
-//!   launcher holds.
-//! - [`run`] — top-level `run` orchestration glue.
-//! - [`host`] — the one launch path with *no* sandbox (unpackaged
-//!   apps); read its module docs before touching it.
-//!
-//! The launcher-facing manifest surface is kept in [`manifest`]; policy types
-//! are shared with `tilo-app-package`.
+//! The launcher is implemented mostly as pure functions so the binary in `main.rs` is
+//! just argv parsing + orchestration.
 
 pub mod app_cgroup;
 pub mod appdir;
@@ -77,8 +50,8 @@ pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
-// Where it lives: hosts that start no launcher hold the same gate over the
-// apps they start themselves (`runtime_portal::registration_gate`).
+// Where it lives: hosts that start no launcher hold the same gate over the apps they start themselves
+// (`runtime_portal::registration_gate`).
 #[cfg(unix)]
 pub use runtime_portal::registration_gate;
 #[cfg(target_os = "linux")]

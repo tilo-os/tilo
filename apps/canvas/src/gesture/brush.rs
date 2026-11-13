@@ -17,7 +17,6 @@ const LIGHT: f64 = 0.35;
 /// The least pressure of a fast sweep.
 const THIN: f64 = 0.45;
 
-/// A stroke being laid down.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BrushDraft {
     /// `[x, y, pressure]` in artwork units, as the stroke will be painted.

@@ -1,8 +1,6 @@
-//! Behavioural tests for the math editor. The interactive field can't be
-//! clicked in CI, so these prove the editing semantics on the model: caret
-//! motion for each key combo, word motion, selection ranges, delete/backspace
-//! (incl. structure unwrap), clipboard round-trip, structured-input building,
-//! and model → linear → engine round-trips.
+//! The math editor's editing semantics, proven on the model and on the field's
+//! key and pointer paths: caret motion, selection, deletion, clipboard, and the
+//! model → linear → engine round-trip.
 
 use super::edit::Editor;
 use super::model::{self, Node, Slot};
@@ -11,19 +9,17 @@ fn ed(s: &str) -> Editor {
     Editor::from_linear(s)
 }
 
-/// Caret as `(steps, offset)` for assertions.
 fn caret(e: &Editor) -> (Vec<(usize, Slot)>, usize) {
     (e.caret.steps.clone(), e.caret.offset)
 }
 
-/// Plain, Home/End and word-wise caret motion, including stepping into and out
-/// of fraction boxes and exponents. Each phase starts from a fresh editor.
+/// Caret motion, including stepping into and out of fraction boxes and
+/// exponents.
 #[test]
 fn caret_motion_by_atom_word_row_edge_and_structure() {
     // phase left_right_move_by_atom
     {
         let mut e = ed("x+1");
-        // starts at end (offset 3)
         assert_eq!(e.caret.offset, 3, "left_right: starts at end");
         e.move_left(false);
         assert_eq!(e.caret.offset, 2, "left_right: first left");
@@ -38,12 +34,10 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
         e.home(false);
         assert_eq!(e.caret.offset, 0, "home_end: home");
         e.end(false);
-        // root row: Func, +, 2  => len 3
         assert_eq!(e.caret.offset, e.expr.root.len(), "home_end: end");
     }
     // phase left_into_and_out_of_fraction
     {
-        // (a)/(b): a single Frac node at root[0]
         let mut e = ed("(a)/(b)");
         assert_eq!(e.expr.root.len(), 1, "into_frac: single frac node");
         e.home(false); // offset 0, before the frac
@@ -63,7 +57,6 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
     // phase up_down_navigate_fraction_boxes
     {
         let mut e = ed("(a)/(b)");
-        // descend into denominator
         e.home(false);
         e.move_right(false); // into num
         e.move_down(); // num -> den
@@ -74,7 +67,6 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
     // phase up_into_exponent
     {
         let mut e = ed("x^2");
-        // root: Char(x), Sup{2}
         e.home(false);
         e.move_right(false); // past x
         e.move_right(false); // into exponent (Sup enters from left)
@@ -83,7 +75,6 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
     // phase ctrl_left_right_jump_tokens
     {
         let mut e = ed("12+sin");
-        // root: 1 2 + s i n  (sin stays as chars since no paren)
         e.end(false);
         assert_eq!(e.caret.offset, 6, "word: end");
         e.move_word_left(false); // over "sin"
@@ -97,8 +88,8 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
     }
 }
 
-/// Every selecting gesture yields the exact `[lo, hi)` range; a plain arrow
-/// collapses a selection to its edge.
+/// Every selecting gesture yields its `[lo, hi)`; a plain arrow collapses the
+/// selection to its edge.
 #[test]
 fn selection_ranges_for_each_selecting_gesture() {
     // Each case builds a fresh editor, runs a gesture, expects (lo, hi).
@@ -165,8 +156,7 @@ fn selection_ranges_for_each_selecting_gesture() {
     assert_eq!(e.caret.offset, 2, "collapse: caret at left edge");
 }
 
-/// Backspace/Delete remove the adjacent atom or the selection, and at the front
-/// of a structure box unwrap the structure.
+/// At the front of a box, Backspace unwraps the structure.
 #[test]
 fn delete_and_backspace_including_structure_unwrap() {
     // phase backspace_deletes_atom_before
@@ -196,7 +186,6 @@ fn delete_and_backspace_including_structure_unwrap() {
     // phase backspace_at_front_of_denominator_unwraps_fraction
     {
         let mut e = ed("(a)/(b)");
-        // place caret at the front of the denominator
         e.home(false);
         e.move_right(false); // into numerator
         e.move_down(); // into denominator
@@ -208,7 +197,6 @@ fn delete_and_backspace_including_structure_unwrap() {
             Vec::<(usize, Slot)>::new(),
             "unwrap_frac: caret at root"
         );
-        // num "a" + den "b" concatenated
         assert_eq!(e.to_linear(), "ab", "unwrap_frac: text");
     }
     // phase backspace_at_front_of_exponent_unwraps_power
@@ -223,9 +211,8 @@ fn delete_and_backspace_including_structure_unwrap() {
     }
 }
 
-/// Typing builds structured nodes: `/` fractions, `^` superscripts, `sqrt(` and
-/// `√` radicals, function calls, `pi` → π, `*` → `·`, auto-paired parens.
-/// Every phase starts from a fresh editor.
+/// Typing builds structured nodes: fractions, superscripts, radicals, calls,
+/// `pi` → π, `*` → `·`, auto-paired parens.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -237,7 +224,6 @@ fn typed_characters_build_structured_nodes() {
         let mut e = Editor::from_linear("");
         e.type_char('x');
         e.type_char('/');
-        // now inside the denominator
         assert_eq!(caret(&e).0, vec![(0, Slot::Den)], "slash: caret in den");
         e.type_char('2');
         assert_eq!(e.to_linear(), "(x)/(2)", "slash: text");
@@ -268,9 +254,8 @@ fn typed_characters_build_structured_nodes() {
     }
     // phase radical_glyph_builds_structured_sqrt
     {
-        // Entering the `√` glyph must build a real radical (caret dropping into the
-        // radicand), identical to typing `sqrt(` — not a dead literal `√` char the
-        // engine can't parse. This is the `type_char('√') -> insert_sqrt()` wiring.
+        // The `√` glyph must build a real radical, as `sqrt(` does, not a literal
+        // `√` the engine cannot parse.
         let mut e = Editor::from_linear("");
         e.type_char('√');
         assert_eq!(
@@ -285,7 +270,6 @@ fn typed_characters_build_structured_nodes() {
             matches!(e.expr.root.first(), Some(Node::Sqrt { index: None, .. })),
             "root must hold a structured radical, not a literal glyph"
         );
-        // Serializes to `sqrt(...)` the engine accepts.
         assert_eq!(e.to_linear(), "sqrt(x+9)", "radical_glyph: text");
         let linear = engine_linear(&e.to_linear());
         assert!(
@@ -295,8 +279,6 @@ fn typed_characters_build_structured_nodes() {
     }
     // phase radical_glyph_wraps_the_selection
     {
-        // `√` over a selection replaces it with an empty radical (insert_sqrt goes
-        // through insert_node, which deletes the selection first).
         let mut e = ed("x+1");
         e.select_all();
         e.type_char('√');
@@ -343,9 +325,7 @@ fn typed_characters_build_structured_nodes() {
         e.type_char('*');
         e.type_char('x');
         assert_eq!(e.to_linear(), "2·x", "star: middle dot");
-        // and the engine accepts middle-dot multiplication? It does not — but the
-        // graph editors translate · back to * on serialize-for-engine (see
-        // engine_linear). Here we only check the structural form.
+        // The engine takes `*`: the editors translate `·` back on serialize.
     }
     // phase paren_pair_auto_inserts_and_close_exits
     {
@@ -365,9 +345,8 @@ fn typed_characters_build_structured_nodes() {
     }
 }
 
-/// Copy/cut serialize the selection to linear form and paste parses linear
-/// text back into the tree — the editor core behind Ctrl+C / Ctrl+X / Ctrl+V,
-/// deterministic and independent of the (headless-unavailable) system clipboard.
+/// The editor core behind Ctrl+C, Ctrl+X and Ctrl+V: deterministic, without the
+/// system clipboard, which headless has not got.
 #[test]
 fn clipboard_copy_cut_paste_round_trip_through_linear_form() {
     // phase copy_selection_serializes_to_linear
@@ -409,17 +388,14 @@ fn clipboard_copy_cut_paste_round_trip_through_linear_form() {
         e.move_left(true); // select "123"
         let copied = e.selected_linear().expect("copy serializes the selection");
         assert_eq!(copied, "123", "copy_paste: copied");
-        // Paste at the end appends exactly the copied span (Ctrl+V's parse path).
         e.end(false);
         e.paste_linear(&copied);
         assert_eq!(e.to_linear(), "x+123123", "copy_paste: pasted");
     }
 }
 
-// -- model -> linear -> engine round-trip ----------------------------------
-
-/// Model → linear → engine: parsed and typed formulas serialize to linear text
-/// the engine compiles, and normalized forms round-trip exactly.
+/// Parsed and typed formulas serialize to text the engine compiles, and
+/// normalized forms round-trip exactly.
 #[test]
 fn linear_serialization_round_trips_and_compiles() {
     // phase round_trip_to_engine_for_many_formulas
@@ -448,7 +424,6 @@ fn linear_serialization_round_trips_and_compiles() {
         for ch in "x+1".chars() {
             e.type_char(ch);
         }
-        // wrap as a fraction over x: select all, then... simpler: build directly
         let mut e2 = Editor::from_linear("");
         e2.type_char('1');
         e2.type_char('/');
@@ -467,14 +442,13 @@ fn linear_serialization_round_trips_and_compiles() {
     }
 }
 
-/// Mirror the graph editors' serialize-for-engine step: middle-dot → `*`.
+/// The graph editors' serialize step: middle-dot → `*`.
 fn engine_linear(s: &str) -> String {
     s.replace('·', "*")
 }
 
-/// The real `MathField` input paths edit content: a `√` Character event builds
-/// a radical, press → drag → Delete removes exactly the dragged span, and
-/// Ctrl+X cuts exactly the keyboard-selected span. Each phase uses a fresh field.
+/// The field's own paths: a `√` builds a radical, a drag then Delete removes
+/// exactly the dragged span, and Ctrl+X cuts the selected one.
 #[test]
 fn field_key_and_pointer_paths_edit_content() {
     use super::MathField;
@@ -487,8 +461,6 @@ fn field_key_and_pointer_paths_edit_content() {
 
     // phase field_key_path_accepts_radical_glyph
     {
-        // Drive the real field key path: a `√` Character event routes through
-        // handle_key -> type_char -> insert_sqrt and builds the radical.
         let mut f = MathField::new("").with_size(20.0);
         f.set_rect(Rect::new(0.0, 0.0, 200.0, 60.0), &mut tr);
         let mods = Modifiers::default();
@@ -503,8 +475,7 @@ fn field_key_and_pointer_paths_edit_content() {
 
     // phase drag_select_then_delete_removes_exactly_the_span
     {
-        // Dragging the mouse selects exactly the dragged span, and Delete removes
-        // exactly it — the real press → drag → key path, not a model shortcut.
+        // The real press → drag → key path, not a model shortcut.
         let mut f = MathField::new("x+123").with_size(20.0);
         f.set_rect(Rect::new(10.0, 5.0, 320.0, 45.0), &mut tr);
         let origin = f.content_origin();
@@ -542,9 +513,8 @@ fn field_key_and_pointer_paths_edit_content() {
 
     // phase ctrl_x_cuts_the_selected_span_through_handle_key
     {
-        // Ctrl+X over a selection cuts exactly that span through the field's real key
-        // path (`handle_key`). Deletion is asserted deterministically; the copy half
-        // routes to the shared `ui` clipboard core (a headless-safe no-op here).
+        // Deletion is asserted; the copy half routes to the `ui` clipboard core,
+        // a no-op headless.
         let mut f = MathField::new("x+123").with_size(20.0);
         f.set_rect(Rect::new(0.0, 0.0, 320.0, 45.0), &mut tr);
         // Select "123" via End then shift+Left ×3 — all through handle_key.
@@ -560,8 +530,7 @@ fn field_key_and_pointer_paths_edit_content() {
     }
 }
 
-/// The integral glyph must pass the field's character filter, not just work
-/// when sent straight to the shared editor.
+/// The integral glyph must pass the field's character filter.
 #[test]
 fn field_handle_key_accepts_the_integral_glyph() {
     use super::MathField;
@@ -582,8 +551,7 @@ fn field_handle_key_accepts_the_integral_glyph() {
     assert_eq!(caret(&field.editor), (vec![], 1));
 }
 
-/// Compare the rectangles consumed by the painter with the actual layout's
-/// boundaries for each expected visual span, rather than synthetic gap data.
+/// The painted rectangles against the layout's own boundaries.
 fn assert_field_selection_bands(field: &super::MathField, spans: &[(usize, usize)]) {
     use super::render::{caret_gap, row_gaps, selection_bands};
     use vello::kurbo::Rect;
@@ -608,8 +576,8 @@ fn assert_field_selection_bands(field: &super::MathField, spans: &[(usize, usize
     );
 }
 
-/// Integral arguments share a model row, but selections must not connect the
-/// limits to the body or cover the differential between body and variable.
+/// Integral arguments share a model row, but a selection must not connect the
+/// limits to the body or cover the differential.
 #[test]
 fn integral_selection_bands_follow_visual_arguments_across_boundaries() {
     use super::{MathField, render};
@@ -651,8 +619,8 @@ fn integral_selection_bands_follow_visual_arguments_across_boundaries() {
     }
 }
 
-/// Ordinary commas and nested fraction rows retain their existing contiguous
-/// highlights; even a fraction in an integral is still a single parent atom.
+/// Ordinary commas and nested fraction rows stay contiguous: a fraction inside
+/// an integral is one atom.
 #[test]
 fn selection_bands_preserve_ordinary_rows_and_nested_fractions() {
     use super::{MathField, model::Path};
@@ -708,11 +676,9 @@ fn selection_bands_preserve_ordinary_rows_and_nested_fractions() {
     assert_field_selection_bands(&nested, &[(0, 2), (3, 5), (6, 8), (9, 11)]);
 }
 
-// -- click → caret position round-trip (real layout + hit-test) -------------
-
-/// Caret index ⇄ pixel x on the real layout: clicks land at measured glyph
-/// boundaries, drawn gaps sit at summed advances, remote cursors snap to a gap,
-/// and the layout cache rebuilds only when content changes. Fresh field per phase.
+/// Caret index and pixel x on the real layout: clicks land at measured glyph
+/// boundaries, drawn gaps sit at summed advances, a remote cursor snaps to a
+/// gap, and the layout cache rebuilds only when the content changes.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -728,12 +694,8 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
 
     // phase click_at_measured_glyph_boundary_places_caret_there
     {
-        // The caret must be placed by measuring real glyph advances with the same
-        // font/size/weight the glyphs are drawn with. Independently measure the
-        // cumulative advance to each glyph boundary, click there against the live
-        // layout, and assert the caret lands at exactly that index. A regression to
-        // "char-count × fixed advance" or a font/size/weight mismatch would drift the
-        // landing offset and fail this.
+        // The advance to each boundary is measured independently, so a regression to
+        // "char count × fixed advance" or a font or size mismatch fails here.
         let size = 22.0f32;
         let mut f = MathField::new("x+12").with_size(size);
         let rect = Rect::new(10.0, 5.0, 320.0, 65.0);
@@ -766,9 +728,8 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
 
     // phase caret_gap_x_matches_summed_glyph_advances
     {
-        // The drawn caret bar sits exactly at the active gap's x, which equals the
-        // summed advance up to the caret index — so caret-index ⇄ pixel-x is a true
-        // inverse of the hit-test above.
+        // The caret bar sits at the summed advance up to the caret index, the
+        // inverse of the hit test above.
         let size = 22.0f32;
         let mut f = MathField::new("abc").with_size(size);
         f.set_rect(Rect::new(0.0, 0.0, 200.0, 60.0), &mut tr);
@@ -794,19 +755,15 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
 
     // phase layout_is_cached_until_content_changes
     {
-        // The layout cache must not rebuild while the content is unchanged, but must
-        // rebuild after an edit — this is what keeps typing from re-shaping the whole
-        // formula every frame.
+        // This is what keeps typing from re-shaping the formula every frame.
         let mut f = MathField::new("x+1").with_size(22.0);
         f.set_rect(Rect::new(0.0, 0.0, 200.0, 60.0), &mut tr);
         let sig1 = f.layout_sig.clone();
-        // Re-laying out with the same content keeps the same signature (no rebuild).
         f.set_rect(Rect::new(0.0, 0.0, 240.0, 60.0), &mut tr);
         assert_eq!(
             f.layout_sig, sig1,
             "unchanged content must not rebuild layout"
         );
-        // Editing the content changes the signature (forces a rebuild).
         f.set_source("x+12");
         f.set_rect(Rect::new(0.0, 0.0, 240.0, 60.0), &mut tr);
         assert_ne!(f.layout_sig, sig1, "edit must invalidate the cached layout");
@@ -814,10 +771,8 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
 
     // phase remote_cursor_maps_to_a_drawn_caret_bar
     {
-        // A remote collaborator's cursor (a `RemoteCursorMoved` scene-space point)
-        // must map onto the field's 2D glyph layout and produce a drawn caret bar,
-        // snapped to the nearest insertion gap in the peer's colour — this is what
-        // renders multi-cursor presence *inside* the structured formula.
+        // A peer's cursor maps onto the glyph layout as a caret bar snapped to the
+        // nearest gap, in the peer's colour.
         let mut f = MathField::new("x+12").with_size(20.0);
         let rect = Rect::new(10.0, 5.0, 260.0, 45.0);
         f.set_rect(rect, &mut tr);
@@ -845,8 +800,6 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
             "the mapped caret must sit inside the field rect: {bar:?} vs {rect:?}"
         );
 
-        // A cursor OUTSIDE the field maps to nothing (a peer editing elsewhere must
-        // not paint a phantom caret here).
         let outside = Point::new(rect.x1 + 200.0, rect.center().y);
         assert!(
             f.remote_caret_bars(&[(outside, peer)]).is_empty(),
@@ -855,12 +808,9 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
     }
 }
 
-// -- bounded field + scrolling ----------------------------------------------
-
-/// The field is bounded: content wider or taller than it scrolls (clamped,
-/// caret kept visible) instead of resizing it; short content does not scroll;
-/// an expandable card grows to fit up to its max, then scrolls. Fresh field per
-/// phase.
+/// Content wider or taller than the field scrolls, with the caret kept in view,
+/// instead of resizing it; an expandable card grows to its maximum, then
+/// scrolls.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -877,8 +827,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
 
     // phase long_formula_scrolls_horizontally_to_keep_caret_visible
     {
-        // A formula longer than the field must scroll horizontally so the caret stays
-        // visible while typing — the field itself never grows.
         let mut f = MathField::new("").with_size(20.0);
         let rect = Rect::new(10.0, 5.0, 210.0, 45.0); // fixed 200 x 40 field
         f.set_rect(rect, &mut tr);
@@ -899,7 +847,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
             "typing off the right edge must scroll right"
         );
 
-        // The caret (at the end) is on-screen inside the field rect.
         let steps = f.editor.caret.steps.clone();
         let off = f.editor.caret.offset;
         let gap = super::render::caret_gap(f.layout.as_ref().unwrap(), &steps, off).unwrap();
@@ -911,7 +858,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
             rect.x1
         );
 
-        // Jumping home scrolls back so the start is visible again.
         f.handle_key(&WKey::Named(NamedKey::Home), &mods);
         f.set_rect(rect, &mut tr);
         assert_eq!(f.scroll.x, 0.0, "Home must reveal the start of the formula");
@@ -925,9 +871,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
 
     // phase tall_formula_is_bounded_not_resized
     {
-        // A formula taller than the field (a fraction) stays bounded to the field
-        // rect and scrolls vertically instead of resizing the row with the height of
-        // the formula.
         let mut f = MathField::new("(x^2+1)/(x-3)").with_size(20.0);
         let rect = Rect::new(0.0, 0.0, 240.0, 30.0); // deliberately shorter than a fraction
         f.set_rect(rect, &mut tr);
@@ -962,8 +905,6 @@ fn bounded_field_scrolls_instead_of_resizing() {
 
     // phase short_formula_does_not_scroll
     {
-        // A short formula that fits is unchanged: no scroll, content left-aligned and
-        // vertically centered exactly as before the scroll support was added.
         let mut f = MathField::new("x+1").with_size(20.0);
         let rect = Rect::new(10.0, 5.0, 310.0, 45.0);
         f.set_rect(rect, &mut tr);
@@ -994,16 +935,11 @@ fn bounded_field_scrolls_instead_of_resizing() {
         assert_eq!(f.scroll.x, 0.0, "wheel: over-scroll left clamps to 0");
     }
 
-    // phase card_grows_to_fit_then_scrolls_beyond_max
-    // (expandable card: grow to fit, then scroll — HIG §2)
     {
-        // A card grows to fit its formula UP TO the max, then scrolls — never clips.
-        // Proven on the real path across three regimes: a fraction (grows to fit, shown
-        // in full), the 3D-default stacked surface (grows to fit, shown in full), and a
-        // fraction-over-fraction that exceeds the max (clamps to the max, then scrolls).
+        // A fraction and the 3D-default stacked root grow to fit; a
+        // fraction-over-fraction clamps to the maximum and scrolls.
 
-        // A fraction is taller than a plain line but under the generous max: the
-        // card grows to its exact height and shows it IN FULL (no scroll, no clip).
+        // Under the maximum, the card grows to the formula's exact height.
         for src in ["(x^2+1)/(x-3)", "sin(sqrt(x^2+y^2))"] {
             let mut f = MathField::new(src).with_size(20.0);
             let h = f.content_height(&mut tr);
@@ -1023,8 +959,7 @@ fn bounded_field_scrolls_instead_of_resizing() {
             );
         }
 
-        // A fraction-over-fraction exceeds even the generous max: the card clamps to
-        // the max and the field reports overflow (scroll), never clip.
+        // Past the maximum the field reports overflow and scrolls, never clips.
         let mut huge = MathField::new("(1/x)/(1/y)").with_size(20.0);
         let huge_h = huge.content_height(&mut tr);
         assert!(
@@ -1044,9 +979,8 @@ fn bounded_field_scrolls_instead_of_resizing() {
     }
 }
 
-/// Only the focused field follows its caret. An inactive row (a neighbouring
-/// surface in the Graph 3D list) shows its formula from the start, instead of
-/// the left-clipped tail the caret-at-end seed would otherwise scroll it to.
+/// An inactive row shows its formula from the start, not the clipped tail a
+/// caret-at-end seed would scroll it to.
 #[test]
 fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
     use super::MathField;
@@ -1093,9 +1027,8 @@ fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
     );
     assert!((field.content_origin().x - (rect.x0 + MathField::PAD_X)).abs() < f64::EPSILON);
 
-    // Wheel-scrolling an inactive row sticks: the next unfocused frame keeps
-    // the offset (clamped) instead of chasing the parked caret or snapping
-    // back to the start.
+    // Wheel-scrolling an inactive row sticks: the next unfocused frame keeps the
+    // offset instead of chasing a parked caret.
     field.scroll_by(30.0, 0.0);
     field.draw(
         &mut scene,
@@ -1110,7 +1043,6 @@ fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
         "an unfocused field keeps its wheel scroll, got {}",
         field.scroll.x
     );
-    // Regaining focus resumes following the caret at the formula's end.
     field.draw(
         &mut scene,
         Affine::IDENTITY,
@@ -1127,8 +1059,8 @@ fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
     );
 }
 
-/// A subtraction reads as the true minus sign wherever it sits in the
-/// notation, while the formula the engine receives keeps its ASCII hyphen.
+/// A subtraction reads as the true minus sign, while the engine's copy keeps
+/// its ASCII hyphen.
 #[test]
 fn subtraction_is_drawn_with_the_true_minus_and_stored_with_the_hyphen() {
     use super::MathField;

@@ -1,10 +1,8 @@
-//! Isolated production-directory fixture for native evidence collection.
+//! An isolated production-directory fixture for the native evidence tests.
 use std::{fs, io::Write, path::Path};
 
 use sha2::{Digest, Sha256};
 
-/// SHA-256 over ordered, length-delimited UTF-8 names and directory flags.
-/// Ignores host-specific inode, timestamp and absolute parent path metadata.
 pub(crate) fn order_hash(entries: &[crate::model::Entry]) -> String {
     let mut hash = Sha256::new();
     for entry in entries {
@@ -15,9 +13,6 @@ pub(crate) fn order_hash(entries: &[crate::model::Entry]) -> String {
     hex::encode(hash.finalize())
 }
 
-/// Create 1,200 real entries, including 299 distinct PNGs and four folders.
-/// The directory must not exist; no existing file or symlink is overwritten.
-/// On an I/O error a partial NEW fixture remains for diagnosis.
 pub fn seed(directory: &Path) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     fs::create_dir(directory)?;
     for index in 0..1200_u32 {
@@ -27,15 +22,18 @@ pub fn seed(directory: &Path) -> Result<serde_json::Value, Box<dyn std::error::E
         }
         let (extension, bytes) = match index % 4 {
             0 => {
-                let image = image::RgbaImage::from_fn(64, 48, |x, y| {
-                    image::Rgba([
-                        ((x * 3 + index) % 256) as u8,
-                        ((y * 5 + index / 4) % 256) as u8,
-                        ((x + y + index / 16) % 256) as u8,
-                        255,
-                    ])
-                });
-                ("png", ui::png::encode_rgba8(64, 48, image.as_raw())?)
+                let image: Vec<u8> = (0..48_u32)
+                    .flat_map(|y| (0..64_u32).map(move |x| (x, y)))
+                    .flat_map(|(x, y)| {
+                        [
+                            ((x * 3 + index) % 256) as u8,
+                            ((y * 5 + index / 4) % 256) as u8,
+                            ((x + y + index / 16) % 256) as u8,
+                            255,
+                        ]
+                    })
+                    .collect();
+                ("png", ui::png::encode_rgba8(64, 48, &image)?)
             }
             1 => (
                 "md",

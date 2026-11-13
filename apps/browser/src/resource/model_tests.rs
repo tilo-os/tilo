@@ -42,8 +42,6 @@ fn id_of(browser: &Replica<Browser>, url: &str) -> Id {
         .unwrap()
 }
 
-/// A bookmark keeps the normalized address and a title; a page is
-/// bookmarked once; its title is a field edit; a bad address is refused.
 #[test]
 fn bookmarks_are_normalized_pages_with_titles() {
     let mut browser = Replica::<Browser>::new();
@@ -77,8 +75,6 @@ fn bookmarks_are_normalized_pages_with_titles() {
     assert_eq!(listed(&browser).len(), 1);
 }
 
-/// Preferences are field edits held to their invariant; site protection is
-/// a verb that keeps exact origins.
 #[test]
 fn preferences_and_site_protection() {
     let mut browser = Replica::<Browser>::new();
@@ -127,9 +123,6 @@ fn preferences_and_site_protection() {
     assert!(browser.state().unwrap().site_exceptions.is_empty());
 }
 
-/// Two people bookmarking at once keep both; one page bookmarked by both
-/// is listed once and removed whole; removing while someone else adds the
-/// page keeps their bookmark; preferences merge per field.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Browser>::new();
@@ -186,8 +179,6 @@ fn concurrent_edits_converge() {
     assert_eq!(preferences.homepage, "https://home.test/");
 }
 
-/// The person's address book keeps every profile valid and within its
-/// limit, whichever way a change arrives.
 #[test]
 fn the_address_book_holds_valid_profiles_only() {
     use crate::autofill::{AddressBook, tests::profile};
@@ -227,8 +218,6 @@ fn the_address_book_holds_valid_profiles_only() {
     );
 }
 
-/// An agent bookmarks, edits and protects with one call each, and the
-/// person reads what it did in the browser's own sentences.
 #[test]
 fn an_agents_changes_render_as_the_browsers_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

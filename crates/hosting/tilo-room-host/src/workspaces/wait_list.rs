@@ -594,6 +594,92 @@ impl WaitList {
     }
 }
 
+/// An invitation someone who may invite asked the workspace to mail to an
+/// address on its wait list ([`Workspaces::mail_wait_list`]).
+pub struct WaitListMail {
+    /// Completed only after the operator durably accepts the mail.
+    pub queued: tokio::sync::oneshot::Sender<bool>,
+    pub to: Mailbox,
+    /// The invitation's web link.
+    pub link: String,
+    /// A secret that takes the entry off the list, for the mail's removal
+    /// link; the entry keeps only its SHA-256.
+    pub removal: [u8; 32],
+}
+
+/// What whoever runs the relay decided about the door's wait list, set once
+/// at its start: where an invitation a member asks for is mailed, and what the
+/// door says to someone it turns away.
+#[derive(Default)]
+pub(super) struct DoorSettings {
+    /// Where invitations to mail to wait-list addresses go
+    /// ([`super::Workspaces::mail_wait_list`]).
+    pub(super) mail: std::sync::OnceLock<(
+        String,
+        tokio::sync::mpsc::UnboundedSender<super::WaitListMail>,
+    )>,
+    /// What the door says about the wait list
+    /// ([`super::Workspaces::offer_wait_list`]).
+    pub(super) wait_list: std::sync::OnceLock<tilo_relay_protocol::directory::DoorWaitList>,
+}
+
+impl super::Workspaces {
+    /// The wait list the door keeps, as whoever runs the relay configured it:
+    /// what a person the door turns away is told about leaving an address
+    /// there ([`DoorRefused::wait_list`](tilo_relay_protocol::directory::DoorRefused)).
+    /// `false` once called before.
+    #[must_use]
+    pub fn offer_wait_list(&self, door: tilo_relay_protocol::directory::DoorWaitList) -> bool {
+        self.inner.door.wait_list.set(door).is_ok()
+    }
+
+    /// The wait list the door keeps, when whoever runs the relay offered one.
+    #[must_use]
+    pub fn wait_list_door(&self) -> Option<&tilo_relay_protocol::directory::DoorWaitList> {
+        self.inner.door.wait_list.get()
+    }
+
+    /// The invitations members ask to mail to addresses on a wait list,
+    /// for whoever runs the relay to send from the web entry `door`: until
+    /// this is called, the workspaces send no mail and refuse to, and they mail
+    /// only invitations on that door
+    /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]). `None` once
+    /// called before.
+    #[must_use]
+    pub fn mail_wait_list(
+        &self,
+        door: &str,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<WaitListMail>> {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.inner.door.mail.set((door.to_owned(), sender)).ok()?;
+        Some(receiver)
+    }
+}
+
+impl super::GovernedWorkspace {
+    /// Take off the wait list everyone who joined with an invitation sent
+    /// for their entry. A failed write leaves them for the next time.
+    pub(super) fn forget_joined_wait_list(&mut self) {
+        let ledger = &self.record.collaboration;
+        match self
+            .wait_list
+            .joined(|invite| ledger.redeemed(invite), tilo_clock::unix_now_ns())
+        {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                workspace = %self.record.workspace,
+                count,
+                "invited addresses left the wait list on joining"
+            ),
+            Err(error) => tracing::warn!(
+                workspace = %self.record.workspace,
+                %error,
+                "the wait list kept invited addresses that joined"
+            ),
+        }
+    }
+}
+
 fn push_capped(list: &mut Vec<[u8; 32]>, item: [u8; 32], max: usize) {
     list.push(item);
     let over = list.len().saturating_sub(max);

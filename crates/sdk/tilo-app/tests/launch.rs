@@ -64,7 +64,7 @@ pub struct Note {
     pub text: String,
 }
 
-#[resource(kind = "test.sketch", label = "Sketch")]
+#[resource(kind = "test.sketch", catalogue = "tests/locales")]
 impl Sketch {
     /// Trace over an image.
     #[action]
@@ -366,16 +366,22 @@ fn a_handed_file_is_kept_in_the_content_store_the_view_reads() {
     let (file, _receipt) = OpenFile::new("harbour.png", "image/png", bytes.clone()).unwrap();
     let mut app = TestApp::<KeepApp>::handed(file).unwrap();
     app.harness().relayout();
-    let hash = app.state().source;
-    assert_eq!(
-        hash,
-        tilo_content::hash_bytes(&bytes),
-        "the record names the bytes"
+    let reference = app.state().source;
+    // The record names the reference the launch's store answered: it opens
+    // the file, and the file's own address holds nothing in the clear.
+    assert!(tilo_content::is_sealed(&reference), "{reference}");
+    assert!(
+        tilo_content::names(&reference, &bytes),
+        "the reference names the file the launch kept"
+    );
+    assert!(
+        !app.content().has(&tilo_content::hash_bytes(&bytes)),
+        "nothing kept in the clear"
     );
     let content = VIEW_CONTENT
         .with(|content| content.borrow_mut().take())
         .expect("the view reads the content store the launch kept the bytes in");
-    assert_eq!(content.read(&hash), Some(bytes));
+    assert_eq!(content.read(&reference), Some(bytes));
 }
 
 #[test]
@@ -461,7 +467,7 @@ fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
 }
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.gallery.effects")]
+#[effect(operation = "test.gallery.effects", catalogue = "tests/locales")]
 pub enum GalleryEffect {
     /// Show a picture.
     #[effect(kind = "read")]

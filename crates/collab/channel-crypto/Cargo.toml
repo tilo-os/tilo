@@ -55,6 +55,10 @@ zeroize.workspace = true
 # Content keys, key-history bundles and persisted state are sealed through
 # the shared construction.
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+# One device's media keys are sealed to its identity key: the Ed25519 key
+# every device already has is turned into the X25519 one a box is addressed
+# to, as the device fabric does for the secrets it replicates.
+ed25519-dalek.workspace = true
 
 # OpenMLS reads randomness and the clock through JavaScript on wasm, and
 # refuses to build there without being told those APIs exist. getrandom is

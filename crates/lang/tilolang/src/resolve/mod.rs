@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod effects;
 mod model;
+mod templates;
 mod text;
 mod triggers;
 mod views;
@@ -205,6 +206,19 @@ impl Env {
             .find(|c| !c.own && c.app == app && c.name == name)
     }
 
+    /// [`Self::foreign_callable`], where `from_template_of` is the mark a name rewritten at
+    /// import carries: a private callable is found only when the mark names its own package.
+    pub fn foreign_callable_marked(
+        &self,
+        app: &str,
+        name: &str,
+        from_template_of: Option<&str>,
+    ) -> Option<&Callable> {
+        self.callables
+            .iter()
+            .find(|c| !c.own && c.app == app && c.name == name && c.callable_by(from_template_of))
+    }
+
     /// An import named by alias or by full app id.
     pub fn find_import(&self, path: &str) -> Option<&Import> {
         self.imports
@@ -287,6 +301,32 @@ impl Env {
                 .collect(),
             previously: meta.previously.clone(),
         });
+        // The package's `template view`s: a caller elsewhere writes `alias.name(...)` with a
+        // block, and the template expands there. Its body is its own package's, so every
+        // unqualified reference to one of the package's items is rewritten to `alias.item`
+        // before it is registered (`templates::qualify`); the caller's block, inserted at the
+        // slot when the template expands, keeps the caller's scope. One that does not parse is
+        // left out, and a call of it then reads as a view the package does not declare, rather
+        // than failing the importer's whole compile.
+        let names = templates::PackageNames::of(meta);
+        for template in &meta.templates {
+            let source = format!("app {} \"{}\"\n{}", meta.app, meta.title, template.source);
+            let Ok(module) = crate::package::parse(&source) else {
+                continue;
+            };
+            for item in module.items {
+                if let ast::Item::View(mut view) = item {
+                    if !crate::checker::is_template(&view) {
+                        continue;
+                    }
+                    templates::qualify(&mut view, alias, &meta.app, &names);
+                    self.templates.push(Template {
+                        ns: Some(meta.app.clone()),
+                        decl: view,
+                    });
+                }
+            }
+        }
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
             name: f.name.clone(),
@@ -359,6 +399,7 @@ impl Env {
                         text: d.text.clone(),
                     }),
                     place: p.place,
+                    label: p.label.clone(),
                     entry: p.entry,
                 })
                 .collect()
@@ -367,6 +408,28 @@ impl Env {
             r.as_ref()
                 .map_or(Ty::Unit, |t| Ty::parse_meta(t, &app).unwrap_or(Ty::Error))
         };
+        for v in meta
+            .views
+            .iter()
+            .filter(|v| v.presents.is_some() || v.row_of.is_some())
+        {
+            // `add` appends and returns nothing; the view is marked private as it is pushed.
+            self.callables.push(Callable {
+                kind: CKind::View,
+                name: v.name.clone(),
+                id: v.id.clone(),
+                app: app.clone(),
+                own: false,
+                func: None,
+                params: params(&v.params),
+                result: Ty::View,
+                class: None,
+                uses: BTreeSet::new(),
+                present: Presentation::default(),
+                scenario: false,
+                private: true,
+            });
+        }
         let mut add = |kind, name: &str, id: &str, params, result, class, uses, present| {
             self.callables.push(Callable {
                 kind,
@@ -381,6 +444,7 @@ impl Env {
                 uses,
                 present,
                 scenario: false,
+                private: false,
             });
         };
         for a in meta.callable_actions() {
@@ -423,6 +487,10 @@ impl Env {
                 Presentation::default(),
             );
         }
+        // The views the package does not offer — an action's presentation view, a loop's row
+        // view — are the package's own helpers: source that names no template of the package
+        // cannot call them (`Callable::private`), but a `template view` of the package can,
+        // since its body was rewritten at import with the package's mark.
         for rv in &meta.row_views {
             let ty = meta.types.iter().find(|t| t.id == rv.ty);
             let view = meta.views.iter().find(|v| v.id == rv.view);
@@ -797,6 +865,9 @@ impl Resolver<'_> {
                 if let Some(d) = &p.default {
                     self.err("E028", d.span, format!("`.{}` is a variant's field, which takes no default; only an action's parameter does", p.name.name));
                 }
+                if p.label.is_some() {
+                    self.err("E057", p.name.span, format!("`.{}` is a variant's field, and a value nothing gives: only an action's parameter says what a person reads where they give it", p.name.name));
+                }
                 if fields.iter().any(|x| x.name == p.name.name) {
                     self.err(
                         "E012",
@@ -1092,6 +1163,7 @@ impl Resolver<'_> {
         if let ExprKind::Call { callee, args, .. } = &e.kind
             && let ExprKind::Ident(kind) = &callee.kind
             && matches!(kind.as_str(), "Date" | "Time")
+            && !self.declares(kind)
         {
             return match date_value(kind, args) {
                 Ok((lt, text)) if lt.same(ty) => Some(serde_json::Value::String(text)),
@@ -1231,7 +1303,9 @@ impl Resolver<'_> {
                     "Map" => Ty::Map(boxed),
                     _ => Ty::Collection(boxed),
                 };
-                if ty.is_container() && !field_position {
+                // A map is a value the code fills as it runs (`Map<Text>()`), as a list is one:
+                // the sets and collections a store keeps are fields, and those are not values.
+                if ty.is_container() && !field_position && !matches!(ty, Ty::Map(_)) {
                     self.err("E023", te.span, format!("`{}` can only be the type of a field or of a view's parameter; use `List<T>` for values you pass around", name.name));
                     return Ty::Error;
                 }
@@ -1285,50 +1359,46 @@ impl Resolver<'_> {
         }
     }
 
+    /// Whether the package declares a type, enum or alias called `name`: its own declaration
+    /// shadows the type the language provides of that name throughout the package.
+    fn declares(&self, name: &str) -> bool {
+        self.own_types.contains(name)
+            || self.own_enums.contains(name)
+            || self.own_aliases.contains_key(name)
+    }
+
     fn named_type(&mut self, path: &[ast::Ident], span: Span) -> Ty {
         let dotted: Vec<&str> = path.iter().map(|i| i.name.as_str()).collect();
         if let [single] = dotted.as_slice() {
-            match *single {
-                "Int" => return Ty::Int,
-                "Float" => return Ty::Float,
-                "Bool" => return Ty::Bool,
-                "Text" => return Ty::Text,
-                "Principal" => return Ty::Principal,
-                "Date" => return Ty::Date,
-                "Time" => return Ty::Time,
-                "Duration" => return Ty::Duration,
-                "RichText" => return Ty::RichText,
-                "Bytes" => return Ty::Bytes,
-                "Response" => return Ty::Response,
-                "Action" => return Ty::Action,
-                "View" => return Ty::View,
-                name if self.own_types.contains(name) => {
-                    return Ty::Record(TypeKey {
-                        app: self.env.app.clone(),
-                        name: name.to_string(),
-                    });
-                }
-                name if self.own_enums.contains(name) => {
-                    return Ty::Enum(TypeKey {
-                        app: self.env.app.clone(),
-                        name: name.to_string(),
-                    });
-                }
-                name if self.own_aliases.contains_key(name) => {
-                    let te = self.own_aliases.get(name).cloned();
-                    return te.map_or(Ty::Error, |te| self.alias_type(name, &te));
-                }
-                name => {
-                    let app = &self.env.app;
-                    if let Some((_, ty)) = self
-                        .env
-                        .aliases
-                        .iter()
-                        .find(|(k, _)| k.app == *app && k.name == name)
-                    {
-                        return ty.clone();
-                    }
-                }
+            // The package's own declaration takes the name: it shadows the type the language
+            // provides of that name throughout the package, which `std.` still names
+            // (README, "Type names").
+            if self.own_types.contains(*single) {
+                return Ty::Record(TypeKey {
+                    app: self.env.app.clone(),
+                    name: (*single).to_string(),
+                });
+            }
+            if self.own_enums.contains(*single) {
+                return Ty::Enum(TypeKey {
+                    app: self.env.app.clone(),
+                    name: (*single).to_string(),
+                });
+            }
+            if let Some(te) = self.own_aliases.get(*single).cloned() {
+                return self.alias_type(single, &te);
+            }
+            if let Some(ty) = crate::types::language_type(single) {
+                return ty;
+            }
+            let app = &self.env.app;
+            if let Some((_, ty)) = self
+                .env
+                .aliases
+                .iter()
+                .find(|(k, _)| k.app == *app && k.name == *single)
+            {
+                return ty.clone();
             }
             let mut known: Vec<String> = self
                 .own_types
@@ -1347,7 +1417,14 @@ impl Resolver<'_> {
             } else {
                 String::new()
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Bytes, Principal, Date, Time, Duration, Action, View and {known}{held}"));
+            self.err(
+                "E013",
+                span,
+                format!(
+                    "unknown type `{single}`; types here: {} and {known}{held}",
+                    crate::types::LANGUAGE_TYPE_NAMES.join(", ")
+                ),
+            );
             return Ty::Error;
         }
         if let Some(ty) = crate::types::named(&dotted) {
@@ -1360,10 +1437,9 @@ impl Resolver<'_> {
             self.err("E013", span, format!("unknown type `{}`: `{prefix}` is not an imported package; add `use <app id> as {prefix}`", dotted.join(".")));
             return Ty::Error;
         };
-        // The library declares no types: what it names under `std.` are the language's
-        // text-held types.
+        // The library declares no types: what it names under `std.` are the language's own.
         if import.app == crate::stdlib::APP {
-            self.err("E013", span, format!("the standard library has no type `{name}`; its types are `std.Identifier` and `std.RichText`"));
+            self.err("E013", span, format!("the standard library declares no type `{name}`; `std.` names the language's own ones, such as `std.Identifier`, `std.RichText` and `std.Text`"));
             return Ty::Error;
         }
         let key = TypeKey {
@@ -1399,16 +1475,19 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
-    /// Checks the parameters a view supplies (`above: Option<Task> (above)`): only an action's,
-    /// starting right after its subject, each optional and with no default, and each a place a
-    /// view knows (`above`).
-    fn places(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
+    /// Checks what a parameter says of itself besides its name, written in one place after its
+    /// type: a place a view supplies (`above: Option<Task> (above)`, only an action's, starting
+    /// right after its subject, each optional and with no default, and each a place a view knows)
+    /// or its label (`saved: Bool (label: "On the Watch later list")`, only where a person gives
+    /// the parameter, never where a view does).
+    fn supplied(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
         let mut in_run = true;
         for (i, p) in written.iter().enumerate() {
             let Some(place) = &p.place else {
                 if i > 0 {
                     in_run = false;
                 }
+                self.label(p, kind);
                 continue;
             };
             if kind != CKind::Action {
@@ -1436,6 +1515,20 @@ impl Resolver<'_> {
         }
     }
 
+    /// A parameter's label (`saved: Bool (label: "On the Watch later list")`) is what a person
+    /// reads where they give it, so only an action's parameters write one, and it is the words
+    /// of the value as they read it ("On the Watch later list"), never its name again.
+    fn label(&mut self, p: &ast::Param, kind: CKind) {
+        let Some(label) = &p.label else { return };
+        if kind != CKind::Action {
+            self.err("E057", p.name.span, format!("`{}` is a parameter of the {}; a label says what a person gives, and only an action's parameters are given to one", p.name.name, kind.word()));
+            return;
+        }
+        if label.trim().is_empty() {
+            self.err("E057", p.name.span, format!("`{}` has an empty label; say what the parameter holds as the person reads it, as `label: \"On the Watch later list\"`, or leave it out and let its name read", p.name.name));
+        }
+    }
+
     /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
     /// is: a view is handed it live (views are components, and these are their props).
     ///
@@ -1458,6 +1551,7 @@ impl Resolver<'_> {
                 ty,
                 default: None,
                 place: action && p.place.is_some(),
+                label: if action { p.label.clone() } else { None },
                 entry: false,
             });
         }
@@ -1541,7 +1635,7 @@ impl Resolver<'_> {
             }
             let ast_params = params;
             let params = self.params(params, kind == CKind::View, kind == CKind::Action);
-            self.places(ast_params, &params, kind, name.span);
+            self.supplied(ast_params, &params, kind, name.span);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
@@ -1594,6 +1688,7 @@ impl Resolver<'_> {
                 uses,
                 present,
                 scenario: false,
+                private: false,
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
@@ -1614,6 +1709,7 @@ impl Resolver<'_> {
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
                 scenario: false,
+                private: false,
             });
             func += 1;
         }
@@ -1633,7 +1729,7 @@ impl Resolver<'_> {
                 .iter()
                 .find(|a| a.name.name == callable.name)
                 .and_then(|a| a.params.get(index))
-                .and_then(|p| p.default.as_ref());
+                .and_then(|p| p.default.as_deref());
             let (Some(written), Some(param)) = (written, callable.params.get_mut(index)) else {
                 continue;
             };
@@ -1712,6 +1808,7 @@ impl Resolver<'_> {
                 ..Presentation::default()
             },
             scenario: true,
+            private: false,
         });
     }
 
@@ -2129,16 +2226,29 @@ impl Resolver<'_> {
 
 /// Resolves a type written inside a body (a `let` annotation).
 pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) -> Ty {
+    resolve_type_expr_in(env, None, te, diags)
+}
+
+/// [`resolve_type_expr`], with a plain type name read as the package `ns` declares it: the
+/// package whose `template view` is expanding, so the template's own body names its package's
+/// types (`a: Arrangement`), never the caller's of the same name.
+pub fn resolve_type_expr_in(
+    env: &Env,
+    ns: Option<&str>,
+    te: &TypeExpr,
+    diags: &mut Vec<Diagnostic>,
+) -> Ty {
+    let app = ns.unwrap_or(&env.app);
     let own_types = env
         .types
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let own_enums = env
         .enums
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let mut r = Resolver {
@@ -2230,7 +2340,7 @@ fn at_rest(
             .iter()
             .skip(1)
             .find(|p| &p.name.name == name)
-            .and_then(|p| p.default.as_ref())
+            .and_then(|p| p.default.as_deref())
             .and_then(deeper),
         ExprKind::Field { base, name } => {
             let ExprKind::Ident(base) = &base.kind else {
@@ -2251,25 +2361,19 @@ fn at_rest(
 }
 
 /// Names the language gives types of its own; a package cannot declare them.
-fn is_builtin_type(name: &str) -> bool {
+/// Whether source writes a type with this name (`List<T>`): a name that takes a type argument
+/// is how the language spells a type, so it names none of a package's.
+fn is_type_former(name: &str) -> bool {
     matches!(
         name,
-        "Int"
-            | "Float"
-            | "Bool"
-            | "Text"
-            | "Principal"
-            | "Date"
-            | "Time"
-            | "Duration"
-            | "Action"
-            | "View"
-            | "List"
-            | "Set"
-            | "Map"
-            | "Collection"
-            | "Option"
-            | "Result"
+        "List" | "Set" | "Map" | "Collection" | "Option" | "Result" | "Filter" | "Sort"
+    )
+}
+
+/// Why a package cannot declare a type called `name`: the language writes a type with it.
+fn type_former_error(name: &str) -> String {
+    format!(
+        "`{name}` is how the language writes a type (`{name}<…>`), not a name for one; name yours differently"
     )
 }
 

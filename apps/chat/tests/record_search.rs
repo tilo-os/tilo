@@ -11,9 +11,10 @@ use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use chat::demo::Workspace;
+use chat::drafts::ChatDrafts;
 use chat::messages::chat_part;
 use chat::parts::ChatPart;
-use ui::tilo_resource::{Id, NonBlank, Replica};
+use ui::tilo_resource::{Id, Invoke, NonBlank, Replica};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 /// What the chat binary answers search about `doc`: its entries, as the
@@ -151,6 +152,48 @@ fn an_agent_is_found_from_the_workspace_record() {
         "an agent's row shows the agent itself"
     );
     assert_eq!(hits[0]["keeper"]["identity"], "u_ada");
+}
+
+#[test]
+fn a_draft_is_found_from_the_persons_own_record() {
+    let mut drafts = Replica::<ChatDrafts>::new().as_author("u_ada");
+    let written = ChatDrafts::paths()
+        .drafts
+        .key("c_general")
+        .perform(&tilo_document::RichTextAction::AppendParagraph {
+            text: "see you at 8".to_owned(),
+        })
+        .expect("a paragraph is written in the draft");
+    drafts
+        .apply(Invoke::edit(&written).expect("an edit of the draft"))
+        .expect("the draft takes the words");
+
+    let entries = read(&drafts.save());
+    let hit = entries
+        .iter()
+        .find(|entry| {
+            entry["title"]
+                .as_str()
+                .is_some_and(|title| title.ends_with("see you at 8"))
+        })
+        .expect("the draft is found by its words");
+    assert!(
+        hit["title"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("Draft"),
+        "an unsent message says it is one: {}",
+        hit["title"]
+    );
+    assert!(
+        hit["resource"]
+            .as_str()
+            .is_some_and(|resource| resource.ends_with("/channels/c_general")),
+        "a hit opens the conversation the draft is written in: {}",
+        hit["resource"]
+    );
+    assert_eq!(hit["kind"], "message");
+    assert_eq!(hit["place"]["anchor"], "chat.workspace/channels/c_general");
 }
 
 #[test]

@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use tilo_compositor::OutputConfig as CompositorOutput;
 use tilo_session::{Options, Session, SessionConfig};
 
@@ -41,7 +39,7 @@ fn session() -> Session {
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
-    common::wait_for(session, format!("the condition at {at}"), |session| {
+    crate::common::wait_for(session, format!("the condition at {at}"), |session| {
         done(session).then_some(())
     });
 }

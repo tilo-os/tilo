@@ -17,7 +17,7 @@ pub struct Review {
     pub summary: String,
 }
 
-#[resource(kind = "test.review", label = "Review")]
+#[resource(kind = "test.review", catalogue = "tests/locales")]
 impl Review {
     /// Start a thread: writes a thread's unit, so it says so.
     #[action(writes = threads)]

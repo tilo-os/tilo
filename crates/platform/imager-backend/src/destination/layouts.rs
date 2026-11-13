@@ -1,65 +1,31 @@
 //! Curated keyboard-layout dataset for the installer's layout picker.
 //!
-//! Each [`Layout`] carries two things:
-//!
-//!   * The **apply** data — the xkb layout/variant the installed system
-//!     should use (`xkb_layout`, `xkb_variant`) plus a human
-//!     `display_name` shown in the picker `Dropdown`.
-//!   * The **visual** data — the glyphs each physical key produces under
-//!     this layout, so the installer's keyboard view can draw a
-//!     live preview of exactly what the selected layout types.
-//!
-//! The visual rows model the four main blocks of an ANSI/ISO keyboard, in
-//! US physical-key order:
-//!
-//!   * row 0 — number row: `1 2 3 4 5 6 7 8 9 0 - =`            (12 keys)
-//!   * row 1 — top letter row: `q w e r t y u i o p [ ]`        (12 keys)
-//!   * row 2 — home row: `a s d f g h j k l ; '`                (11 keys)
-//!   * row 3 — bottom row: `z x c v b n m , . /`                (10 keys)
-//!
-//! For every layout the entries are the *output* glyphs at those physical
-//! positions (so AZERTY's top row reads `a z e r t y …`, QWERTZ swaps
-//! y/z and adds `ü ö ä`, Dvorak reorders entirely, …). `number_shift`
-//! carries the shifted glyphs for the number row, where they aren't simply
-//! the uppercase of the base (e.g. `1`→`!`, AZERTY `&`→`1`); the preview
-//! shows those in a corner of each number key.
-//!
-//! The dataset is static Rust data — no I/O — so the picker and the
-//! integrity tests are deterministic.
+//! Each layout carries the xkb layout and variant the installed system uses, a display name, and
+//! the glyphs each physical key types, in US physical order, so the keyboard view can preview what
+//! the selected layout produces. The dataset is static data, so the picker and its integrity tests
+//! are deterministic.
 
-/// Expected key counts for the four visual rows, in order.
 pub const ROW_LENS: [usize; 4] = [12, 12, 11, 10];
 
-/// A single keyboard layout: apply metadata + visual key glyphs.
 pub struct Layout {
-    /// Unique, stable id (e.g. `"us"`, `"de"`, `"dvorak"`).
     pub id: &'static str,
-    /// xkb layout passed to the installed system (e.g. `"us"`, `"de"`).
     pub xkb_layout: &'static str,
-    /// Optional xkb variant (e.g. Dvorak = layout `"us"` variant
-    /// `"dvorak"`); `None` for the plain layout.
     pub xkb_variant: Option<&'static str>,
-    /// Human-readable name shown in the picker (and in Review).
     pub display_name: &'static str,
-    /// Base-level glyphs for the four main rows, in US physical order.
-    /// Lengths must match [`ROW_LENS`].
+    /// In US physical order; lengths must match [`ROW_LENS`].
     pub rows: [&'static [&'static str]; 4],
-    /// Shifted glyphs for the number row (row 0); length 12.
     pub number_shift: &'static [&'static str],
 }
 
 impl Layout {
-    /// The xkb variant or the empty string (never `None`) — convenient
-    /// for argv plumbing where empty means "no variant".
+    /// Empty means no variant.
     pub fn variant_or_empty(&self) -> &'static str {
         self.xkb_variant.unwrap_or("")
     }
 }
 
-/// The display name of the default layout (English / US).
 pub const DEFAULT_DISPLAY_NAME: &str = "English (US)";
 
-/// The curated set, in display order. English (US) is first / default.
 pub static LAYOUTS: &[Layout] = &[
     Layout {
         id: "us",
@@ -271,22 +237,17 @@ pub static LAYOUTS: &[Layout] = &[
     },
 ];
 
-/// All display names, in picker order — fed to the layout `Dropdown`.
+/// In picker order.
 pub fn display_names() -> Vec<String> {
     LAYOUTS.iter().map(|l| l.display_name.to_string()).collect()
 }
 
-/// Look up a layout by its `display_name` (what the dropdown stores).
 pub fn by_display_name(name: &str) -> Option<&'static Layout> {
     let name = name.trim();
     LAYOUTS.iter().find(|l| l.display_name == name)
 }
 
-/// Absolute fallback for [`default_layout`] if `LAYOUTS` were ever empty —
-/// which it never is (`layout_dataset_is_complete_unique_and_well_formed` below asserts ~15-25
-/// curated entries) — so the lookup can return a plain value instead of
-/// indexing into or unwrapping data a future edit could in principle shrink
-/// to zero.
+/// A fallback for an empty `LAYOUTS`; the dataset tests assert the curated set is never empty.
 static EMPTY_LAYOUT: Layout = Layout {
     id: "us",
     xkb_layout: "us",
@@ -296,7 +257,6 @@ static EMPTY_LAYOUT: Layout = Layout {
     number_shift: &[],
 };
 
-/// The default layout (English / US). Always present.
 pub fn default_layout() -> &'static Layout {
     by_display_name(DEFAULT_DISPLAY_NAME)
         .or_else(|| LAYOUTS.first())
@@ -370,7 +330,6 @@ mod tests {
             }
         }
         {
-            // The brief requires at least these.
             for id in ["us", "de", "fr", "gb", "es", "dvorak", "colemak"] {
                 assert!(
                     LAYOUTS.iter().any(|l| l.id == id),
@@ -398,7 +357,7 @@ mod tests {
             assert!(by_display_name("Klingon").is_none());
         }
         {
-            // Dvorak / Colemak are us-variants, not their own xkb layout.
+            // Dvorak and Colemak are us-variants, not their own xkb layout.
             let dv = by_display_name("Dvorak").unwrap();
             assert_eq!(dv.xkb_layout, "us");
             assert_eq!(dv.xkb_variant, Some("dvorak"));
@@ -407,7 +366,6 @@ mod tests {
             assert_eq!(us.variant_or_empty(), "");
         }
         {
-            // Sanity: the visual data encodes the famous remaps.
             let de = by_display_name("German (QWERTZ)").unwrap();
             assert_eq!(
                 de.rows[1][5], "z",

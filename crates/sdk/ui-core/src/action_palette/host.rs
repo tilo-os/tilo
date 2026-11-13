@@ -7,6 +7,7 @@
 //! ([`ActionPalette::set_entries`]) and takes back which one the person chose
 //! ([`ActionPalette::take_outcome`]).
 
+use crate::i18n::{widget_format, widget_text};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -22,6 +23,7 @@ use crate::widget::{SearchField, Widget};
 
 use super::rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 use super::{ActionPalette, FIELD_SIZE, HostStep};
+use crate::widget::DrawChild;
 
 /// Rows the list shows before it scrolls when the host sets no height.
 const DEFAULT_LIST_ROWS: f64 = 10.0;
@@ -274,6 +276,13 @@ impl ActionPalette {
         ActivationModifier::of(self.held)
     }
 
+    /// The modifier held as the last row was chosen, which says where it opens: the person may
+    /// have let go of it by the time the host carries the choice out.
+    #[must_use]
+    pub fn chosen_with(&self) -> Option<ActivationModifier> {
+        self.chosen_with
+    }
+
     /// The chips a host feeding its own rows offers above them: it declared
     /// the facets, so it is the one that can narrow its rows by what is
     /// picked ([`Self::picked_filters`]). Unlike the facets an app's own rows
@@ -389,6 +398,18 @@ impl ActionPalette {
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.sync_list();
+        self.place_field();
+    }
+
+    /// Place the query field, and with it the controls inside it — the scope
+    /// token, the count, "Search everywhere", the clear button — where this
+    /// card puts them. The card draws the field itself, so nothing else would
+    /// place it, and a frame read before the card is painted (assistive
+    /// technology, a press) would find those controls at the window's origin.
+    pub(crate) fn place_field(&mut self) {
+        let theme = self.layout_theme.clone();
+        let row = self.input_row_rect();
+        self.field.apply_layout_external(row, &theme);
     }
 
     /// The size the card asks for, as layout measures it: the rows it holds,
@@ -486,6 +507,7 @@ impl ActionPalette {
     pub(crate) fn host_prepare(&mut self, theme: &Theme) {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.layout_theme = theme.clone();
         self.results.resolve_metrics(theme);
         self.results
             .set_group_gap(f64::from(theme.tokens.spacing.rhythm.section));
@@ -672,7 +694,7 @@ impl ActionPalette {
         self.results.set_empty_text(self.empty_results_title());
         let nothing_matched = !self.is_searching() && !self.query().trim().is_empty();
         self.results
-            .set_empty_hint(nothing_matched.then(|| crate::i18n!("palette-no-results-hint")));
+            .set_empty_hint(nothing_matched.then(|| widget_text("palette-no-results-hint")));
     }
 
     /// Whether the card says it is still searching: the host set
@@ -688,11 +710,11 @@ impl ActionPalette {
 
     fn empty_results_title(&self) -> String {
         if self.is_searching() {
-            crate::i18n!("palette-searching")
+            widget_text("palette-searching")
         } else if self.query().is_empty() {
-            crate::i18n!("palette-empty")
+            widget_text("palette-empty")
         } else {
-            crate::i18n!("palette-no-results", "query" => self.query())
+            widget_format("palette-no-results", &[("query", self.query().into())])
         }
     }
 
@@ -711,6 +733,7 @@ impl ActionPalette {
             self.begin_host_step(entry.id, spec);
             return;
         }
+        self.chosen_with = ActivationModifier::of(self.held);
         self.outcome = Some(CommandOutcome {
             id: entry.id,
             argument: None,
@@ -789,6 +812,7 @@ impl ActionPalette {
                 };
                 let value = self.field.value().to_owned();
                 self.submitted_argument = Some(value.clone());
+                self.chosen_with = ActivationModifier::of(self.held);
                 self.outcome = Some(CommandOutcome {
                     id: step.id,
                     argument: Some(value),
@@ -887,9 +911,8 @@ impl ActionPalette {
             );
         }
         self.sync_field_focus();
-        self.field.apply_layout_external(row_rect);
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if self.shows_field_only() {
             text_renderer.set_text_scale(renderer_scale);
             return;
@@ -919,6 +942,12 @@ impl ActionPalette {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.set_held_modifiers(modifiers.state());
             return false;
+        }
+        // A key carries the modifiers held as it is pressed: a host that hands the palette no
+        // change of them (the desktop's search, over the shell's own keys) still opens a row
+        // where the held modifier asks.
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            self.set_held_modifiers(ctx.modifiers.state());
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
@@ -1181,7 +1210,7 @@ impl ActionPalette {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
         let mut node = AccessNode::new(Role::Dialog)
-            .with_name(crate::i18n!("palette-name"))
+            .with_name(widget_text("palette-name"))
             .with_state(AccessState {
                 focusable: true,
                 focused: self.is_presented(),
@@ -1193,10 +1222,6 @@ impl ActionPalette {
         if !open {
             return node;
         }
-        let name = match &self.host_step {
-            Some(_) => self.field.prompt().unwrap_or_default().to_owned(),
-            None => self.query_placeholder.clone(),
-        };
         // The caret makes the field a text field for assistive technology
         // (AT-SPI Text and EditableText), not only a labelled value.
         let (anchor, caret) = self.field.selection_anchor_focus_or_caret();
@@ -1204,9 +1229,14 @@ impl ActionPalette {
             .host_step
             .as_ref()
             .is_some_and(|step| step.kind == ArgumentKind::Secret);
+        let (name, description) = super::widget::field_announcement(
+            &self.field,
+            self.host_step.as_ref().and(self.field.prompt()),
+        );
         let mut query_node = AccessNode::new(Role::TextInput)
             .with_action_target(QUERY_TARGET)
             .with_name(name)
+            .with_optional_description(description)
             .with_bounds(self.input_row_rect())
             .with_state(
                 AccessState::new()
@@ -1228,7 +1258,7 @@ impl ActionPalette {
         }
         let mut children = vec![
             query_node,
-            list.with_name(crate::i18n!("palette-results"))
+            list.with_name(widget_text("palette-results"))
                 .with_bounds(self.list_rect()),
         ];
         if let (Some(token), Some(action)) = (self.field.scope_token(), &self.scope_token_action) {

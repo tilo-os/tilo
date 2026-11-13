@@ -96,7 +96,7 @@ test('joining at a door that mails says to check the inbox, with a resend and a 
   await elements.again.fire('click');
   assert.deepEqual(calls.at(-1), ['join', 'Ada@Example.org']);
   assert.equal(shown().state, 'inbox');
-  assert.equal(shown().note, 'Asked again. We send at most one link an hour, so check your spam folder too.');
+  assert.equal(shown().note, 'Sent again. We send at most one link an hour, so check your spam folder too.');
 });
 
 test('joining at a door that sends no mail lists the address and says plainly no mail comes', async () => {

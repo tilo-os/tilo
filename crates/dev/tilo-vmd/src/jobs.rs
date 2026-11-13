@@ -1,11 +1,9 @@
-//! Long jobs run as `ssh <vm> tilo-vmd build` or `tilo-vmd ci-layer`:
-//! the job arrives on stdin, every tool's output streams to stderr (the
-//! host shows it live), and the outcome is one [`JobLine`] on stdout.
-//!
-//! `build` compiles in the synced worktree `<root>/src/<worktree>` with the
-//! dev image's toolchain and the shared sccache, lays the component out with
-//! the manifest installer from that same tree, and imports the result
-//! straight into the layer store: no bytes travel back to the host.
+//! Long jobs run as `ssh <vm> tilo-vmd build` or `tilo-vmd ci-layer`: the job
+//! arrives on stdin, every tool's output streams to stderr (the host shows it
+//! live), and the outcome is one job line on stdout. `build` compiles in the synced
+//! worktree with the dev image's toolchain and the shared sccache, lays the
+//! component out with the manifest installer from that same tree, and imports the
+//! result straight into the layer store.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -26,8 +24,8 @@ use crate::fsutil;
 
 /// Shared compiler cache for every worktree's in-VM builds.
 pub const SCCACHE_DIR: &str = "/var/cache/tilo-vm/sccache";
-/// bootc's registry credentials, used for upgrades and CI layers alike. Tilo
-/// images are public; only a private registry needs an entry here.
+/// bootc's registry credentials, used for upgrades and CI layers alike; Tilo images are public, so
+/// only a private registry needs an entry here.
 pub const AUTH_FILE: &str = "/etc/ostree/auth.json";
 
 /// Run `command`, streaming its stdout and stderr to our stderr (stdout
@@ -113,9 +111,9 @@ fn capture(command: &mut Command) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// `(hits, misses)` of the shared sccache. Asked as the build user: asking
-/// starts the server when none runs, and a server started as root would
-/// write root-owned cache entries for every later build.
+/// `(hits, misses)` of the shared sccache, asked as the build user: asking starts the server when
+/// none runs, and a server started as root would write root-owned cache entries for every later
+/// build.
 fn sccache_totals(user: Option<&BuildUser>) -> Option<(u64, u64)> {
     let mut stats = Command::new("sccache");
     stats
@@ -222,8 +220,8 @@ impl Daemon {
         result
     }
 
-    /// The provenance of a component built in the VM: the job's, completed
-    /// with the builder, base image, toolchain and the build's choices.
+    /// The provenance of a component built in the VM: the job's, completed with the builder, base
+    /// image, toolchain and the build's choices.
     fn vm_build_provenance(
         &self,
         job: &BuildJob,
@@ -293,8 +291,8 @@ impl Daemon {
         if matches!(component.profile.as_str(), "dev" | "test")
             && let (_, Some(target)) = toolchain()
         {
-            // The driver lives beside the build dirs, where the build user
-            // can run it; the daemon's own state is root's alone.
+            // The driver lives beside the build dirs, where the build user can run it; the daemon's
+            // own state is root's alone.
             crate::linker::configure(
                 &mut cargo,
                 &self.targets.dir().join(".linkers"),
@@ -369,8 +367,8 @@ impl Daemon {
         self.user_slot(slot)?;
         let sccache = on_path("sccache");
         let mut timer = Timer(BTreeMap::new());
-        // The package is built output: it lands in the tree's own target/,
-        // which the build user can write, and installing reads it from there.
+        // The package is built output: it lands in the tree's own `target/`, which the build user
+        // can write, and installing reads it from there.
         let staging = src
             .join("target/tilo-vm")
             .join(format!("app-{}", uuid::Uuid::new_v4().simple()));
@@ -405,8 +403,6 @@ impl Daemon {
         })
     }
 
-    /// Run a [`CiJob`]: pull the image, copy the component's paths out of
-    /// it, and import them as a layer with `authority = "ci"`.
     pub fn ci_job(&mut self, job: &CiJob) -> Result<JobOutput, DaemonError> {
         if !on_path("podman") {
             return Err(DaemonError::ToolMissing {
@@ -507,10 +503,9 @@ fn create_dir_as(user: Option<&BuildUser>, dir: &Path) -> Result<(), DaemonError
     Ok(())
 }
 
-/// Before a build as `user`: take back what root-run builds left in the
-/// tree and the compiler cache, and stop a root compiler-cache server, so
-/// the build (and the owner's own builds after it) can write everything
-/// they touch.
+/// Before a build as `user`: take back what root-run builds left in the tree and the compiler
+/// cache, and stop a root cache server, so the build and the owner's own builds after it can write
+/// everything they touch.
 fn prepare_user_build(user: &BuildUser, src: &Path) -> Result<(), DaemonError> {
     let mut reclaimed = user.reclaim(&src.join("target"))?;
     let cache =
@@ -529,9 +524,9 @@ fn prepare_user_build(user: &BuildUser, src: &Path) -> Result<(), DaemonError> {
     }
     let port = build_user::sccache_port();
     if on_path("sccache") && build_user::root_listens_on(port) {
-        // A server started by an earlier root build: the build user's
-        // compiles would go through it and write root-owned cache entries.
-        // `--stop-server` asks exactly the server on this port to exit.
+        // A server started by an earlier root build: the build user's compiles would go through it
+        // and write root-owned cache entries. `--stop-server` asks exactly the server on this port
+        // to exit.
         eprintln!("tilo-vmd: stopping the root compiler-cache server on port {port}");
         let _ = Command::new("sccache")
             .arg("--stop-server")
@@ -597,8 +592,8 @@ pub fn pull_error(image: &str, output: &str) -> DaemonError {
     }
 }
 
-/// Copy each absolute `path` (a trailing `/` copies a tree) from `root`
-/// into `dest`, keeping symlinks and modes.
+/// Copy each absolute `path` (a trailing `/` copies a tree) from `root` into `dest`, keeping
+/// symlinks and modes.
 pub fn extract_paths(
     root: &Path,
     dest: &Path,
@@ -629,8 +624,8 @@ pub fn extract_paths(
     Ok(())
 }
 
-/// Read a job from `input`, run it, and write its [`JobLine`] to `output`.
-/// Returns whether the job succeeded.
+/// Read a job from `input`, run it, and write its job line to `output`. Returns whether the job
+/// succeeded.
 pub fn run_job<J: serde::de::DeserializeOwned>(
     input: impl Read,
     mut output: impl Write,

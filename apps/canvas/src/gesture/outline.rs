@@ -10,7 +10,6 @@ use ui::vello::kurbo::{BezPath, CubicBez, ParamCurve as _, ParamCurveNearest as 
 
 use crate::model::Shape;
 
-/// `v` scaled to length one, when it has a direction.
 fn unit(v: ui::vello::kurbo::Vec2) -> Option<ui::vello::kurbo::Vec2> {
     let length = v.hypot();
     (length > 1e-12).then(|| v / length)
@@ -51,14 +50,12 @@ impl Anchor {
     }
 }
 
-/// One connected run of anchors.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Contour {
     pub anchors: Vec<Anchor>,
     pub closed: bool,
 }
 
-/// Which part of an anchor a point is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
     Anchor,
@@ -66,7 +63,6 @@ pub enum Part {
     After,
 }
 
-/// A point of an outline: an anchor or one of its handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PointRef {
     pub contour: usize,
@@ -74,7 +70,6 @@ pub struct PointRef {
     pub part: Part,
 }
 
-/// A whole outline: its contours.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Outline {
     pub contours: Vec<Contour>,
@@ -279,7 +274,6 @@ impl Outline {
         self.contours.get_mut(contour)?.anchors.get_mut(anchor)
     }
 
-    /// Where `point` is.
     pub fn get(&self, point: PointRef) -> Option<Point> {
         let anchor = self.anchor(point.contour, point.anchor)?;
         match point.part {
@@ -289,7 +283,6 @@ impl Outline {
         }
     }
 
-    /// Every anchor, in order.
     pub fn anchors(&self) -> impl Iterator<Item = (PointRef, &Anchor)> {
         self.contours.iter().enumerate().flat_map(|(contour, c)| {
             c.anchors.iter().enumerate().map(move |(anchor, a)| {
@@ -388,7 +381,6 @@ impl Outline {
         }
     }
 
-    /// Whether the outline still draws something.
     pub fn is_empty(&self) -> bool {
         self.contours.is_empty()
     }
@@ -500,7 +492,6 @@ pub struct PenDraft {
     pub pulling: bool,
 }
 
-/// What a press of the pen did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PenStep {
     /// Placed an anchor; the path goes on.

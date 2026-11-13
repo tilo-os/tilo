@@ -2,9 +2,11 @@
 //! it inserts, moves or removes are ([`crate::items`]).
 
 use serde_json::Value as Json;
+use tilo_doc::snapshot::BlockView;
+use tilo_document::ClipBlock;
 use tilo_resource::{Edit, EditOp, Id, Model as _, Segment};
 use tilolang_runtime::place::{Place, Placement};
-use tilolang_runtime::store::{ANY_FIELD, FieldKey, Mutation, StoreError};
+use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Mutation, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
 use super::reading::{json_of_scalar, path_to};
@@ -41,6 +43,7 @@ impl Inner {
                     touched: Vec::new(),
                     items: Vec::new(),
                     placed: Vec::new(),
+                    reshapes: false,
                 })
             }
             // A new item, stored by its id, placed before the item the program saw at the
@@ -89,6 +92,7 @@ impl Inner {
                     touched: vec![coll.clone()],
                     items: vec![(coll, id.clone())],
                     placed: vec![(doc, id, true)],
+                    reshapes: false,
                 })
             }
             Mutation::CollMove { field, item, index } => self.plan_move(at, field, (item, *index)),
@@ -96,19 +100,24 @@ impl Inner {
             _ => {
                 let prefix = self.prefix_of(at)?;
                 let chunk = self.at_chunk(at)?;
+                let (edit, reshapes) = match m {
+                    Mutation::SetRich { field, value } => {
+                        let (op, reshapes) = self.rich_edit_of(at, field, value)?;
+                        (Edit::new(path_to(&prefix, field), op), reshapes)
+                    }
+                    _ => (edit_of(&prefix, m)?, false),
+                };
                 Ok(Planned {
                     edits: vec![DynEdit::routed_at(
                         &self.chunks,
-                        DynEdit::Edit {
-                            id: doc,
-                            edit: edit_of(&prefix, m)?,
-                        },
+                        DynEdit::Edit { id: doc, edit },
                         chunk,
                     )],
                     item: None,
                     touched: vec![FieldKey::new(at, written_field(m))],
                     items: Vec::new(),
                     placed: Vec::new(),
+                    reshapes,
                 })
             }
         }
@@ -202,6 +211,7 @@ impl Inner {
             touched: vec![to.clone(), left.clone()],
             items: vec![(to, item.to_owned()), (left, item.to_owned())],
             placed: vec![(at.doc.clone(), item.to_owned(), false)],
+            reshapes: false,
         })
     }
 
@@ -236,6 +246,7 @@ impl Inner {
             ],
             items: vec![(left, item.to_owned())],
             placed: vec![(doc.to_owned(), item.to_owned(), false)],
+            reshapes: false,
         })
     }
 
@@ -556,9 +567,11 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
         ),
         Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }),
         Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }),
-        // A rich text is brought to read as the value by splices and marks of the paragraphs
-        // that differ, the edit native rich text takes.
-        Mutation::SetRich { field, value } => (field, rich_edit(value).map_err(backend)?),
+        Mutation::SetRich { .. } => {
+            return Err(invalid(
+                "a rich text is written as an edit of what it holds",
+            ));
+        }
         Mutation::SetAdd { field, key } => (
             field,
             EditOp::Insert {
@@ -592,20 +605,68 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
     Ok(Edit::new(path_to(prefix, field), op))
 }
 
-/// The edit that brings a rich text field to read as `value`: splices and marks of the
-/// paragraphs that differ, the edit native rich text takes. One form for every writer of a
-/// rich text: a view of the package's own, and a view of another app's sent to its door.
+/// The edit that brings a rich text field to read as `blocks`: the whole of it, or with
+/// `replace` the blocks it names, the first of them at `at` ([`tilo_document::RichTextAction::SyncClips`]).
 pub(crate) fn rich_edit(
-    value: &tilolang_runtime::rich::RichValue,
+    blocks: Vec<ClipBlock>,
+    replace: Option<Vec<String>>,
+    at: usize,
 ) -> Result<EditOp, serde_json::Error> {
     let action = tilo_document::RichTextAction::SyncClips {
-        blocks: value
-            .blocks
-            .iter()
-            .map(tilo_document::ClipBlock::from_view)
-            .collect(),
+        blocks,
+        replace,
+        at,
     };
     Ok(EditOp::Rich {
         rich: serde_json::to_value(&action)?,
     })
+}
+
+impl Inner {
+    /// The edit that brings the rich text `field` of `at` from what it holds to read as `value`:
+    /// the paragraphs that differ, in their place among those it keeps. A keystroke records the
+    /// paragraph it typed into, however long the text. Also whether the edit gives the text a
+    /// structure rather than words — a paragraph more or fewer, or one whose kind or attributes
+    /// changed (`# ` making a line a heading), a step of the person's on its own ([`super::burst`]).
+    fn rich_edit_of(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        value: &tilolang_runtime::rich::RichValue,
+    ) -> Result<(EditOp, bool), StoreError> {
+        let (app, ty) = self.locate(at)?;
+        let held = match self.read_mirror((&app, &ty), at, field)? {
+            FieldValue::Rich(held) => held.blocks,
+            _ => Vec::new(),
+        };
+        let want = &value.blocks;
+        let same = |(a, b): &(&BlockView, &BlockView)| {
+            a.kind == b.kind && a.text == b.text && a.marks == b.marks && a.attrs == b.attrs
+        };
+        let start = held.iter().zip(want).take_while(same).count();
+        let end = held
+            .iter()
+            .rev()
+            .zip(want.iter().rev())
+            .take_while(same)
+            .count();
+        let end = end.min(held.len().min(want.len()).saturating_sub(start));
+        let was = held
+            .get(start..held.len().saturating_sub(end))
+            .unwrap_or_default();
+        let now = want
+            .get(start..want.len().saturating_sub(end))
+            .unwrap_or_default();
+        let reshapes = was.len() != now.len()
+            || was
+                .iter()
+                .zip(now)
+                .any(|(was, now)| was.kind != now.kind || was.attrs != now.attrs);
+        // A text not written yet holds what a new one starts with, which the value replaces.
+        let replace =
+            (!held.is_empty()).then(|| was.iter().map(|block| block.id.clone()).collect());
+        let blocks = now.iter().map(ClipBlock::from_view).collect();
+        let op = rich_edit(blocks, replace, start).map_err(backend)?;
+        Ok((op, reshapes))
+    }
 }

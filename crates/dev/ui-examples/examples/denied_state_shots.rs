@@ -1,19 +1,6 @@
 //! Offscreen renders of the **permission-denied** state, so the scrim that
 //! signals "you cannot act on this" can be graded instead of assumed.
-//!
-//! Each row draws the same control twice — once through a permissive
-//! [`PermissionContext`] and once through one that grants nothing — via the
-//! real `draw` path, which is where the scrim is applied. What
-//! the PNG shows is therefore the production denied state, not a mock of it.
-//!
-//! Both a neutral control (primary text on the card) and an accent-filled one
-//! are included on purpose: a scrim that darkens body and label together
-//! preserves their ratio, so an accent chip can mute far less than a neutral
-//! one. Seeing them side by side is what tells you whether the signal holds.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- denied_state_shots`
-//! Out: `$DENIED_SHOTS_OUT` (default `/tmp/denied_shots`) — one PNG per theme in
-//! `$DENIED_SHOTS_THEMES` (default `Dark,Light,High Contrast`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,6 +16,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::ButtonRole;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
@@ -77,7 +65,7 @@ fn stamp(
     widget.apply_layout(&taffy, node, origin);
     let presence = PresenceCtx::default();
     presence.with_permissions(permissions.clone(), || {
-        widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+        widget.draw_child(scene, Affine::IDENTITY, tr, theme, &presence);
     });
     Ok(())
 }

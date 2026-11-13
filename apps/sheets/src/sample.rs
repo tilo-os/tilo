@@ -1,9 +1,4 @@
-//! The sample workbook screenshots show: a monthly budget with SUM /
-//! AVERAGE / IF formulas, and a quarterly sales sheet with growth %, written
-//! as the edits and verbs a person building it would make.
-//!
-//! Every identity is fixed, so a capture stages the same workbook on every
-//! run.
+//! The sample workbook captures and tests open.
 
 use ui::tilo_resource::{Atom, Id, Invoke};
 
@@ -12,13 +7,9 @@ use crate::resource::verbs;
 use crate::workbook::{Cell, ChartKind, Comment, CommentCells, FIRST_SHEET_ID, Sheet, Workbook};
 use tilo_locale::{Currency, DateStyle};
 
-/// The budget sheet's identity: a new workbook's first sheet, which the
-/// sample fills.
 pub const BUDGET_SHEET_ID: &str = FIRST_SHEET_ID;
-/// The sales sheet's identity.
 pub const SALES_SHEET_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0002";
 
-/// Cells of one sample sheet, in the order they were entered.
 struct Cells(Sheet);
 
 impl Cells {
@@ -39,8 +30,6 @@ impl Cells {
     }
 }
 
-/// The sample workbook: a new workbook's blank first sheet filled as the
-/// budget, and the sales sheet after it — the edits that write it, in order.
 pub fn workbook() -> Vec<Invoke<Workbook>> {
     let sheets = Workbook::paths().sheets;
     let mut edits = sheets
@@ -166,7 +155,6 @@ fn budget_id() -> Id {
     Id::from_raw(BUDGET_SHEET_ID)
 }
 
-/// Two charts over the budget.
 pub fn charts() -> Vec<Invoke<Workbook>> {
     let chart = |title: &str, kind: ChartKind, range: &str| {
         Workbook::ADD_CHART.with(verbs::AddChart {
@@ -182,11 +170,8 @@ pub fn charts() -> Vec<Invoke<Workbook>> {
     ]
 }
 
-/// The sample comment thread's identity.
 const COMMENT_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0201";
 
-/// A comment thread on the budget, each by the person who wrote it: Alex
-/// asks, Sam replies.
 pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
     let mut budget = budget();
     let comment = budget.area((1, 1), (4, 1)).map(|area| {
@@ -215,7 +200,6 @@ pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
         .collect()
 }
 
-/// Resolve the sample comment thread.
 pub fn resolve_comment() -> Option<Invoke<Workbook>> {
     let path = Workbook::paths()
         .comments
@@ -224,8 +208,6 @@ pub fn resolve_comment() -> Option<Invoke<Workbook>> {
     Invoke::edit(&path.set(true)).ok()
 }
 
-/// The seeds of the fill-series scenario: three patterns under the budget,
-/// which the fill handle then extends.
 pub fn fill_seeds() -> Vec<Invoke<Workbook>> {
     let cells = [
         ("A15", "Fill demo"),

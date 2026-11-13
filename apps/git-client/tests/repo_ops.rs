@@ -1,14 +1,7 @@
-//! Integration tests that drive the git client's PRODUCTION actions against
-//! a real temporary git repository and assert the repo actually mutated.
-//!
-//! Nothing here is a tautology over in-memory state: each test creates a
-//! fresh repo with `git2`, runs the same `crate::repo::*` function the app
-//! invokes (or, where it adds value, drives the `GitClientApp` action that
-//! calls it), and then re-opens the repo with `git2` to verify the index,
-//! HEAD, commit tree, branches, or stash list changed as expected.
-//!
-//! These tests use libgit2 directly to BUILD fixtures and to VERIFY the
-//! after-state — they never shell out to the `git` CLI.
+//! These tests drive the client's production actions against a real temporary
+//! repository and then re-open it with `git2` to check the index, HEAD, commit
+//! tree, branches or stash list changed: nothing here is a tautology over in-memory
+//! state. Fixtures and checks use libgit2 directly and never shell out to `git`.
 
 #![allow(
     clippy::unwrap_used,
@@ -85,9 +78,8 @@ fn is_staged(path: &Path, file: &str) -> bool {
     })
 }
 
-/// Whole-file index operations and commits: stage, unstage, stage-untracked then
-/// commit, empty-message and missing-identity rejection, and stash save/apply.
-/// Each phase is a former test with its own fresh fixture.
+/// Whole-file index operations and commits: stage, unstage, stage an untracked file then commit,
+/// empty-message and missing-identity rejection, and stash save/apply.
 #[test]
 fn file_staging_commit_and_stash_round_trip() {
     stage_file_writes_index();
@@ -178,8 +170,8 @@ fn commit_without_identity_is_rejected() {
     assert!(repo::commit(&path, "msg").is_err());
 }
 
-/// Ref operations: create+checkout, checkout existing, delete (refusing HEAD),
-/// and fetch/pull against a local remote. Each phase is a former test with its own fresh fixture.
+/// Ref operations: create and checkout, checkout an existing branch, delete (refusing HEAD), and
+/// fetch/pull against a local remote.
 #[test]
 fn branch_and_remote_operations_move_refs() {
     create_branch_and_checkout_moves_head();
@@ -244,8 +236,8 @@ fn delete_branch_removes_ref_and_refuses_head() {
     );
 }
 
-/// Hunk-level staging: stage and unstage one hunk, an untracked file's hunk stages
-/// the whole file, and a partially staged file keeps distinct diffs. Each phase is a former test with its own fresh fixture.
+/// Hunk-level staging: stage and unstage one hunk, an untracked file's hunk stages the whole file,
+/// and a partially staged file keeps distinct diffs.
 #[test]
 fn hunk_staging_touches_only_the_selected_hunk() {
     stage_hunk_stages_only_the_selected_hunk();
@@ -462,14 +454,9 @@ fn fetch_and_pull_against_a_local_remote() {
     );
 }
 
-// =====================================================================
-// App-level: drive the GitClientApp's PRODUCTION action methods so the
-// exact UI code path is exercised end-to-end against a real repo.
-// =====================================================================
+// App level: the `GitClientApp`'s production action methods, so the exact UI code path is exercised
+// against a real repository.
 
-/// The app's production actions drive the real repository: stage and commit,
-/// toggle-stage one file, checkout and create a branch, stage a hunk, discard a
-/// file. Each phase is a former test with its own fresh fixture.
 #[test]
 fn app_production_actions_mutate_the_repository() {
     app_stage_and_commit_through_production_actions();
@@ -609,9 +596,8 @@ fn app_stage_hunk_through_production_action() {
     );
 }
 
-/// Opening repositories: a plain directory is handled gracefully and rejected by
-/// the empty state, a real repository opens, and a Unicode repository commits an
-/// exact Unicode file. Each phase is a former test with its own fresh fixture.
+/// Opening repositories: a plain directory is handled gracefully and rejected by the empty state, a
+/// real repository opens, and a Unicode repository commits an exact Unicode file.
 #[test]
 fn opening_a_repository_accepts_real_repos_and_rejects_plain_directories() {
     not_a_repo_is_handled_gracefully();
@@ -645,9 +631,8 @@ fn stage_hunk_of_untracked_file_stages_whole_file() {
     );
 }
 
-/// Discarding worktree changes: a tracked edit reverts, an untracked file is
-/// deleted, one hunk reverts alone, and CRLF checkout configuration survives.
-/// Each phase is a former test with its own fresh fixture.
+/// Discarding worktree changes: a tracked edit reverts, an untracked file is deleted, one hunk
+/// reverts alone, and a CRLF checkout configuration survives.
 #[test]
 fn discard_reverts_worktree_files_and_hunks() {
     discard_file_reverts_tracked_worktree_edit();
@@ -999,7 +984,8 @@ fn linked_worktrees_use_selected_revision_and_preserve_existing_work() {
     assert_eq!(repo::list_worktrees(&path).unwrap().len(), 3);
 }
 
-/// Existing paths and branches and invalid revisions fail without replacing files, creating branches, or silently succeeding.
+/// Existing paths and branches and invalid revisions fail without replacing files, creating
+/// branches, or silently succeeding.
 #[test]
 fn linked_worktrees_refuse_unsafe_destinations_and_invalid_inputs() {
     let (dir, path) = init_repo();

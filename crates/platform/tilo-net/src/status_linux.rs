@@ -359,8 +359,8 @@ mod tests {
                 metered: None
             }
         );
-        // Longer than the old five-second poll, on the runtime's clock, which
-        // runs ahead while every task waits: an idle portal causes no reads.
+        // Longer than DEADLINE, on the runtime's clock, which runs ahead while every
+        // task waits: an idle portal causes no reads.
         tokio::time::pause();
         assert!(
             tokio::time::timeout(imp::POLL * 2, receiver.changed())

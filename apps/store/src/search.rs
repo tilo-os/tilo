@@ -8,6 +8,7 @@
 //! app as it is now and an app that disappeared is refused rather than
 //! navigating to a stale package identity.
 
+use crate::resource::CATALOG;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -19,16 +20,11 @@ use ui::lock::{MutexRecover as _, RwLockRecover as _};
 #[derive(Default)]
 struct DirectoryState {
     revision: Option<[u8; 32]>,
-    /// The current catalogue as search entries. A replacement is completely
-    /// built before this lock is held, then swapped with its apps in one
-    /// short critical section.
     entries: Arc<Vec<SearchEntry>>,
     apps: BTreeMap<String, StoreItem>,
     registries: Vec<crate::config::RegistryConfig>,
 }
 
-/// The Store's complete catalogue directory: every app by id, and its search
-/// entries. Replacing an unchanged worker snapshot is O(1).
 #[derive(Clone, Default)]
 pub struct StoreDirectory {
     state: Arc<RwLock<DirectoryState>>,
@@ -38,7 +34,6 @@ pub struct StoreDirectory {
 }
 
 impl StoreDirectory {
-    /// Replace the directory after a worker snapshot.
     pub fn sync(&self, items: &[StoreItem]) {
         self.rebuild_serialized(items, || {});
     }
@@ -63,8 +58,6 @@ impl StoreDirectory {
         let mut entries = Vec::with_capacity(items.len());
         for item in items {
             if apps.insert(item.id.clone(), item.clone()).is_some() {
-                // A catalogue naming one app twice is malformed: withdraw the
-                // directory rather than let agents act on either row.
                 tracing::error!(app = %item.id, "withdrawing Store directory: an app is listed twice");
                 *self.state.write_recover() = DirectoryState::default();
                 return;
@@ -94,13 +87,11 @@ impl StoreDirectory {
             .cloned()
     }
 
-    /// Every app of the catalogue as a search entry.
     pub fn entries(&self) -> Vec<SearchEntry> {
         let entries = Arc::clone(&self.state.read_recover().entries);
         entries.as_ref().clone()
     }
 
-    /// The catalogue app `id`, as the directory holds it now.
     pub fn app(&self, id: &str) -> Option<StoreItem> {
         self.state.read_recover().apps.get(id).cloned()
     }
@@ -111,16 +102,16 @@ impl StoreDirectory {
 /// An app with no build for this device says so instead; its page says why.
 fn app_entry(item: &StoreItem) -> SearchEntry {
     let subtitle = if item.not_built_for_this_device() {
-        ui::i18n!("store-not-for-this-device")
+        CATALOG.t("store-not-for-this-device")
     } else if item.summary().is_empty() {
         crate::catalogue::source_label(item)
     } else {
         item.summary().to_owned()
     };
     let group = if crate::catalogue::is_bot(item) {
-        ui::i18n!("store-view-bots")
+        CATALOG.t("store-view-bots")
     } else {
-        ui::i18n!("store-search-apps")
+        CATALOG.t("store-search-apps")
     };
     SearchEntry::new(item.name.clone(), searchable_text(item))
         .anchored(resource_id(item))
@@ -133,8 +124,6 @@ fn resource_id(item: &StoreItem) -> String {
     format!("app:{}", item.id)
 }
 
-/// What showing the search anchor `anchor` is: the details of the app it
-/// names.
 pub(crate) fn opened(
     anchor: &str,
 ) -> Result<crate::resource::StoreEffect, ui::tilo_resource::Refusal> {
@@ -184,7 +173,6 @@ mod tests {
     use std::sync::mpsc;
     use ui::search::SearchProvider;
 
-    /// The app's search source over the directory, as the framework builds it.
     fn source(directory: &StoreDirectory) -> impl SearchProvider + use<> {
         ui::framework::testing::search_source::<crate::reports::Reports>(directory.entries())
     }
@@ -224,7 +212,7 @@ mod tests {
 
     #[test]
     fn catalogue_paging_and_stale_addresses_are_refused() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         {
             let items = (0..2_048).map(item).collect::<Vec<_>>();
             let directory = StoreDirectory::default();

@@ -19,6 +19,7 @@ use ui_core::time::Instant;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
+use ui_core::widget::DrawChild;
 use ui_core::widget::{AppModel, Collaborative, Decorator, Element, ModelPath, Widget};
 
 type Hook = Box<dyn FnMut()>;
@@ -209,7 +210,12 @@ impl Decorator for Kept {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if let Some(sync) = self.upkeep.sync.as_mut() {
+        // A proof that the sync owes nothing runs the tree's sync alone: the
+        // work this window takes in is what the frame runs beside it, and
+        // taking it in again would change the tree the proof measures.
+        if !ui_core::component_inputs::is_proving()
+            && let Some(sync) = self.upkeep.sync.as_mut()
+        {
             sync();
         }
         self.content.sync(state, path);
@@ -224,7 +230,7 @@ impl Decorator for Kept {
         presence: &PresenceCtx,
     ) {
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if let Some(presented) = self.upkeep.presented.as_mut() {
             presented();
         }

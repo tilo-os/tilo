@@ -64,9 +64,23 @@ pub(super) fn resume_record<'f>(
 
 pub(super) struct ReplayWrite {
     pub(super) ticket: Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    /// What an opened record's answer sends ahead of its reply: the record's
+    /// retained frames, written with no live frame between them.
+    pub(super) answer: Vec<Envelope>,
     pub(super) reply: Option<Envelope>,
     pub(super) replaying: bool,
 }
+/// Whether the answer to `env` goes to the writer as a replay does: no live
+/// frame is written until it is. A subscription's replay ends in its
+/// `Ready`, an opened record's answer in its `RecordOpened`; a live frame
+/// between their frames would reach the device ahead of what it builds on.
+pub(super) const fn answered_as_replay(env: &Envelope) -> bool {
+    matches!(
+        env,
+        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. } | Envelope::OpenRecord { .. }
+    )
+}
+
 pub(super) async fn authorize_state_frame(
     frame: &Envelope,
     peer: &AuthenticatedPeer,
@@ -132,6 +146,7 @@ pub(super) async fn authorize_state_recipient(
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     workspace_id: u64,
     ws: &SharedWorkspace,
+    catchup: &ReplayCatchup,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     write: &mut W,
@@ -160,9 +175,10 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
         }
         None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
     };
-    let Some(bootstrap) = bootstrap else {
+    let Some((bootstrap, certified)) = bootstrap else {
         return Ok(());
     };
+    let _ = catchup.certified.set(certified);
     let envelope = Envelope::WorkspaceBootstrap {
         workspace_id,
         bootstrap,
@@ -172,6 +188,129 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
         .write_all(&encode_charged(&envelope, session, false)?)
         .await?;
     Ok(())
+}
+
+/// What a subscriber holds of its workspace's members' certificates beside
+/// the governance its replay carries: the roster its bootstrap named, and the
+/// revocations the governance carries. Every other member device's
+/// certificate the device takes from that governance
+/// ([`tilo_peer_state::StatePeer::governance_certifies`]), or refuses: an
+/// identity hello of a device outside the roster tells it nothing it takes,
+/// unless it brings a revocation the governance lacks. Every member device's
+/// hello is retained, of devices long gone too, so a replay that sent them
+/// all sent a crowd's certificates twice.
+#[derive(Debug, Default)]
+pub(crate) struct GovernanceCertificates {
+    roster: std::collections::BTreeSet<[u8; 32]>,
+    revocations: Vec<tilo_user_identity::RevocationEntry>,
+}
+
+impl GovernanceCertificates {
+    /// For a device whose bootstrap names `roster` and `revocations`.
+    pub(crate) fn new(
+        roster: &[tilo_user_identity::DeviceCert],
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    ) -> Self {
+        Self {
+            roster: roster.iter().map(|cert| cert.device_public_key).collect(),
+            revocations,
+        }
+    }
+
+    /// Whether an identity hello of `cert` with `revocations` tells the
+    /// device nothing it would take.
+    fn carries(
+        &self,
+        cert: &tilo_user_identity::DeviceCert,
+        revocations: &[tilo_user_identity::RevocationEntry],
+    ) -> bool {
+        !self.roster.contains(&cert.device_public_key)
+            && revocations
+                .iter()
+                .all(|entry| self.revocations.contains(entry))
+    }
+}
+
+/// Frames addressed to a replaying device that wait for the replay's next
+/// pause between batches.
+const MAX_ADDRESSED: usize = 64;
+
+/// Write the frames committed for this device alone while its replay runs
+/// ([`ReplayCatchup::address`]), each authorised as every state frame is.
+async fn write_addressed<W: tokio::io::AsyncWrite + Unpin>(
+    catchup: &ReplayCatchup,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    for frame in catchup.take_addressed() {
+        authorize_state_frame(&frame, peer, session).await?;
+        write
+            .write_all(&encode_charged(&frame, session, false)?)
+            .await?;
+        catchup.addressed_written(frame);
+    }
+    Ok(())
+}
+
+/// What a replay leaves out for its subscriber, beside what its capture
+/// already did: frames only other devices can use. A peer relay keeps all of
+/// the workspace and is left nothing out.
+struct ReplayFilter {
+    device: [u8; 32],
+    payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    every_frame: bool,
+    channel_reader: bool,
+}
+
+impl ReplayFilter {
+    async fn new(run: ReplayRun<'_>, peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> Self {
+        Self {
+            device: peer.device_public_key,
+            payloads: run.workspace.lock().await.store.payloads().clone(),
+            every_frame: run.authority.every_record(),
+            channel_reader: session
+                .channel_reader
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Whether `frame` stays out of this replay:
+    /// - a channel commit's copy that carries what other devices join from
+    ///   (their Welcome), which reaches them alone live too;
+    /// - the copy addressed to this device that its replay already wrote
+    ///   ahead of its batches ([`ReplayCatchup::address`]);
+    /// - a device's request to be admitted to a channel's group, for a
+    ///   device that admits no one ([`Envelope::ChannelReader`]): every
+    ///   member's is retained, so it would be one per member;
+    /// - a device's identity hello that says nothing the workspace's
+    ///   governance, which the replay carries, does not
+    ///   ([`GovernanceCertificates`]): every member device's is retained,
+    ///   those of devices long gone too.
+    fn leaves_out(&self, frame: &Envelope, catchup: &ReplayCatchup) -> bool {
+        if self.every_frame {
+            return false;
+        }
+        let Envelope::Delta { delta, .. } = frame else {
+            return false;
+        };
+        let Some((_, _, body)) = crate::coedit::retention_view(delta) else {
+            return false;
+        };
+        if self.channel_reader && self.payloads.asks_admission(body) {
+            return true;
+        }
+        if let Some(certified) = catchup.certified.get()
+            && let Some((cert, revocations)) = self.payloads.identity(body)
+        {
+            return certified.carries(&cert, &revocations);
+        }
+        match self.payloads.audience(body) {
+            Some(audience) if !audience.contains(&self.device) => true,
+            Some(_) => catchup.was_addressed(frame),
+            None => false,
+        }
+    }
 }
 
 /// One subscription's replay as [`finish_replay_write`] drives it: the workspace,
@@ -214,14 +353,20 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             authority: &ticket.authority,
             catchup: &catchup,
         };
-        write_bootstrap(workspace_id, &ws, peer, session, write).await?;
+        write_bootstrap(workspace_id, &ws, &catchup, peer, session, write).await?;
         let replaying = crate::timing::start();
         let replayed_frames = drive_replay(run, handle, peer, session, write).await?;
         crate::timing::event("join.replay_total", replaying, replayed_frames);
         authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority).await?;
+        // A host attached to the workspace was replayed every record.
+        let records_when_opened = {
+            let runtime = ws.lock().await;
+            runtime.store.records_when_opened() && !runtime.attached(&peer.device_public_key)
+        };
         reply = Some(Envelope::Ready {
             workspace_id,
             pending_deltas: u32::try_from(replayed_frames).unwrap_or(u32::MAX),
+            records_when_opened,
         });
         completed_replay = Some((
             catchup.clone(),
@@ -230,6 +375,13 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             ticket,
         ));
         // Dropping this ticket schedules specific bounded spool reclamation.
+    }
+    for frame in batch.answer {
+        authorize_state_frame(&frame, peer, session).await?;
+        write
+            .write_all(&encode_charged(&frame, session, false)?)
+            .await?;
+        trace_native_publication("written", &frame, Some(&peer.device_public_key));
     }
     if let Some(reply) = reply {
         let readying = crate::timing::start();
@@ -281,6 +433,9 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
     let mut phase = crate::timing::start();
     // Of the phase, the time spent writing batches to the connection.
     let mut writing = std::time::Duration::ZERO;
+    // The first batch is prepared while the keys the device's entry asked
+    // for are on their way; they are written ahead of it.
+    let mut first = true;
     loop {
         let authority = run.authority.clone();
         let source = StateSource::new(peer, session);
@@ -288,7 +443,16 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
             authorize_replay(run.workspace, &source, &authority).await?;
             handle.advance(&authority, written.take()).await
         };
-        match preparing.await? {
+        let prepared = if std::mem::take(&mut first) {
+            let keying = crate::timing::start();
+            let (prepared, ()) = tokio::join!(preparing, run.catchup.keys());
+            crate::timing::event("join.keys_first", keying, 0);
+            prepared
+        } else {
+            preparing.await
+        };
+        write_addressed(run.catchup, peer, session, write).await?;
+        match prepared? {
             ReplayAdvance::Preparing => {}
             ReplayAdvance::Batch(frames) => {
                 let batch_at = crate::timing::start();
@@ -321,7 +485,7 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
                 crate::timing::event("join.replay", phase, summary.total_frames);
                 crate::timing::event(
                     "join.replay_write",
-                    phase.and_then(|_| std::time::Instant::now().checked_sub(writing)),
+                    phase.and_then(|_| tilo_clock::now().checked_sub(writing)),
                     summary.total_frames,
                 );
                 let cutting = crate::timing::start();
@@ -369,7 +533,14 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
         run.authority,
     )
     .await?;
+    let filter = ReplayFilter::new(run, peer, session).await;
     while let Some(frame) = frames.front() {
+        if filter.leaves_out(frame, run.catchup) {
+            // Counted as delivered: a resume has nothing of it to send again.
+            let _ = resume_record(session, run.workspace_id, [frame]);
+            frames.pop_written();
+            continue;
+        }
         write
             .write_all(&encode_charged(frame, session, false)?)
             .await?;
@@ -680,6 +851,27 @@ pub(super) struct ReplayCatchup {
     /// a crash ends the session, and its next one replays retained history.
     /// The store's work reclamation discards what a crash leaves.
     held: std::path::PathBuf,
+    /// Frames committed while this replay runs that are addressed to this
+    /// device alone among the workspace's (the Welcome that admits it to a
+    /// channel's group, [`neighbour_wire::audience`]): written between the
+    /// replay's batches rather than after its last one. Nothing the replay
+    /// carries is what such a frame builds on, and the keys it brings open
+    /// what the replay is still sending, so a page shows a record while the
+    /// rest of the workspace arrives. Neither the replay's batches nor its
+    /// final cut carry them again ([`Self::was_addressed`]).
+    addressed: std::sync::Mutex<Vec<Arc<Envelope>>>,
+    /// The addressed frames written so far.
+    written: std::sync::Mutex<Vec<Arc<Envelope>>>,
+    /// Woken as a frame is addressed to this device.
+    addressed_wake: tokio::sync::Notify,
+    /// Until when the replay's first batch waits for this device's keys: a
+    /// device the door just admitted asked for them in its entry, and its
+    /// Welcome may still be on its way ([`crate::peer::Arriving`]).
+    keys_due: std::sync::Mutex<Option<tokio::time::Instant>>,
+    /// What the workspace's governance, which this replay carries, tells the
+    /// device of its members' certificates ([`GovernanceCertificates`]), as
+    /// its bootstrap read it.
+    certified: std::sync::OnceLock<GovernanceCertificates>,
 }
 impl ReplayCatchup {
     pub(super) const ACTIVE: u8 = 0;
@@ -693,7 +885,71 @@ impl ReplayCatchup {
             phase: std::sync::atomic::AtomicU8::new(Self::ACTIVE),
             dirty: std::sync::atomic::AtomicBool::new(false),
             held: work.join(crate::store::replay::held_work_name(rand::random())),
+            addressed: std::sync::Mutex::new(Vec::new()),
+            written: std::sync::Mutex::new(Vec::new()),
+            addressed_wake: tokio::sync::Notify::new(),
+            keys_due: std::sync::Mutex::new(None),
+            certified: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Hold the replay's first batch until a frame is addressed to this
+    /// device, or until `due`: the keys its entry asked for come first.
+    pub(super) fn expect_keys(&self, due: tokio::time::Instant) {
+        *self.keys_due.lock_recover() = Some(due);
+    }
+
+    /// Wait, at most until the instant [`Self::expect_keys`] named, for the
+    /// first frame addressed to this device. At once when none is expected.
+    pub(super) async fn keys(&self) {
+        let Some(due) = self.keys_due.lock_recover().take() else {
+            return;
+        };
+        loop {
+            let woken = self.addressed_wake.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            if !self.addressed.lock_recover().is_empty() {
+                return;
+            }
+            if tokio::time::timeout_at(due, woken).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Hand `frame`, addressed to this device, to the replay's next pause
+    /// between batches. Past [`MAX_ADDRESSED`] waiting frames the newest is
+    /// left to the final cut, which carries every one of them anyway.
+    pub(super) fn address(&self, frame: Arc<Envelope>) {
+        let mut addressed = self.addressed.lock_recover();
+        if addressed.len() < MAX_ADDRESSED {
+            addressed.push(frame);
+        }
+        drop(addressed);
+        self.addressed_wake.notify_waiters();
+    }
+
+    /// The frames addressed to this device since the last call, oldest first.
+    pub(super) fn take_addressed(&self) -> Vec<Arc<Envelope>> {
+        std::mem::take(&mut *self.addressed.lock_recover())
+    }
+
+    /// `frame`, addressed to this device, is written.
+    fn addressed_written(&self, frame: Arc<Envelope>) {
+        let mut written = self.written.lock_recover();
+        if written.len() < MAX_ADDRESSED {
+            written.push(frame);
+        }
+    }
+
+    /// Whether `frame` was written to this device ahead of the replay's
+    /// batches.
+    fn was_addressed(&self, frame: &Envelope) -> bool {
+        self.written
+            .lock_recover()
+            .iter()
+            .any(|written| **written == *frame)
     }
 
     /// Hold `bytes`, the commit at host order `sequence`, for the final cut.

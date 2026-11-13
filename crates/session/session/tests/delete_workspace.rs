@@ -6,10 +6,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the assertion"
 )]
-
-mod common;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -27,11 +26,7 @@ use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use common::{HEIGHT, WIDTH};
-
-// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
-// as it is the session's own.
-tilo_automerge_isolate::test_worker!();
+use crate::common::{HEIGHT, WIDTH};
 
 /// The workspace this computer holds, and the person deletes.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -62,7 +57,7 @@ fn this_computer(
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&[0x62; 32]);
+    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let cert = certified(&person, &device, "The laptop");
@@ -93,7 +88,6 @@ fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, 
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
                 SystemTime::now(),
             )
             .expect("the host admits the workspace's people");
@@ -195,13 +189,11 @@ fn delete_sheet_open(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// Whether the desk is asking the person to delete anything on a banner.
+/// Whether the desk is asking the person anything on a banner.
 fn asking_on_a_banner(session: &Session) -> bool {
     let centre = session.notifications();
     let log = centre.log();
-    log.active()
-        .iter()
-        .any(|notice| notice.addressed == Some(tilo_desktop_surface::notifications::Addressed::Ask))
+    log.active().iter().any(tilo_desktop_surface::is_host_offer)
 }
 
 /// The session keeps the workspace until the person says yes.
@@ -360,4 +352,45 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
             .all(|held| held.id().to_string() != shown)),
         "the confirmed delete is the desk's, and it deleted the workspace"
     );
+}
+
+/// Wait until `device` neither shows nor keeps `workspace`, which its owner deleted, and said so.
+fn forgotten(device: &crate::common::people::Device, workspace: &str) {
+    tilo_test_env::wait_until(format!("{} forgets {workspace}", device.label), || {
+        let state = device.state();
+        let shown = state["state"]["workspace_tree"]["workspaces"]
+            .as_array()
+            .is_some_and(|shown| {
+                shown
+                    .iter()
+                    .any(|held| held["room"].as_str() == Some(workspace))
+            });
+        !shown && !device.held().iter().any(|held| held == workspace)
+    });
+    assert!(
+        device
+            .log()
+            .contains("a workspace its owner deleted leaves this device"),
+        "{} says why it forgot {workspace}:\n{}",
+        device.label,
+        device.log()
+    );
+}
+
+/// The owner deletes the workspace at its site: a member's device in it takes it off the desk and
+/// out of its record and tells the person, and a member's device that was off meanwhile does the
+/// same once it is back.
+#[test]
+fn a_workspace_its_owner_deletes_leaves_every_members_device() {
+    let (site, _ada, _bob, ada_laptop, mut bob_laptop) =
+        crate::common::people::two_people_at_a_site();
+    ada_laptop.wait_holding(&site.workspace);
+    bob_laptop.wait_holding(&site.workspace);
+    bob_laptop.stop();
+
+    site.delete();
+    forgotten(&ada_laptop, &site.workspace);
+
+    bob_laptop.start();
+    forgotten(&bob_laptop, &site.workspace);
 }

@@ -273,12 +273,6 @@ where
             data.handle.increment_serial(resource);
         }
 
-        // Discard requsets without any active input method instance.
-        if !data.input_method_handle.has_instance() {
-            debug!("discarding text-input request without IME running");
-            return;
-        }
-
         let focus = match data.handle.focus() {
             Some(focus) if focus.id().same_client_as(&resource.id()) => focus,
             _ => {

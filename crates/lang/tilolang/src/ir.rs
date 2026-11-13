@@ -126,6 +126,10 @@ pub struct ActionRef {
 pub struct Facts {
     pub mutates: bool,
     pub outside: bool,
+    /// The capabilities the body's `outside(...)` calls name (`youtube.search`, `smtp.send`), as
+    /// written: what its action is tagged with so the session can find the action that asks a
+    /// service for what a canvas query names ([`crate::meta::ActionMeta::outside`]).
+    pub outside_caps: BTreeSet<String>,
     pub invokes: BTreeSet<ActionRef>,
     pub action_values: BTreeSet<ActionRef>,
     pub views: BTreeSet<usize>,

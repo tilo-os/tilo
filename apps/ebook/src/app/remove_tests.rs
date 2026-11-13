@@ -146,7 +146,6 @@ fn a_cancelled_removal_leaves_the_book_opening_and_a_confirmed_one_forgets_its_f
     );
     let mut app = opens_after_reopening(app, &id);
 
-    // A watched-folder entry of the book, and one of another book.
     let watched = PathBuf::from("/watched/removed.epub");
     let other = PathBuf::from("/watched/other.epub");
     books(&mut app)

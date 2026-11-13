@@ -1,10 +1,7 @@
 //! `tilo-vmd exec`: run one command as a slot sees the system, streamed and
-//! bounded.
-//!
-//! The command joins the mount namespace of the slot's running session (the
-//! session unit's main process), where the slot's layers are stacked over
-//! `/usr` with `ExtensionDirectories=`, and runs as the slot's user. So it
-//! sees exactly the files the session does: nothing is re-assembled for it.
+//! bounded. The command joins the mount namespace of the slot's running session,
+//! where the slot's layers are stacked over `/usr`, and runs as the slot's user, so
+//! it sees exactly the files the session does.
 
 use std::io::{Read, Write};
 use std::process::{Command, ExitStatus, Stdio};
@@ -25,8 +22,8 @@ pub enum Ended {
 }
 
 impl Ended {
-    /// The exit status `tilo-vmd exec` passes on: the command's own, 124
-    /// for a timeout (as `timeout(1)`), 125 for too much output.
+    /// The exit status `tilo-vmd exec` passes on: the command's own, 124 for a timeout as
+    /// `timeout(1)`, 125 for too much output.
     pub fn code(self) -> u8 {
         match self {
             Self::Exited(code) => u8::try_from(code).unwrap_or(1),
@@ -37,9 +34,9 @@ impl Ended {
     }
 }
 
-/// The variables that place a process in a user's session. `runuser` sets
-/// only `HOME`, `SHELL`, `USER` and `LOGNAME`, so without these the command
-/// would keep the daemon's (root's `XDG_RUNTIME_DIR=/run/user/0`, no bus).
+/// The variables that place a process in a user's session: `runuser` sets only `HOME`, `SHELL`,
+/// `USER` and `LOGNAME`, so without these the command would keep the daemon's root runtime
+/// directory and no bus.
 pub const SESSION_ENV: &[&str] = &[
     "XDG_RUNTIME_DIR",
     "XDG_DATA_HOME",
@@ -66,9 +63,8 @@ pub fn session_env(environ: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Add the compositor's `WAYLAND_DISPLAY` to a session's `env`. The display is
-/// named after the session process started, so that process's environment
-/// never has it; the compositor publishes it under the runtime directory.
+/// Add the compositor's `WAYLAND_DISPLAY` to a session's `env`: the display is named after the
+/// session process started, so that process's environment never has it.
 pub fn add_published_wayland_display(env: &mut Vec<(String, String)>) {
     if env.iter().any(|(key, _)| key == "WAYLAND_DISPLAY") {
         return;
@@ -90,9 +86,8 @@ pub fn add_published_wayland_display(env: &mut Vec<(String, String)>) {
     }
 }
 
-/// The command that runs `args` as `user` inside the mount namespace of
-/// process `pid`, with that session's `env` (see [`session_env`]) in place
-/// of the daemon's.
+/// The command that runs `args` as `user` inside the mount namespace of process `pid`, with that
+/// session's `env` in place of the daemon's.
 pub fn in_session(pid: u32, user: &str, env: &[(String, String)], args: &[String]) -> Command {
     let mut command = Command::new("nsenter");
     command
@@ -111,8 +106,8 @@ pub fn in_session(pid: u32, user: &str, env: &[(String, String)], args: &[String
     command
 }
 
-/// Run `command`, copying its stdout and stderr to `out` and `err` as they
-/// come, and kill it after `timeout` or once `max_bytes` of output passed.
+/// Run `command`, copying its stdout and stderr to `out` and `err` as they come, and kill it after
+/// `timeout` or once `max_bytes` of output passed.
 pub fn run_bounded(
     mut command: Command,
     timeout: Duration,
@@ -176,8 +171,8 @@ pub fn run_bounded(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    // After a kill, grandchildren may still hold the pipes open: give the
-    // copiers a moment to pass on what was read, but do not wait on them.
+    // After a kill, grandchildren may still hold the pipes open: give the copiers a moment to pass
+    // on what was read, but do not wait on them.
     let drained = Instant::now();
     while status.is_none()
         && drained.elapsed() < Duration::from_secs(1)

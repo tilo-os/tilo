@@ -1,37 +1,12 @@
 //! Real filesystem I/O for the editor: reading a file into a buffer, writing a
 //! buffer back atomically, and noticing when a file changed underneath us.
-//!
-//! Two rules shape this module.
-//!
-//! **Writes are atomic.** A save goes through [`tilo_files::native::atomic`],
-//! which writes a sibling temp file, fsyncs it, and renames it over the
-//! target, keeping an existing file's permission bits and symbolic link. A
-//! crash or a full disk therefore leaves either the old file or the new one,
-//! never a half-written source file. An editor that can truncate your code on a
-//! bad day is worse than one that cannot save at all.
-//!
-//! **A save never silently clobbers.** Every buffer carries the [`Stamp`] its
-//! bytes were read at. [`save`] re-stats the file first and refuses with
-//! [`SaveError::Conflict`] when the stamp moved — the file was rewritten by
-//! `git checkout`, a formatter, or another editor since we read it. The app
-//! turns that into a choice (overwrite / reload / cancel) rather than deciding
-//! for the user.
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use ui::time::SystemTime;
 
-/// Files larger than this are not opened as text buffers. The editor holds the
-/// whole body in the CRDT as a character-addressed `Text`, so a hundred-megabyte
-/// blob is not a slow editor, it is an unusable one.
 pub const MAX_TEXT_BYTES: u64 = 24 * 1024 * 1024;
 
-/// What we know about a file on disk at the moment we last agreed with it.
-///
-/// Modification time plus length is what every editor uses for this, and it is
-/// the right trade: it costs one `stat`, whereas hashing costs a full read of
-/// every open file on every save. `mtime` is `None` on the filesystems that do
-/// not report one, in which case length alone still catches the common case.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Stamp {
     pub mtime: Option<SystemTime>,
@@ -39,7 +14,6 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    /// Read the current stamp of `path`. A missing file has no stamp.
     pub fn of(path: &Path) -> io::Result<Stamp> {
         let md = std::fs::metadata(path)?;
         Ok(Stamp {
@@ -49,11 +23,9 @@ impl Stamp {
     }
 }
 
-/// Why a load failed, in terms the user can act on.
 #[derive(Debug)]
 pub enum LoadError {
     Io(io::Error),
-    /// The file is larger than [`MAX_TEXT_BYTES`].
     TooLarge(u64),
     /// The bytes are not UTF-8 text (or contain NULs) — opening it as a text
     /// buffer would corrupt it on the next save.
@@ -75,12 +47,9 @@ impl std::fmt::Display for LoadError {
     }
 }
 
-/// Why a save failed.
 #[derive(Debug)]
 pub enum SaveError {
     Io(io::Error),
-    /// The file changed on disk since the buffer was read. The app resolves
-    /// this through overwrite/reload/cancel and re-stamps the chosen contents.
     Conflict,
 }
 
@@ -100,10 +69,8 @@ pub struct Loaded {
     pub stamp: Stamp,
 }
 
-/// Read `path` as a text buffer, refusing what must not become one.
-///
-/// The size check happens against the metadata *before* the read, so opening a
-/// huge file costs a `stat` rather than a full slurp into memory.
+/// Read `path` as a text buffer, refusing what must not become one. The size check runs on the
+/// metadata before the read, so a huge file costs a `stat`.
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     let md = std::fs::metadata(path).map_err(LoadError::Io)?;
     if md.len() > MAX_TEXT_BYTES {
@@ -120,7 +87,6 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     })
 }
 
-/// Bound the actual read as well as stat: the file can grow between them.
 fn read_body(reader: impl Read) -> Result<String, LoadError> {
     let mut bytes = Vec::new();
     reader
@@ -136,20 +102,14 @@ fn read_body(reader: impl Read) -> Result<String, LoadError> {
     String::from_utf8(bytes).map_err(|_| LoadError::NotText)
 }
 
-/// Write `text` to `path` atomically, refusing if the file moved on underneath.
-///
-/// `expected` is the stamp the buffer was last in agreement with. Pass `None`
-/// to write unconditionally — that is the "overwrite anyway" the user chose
-/// after seeing the conflict, and the only way to reach this function without a
-/// freshness check.
-///
-/// A file that does not exist yet cannot conflict: creating it is the save.
+/// Write `text` to `path` atomically, refusing when the file moved on. `expected` is the stamp the
+/// buffer agreed with; `None` writes unconditionally, which is the overwrite the person chose after
+/// seeing a conflict.
 pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, SaveError> {
     if let Some(expected) = expected {
         match Stamp::of(path) {
             Ok(current) if &current != expected => return Err(SaveError::Conflict),
             Ok(_) => {}
-            // Not existing yet is not a conflict — the save creates it.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(SaveError::Io(e)),
         }
@@ -158,11 +118,9 @@ pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, 
     Stamp::of(path).map_err(SaveError::Io)
 }
 
-/// Replace `path`'s bytes atomically. A file that exists stays the person's
-/// file: a script keeps its executable bit, and a symbolic link (a dotfile
-/// kept in another repository) keeps pointing where it did, with the new
-/// bytes written to its target. A path that does not exist yet is created
-/// with its folders.
+/// Replace `path`'s bytes atomically. An existing file stays the person's: a script keeps its
+/// executable bit, a symbolic link keeps pointing at its target, and a new path is created with its
+/// folders.
 fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => tilo_files::native::atomic::write_preserving_target(path, bytes),
@@ -173,9 +131,6 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-/// Whether a file changed on disk relative to `stamp`. A file that vanished
-/// counts as changed — saving over it would recreate something the user may
-/// have deliberately deleted.
 pub fn changed_on_disk(path: &Path, stamp: &Stamp) -> bool {
     match Stamp::of(path) {
         Ok(current) => &current != stamp,
@@ -183,9 +138,7 @@ pub fn changed_on_disk(path: &Path, stamp: &Stamp) -> bool {
     }
 }
 
-/// A cheap, conventional binary sniff: a NUL byte in the first 8 KiB. Real
-/// source files do not contain NUL; ELF objects, images and archives do, within
-/// the first few bytes.
+/// A NUL byte in the first 8 KiB: source files do not hold one, ELF objects, images and archives do.
 fn looks_like_text(bytes: &[u8]) -> bool {
     let head = bytes.get(..bytes.len().min(8192)).unwrap_or(bytes);
     !head.contains(&0)
@@ -212,18 +165,10 @@ pub const IGNORED_DIRS: &[&str] = &[
     ".next",
 ];
 
-/// Whether a directory entry should be skipped when listing or searching a
-/// project tree.
-///
-/// Matched on the **name**, whatever the entry's type. In a git worktree `.git`
-/// is a *file* holding a gitdir pointer rather than a directory, so a
-/// type-gated test lets it through and it shows up as an openable source file.
 pub fn is_ignored_dir(name: &str) -> bool {
     IGNORED_DIRS.contains(&name)
 }
 
-/// The absolute, symlink-resolved form of `path`, falling back to the input
-/// when it cannot be canonicalised (a path that does not exist yet).
 pub fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -276,9 +221,6 @@ mod tests {
         let d = tmpdir();
         let p = d.path().join("a.rs");
         let s1 = save(&p, "one", None).unwrap();
-        // Change the length as well as the contents so the new stamp is
-        // observably different even on filesystems whose mtimes have coarse
-        // resolution (or when both atomic renames land in the same clock tick).
         let s2 = save(&p, "two!", Some(&s1)).expect("we are still in agreement with the file");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "two!");
         assert_ne!(s1, s2, "the stamp advances with the content");
@@ -289,7 +231,6 @@ mod tests {
         let p = d.path().join("a.rs");
         let stale = save(&p, "original", None).unwrap();
 
-        // Something else rewrites the file — `git checkout`, rustfmt, a peer.
         std::fs::write(&p, "rewritten by someone else").unwrap();
 
         assert!(matches!(
@@ -314,13 +255,10 @@ mod tests {
             save(&p, "mine", Some(&stale)),
             Err(SaveError::Conflict)
         ));
-        // Passing no expectation is the user having said "overwrite anyway".
         save(&p, "mine", None).expect("an unconditional save always writes");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "mine");
     }
 
-    /// Saving a script keeps it executable, and saving through a symbolic
-    /// link writes the file it points at and leaves the link in place.
     #[cfg(unix)]
     #[test]
     fn a_save_keeps_the_files_permissions_and_its_symbolic_link() {
@@ -364,7 +302,6 @@ mod tests {
         let stamp = save(&p, "x", None).unwrap();
         std::fs::remove_file(&p).unwrap();
         assert!(changed_on_disk(&p, &stamp));
-        // Saving it back is then a fresh create, not a conflict.
         save(&p, "x", Some(&stamp)).expect("recreating a deleted file is not a conflict");
     }
 

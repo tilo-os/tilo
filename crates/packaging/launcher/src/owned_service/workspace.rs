@@ -13,8 +13,8 @@ use std::{
 use tilo_files::native::atomic::{Privacy, StorageDirectory};
 const APP: &str = "tilo-rooms/personal/so.tilo.imager.home-export";
 
-/// What a service's workspace holds besides the delegated app home, and
-/// how it checks its caller's root custody.
+/// What a service's workspace holds besides the delegated app home, and how it checks its caller's root
+/// custody.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Layout {
     /// Names the refusal of a work root that is not fresh.
@@ -28,8 +28,7 @@ pub(super) struct Layout {
 pub(super) enum Person {
     /// The exporting person's home, delegated to the worker.
     Delegated,
-    /// An empty read-only compatibility mount: no target person identity or
-    /// state is loaded.
+    /// An empty read-only compatibility mount: no target person identity or state is loaded.
     Empty,
 }
 
@@ -135,8 +134,7 @@ impl Workspace {
         Ok(())
     }
 }
-/// Builds the workspace in the fresh, owner-only directory at `path`. The
-/// caller has validated `owner`.
+/// Builds the workspace in the fresh, owner-only directory at `path`.
 pub(super) fn prepare(layout: Layout, path: &Path, owner: Owner) -> io::Result<Workspace> {
     (layout.root)()?;
     let chain = controlled(path)?;

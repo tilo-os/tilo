@@ -1,5 +1,5 @@
-//! Git smart HTTP over Rustls. Authentication and deadlines belong to one
-//! operation; neither credentials nor repository configuration are global.
+//! Git smart HTTP over Rustls: authentication and deadlines belong to one
+//! operation, and neither credentials nor repository configuration are global.
 
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
@@ -45,8 +45,8 @@ fn factory(remote: &git2::Remote<'_>) -> Result<Transport, git2::Error> {
         .tls_backend_rustls()
         .connect_timeout(Duration::from_secs(10))
         .timeout(REQUEST_TIMEOUT)
-        // Redirects must never move credential scope to another origin or
-        // downgrade HTTPS. Report a moved remote instead of silently following.
+        // Redirects must never move credential scope to another origin or downgrade HTTPS, so a
+        // moved remote is reported instead of followed.
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("git/tilo");
     match config.get_path("http.sslCAInfo") {
@@ -83,7 +83,7 @@ fn factory(remote: &git2::Remote<'_>) -> Result<Transport, git2::Error> {
     let client = builder
         .build()
         .map_err(|_| failure("could not initialize the Git TLS client"))?;
-    // Push URLs can differ from fetch URLs; action() supplies the actual URL.
+    // Push URLs can differ from fetch URLs; `action()` supplies the actual URL.
     let settings = HelperSettings::from_config(&config, remote)?;
     Transport::smart(
         remote,
@@ -320,8 +320,8 @@ fn is_certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
     ) {
         return true;
     }
-    // io::Error::source delegates to its boxed error's source, which can omit
-    // the Rustls error itself. Inspect get_ref before continuing the chain.
+    // `io::Error::source` delegates to its boxed error, which can omit the Rustls error itself:
+    // inspect `get_ref` before continuing the chain.
     if let Some(error) = error.downcast_ref::<io::Error>()
         && let Some(inner) = error.get_ref()
         && is_certificate_error(inner)
@@ -332,8 +332,8 @@ fn is_certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
 }
 
 fn offers_basic(value: &str) -> bool {
-    // Commas separate challenges or parameters, except inside quoted strings.
-    // A parameter such as `Basic="..."` is not an authentication scheme.
+    // Commas separate challenges or parameters, except inside quoted strings: a parameter such as
+    // `Basic="…"` is not an authentication scheme.
     let is_basic = |part: &str| {
         let mut words = part.split_whitespace();
         words
@@ -424,7 +424,7 @@ impl Write for HttpStream {
     }
 }
 
-/// Copy configuration before crossing the smart-transport Send boundary.
+/// Copy configuration before crossing the smart transport's `Send` boundary.
 struct HelperSettings(Vec<(String, Helper)>);
 
 impl HelperSettings {
@@ -456,8 +456,8 @@ impl HelperSettings {
     }
 }
 
-/// Whether a `credential.helper` entry at `level` names a program the person
-/// or the system chose, rather than one written into a checkout.
+/// Whether a `credential.helper` at `level` names a program the person or the system chose, rather
+/// than one written into a checkout.
 fn helper_level_is_trusted(level: git2::ConfigLevel) -> bool {
     !matches!(
         level,
@@ -468,8 +468,8 @@ fn helper_level_is_trusted(level: git2::ConfigLevel) -> bool {
 impl Helper {
     fn from_config(config: &git2::Config, raw_url: &str, url: &Url) -> Result<Self, git2::Error> {
         let origin = url.origin().ascii_serialization();
-        // Apply broad helpers first, preserving multivar order. An explicit
-        // empty helper clears all earlier helpers before more-specific entries.
+        // Apply broad helpers first, preserving multivar order; an explicit empty helper clears all
+        // earlier ones.
         let mut keys = vec!["credential".to_owned(), format!("credential.{origin}")];
         let exact = format!("credential.{raw_url}");
         if !keys.contains(&exact) {
@@ -484,11 +484,10 @@ impl Helper {
             };
             while let Some(entry) = entries.next() {
                 let entry = entry?;
-                // A helper is a program this app runs; a repository's own
-                // configuration is content anyone who can write the checkout
-                // can set. Helpers are honoured from the person's and the
-                // system's levels only — like `core.sshCommand`, which the SSH
-                // transport refuses for the same reason.
+                // A helper is a program this app runs, and a repository's configuration is content
+                // anyone who can write the checkout can set. Helpers are honoured from the person's
+                // and the system's levels only, like `core.sshCommand`, which the SSH transport
+                // refuses for the same reason.
                 if !helper_level_is_trusted(entry.level()) {
                     continue;
                 }
@@ -532,9 +531,9 @@ impl Helper {
 mod tests {
     use super::*;
 
-    /// Credential configuration: fetch and push capture their own, the helper
-    /// snapshot ignores later edits, non-default ports stay isolated, and an empty
-    /// scoped helper resets prior entries while keeping order. Each phase is a former test with its own fresh fixture.
+    /// Credential configuration: fetch and push capture their own, the helper snapshot ignores
+    /// later edits, non-default ports stay isolated, and an empty scoped helper resets prior
+    /// entries while keeping order.
     #[test]
     fn credential_configuration_is_captured_per_operation_and_origin() {
         fetch_and_push_capture_their_own_credential_configuration();
@@ -721,8 +720,8 @@ mod tests {
         );
     }
 
-    /// HTTP protocol edges: Basic challenges parse outside quoted parameters and
-    /// boxed TLS certificate errors keep their classification. Each phase is a former test with its own fresh fixture.
+    /// HTTP protocol edges: Basic challenges parse outside quoted parameters, and boxed TLS
+    /// certificate errors keep their classification.
     #[test]
     fn http_challenges_and_tls_errors_are_classified() {
         basic_challenges_are_parsed_outside_quoted_parameters();
@@ -757,10 +756,9 @@ mod tests {
         )));
     }
 
-    /// Credential helper command lines: native executables keep quotes, spaces and
-    /// backslashes; relative helpers keep the git- prefix and POSIX quoting; absolute
-    /// POSIX paths survive on every platform; shell scripts and expansion are kept.
-    /// Each phase is a former test with its own fresh fixture.
+    /// Credential helper command lines: native executables keep quotes, spaces and backslashes;
+    /// relative helpers keep the git- prefix and POSIX quoting; absolute POSIX paths survive on
+    /// every platform; shell scripts and expansion are kept.
     #[test]
     fn credential_helper_commands_preserve_paths_quoting_and_scripts() {
         native_helper_executables_preserve_quotes_spaces_and_backslashes();

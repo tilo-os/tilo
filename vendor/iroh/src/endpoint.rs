@@ -257,9 +257,16 @@ impl Builder {
 
         let metrics = EndpointMetrics::default();
 
-        let tls_config = self
+        // TILO PATCH: unset, the trust is the system store every Tilo
+        // client uses, not compiled-in roots (`TILO-PATCH.md`). In a browser
+        // the browser does the TLS.
+        #[cfg(not(wasm_browser))]
+        let ca_tls_config = self
             .ca_tls_config
-            .unwrap_or_default()
+            .unwrap_or_else(tls::system_store::system_store);
+        #[cfg(wasm_browser)]
+        let ca_tls_config = self.ca_tls_config.unwrap_or_default();
+        let tls_config = ca_tls_config
             .client_config(crypto_provider)
             .map_err(|err| e!(BindError::InvalidCaRootConfig, err))?;
 
@@ -710,6 +717,9 @@ impl Builder {
     /// iroh relays, pkarr servers, or DNS-over-HTTPS resolvers.
     /// They don't need to be trusted for the integrity or authenticity of native
     /// iroh connections, which rely on iroh's own cryptographic authentication mechanisms.
+    ///
+    /// TILO PATCH: unset, the system's trust store is used (Tilo's bundle on
+    /// Linux), as every other Tilo client uses it.
     pub fn ca_tls_config(mut self, ca_tls_config: CaTlsConfig) -> Self {
         self.ca_tls_config = Some(ca_tls_config);
         self

@@ -11,16 +11,6 @@
 //! toolkit: the Reading role's optical cuts (title, body, footnote and
 //! superscripts at their own sizes), small caps, italics, old-style figures
 //! and a Greek and a Cyrillic line, on a light and a dark page.
-//!
-//! ```bash
-//! cargo run -p ui-examples --example reading-face-shots -- \
-//!     --shots target/look/reading/page.png --scale 2
-//! ```
-//!
-//! Writes `<stem>-<face>-<theme>.png` next to the `--shots` path for every
-//! [`ReadingFace`] and the themes `light` and `dark`, plus
-//! `<stem>-cuts-<theme>.png`: one line of New Computer Modern at each size
-//! from 9 to 48 px, so the switch between its cuts can be seen.
 
 use std::path::{Path, PathBuf};
 

@@ -151,6 +151,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
     "on_activate_view": "activates the widget's published view action for the entry it opened",
+    "on_command": "the slash menu's row for a command the view placed fires the view's own "
+    "command event, which runs what the view declared as its other controls are run",
     "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
     "a banner's follows its published dismiss button",
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
@@ -186,6 +188,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_selected": "reports which rows a list has chosen: what this window shows, kept where the "
     "person is rather than in the app's resource, no edit",
     "on_station_view": "answers the stepper's published view action for the station chosen",
+    "on_surface": "runs a closure on behalf of a motion surface, so the frames the motion asks "
+    "are that surface's alone: what is drawn, never an edit, and it activates no control",
     "on_files_view": "answers the drop zone's published view action for the files dropped",
     "on_check_view": "answers the table's published view action for the box turned",
     "on_row_click_view": "answers the table's published view action for the row clicked",
@@ -595,14 +599,12 @@ LEGACY_API_BANS = {
 }
 # The apps that act on other apps' published actions or publish their own to
 # the broker as data, not through a resource of their own: the agent plans and
-# invokes whatever the catalogue offers, Shortcuts stores and runs steps of
-# it, and the web search service publishes its two actions straight to the
-# broker. An address is their data, so they build one; every other old API is
+# invokes whatever the catalogue offers, and Shortcuts stores and runs steps of
+# it. An address is their data, so they build one; every other old API is
 # refused for them as for any app.
 PROTOCOL_ENDPOINTS: dict[str, str] = {
     "agent": "plans and invokes the actions the broker's catalogue offers",
     "shortcuts": "stores and runs steps that name other apps' published actions",
-    "web-search": "a headless service that publishes its actions to the broker",
 }
 # Which matches of a legacy rule are the old API, given the file's code and
 # its raw text (same offsets): a `put` on a content store, a secret store or a

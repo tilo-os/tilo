@@ -1,6 +1,5 @@
-//! Ordering of signed registry version strings. Build metadata is identity,
-//! never update precedence. Numeric `CalVer` and legacy opaque versions retain
-//! their historical ordering when neither input parses as `SemVer`.
+//! Ordering of registry version strings: build metadata is identity, never update precedence, and
+//! versions that do not parse as `SemVer` order numerically by field.
 
 use std::cmp::Ordering;
 
@@ -13,8 +12,8 @@ pub fn compare(left: &str, right: &str) -> Ordering {
     }
 }
 
-/// Whether `version` is a pre-release, which only the development channel
-/// installs. Versions that are not `SemVer` count as releases.
+/// Whether `version` is a pre-release, which only the development channel installs. Versions that
+/// are not `SemVer` count as releases.
 pub fn is_prerelease(version: &str) -> bool {
     semver::Version::parse(version).is_ok_and(|version| !version.pre.is_empty())
 }

@@ -78,6 +78,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Bytes
         | Ty::Response
         | Ty::Json
+        | Ty::File
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }
@@ -1062,7 +1063,11 @@ impl Core {
             | Imp::MapSetAdd
             | Imp::MapSetRemove => self.set_map_import(imp, a),
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
-            Imp::MapGetValue | Imp::MapKeysValue => self.map_value_import(imp, a),
+            Imp::MapNew
+            | Imp::MapPutValue
+            | Imp::MapRemoveValue
+            | Imp::MapGetValue
+            | Imp::MapKeysValue => self.map_value_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {
@@ -1078,7 +1083,16 @@ impl Core {
                 } else {
                     r.target.ty.clone()
                 };
-                ret_i32(i32::from(stored == ty))
+                // A resource of another app names its type `app#Type`: it is the type whose id
+                // that app's package declares it under.
+                let is = stored == ty
+                    || crate::foreign::foreign_type(&stored).is_some_and(|key| {
+                        self.registry
+                            .borrow()
+                            .type_for(&key)
+                            .is_some_and(|id| id == ty)
+                    });
+                ret_i32(i32::from(is))
             }
             Imp::RefId => {
                 let r = self.ref_arg(a.h(0)?)?;

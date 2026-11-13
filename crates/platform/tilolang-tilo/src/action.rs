@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilo_actions::{
     Action, ActionError, ActionFacet, ActionKey, ActionRegistry, Described, Did, Doc,
-    EncodedAction, Scalar,
+    EncodedAction, ParamType, Scalar,
 };
 use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Segment, Slot};
 
@@ -45,6 +45,38 @@ pub const EDIT_TEXT_ACTION: &str = tilolang_runtime::store::EDIT_TEXT_ACTION;
 
 /// The action id of a bound checkbox changing its field.
 pub const EDIT_FLAG_ACTION: &str = tilolang_runtime::store::EDIT_FLAG_ACTION;
+
+/// A bound control's edit of one field — a text input or a checkbox — as a resource offers it:
+/// the door gives it an action ([`crate::publish`]), and the surface publishes it as the verb a
+/// change of the field names ([`crate::surface`]). One declaration, so the arguments a change is
+/// published with are the ones the surface's verb declares.
+pub struct DirectEdit {
+    /// The verb a change of the field names.
+    pub id: &'static str,
+    /// What the action reads as.
+    pub label: &'static str,
+    /// What the value it sets is.
+    pub value: ParamType,
+    /// Whether a change of the field names the value it set. A text edit's does not: what a
+    /// person typed is the change itself, so its arguments name the field alone.
+    pub names_value: bool,
+}
+
+/// The two direct edits every resource offers its fields.
+pub const DIRECT_EDITS: [DirectEdit; 2] = [
+    DirectEdit {
+        id: EDIT_TEXT_ACTION,
+        label: "Edit a text field",
+        value: ParamType::Text,
+        names_value: false,
+    },
+    DirectEdit {
+        id: EDIT_FLAG_ACTION,
+        label: "Set a flag field",
+        value: ParamType::Boolean,
+        names_value: true,
+    },
+];
 
 /// The action id of a resource the host creates on its own, outside any action: a package's
 /// per-workspace root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).
@@ -83,6 +115,11 @@ pub struct Authorship {
     /// which the workspace commits as one action ([`invocation_id`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
+    /// The gesture the change is one of ([`crate::store::burst`]): every change of one burst of
+    /// typing into a field names the same one, which the workspace's history lists as one entry
+    /// and undo takes back as one step. `None` for a change that is a step of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<tilo_actions::ActionId>,
 }
 
 /// The invocation a run's changes name ([`Authorship::invocation`]) as the workspace writes it:
@@ -275,37 +312,6 @@ impl DynEdit {
         }
     }
 
-    /// Whether `next`, made by the same person straight after this edit, continues the same
-    /// gesture: an edit of the same field of the same resource that the field's kind says goes
-    /// on from this one (typing on in a word, erasing backwards, setting one value again).
-    #[must_use]
-    pub fn continues(&self, next: &Self) -> bool {
-        match (self, next) {
-            (
-                Self::Edit { id, edit },
-                Self::Edit {
-                    id: next_id,
-                    edit: next_edit,
-                },
-            ) => id == next_id && edit.coalesces(next_edit),
-            (
-                Self::In { app, edit },
-                Self::In {
-                    app: next_app,
-                    edit: next_edit,
-                },
-            ) => app == next_app && edit.continues(next_edit),
-            (
-                Self::Chunk { chunk, edit },
-                Self::Chunk {
-                    chunk: next_chunk,
-                    edit: next_edit,
-                },
-            ) => chunk == next_chunk && edit.continues(next_edit),
-            _ => false,
-        }
-    }
-
     /// Whether the edit queues an outside effect, rather than only changing the record.
     #[must_use]
     pub fn reaches_outside(&self) -> bool {
@@ -393,25 +399,6 @@ impl DynAction {
         } else {
             tilo_actions::ActionKind::Undoable
         })
-    }
-
-    /// Whether `next`, invoked by the same person straight after this action, continues the same
-    /// gesture, and so is one undo step with it: the same action (a bound field's edit) making
-    /// one edit that goes on from this one's ([`DynEdit::continues`]). The keystrokes of a word
-    /// typed into a field are one step, as in every other app.
-    #[must_use]
-    pub fn continues(&self, next: &Self) -> bool {
-        let ([edit], [next_edit]) = (self.edits.as_slice(), next.edits.as_slice()) else {
-            return false;
-        };
-        self.app == next.app
-            && self.kind == next.kind
-            && self.action_id == next.action_id
-            // By the same code for the same person; when each keystroke was made differs.
-            && self.authorship.invoker == next.authorship.invoker
-            && self.authorship.chain == next.authorship.chain
-            && self.authorship.module == next.authorship.module
-            && edit.continues(next_edit)
     }
 
     /// Encode under [`ACTION_TYPE`], the framework's action encoding.

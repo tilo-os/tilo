@@ -242,7 +242,7 @@ mod probe {
 
     async fn metadata_reports_size_kind_and_time(dir: &Dir) -> Outcome {
         let before = tilo_clock::wall()
-            .checked_sub(tilo_clock::Duration::from_secs(5))
+            .checked_sub(tilo_clock::time::Duration::from_secs(5))
             .ok_or("clock")?;
         dir.write_atomic(&p("m/file"), b"12345")
             .await

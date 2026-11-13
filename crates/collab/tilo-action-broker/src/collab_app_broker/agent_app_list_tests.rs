@@ -234,3 +234,40 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
     drop(detached);
     assert!(why.contains("not attached"), "{why}");
 }
+
+/// An app running only without a window (started for an action that shows
+/// nothing) is still opened: its open gives that instance its window. One
+/// with a window is not offered to open again.
+#[test]
+fn an_app_running_without_a_window_is_still_offered_to_open() {
+    let workspace = workspace();
+    let workspace_id = workspace.id().to_string();
+    let state = broker(vec![workspace], vec![NOTES], true);
+    state.replace_published_surfaces_for_test(vec![super::super::PublishedSurface {
+        peer_id: 9,
+        app_id: NOTES.into(),
+        route: tilo_broker_core::CrdtRoute::record(NOTES, &workspace_id, "notes"),
+        actions: Vec::new(),
+        live: true,
+    }]);
+    let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+    let opens = |state: &Arc<AppBrokerState>| {
+        installed(state, &owner, &workspace_id)
+            .expect("the owner reaches it")
+            .rows
+            .iter()
+            .any(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address.action == APPLICATION_OPEN_ACTION)
+            })
+    };
+    assert!(!opens(&state), "a window of it is up");
+    state
+        .launchable
+        .windowless_peers
+        .lock()
+        .expect("windowless")
+        .insert(9);
+    assert!(opens(&state), "it runs with no window");
+}

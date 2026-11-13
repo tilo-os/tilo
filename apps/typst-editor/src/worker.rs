@@ -70,7 +70,6 @@ impl CompileWorker {
         })
     }
 
-    /// Queue a compile of `source`. Returns the sequence number assigned.
     pub fn request(&mut self, source: String) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -89,7 +88,6 @@ impl CompileWorker {
         latest
     }
 
-    /// True while a queued source has not yet produced a result.
     pub fn in_flight(&self) -> bool {
         self.next_seq.saturating_sub(1) > self.last_done_seq
     }

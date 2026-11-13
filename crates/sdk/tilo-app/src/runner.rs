@@ -2,6 +2,11 @@
 //! target-scoped dependencies in `Cargo.toml` are the only platform selection
 //! in the SDK facade; apps never name a runner.
 
+/// Whether this build runs as a page: it has no event loop of its own and one
+/// thread that runs the toolkit's background queue between frames, so work of
+/// any size moves off the frame here and a hosted runner draws in the frame.
+pub(crate) const IN_A_PAGE: bool = cfg!(target_family = "wasm");
+
 #[cfg(all(feature = "native", not(target_family = "wasm")))]
 pub use tilo_runner_native::{run, run_or_exit};
 

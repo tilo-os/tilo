@@ -1,6 +1,3 @@
-//! The response pane: nothing yet, a failure, or the response with its status,
-//! timing, size and body.
-
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
@@ -15,27 +12,24 @@ use crate::model::{KeyValue, ResponseData, ResponseView, human_duration};
 use crate::palette::status_tone;
 use ui::widget::{Slot, SlotHandle};
 
-/// A built response pane and the slot its body view can be replaced in.
 pub(crate) struct Built {
     pub(crate) element: Element,
     pub(crate) body: SlotHandle,
 }
 
-/// No request has been sent yet.
 pub(crate) fn empty(_sink: &Sink) -> Element {
     Box::new(
         EmptyState::new("No response yet")
             .with_icon(Icon::Globe)
-            .with_message("Send the request to see what comes back.")
+            .with_message(crate::locales::CATALOG.t("api-tester-no-response-hint"))
             .into_scrollable(),
     )
 }
 
-/// A request is on its way, with the way out of waiting for it.
 pub(crate) fn sending(sink: &Sink) -> Element {
     let waiting = EmptyState::new("Sending request")
         .with_icon(Icon::Send)
-        .with_message("Waiting for the server to respond.")
+        .with_message(crate::locales::CATALOG.t("api-tester-waiting-response"))
         .with_action("Cancel request")
         .with_action_id("api.response.cancel");
     Box::new(
@@ -44,7 +38,6 @@ pub(crate) fn sending(sink: &Sink) -> Element {
     )
 }
 
-/// The request could not be completed. The reason is shown here once.
 pub(crate) fn failed(detail: &str, sink: &Sink) -> Element {
     let status = Row::new().push(Box::new(
         Badge::text("Failed").style(ChipStyle::Tinted(Tone::Danger)),
@@ -79,7 +72,6 @@ fn caption(text: &str) -> Element {
     )
 }
 
-/// The status, timing and size, and the switch between views of the body.
 pub(crate) fn response(
     data: &ResponseData,
     view: ResponseView,
@@ -90,7 +82,7 @@ pub(crate) fn response(
     let switch = ui::widget::ViewTabs::new(
         ResponseView::ALL
             .iter()
-            .map(|v| Segment::new(v.label()))
+            .map(|v| Segment::new(crate::locales::CATALOG.t(v.message())))
             .collect(),
         ResponseView::ALL
             .iter()
@@ -115,31 +107,31 @@ pub(crate) fn response(
         Some(notice) => summary.push(caption(notice)),
         None => summary,
     };
-    // The response can leave the app: its body, its headers, and the request
-    // that produced it.
+    // The response can leave the app: its body, its headers, and the request that
+    // produced it.
     let summary = summary.push(copy_control(
         sink,
         "api.copy.body",
         Icon::Copy,
-        "Copy body",
+        &crate::locales::CATALOG.t("api-tester-copy-body"),
         "body",
     ));
     let summary = summary.push(copy_control(
         sink,
         "api.copy.headers",
         Icon::List,
-        "Copy headers",
+        &crate::locales::CATALOG.t("api-tester-copy-headers"),
         "headers",
     ));
     let summary = summary.push(copy_control(
         sink,
         "api.copy.request",
         Icon::ClipboardPaste,
-        "Copy request",
+        &crate::locales::CATALOG.t("api-tester-copy-request"),
         "request",
     ));
     let summary = summary.push(Box::new(switch));
-    let (slot, handle) = Slot::new(body(data, view));
+    let (slot, handle) = Slot::new(body_view(data, view));
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(summary))
@@ -150,8 +142,8 @@ pub(crate) fn response(
     }
 }
 
-/// A control that copies something out of the response, as the effect the
-/// palette and an agent invoke.
+/// A control that copies part of the response out, as the effect the palette and an
+/// agent invoke.
 fn copy_control(sink: &Sink, id: &str, icon: Icon, label: &str, part: &str) -> Element {
     let effect = crate::actions::ApiTesterEffect::CopyResponse {
         part: part.to_owned(),
@@ -166,18 +158,21 @@ fn size(bytes: usize) -> String {
     ui::format::size(u64::try_from(bytes).unwrap_or(u64::MAX))
 }
 
-/// The body's size; a lower bound when the server declared none and only
-/// its start was downloaded.
+/// The body's size; a lower bound when the server declared none and only its start was
+/// downloaded.
 pub(crate) fn size_caption(data: &ResponseData) -> String {
     if data.size_exact {
         size(data.size_bytes)
     } else {
-        format!("More than {}", size(data.size_bytes))
+        crate::locales::CATALOG.t_args(
+            "api-tester-size-more-than",
+            &[("size", size(data.size_bytes).into())],
+        )
     }
 }
 
-/// How the body view shows the body, when it is not the whole of it as
-/// text: only its start, or in hex.
+/// How the body view shows the body, when it is not the whole of it: only its start, or
+/// in hex.
 pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
     let partial = !data.size_exact || data.shown_bytes < data.size_bytes;
     let shown = size(data.shown_bytes);
@@ -189,7 +184,7 @@ pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
     }
 }
 
-pub(crate) fn body(data: &ResponseData, view: ResponseView) -> Element {
+pub(crate) fn body_view(data: &ResponseData, view: ResponseView) -> Element {
     match view {
         ResponseView::Pretty if data.is_json() => Box::new(
             Scrollable::new_vertical()
@@ -220,7 +215,8 @@ fn headers(rows: &[KeyValue]) -> Element {
             .with_kind(TextKind::Identifier)
             .with_text(|row: &KeyValue| row.value.clone()),
     ];
-    let mut table = DataTable::new(columns).with_accessible_name("Response headers");
+    let mut table = DataTable::new(columns)
+        .with_accessible_name(crate::locales::CATALOG.t("api-tester-response-headers"));
     table.set_rows(rows.to_vec());
     Box::new(
         Scrollable::new_vertical()

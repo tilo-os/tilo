@@ -16,7 +16,6 @@
 //! action ([`cli`]), none of which needs a filesystem or a process, so a shell
 //! anywhere reads `cp a b` the same way. Carrying a task out touches the
 //! filesystem and lives with the runtime (`ush::file_actions`).
-
 use std::path::{Component, Path, PathBuf};
 
 use collab_types::caps::{Access, Actor, CapDecision, CapOverride, ResourceRef, decide_capability};
@@ -27,60 +26,45 @@ use crate::RUNTIME_APP_ID;
 
 pub mod cli;
 
-/// The most paths one invocation names: a command line with more is
-/// refused whole, never carried out in part.
 pub const MAX_OPERANDS: usize = 256;
 
-/// How many carried-out file actions the record keeps, so recent ones can
-/// still be undone. What an older one kept aside stays in the environment's
-/// recoverable store, listed and restored by its id.
+// How many carried-out file actions the record keeps, so recent ones can still
+// be undone.
 pub const KEPT_TASKS: usize = 64;
-
-/// The most text one `append` or `write` carries inside the record. More
-/// than this travels by reference to the environment's content store
-/// ([`WriteOp::content`], [`AppendFileOp::content`]), which has no bound of
-/// its own: a write of any size is one action.
+/// The most text one `append` or `write` carries inside the record; more travels
+/// by reference to the content store, which has no bound, so a write of any size
+/// is one action.
 pub const MAX_TEXT_BYTES: usize = 64 * 1024;
-
-/// How an action names content kept in the environment's content store:
-/// `tilo.content:<hash>`, the reference every action takes content by.
+/// How an action names content in the environment's content store:
+/// `tilo.content:<hash>`.
 #[must_use]
 pub fn content_reference(hash: &str) -> String {
     format!("tilo.content:{hash}")
 }
 
-/// The hash a `tilo.content:<hash>` reference names, when `reference` is
-/// one.
 #[must_use]
 pub fn content_hash(reference: &str) -> Option<&str> {
     tilo_resource::content::reference_hash(reference)
 }
 
-/// What a command asked for, before anything is written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum FileAction {
     Copy(CopyOp),
     Move(MoveOp),
-    /// Remove `paths` into the recoverable store.
     Remove(RemoveOp),
     MakeDir(MakeDirOp),
     RemoveDir(RemoveDirOp),
     Link(LinkOp),
     Truncate(TruncateOp),
-    /// Create `files` if they are missing, leave their contents alone.
     Touch(AppendFileOp),
-    /// Add `text` to the end of each of `files`.
     Append(AppendFileOp),
     /// Make each of `files` hold exactly the given contents: what a shell's
     /// `>` does.
     Write(WriteOp),
-    /// Take back the task `entry` of the record's outbox: what undoing an
-    /// action queues.
+    /// Take back the task `entry` of the record's outbox: what undoing an action
+    /// queues.
     Revert(RevertOp),
-    /// Put back one thing the recoverable store keeps, by its id: what an
-    /// older runtime kept there, or what a task the record no longer lists
-    /// moved aside.
     Restore(RestoreOp),
 }
 
@@ -93,7 +77,6 @@ impl Default for FileAction {
 tilo_resource::json_model!(FileAction);
 
 impl FileAction {
-    /// The verb, as the record's actions and the audit log name it.
     #[must_use]
     pub const fn verb(&self) -> &'static str {
         match self {
@@ -148,8 +131,6 @@ impl FileAction {
         }
     }
 
-    /// Every path the action names: what the audit log and History are
-    /// about.
     #[must_use]
     pub fn paths(&self) -> Vec<PathBuf> {
         let mut out = self.reads();
@@ -214,7 +195,6 @@ impl FileAction {
     }
 }
 
-/// The refusal for a path no grant covers, as the person reads it.
 #[must_use]
 pub fn ungranted(path: &Path) -> String {
     format!(
@@ -223,9 +203,6 @@ pub fn ungranted(path: &Path) -> String {
     )
 }
 
-/// Is `path` reachable at `verb` under `grants`? The one question every
-/// grant check of an environment asks, with the same `decide_capability`
-/// the compositor's permissions panel and the launcher use.
 #[must_use]
 pub fn permits(grants: &[CapOverride], path: &Path, verb: Access, now: Option<u64>) -> bool {
     let actor = Actor::app(RUNTIME_APP_ID);
@@ -283,7 +260,6 @@ pub fn anchored(action: FileAction, cwd: &Path) -> FileAction {
         if path.is_absolute() {
             path
         } else {
-            // `join` keeps a trailing separator, which says "a directory".
             cwd.join(path)
         }
     };
@@ -340,7 +316,6 @@ pub fn anchored(action: FileAction, cwd: &Path) -> FileAction {
     }
 }
 
-/// `cp` as it was asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopyOp {
     pub sources: Vec<PathBuf>,
@@ -353,7 +328,6 @@ pub struct CopyOp {
     pub no_clobber: bool,
 }
 
-/// `mv` as it was asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveOp {
     pub sources: Vec<PathBuf>,
@@ -373,7 +347,6 @@ pub struct RemoveOp {
     pub force: bool,
 }
 
-/// `mkdir` as it was asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MakeDirOp {
     pub dirs: Vec<PathBuf>,
@@ -381,15 +354,14 @@ pub struct MakeDirOp {
     pub parents: bool,
 }
 
-/// `rmdir` as it was asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveDirOp {
     pub dirs: Vec<PathBuf>,
     #[serde(default)]
     pub parents: bool,
 }
-
-/// `ln` as it was asked for.
+/// `ln -s TARGET DIR` and `ln TARGET` on a directory make the link inside it,
+/// named after the target.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkOp {
     pub target: PathBuf,
@@ -398,13 +370,10 @@ pub struct LinkOp {
     pub symbolic: bool,
     #[serde(default)]
     pub force: bool,
-    /// `ln -s TARGET DIR` and `ln TARGET` on a directory make the link inside
-    /// it, named after the target.
     #[serde(default)]
     pub into_directory: bool,
 }
 
-/// `truncate` as it was asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TruncateOp {
     pub files: Vec<PathBuf>,
@@ -413,9 +382,6 @@ pub struct TruncateOp {
     pub create: bool,
 }
 
-/// `touch` and `append` as they were asked for: the same files, and what
-/// `append` adds (nothing for `touch`): `text`, or the content `content`
-/// names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppendFileOp {
     pub files: Vec<PathBuf>,
@@ -438,8 +404,6 @@ pub struct WriteOp {
     /// `text` is base64 of the contents.
     #[serde(default)]
     pub base64: bool,
-    /// The contents, by their hash in the environment's content store, in
-    /// place of `text`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Only a file that is not there yet (a shell's `>` under `set -C`).
@@ -470,8 +434,6 @@ impl WriteOp {
         }
     }
 
-    /// A write of the content kept under `hash` in the environment's
-    /// content store.
     #[must_use]
     pub fn of_content(files: Vec<PathBuf>, hash: String, no_clobber: bool) -> Self {
         Self {
@@ -500,13 +462,11 @@ impl WriteOp {
     }
 }
 
-/// Take back the outbox entry `entry`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevertOp {
     pub entry: String,
 }
 
-/// Put back the recoverable store's entry `kept`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoreOp {
     pub kept: String,
@@ -515,40 +475,48 @@ pub struct RestoreOp {
 /// One file action queued for the device whose disk it changes.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct FileTask {
-    /// The device whose runtime alone carries it out.
     pub device: String,
     pub action: FileAction,
 }
 
-/// One operation of a carried-out action, as undoing reads it: what a task
-/// settles with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "undo", rename_all = "kebab-case")]
 pub enum UndoEntry {
-    /// Delete the directory that was made.
-    MakeDir { path: PathBuf },
-    /// Make the directory that was removed again.
-    RemoveDir { path: PathBuf },
-    /// Put back what was moved into the recoverable store as `id`.
-    Kept { id: String, path: PathBuf },
-    /// Remove the file that was written; what it replaced comes back from
-    /// the entry kept beside it.
-    Write { path: PathBuf },
-    /// Remove the file that was made.
-    MakeFile { path: PathBuf },
-    /// Nothing changed, so undoing takes nothing away.
+    MakeDir {
+        path: PathBuf,
+    },
+    RemoveDir {
+        path: PathBuf,
+    },
+    /// Put back one thing the recoverable store keeps, by its id: what an older
+    /// runtime kept there, or what a task the record no longer lists moved
+    /// aside.
+    Kept {
+        id: String,
+        path: PathBuf,
+    },
+    Write {
+        path: PathBuf,
+    },
+    MakeFile {
+        path: PathBuf,
+    },
     Touched,
-    /// Remove the copy. Undo does not take back the source.
-    Copy { from: PathBuf, to: PathBuf },
-    /// Remove the link.
-    Link { path: PathBuf, symbolic: bool },
-    /// The store's entry `id` was put back at `path`: undoing moves it
-    /// aside again.
-    Restored { id: String, path: PathBuf },
+    Copy {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    Link {
+        path: PathBuf,
+        symbolic: bool,
+    },
+    Restored {
+        id: String,
+        path: PathBuf,
+    },
 }
 
 impl UndoEntry {
-    /// The path undoing this entry writes, if any.
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
@@ -565,7 +533,6 @@ impl UndoEntry {
     }
 }
 
-/// The paths of a verb's parameter, as the record stores them.
 pub(crate) fn paths_of(list: Vec<String>) -> Vec<PathBuf> {
     list.into_iter().map(PathBuf::from).collect()
 }

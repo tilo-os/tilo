@@ -1,4 +1,5 @@
 //! Pure validation of public transport metadata; no metadata grants source access.
+
 use serde_json::Value;
 
 use super::Result;
@@ -70,7 +71,6 @@ fn canonical_identity(value: &str) -> bool {
         .is_ok_and(|id| !id.is_nil() && id.hyphenated().to_string() == value)
 }
 
-/// Validate a portable payload receipt, including its closed limits envelope.
 pub fn expectation(value: &Value, kind: &str) -> Result<()> {
     let (purpose, prefix, logical) = match kind {
         "home" => ("home", "home", "runtime_sockets"),
@@ -172,7 +172,6 @@ pub fn expectation(value: &Value, kind: &str) -> Result<()> {
     )
 }
 
-/// Validate the ciphertext expectation against a measured file.
 pub fn receipt(value: &Value, size: u64, digest: &str) -> Result<()> {
     keys(value, &["schema", "sealed_bytes", "ciphertext_sha256"])?;
     require(
@@ -185,7 +184,6 @@ pub fn receipt(value: &Value, size: u64, digest: &str) -> Result<()> {
     )
 }
 
-/// Validate a root-authenticated first-use origin record's public fields.
 pub fn origin(value: &Value) -> Result<()> {
     keys(
         value,
@@ -266,7 +264,6 @@ fn scope_plan(authenticated: &Value, scope: &Value) -> Result<()> {
     )
 }
 
-/// Check descriptive coexistence lineage, without opening or granting a source.
 pub fn shared_apps(value: &Value) -> Result<bool> {
     let required = !absent(value, "retained_home")
         && value
@@ -410,8 +407,6 @@ fn json_size(value: &Value) -> Result<usize> {
         .map_err(|_| invalid("metadata JSON is invalid"))
 }
 
-/// Validate the authenticated envelope and descriptive routing/resize metadata only.
-/// Payload expectations and on-disk comparisons are deliberately separate checks.
 pub fn authenticated_metadata(value: &Value) -> Result<()> {
     require(
         value.is_object() && number(value, "schema")? == 1,

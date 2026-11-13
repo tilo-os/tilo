@@ -77,8 +77,6 @@ mod tests {
         reader
     }
 
-    /// Answer an open with a PTY and a private session lease; the returned
-    /// supervisor end of the lease reads end-of-file once the tab drops it.
     fn grant_session(server: &UnixStream, session: &str) -> UnixStream {
         let pair = portable_pty::native_pty_system()
             .openpty(portable_pty::PtySize::default())
@@ -111,8 +109,6 @@ mod tests {
         });
     }
 
-    /// The `open-session` line a hosted tab shown in `window` sends its
-    /// supervisor when it opens, as the supervisor reads it.
     fn open_request_from(window: &ui::hosted_window::HostedWindow) -> serde_json::Value {
         // The window bar then lists the environments off the UI thread over
         // the runtime directory's socket: pin that to an empty directory so
@@ -152,12 +148,10 @@ mod tests {
         assert_eq!(request["op"], "open-session");
         assert_eq!(request["workspace"], "e787c8a3-e6d5-4b00-90fe-ff1af708b979");
 
-        // The window moved: the next open names where it is now.
         window.set_workspace(Some("2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a".into()));
         let request = open_request_from(&window);
         assert_eq!(request["workspace"], "2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a");
 
-        // A window in no workspace, or an empty one, names none.
         for unknown in [None, Some(String::new())] {
             window.set_workspace(unknown);
             let request = open_request_from(&window);
@@ -168,8 +162,6 @@ mod tests {
 
     #[test]
     fn deferred_host_constructs_without_a_socket_and_reports_missing_ush_after_open() {
-        // A runtime directory with no desktop service sockets, held for the
-        // open so no other test's runtime appears in it meanwhile.
         let runtime = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", runtime.path());
@@ -259,7 +251,6 @@ mod tests {
         let mut reader = accept_hello(&server);
         let mut request = String::new();
         reader.read_line(&mut request).unwrap();
-        // Agent host refusal is deterministic and starts no replacement child.
         assert!(matches!(
             sessions.begin_open(&SessionTarget::Host, Requester::Agent, None, waker),
             Some(Err(OpenError::Refused(_)))
@@ -316,8 +307,6 @@ mod tests {
                     "every replaced or closed session must disconnect"
                 );
             }));
-            // Use the existing test seam to lend the next private connection,
-            // without touching the process-global runtime directory.
             widget.set_sessions(crate::sessions::Sessions::hosted(HostedProcessServices {
                 ush: Some(client),
             }));
@@ -357,8 +346,6 @@ mod tests {
         )
         .unwrap();
         handed.recv_timeout(hang_bound()).unwrap();
-        // Keep the result queued, with its descriptors received but unaccepted.
-        // Worker completion pins that race without consuming the UI's answer.
         tilo_test_env::wait_until("the answer to be queued", || pending.answer.is_finished());
         drop(pending);
         worker.join().unwrap();

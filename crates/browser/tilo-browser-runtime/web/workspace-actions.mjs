@@ -2,14 +2,20 @@
  * Workspaces on the person's machines, as the desktop's host actions:
  * making one, and inviting someone into it.
  *
- * - `new-workspace`: a workspace on a machine the person set up
- *   (`machine-setup.mjs`): the one this page is on when its host is theirs,
- *   else one this browser set up for them. The host creates it and admits
- *   this device as its owner (`workspaces.create`, `enter`); the page then
- *   opens it.
- * Inviting someone is the desktop's own invite sheet (`invite.rs`): it makes
- * and lists the workspace's invitations through its host, so the page carries
- * no invite action of its own.
+ * - `new-workspace`: a workspace of the person's own. On a machine they set
+ *   up (`machine-setup.mjs`) it is the one this page is on when its host is
+ *   theirs, else one this browser set up for them: the host creates it and
+ *   admits this device as its owner (`workspaces.create`, `enter`). On a host
+ *   that keeps workspaces of people's own for the people it lets in
+ *   (`can_own_workspaces`), it is asked for by name and entered as theirs
+ *   (`enterOwnWorkspace`), however many they ask for. The page then opens it.
+ * - `copy-invite-link`: one press, and a link to this workspace is on the
+ *   clipboard — the sheet is for choosing what someone gets, not for handing
+ *   a link over. The invitation is made in the press, never before: the host
+ *   answers in tens of milliseconds, and a browser that will not take the
+ *   copy by then gets the link in a card to copy by hand. Whoever wants a
+ *   role chosen, or the invitation listed and taken back, opens the sheet
+ *   (`invite.rs`).
  *
  * - `waiting-to-join`: the addresses people left at the door of a workspace
  *   that takes people by invitation (`membership.waitList`), for the owner
@@ -28,6 +34,10 @@ export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New wor
  * desktop opens itself (it needs nothing of the page but its site). */
 export const JOIN_WORKSPACE = Object.freeze({id: 'join-workspace', title: 'Join a workspace',
   label: 'Join a workspace…', subtitle: 'Browse the workspaces this site lists', source: 'workspace'});
+/** One press, and the link is on the clipboard: the invite sheet is for
+ * choosing what someone gets, not for handing a link over. */
+export const INVITE_LINK = Object.freeze({id: 'copy-invite-link', title: 'Copy an invite link',
+  subtitle: 'Anyone with it joins as an editor', source: 'workspace'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',
   subtitle: 'Invite people who left their address at the door'});
 
@@ -46,6 +56,11 @@ export function invitedLine(atMs, now = Date.now(), locale = undefined) {
 }
 
 export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.hostCert?.user_public_key) === peer.userPublicKey;
+
+/** Whether the host this page is in keeps workspaces of people's own for the
+ * people it lets in, so this person's next workspace is one of theirs even
+ * though the host is not. */
+export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.hostCert?.capabilities?.can_own_workspaces);
 
 /**
  * The workspace actions of a page whose peer is `peer` (`null` on the
@@ -73,7 +88,8 @@ export function createWorkspaceActions({
   let workspaceName = null;
   const inWorkspace = Boolean(peer?.workspace && peer.createInvitation);
   const actions = () => [
-    ...(ownHost(peer) || machines().length ? [NEW_WORKSPACE] : []),
+    ...(ownHost(peer) || machines().length || keepsOwn(peer) ? [NEW_WORKSPACE] : []),
+    ...(lettingIn ? [INVITE_LINK] : []),
     JOIN_WORKSPACE,
     ...(lettingIn ? [WAITING] : []),
   ];
@@ -85,10 +101,18 @@ export function createWorkspaceActions({
 
   const newWorkspace = async (on = null) => {
     const own = ownHost(peer) && (!on || on === peer.origin);
-    const choices = own ? [peer.origin] : on ? [on] : machines();
+    // A host that keeps workspaces of people's own keeps this person's next
+    // one beside theirs: it is asked for by name and entered as theirs, with
+    // no machine of this person's in between.
+    const kept = !own && keepsOwn(peer) && (!on || on === peer.origin);
+    const choices = own || kept ? [peer.origin] : on ? [on] : machines();
     const origin = choices.length > 1 ? await ui.chooseMachine(choices) : choices[0];
     if (!origin) return;
     const created = await ui.askWorkspaceName(async name => {
+      if (kept) {
+        const made = await peer.enterOwnWorkspace({name});
+        return {room: made.workspace, name: made.name ?? name, hostDevice: hex(peer.host?.hostCert?.device_public_key)};
+      }
       const host = own ? peer : await lobby(origin);
       try {
         const workspace = await host.workspaces.create(name);
@@ -100,6 +124,16 @@ export function createWorkspaceActions({
       }
     });
     if (created) await open({origin, room: created.room, name: created.name, hostDevice: created.hostDevice});
+  };
+
+  /** Hand over a link in one press: made now, copied when the browser takes
+   * it, else shown in a card to copy by hand. */
+  const copyInviteLink = async () => {
+    const link = await inviteLink(await peer.createInvitation({role: 'editor'}));
+    if (await ui.copy?.(link)) return;
+    await ui.share({title: 'Invite someone to join',
+      body: 'Anyone with this link joins as an editor. Take it back whenever you like, in the invite sheet.',
+      link, copied: true});
   };
 
   /** An invitation for the address `entry` left at the door: mailed there
@@ -127,9 +161,9 @@ export function createWorkspaceActions({
   return {
     actions,
     /** Whether `id` is one of these actions. */
-    handles: id => [NEW_WORKSPACE.id, WAITING.id].includes(id),
+    handles: id => [NEW_WORKSPACE.id, INVITE_LINK.id, WAITING.id].includes(id),
     /** Show the actions in `mount`'s desktop; whoever the host lets invite
-     * is offered the wait list. */
+     * is offered a link and the wait list. */
     async attach(target) {
       mount = target;
       refresh();
@@ -140,9 +174,13 @@ export function createWorkspaceActions({
         // The host may keep its member list to the owner.
       }
       // The host shows the wait list to the owner and to members of a
-      // workspace that has its members invite people; a host that keeps it
-      // from this person refuses, which is nobody to invite, not a failure.
-      lettingIn = await peer.membership.waitList().then(() => true, () => false);
+      // workspace that has its members invite people. Whether this person is
+      // one is asked first, so a page never asks for a list its person may
+      // not see (every guest of a public workspace would be refused, each
+      // refusal a warning on the host); a list the host still refuses is
+      // nobody to invite, not a failure.
+      lettingIn = await peer.membership.mayInvite().catch(() => false)
+        && await peer.membership.waitList().then(() => true, () => false);
       refresh();
     },
     /** Make a workspace on the machine at `origin` (one just set up). */
@@ -153,6 +191,7 @@ export function createWorkspaceActions({
     async perform(id) {
       try {
         if (id === NEW_WORKSPACE.id) await newWorkspace();
+        else if (id === INVITE_LINK.id && lettingIn) await copyInviteLink();
         else if (id === WAITING.id && lettingIn) {
           // The addresses left at the workspace's door, where the workspace
           // keeps a wait list: a workspace without one lists none.

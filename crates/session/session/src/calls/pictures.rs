@@ -402,6 +402,7 @@ fn encode(source: Source, fps: u32, feed: &Feed, sink: &Weak<dyn Sink>) {
             for unit in units {
                 let object = VideoObject {
                     keyframe: unit.keyframe,
+                    hdr: false,
                     codec: Codec::H264,
                     layer: *layer,
                     sequence: encoder.sequence,

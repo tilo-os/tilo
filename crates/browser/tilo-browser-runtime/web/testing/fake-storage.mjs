@@ -130,7 +130,11 @@ export function fakeLocks(){
       if(typeof options==='function'){callback=options;options={};}
       while(held.has(name)){
         if(options.ifAvailable)return callback(null);
-        await new Promise(resolve=>{waiters.set(name,[...(waiters.get(name)??[]),resolve]);});
+        options.signal?.throwIfAborted();
+        await new Promise((resolve,reject)=>{
+          waiters.set(name,[...(waiters.get(name)??[]),resolve]);
+          options.signal?.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+        });
       }
       const entry={owner};held.set(name,entry);
       try{return await callback({name,mode:options.mode??'exclusive'});}

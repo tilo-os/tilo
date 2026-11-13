@@ -1,31 +1,8 @@
-//! What a hosted VM used, as records an account's bill is made from.
-//!
-//! A VM is billed per second for the time its hypervisor process runs:
-//! from the moment it is started (a cold boot or a restore) until the
-//! moment it is gone (suspended to a snapshot, shut down, or crashed). A
-//! suspended or stopped VM costs nothing; its persistent disk stays. A
-//! snapshot kept on disk is counted on its own, by size and time held.
-//!
-//! The [`Meter`] of one VM turns those moments into [`UsageRecord`]s, one
-//! per run and one per snapshot, and the [`Ledger`] keeps them per account,
-//! one JSON object per line, in the order they ended. Billing reads the
-//! ledger ([`Ledger::records`], [`summarize`]); nothing here knows prices.
-//!
-//! # Seconds
-//!
-//! Times are wall-clock milliseconds. A run's billed `seconds` are its
-//! milliseconds plus what earlier runs of the same VM left over, in whole
-//! seconds; the remainder carries to the next run. So a VM woken ten times
-//! for 1.5 s is billed 15 s, never 10 s or 20 s, and the sum of a VM's
-//! `seconds` is always its total running time rounded down, with less than a
-//! second outstanding.
-//!
-//! # Crashes
-//!
-//! The meter's open run is saved with the last moment the VM was seen
-//! alive ([`Meter::seen`]). If the service stops without closing it, the
-//! next start closes it at that moment ([`Meter::recover`]): the gap is
-//! never billed.
+//! What a hosted VM used, as records an account's bill is made from: a VM is billed
+//! per second while its hypervisor runs, a held snapshot by size and time. Times
+//! are wall-clock milliseconds, and whole seconds are billed with the remainder
+//! carried to the next run ([`Ledger`] keeps the records, [`summarize`] sums them;
+//! nothing here knows prices).
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -36,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use super::size::VmSize;
 use super::valid_name;
 
-/// Who pays for a VM, and which VM it is.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VmIdentity {
     /// `<workspace>/<environment>`: one VM per hosted workspace environment.
@@ -50,28 +26,20 @@ pub struct VmIdentity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UsageKind {
-    /// The VM's hypervisor ran.
     Running,
-    /// A snapshot of the VM's memory and devices was kept on disk.
     Snapshot,
 }
 
-/// How a run ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunEnd {
-    /// Idle, and saved to a snapshot; the next command restores it.
     Suspended,
-    /// Shut down on request; the next command boots it.
     Stopped,
-    /// The hypervisor went away by itself.
     Crashed,
-    /// The service stopped while it ran; closed at the last moment it was
-    /// seen alive.
+    /// The service stopped while it ran; closed at the last moment it was seen alive.
     Recovered,
 }
 
-/// One run or one held snapshot of one VM.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UsageRecord {
     pub kind: UsageKind,
@@ -79,13 +47,11 @@ pub struct UsageRecord {
     pub identity: VmIdentity,
     pub start_ms: u64,
     pub end_ms: u64,
-    /// `end_ms - start_ms`.
     pub millis: u64,
-    /// Whole seconds billed for this record (see the module docs).
+    /// Whole seconds billed, with the remainder carried to the next run.
     pub seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<RunEnd>,
-    /// A snapshot's size on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_bytes: Option<u64>,
 }
@@ -94,6 +60,10 @@ pub struct UsageRecord {
 pub struct OpenRun {
     pub start_ms: u64,
     pub last_seen_ms: u64,
+    /// When the first Linux action of this run came: the run is billed from then. A run that only
+    /// held the Browser is not billed, as its page actions are counted instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billed_from_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -105,8 +75,8 @@ pub struct HeldSnapshot {
     pub carry_ms: u64,
 }
 
-/// One VM's meter. Saved beside the VM after every change, so a restarted
-/// service carries on where it was.
+/// One VM's meter. Saved beside the VM after every change, so a restarted service carries on where
+/// it was.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Meter {
     pub identity: VmIdentity,
@@ -139,35 +109,43 @@ impl Meter {
         self.open.is_some()
     }
 
-    /// The hypervisor was started at `now`. A run already open stays open:
-    /// starting twice is still one run.
-    pub fn started(&mut self, now: u64) {
+    /// The hypervisor was started at `now`, for a Linux action when `billed`. A run already open
+    /// stays open: starting twice is still one run.
+    pub fn started(&mut self, now: u64, billed: bool) {
         if self.open.is_none() {
             self.open = Some(OpenRun {
                 start_ms: now,
                 last_seen_ms: now,
+                billed_from_ms: billed.then_some(now),
             });
         }
     }
 
-    /// The VM was seen alive at `now`.
+    /// A Linux action ran at `now`: the open run is billed from its first.
+    pub fn billed(&mut self, now: u64) {
+        if let Some(open) = self.open.as_mut() {
+            open.billed_from_ms.get_or_insert(now);
+        }
+    }
+
     pub fn seen(&mut self, now: u64) {
         if let Some(open) = self.open.as_mut() {
             open.last_seen_ms = open.last_seen_ms.max(now);
         }
     }
 
-    /// The hypervisor is gone since `now`. `None` when nothing ran.
+    /// The hypervisor is gone since `now`. `None` when nothing billed ran.
     pub fn stopped(&mut self, now: u64, ended: RunEnd) -> Option<UsageRecord> {
         let open = self.open.take()?;
-        let end = now.max(open.start_ms);
-        Some(self.run_record(open.start_ms, end, ended))
+        let start = open.billed_from_ms?;
+        Some(self.run_record(start, now.max(start), ended))
     }
 
     /// Close a run the service left open, at the last moment it was seen.
     pub fn recover(&mut self) -> Option<UsageRecord> {
         let open = self.open.take()?;
-        Some(self.run_record(open.start_ms, open.last_seen_ms, RunEnd::Recovered))
+        let start = open.billed_from_ms?;
+        Some(self.run_record(start, open.last_seen_ms.max(start), RunEnd::Recovered))
     }
 
     fn run_record(&mut self, start_ms: u64, end_ms: u64, ended: RunEnd) -> UsageRecord {
@@ -186,8 +164,8 @@ impl Meter {
         }
     }
 
-    /// A snapshot of `bytes` was written at `now`. One that was held is
-    /// replaced, and its record returned.
+    /// A snapshot of `bytes` was written at `now`. One that was held is replaced, and its record
+    /// returned.
     pub fn snapshot_taken(&mut self, now: u64, bytes: u64) -> Option<UsageRecord> {
         let replaced = self.snapshot_dropped(now);
         self.snapshot = Some(HeldSnapshot {
@@ -198,7 +176,6 @@ impl Meter {
         replaced
     }
 
-    /// The held snapshot was deleted at `now`.
     pub fn snapshot_dropped(&mut self, now: u64) -> Option<UsageRecord> {
         let held = self.snapshot.take()?;
         let end_ms = now.max(held.start_ms);
@@ -249,8 +226,7 @@ impl Ledger {
         Ok(self.dir.join(format!("{account}.jsonl")))
     }
 
-    /// Append `record` to its account's file and wait until it is on disk:
-    /// a record is money.
+    /// Append `record` to its account's file and wait until it is on disk: a record is money.
     pub fn append(&self, record: &UsageRecord) -> std::io::Result<()> {
         let path = self.file(&record.identity.account)?;
         std::fs::create_dir_all(&self.dir)?;
@@ -261,8 +237,8 @@ impl Ledger {
         file.sync_data()
     }
 
-    /// The account's records, oldest first. A line that is not a record
-    /// (a torn write at a crash) is skipped.
+    /// The account's records, oldest first. A line that is not a record (a torn write at a crash)
+    /// is skipped.
     pub fn records(&self, account: &str) -> std::io::Result<Vec<UsageRecord>> {
         let file = match File::open(self.file(account)?) {
             Ok(file) => file,
@@ -277,7 +253,6 @@ impl Ledger {
     }
 }
 
-/// One size's usage in a period.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SizeUsage {
     pub size: VmSize,
@@ -298,8 +273,7 @@ impl SizeUsage {
     }
 }
 
-/// What an account used per size, from the records that ended in
-/// `[from_ms, to_ms)`. A record belongs to the period it ended in.
+/// What an account used per size, from the records that ended in `[from_ms, to_ms)`.
 #[must_use]
 pub fn summarize(records: &[UsageRecord], from_ms: u64, to_ms: u64) -> Vec<SizeUsage> {
     let mut by_size: std::collections::BTreeMap<VmSize, SizeUsage> =
@@ -344,14 +318,13 @@ mod tests {
 
     #[test]
     fn runs_are_billed_per_second_across_suspends() {
-        // phase: ten 1.5 s runs bill 15 s, carried across records
         {
             let mut meter = Meter::new(identity(VmSize::Small));
             let mut seconds = Vec::new();
             for wake in 0..10_u64 {
                 let start = 1_000_000 + wake * 60_000;
-                meter.started(start);
-                meter.started(start + 200);
+                meter.started(start, true);
+                meter.started(start + 200, true);
                 let record = meter.stopped(start + 1_500, RunEnd::Suspended).unwrap();
                 assert_eq!((record.start_ms, record.millis), (start, 1_500));
                 seconds.push(record.seconds);
@@ -365,10 +338,9 @@ mod tests {
                 "nothing ran"
             );
         }
-        // phase: a run the service lost is closed where it was last seen
         {
             let mut meter = Meter::new(identity(VmSize::Default));
-            meter.started(10_000);
+            meter.started(10_000, true);
             meter.seen(14_000);
             meter.seen(13_000);
             let saved = serde_json::to_vec(&meter).unwrap();
@@ -380,13 +352,33 @@ mod tests {
             );
             assert!(!restarted.running());
         }
-        // phase: a clock that steps back never bills negative time
         {
             let mut meter = Meter::new(identity(VmSize::Small));
-            meter.started(50_000);
+            meter.started(50_000, true);
             let record = meter.stopped(49_000, RunEnd::Crashed).unwrap();
             assert_eq!((record.millis, record.seconds), (0, 0));
         }
+    }
+
+    #[test]
+    fn a_run_is_billed_from_its_first_linux_action_and_a_browser_alone_is_not() {
+        let mut meter = Meter::new(identity(VmSize::Small));
+        meter.started(10_000, false);
+        meter.seen(70_000);
+        assert_eq!(
+            meter.stopped(70_000, RunEnd::Suspended),
+            None,
+            "a VM that only held Browser bills no time: its page actions are counted"
+        );
+        meter.started(100_000, false);
+        meter.billed(130_000);
+        meter.billed(140_000);
+        let record = meter.stopped(190_000, RunEnd::Suspended).unwrap();
+        assert_eq!(
+            (record.start_ms, record.seconds),
+            (130_000, 60),
+            "from the first Linux action until it slept"
+        );
     }
 
     #[test]
@@ -403,7 +395,7 @@ mod tests {
         assert_eq!(dropped.seconds, 43_200);
         assert_eq!(meter.snapshot_dropped(0), None);
 
-        meter.started(0);
+        meter.started(0, true);
         let run = meter.stopped(90_500, RunEnd::Suspended).unwrap();
         let usage = summarize(&[replaced, dropped, run], 0, u64::MAX);
         assert_eq!(usage.len(), 1);
@@ -421,15 +413,15 @@ mod tests {
             account: "acct-2".into(),
             ..identity(VmSize::Xlarge)
         });
-        small.started(0);
-        other.started(0);
+        small.started(0, true);
+        other.started(0, true);
         ledger
             .append(&small.stopped(3_000, RunEnd::Suspended).unwrap())
             .unwrap();
         ledger
             .append(&other.stopped(5_000, RunEnd::Stopped).unwrap())
             .unwrap();
-        small.started(10_000);
+        small.started(10_000, true);
         ledger
             .append(&small.stopped(12_000, RunEnd::Suspended).unwrap())
             .unwrap();

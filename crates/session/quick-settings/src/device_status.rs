@@ -12,15 +12,6 @@ impl QuickSettingsState {
         self.status.volume.is_some_and(|volume| volume.muted)
     }
 
-    /// Show the output at `level`, as a slider being dragged or a readout
-    /// shows it; mute stays as it is.
-    pub fn set_volume_level(&mut self, level: f32) {
-        self.status.volume = Some(media::audio::default_node::VolumeState {
-            level,
-            muted: self.volume_muted(),
-        });
-    }
-
     /// The battery as last read; absent until then.
     pub fn battery(&self) -> tilo_power_mgmt::BatterySnapshot {
         self.status

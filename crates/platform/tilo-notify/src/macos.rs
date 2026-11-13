@@ -1,14 +1,10 @@
 //! The macOS backend: `UNUserNotificationCenter`.
 //!
 //! The notification center belongs to an app bundle, and asking for it from a
-//! process without a bundle identifier (a binary run from `target/`) raises an
-//! Objective-C exception. Such a process gets a notifier that answers
-//! [`NotifyError::Unavailable`] and says why once in the log; run the
-//! development `.app` to see notifications.
-//!
-//! The first notification asks the user for permission. Showing and
-//! scheduling are asynchronous: a request the user has refused is dropped by
-//! the system and logged, not returned.
+//! process without a bundle identifier raises an Objective-C exception. Such a
+//! process gets a notifier that answers [`NotifyError::Unavailable`] and says why
+//! once in the log. Showing and scheduling are asynchronous: a request the user
+//! refused is dropped by the system and logged, not returned.
 
 use std::ptr::NonNull;
 use std::sync::{Arc, OnceLock, mpsc};
@@ -29,10 +25,8 @@ use objc2_user_notifications::{
 
 use crate::{Notification, Notifier, NotifyError, Scheduled, SystemTime};
 
-/// How long [`Notifier::scheduled`] waits for the center's answer.
 const QUERY_BUDGET: Duration = Duration::from_secs(3);
 
-/// The `userInfo` key a notification's activation URI travels under.
 const ACTIVATION_KEY: &str = "tilo.activation";
 
 pub(crate) fn notifier() -> Arc<dyn Notifier> {
@@ -61,8 +55,8 @@ fn tags(tag: &str) -> Retained<NSArray<NSString>> {
     NSArray::from_retained_slice(&[NSString::from_str(tag)])
 }
 
-/// Ask for permission (the system asks the user only once), then add the
-/// request `make` builds.
+/// Ask for permission (the system asks the user only once), then add the request
+/// `make` builds.
 fn authorized_add(make: impl Fn() -> Retained<UNNotificationRequest> + 'static) {
     let handler = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
         if !granted.as_bool() {
@@ -98,7 +92,6 @@ fn content(notification: &Notification) -> Retained<UNMutableNotificationContent
     content
 }
 
-/// The activation URI a delivered notification carries, if any.
 fn activation_of(notification: &UNNotification) -> Option<String> {
     let info = notification.request().content().userInfo();
     let value = info.objectForKey(&NSString::from_str(ACTIVATION_KEY))?;
@@ -118,7 +111,6 @@ define_class!(
 
     // SAFETY: the method signatures match the protocol's.
     unsafe impl UNUserNotificationCenterDelegate for Delegate {
-        /// A click (or another response): hand the activation URI over.
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
         fn did_receive(
             &self,
@@ -148,10 +140,10 @@ define_class!(
     }
 );
 
-/// Make this process's delegate the center's, once. The center holds its
-/// delegate weakly, so the delegate lives as long as the process. Set as
-/// the host builds its services, before the app finishes launching, so the
-/// click that launched it is delivered too.
+/// Make this process's delegate the center's, once. The center holds its delegate
+/// weakly, so the delegate lives as long as the process. Set as the host builds its
+/// services, before the app finishes launching, so the click that launched it is
+/// delivered.
 fn install_delegate() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
@@ -185,8 +177,8 @@ impl Notifier for CenterNotifier {
 
     fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
         crate::validate(notification)?;
-        // A time-interval trigger must lie in the future; a past time shows
-        // the notification a moment from now.
+        // A time-interval trigger must lie in the future; a past time shows the
+        // notification a moment from now.
         let seconds = at
             .duration_since(tilo_clock::wall())
             .map_or(1.0, |ahead| ahead.as_secs_f64().max(1.0));

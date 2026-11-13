@@ -28,6 +28,7 @@ use ui::{TextRenderer, Theme};
 
 use super::DesktopSurface;
 use crate::navigation::Admitted;
+use ui::widget::DrawChild;
 
 /// The views this desktop runs for the windows that embed them, and the windows its menus offer to
 /// share.
@@ -269,7 +270,7 @@ impl DesktopSurface {
                 clip,
             );
             let outer = presence.push_viewport(Rect::new(0.0, 0.0, VIEW.0, VIEW.1));
-            tile.draw(
+            tile.draw_child(
                 scene,
                 host::view_transform(transform, *rect),
                 text,

@@ -1,8 +1,5 @@
-//! The Photos window: the shared [`Photos`] laid out with the empty state
-//! the window keeps while its content column has nothing to show. The view
-//! holds the state with the window, so its effect handler and publications
-//! reach what the window shows; what an effect asks of the window waits in
-//! the state for the window's next sync.
+//! The Photos window: the shared [`Photos`] laid out with the empty state the window keeps while
+//! its content column has nothing to show.
 
 use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
@@ -27,21 +24,12 @@ use crate::actions::PhotosEffect;
 use crate::model::PhotoLibrary;
 use crate::strings::tr;
 
-/// The Photos window: the shared [`Photos`] it lays out, and the empty state
-/// it shows while the content column has nothing to lay out.
 pub struct PhotosApp {
     photos: Rc<RefCell<Photos>>,
-    /// What the content column shows while it has nothing to lay out.
     pub(super) empty_state: Option<EmptyState>,
-    /// What the empty state shows, and whether the framework's door was
-    /// attached to bind its action.
     empty_state_key: Option<(EmptyShown, bool)>,
-    /// The tab's title as the last sync named it.
     title: String,
-    /// The library as the document holds it, shown as it changes; `None`
-    /// for a window outside the framework.
     live: Option<Live<PhotoLibrary>>,
-    /// The `(revision, loads)` of the library last shown.
     presented: Option<(u64, u64)>,
 }
 
@@ -52,19 +40,14 @@ impl Default for PhotosApp {
 }
 
 impl PhotosApp {
-    /// A window whose content store lives in memory with it: tests and
-    /// offscreen shots. The runtime uses [`Self::new_persistent`].
     pub fn new() -> Self {
         Self::with_content(ContentStore::memory())
     }
 
-    /// A window keeping imported originals in, and reading photographs
-    /// from, `content`.
     pub fn with_content(content: ContentStore) -> Self {
         Self::over(Photos::with_content(content))
     }
 
-    /// Runtime constructor: see [`Photos::new_persistent`].
     #[must_use]
     pub fn new_persistent(content: ContentStore) -> Self {
         Self::over(Photos::new_persistent(content))
@@ -81,39 +64,28 @@ impl PhotosApp {
         }
     }
 
-    /// This window, launched naming `path`: a folder of photographs to
-    /// import into the library it shows, or a photograph the launch
-    /// imported, to show.
     #[must_use]
     pub fn launched_on(self, path: Option<std::path::PathBuf>) -> Self {
         self.state().launched = path;
         self
     }
 
-    /// This window editing through `dispatcher`: what a test of the
-    /// window's own methods attaches
-    /// ([`testing::dispatcher`](ui::framework::testing::dispatcher)).
     #[must_use]
     pub fn with_dispatcher(self, dispatcher: ui::framework::Dispatcher<PhotoLibrary>) -> Self {
         self.state().dispatch = Some(dispatcher);
         self
     }
 
-    /// This window in a shell: its sidebar shows what `places` shows, and
-    /// the shell's own buttons join the window bar through `bar`.
     #[must_use]
     pub fn in_shell(self, places: &NavFeed, bar: WindowBarLink) -> Self {
         self.state().join_shell(places, bar);
         self
     }
 
-    /// What the window shows, shared with the view's effect handler and
-    /// publications.
     pub fn state(&self) -> RefMut<'_, Photos> {
         self.photos.borrow_mut()
     }
 
-    /// Show the library the document holds now, when it changed since.
     fn follow_document(&mut self) {
         if let Some(library) = self
             .live
@@ -124,9 +96,6 @@ impl PhotosApp {
         }
     }
 
-    /// Keep the shared empty state mounted as a retained child whenever the
-    /// content column is empty, so keyboard, accessibility and automation
-    /// reach its action through the same door as a click.
     fn refresh_empty_state(&mut self, doc: &AutoCommit) {
         let mut photos = self.photos.borrow_mut();
         let key = photos
@@ -140,13 +109,8 @@ impl PhotosApp {
                     EmptyState::new(&shown.title).with_message(&shown.body)
                 }
                 .with_icon(shown.icon);
-                // Import and a new album are effects of the app, not actions
-                // of the library record: they bind through the framework's
-                // door, as the header's Open does.
                 let (label, id, effect) = match shown.action {
                     None => return empty,
-                    // After a failure, Open says it is for another photo:
-                    // the one that failed stays failed.
                     Some(EmptyAction::Open) => (
                         tr(if shown.error {
                             "photos-open-another"
@@ -181,16 +145,12 @@ impl PhotosApp {
     }
 }
 
-/// The view of the library: `window` over the document, its state shared
-/// with the effect handler and the rows it publishes.
 pub(crate) fn view(cx: &ViewCx<PhotoLibrary>, mut window: PhotosApp) -> Element {
     window.live = Some(cx.live().clone());
     let photos = Rc::clone(&window.photos);
     photos
         .borrow_mut()
         .attach_framework(cx.dispatcher(), cx.actions());
-    // A search hit, or an agent's `open`, shows the photograph or album it
-    // names.
     cx.on_open_item(photos.borrow().opener());
     {
         let photos = Rc::clone(&photos);
@@ -218,9 +178,6 @@ pub(crate) fn view(cx: &ViewCx<PhotoLibrary>, mut window: PhotosApp) -> Element 
     )
 }
 
-/// The open photograph's own scale, for `Ctrl+=` / `Ctrl+-` / `Ctrl+0`,
-/// `Ctrl+scroll` and a pinch: the picture zooms, not the window's text. In the
-/// library the gesture is left to the window, which is what a grid wants.
 impl ui::content_zoom::ContentZoom for PhotosApp {
     fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
         let mut photos = self.state();
@@ -231,8 +188,6 @@ impl ui::content_zoom::ContentZoom for PhotosApp {
     }
 }
 
-/// Showing photographs to a workspace: the window goes full screen while the
-/// person presents, and leaving full screen any other way ends it.
 impl ui::widget::FullscreenProvider for PhotosApp {
     fn fullscreen_intent(&self) -> Option<bool> {
         Some(self.photos.borrow().presenting)
@@ -275,13 +230,6 @@ impl ui::widget::controls::ActionControls for PhotosApp {
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        // Photos projects its custom media surfaces and retained buttons into
-        // one complete semantic tree above. Inventory that visible tree once:
-        // appending every retained widget here also advertises controls that
-        // are currently hidden (other routes, closed sheets, disabled jobs),
-        // producing orphan automation bindings with no matching UI target.
-        // The buttons' canonical resources remain published by `resources`
-        // and are dispatched through the same retained widgets.
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
         if let Some(empty) = &self.empty_state {
             bindings.extend(ui::widget::controls::control_action_bindings(empty));
@@ -309,8 +257,6 @@ impl Widget for PhotosApp {
         dyn ui::widget::FullscreenProvider
     );
 
-    /// The system's back gesture lowers or puts away an editor's sheet
-    /// before anything navigates (`Photos::sheet_back`).
     fn on_nav_gesture(
         &mut self,
         dir: ui::gesture::NavDirection,
@@ -335,8 +281,6 @@ impl Widget for PhotosApp {
             .fold(own, |seen, child| seen.or(child.nav_availability()))
     }
 
-    /// Shared controls remain retained children even in the painted media
-    /// surface, with their own focus, action custody and accessibility.
     fn children(&self) -> Vec<&dyn Widget> {
         self.empty_state
             .as_ref()
@@ -345,8 +289,6 @@ impl Widget for PhotosApp {
             .collect()
     }
 
-    /// Every widget the canvas may give a layout node: the empty state, the
-    /// photograph, and the People surface's name field and buttons.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         if let Some(empty) = &self.empty_state {
             visitor(empty);
@@ -408,8 +350,6 @@ impl Widget for PhotosApp {
         self.photos.borrow().title().clone_into(&mut self.title);
     }
 
-    /// The slide show is a timed presentation: the window sleeps until the
-    /// next photograph is due rather than repainting while it waits.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.children()
             .into_iter()
@@ -491,13 +431,6 @@ impl Widget for PhotosApp {
         Some(self)
     }
 
-    /// Hand the concrete app back out of a `Box<dyn Widget>`.
-    ///
-    /// A compositor hosting this in a tab holds it as a trait object, so
-    /// "open this file in the photo viewer that is already on screen" has no
-    /// route in without it. Opening still goes through
-    /// [`Photos::open_path`] — this only recovers the type, it does not add
-    /// a second way to change what is shown.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -540,14 +473,8 @@ impl Widget for PhotosApp {
     }
 }
 
-/// Lets the compositor host Photos in a tab directly, the same way it hosts
-/// the terminal, the file explorer and the word processor, rather than
-/// standing a placeholder card where the photograph should be.
 impl ui::widget::AppWidget for PhotosApp {
     fn app_kind(&self) -> ui::widget::AppKind {
-        // The toolkit's tab vocabulary has no picture variant. Photos edits a
-        // file and writes the result back, which is what `Editor` names; the
-        // glyph below is what actually tells the two apart in a tab pill.
         ui::widget::AppKind::Editor
     }
 
@@ -556,8 +483,6 @@ impl ui::widget::AppWidget for PhotosApp {
     }
 
     fn app_icon(&self) -> ui::widget::IconDescriptor {
-        // Nerd Font image glyph, matching the convention every other hosted
-        // app's tab pill uses.
         ui::widget::IconDescriptor::Glyph("\u{F02E9}")
     }
 

@@ -29,7 +29,6 @@ fn current_uid() -> u32 {
 /// original admission/validation rather than deriving custody from a pathname.
 pub trait DirectoryPin: Send + Sync {
     fn file(&self) -> &File;
-    /// Open a readable handle to the held directory.
     fn readable_file(&self) -> io::Result<File>;
     /// Revalidate the caller's held directory ancestry.
     fn validate(&self) -> io::Result<()>;
@@ -127,7 +126,6 @@ impl Listener {
     pub fn socket(&self) -> &UnixListener {
         &self.socket
     }
-    /// Revalidate the listener's held directory ancestry.
     pub fn validate(&self) -> io::Result<()> {
         self.parent.validate()
     }

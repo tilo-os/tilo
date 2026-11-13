@@ -1,8 +1,6 @@
-//! The formula list beside a plot: one row per function or surface, each with
-//! its colour, its math editor, a visibility toggle and a delete button, and
-//! an add button under the list. Graph 2D's functions and Graph 3D's
-//! surfaces are the same list with different words, so both screens hold one
-//! of these.
+//! The formula list beside a plot: a row per function or surface with its
+//! colour, math editor, visibility toggle and delete button. Graph 2D's
+//! functions and Graph 3D's surfaces are the same list with different words.
 
 use ui::charts::ChartPalette;
 use ui::chrome::{SelectionState, paint_row_selection};
@@ -20,21 +18,15 @@ use crate::chrome::SidePanel;
 use crate::mathfield::{self, MathField};
 use crate::model::PlotFn;
 
-/// The words one kind of formula list uses.
 #[derive(Clone, Copy, Debug)]
 pub struct Words {
     pub title: &'static str,
-    /// What leads each formula (`y =`).
     pub prefix: &'static str,
-    /// What an empty formula row shows.
     pub placeholder: &'static str,
-    /// The add button's label.
     pub add: &'static str,
-    /// The singular name of one row, for accessible names.
     pub item: &'static str,
 }
 
-/// Graph 2D's list: `y = f(x)` curves.
 pub const CURVES: Words = Words {
     title: "Functions",
     prefix: "y =",
@@ -43,7 +35,6 @@ pub const CURVES: Words = Words {
     item: "function",
 };
 
-/// Graph 3D's list: `z = f(x, y)` surfaces.
 pub const SURFACES: Words = Words {
     title: "Surfaces",
     prefix: "z =",
@@ -52,14 +43,12 @@ pub const SURFACES: Words = Words {
     item: "surface",
 };
 
-/// Which of a row's two buttons the pointer is over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowButton {
     Visibility,
     Delete,
 }
 
-/// What the pointer is over in the panel, for deciding when to repaint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hover {
     pub row: Option<usize>,
@@ -67,8 +56,8 @@ pub struct Hover {
     pub add: bool,
 }
 
-/// What the panel paints: the rows, which one is selected and whether the
-/// window has keyboard focus (only then does the selected row show a caret).
+/// What the panel paints. The selected row shows a caret only while the window
+/// has keyboard focus.
 #[derive(Clone, Copy, Debug)]
 pub struct Formulas<'a> {
     pub rows: &'a [PlotFn],
@@ -76,8 +65,8 @@ pub struct Formulas<'a> {
     pub focused: bool,
 }
 
-/// The theme's measurements the panel lays out with, cached from the last
-/// draw so the event path (which has no theme) places rows the same way.
+/// Cached from the last draw so the event path, which has no theme, places rows
+/// the same way.
 #[derive(Clone, Copy, Debug)]
 struct PanelMetrics {
     s1: f64,
@@ -85,8 +74,8 @@ struct PanelMetrics {
     s3: f64,
     small: f64,
     regular: f64,
-    /// How much a text-sized extent grows with the text scale (never below
-    /// 1), which the editor's minimum and maximum heights follow.
+    /// How much an extent grows with the text scale; the editor's heights follow
+    /// it.
     growth: f64,
 }
 
@@ -103,8 +92,7 @@ impl PanelMetrics {
         }
     }
 
-    /// The height a row's editor takes for a formula `content` tall: it
-    /// grows to fit, between the minimum and maximum heights at this text
+    /// Grows to fit, between the minimum and maximum heights at this text
     /// scale.
     fn editor_height(&self, content: f64) -> f64 {
         content.clamp(
@@ -129,16 +117,13 @@ pub struct PlotPanel {
     add: Rect,
     add_w: f64,
     fields: Vec<MathField>,
-    /// Per-row heights, grown to fit each formula up to a maximum. Measured
-    /// in `draw`, where a text renderer is at hand, and reused by `layout`
-    /// on the event path so hit-tests match what was painted.
+    /// Grown to fit each formula up to a maximum; measured in `draw` and reused
+    /// by `layout`, so hit tests match what was painted.
     heights: Vec<f64>,
-    /// Measured width of the row prefix at this frame's text size.
     prefix_w: f64,
-    /// The side of a row button's pointer target.
     target: f64,
     hover: Hover,
-    /// The theme-resolved size of a formula, set in `Title`.
+    /// The theme-resolved size, set in `Title`.
     formula_size: f32,
     m: PanelMetrics,
 }
@@ -174,13 +159,11 @@ impl PlotPanel {
         &mut self.panel
     }
 
-    /// Whether the panel is open as a floating drawer, covering the plot
-    /// and the header.
+    /// Open as a floating drawer, covering the plot and the header.
     pub fn floats_open(&self) -> bool {
         self.panel.is_overlay() && self.panel.is_open()
     }
 
-    /// Adopt the theme's scale and metrics.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.panel.scale_for(theme);
         self.target = f64::from(theme.tokens.metrics.min_pointer_target);
@@ -188,9 +171,8 @@ impl PlotPanel {
         self.m = PanelMetrics::of(theme);
     }
 
-    /// Reconcile the editors with the model's rows: one per row, fed the
-    /// row's current formula. Local edits survive because `set_source` is a
-    /// no-op when the string is unchanged.
+    /// One editor per row, fed its current formula. A local edit survives
+    /// because `set_source` is a no-op when the string is unchanged.
     pub fn sync_fields(&mut self, rows: &[PlotFn]) {
         if self.fields.len() == rows.len() {
             for (field, row) in self.fields.iter_mut().zip(rows) {
@@ -230,9 +212,8 @@ impl PlotPanel {
         }
     }
 
-    /// Measure every formula, the prefix and the add button at the size they
-    /// paint at, so `layout` can place variable-height rows. A formula
-    /// taller than the maximum clamps and scrolls within its editor.
+    /// Measures at the size they paint at, so `layout` can place
+    /// variable-height rows; a formula over the maximum clamps and scrolls.
     pub fn fit(&mut self, rows: &[PlotFn], tr: &mut TextRenderer, theme: &Theme) {
         self.scale_for(theme);
         self.formula_size = mathfield::formula_size(theme);
@@ -246,9 +227,8 @@ impl PlotPanel {
         self.heights.clear();
         for field in &mut self.fields {
             field.set_size(self.formula_size);
-            // The formula's boxes are laid out at the theme's size, which
-            // already includes the text scale, and they are painted at
-            // exactly that size: the measured content is the drawn content.
+            // The boxes are laid out and painted at the theme's size, which
+            // already includes the text scale.
             let content = if field.is_empty() {
                 0.0
             } else {
@@ -258,8 +238,6 @@ impl PlotPanel {
         }
     }
 
-    /// Resolve the panel, the content column and every row for the window
-    /// `area` and `count` formulas.
     pub fn layout(&mut self, area: Rect, count: usize) {
         self.panel.layout(area);
         self.rows.clear();
@@ -324,17 +302,14 @@ impl PlotPanel {
         self.rows.get(i).map(|r| r.edit)
     }
 
-    /// The visibility toggle's pointer target.
     pub fn visibility_rect(&self, i: usize) -> Option<Rect> {
         self.rows.get(i).map(|r| self.target_of(r.vis))
     }
 
-    /// The delete button's pointer target.
     pub fn delete_rect(&self, i: usize) -> Option<Rect> {
         self.rows.get(i).map(|r| self.target_of(r.del))
     }
 
-    /// Center of row `i`'s visibility toggle, once laid out (test helper).
     #[cfg(test)]
     pub(crate) fn vis_center(&self, i: usize) -> Option<Point> {
         self.visibility_rect(i).map(|r| r.center())
@@ -344,7 +319,7 @@ impl PlotPanel {
         (self.add != Rect::ZERO).then_some(self.add)
     }
 
-    /// A button's pointer target: its face grown to the minimum target.
+    /// The face grown to the minimum target.
     fn target_of(&self, face: Rect) -> Rect {
         let grow_x = ((self.target - face.width()) / 2.0).max(0.0);
         let grow_y = ((self.target - face.height()) / 2.0).max(0.0);
@@ -375,7 +350,7 @@ impl PlotPanel {
         self.add != Rect::ZERO && self.add.contains(p)
     }
 
-    /// Track the pointer. Returns whether anything the panel paints changed.
+    /// Returns whether anything painted changed.
     pub fn set_pointer(&mut self, p: Point) -> bool {
         let button = self
             .vis_at(p)
@@ -395,9 +370,7 @@ impl PlotPanel {
         self.hover
     }
 
-    /// Paint the panel: its ground,
-    /// its header, the rows, the add button and the show/hide button. The
-    /// active row shows a caret only while the window has keyboard focus.
+    /// The active row shows a caret only while the window has keyboard focus.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -472,8 +445,7 @@ impl PlotPanel {
             } else {
                 colors.text_dim
             };
-            // The colour key: a filled dot while the formula plots, a ring
-            // while it is hidden.
+            // A filled dot while the formula plots, a ring while it is hidden.
             let series = palette.categorical(i);
             let centre = Point::new(geo.row.x0 + s3 + s3 / 2.0, geo.row.center().y);
             let dot = Rect::from_center_size(centre, (s3, s3));
@@ -510,8 +482,7 @@ impl PlotPanel {
             let name = |verb: &str| format!("{verb} {} {}", self.words.item, i + 1);
             let (show, delete) = (name("Show"), name("Delete"));
             let hover = self.hover.button;
-            // A hidden plot shows the crossed-out eye; the button stays
-            // live so it can show the plot again.
+            // The button stays live, so a hidden plot can come back.
             let eye = if row.visible { Icon::Eye } else { Icon::EyeOff };
             let vis = ButtonFace::icon_only(geo.vis, eye, &show)
                 .control_size(ControlSize::Small)
@@ -540,16 +511,13 @@ mod tests {
             .collect()
     }
 
-    /// The row a short, single-line formula gets.
     fn base_row(theme: &Theme) -> f64 {
         mathfield::card_view_height(mathfield::CARD_MIN_H)
             + 2.0 * f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Formula rows on the real fit → layout → draw path: a fraction grows to
-    /// show in full, an oversized formula clamps to the maximum and scrolls, a
-    /// short formula keeps the base height, and taller rows push later rows
-    /// down. Fresh panel and renderer per phase.
+    /// A fraction grows to show in full, an oversized formula clamps and
+    /// scrolls, and taller rows push later rows down.
     #[test]
     fn formula_rows_grow_to_fit_clamp_to_max_and_reflow() {
         let theme = Theme::dark();
@@ -647,8 +615,6 @@ mod tests {
         }
     }
 
-    /// Every row's colour key, visibility toggle and delete button sit in the
-    /// row, and the hover state reports what the pointer is over.
     #[test]
     fn pointer_reports_the_row_and_button_under_it() {
         let theme = Theme::dark();
@@ -676,9 +642,6 @@ mod tests {
         assert_eq!(panel.hover(), Hover::default());
     }
 
-    /// At a large text scale the editor grows with the formula, so a stacked
-    /// formula still shows in full instead of being clipped by a row that
-    /// kept its 1× height.
     #[test]
     fn editors_grow_with_the_text_scale() {
         let theme = Theme::dark().with_text_scale(2.0);
@@ -696,9 +659,8 @@ mod tests {
         );
     }
 
-    /// A renderer that carries the text scale itself (the live desktop) paints
-    /// the formula at the theme's size, which already includes that scale: the
-    /// editor holds the grown glyphs exactly, not a multiple of them.
+    /// A renderer that carries the text scale itself paints at the theme's size,
+    /// which already includes it, so the editor holds the grown glyphs exactly.
     #[test]
     fn a_scaled_renderer_gets_an_editor_that_holds_exactly_the_grown_glyphs() {
         let theme = Theme::dark().with_text_scale(1.5);
@@ -715,8 +677,7 @@ mod tests {
             "the stacked formula must fit its editor in full: content {content} vs {}",
             edit.height()
         );
-        // The formula is set at the theme's resolved size, so it grows with
-        // the reader's text scale instead of staying at the 1× size.
+        // Set at the theme's resolved size, so it grows with the text scale.
         let one = Theme::dark();
         assert!(
             panel.formula_size > mathfield::formula_size(&one) * 1.4,

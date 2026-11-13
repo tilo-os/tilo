@@ -215,16 +215,16 @@ pub fn desk_resource(
     .with_children(windows.chain(screens).chain(search))
 }
 
-/// The launchpad's resource: each card a resource of its own that offers the desk's launchpad verb,
-/// bound to the card it stands for.
+/// The launchpad's resource: each card `cards` offers a resource of its own that offers the desk's
+/// launchpad verb, bound to the card it stands for.
 /// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the host publishes it as a
 /// host action, which is how the palette and the catalogue of actions name it, and this lists the
 /// same verb to agents and scripts that invoke an action by the resource it is published on. Both
 /// reach the verb through the host's one door.
 #[must_use]
-pub fn launchpad_resource() -> ResourceSpec {
-    let cards = crate::launchpad::LaunchpadAction::ALL
-        .into_iter()
+pub fn launchpad_resource(cards: &[crate::launchpad::LaunchpadAction]) -> ResourceSpec {
+    let cards = cards
+        .iter()
         .map(|card| (card.slug(), card.label()))
         .chain([("apps", t("launchpad-open-app"))]);
     let rows = cards.map(|(slug, label)| {

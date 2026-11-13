@@ -11,14 +11,12 @@ struct State {
     done: bool,
     failed: bool,
 }
-/// Opaque cursor retaining the actual held directory and authenticated session.
 pub struct FsDirectoryCursor {
     session: FsSession,
     root: DirectoryGrant,
     state: Mutex<State>,
 }
 impl FsSession {
-    /// Opens an independent cursor from the actual directory descriptor.
     pub fn open_directory_cursor(
         &self,
         root: &DirectoryGrant,
@@ -42,8 +40,6 @@ impl FsSession {
     }
 }
 impl FsDirectoryCursor {
-    /// # Errors
-    /// Refuses revoked or closed session/ancestor authority.
     pub fn check(&self) -> Result<(), FsError> {
         self.session.check_directory(&self.root)
     }
@@ -101,7 +97,6 @@ impl FsDirectoryCursor {
                 // This live enumeration promises no snapshot. A name removed
                 // before its checked observation is absent, not inaccessible.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                // Permission and all other native failures remain visible rows.
                 Err(_) => None,
             };
             entries.push(DirectoryStreamRow { name, stat });

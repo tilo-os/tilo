@@ -1,9 +1,6 @@
-//! Monitor's controls, as slots in the window's bar ([`ui::window_toolbar`]):
-//! the Processes and Resources views, Refresh, the update frequency as a menu
-//! button, and on the process list Tree view, with Include children and
-//! Kernel threads in the bar's menu. The bar's search narrows the process
-//! list ([`crate::view::ProcessesPane`] is its `Filterable`). The window
-//! draws no header row and the list no row of toggles of its own.
+//! Monitor's controls as slots in the window's bar: the Processes and Resources
+//! views, Refresh, the update frequency menu, Tree view with Include children, and
+//! Kernel threads. The bar's search narrows the process list.
 
 use ui::framework::BarCommands;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarView, ToolbarViews, WindowToolbar};
@@ -13,19 +10,16 @@ use crate::model::ProcessDataStatus;
 use crate::tree::SumMode;
 use crate::view::{Cadence, Request};
 
-/// What an entry of the window bar does.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum BarCommand {
     Refresh,
     TreeMode,
     SumChildren,
     KernelThreads,
-    /// Sample at this cadence.
     Cadence(Cadence),
 }
 
 impl Tab {
-    /// The view's id in the window bar.
     pub(crate) fn view_id(self) -> &'static str {
         match self {
             Self::Processes => "monitor.view.processes",
@@ -35,17 +29,16 @@ impl Tab {
 }
 
 impl MonitorApp {
-    /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
         let state = self.state.borrow();
         toolbar.views = Some(ToolbarViews {
-            name: String::from("View"),
+            name: crate::resource::CATALOG.t("monitor-views"),
             choices: Tab::ALL
                 .iter()
                 .map(|tab| ToolbarView {
                     id: tab.view_id().to_owned(),
-                    label: tab.label().to_owned(),
+                    label: tab.label(),
                 })
                 .collect(),
             chosen: state.tab.view_id().to_owned(),
@@ -65,11 +58,18 @@ impl MonitorApp {
             })
             .collect();
         let mut actions = vec![
-            bar.entry("refresh", "Refresh", BarCommand::Refresh),
+            bar.entry(
+                "refresh",
+                crate::resource::CATALOG.t("monitor-refresh"),
+                BarCommand::Refresh,
+            ),
             ToolbarAction::new(
                 "monitor.cadence",
                 "timer",
-                format!("Update frequency: {}", chosen.label()),
+                crate::resource::CATALOG.t_args(
+                    "monitor-update-frequency",
+                    &[("cadence", ui::i18n::ArgValue::Text(chosen.label()))],
+                ),
             )
             .with_items(cadences),
         ];
@@ -78,29 +78,40 @@ impl MonitorApp {
             && state.shared.borrow().total > 0;
         if lists {
             actions.push(
-                bar.entry("list-tree", "Tree view", BarCommand::TreeMode)
-                    .on(state.tree_mode),
+                bar.entry(
+                    "list-tree",
+                    crate::resource::CATALOG.t("monitor-tree-view"),
+                    BarCommand::TreeMode,
+                )
+                .on(state.tree_mode),
             );
             if state.tree_mode {
                 actions.push(
-                    bar.entry("layers", "Include children", BarCommand::SumChildren)
-                        .on(state.sum_mode == SumMode::SumSubtree)
-                        .in_menu(),
+                    bar.entry(
+                        "layers",
+                        crate::resource::CATALOG.t("monitor-include-children"),
+                        BarCommand::SumChildren,
+                    )
+                    .on(state.sum_mode == SumMode::SumSubtree)
+                    .in_menu(),
                 );
             }
             actions.push(
-                bar.entry("eye", "Kernel threads", BarCommand::KernelThreads)
-                    .on(state.prefs.show_kernel_threads)
-                    .in_menu(),
+                bar.entry(
+                    "eye",
+                    crate::resource::CATALOG.t("monitor-kernel-threads"),
+                    BarCommand::KernelThreads,
+                )
+                .on(state.prefs.show_kernel_threads)
+                .in_menu(),
             );
         }
         ui::widget::NavShell::push_window_actions(&mut toolbar, actions);
         toolbar
     }
 
-    /// Queue what the person did in the window's bar as the request its
-    /// control would have made, after the shell's own slots. Returns whether
-    /// anything was asked.
+    /// Queue what the person did in the bar as the request its control makes;
+    /// whether anything was asked.
     pub(super) fn take_window_toolbar_events(&mut self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {

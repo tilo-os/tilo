@@ -56,8 +56,6 @@ fn edit_args(read: &Value, insert: &str) -> Value {
         "deleted_text":read["text"],"before_context":read["before_context"],"after_context":read["after_context"]})
 }
 
-/// Edit the text of `file` with the edit `op`, as an agent does: one field
-/// edit at the file's text.
 fn edit(
     app: &mut TestApp<CodeEditorShell>,
     file: &str,

@@ -14,21 +14,16 @@ use crate::resource::{ExportSvg, FindArea, ViewOp};
 use crate::selection::Select;
 use crate::view_ops::{self, Awaiting};
 
-/// An answer still waiting for its pictures, and who it goes to.
 pub(super) struct Due {
     waiting: Waiting,
     reply: ui::framework::EffectReply,
 }
 
-/// What an answer waits for.
 enum Waiting {
-    /// A view's or an export's pictures.
     Answer(Awaiting<ActionOutput>),
-    /// The magic wand's or a colour's area being found for find-area.
     Colour(Box<Colouring>),
 }
 
-/// A colour find-area is looking for in the artwork as it was invoked on.
 struct Colouring {
     search: ColourSearch,
     art: Artwork,
@@ -42,6 +37,21 @@ impl CanvasSurface {
         op: &ViewOp,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
+        // A picture is decoded off the frame, and a page cannot wait for the
+        // decoder: an answer that must show the pictures themselves asks
+        // again once they are here rather than answer from a placeholder.
+        if !ui::rt::available(ui::rt::Feature::BlockOn) {
+            let version = match op {
+                ViewOp::Look { look } => look.version.as_deref(),
+                ViewOp::Inspect { inspect } => inspect.version.as_deref(),
+                ViewOp::Measure { measure } => measure.version.as_deref(),
+                _ => None,
+            };
+            let (art, _, _) = Self::at_version(cx, version)?;
+            if !self.tools.renderer.borrow_mut().pictures.ready(&art) {
+                return Err(crate::locales::CATALOG.t("canvas-pictures-decoding"));
+            }
+        }
         let mut answer = self.answer(op, cx)?;
         if let Some(done) = answer.poll() {
             return done.map(ui::framework::Effected::Done);
@@ -53,18 +63,24 @@ impl CanvasSurface {
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// Answer the views whose pictures came.
-    pub(super) fn take_due(&mut self) {
+    /// Answer the views whose pictures came. Taken up between frames, so the
+    /// frame that answers them syncs and shows what the answer wrote.
+    /// Answers whether it answered any.
+    pub(super) fn take_due(&mut self) -> bool {
         let due = std::mem::take(&mut self.due);
+        let mut answered = false;
         for mut due in due {
             match self.came(&mut due.waiting) {
-                Some(done) => due.reply.finish(done),
+                Some(done) => {
+                    due.reply.finish(done);
+                    answered = true;
+                }
                 None => self.due.push(due),
             }
         }
+        answered
     }
 
-    /// What `waiting` came to, once its pictures came.
     fn came(&mut self, waiting: &mut Waiting) -> Option<Result<ActionOutput, String>> {
         match waiting {
             Waiting::Answer(answer) => answer.poll(),
@@ -83,12 +99,7 @@ impl CanvasSurface {
         document: ui::tilo_resource::Doc,
         cx: &mut Reading,
     ) -> ui::framework::Effected {
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let patient = std::mem::replace(&mut renderer.pictures.patient, true);
-        let search = ColourSearch::start(&mut renderer, text, &art, query);
-        renderer.pictures.patient = patient;
-        drop(renderer);
+        let search = ColourSearch::start(&art, query);
         let asked = art.clone();
         let reply = cx.reply_then(move |_, output, cx| {
             let d = output
@@ -117,7 +128,6 @@ impl CanvasSurface {
         ui::framework::Effected::Pending
     }
 
-    /// The area `colouring` found, as path data, once its pictures came.
     fn look_for(&mut self, colouring: &mut Colouring) -> Option<Result<ActionOutput, String>> {
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         let mut renderer = self.tools.renderer.borrow_mut();
@@ -146,7 +156,7 @@ impl CanvasSurface {
         };
         let pictures = self.pictures.clone();
         let content = crate::content::store();
-        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
+        let phase = crate::locales::CATALOG.t("canvas-rendering-artwork");
         Ok(cx.thread(
             move |progress| {
                 progress.report(phase, None, None);
@@ -161,7 +171,6 @@ impl CanvasSurface {
         ))
     }
 
-    /// `op` from the artwork it names, waiting for any picture it needs.
     fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<Awaiting<ActionOutput>, String> {
         let version = match op {
             ViewOp::Look { look } => look.version.as_deref(),
@@ -249,7 +258,6 @@ impl CanvasSurface {
         answer
     }
 
-    /// The reference picture as `inspect` reports it, when there is one.
     fn reference_info(&self, art: &Artwork) -> Option<Value> {
         let reference = art.reference.as_ref()?;
         let mut renderer = self.tools.renderer.borrow_mut();
@@ -276,14 +284,10 @@ pub(super) fn select_found(
     cx: &Reading,
 ) -> Result<Value, String> {
     if cx.live().with(|current| current != art) {
-        return Err(ui::i18n::I18nManager::lookup_plain(
-            "canvas-finding-changed",
-        ));
+        return Err(crate::locales::CATALOG.t("canvas-finding-changed"));
     }
     if cx.dispatcher().read_only() {
-        return Err(ui::i18n::I18nManager::lookup_plain(
-            "canvas-finding-read-only",
-        ));
+        return Err(crate::locales::CATALOG.t("canvas-finding-read-only"));
     }
     let mut selected = Artwork::from_doc(document).map_err(|error| error.to_string())?;
     let before = selected.clone();
@@ -295,7 +299,6 @@ pub(super) fn select_found(
     Ok(answer)
 }
 
-/// An answer that is only `value`.
 fn listing(value: Value) -> ActionOutput {
     ActionOutput {
         value: Some(value),
@@ -303,7 +306,6 @@ fn listing(value: Value) -> ActionOutput {
     }
 }
 
-/// `info` with the revision it answers from and the version's name.
 fn stamp(info: &mut Value, revision: &str, shown: Option<&str>) {
     if let Value::Object(fields) = info {
         fields.insert("revision".into(), revision.into());
@@ -334,7 +336,6 @@ fn written(
     Ok(info)
 }
 
-/// The answer of `info`, stamped, with `picture` kept as content.
 fn pictured(
     picture: Option<&view_ops::Picture>,
     mut info: Value,

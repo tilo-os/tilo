@@ -1,34 +1,16 @@
-//! When the filesystem daemon's endpoint starts its relays.
-//!
-//! `fs serve` binds with an *empty* relay map and holds the default relays
-//! in a [`Reachability`] until something means another party may dial this
-//! device; see [`tilo_endpoint_reachability`] for what the relays cost and
-//! how they are held back. Dialling out works while dormant too.
-//!
-//! Who can dial a mount? Only a party that knows it, and every way of
-//! knowing it leaves a trace the daemon sees. Each one wakes the relays:
-//!
-//! * a peer the content plane learns of — persisted, bootstrapped from a
-//!   ticket or authenticated in a session
-//!   ([`crate::Hydrator::add_peer`]);
-//! * sync progress persisted with a peer: someone synced with this
-//!   namespace before;
-//! * a capability list that names anyone other than the mount's own actor,
-//!   at start or after any change to it;
-//! * a live share grant, or any request to the share control socket;
-//! * no capability list at all: an unenforced mount is shared by handing
-//!   out its ticket, which leaves no trace.
-//!
-//! Waking is sticky for the life of the process: the endpoint's handle is
-//! deferred without a rest delay.
+//! When the daemon's endpoint starts its relays. `fs serve` binds with an empty
+//! relay map and holds the default relays back until something shows another party
+//! may dial this device: a peer the content plane learns of, sync progress with a
+//! peer, a capability list naming anyone other than the mount's own actor, a live
+//! share grant, or no capability list at all. Waking is sticky for the life of the
+//! process. Dialling out works while dormant.
 
 use crate::acl::AclHandle;
 
 pub use tilo_endpoint_reachability::Reachability;
 
-/// Start `reachability`'s held-back relays because of `why`, and say so on
-/// stdout, where the daemon's log goes. Returns whether this call started
-/// them.
+/// Start the held-back relays because of `why`, and say so on stdout; returns
+/// whether this call started them.
 pub fn wake(reachability: &Reachability, why: &'static str) -> bool {
     let started = reachability.wake(why);
     if started {
@@ -37,9 +19,9 @@ pub fn wake(reachability: &Reachability, why: &'static str) -> bool {
     started
 }
 
-/// Wake `reachability` once `acl` names anyone other than the mount's own
-/// actor: now, or after any change to it while dormant. Returns the task
-/// watching for that change, if one was needed.
+/// Wake `reachability` once `acl` names anyone other than the mount's own actor:
+/// now, or after any change to it while dormant. Returns the task watching for that
+/// change, if one was needed.
 pub fn wake_when_acl_admits_others(
     reachability: &Reachability,
     acl: &AclHandle,
@@ -79,8 +61,6 @@ mod tests {
     use super::{Reachability, wake_when_acl_admits_others};
     use crate::acl::{AclHandle, WorkspaceAcl};
 
-    /// Two relays nobody listens on: the test observes the relay map, not
-    /// a relay connection.
     fn unused_relays() -> RelayMap {
         ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
             .into_iter()
@@ -88,9 +68,6 @@ mod tests {
             .collect()
     }
 
-    /// An endpoint bound the way `fs serve` binds one, and its relay map:
-    /// the map is shared, so it shows what the endpoint's net report and
-    /// relay transport see.
     async fn endpoint_without_relays() -> (iroh::Endpoint, RelayMap) {
         let relays = RelayMap::empty();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)
@@ -124,9 +101,6 @@ mod tests {
         )
     }
 
-    /// The shipped capability list grants only the mount's own principal:
-    /// nobody else can be admitted, so the relays stay asleep. A grant to
-    /// another person, made while the mount runs, wakes them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_grant_to_someone_else_wakes_the_relays() {
         let me = [1; 32];
@@ -153,7 +127,6 @@ mod tests {
             std::slice::from_ref(&local),
             None,
         ));
-        // The watcher wakes the relays only for an ACL that names others.
         assert!(
             !acl.snapshot().names_others() && reachability.is_dormant(),
             "a change that still names only this mount must not wake them"
@@ -174,7 +147,6 @@ mod tests {
         endpoint.close().await;
     }
 
-    /// An ACL that already names someone else wakes the relays at once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_acl_naming_someone_else_wakes_the_relays_at_start() {
         let acl = AclHandle::new(WorkspaceAcl::from_capabilities(

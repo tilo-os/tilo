@@ -1,15 +1,4 @@
 //! The "Set up speakers" flow, as a state machine independent of widgets.
-//!
-//! Choose outputs on any of your devices, tell which one is which by
-//! listening to each in turn, optionally place them around the room, name
-//! the set and save it. Saving asks each other device to join; once every
-//! speaker is ready the set can be calibrated: a microphone where the person
-//! sits hears each speaker's sweep, the set's own devices' microphones and
-//! any others switched on listen too, and a calibration is only a proposal
-//! until it is applied.
-//!
-//! The shell owns speaker groups; this module only builds the commands the
-//! Speakers pane sends and interprets the snapshots it gets back.
 
 use std::collections::BTreeMap;
 
@@ -21,26 +10,19 @@ use ui::collaboration::{
 
 use crate::i18n::{t, t_args};
 
-/// Default distance of a new room point from the listening position.
 pub const ROOM_RADIUS_MM: i32 = 2_000;
-/// Room points are placed within this many millimetres of the listener.
 pub const ROOM_EXTENT_MM: i32 = 5_000;
 
-/// How the chosen speakers are arranged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrangement {
-    /// Two speakers, left and right.
     Stereo,
-    /// Three to six speakers in named channels (5.1 and its subsets).
     Surround,
-    /// Any number of speakers placed freely around the room.
     Room,
 }
 
 impl Arrangement {
     pub const ALL: [Self; 3] = [Self::Stereo, Self::Surround, Self::Room];
 
-    /// The arrangement's name, as the chooser lists it.
     #[must_use]
     pub fn label(self) -> String {
         t(match self {
@@ -50,7 +32,6 @@ impl Arrangement {
         })
     }
 
-    /// What the arrangement means, beside the chooser.
     #[must_use]
     pub fn description(self) -> String {
         t(match self {
@@ -76,7 +57,6 @@ impl Arrangement {
     }
 }
 
-/// A speaker's role as a phrase inside a sentence: "left speaker".
 #[must_use]
 pub fn role_text(role: SpeakerRoleSpec) -> String {
     t(match role {
@@ -90,7 +70,6 @@ pub fn role_text(role: SpeakerRoleSpec) -> String {
     })
 }
 
-/// A role as a button answers "Which one just played?": "Left".
 #[must_use]
 pub fn role_answer(role: SpeakerRoleSpec) -> String {
     t(match role {
@@ -104,7 +83,6 @@ pub fn role_answer(role: SpeakerRoleSpec) -> String {
     })
 }
 
-/// Where one member of a set stands.
 #[must_use]
 pub fn member_status_text(status: SpeakerMemberStatus) -> String {
     t(match status {
@@ -117,7 +95,6 @@ pub fn member_status_text(status: SpeakerMemberStatus) -> String {
     })
 }
 
-/// A session playing on a set, as its status pill reads.
 #[must_use]
 pub fn playback_text(playback: &SpeakerPlaybackInfo) -> String {
     t(match playback {
@@ -128,7 +105,6 @@ pub fn playback_text(playback: &SpeakerPlaybackInfo) -> String {
     })
 }
 
-/// One output that can join a speaker set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     pub device: String,
@@ -139,19 +115,16 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// "Shelf (Speakers)".
     #[must_use]
     pub fn label(&self) -> String {
         format!("{} ({})", self.device_label, self.output_label)
     }
 }
 
-/// One device's microphone that can listen while a set is calibrated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Microphone {
     pub device: String,
     pub device_label: String,
-    /// "Phone (Microphone)".
     pub label: String,
     pub local: bool,
     pub status: MicrophoneStatus,
@@ -189,10 +162,8 @@ impl Microphone {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// Existing speaker sets and "Set up speakers".
     Overview,
     ChooseOutputs,
-    /// "Which one just played?" for the speaker at `index`.
     Identify {
         index: usize,
         played: bool,
@@ -200,13 +171,11 @@ pub enum Step {
     /// Drag each speaker to where it stands (room arrangement only).
     Layout,
     Name,
-    /// Measure a saved set with a microphone.
     Calibrate {
         group: String,
     },
 }
 
-/// The whole flow.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpeakerSetup {
     step: Step,
@@ -223,7 +192,6 @@ pub struct SpeakerSetup {
     /// Extra microphones the person switched on or off, overriding the
     /// default (on for the set's own devices that already allowed it).
     microphone_choices: BTreeMap<String, bool>,
-    /// The device at the listening position the person picked, if any.
     listening: Option<String>,
 }
 
@@ -258,8 +226,6 @@ fn candidates_of(device: &SpeakerDeviceInfo) -> impl Iterator<Item = Candidate> 
         })
 }
 
-/// A default spot on an arc in front of the listener, spreading `count`
-/// speakers from left to right.
 #[must_use]
 pub fn default_room_point(index: usize, count: usize) -> SpeakerRoleSpec {
     let as_f64 = |value: usize| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
@@ -325,8 +291,6 @@ impl SpeakerSetup {
         self.message = message;
     }
 
-    /// Adopt a fresh snapshot from the shell. Choices whose output
-    /// disappeared are dropped.
     pub fn update(&mut self, snapshot: SpeakerSnapshot) {
         self.snapshot = snapshot;
         let available = self.candidates();
@@ -353,7 +317,6 @@ impl SpeakerSetup {
         }
     }
 
-    /// Every output on an online device that can join.
     #[must_use]
     pub fn candidates(&self) -> Vec<Candidate> {
         self.snapshot
@@ -363,7 +326,6 @@ impl SpeakerSetup {
             .collect()
     }
 
-    /// Every device's microphone the shell offers for calibrating `group`.
     #[must_use]
     pub fn microphones(&self, group: &str) -> Vec<Microphone> {
         let Some(known) = self.group(group) else {
@@ -386,7 +348,6 @@ impl SpeakerSetup {
             .collect()
     }
 
-    /// Microphones that can hear at the listening position: every usable one.
     #[must_use]
     pub fn listening_choices(&self, group: &str) -> Vec<Microphone> {
         self.microphones(group)
@@ -395,7 +356,6 @@ impl SpeakerSetup {
             .collect()
     }
 
-    /// Pick the device whose microphone sits where the person listens.
     pub fn set_listening(&mut self, device: &str) {
         self.listening = Some(device.to_string());
     }
@@ -434,12 +394,10 @@ impl SpeakerSetup {
                 .unwrap_or(microphone.member && microphone.status == MicrophoneStatus::Ready)
     }
 
-    /// Switch `device`'s microphone on or off as an extra listener.
     pub fn set_also_listens(&mut self, device: &str, on: bool) {
         self.microphone_choices.insert(device.to_string(), on);
     }
 
-    /// The microphones besides the listening one, in the shell's order.
     #[must_use]
     pub fn extra_microphones(&self, group: &str) -> Vec<Microphone> {
         let listening = self.listening(group).map(|microphone| microphone.device);
@@ -467,7 +425,6 @@ impl SpeakerSetup {
             .find(|calibration| calibration.group == group)
     }
 
-    /// Start a new set.
     pub fn begin(&mut self) {
         *self = Self {
             snapshot: std::mem::take(&mut self.snapshot),
@@ -488,7 +445,6 @@ impl SpeakerSetup {
             .any(|chosen| chosen.device == candidate.device && chosen.output == candidate.output)
     }
 
-    /// Add or remove one output.
     pub fn toggle(&mut self, candidate: &Candidate) {
         if let Some(index) = self.chosen.iter().position(|chosen| {
             chosen.device == candidate.device && chosen.output == candidate.output
@@ -521,7 +477,6 @@ impl SpeakerSetup {
         })
     }
 
-    /// Move from choosing outputs to telling them apart.
     pub fn confirm_outputs(&mut self) -> Result<(), String> {
         if let Some(problem) = self.outputs_problem() {
             return Err(problem);
@@ -585,8 +540,6 @@ impl SpeakerSetup {
             .collect()
     }
 
-    /// "It was the left one." Assigning the first speaker of a stereo pair
-    /// settles the other one too.
     pub fn assign(&mut self, role: SpeakerRoleSpec) -> Result<(), String> {
         let Step::Identify { index, .. } = self.step else {
             return Err(t("speakers-assign-listen-first"));
@@ -648,7 +601,6 @@ impl SpeakerSetup {
         };
     }
 
-    /// Place a room speaker, clamped to the room.
     pub fn place(&mut self, index: usize, x_mm: i32, y_mm: i32) {
         if self.arrangement != Arrangement::Room {
             return;
@@ -662,7 +614,6 @@ impl SpeakerSetup {
         }
     }
 
-    /// Room points in member order, for the layout canvas.
     #[must_use]
     pub fn room_points(&self) -> Vec<(i32, i32)> {
         self.roles
@@ -697,7 +648,6 @@ impl SpeakerSetup {
         self.name = name.to_string();
     }
 
-    /// The create command for the finished draft.
     pub fn save_command(&self) -> Result<SpeakerCommand, String> {
         let name = self.name.trim();
         if name.is_empty() {
@@ -730,7 +680,6 @@ impl SpeakerSetup {
         })
     }
 
-    /// The shell saved the set as `group`: go on to calibration.
     pub fn saved(&mut self, group: String) {
         self.calibrate_seen = self.group(&group).is_some();
         self.step = Step::Calibrate { group };
@@ -780,8 +729,6 @@ impl SpeakerSetup {
             .then(|| t("speakers-calibrate-no-microphone"))
     }
 
-    /// Start measuring `group` from where the person sits, with every extra
-    /// microphone that is switched on.
     pub fn calibrate_command(&self, group: &str) -> Result<SpeakerCommand, String> {
         if let Some(problem) = self.calibration_problem(group) {
             return Err(problem);
@@ -808,7 +755,6 @@ impl SpeakerSetup {
         })
     }
 
-    /// Step back.
     pub fn back(&mut self) {
         self.message = None;
         self.step = match &self.step {
@@ -830,20 +776,15 @@ impl SpeakerSetup {
         };
     }
 
-    /// Return to the overview.
     pub fn close(&mut self) {
         self.step = Step::Overview;
     }
 }
 
-/// Where the Speakers pane sends its commands. The live implementation is
-/// the shell's broker lane; tests substitute a fake.
 pub trait SpeakerService: Send + Sync {
-    /// Send one command and wait for the shell's answer.
     fn call(&self, command: SpeakerCommand) -> Result<ui::collaboration::SpeakerReply, String>;
 }
 
-/// The shell's speaker authority over the authenticated Settings route.
 pub struct BrokerSpeakers;
 
 impl SpeakerService for BrokerSpeakers {

@@ -17,7 +17,6 @@ use crate::render::{Options, Renderer};
 use crate::tools::Tools;
 use crate::view_ops::Awaiting;
 
-/// A picture format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Format {
     #[default]
@@ -48,25 +47,20 @@ impl Format {
         }
     }
 
-    /// Whether the format keeps transparency.
     pub fn transparent(self) -> bool {
         self != Self::Jpeg
     }
 
-    /// Whether the format is pixels, which a size applies to.
     pub fn raster(self) -> bool {
         self != Self::Svg
     }
 }
 
-/// How much of the artwork is exported.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Area {
     #[default]
     Whole,
-    /// What the canvas shows now.
     View,
-    /// The selected marks, cropped to them.
     Selection,
 }
 
@@ -75,10 +69,8 @@ const JPEG_QUALITY: u8 = 90;
 
 /// The sizes offered, as pixels per artwork unit.
 pub const SCALES: [f64; 5] = [0.5, 1.0, 2.0, 3.0, 4.0];
-/// The longest side a picture may have.
 pub use crate::content_geometry::MAX_PIXELS;
 
-/// What the export dialog is set to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub format: Format,
@@ -87,7 +79,6 @@ pub struct Settings {
     pub transparent: bool,
 }
 
-/// The dialog's choices, kept while the window is open.
 #[derive(Clone)]
 pub struct Choices {
     pub format: LocalState<Format>,
@@ -132,14 +123,12 @@ pub fn part(
             let shown = view
                 .map(|view| view.intersect(art.bounds()))
                 .filter(|shown| shown.width() >= 1.0 && shown.height() >= 1.0)
-                .ok_or_else(|| ui::i18n::I18nManager::lookup_plain("canvas-export-no-view"))?;
+                .ok_or_else(|| crate::locales::CATALOG.t("canvas-export-no-view"))?;
             Ok((art.clone(), shown))
         }
         Area::Selection => {
             if selection.is_empty() {
-                return Err(ui::i18n::I18nManager::lookup_plain(
-                    "canvas-export-no-selection",
-                ));
+                return Err(crate::locales::CATALOG.t("canvas-export-no-selection"));
             }
             let part = crate::view_ops::part(art, selection)?;
             let bounds = part.bounds();
@@ -148,7 +137,6 @@ pub fn part(
     }
 }
 
-/// The picture's size in pixels.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -159,7 +147,6 @@ pub fn pixels(region: Rect, scale: f64) -> (u32, u32) {
     (side(region.width()), side(region.height()))
 }
 
-/// The exported file's bytes, once its pictures are rendered.
 pub fn encode(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -194,7 +181,6 @@ pub enum Drawn {
     Raster(Box<crate::view_ops::Drawing>),
 }
 
-/// Draw the export of `region` of `art`.
 pub fn draw(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -209,7 +195,7 @@ pub fn draw(
         ))));
     }
     if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-        return Err(ui::i18n::I18nManager::format(
+        return Err(crate::locales::CATALOG.t_args(
             "canvas-export-too-large",
             &[("pixels", MAX_PIXELS.to_string().into())],
         ));
@@ -229,7 +215,6 @@ pub fn draw(
     ))))
 }
 
-/// A rendered export's RGBA as the file's bytes in `format`.
 pub fn encode_raster(
     rgba: &[u8],
     width: u32,
@@ -300,7 +285,6 @@ pub struct SvgDrawing {
 }
 
 impl SvgDrawing {
-    /// Whether every picture it embeds has come.
     #[must_use]
     pub fn ready(&self) -> bool {
         self.painted
@@ -411,7 +395,7 @@ pub fn draw_svg(
 /// that comes to.
 pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     let choices = tools.export.clone();
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let format = ui::widget::ToggleGroup::from_state(
         Format::ALL
             .iter()
@@ -561,7 +545,6 @@ fn preview(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     })
 }
 
-/// What [`summary`] said last, and for what.
 #[derive(Default)]
 struct Sizes {
     key: Option<SizesKey>,
@@ -580,7 +563,6 @@ struct Said {
 }
 
 impl Said {
-    /// Only `why` there is no picture.
     fn not(why: String) -> Self {
         Self {
             size: why,
@@ -588,7 +570,6 @@ impl Said {
         }
     }
 
-    /// Count the bytes, if their pictures came.
     fn count(&mut self) {
         if let Some(done) = self.counting.as_mut().and_then(Awaiting::poll) {
             self.counting = None;
@@ -600,7 +581,7 @@ impl Said {
         let mut said = self.size.clone();
         if let Some(bytes) = self.bytes {
             said.push('\n');
-            said.push_str(&ui::i18n::I18nManager::format(
+            said.push_str(&crate::locales::CATALOG.t_args(
                 "canvas-export-bytes",
                 &[("size", ui::format::size(bytes).into())],
             ));
@@ -613,7 +594,6 @@ impl Said {
     }
 }
 
-/// What the summary depends on: the artwork as it is, and the settings.
 #[derive(PartialEq)]
 struct SizesKey {
     /// The dialog is open: only then is the picture made to count it.
@@ -634,13 +614,13 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
     };
     let size = if settings.format.raster() {
         if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-            return Said::not(ui::i18n::I18nManager::format(
+            return Said::not(crate::locales::CATALOG.t_args(
                 "canvas-export-too-large",
                 &[("pixels", MAX_PIXELS.to_string().into())],
             ));
         }
         let (width, height) = pixels(region, settings.scale);
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-export-summary",
             &[
                 ("width", width.into()),
@@ -650,7 +630,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         )
     } else {
         let (width, height) = pixels(region, 1.0);
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-export-svg-summary",
             &[("width", width.into()), ("height", height.into())],
         )
@@ -671,7 +651,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         None
     };
     let note = (settings.transparent && !settings.format.transparent())
-        .then(|| ui::i18n::I18nManager::lookup_plain("canvas-export-jpeg-opaque"));
+        .then(|| crate::locales::CATALOG.t("canvas-export-jpeg-opaque"));
     let mut said = Said {
         size,
         counting,
@@ -682,7 +662,6 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
     said
 }
 
-/// The selection cut out of one artwork, kept while both stay the same.
 struct CutKey {
     art: Rc<Artwork>,
     selection: Vec<String>,
@@ -735,7 +714,6 @@ mod tests {
         image::load_from_memory(png).unwrap().to_rgba8()
     }
 
-    /// Renders this thread's pixels as a browser page's frame loop does.
     fn frame_loop() -> PixelsHost {
         let gpu = ui::offscreen::shared_gpu().unwrap();
         let vello = ui::vello::Renderer::new(
@@ -751,7 +729,6 @@ mod tests {
         host
     }
 
-    /// Frames, until `host` answered everything asked of it.
     fn frames(host: &mut PixelsHost) {
         tilo_test_env::wait_until("the picture", || {
             if !host.waiting() {

@@ -25,6 +25,185 @@ pub const UNKNOWN_AUTHOR_NAME: &str = "Unknown participant";
 #[doc(hidden)]
 pub const SHORT_LEN: usize = 8;
 
+/// The namespace of the principal an application acts under (`app:so.tilo.notes`).
+pub const APP_NAMESPACE: &str = "app:";
+/// The namespace of the principal an agent acts under (`agent:scribe`).
+pub const AGENT_NAMESPACE: &str = "agent:";
+/// The namespace of the principal an installed bot acts under (`bot:status`).
+pub const BOT_NAMESPACE: &str = "bot:";
+/// The namespace of the principal a Shortcut's run acts under (`shortcut:morning`).
+pub const SHORTCUT_NAMESPACE: &str = "shortcut:";
+
+/// Where the words a reader names software by come from — a history row, a presence mark, a
+/// catch-up line: every surface that says who made a change.
+pub trait ParticipantNames {
+    /// What the reader calls the person `id`, when they know a name for them. A person a reader
+    /// has no name for is [`UNKNOWN_AUTHOR_NAME`], never their key.
+    fn person(&self, _id: &str) -> Option<String> {
+        None
+    }
+
+    /// What the reader calls the app `app_id`: the session's name for it in this window's
+    /// language ([`installed_app_name`]), else the words its id makes ("Today") — an app
+    /// installed nowhere near this device.
+    fn app(&self, app_id: &str) -> String {
+        installed_app_name(app_id).unwrap_or_else(|| app_words(app_id))
+    }
+
+    /// What the reader calls the agent whose id is `name` ([`name_words`]): its name, and — for
+    /// a reader whose surfaces mark software in words rather than with an agent badge — that it
+    /// is one.
+    fn agent(&self, name: &str) -> String {
+        name_words(name)
+    }
+}
+
+/// What the actor `id` is called to the person reading `names`: a person by their name, an app
+/// by its own name in their language, an agent by the name it goes by. The id itself is never
+/// shown, and never cut short: a reader who knows no name reads [`UNKNOWN_AUTHOR_NAME`].
+pub fn actor_name(id: &str, names: &dyn ParticipantNames) -> String {
+    let id = id.trim();
+    if let Some(app) = id.strip_prefix(APP_NAMESPACE) {
+        return names.app(app.trim());
+    }
+    if let Some(agent) = id.strip_prefix(AGENT_NAMESPACE) {
+        return names.agent(agent);
+    }
+    if let Some(bot) = id.strip_prefix(BOT_NAMESPACE) {
+        return names.person(bot).unwrap_or_else(|| name_words(bot));
+    }
+    if let Some(shortcut) = id.strip_prefix(SHORTCUT_NAMESPACE) {
+        return name_words(shortcut);
+    }
+    names
+        .person(id)
+        .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
+}
+
+/// The words a self-declared name is shown in: the name a person reads, its first letter
+/// capitalized ("scribe" → "Scribe"). A name is what it is: nothing is derived from an id here.
+#[must_use]
+pub fn name_words(name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        return UNKNOWN_AUTHOR_NAME.to_owned();
+    }
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
+}
+
+thread_local! {
+    /// What the session said each app installed on this device is called, and the language this
+    /// process reads names in: both ride with the workspace's roster names, so a window names
+    /// another app by the same feed it names people. A process no session serves names an app by
+    /// the words its id makes.
+    static INSTALLED_APPS: std::cell::RefCell<(String, Option<Vec<collab_types::history::NamedApp>>)> =
+        const { std::cell::RefCell::new((String::new(), None)) };
+}
+
+/// Say the language this process reads names in (`de-DE`), for the app names the session sends:
+/// a window names an app in its own language, whatever language its people's names arrive in.
+/// Whether this thread's names changed.
+pub fn set_names_language(language: &str) -> bool {
+    INSTALLED_APPS.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.0 == language {
+            return false;
+        }
+        language.clone_into(&mut held.0);
+        true
+    })
+}
+
+/// Take the installed apps the session sent (`CollabEvent::Context`), with what each is called in
+/// every language its package names it in. Whether this thread's names changed.
+pub fn set_installed_apps(apps: Vec<collab_types::history::NamedApp>) -> bool {
+    INSTALLED_APPS.with(|held| {
+        let mut held = held.borrow_mut();
+        let changed = held.1.as_ref() != Some(&apps);
+        held.1 = Some(apps);
+        changed
+    })
+}
+
+/// What the app `app_id` is called in the language this process reads (`set_names_language`), as
+/// the session sent it (`set_installed_apps`): `None` for an app installed nowhere near this
+/// device.
+#[must_use]
+pub fn installed_app_name(app_id: &str) -> Option<String> {
+    let app_id = app_id.trim();
+    INSTALLED_APPS.with(|held| {
+        let held = held.borrow();
+        let (language, apps) = (&held.0, held.1.as_ref()?);
+        apps.iter()
+            .find(|app| app.id == app_id)
+            .map(|app| app.name_in(language).to_owned())
+    })
+}
+
+/// What the app `app_id` is called to a person reading `locale`: the session's name for it in
+/// that language, else [`app_words`] — an app installed nowhere near this device. Never an id.
+#[must_use]
+pub fn app_name(app_id: &str, locale: &str) -> String {
+    installed_app_name_in(app_id, locale).unwrap_or_else(|| app_words(app_id))
+}
+
+/// [`installed_app_name`] in `locale`, whatever language this process reads.
+#[must_use]
+pub fn installed_app_name_in(app_id: &str, locale: &str) -> Option<String> {
+    let app_id = app_id.trim();
+    INSTALLED_APPS.with(|held| {
+        let held = held.borrow();
+        held.1.as_ref().and_then(|apps| {
+            apps.iter()
+                .find(|app| app.id == app_id)
+                .map(|app| app.name_in(locale).to_owned())
+        })
+    })
+}
+
+/// An app id written as words for a person: the id's last dotted part, its `-`/`_` breaks made
+/// spaces, and a camel-case hump a space too — "so.tilo.lang.today" → "Today",
+/// "org.gnome.TextEditor" → "Text Editor".
+#[must_use]
+pub fn app_words(app_id: &str) -> String {
+    let last = app_id
+        .rsplit('.')
+        .find(|part| !part.is_empty())
+        .unwrap_or(app_id);
+    let spread = last.replace(['-', '_'], " ");
+    let mut broken = String::new();
+    let mut before: Option<char> = None;
+    for ch in spread.chars() {
+        if before.is_some_and(|prev| prev.is_lowercase() || prev.is_ascii_digit())
+            && ch.is_uppercase()
+        {
+            broken.push(' ');
+        }
+        before = Some(ch);
+        broken.push(ch);
+    }
+    let said = broken
+        .split_whitespace()
+        .map(|word| {
+            let mut letters = word.chars();
+            let Some(first) = letters.next() else {
+                return String::new();
+            };
+            first.to_uppercase().collect::<String>() + letters.as_str()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if said.trim().is_empty() {
+        UNKNOWN_AUTHOR_NAME.to_owned()
+    } else {
+        said
+    }
+}
+
 /// Longest self-declared handle we will render. Anything longer is almost
 /// certainly not a handle (it is a key, a blob, or an attempt to blow out the
 /// row) and falls through to the unknown-participant path.
@@ -164,6 +343,10 @@ pub fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
 /// disambiguation when two authors share a name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryAuthor {
+    /// The name it goes by: a person's, an agent's own — the reader's account
+    /// name too, since the line that names the author words the reader as
+    /// "You" from [`Self::relation`]. A name, never a sentence: a row that says
+    /// whom software acted for words that line once, from the facts beside it.
     pub name: String,
     /// Degrees `[0, 360)`. Kept for fixtures and any surface that still
     /// reads hue; paint uses [`HistoryAuthor::rgb`].
@@ -181,9 +364,13 @@ pub struct HistoryAuthor {
     /// person, or software acting for someone.
     pub relation: AuthorRelation,
     /// Who acted and for whom, when the author is an agent, a Shortcut or an
-    /// app acting for a person: the same facts [`Self::name`] reads as a
-    /// sentence, kept as data for the action surface and assistive tech.
+    /// app acting for a person: the facts the line that names it words.
     pub attribution: Option<HistoryAttribution>,
+    /// The person the author acted for is the reader: the line says "for you".
+    pub for_reader: bool,
+    /// The task that named the author, as it was called then: the line reads
+    /// "Ada via task ‘Prepare Q3 financials’".
+    pub task: Option<String>,
 }
 
 /// An author that acted for someone: an agent's change is the agent's, on
@@ -195,8 +382,6 @@ pub struct HistoryAttribution {
     pub actor: String,
     /// What the actor is.
     pub kind: tilo_actions::ActorKind,
-    /// The actor's display name, without the person it acted for.
-    pub actor_name: String,
     /// The principal of the person it acted for, when it acted for one.
     pub on_behalf_of: Option<String>,
     /// That person's display name.
@@ -230,6 +415,8 @@ impl HistoryAuthor {
             avatar_rgb: hue_to_rgb(avatar_hue),
             relation: AuthorRelation::Person,
             attribution: None,
+            for_reader: false,
+            task: None,
         }
     }
 
@@ -299,4 +486,76 @@ pub fn hue_to_rgb(hue_deg: f32) -> (u8, u8, u8) {
         channel_u8(green + min_add),
         channel_u8(blue + min_add),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A reader whose words are the source language's, and who knows one person by name.
+    struct Reader;
+
+    impl ParticipantNames for Reader {
+        fn person(&self, id: &str) -> Option<String> {
+            (id == "ada").then(|| "Ada Lovelace".to_owned())
+        }
+    }
+
+    #[test]
+    fn every_kind_of_actor_is_named_by_what_it_is_never_by_an_id() {
+        assert_eq!(actor_name("ada", &Reader), "Ada Lovelace");
+        assert_eq!(
+            actor_name("9f2c1a34b7", &Reader),
+            UNKNOWN_AUTHOR_NAME,
+            "a person nobody named is never shown by their key"
+        );
+        assert_eq!(actor_name("agent:scribe", &Reader), "Scribe");
+        assert_eq!(actor_name("shortcut:morning", &Reader), "Morning");
+        assert_eq!(actor_name("bot:status", &Reader), "Status");
+        assert_eq!(
+            actor_name("app:so.tilo.lang.today", &Reader),
+            "Today",
+            "an app is its own name, whole: never its id, never part of one"
+        );
+    }
+
+    #[test]
+    fn an_app_name_is_the_one_the_session_sent_in_the_reader_s_language() {
+        // The session knows what each installed app is called, in every language its package
+        // names it in: a reader names it so, and an app this device does not have by the words
+        // its id makes — never by its id.
+        assert!(set_installed_apps(vec![collab_types::history::NamedApp {
+            id: "so.tilo.lang.today".to_owned(),
+            name: "Today".to_owned(),
+            names: [("de-DE".to_owned(), "Heute".to_owned())]
+                .into_iter()
+                .collect(),
+        }]));
+        assert_eq!(app_name("so.tilo.lang.today", "de-DE"), "Heute");
+        assert_eq!(app_name("so.tilo.lang.today", "en-US"), "Today");
+        assert_eq!(
+            app_name("so.tilo.lang.today", ""),
+            "Today",
+            "a reader with no language reads the name the package gives itself"
+        );
+        assert_eq!(
+            app_name("org.example.Editor", "de-DE"),
+            "Editor",
+            "an app installed nowhere near this device reads as the words its id makes"
+        );
+        assert!(set_installed_apps(Vec::new()), "the apps are gone");
+        assert!(!set_installed_apps(Vec::new()), "the same names read once");
+        assert_eq!(
+            app_name("so.tilo.lang.today", "de-DE"),
+            "Today",
+            "with no session's names, the words its id makes"
+        );
+    }
+
+    #[test]
+    fn an_app_id_is_written_as_words_a_person_reads() {
+        assert_eq!(app_words("so.tilo.lang.today"), "Today");
+        assert_eq!(app_words("so.tilo.file-explorer"), "File Explorer");
+        assert_eq!(app_words("org.gnome.TextEditor"), "Text Editor");
+    }
 }

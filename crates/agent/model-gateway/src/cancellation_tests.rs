@@ -2,8 +2,8 @@
 use super::*;
 use crate::transport::{FdTransport, Transport};
 use std::os::fd::AsFd;
+use test_http::Responder;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 fn delta(text: &str, finish: &serde_json::Value) -> String {
     format!(
@@ -15,30 +15,41 @@ fn delta(text: &str, finish: &serde_json::Value) -> String {
     )
 }
 
-async fn read_post(stream: &mut tokio::net::TcpStream) {
-    let mut reader = tokio::io::BufReader::new(stream);
-    let mut length = None;
-    loop {
-        let mut line = String::new();
-        assert!(reader.read_line(&mut line).await.unwrap() > 0);
-        if line == "\r\n" {
-            break;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = Some(value.trim().parse::<usize>().unwrap());
-        }
-    }
-    reader
-        .read_exact(&mut vec![0; length.unwrap()])
-        .await
-        .unwrap();
-}
-
 async fn native_stop_retry() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // The first inference's connection is closed by stopping it; the retry
+    // opens its own and is answered to the end.
+    let connections = std::sync::atomic::AtomicUsize::new(0);
+    let served = Responder::serve(move |peer| {
+        let turn = connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(peer.request().method, "POST");
+        if turn == 0 {
+            let _ = peer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            );
+            let _ = peer.write(delta("partial", &serde_json::Value::Null).as_bytes());
+            // Stopping must close the paid generation immediately, not merely
+            // hide its output until the provider's 120 second deadline.
+            assert!(
+                peer.wait_for_close(),
+                "stopping the inference left the provider's connection open"
+            );
+            return;
+        }
+        let body = delta("retry answer", &serde_json::Value::Null)
+            + &delta("", &serde_json::json!("stop"))
+            + "data: [DONE]\n\n";
+        let _ = peer.write(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        );
+        let _ = peer.write(body.as_bytes());
+    });
     let mut profile = ProviderProfile::local_vllm();
     profile.id = "test-provider".into();
-    profile.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    profile.endpoint = format!("{}/v1", served.url());
     profile.models = vec![agent_provider_config::ModelDescriptor::new("test-model")];
     ProviderConfig {
         profiles: vec![profile.clone()],
@@ -53,30 +64,6 @@ async fn native_stop_retry() {
         .store(&reference, &authorization, "fabricated-test-key")
         .unwrap();
 
-    let provider = async {
-        let (mut first, _) = listener.accept().await.unwrap();
-        read_post(&mut first).await;
-        first
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-            )
-            .await
-            .unwrap();
-        first
-            .write_all(delta("partial", &serde_json::Value::Null).as_bytes())
-            .await
-            .unwrap();
-        // Stopping must close the paid generation immediately, not merely hide
-        // its output until the provider's 120 second deadline.
-        let mut byte = [0];
-        assert_eq!(first.read(&mut byte).await.unwrap(), 0);
-        let (mut second, _) = listener.accept().await.unwrap();
-        read_post(&mut second).await;
-        let body = delta("retry answer", &serde_json::Value::Null)
-            + &delta("", &serde_json::json!("stop"))
-            + "data: [DONE]\n\n";
-        second.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-    };
     let (mut original, peer) = UnixStream::pair().unwrap();
     write_frame(
         &mut original,
@@ -122,7 +109,7 @@ async fn native_stop_retry() {
         drop(original);
     };
     Box::pin(tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        tokio::join!(gateway, provider, client);
+        tokio::join!(gateway, client);
     }))
     .await
     .unwrap();

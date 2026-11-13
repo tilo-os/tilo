@@ -1,5 +1,5 @@
-//! The CI seccomp filter refuses what builds never need and kernel exploits
-//! do, while leaving the ordinary calls of a build working.
+//! The CI seccomp filter refuses what builds never need and kernel exploits do, while leaving the
+//! ordinary calls of a build working.
 
 use crate::needs_sandbox;
 use crate::support::{run, shell};
@@ -8,8 +8,8 @@ use tilo_sandbox::job::NESTING_ID;
 #[test]
 fn exploit_primitives_are_refused_with_eperm() {
     needs_sandbox!();
-    // Each line runs a tiny program that makes one refused syscall and
-    // prints its errno name. `python3` is in the host root the tests use.
+    // Each line runs a tiny program that makes one refused syscall and prints its errno name.
+    // `python3` is in the host root the tests use.
     let script = r#"
 for probe in \
   'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(321,0,0,0,0); print("bpf", os.strerror(ctypes.get_errno()))' \
@@ -38,8 +38,8 @@ done
 #[test]
 fn mount_is_refused() {
     needs_sandbox!();
-    // A job's filesystem is final: even as root inside, mount(2) is EPERM
-    // from the filter (before the kernel's own capability check).
+    // A job's filesystem is final: even as root inside, mount(2) is EPERM from the filter (before
+    // the kernel's own capability check).
     let (status, out) = run(|s| {
         shell(
             s,
@@ -60,8 +60,7 @@ fn mount_is_refused() {
 #[test]
 fn only_a_job_allowed_nested_sandboxes_starts_one_and_netfilter_stays_closed() {
     needs_sandbox!();
-    // What bubblewrap and `unshare` do: a user namespace of their own, and
-    // mounts in it.
+    // What bubblewrap and `unshare` do: a user namespace of their own, and mounts in it.
     let nest = "unshare --user --map-root-user --mount --net sh -c 'mount -t tmpfs none /tmp && echo nested' 2>&1; echo done";
     let (status, out) = run(|s| shell(s, nest));
     assert!(status.success() && out.contains("done"), "{out}");
@@ -70,9 +69,9 @@ fn only_a_job_allowed_nested_sandboxes_starts_one_and_netfilter_stays_closed() {
         "a standard job started a sandbox: {out}"
     );
 
-    // Not root inside: the job's root holds no capability, and only another
-    // id may map itself in a namespace of its own without `CAP_SETFCAP`, so
-    // a nesting job is NESTING_ID unless its caller picks another id.
+    // Not root inside: the job's root holds no capability, and only another id may map itself in a
+    // namespace of its own without `CAP_SETFCAP`, so a nesting job is NESTING_ID unless its caller
+    // picks another id.
     let (status, out) = run(|s| {
         shell(s, &format!("id -u; {nest}"));
         s.allow_nested_sandboxes();
@@ -84,8 +83,8 @@ fn only_a_job_allowed_nested_sandboxes_starts_one_and_netfilter_stays_closed() {
         "{out}"
     );
 
-    // Holding CAP_NET_ADMIN over its own network namespace, a nested
-    // sandbox still can't reach nftables or XFRM; route netlink works.
+    // Holding CAP_NET_ADMIN over its own network namespace, a nested sandbox still can't reach
+    // nftables or XFRM; route netlink works.
     let probe = r#"unshare --user --map-root-user --net python3 -c '
 import socket
 for name, proto in (("route", 0), ("netfilter", 12), ("xfrm", 6)):
@@ -111,8 +110,8 @@ for name, proto in (("route", 0), ("netfilter", 12), ("xfrm", 6)):
 #[test]
 fn ordinary_build_syscalls_still_work() {
     needs_sandbox!();
-    // Threads, fork, pipes, file I/O: the filter must leave all of it alone,
-    // or no compiler runs. A shell that forks, pipes and writes proves it.
+    // Threads, fork, pipes, file I/O: the filter must leave all of it alone, or no compiler runs. A
+    // shell that forks, pipes and writes proves it.
     let (status, out) = run(|s| {
         shell(
             s,

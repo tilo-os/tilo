@@ -48,7 +48,7 @@ pub struct Library {
     pub logo: Bytes,
 }
 
-#[resource(kind = "test.library", label = "Library")]
+#[resource(kind = "test.library", catalogue = "tests/locales")]
 impl Library {
     /// Create a snippet: a unit of its own.
     #[action(writes = snippets)]
@@ -278,7 +278,7 @@ impl Shelf {
     }
 }
 
-#[resource(kind = "test.shelf", label = "Shelf")]
+#[resource(kind = "test.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Shelve a book.
     #[action]
@@ -348,7 +348,7 @@ impl Misdeclared {
     }
 }
 
-#[resource(kind = "test.misdeclared", label = "Misdeclared")]
+#[resource(kind = "test.misdeclared", catalogue = "tests/locales")]
 impl Misdeclared {
     /// Rename it.
     #[action]
@@ -627,7 +627,7 @@ fn bytes_inline_small_values_and_reference_large_ones() {
     let small = Bytes::of(b"logo");
     assert_eq!(small.inline(), Some(&b"logo"[..]));
     let large = Bytes::of(&[7; 4096]);
-    assert!(large.needs_store());
+    assert!(large.inline().is_none());
     assert_eq!(large.len(), 4096);
     for value in [small, large, Bytes::default()] {
         assert_eq!(Bytes::from_json(&value.to_json()).unwrap(), value);

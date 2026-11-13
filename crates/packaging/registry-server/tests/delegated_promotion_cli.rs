@@ -30,8 +30,6 @@ fn secret(path: &std::path::Path, key: &SigningKey) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-/// The arguments authorizing `channel_hex` to serve `publisher_hex` under
-/// `owner_path` at `generation`.
 fn authorize<'a>(
     owner_path: &'a std::path::Path,
     channel_hex: &'a str,
@@ -51,9 +49,6 @@ fn authorize<'a>(
     ]
 }
 
-/// The arguments publishing the staged first-party promotion served by
-/// `channel_path`; `valid_for_seconds` sets the certificate lifetime when
-/// given.
 fn publish_args<'a>(
     channel_path: &'a std::path::Path,
     valid_for_seconds: Option<&'a str>,
@@ -70,8 +65,6 @@ fn publish_args<'a>(
     arguments
 }
 
-/// The arguments refreshing the delegated snapshot for `channel_path` with a
-/// lifetime of `valid_for_seconds` seconds.
 fn refresh_args<'a>(channel_path: &'a std::path::Path, valid_for_seconds: &'a str) -> [&'a str; 5] {
     [
         "sign-delegated-snapshot",
@@ -82,7 +75,6 @@ fn refresh_args<'a>(channel_path: &'a std::path::Path, valid_for_seconds: &'a st
     ]
 }
 
-/// The package ids of `snapshot`'s entries.
 fn ids(snapshot: &SignedRegistrySnapshot) -> Vec<&str> {
     snapshot
         .entries
@@ -91,7 +83,6 @@ fn ids(snapshot: &SignedRegistrySnapshot) -> Vec<&str> {
         .collect()
 }
 
-/// Store an allowlist admitting `publisher_hex` as a first-party publisher.
 fn allow(storage: &Storage, publisher_hex: &str, can_add_new: bool) {
     let mut row = crate::support::publisher(publisher_hex, can_add_new);
     row.note = "first party".into();
@@ -259,9 +250,9 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         registry_types::snapshot_hash(&snapshot).unwrap()
     );
 
-    // Simulate a crash after the signed snapshot and moderation state became
-    // durable and the staged manifest was consumed, but before the promotion
-    // journal deletion. Recovery must not require the untrusted stage again.
+    // Simulate a crash after the signed snapshot and moderation state became durable and the staged
+    // manifest was consumed, but before the promotion journal deletion. Recovery must not require
+    // the untrusted stage again.
     storage
         .save_promotion_transaction(&PromotionJournal {
             publisher_pubkey_hex: publisher_hex.clone(),
@@ -295,8 +286,8 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert_eq!(compact.sequence, 2);
     registry_types::verify_compact_snapshot(&compact, &owner_hex, compact.issued_at_unix).unwrap();
 
-    // A higher-generation root authorization revokes the old channel at the
-    // serving boundary immediately, even while its certificate is unexpired.
+    // A higher-generation root authorization revokes the old channel at the serving boundary
+    // immediately, even while its certificate is unexpired.
     secret(&owner_path, &owner);
     ok(
         temp.path(),
@@ -358,8 +349,8 @@ fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() 
             change: sign_change_request(EntryAction::Add, entry, &publisher_key),
         }
     };
-    // The advertised URL no longer serves these bytes, but the registry
-    // already holds them under the digest the publisher signed.
+    // The advertised URL no longer serves these bytes, but the registry already holds them under
+    // the digest the publisher signed.
     let collectable = submission(
         "so.tilo.editor",
         "https://apps.tilo.so/artifacts/gone/editor-x86_64.tapp",
@@ -485,9 +476,8 @@ fn thin_app_promotion_waits_for_its_exact_native_runtime() {
     assert!(storage.load_promotion_transaction().unwrap().is_none());
     assert!(storage.load_staged_promotion().unwrap().is_none());
 
-    // A provider offered in the predecessor is insufficient if this batch
-    // removes it. The new ARM request must stay pending, while the exact x86
-    // provider and its app can publish.
+    // A provider offered in the predecessor is insufficient if this batch removes it. The new ARM
+    // request must stay pending, while the exact x86 provider and its app can publish.
     let newly_missing = native_submission(
         &publisher_key,
         "so.tilo.new-arm-app",
@@ -598,8 +588,8 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
         selected
             .artifacts
             .retain(|artifact| artifact.submission_id != "so.tilo.held");
-        // Model a crash at either durable boundary of subset selection. No
-        // approval, snapshot publication, or deletion has happened yet.
+        // Model a crash at either durable boundary of subset selection. No approval, snapshot
+        // publication, or deletion has happened yet.
         storage.save_staged_promotion(&selected).unwrap();
         if journal_saved {
             let authorization = storage.load_channel_authorization().unwrap().unwrap();
@@ -654,8 +644,8 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
         assert!(storage.load_promotion_transaction().unwrap().is_none());
         ok(temp.path(), &args);
         assert_eq!(storage.load_snapshot().unwrap().unwrap(), snapshot);
-        // The ordinary collector can reconsider the untouched held request
-        // from its retained bytes, and it still cannot publish without its SDK.
+        // The ordinary collector can reconsider the untouched held request from its retained bytes,
+        // and it still cannot publish without its SDK.
         ok(
             temp.path(),
             &["collect-first-party", "--publisher-pubkey", &publisher_hex],
@@ -672,9 +662,9 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
             storage.load_staged_artifact(&held.1.blake3_hex).unwrap(),
             held.2
         );
-        // An item bound of one must not continually recollect the app while
-        // its needed provider sorts beyond the cutoff. Publish the provider,
-        // then reconsider the exact unchanged held app in the next batch.
+        // An item bound of one must not continually recollect the app while its needed provider
+        // sorts beyond the cutoff. Publish the provider, then reconsider the exact unchanged held
+        // app in the next batch.
         let restored = native_submission(
             &publisher,
             "so.tilo.runtime.held",
@@ -771,8 +761,8 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
             owner_path.to_str().unwrap(),
         ],
     );
-    // An authentic expired catalogue can be renewed; consumers still reject
-    // those old bytes at the current time until renewal is published.
+    // An authentic expired catalogue can be renewed; consumers still reject those old bytes at the
+    // current time until renewal is published.
     let mut expired = storage.load_snapshot().unwrap().unwrap();
     expired.previous_snapshot_hash_hex = registry_types::snapshot_hash(&expired).unwrap();
     expired.sequence += 1;

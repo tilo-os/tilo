@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-/// Explicit roots granted by the person; no implicit environment probing.
 #[derive(Clone, Debug)]
 pub struct SourceRoots {
     pub home: PathBuf,
@@ -61,8 +60,7 @@ pub enum Origin {
     Browser,
 }
 
-/// Services an online account enables. This is what the person consented to,
-/// not an inference from a provider name.
+/// What the person consented to, not an inference from a provider name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Service {
@@ -72,11 +70,8 @@ pub enum Service {
     Contacts,
 }
 
-/// The exact selected source account a private handoff journal carries.
-///
-/// It is derived from [`Candidate`] but keeps no source path, profile name or
-/// credential. The opaque `source_id` is the same fingerprint discovery gives
-/// the account, so a fresh source can be matched without trusting plan media.
+/// It keeps no source path, profile name or credential, and its opaque `source_id` is the fingerprint
+/// discovery gives the account, so a fresh source matches without trusting plan media.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectedAccount {
@@ -88,7 +83,6 @@ pub struct SelectedAccount {
 }
 
 impl SelectedAccount {
-    /// The selected form of a GOA account, or `None` for another source.
     pub fn from_candidate(candidate: &Candidate) -> Option<Self> {
         if candidate.origin != Origin::Gnome {
             return None;
@@ -103,8 +97,7 @@ impl SelectedAccount {
     }
 }
 
-/// Metadata only, safe for the local review. Presence means a configured
-/// account or profile was found; it does not establish a valid login.
+/// Presence means a configured account or profile was found; it does not establish a valid login.
 #[derive(Clone, Debug, Serialize)]
 pub struct Candidate {
     pub id: String,
@@ -113,13 +106,10 @@ pub struct Candidate {
     pub label: String,
     pub identity: Option<String>,
     pub server: Option<String>,
-    /// Source path for the private home/profile transfer, never a cookie value.
     pub profile: PathBuf,
     pub needs_sign_in: bool,
-    /// Supports selected credential extraction; discovery alone does not verify a login.
     pub can_import_credentials: bool,
-    /// Enabled services reported by the source. Empty when the source does not
-    /// describe them; never guessed from a provider.
+    /// Empty when the source does not describe them; never guessed from a provider.
     #[serde(default)]
     pub services: Vec<Service>,
 }
@@ -128,22 +118,17 @@ pub struct Candidate {
 pub struct Inventory {
     pub candidates: Vec<Candidate>,
     pub tilo_accounts: Vec<TiloCandidate>,
-    /// Thunderbird accounts, Local Folders, address books and calendars.
     #[serde(default)]
     pub thunderbird: Vec<ThunderbirdProfile>,
-    /// Reviewed source handles used only by the local capture worker. These
-    /// retain private profile paths and are never serialized into receipts.
+    /// They retain private profile paths and are never serialized into receipts.
     #[serde(skip)]
     pub thunderbird_reviewed: Vec<ReviewedThunderbird>,
-    /// Existing sources that could not be examined; do not silently call an
-    /// incomplete scan complete. Paths are not included in diagnostic strings.
+    /// An incomplete scan is never called complete, and paths stay out of diagnostics.
     pub unreadable_sources: Vec<&'static str>,
 }
 
 const MAX_CONFIG: u64 = 2 * 1024 * 1024;
 
-/// Read only recognized metadata from roots the person chose to migrate.
-/// No network access, application launch, keyring access or writes.
 pub fn discover(roots: &SourceRoots) -> Inventory {
     let mut inventory = Inventory::default();
     tilo::discover(roots, &mut inventory);
@@ -184,7 +169,6 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
     inventory
 }
 
-/// Independent recognized profiles beneath the already admitted Home root.
 /// This never reads a config root or substitutes Home/.config for a refused one.
 pub fn discover_home_profiles(home: &Path) -> Inventory {
     let mut inventory = Inventory::default();
@@ -359,8 +343,8 @@ fn add(
     });
 }
 
-// Keep only allowlisted non-secret keys. Foreign configs may include plaintext
-// passwords; their other fields never enter the review or a serializable value.
+// Keep only allowlisted non-secret keys: foreign configs may include plaintext passwords, and
+// their other fields never enter the review or a serializable value.
 pub fn sections(text: &str, allowed: &[&str]) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut result: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     let mut section = String::new();
@@ -387,8 +371,8 @@ pub fn sections(text: &str, allowed: &[&str]) -> BTreeMap<String, BTreeMap<Strin
 
 pub fn safe_server(raw: &str) -> Option<String> {
     let url = url::Url::parse(raw).ok()?;
-    // Match the connector's canonical DAV transport policy: HTTPS, or HTTP
-    // only on loopback. Discovery must retain endpoints it can actually import.
+    // Match the connector's canonical DAV policy: HTTPS, or HTTP only on loopback; discovery keeps
+    // endpoints it can actually import.
     if account_custody::nextcloud::server_url(raw).is_err()
         || url.host_str().is_none()
         || !url.username().is_empty()

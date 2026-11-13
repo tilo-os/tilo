@@ -71,7 +71,7 @@ store-package-file-type = Tilo-Paket
 store-package-review-busy = Zu viele Paketprüfungen warten. Schließe zuerst die laufenden ab.
 
 store-package-local-trust = Von einer bestehenden vertrauenswürdigen Bestätigung verifiziert
-store-installed-unanswered = Bei der Installation verifiziert. { $repositories } hat noch nicht geantwortet; Beschreibung und Updates dieser App erscheinen hier, sobald es antwortet.
+store-installed-unanswered = Bei der Installation verifiziert. { $repositories } hat noch nicht geantwortet, daher fehlen Beschreibung und Updates.
 store-installed-unlisted = Bei der Installation verifiziert. Keine aktivierte Quelle führt diese App, daher bekommt sie hier keine Updates.
 store-package-local-description = Signierte lokale Anwendung. Zur Installation müssen ihre Nutzdaten und genau ihre Laufzeit verfügbar sein.
 store-package-local-source = Lokales Paket
@@ -113,7 +113,7 @@ store-bot-kind = Bot
 store-bot-what-it-does = Was er tut
 store-bot-appearance = Darf unter anderen Namen und Bildern posten. Immer als Bot gekennzeichnet.
 store-bot-add-to-workspace = Zu diesem Arbeitsbereich hinzufügen…
-store-bot-add-elsewhere = Ein Arbeitsbereich fügt einen Bot mit seiner Aktion „Bot hinzufügen“ hinzu
+store-bot-add-elsewhere = Fügen Sie einen Bot im Arbeitsbereich selbst hinzu
 store-bot-trigger-connector = Wenn sein Connector ein Ereignis meldet
 store-bot-trigger-record-changed = Wenn sich ein Eintrag ändert
 store-bot-trigger-schedule = Nach Zeitplan
@@ -186,8 +186,8 @@ store-kept = { $name } bleibt auf diesem Gerät.
 store-released = { $name } darf aufgeräumt werden, wenn es nicht genutzt wird.
 store-progress-opening = { $name } wird geöffnet…
 store-progress-installing = { $name } wird installiert…
-store-progress-continues = Der Paketmanager schließt das in einem eigenen Prozess ab, hier lässt es sich nicht stoppen. Lassen Sie es laufen oder schließen Sie dieses Fenster: Es endet so oder so.
-store-job-continues = Der Paketmanager führt das aus; hier lässt es sich nicht stoppen, und es endet auch dann, wenn Sie das Fenster schließen.
+store-progress-continues = Das lässt sich hier nicht stoppen. Lassen Sie es laufen oder schließen Sie dieses Fenster: Es wird so oder so fertig.
+store-job-continues = Das lässt sich hier nicht stoppen. Es wird auch dann fertig, wenn Sie das Fenster schließen.
 store-progress-updating = { $name } wird aktualisiert…
 store-progress-removing = { $name } wird entfernt…
 store-progress-keeping = { $name } wird auf diesem Gerät behalten…
@@ -351,3 +351,44 @@ store-remotes-configured = Eingerichtete Quellen
 
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installiert, { $size } insgesamt
+store-window-name = App Store
+
+store-app-tilo = Tilo-App
+store-app-flatpak = Flatpak-App
+store-app-flatpak-from = Flatpak-App von { $source }
+store-app-flatpak-from-version = Flatpak-App von { $source }, Version { $version }
+
+## Actions
+
+store-catalog = App Store
+store-catalog-record-moderation-case = Moderationsfall erfassen
+store-effect-inspect-catalogue = Katalog ansehen
+store-effect-refresh = Katalog aktualisieren
+store-effect-update-all = Alle Apps aktualisieren
+store-effect-set-search = Apps durchsuchen
+store-effect-show-view = Store-Bereich anzeigen
+store-effect-show-more = Weitere Apps anzeigen
+store-effect-unblock-app = App entsperren
+store-effect-browse-remote = Flatpak-Repository durchsuchen
+store-effect-set-category = Kategorie anzeigen
+store-effect-clear-filters = Suche leeren
+store-effect-show-details = App-Details anzeigen
+store-effect-show-runtime-details = Laufzeit einer App prüfen
+store-effect-install-runtime = Signierte Laufzeit installieren
+store-effect-set-technical-details = Technische Details ein- oder ausblenden
+store-effect-import-package = Lokales Paket prüfen
+store-effect-open-reference = Flatpak-Referenz öffnen
+store-effect-show-catalogue = Zurück zu den Apps
+store-effect-show-remotes = Flatpak-Quellen anzeigen
+store-effect-show-trust = Vertrauen und Moderation anzeigen
+store-effect-open-link = Webseite öffnen
+store-effect-pin = Auf dem Gerät behalten
+store-effect-add-bot = Verzeichnis-Bot hinzufügen
+store-effect-refresh-remotes = Quellen aktualisieren
+store-effect-add-remote = Flatpak-Quelle hinzufügen
+store-effect-remove-remote = Quelle entfernen
+store-effect-prepare-moderation = Bericht vorbereiten
+store-effect-submit-report = Signierten Bericht senden
+
+## What the app is called in a window and in the launcher
+store-app-title = App-Store

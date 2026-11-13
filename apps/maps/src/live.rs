@@ -1,37 +1,26 @@
-//! The running route as the shell's live activity: a card or a pill the
-//! person keeps in reach while they work in another workspace, and the
-//! control that ends the trip there.
-//!
-//! The shell decides whether the route's card stands on the desk: while
-//! Maps' own window is on screen the directions are drawn there, and the
-//! card waits. What this module publishes is the reading the pill and the
-//! card's fallback show — the turn ahead, how far it is, and how long the
-//! whole trip takes.
+//! The running route as the shell's live activity: the pill and card another workspace shows, and
+//! the control that ends the trip. The shell decides whether the card is on screen; what this
+//! publishes is the turn ahead, its distance, and the trip's time.
 
 use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
 
 use crate::geo;
 use crate::model::Route;
 
-/// The activity id a running route is published under, and the presentation
-/// the route's card is asked for with.
+/// The activity id a running route is published under, and the presentation the route's card is
+/// asked for with.
 pub(crate) const ACTIVITY: &str = "maps.active-navigation";
 
-/// What Maps publishes now: the running route, or nothing at all.
 #[must_use]
 pub(crate) fn published(route: Option<&Route>) -> Published {
     let Some(route) = route else {
         return Published::default();
     };
     let mut published = Published::of(summary(route));
-    // Directions ask for their card without the person pulling it: they are
-    // on their way, and the next turn should be in reach wherever they work.
     published.overlay = true;
     published
 }
 
-/// The route's reading: the turn ahead and how far it is, then how long the
-/// trip still takes and how much of it is left.
 fn summary(route: &Route) -> Summary {
     let next = route.steps.first();
     let (instruction, icon, distance) = next.map_or_else(
@@ -61,8 +50,6 @@ fn summary(route: &Route) -> Summary {
             "{}, {remaining}",
             geo::fmt_duration(route.duration_s)
         ))
-        // The trip is ended by the person, which the card offers as their
-        // close.
         .with_control(Control::new(
             "end",
             crate::failure::t("maps-end"),
@@ -70,16 +57,11 @@ fn summary(route: &Route) -> Summary {
         ))
 }
 
-/// A control pressed on the route's card or pill, where the person is not in
-/// Maps' own window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
-    /// End the trip and clear the route.
     End,
 }
 
-/// The controls pressed on the route since the last call of this, as what
-/// they ask.
 #[must_use]
 pub(crate) fn take_commands() -> Vec<Command> {
     ui::collaboration::channel_live_activity::take_controls()
@@ -94,7 +76,6 @@ pub(crate) fn take_commands() -> Vec<Command> {
         .collect()
 }
 
-/// Show what Maps shows now as its live activity, or end it.
 pub(crate) fn publish(published: &Published) {
     let shown = (published.summary.is_some())
         .then(|| serde_json::to_value(published).ok())
@@ -136,8 +117,6 @@ mod tests {
         }
     }
 
-    /// The route reads as the turn ahead: what to do, how far it is, and how
-    /// long the whole trip takes with how much is left of it.
     #[test]
     fn the_route_reads_as_the_turn_ahead_and_the_trip_left() {
         let route = route();
@@ -158,7 +137,6 @@ mod tests {
         assert_eq!(close.id, "end");
     }
 
-    /// With no route there is nothing to show.
     #[test]
     fn no_route_is_no_activity() {
         let published = published(None);

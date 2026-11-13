@@ -1,6 +1,6 @@
 //! Kernel custody of the fixed ordinary launcher owned by the installed root helper.
-//! This transports ownership only; registration, package/session policy and the
-//! inner ordinary namespace witness remain independent mandatory admissions.
+//! This transports ownership only; registration, package/session policy and the inner
+//! ordinary namespace witness remain independent mandatory admissions.
 use crate::{owned_service::ServiceCancellation, retained_view::ConsumerCommand};
 use runtime_portal::{fd_transport, process_binding::ExecutingPeer};
 use sha2::{Digest, Sha256};
@@ -235,8 +235,7 @@ fn protected_launcher() -> io::Result<File> {
     }
     Ok(file)
 }
-/// Root alone retains and reaps this actual Child. It grants no source access.
-/// The caller must already own its private mount namespace and signed context.
+/// Root alone retains and reaps this actual Child.
 pub struct OwnedOrdinaryChild {
     child: Child,
     pidfd: OwnedFd,
@@ -385,7 +384,7 @@ impl OwnedOrdinaryChild {
             executable,
         })
     }
-    /// Start the actual root owner. A panic/observation error cannot mint stop.
+    /// Start the actual root owner.
     pub fn start_supervision(self) -> io::Result<OrdinaryChildSupervisor> {
         let launcher_pid = self.child.id();
         let launcher_pidfd = self.pidfd.try_clone()?;
@@ -421,7 +420,7 @@ impl OwnedOrdinaryChild {
             worker: Some(worker),
         })
     }
-    /// Existing authenticated bootstrap only. ACKs mean transport, not authority.
+    /// Existing authenticated bootstrap only.
     pub fn handoff(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         if self.cancel.is_cancelled()
             || stopped(&self.pidfd)?
@@ -456,8 +455,7 @@ impl OwnedOrdinaryChild {
         self.remote.take();
         Ok(())
     }
-    /// Run on the existing root owner worker. Reap evidence is an actual wait
-    /// result. Caller still retains source and inner-namespace retirement duties.
+    /// Run on the existing root owner worker.
     pub fn serve(&mut self) -> io::Result<()> {
         self.control
             .set_read_timeout(Some(Duration::from_millis(50)))?;
@@ -507,8 +505,8 @@ impl OwnedOrdinaryChild {
 }
 impl Drop for OwnedOrdinaryChild {
     fn drop(&mut self) {
-        // Handoff and owner-start failure retain real child custody until both
-        // reap and the independently held kernel handle observe termination.
+        // Handoff and owner-start failure retain real child custody until both reap and the
+        // independently held kernel handle observe termination.
         loop {
             let _ = self.child.kill();
             if self.child.wait().is_ok() && stopped(&self.pidfd).unwrap_or(false) {
@@ -518,8 +516,7 @@ impl Drop for OwnedOrdinaryChild {
         }
     }
 }
-/// Parent root driver retains this through child reap AND its separate source/
-/// inner-namespace cleanup. Thread completion alone is never stop evidence.
+/// Parent root driver retains this through child reap AND its separate source/ inner-namespace cleanup.
 pub struct OrdinaryChildSupervisor {
     launcher_pid: u32,
     launcher_pidfd: OwnedFd,
@@ -555,8 +552,8 @@ impl OrdinaryChildSupervisor {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        // Recover actual custody after an owner panic or failed observation;
-        // never replace this with a thread-completion or cancellation claim.
+        // Recover actual custody after an owner panic or failed observation; never replace this with a
+        // thread-completion or cancellation claim.
         while !self.observed_stopped() {
             let mut locked = self
                 .custody
@@ -610,8 +607,7 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    // These are ownership failure tests of a real controlled process. They
-    // do not construct installed source, person, package or namespace grants.
+    // These are ownership failure tests of a real controlled process.
     fn controlled_child() -> (OwnedOrdinaryChild, UnixStream, OwnedFd) {
         let child = Command::new("/bin/sleep")
             .arg("30")
@@ -779,9 +775,7 @@ fn exact_parent(pid: u32, parent: u32) -> io::Result<()> {
     }
     Ok(())
 }
-/// Deliver only an actual owned root child already independently authenticated
-/// by the original helper. No command, UID, source or namespace grant is sent.
-/// The proof endpoint must have been created by that exact consuming child.
+/// Deliver only an actual owned root child already independently authenticated by the original helper.
 pub fn send_consuming_bootstrap(
     stream: &mut UnixStream,
     child: &mut Child,
@@ -866,16 +860,14 @@ pub enum DelegationOutcome {
     Refused,
 }
 /// Emit the sole complete negative handoff at the existing delegation phase.
-/// # Errors
-/// An incomplete write leaves the bootstrap unusable and must retire it.
 pub fn refuse_consuming_bootstrap(stream: &mut UnixStream, deadline: Instant) -> io::Result<()> {
     let fence = SocketDeadline::start(stream, ServiceCancellation::default(), deadline)?;
     stream.write_all(BOOTSTRAP_REFUSED)?;
     fence.check()
 }
 
-/// Only internal fixed-helper entry; arguments carry one inherited private
-/// control descriptor, never paths, credentials, commands or source authority.
+/// Only internal fixed-helper entry; arguments carry one inherited private control descriptor, never
+/// paths, credentials, commands or source authority.
 pub const CONSUMING_BOOTSTRAP_MODE: &str = "--retained-consumer-bootstrap";
 
 fn consuming_mode(pid: u32) -> io::Result<()> {
@@ -905,9 +897,7 @@ fn consuming_mode(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Root ownership of the actual fixed consuming bootstrap. Its stop certifies
-/// this outer task only. Source/target namespace and exposure retirement must
-/// still be observed independently by their existing canonical owners.
+/// Root ownership of the actual fixed consuming bootstrap.
 pub struct ManagedConsumingBootstrap {
     child: Child,
     peer: ExecutingPeer,
@@ -920,11 +910,8 @@ pub struct ManagedConsumingBootstrap {
     command_sent: bool,
 }
 impl ManagedConsumingBootstrap {
-    /// Spawn only the fixed protected internal helper from an actual installed
-    /// root helper, then authenticate its current kernel identity both ways.
-    /// The child entry must isolate its own mount namespace before QPE.
-    /// # Errors
-    /// Refuses root/program/child/QPE/namespace evidence or cancelled custody.
+    /// Spawn only the fixed protected internal helper from an actual installed root helper, then
+    /// authenticate its current kernel identity both ways.
     pub fn spawn(cancel: ServiceCancellation) -> io::Result<Self> {
         if rustix::process::getuid().as_raw() != 0
             || rustix::process::geteuid().as_raw() != 0
@@ -970,8 +957,7 @@ impl ManagedConsumingBootstrap {
             });
         }
         let mut child = command.spawn()?;
-        // Until successful mutual authentication, no target or source may be
-        // created in the child. Failure therefore reaps this actual bootstrap.
+        // Until successful mutual authentication, no target or source may be created in the child.
         let admitted = (|| {
             runtime_portal::process_binding::complete(&mut control)?;
             control.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -1040,8 +1026,8 @@ impl ManagedConsumingBootstrap {
         }
         exact_parent(self.peer.pid(), std::process::id())
     }
-    /// Send the single child-created direct Shell proof endpoint on the existing
-    /// authenticated root bootstrap transport. No listener is created.
+    /// Send the single child-created direct Shell proof endpoint on the existing authenticated root
+    /// bootstrap transport.
     pub fn delegate_shell(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         self.check()?;
         let endpoint = self.shell_endpoint.as_ref().ok_or_else(denied)?;
@@ -1049,10 +1035,7 @@ impl ManagedConsumingBootstrap {
         self.shell_endpoint.take();
         self.check()
     }
-    /// Queue the frozen command before shared delegation. The child still waits
-    /// for genuine direct Shell QPE before reading or executing this command.
-    /// A local refusal emits exactly TCB0; only attempted shared framing errors
-    /// escape as errors and require global bootstrap retirement.
+    /// Queue the frozen command before shared delegation.
     pub fn delegate_shell_command(
         &mut self,
         stream: &mut UnixStream,
@@ -1082,9 +1065,8 @@ impl ManagedConsumingBootstrap {
         fence.check()?;
         Ok(DelegationOutcome::Delegated)
     }
-    /// Request cancellation of the fixed child driver, which must first retire
-    /// its ordinary child and exposure owners before exiting. This never
-    /// certifies inner namespace or source cleanup.
+    /// Request cancellation of the fixed child driver, which must first retire its ordinary child and
+    /// exposure owners before exiting.
     pub fn retire_before_exit(&mut self) {
         if !self.stop_requested {
             self.stop_requested = true;
@@ -1093,7 +1075,6 @@ impl ManagedConsumingBootstrap {
             let _ = self.control.shutdown(std::net::Shutdown::Write);
         }
         // Keep actual owned Child and held namespace until root-child reaping.
-        // Parent/child controller failure cannot turn into a successful detach.
         while self.child.wait().is_err() {
             std::thread::park_timeout(Duration::from_millis(50));
         }
@@ -1109,15 +1090,13 @@ impl Drop for ManagedConsumingBootstrap {
 }
 
 /// A bounded descriptive command on the already authenticated parent channel.
-/// It is not installed source, person or package authority.
 pub enum ConsumingBootstrapCommand {
     Launch(ObservedCommand),
     Exposure(ExposureRequest),
     Retire,
 }
 impl ManagedConsumingBootstrap {
-    /// Deliver the exact frozen target command once, over the same private
-    /// parent channel. The independently authenticated Shell checks its digest.
+    /// Deliver the exact frozen target command once, over the same private parent channel.
     pub fn send_command(
         &mut self,
         command: &ConsumerCommand,
@@ -1152,9 +1131,7 @@ impl ManagedConsumingBootstrap {
     }
 }
 
-/// The internal fixed helper's current parent and private channels. This grants
-/// no source access; Imager independently keeps its actual source/session owner
-/// in the original parent and checks observed Shell against that certified input.
+/// The internal fixed helper's current parent and private channels.
 pub struct ConsumingBootstrapEntry {
     parent: ExecutingPeer,
     helper: File,
@@ -1165,8 +1142,7 @@ pub struct ConsumingBootstrapEntry {
     target_routing: Option<TargetKernelRouting>,
 }
 impl ConsumingBootstrapEntry {
-    /// Call after isolating this helper's own mount namespace. The inherited
-    /// descriptor alone is insufficient: actual root-parent QPE/image are needed.
+    /// Call after isolating this helper's own mount namespace.
     pub fn authenticate(mut control: UnixStream) -> io::Result<Self> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(denied());
@@ -1228,7 +1204,6 @@ impl ConsumingBootstrapEntry {
         exact_parent(std::process::id(), self.parent.pid())
     }
     /// Observe the actual target Shell over the child-created private endpoint.
-    /// Caller must match it to original parent's certified input before spawn.
     pub fn authenticate_shell(&mut self) -> io::Result<ExecutingPeer> {
         self.check()?;
         if self.shell_authenticated {
@@ -1260,8 +1235,7 @@ impl ConsumingBootstrapEntry {
         self.shell_authenticated = true;
         Ok(shell)
     }
-    /// The sole bounded parent-control reader. Exposure control will extend its
-    /// finite vocabulary, preserving one owner of this stream.
+    /// The sole bounded parent-control reader.
     pub fn next_command(&mut self) -> io::Result<ConsumingBootstrapCommand> {
         self.check()?;
         self.control
@@ -1302,8 +1276,8 @@ impl ConsumingBootstrapEntry {
             _ => Err(denied()),
         }
     }
-    /// Deliver actual ordinary child custody on the independently authenticated
-    /// direct Shell stream; caller retains the returned root supervisor.
+    /// Deliver actual ordinary child custody on the independently authenticated direct Shell stream;
+    /// caller retains the returned root supervisor.
     pub fn handoff_ordinary(&mut self, child: &mut OwnedOrdinaryChild) -> io::Result<()> {
         self.check()?;
         if !self.shell_authenticated || !self.command_received {
@@ -1374,8 +1348,6 @@ struct RoutedCommandWire {
     routing: TargetKernelRouting,
 }
 /// The sole descriptive command decoded from the actual authenticated parent.
-/// Its routing must match independently acquired direct Shell kernel evidence.
-/// No public constructor or serialization can turn caller labels into this value.
 pub struct ObservedCommand {
     command: ConsumerCommand,
     routing: TargetKernelRouting,
@@ -1385,7 +1357,6 @@ impl ObservedCommand {
     pub fn command(&self) -> &ConsumerCommand {
         &self.command
     }
-    /// # Errors
     /// Refuses every PID/start/UID/GID/groups difference or unavailable live peer.
     pub fn check_target(&self, peer: &ExecutingPeer) -> io::Result<()> {
         self.routing.check(peer)
@@ -1622,8 +1593,7 @@ mod bootstrap_refusal_tests {
             .unwrap();
         let fence =
             SocketDeadline::start(&shell, ServiceCancellation::default(), deadline).unwrap();
-        // The root stays open with a partial frame: only the fence at the
-        // deadline ends the read.
+        // The root stays open with a partial frame: only the fence at the deadline ends the read.
         root.write_all(b"TCB").unwrap();
         assert!(read_bootstrap_kind(&mut shell).is_err());
         assert!(fence.check().is_err());
@@ -1650,8 +1620,6 @@ mod bootstrap_refusal_tests {
 }
 
 // These handles arrive only on the already authenticated original-parent channel.
-// The original parent independently brackets its actual owned child; these are
-// process/namespace custody, never source or person authority.
 struct ParentObservedNamespaces {
     child: File,
     parent: File,
@@ -1667,8 +1635,8 @@ impl ParentObservedNamespaces {
     }
 }
 fn mount_namespace(file: &File) -> io::Result<()> {
-    // `_IO(0xb7, 3)`: musl types ioctl's request as `int`, glibc as
-    // `unsigned long`; `libc::Ioctl` is each one's.
+    // `_IO(0xb7, 3)`: musl types ioctl's request as `int`, glibc as `unsigned long`; `libc::Ioctl` is
+    // each one's.
     const NS_GET_NSTYPE: libc::Ioctl = 0xb703;
     if unsafe { libc::ioctl(file.as_raw_fd(), NS_GET_NSTYPE) } != libc::CLONE_NEWNS {
         return Err(denied());

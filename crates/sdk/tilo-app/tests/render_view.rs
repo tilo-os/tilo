@@ -16,7 +16,7 @@ pub struct Sketch {
     pub title: String,
 }
 
-#[resource(kind = "test.sketch", label = "Sketch")]
+#[resource(kind = "test.sketch", catalogue = "tests/locales")]
 impl Sketch {
     /// Rename the sketch.
     #[action]

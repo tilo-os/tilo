@@ -1,23 +1,3 @@
-//! Live-verify lane for the maps raster basemap.
-//!
-//! These tests exercise the REAL end-to-end tile path — the LIVE `MapsApp`
-//! (network on, real background worker), the production
-//! `draw_tiles → request → worker fetch → PNG decode → drain` plumbing, and a
-//! GPU rasterise of the result — the exact path that hermetic unit tests (which
-//! hit a local mock) and `--shots` (which renders offline SAMPLE data) never
-//! touch. That gap is why the "tiles never load" bug shipped: every test was
-//! green while the real network→decode→render path was never run.
-//!
-//! The network-dependent cases are explicitly ignored so hermetic CI reports
-//! them as not executed instead of counting an early return as a passing test.
-//! They still compile with every build and are runnable as one opt-in lane:
-//!
-//!   tilo-build test -p maps --test `live_maps` -- \
-//!     --ignored --nocapture --test-threads 1
-//!
-//! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
-//! written (default: `apps/maps/live-out/`).
-
 #![allow(
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
@@ -32,23 +12,14 @@ mod livetest;
 use livetest::{Frame, Harness, pump_frames_until, render_live_to_png};
 use vello::kurbo::Rect;
 
-/// Live viewport. Width < 720 puts the side panel into its overlay drawer,
-/// which starts CLOSED for the live `new()` app — so the whole frame is map,
-/// with only the floating chrome (search bar top, controls right, attribution
-/// bottom-right) over it. That gives a large, clean central tile region.
 const VP: (u32, u32) = (700, 780);
 
-/// Central map region, inset well clear of every piece of floating chrome:
-/// search bar (top), zoom/locate/download controls (right edge), scale bar +
-/// map attribution (bottom-right). Everything sampled here is pure basemap.
 fn map_region() -> Rect {
     let (w, h) = VP;
     Rect::new(30.0, 110.0, f64::from(w) - 90.0, f64::from(h) - 90.0)
 }
 
 fn unique_cache() -> PathBuf {
-    // Only needs to be distinct per run; a pre-epoch clock (never in practice)
-    // just falls back to 0 rather than panicking the test setup.
     let n = ui::time::unix_now_ns();
     std::env::temp_dir().join(format!("tilo-maps-live-{}-{}", std::process::id(), n))
 }
@@ -61,8 +32,6 @@ fn out_dir() -> PathBuf {
     p
 }
 
-/// Every `.png` the worker persisted under `dir`, as bytes — exactly what the
-/// production fetch path accepted from the tile server.
 fn cached_pngs(dir: &std::path::Path) -> Vec<Vec<u8>> {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
@@ -87,11 +56,6 @@ fn cached_pngs(dir: &std::path::Path) -> Vec<Vec<u8>> {
 
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
 
-/// Fail unless the tiles the worker accepted are real map imagery. A provider
-/// refusing service answers every coordinate with one placeholder image (CARTO's
-/// "API KEY REQUIRED" tile is byte-identical for every z/x/y), which decodes
-/// fine and paints plenty of colours — so decoding alone cannot tell. Distinct
-/// coordinates across a dense city centre must be distinct images.
 fn assert_real_imagery(tiles: &[Vec<u8>]) {
     assert!(
         tiles.len() >= 8,
@@ -118,21 +82,12 @@ fn assert_real_imagery(tiles: &[Vec<u8>]) {
     );
 }
 
-/// (1) FULL-PLUMBING integration test — the thing that was missing.
-///
-/// Drives the LIVE app's real frame cycle until tiles arrive, then asserts the
-/// production request→worker→fetch→DECODE→drain path actually delivered decoded
-/// imagery into memory, recorded no failures, and wrote real PNGs to disk.
-/// No GPU required — this is pure network + decode + drain.
 #[test]
 #[ignore = "requires live tile services; run the explicit maps live lane"]
 fn live_tiles_fetch_decode_and_cache() {
     let cache = unique_cache();
     let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
 
-    // Pump the real frame cycle until the first tile is decoded & resident, or
-    // 15s elapse. Each frame's draw issues real requests; the next frame's sync
-    // drains decoded results. 150ms between frames lets the worker make headway.
     let stats = pump_frames_until(
         &mut app,
         Duration::from_secs(15),
@@ -140,8 +95,6 @@ fn live_tiles_fetch_decode_and_cache() {
         |a| a.tiles_mem_len() > 0,
     );
 
-    // Give the worker a little longer to fill more of the viewport so the count
-    // is representative (still bounded).
     let _ = pump_frames_until(
         &mut app,
         Duration::from_secs(6),
@@ -188,8 +141,6 @@ fn live_tiles_fetch_decode_and_cache() {
     std::fs::remove_dir_all(&cache).ok();
 }
 
-/// Opt-in live GPU lane: real tiles render, and a mid-zoom reuses tiles without
-/// blanking.
 #[test]
 #[ignore = "requires live tile services and a GPU; run the explicit maps live lane"]
 #[allow(
@@ -197,14 +148,6 @@ fn live_tiles_fetch_decode_and_cache() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
-    // Phase `live_render_shows_real_tiles`.
-    // (2) LIVE-RENDER screenshot e2e — inspect the pixels.
-    //
-    // Renders the LIVE, network-on map to PNG both BEFORE tiles load (placeholder)
-    // and AFTER, then proves the map area shows real, varied tile imagery: it is
-    // not uniform, it is far more colour-diverse than the placeholder, and it
-    // substantially CHANGED once imagery arrived. Requires a headless GPU
-    // (lavapipe is fine).
     {
         let cache = unique_cache();
         let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
@@ -212,7 +155,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         let before_png = out.join("maps-live-before.png");
         let after_png = out.join("maps-live-after.png");
 
-        // Frame 0: no tiles resident yet → the honest placeholder (grid substrate).
         let before = render_live_to_png(&mut app, &before_png);
         assert_eq!(
             app.tiles_mem_len(),
@@ -220,14 +162,12 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
             "the first frame should predate any decoded tile"
         );
 
-        // Pump until enough tiles cover the region, or 25s elapse.
         let stats = pump_frames_until(
             &mut app,
             Duration::from_secs(25),
             Duration::from_millis(150),
             |a| a.tiles_mem_len() >= 8 && !a.tiles_has_inflight(),
         );
-        // A few settle frames so late arrivals fold in.
         let _ = pump_frames_until(
             &mut app,
             Duration::from_secs(3),
@@ -254,7 +194,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
             after_png.display(),
         );
 
-        // The data-path outcome must be sound.
         assert!(
             app.tiles_mem_len() > 0,
             "no decoded tiles resident to render"
@@ -264,18 +203,8 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
             None,
             "tile fetch failed — imagery refused or unreachable"
         );
-        // The painted tiles are the server's real imagery, not one placeholder
-        // repeated: pixel variety alone passed CARTO's "API KEY REQUIRED" tile.
         assert_real_imagery(&cached_pngs(app.tiles_cache_dir()));
 
-        // Pixel outcome: real imagery replaced the loading substrate.
-        //
-        // The harness renders the dark theme, so this is the OSM Standard
-        // raster re-toned dark: deep land, roads, parks, water and light labels.
-        // It quantises (5 bits/channel, to ignore AA noise) to many distinct
-        // colours; the FLOOR here stays well above what a flat fill or the
-        // loading substrate reaches. `changed_fraction` shows most sampled map
-        // pixels changing from the loading substrate to the map.
         assert!(
             !after.is_uniform(region),
             "map area is a uniform fill — no imagery rendered"
@@ -294,13 +223,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         std::fs::remove_dir_all(&cache).ok();
     }
 
-    // Phase `live_mid_zoom_reuses_tiles_and_never_blanks`.
-    // Zoom must never blank. After z14 imagery is resident, jumping to a mid-zoom
-    // where the target-level tiles are NOT fetched yet must still paint imagery —
-    // the resident tiles reused *scaled* (lower-z ancestors on a zoom-in,
-    // higher-z descendants on a zoom-out) — rather than a flat land fill. Renders
-    // one zoom-out and one zoom-in mid-frame and asserts each shows varied imagery,
-    // exercising the real fetch→decode→draw path (only the base tiles ever load).
     {
         let cache = unique_cache();
         let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
@@ -322,8 +244,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         );
         assert_real_imagery(&cached_pngs(app.tiles_cache_dir()));
 
-        // Zoom OUT one integer level: the target tiles aren't loaded, so the frame
-        // must reuse the resident tiles as scaled descendants — never blank.
         app.set_zoom_for_verify(base_zoom - 1.0);
         let out_png = out.join("maps-mid-zoom-out.png");
         let f_out = render_live_to_png(&mut app, &out_png);
@@ -343,8 +263,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
             "zoom-out mid-frame shows too little imagery ({out_colors}) — tiles not reused scaled"
         );
 
-        // Re-settle at the base zoom, then zoom IN one integer level: reuse the
-        // resident tiles as scaled ancestors — again, never blank.
         app.set_zoom_for_verify(base_zoom);
         let _ = pump_frames_until(
             &mut app,
@@ -375,9 +293,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
     }
 }
 
-/// A trivially-runnable sanity assert on the pixel helpers themselves, so the
-/// content assertions are trusted (a uniform frame reads as uniform / low
-/// diversity). Runs hermetically — no gate, no network, no GPU.
 #[test]
 fn frame_pixel_helpers_detect_uniform_vs_varied() {
     let (w, h) = (32u32, 32u32);
@@ -390,8 +305,6 @@ fn frame_pixel_helpers_detect_uniform_vs_varied() {
     assert!(uniform.is_uniform(region));
     assert_eq!(uniform.distinct_colors(region, 1), 1);
 
-    // A coarse 8px-block checker (survives the step-4 sampler): not uniform,
-    // > 1 distinct colour.
     let mut data = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         for x in 0..w {
@@ -410,6 +323,5 @@ fn frame_pixel_helpers_detect_uniform_vs_varied() {
     };
     assert!(!varied.is_uniform(region));
     assert!(varied.distinct_colors(region, 1) >= 2);
-    // Fully different from the uniform frame.
     assert!(varied.changed_fraction(&uniform, region, 1, 16) > 0.4);
 }

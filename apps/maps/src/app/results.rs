@@ -1,4 +1,5 @@
-//! What arrives from the network and the location service: a tile, a geocoder reply or a position, drained on the app's own thread and applied to the map.
+//! What arrives from the network and the location service, drained on the app's own thread and
+//! applied to the map.
 
 use super::{
     ActionOutput, LatLon, LocationOutcome, MapsApp, NetMsg, POI_MAX, TravelMode, Workspace,
@@ -12,9 +13,6 @@ impl MapsApp {
                   message kinds, and splitting arms out would relocate the code, not \
                   shrink what a reader must trace for one variant"
     )]
-    /// Take the network results that arrived since the last frame. A result
-    /// that becomes the map's — a geocoded place, a route, transit options —
-    /// is accepted with the map action every peer replays.
     pub(super) fn drain_net(&mut self) {
         while let Ok(msg) = self.net_rx.try_recv() {
             self.pending = self.pending.saturating_sub(1);
@@ -33,8 +31,6 @@ impl MapsApp {
                             self.accept_places(ranked.clone());
                             self.rank_results(&mut ranked, &query);
                             self.results_anchor = Some(self.search_anchor());
-                            // A committed search: list the results in the panel
-                            // and centre on the top (nearest) match.
                             if let Some(first) = ranked.first() {
                                 self.model.center = first.pos;
                                 self.model.selected = Some(first.id.clone());
@@ -71,10 +67,6 @@ impl MapsApp {
                 } => match results {
                     Ok(found) if !found.is_empty() => {
                         self.accept_places(found.clone());
-                        // Rank the From/To suggestions the same way a search
-                        // is ranked — relevance first, nearest-first within a
-                        // tier — so a distant namesake never sits above the
-                        // near place the user meant.
                         let mut ranked = found;
                         self.rank_results(&mut ranked, &query);
                         self.endpoints.finish_search(endpoint_of(origin), ranked);
@@ -86,9 +78,6 @@ impl MapsApp {
                     Err(e) => {
                         self.endpoints
                             .finish_search(endpoint_of(origin), Vec::new());
-                        // The person reads what they can do about it, not the
-                        // transport's own words; the raw error is logged
-                        // (`APP-maps-02`).
                         self.model.status = failure::say(failure::SEARCH, &e);
                     }
                 },
@@ -96,7 +85,6 @@ impl MapsApp {
                     if let Ok(label) = r
                         && !label.is_empty()
                     {
-                        // Refine the device-location origin's label in place.
                         self.model.origin_name = label;
                     }
                 }
@@ -107,9 +95,6 @@ impl MapsApp {
                                 failure::say(failure::ROUTE, "the service offered no route");
                             return;
                         };
-                        // Every route the service offered, this one first: the
-                        // person can look at another without retyping the
-                        // destination.
                         self.model.route_alternatives = routes;
 
                         self.model.route = Some(route.clone());
@@ -143,8 +128,6 @@ impl MapsApp {
                             dest: self.model.dest,
                             dest_name: self.model.dest_name.clone(),
                         }));
-                        // Frame the map on the itinerary now that we have real
-                        // leg geometry (the same courtesy the road route gets).
                         self.fit_current();
                         self.model.status = failure::t("maps-departures-updated");
                     }
@@ -154,7 +137,6 @@ impl MapsApp {
                     }
                 },
                 NetMsg::Pois { generation, pois } => {
-                    // Ignore a stale reply for a viewport we've since panned off.
                     if generation == self.poi_generation {
                         match pois {
                             Ok(mut found) => {
@@ -180,8 +162,6 @@ impl MapsApp {
                     }
                 }
                 NetMsg::RegionSearch { query, results } => {
-                    // Only adopt a reply that still matches the current query and
-                    // while the download dialog is open.
                     if self.offline_panel.query_matches(&query) {
                         self.offline_panel.adopt_results(results);
                     }
@@ -193,11 +173,6 @@ impl MapsApp {
         }
     }
 
-    /// Drain a pending device-location result (non-blocking, once per frame).
-    /// On success the coordinate becomes the route origin, the map recentres,
-    /// a reverse-geocode refines the label, and the route/transit re-plans. On
-    /// failure an honest "Location unavailable" message is shown — never a
-    /// fabricated position.
     pub(super) fn drain_location(&mut self) {
         let Some(rx) = &self.location_rx else { return };
         let outcome = match rx.try_recv() {
@@ -222,7 +197,6 @@ impl MapsApp {
                 self.model.origin_name = failure::t("maps-current-location");
                 self.model.center = pos;
                 self.model.status = failure::t("maps-located");
-                // Refine the raw coordinate into a human place label.
                 if self.online {
                     self.pending += 1;
                     let tx = self.net_tx.clone();
@@ -231,7 +205,6 @@ impl MapsApp {
                         let _ = tx.send(NetMsg::ReverseGeocode(r));
                     });
                 }
-                // If a destination is known, re-plan from the real location.
                 if self.model.dest.is_some() {
                     if self.model.mode.is_transit() {
                         self.recompute_transit();

@@ -1,8 +1,7 @@
 //! Verified, one-time folder copying into a fresh destination.
 //!
-//! Grants must be native absolute paths without symlink components. Directory
-//! handles, not estimates or queued absolute paths, authorize traversal. No
-//! source writes, merges, automatic retries, or executable launches occur here.
+//! Directory handles, not paths, authorize traversal. No source writes, merges or retries happen
+//! here.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -34,9 +33,8 @@ pub struct CopyProgress {
     pub current_relative_path: PathBuf,
 }
 
-/// Paths are relative to the selected source. Verified output is retained on
-/// cancellation/failure. General fidelity disclosures do not assert metadata
-/// equivalence; errors preserving supported timestamps make `complete` false.
+/// Relative to the selected source. Verified output is kept on cancellation or failure; an error
+/// that loses a supported timestamp makes `complete` false.
 #[derive(Clone, Debug, Default)]
 pub struct CopyReport {
     pub verified_files: Vec<PathBuf>,
@@ -71,9 +69,8 @@ pub use crate::migration_directory::{
     PinnedDirectory, preserve_directory_times_values, preserve_time_values, same_snapshot,
 };
 
-// Linux scanner handles may be O_PATH and Windows scanner handles lack
-// FILE_WRITE_ATTRIBUTES. Reopen only the fresh destination using its pinned
-// parent, no-follow lookup and identity comparison before setting timestamps.
+// Linux scanner handles may be O_PATH and Windows ones lack FILE_WRITE_ATTRIBUTES, so reopen only
+// the fresh destination through its pinned parent, no-follow, and compare identity.
 fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) -> io::Result<()> {
     preserve_directory_times_values(
         directory,
@@ -82,8 +79,8 @@ fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) ->
     )
 }
 
-/// The only removable entry is an exclusive temporary file whose current
-/// no-follow identity still matches the handle created by this operation.
+/// Only an exclusive temporary file whose no-follow identity still matches this operation's
+/// handle may be removed.
 pub struct OwnedTemporary {
     parent: Arc<PinnedDirectory>,
     pub name: OsString,
@@ -155,7 +152,6 @@ impl OwnedTemporary {
 
 impl Drop for OwnedTemporary {
     fn drop(&mut self) {
-        // Never recursively clean a destination or unlink a replacement.
         let _ = self.remove_owned();
     }
 }
@@ -252,9 +248,8 @@ impl<S: CopyFileSource> StagedFile<S> {
         self.source.attest(self.bytes, self.digest, cancelled)?;
         check_cancel(cancelled)?;
         self.temporary.validate()?;
-        // Hard-link publication is atomic and fails if the destination exists.
-        // Filesystems without hard links are explicitly unsupported, never
-        // downgraded to an overwriting rename or a partially visible copy.
+        // Hard-link publication is atomic and fails when the destination exists; filesystems without
+        // hard links are unsupported, never a partially visible copy.
         cap_primitives::fs::hard_link(
             &self.temporary.parent.file,
             Path::new(&self.temporary.name),
@@ -291,8 +286,7 @@ impl<S: CopyFileSource> StagedFile<S> {
     }
 }
 
-/// Bounded streaming, also used for the independent source/destination rereads.
-/// The expected length bounds work even if another process keeps appending.
+/// The expected length bounds the work even if another process keeps appending.
 pub fn stream(
     source: &mut impl Read,
     mut destination: Option<&mut File>,
@@ -319,11 +313,8 @@ pub fn stream(
             .ok_or_else(|| changed("invalid read length"))?;
         digest.update(chunk);
         if let Some(output) = &mut destination {
-            // Copy output is an exclusively created, empty regular file. Keep
-            // zero-filled extents sparse on Unix so VM images and large caches do not
-            // consume their entire logical length on the destination. Digests
-            // still cover every byte; the final length below includes trailing
-            // holes. This does not promise identical physical extent layout.
+            // Zero-filled extents stay sparse on Unix, so VM images and caches do not take their whole
+            // logical length; digests still cover every byte.
             if cfg!(unix) && chunk.iter().all(|byte| *byte == 0) {
                 output.seek(SeekFrom::Current(
                     i64::try_from(count).map_err(io::Error::other)?,
@@ -506,17 +497,15 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
     }
 }
 
-/// Copy the explicitly granted source to the exact, new import directory.
-///
-/// `complete()` covers all regular-file bytes, directory entries and supported
-/// timestamps, with other fidelity limitations disclosed separately. Progress
-/// counts only published, verified files. An initial progress event occurs after
-/// pinning grants but before creating the destination.
+/// Copies the explicitly granted source to the exact, new import directory. Progress counts only
+/// published, verified files, and its first event comes after the grants are pinned but before the
+/// destination exists.
 ///
 /// # Errors
-/// Returns an error for invalid/overlapping grants, an existing destination, or
-/// failure to create the fresh root. Failures after creation are per-path report
-/// entries; verified outputs remain available for later explicit resumption.
+///
+/// Returns an error for invalid or overlapping grants, an existing destination or a failure to
+/// create the fresh root. Later failures are per-path report entries; verified output remains for
+/// an explicit resumption.
 pub fn copy_folder(
     source: &Path,
     destination: &Path,
@@ -551,7 +540,6 @@ pub fn copy_folder_internal(
     copy_pinned_folder(source, destination, cancelled, progress, journal, None)
 }
 
-/// Copy the exact granted source capability instead of reopening its pathname.
 pub fn copy_pinned_folder<'a>(
     source: Arc<PinnedDirectory>,
     destination: &Path,
@@ -671,14 +659,12 @@ mod tests {
         (temp, source, base.join("destination"))
     }
 
-    /// Sealed sources, staged corruption, changed sources and conflicting destinations.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn publication_requires_verified_unchanged_bytes_and_preserves_conflicts() {
-        // Phase `sealed_source_requires_independent_bytes_and_late_attestation`.
         // A native-like reader must get a second real pass and postflight before linking.
         {
             use super::super::migration_source::{CopyFileSource, CopyPass, CopyTimes, sealed};
@@ -791,7 +777,6 @@ mod tests {
             assert_eq!(fs::read(source.join("hello")).unwrap(), b"world");
         }
 
-        // Phase `publication_preserves_conflicting_destination`.
         // Catches overwriting a conflict created after exclusive staging.
         {
             let (_temp, source, destination) = fixture();
@@ -804,7 +789,6 @@ mod tests {
             assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
         }
 
-        // Phase `replacing_a_temporary_file_preserves_the_replacement`.
         // Catches unlinking an entry we no longer own during error cleanup.
         {
             let (_temp, source, destination) = fixture();
@@ -956,10 +940,8 @@ mod tests {
         }
     }
 
-    /// Cancellation before, during and after staging.
     #[test]
     fn migration_cancellation_keeps_verified_files_and_cleans_only_temps() {
-        // Phase `cancellation_creates_no_destination_and_reports_incomplete`.
         // Catches work performed despite an already-cancelled grant.
         {
             let (_temp, source, destination) = fixture();
@@ -1002,7 +984,6 @@ mod tests {
         }
     }
 
-    /// Destination parent replacement, descendant swaps and Windows pinning.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1094,8 +1075,6 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            // Staging requires an actually private directory, including its
-            // inherited child ACL; use the same native creation as production.
             fs::remove_dir(destination).unwrap();
             let parent = PinnedDirectory::open_absolute(destination.parent().unwrap()).unwrap();
             parent
@@ -1115,7 +1094,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Writable parents, ancestor rights, sticky temporaries and changed permissions.
     #[test]
     #[cfg(unix)]
     #[allow(
@@ -1123,9 +1101,8 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn namespace_permissions_gate_creation_and_publication() {
-        // Phase `namespace_refuses_other_writable_parent_before_creating_anything`.
-        // A private child does not prevent another account replacing it through
-        // an unsafe parent. Refusal must happen before mkdir, not after adoption.
+        // A private child does not stop another account replacing it through an unsafe parent, so
+        // the refusal must come before mkdir, not after adoption.
         {
             use std::os::unix::fs::PermissionsExt;
             let (temp, source, _) = fixture();
@@ -1191,9 +1168,8 @@ mod tests {
             );
         }
 
-        // Phase `namespace_changed_permissions_stop_publication_and_cleanup`.
-        // Once the private namespace is opened to other writers, neither publish
-        // nor cleanup is allowed to perform its name-based mutation.
+        // Once the private namespace is open to other writers, neither publish nor cleanup may
+        // perform its name-based mutation.
         {
             use std::os::unix::fs::PermissionsExt;
             let (_temp, source, destination) = fixture();
@@ -1209,7 +1185,6 @@ mod tests {
         }
     }
 
-    /// macOS ACL write grants, inherit-only ACLs and read-only ACLs.
     #[test]
     #[cfg(target_os = "macos")]
     #[allow(
@@ -1295,7 +1270,6 @@ mod tests {
     fn namespace_sticky_parent_does_not_trust_a_foreign_owned_child() {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
-        // ownership of a newly created empty directory in its own fixture.
         assert_eq!(tilo_process::effective_uid(), 0);
         let (temp, source, _) = fixture();
         let parent = temp.path().canonicalize().unwrap().join("sticky");

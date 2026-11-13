@@ -5,10 +5,37 @@ use uuid::Uuid;
 
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
+/// What a link offer names: a page of the host's own (`id`), or a record by the catalogue's
+/// reference to it (`reference`, a component's [`crate::component::Link`]). Choosing an entry
+/// writes a run that names what it holds: a `link` to the page, or a `mention` of the record,
+/// which reads as it reads now wherever the text goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
-    pub id: Uuid,
+    pub id: Option<Uuid>,
     pub title: String,
+    pub reference: Option<String>,
+}
+
+impl PageEntry {
+    /// The entry a page `id`, titled `title`.
+    #[must_use]
+    pub fn page(id: Uuid, title: impl Into<String>) -> Self {
+        Self {
+            id: Some(id),
+            title: title.into(),
+            reference: None,
+        }
+    }
+
+    /// The entry of the record a component is offered (`reference`), reading as `title` does.
+    #[must_use]
+    pub fn link(reference: &str, title: &str) -> Self {
+        Self {
+            id: None,
+            title: title.to_owned(),
+            reference: Some(reference.to_owned()),
+        }
+    }
 }
 
 pub type LinkPopover = FilterMenu<PageEntry>;
@@ -66,18 +93,9 @@ mod tests {
     fn seed_three() -> LinkPopover {
         let mut p = LinkPopover::new();
         p.set_items(vec![
-            PageEntry {
-                id: Uuid::from_u128(1),
-                title: "Welcome".into(),
-            },
-            PageEntry {
-                id: Uuid::from_u128(2),
-                title: "Roadmap".into(),
-            },
-            PageEntry {
-                id: Uuid::from_u128(3),
-                title: "Inbox".into(),
-            },
+            PageEntry::page(Uuid::from_u128(1), "Welcome"),
+            PageEntry::page(Uuid::from_u128(2), "Roadmap"),
+            PageEntry::page(Uuid::from_u128(3), "Inbox"),
         ]);
         p
     }
@@ -134,9 +152,8 @@ mod tests {
             let mut p = LinkPopover::new();
             p.set_items(
                 (0..12)
-                    .map(|index| PageEntry {
-                        id: Uuid::from_u128(index + 1),
-                        title: format!("Page {index}"),
+                    .map(|index| {
+                        PageEntry::page(Uuid::from_u128(index + 1), format!("Page {index}"))
                     })
                     .collect(),
             );
@@ -205,14 +222,8 @@ mod tests {
         fn ime_preedit_is_visible_but_filters_only_after_commit() {
             let mut p = LinkPopover::new();
             p.set_items(vec![
-                PageEntry {
-                    id: Uuid::from_u128(1),
-                    title: "東京".into(),
-                },
-                PageEntry {
-                    id: Uuid::from_u128(2),
-                    title: "London".into(),
-                },
+                PageEntry::page(Uuid::from_u128(1), "東京"),
+                PageEntry::page(Uuid::from_u128(2), "London"),
             ]);
             p.set_visible(true);
             assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(

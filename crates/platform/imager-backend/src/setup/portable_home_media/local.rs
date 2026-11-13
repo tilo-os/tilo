@@ -1,8 +1,6 @@
-//! Home data moving on the same computer travels as the same sealed Home unit
-//! as every other route: the reviewed source is sealed into a private
-//! workspace with a throwaway password and admitted again before anything
-//! consumes it. A retry reopens the sealed unit instead of reading the source
-//! again.
+//! Home data moving on the same computer travels as the same sealed Home unit as every other route:
+//! the reviewed source is sealed into a private workspace with a throwaway password and admitted again
+//! before anything consumes it. A retry reopens the sealed unit instead of reading the source again.
 use super::{Expectation, HomeSource, MediaGrant};
 use crate::setup::{
     home_transfer::promotion::AdoptionWitness,
@@ -21,9 +19,8 @@ use zeroize::Zeroizing;
 
 const UNIT: &str = "unit.json";
 
-/// Owner-only record of the sealed unit in the private workspace. The
-/// password protects the package in transit; here it sits beside the admitted
-/// plaintext, which the same owner only already holds.
+/// Owner-only record of the sealed unit in the private workspace. The password protects the package
+/// in transit; it sits beside plaintext only this owner already holds.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -33,8 +30,7 @@ struct Record {
     summary: ExportSummary,
 }
 
-/// An admitted Home unit: the authenticated package and the tree extracted
-/// from it at `root`.
+/// The authenticated package and the tree extracted from it at `root`.
 #[derive(Clone)]
 pub struct SealedHome {
     root: PathBuf,
@@ -43,12 +39,13 @@ pub struct SealedHome {
 }
 
 impl SealedHome {
-    /// Seal `source` into `workspace` and admit it at `root`, a new private
-    /// directory, or reopen the unit an earlier attempt sealed there.
+    /// Seals `source` into `workspace` and admits it at `root`, a new private directory, or reopens
+    /// the unit an earlier attempt sealed there.
     ///
     /// # Errors
-    /// Refuses a nonprivate workspace, an existing `root` without a sealed
-    /// unit, a changed source, insufficient space or a changed sealed unit.
+    ///
+    /// Refuses a non-private workspace, an existing `root` without a sealed unit, a changed source,
+    /// insufficient space or a changed sealed unit.
     pub fn seal(
         source: &HomeSource,
         workspace: &Path,
@@ -90,17 +87,15 @@ impl SealedHome {
             summary,
         };
         let review = authenticate(workspace, &record, cancel)?;
-        // The record precedes admission, so an interrupted admission resumes
-        // from this unit and `root` never exists without one.
+        // The record precedes admission, so an interrupted admission resumes from this unit and
+        // `root` never exists without one.
         publish_private_artifact(&pin, UNIT, &serde_json::to_vec(&record)?)?;
         Self::admit(review, &record, root, false, cancel)
     }
 
-    /// Reopen the unit sealed in `workspace`: authenticate the package again,
-    /// then extract it at `root` if an earlier admission was interrupted, or
-    /// verify the admitted tree. Once applications were deployed into the
-    /// tree, only their user installation may differ. Returns `None` when
-    /// nothing was sealed there yet.
+    /// Authenticates the package again, then extracts it at `root` if an earlier admission was
+    /// interrupted, or verifies the admitted tree. Once applications were deployed, only their user
+    /// installation may differ. `None` when nothing was sealed there yet.
     pub fn reopen(
         workspace: &Path,
         root: &Path,
@@ -114,8 +109,7 @@ impl SealedHome {
         Self::admit(review, &record, root, applications, cancel).map(Some)
     }
 
-    /// Reopen the unit after adoption moved its tree from `root`, verifying
-    /// every authenticated entry where the adoption journal placed it.
+    /// Verifies every authenticated entry where the adoption journal placed it.
     pub fn reopen_adopted(
         workspace: &Path,
         root: &Path,
@@ -165,18 +159,15 @@ impl SealedHome {
         })
     }
 
-    /// Where the admitted tree lives until adoption moves it.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// What the reviewed source held when it was sealed.
     pub fn summary(&self) -> &ExportSummary {
         &self.summary
     }
 
-    /// Verify the admitted tree against the authenticated package; with
-    /// `applications`, deployments into its user installation are allowed.
+    /// With `applications`, deployments into its user installation are allowed.
     pub fn verify(&self, applications: bool, cancel: &AtomicBool) -> io::Result<()> {
         let mut review = self
             .review
@@ -204,7 +195,6 @@ fn record(workspace: &Path) -> io::Result<Option<Record>> {
     Ok(Some(record))
 }
 
-/// Admit the package only if it is exactly the unit its record expects.
 fn authenticate(
     workspace: &Path,
     record: &Record,
@@ -232,8 +222,8 @@ fn authenticate(
     Ok(review)
 }
 
-/// Exclusions that narrow a Home review to the user's Flatpak installation
-/// and app data, the subtrees an applications-only transfer carries.
+/// Exclusions that narrow a Home review to the user's Flatpak installation and app data, the subtrees
+/// an applications-only transfer carries.
 pub fn application_data_exclusions(home: &Path) -> io::Result<Vec<PathBuf>> {
     let mut excluded = Vec::new();
     for (parent, kept) in [

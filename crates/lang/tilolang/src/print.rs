@@ -290,6 +290,11 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     if let Some(place) = &p.place {
         head = format!("{head} ({})", place.name);
     }
+    if let Some(label) = &p.label {
+        let mut quoted = String::new();
+        escape_into(label, &mut quoted);
+        head = format!("{head} (label: \"{quoted}\")");
+    }
     match &p.default {
         Some(default) => {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);

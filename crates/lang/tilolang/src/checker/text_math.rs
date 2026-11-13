@@ -100,6 +100,13 @@ impl Checker<'_> {
                 }
                 Ex::host(Imp::StrLen, vec![r], Ty::Int)
             }
+            // How many words it holds: its runs of non-whitespace.
+            "words" => {
+                if !self.arity(name, args, 0, span) {
+                    return None;
+                }
+                Ex::host(Imp::StrWords, vec![r], Ty::Int)
+            }
             "is_empty" => {
                 if !self.arity(name, args, 0, span) {
                     return None;

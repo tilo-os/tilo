@@ -77,7 +77,7 @@ fn public_import_inspect_and_read_preserve_reported_comparison_and_native_view()
         "chip-study-warm-cycles",
         "chip-study-programmed-bits",
     ] {
-        let expected = ui::i18n::I18nManager::lookup_plain(key);
+        let expected = crate::view::CATALOG.t(key);
         assert!(
             rendered.contains(&serde_json::to_string(&expected).unwrap()),
             "missing retained property {key}"
@@ -238,7 +238,7 @@ fn public_memory_report_preserves_geometry_ports_and_native_properties() {
         "chip-study-memory-initialized",
         "chip-value-no",
     ] {
-        let label = ui::i18n::I18nManager::lookup_plain(key);
+        let label = crate::view::CATALOG.t(key);
         assert!(
             inspection.contains(&serde_json::to_string(&label).unwrap()),
             "missing {key}"

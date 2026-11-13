@@ -1,15 +1,9 @@
 //! Who may ask: the compositor of the person at the seat, and nobody else.
-//!
-//! Changing a machine's routes, DNS and firewall is the shell's to ask, on
-//! the person's behalf: no app, script or other account may, even of the
-//! same person. The shell is recognised as the NTFS mount service recognises
-//! it ([`seat_peer`]).
 
 pub use seat_peer::{PeerFacts, Seat};
 
 use super::Caller;
 
-/// Decide whether `peer` may ask anything at all.
 pub fn decide(seat: &Seat, peer: &PeerFacts) -> Result<Caller, String> {
     if seat.is_seat_shell(peer) {
         Ok(Caller { uid: peer.uid })
@@ -29,13 +23,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("seat0"), "ACTIVE_UID=1000\n").unwrap();
         let seat = Seat {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
+            trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat: dir.path().join("seat0"),
             users: dir.path().join("users"),
         };
         let shell = PeerFacts {
             uid: 1000,
-            exe: Some(PathBuf::from("/usr/bin/shell")),
+            exe: Some(PathBuf::from("/usr/bin/tilo-session")),
             host_namespaces: true,
         };
         assert_eq!(decide(&seat, &shell), Ok(Caller { uid: 1000 }));

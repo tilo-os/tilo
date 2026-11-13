@@ -1,20 +1,9 @@
-//! Built-in RTF **import** codec — parses `{\rtf1 …}` back onto the canonical
-//! rich-text model ([`crate::export_rtf`] handles export). Groups `{ … }` push/pop
-//! formatting state; control words `\word`/`\wordN` take an optional signed
-//! parameter; control symbols cover literal specials (`\\ \{ \}`), `\'XX` hex
-//! bytes, `\uN` Unicode units, and `\*` (skip-destination).
+//! The built-in RTF import codec: `{\rtf1 …}` parsed back onto the canonical rich-text model
+//! ([`crate::export_rtf`] handles export).
 //!
-//! Control word → model: `\par`/`\pard` close the paragraph (`\pard` also
-//! resets paragraph state); `\b`/`\i`/`\ul`/`\strike` (+ `0`/`none` forms) →
-//! `strong`/`em`/`underline`/`strike`; `\cfN` → `color` (0 = auto); `\fsN` →
-//! `fontSize` in points (`N` is half-points); a bulleted paragraph →
-//! `list_item`. `\fonttbl`/`\stylesheet`/`\info`/`\*\…` are skipped; `\colortbl`
-//! is parsed for the color lookup; escapes decode to literal text.
-//!
-//! RTF has no semantic headings, so every paragraph maps to `paragraph` (or
-//! `list_item` if bulleted). `export` is `Unsupported`: RTF export is
-//! [`crate::export_rtf::render_rtf`] (needs a materialized snapshot a
-//! `FormatProvider` doesn't get).
+//! Groups `{ … }` push and pop formatting state; control words take an optional signed parameter;
+//! `\'XX` is a hex byte, `\uN` a Unicode unit and `\*` a skipped destination. RTF has no semantic
+//! headings, so every paragraph maps to `paragraph`, or to `list_item` when bulleted.
 use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
@@ -38,7 +27,6 @@ impl FormatProvider for RtfCodec {
     }
 
     fn export(&self, _doc: DocRef, _content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
-        // The RTF writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
             "RTF export is provided by tilo_doc::export_rtf::render_rtf, not the qdoc codec"
                 .to_string(),
@@ -51,9 +39,7 @@ enum Token {
     GroupOpen,
     GroupClose,
     Control(String, Option<i32>),
-    /// A control symbol: a single non-alpha char after `\` (`\\ \{ \}`, `\*`, `\~`, `\-`, …); `\'XX`/`\uN` lex as their own tokens.
     Symbol(char),
-    /// A `\'XX` hex byte escape → the decoded byte value.
     HexByte(u8),
     /// A `\uN` Unicode escape → the signed 16-bit code unit `N`.
     Unicode(i32),
@@ -67,7 +53,6 @@ fn at(chars: &[char], i: usize) -> char {
     chars.get(i).copied().unwrap_or('\0')
 }
 
-/// Tokenizes the RTF source over chars (== bytes after the import-side byte→char map).
 fn tokenize(src: &str) -> Vec<Token> {
     let chars: Vec<char> = src.chars().collect();
     let n = chars.len();
@@ -127,7 +112,6 @@ fn tokenize(src: &str) -> Vec<Token> {
                     } else {
                         None
                     };
-                    // A single trailing space is the control-word delimiter and is consumed.
                     if i < n && at(&chars, i) == ' ' {
                         i = i.saturating_add(1);
                     }
@@ -151,7 +135,6 @@ fn tokenize(src: &str) -> Vec<Token> {
                         out.push(Token::HexByte(byte));
                     }
                 } else {
-                    // The single char is the symbol; `\\ \{ \}` are literal specials, others (`\*`, `\~`, `\-`, …) carry meaning the parser interprets.
                     out.push(Token::Symbol(d));
                     i = i.saturating_add(1);
                 }
@@ -238,7 +221,6 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
     out
 }
 
-/// Per-scope character formatting, pushed/popped on `{`/`}`.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "four independent, orthogonal per-run toggles mirroring RTF's own flags (\\b \\i \\ul \\strike); a bitflags enum would add indirection with no behavioral benefit"
@@ -251,11 +233,9 @@ struct CharState {
     strike: bool,
     /// 1-based color-table index (`\cfN`); 0 = auto/none.
     color: usize,
-    /// Font size in half-points (`\fsN`); `None` = unset (no `size` mark).
     fs_halfpt: Option<i32>,
 }
 
-/// A run mark gathered during parsing, applied after the block's text is complete (so `ExpandMark::After` doesn't stretch it over trailing text).
 struct PendingMark {
     block: String,
     start: usize,
@@ -290,14 +270,11 @@ fn consume_colortbl(tokens: &[Token], idx: usize) -> Option<(Vec<Option<String>>
     Some((colors, j))
 }
 
-/// The block being filled, its char length, and whether the *next* text should open a fresh
-/// paragraph (true initially and after every `\par`).
 struct BlockCursor {
     prev: Option<String>,
     cur: Option<String>,
     cur_len: usize,
     need_new_block: bool,
-    /// Whether the pending/just-started paragraph is a list item (saw a bullet).
     pending_bullet: bool,
 }
 
@@ -314,7 +291,6 @@ impl Default for BlockCursor {
 }
 
 impl BlockCursor {
-    /// Open a fresh `paragraph` (or `list_item`) block and make it current.
     fn open_block(&mut self, doc: &mut DocMut, is_list: bool) {
         let kind = if is_list { "list_item" } else { "paragraph" };
         let id = doc.insert_block(self.prev.as_deref(), kind);
@@ -326,7 +302,6 @@ impl BlockCursor {
         self.cur_len = 0;
     }
 
-    /// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
     fn ensure_block(&mut self, doc: &mut DocMut) -> String {
         if self.need_new_block || self.cur.is_none() {
             self.open_block(doc, self.pending_bullet);
@@ -354,23 +329,17 @@ impl BlockCursor {
             '}' => '}',
             '~' => '\u{a0}',
             '_' => '\u{2011}',
-            // Optional hyphen (no visible glyph, so falls through here too) and
-            // anything else unrecognized.
             _ => return,
         };
         self.push_char(doc, literal);
     }
 }
 
-/// Everything [`import_rtf`]'s token loop carries from one token to the next.
 struct RtfImport {
-    /// Per-scope character formatting, pushed/popped on `{`/`}`.
     stack: Vec<CharState>,
     colors: Vec<Option<String>>,
     cursor: BlockCursor,
     pending_marks: Vec<PendingMark>,
-    /// Skip-destination depth: entering an ignorable destination (`\*`, or a known
-    /// non-content one) drops tokens until its closing brace (`None` = not skipping).
     skip_depth: Option<usize>,
     depth: usize,
 }
@@ -428,7 +397,6 @@ impl RtfImport {
                 self.cursor.push_char(doc, ch);
             }
             Token::Text(s) if !skipping => self.push_text(s, doc),
-            // Currently inside a skip-destination: drop the token's content.
             Token::Symbol(_)
             | Token::Control(..)
             | Token::HexByte(_)
@@ -437,7 +405,6 @@ impl RtfImport {
         }
     }
 
-    /// Pushes a run of literal text under the active char formatting, gathering the run marks it implies.
     fn push_text(&mut self, s: &str, doc: &mut DocMut) {
         let cs = self.stack.last().cloned().unwrap_or_default();
         if s.is_empty() {
@@ -508,9 +475,7 @@ impl RtfImport {
         }
     }
 
-    /// Handle a control word: toggle char state, break paragraphs, or note a bullet.
     fn handle_control(&mut self, word: &str, param: Option<i32>, doc: &mut DocMut) {
-        // A param of 0 turns a boolean toggle OFF (`\b0`); absent or non-zero = ON.
         let on = param != Some(0);
         let cursor = &mut self.cursor;
         // `stack` always holds at least one `CharState`: seeded with one in `RtfImport::new`, and
@@ -526,8 +491,6 @@ impl RtfImport {
                 cursor.cur = None;
             }
             "pard" => {
-                // Reset paragraph-level state; also a soft break so `\pard` between paragraphs
-                // starts a new block (`export_rtf` emits one `\pard … \par` per paragraph); doesn't reset char state.
                 cursor.need_new_block = true;
                 cursor.cur = None;
                 cursor.pending_bullet = false;
@@ -550,8 +513,6 @@ impl RtfImport {
             "cf" => cs.color = usize::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
             "fs" => cs.fs_halfpt = param,
             "plain" => *cs = CharState::default(),
-            // A literal bullet glyph (`export_rtf` emits `\bullet\tab `) marks the paragraph as a
-            // list item; `\pntext`/`\pn` groups are list-marker destinations we skip but still flag it.
             "bullet" => cursor.pending_bullet = true,
             "pntext" | "pn" | "listtext" => {
                 cursor.pending_bullet = true;
@@ -561,7 +522,6 @@ impl RtfImport {
             | "footnote" | "field" | "object" | "themedata" | "datastore" | "generator" => {
                 self.skip_depth = Some(self.depth);
             }
-            // Everything else (alignment, indents, font selection, doc-level flags, etc.) is intentionally ignored — it doesn't map onto a modeled mark.
             _ => {}
         }
     }
@@ -605,7 +565,6 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
     apply_pending_marks(doc, st.pending_marks);
 }
 
-/// Resolve `\cfN` to a `#rrggbb` string, or `None` (auto / out of range).
 fn color_hex(colors: &[Option<String>], idx: usize) -> Option<String> {
     if idx == 0 {
         return None;
@@ -654,7 +613,6 @@ mod tests {
             assert_eq!(texts, vec!["First".to_string(), "Second".to_string()]);
         }
         {
-            // literal `\\ \{ \}`, a hex-byte escape (é, Latin-1), and a Unicode escape (checkmark, U+2713).
             let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
             let p = snap
                 .blocks
@@ -691,9 +649,6 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
         }
-        // Phase `roundtrip_docrtf_shaped_rtf_preserves_text_and_bold`.
-        // A hand-written RTF snapshot shaped like `export_rtf`'s emit side; the full
-        // round-trip lives in the word processor's tests.
         {
             let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
     {\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
@@ -739,7 +694,6 @@ mod tests {
                 .iter()
                 .find(|m| m.name == "strong")
                 .expect("strong mark present");
-            // The bold run is "bold" — chars 1..5.
             assert_eq!((strong.start, strong.end), (1, 5), "{:?}", p.marks);
         }
         {
@@ -817,7 +771,6 @@ mod tests {
             assert_eq!((color.start, color.end), (0, 3));
         }
         {
-            // `\fs40` = 40 half-points = 20pt.
             let snap = import("{\\rtf1\\ansi\n{\\pard {\\fs40 big}\\par}}");
             let p = snap
                 .blocks

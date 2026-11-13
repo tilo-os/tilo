@@ -22,6 +22,8 @@ futures-util.workspace = true
 serde.workspace = true
 # Google's search element answers with JSON.
 serde_json.workspace = true
+# `fixture-servers`: the test's own server, shared with the rest of the tree.
+test-http = { path = "../../dev/test-http", optional = true }
 url.workspace = true
 # Bing wraps result links in base64url.
 base64.workspace = true
@@ -34,7 +36,7 @@ workspace-hack = { version = "0.1" }
 [features]
 # `fetch_fixture`: a fetch that reaches a test's server on this machine,
 # which `fetch` refuses. Only test builds turn it on.
-fixture-servers = []
+fixture-servers = ["dep:test-http"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }

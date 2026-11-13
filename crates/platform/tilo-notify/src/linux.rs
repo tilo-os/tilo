@@ -1,20 +1,9 @@
 //! The Linux backend on the session bus: the notification portal
 //! (`org.freedesktop.portal.Notification`, which the Tilo shell and
-//! xdg-desktop-portal implement), else the freedesktop notification service
-//! (`org.freedesktop.Notifications`) on a desktop without a portal.
+//! xdg-desktop-portal implement), else `org.freedesktop.Notifications`.
 //!
-//! Every call runs on one bus thread and is bounded, so a stuck service can
-//! delay the caller by at most [`CALL_BUDGET`] and never by a D-Bus timeout.
-//!
-//! A notification with an activation URI carries a default action (the
-//! portal's `default-action`, the freedesktop `default` action), and each
-//! button an action of its own (`tilo-button-<n>`); the first notification
-//! starts listeners for both services' `ActionInvoked` signals on the same
-//! connection, which hand the URI to the app while it runs.
-//!
-//! The freedesktop service also says why a notification it closed went away
-//! (`NotificationClosed`), which [`crate::set_close_handler`] hands the app;
-//! the portal's interface has no such signal, and reports none.
+//! Every call runs on one bus thread and is bounded, so a stuck service delays the
+//! caller by at most [`CALL_BUDGET`] and never by a D-Bus timeout.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -48,7 +37,6 @@ const FREEDESKTOP: (&str, &str, &str) = (
 
 type Job = Box<dyn FnOnce(Option<&Connection>) + Send>;
 
-/// The bus thread's queue. `None` when the thread could not start.
 fn bus() -> Option<&'static Mutex<mpsc::Sender<Job>>> {
     static BUS: OnceLock<Option<Mutex<mpsc::Sender<Job>>>> = OnceLock::new();
     BUS.get_or_init(|| {
@@ -67,7 +55,6 @@ fn bus() -> Option<&'static Mutex<mpsc::Sender<Job>>> {
     .as_ref()
 }
 
-/// Run `call` on the bus thread and wait at most [`CALL_BUDGET`].
 fn on_bus<T: Send + 'static>(
     call: impl FnOnce(&Connection) -> Result<T, NotifyError> + Send + 'static,
 ) -> Result<T, NotifyError> {
@@ -85,8 +72,6 @@ fn on_bus<T: Send + 'static>(
     })
 }
 
-/// Whether `error` says nothing on the bus implements the call, as opposed to
-/// the service refusing it.
 fn missing(error: &zbus::Error) -> bool {
     let zbus::Error::MethodError(name, _, _) = error else {
         return false;
@@ -106,7 +91,6 @@ fn failed(error: zbus::Error) -> NotifyError {
     NotifyError::Failed(error.to_string())
 }
 
-/// Which service answered first; later calls go straight to it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Service {
     Portal,
@@ -117,9 +101,9 @@ pub(crate) struct SessionNotifier {
     app_id: String,
 }
 
-/// Freedesktop ids by tag, so a tag replaces and withdraws its own
-/// notification. Shared by every notifier in the process: the service hands
-/// out ids per connection, and there is one.
+/// Freedesktop ids by tag, so a tag replaces and withdraws its own notification.
+/// Shared by every notifier in the process, since the service hands out ids per
+/// connection, and there is one.
 fn ids() -> &'static Mutex<HashMap<String, u32>> {
     static IDS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
     IDS.get_or_init(Mutex::default)
@@ -138,30 +122,22 @@ impl SessionNotifier {
     }
 }
 
-/// The portal action a click invokes; its target is the activation URI.
 const PORTAL_ACTION: &str = "tilo-activate";
-/// The freedesktop action key a click (on the body) invokes.
 const DEFAULT_ACTION: &str = "default";
 /// The action a notification's button invokes, after this its index.
 const BUTTON_ACTION: &str = "tilo-button-";
 
-/// The action of the button at `index`.
 fn button_action(index: usize) -> String {
     format!("{BUTTON_ACTION}{index}")
 }
 
-/// A notification's actions, each with the activation URI it hands over.
 type Activations = Vec<(String, String)>;
 
-/// Activation URIs by freedesktop notification id and action, for its
-/// `ActionInvoked`.
 fn activation_ids() -> &'static Mutex<HashMap<u32, Activations>> {
     static IDS: OnceLock<Mutex<HashMap<u32, Activations>>> = OnceLock::new();
     IDS.get_or_init(Mutex::default)
 }
 
-/// What a notification's actions hand over: its activation for a click on
-/// it, each button's for that button.
 fn activations_of(n: &Notification) -> Activations {
     n.activation
         .iter()
@@ -175,9 +151,6 @@ fn activations_of(n: &Notification) -> Activations {
         .collect()
 }
 
-/// The tag the freedesktop service shows as notification `id`, forgotten with
-/// its actions: the notification is gone now, and showing the tag again is a
-/// new notification.
 fn take_shown(id: u32) -> Option<String> {
     let tag = ids()
         .lock()
@@ -194,8 +167,6 @@ fn take_shown(id: u32) -> Option<String> {
     Some(tag)
 }
 
-/// The freedesktop service closed notification `id` for `code`: hand the tag
-/// it showed under, and the reason the specification names, to the app.
 fn freedesktop_closed(id: u32, code: u32) {
     let Some(tag) = take_shown(id) else {
         return;
@@ -207,8 +178,6 @@ fn freedesktop_closed(id: u32, code: u32) {
     crate::closed(&tag, reason);
 }
 
-/// Listen for both services' `ActionInvoked`, and the freedesktop service's
-/// `NotificationClosed`, on `connection`, once.
 fn listen_for_reports(connection: &Connection) {
     static LISTENING: std::sync::Once = std::sync::Once::new();
     LISTENING.call_once(|| {
@@ -265,8 +234,8 @@ fn listen_for_reports(connection: &Connection) {
                 }
             })
         });
-        // A service without the close signal (an older one) leaves its iterator empty; the
-        // report simply never comes.
+        // A service without the close signal leaves its iterator empty: the report simply
+        // never comes.
         let closing = connection.clone();
         let spawned = spawned.and_then(|_| {
             tilo_rt::spawn_thread("tilo-notify-closes", move || {
@@ -291,7 +260,6 @@ fn listen_for_reports(connection: &Connection) {
     });
 }
 
-/// What the portal is given of `n`.
 fn portal_content(n: &Notification) -> HashMap<&'static str, Value<'_>> {
     let mut content: HashMap<&'static str, Value<'_>> = HashMap::new();
     content.insert("title", Value::from(n.title.as_str()));
@@ -342,7 +310,6 @@ fn portal_remove(connection: &Connection, tag: &str) -> zbus::Result<()> {
         .map(drop)
 }
 
-/// The freedesktop hints of `n`.
 fn freedesktop_hints(n: &Notification) -> HashMap<&'static str, Value<'static>> {
     let mut hints = HashMap::new();
     // The specification has no warning level; only an error is critical.
@@ -415,7 +382,6 @@ fn freedesktop_close(connection: &Connection, tag: &str) -> zbus::Result<()> {
         .map(drop)
 }
 
-/// Try the portal, else the freedesktop service, remembering which answered.
 fn either(
     connection: &Connection,
     portal: impl FnOnce(&Connection) -> zbus::Result<()>,
@@ -625,8 +591,6 @@ impl Notifier for SessionNotifier {
         let notification = notification.clone();
         let app = self.app_id.clone();
         on_bus(move |connection| {
-            // Every notification may be closed by the person or the service, with or without
-            // actions of its own.
             listen_for_reports(connection);
             either(
                 connection,
@@ -649,8 +613,8 @@ impl Notifier for SessionNotifier {
     }
 }
 
-/// The Tilo shell's extension of the notification service: it verifies the
-/// sender's process ancestry, so only the app it launched is believed.
+/// The Tilo shell's extension of the notification service: it verifies the sender's
+/// process ancestry, so only the app it launched is believed.
 pub(crate) fn publish_priority_contacts(
     app_id: &str,
     contacts: &[PriorityContact],
@@ -707,7 +671,6 @@ mod tests {
         );
     }
 
-    /// Record what `crate::closed` reports for `tag`.
     fn closings(tag: &str) -> Arc<Mutex<Vec<(String, crate::CloseReason)>>> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
@@ -739,7 +702,6 @@ mod tests {
             )],
             "an expiry says so"
         );
-        // Its id and actions are gone with it: the service cannot name it again.
         assert!(
             !ids().lock().unwrap().contains_key("closing-test:expired"),
             "the tag is forgotten"
@@ -779,14 +741,11 @@ mod tests {
     #[test]
     fn a_close_for_a_notification_shown_elsewhere_or_a_reason_the_spec_leaves_open_says_nothing() {
         let seen = closings("unknown-test:");
-        // A tag no handler names: another app of this process showed it.
         if let Ok(mut ids) = ids().lock() {
             ids.insert("elsewhere-test:1".to_owned(), 41_021);
         }
         freedesktop_closed(41_021, 2);
-        // An id this process never showed.
         freedesktop_closed(41_022, 2);
-        // A reason the specification leaves open.
         if let Ok(mut ids) = ids().lock() {
             ids.insert("unknown-test:1".to_owned(), 41_023);
         }

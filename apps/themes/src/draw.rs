@@ -12,6 +12,8 @@ use ui::tokens::PresenceHue;
 use ui::vello::kurbo::{Circle, RoundedRect, Shape, Stroke};
 use ui::vello::peniko::{Color, Fill};
 
+use crate::locales::CATALOG;
+
 /// Logical size the miniature is composed at, before it is scaled to fit.
 pub const CANVAS: (f64, f64) = (480.0, 300.0);
 
@@ -97,13 +99,13 @@ pub fn miniature_list(
     let tile = paint.desktop_with_window();
 
     paint.label(
-        "Inbox",
+        &CATALOG.t("themes-preview-inbox"),
         TextRole::Title,
         colors.text_primary,
         Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter),
     );
     paint.label(
-        "12 conversations",
+        &CATALOG.t("themes-preview-conversations"),
         TextRole::Caption,
         colors.text_dim,
         Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter + 32.0),
@@ -112,10 +114,10 @@ pub fn miniature_list(
     let row_height = 44.0;
     let list_top = tile.y0 + gutter + 62.0;
     for (index, (name, subject, unread)) in [
-        ("Ada Lovelace", "The quarterly review", true),
-        ("Bo Chen", "Re: Budget notes", true),
-        ("Design team", "Friday's critique", false),
-        ("Grace Hopper", "A compiler for everyone", false),
+        ("Ada Lovelace", "themes-preview-subject-review", true),
+        ("Bo Chen", "themes-preview-subject-budget", true),
+        ("Design team", "themes-preview-subject-critique", false),
+        ("Grace Hopper", "themes-preview-subject-compiler", false),
     ]
     .into_iter()
     .enumerate()
@@ -140,7 +142,7 @@ pub fn miniature_list(
             Point::new(row.x0 + 42.0, row.y0 + 6.0),
         );
         paint.label(
-            subject,
+            &CATALOG.t(subject),
             TextRole::Caption,
             colors.text_dim,
             Point::new(row.x0 + 42.0, row.y0 + 24.0),
@@ -199,7 +201,7 @@ pub fn miniature_dialog(
         ui::chrome::panel_border(theme),
     );
     paint.label(
-        "Move to trash?",
+        &CATALOG.t("themes-preview-move-title"),
         TextRole::Title,
         colors.text_primary,
         Point::new(
@@ -208,7 +210,7 @@ pub fn miniature_dialog(
         ),
     );
     paint.label(
-        "The file stays recoverable for 30 days.",
+        &CATALOG.t("themes-preview-move-body"),
         TextRole::Body,
         colors.text_dim,
         Point::new(
@@ -224,7 +226,7 @@ pub fn miniature_dialog(
     );
     paint.fill(&rounded(row, radii.control), colors.surfaces.raised);
     paint.label(
-        "Keep the copy",
+        &CATALOG.t("themes-preview-keep-copy"),
         TextRole::Caption,
         colors.text_primary,
         Point::new(row.x0 + inset, row.y0 + 6.0),
@@ -237,7 +239,7 @@ pub fn miniature_dialog(
     );
     paint.fill(&rounded(cancel, radii.control), colors.surfaces.raised);
     paint.label(
-        "Cancel",
+        &CATALOG.t("themes-preview-cancel"),
         TextRole::Label,
         colors.text_primary,
         Point::new(cancel.x0 + 20.0, cancel.y0 + 7.0),
@@ -250,7 +252,7 @@ pub fn miniature_dialog(
     );
     paint.fill(&rounded(primary, radii.control), colors.intent.accent);
     paint.label(
-        "Move",
+        &CATALOG.t("themes-preview-move"),
         TextRole::Label,
         colors.intent.on_accent,
         Point::new(primary.x0 + 24.0, primary.y0 + 7.0),
@@ -287,7 +289,14 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         colors.surfaces.sidebar,
     );
     let row_height = 26.0;
-    for (i, name) in ["Inbox", "Drafts", "Shared"].into_iter().enumerate() {
+    for (i, name) in [
+        "themes-preview-inbox",
+        "themes-preview-drafts",
+        "themes-preview-shared-with-me",
+    ]
+    .into_iter()
+    .enumerate()
+    {
         #[allow(clippy::cast_precision_loss, reason = "three rows")]
         let top = sidebar.y0 + gutter + i as f64 * (row_height + 2.0);
         let row = Rect::new(
@@ -306,7 +315,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
             colors.text_dim
         };
         paint.label(
-            name,
+            &CATALOG.t(name),
             TextRole::Label,
             ink,
             Point::new(row.x0 + inset, row.y0 + 5.0),
@@ -331,21 +340,21 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let left = sidebar.x1 + f64::from(space.s6);
     let mut top = tile.y0 + gutter;
     paint.label(
-        "Quarterly review",
+        &CATALOG.t("themes-preview-document"),
         TextRole::Title,
         colors.text_primary,
         Point::new(left, top),
     );
     top += 30.0;
     paint.label(
-        "Shared with Ada and Bo",
+        &CATALOG.t("themes-preview-shared"),
         TextRole::Body,
         colors.text_dim,
         Point::new(left, top),
     );
     top += 20.0;
     paint.label(
-        "Edited 2 minutes ago",
+        &CATALOG.t("themes-preview-edited"),
         TextRole::Caption,
         colors.text_tertiary,
         Point::new(left, top),
@@ -359,7 +368,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         colors.intent.you,
     );
     paint.label(
-        "Budget notes",
+        &CATALOG.t("themes-preview-field"),
         TextRole::Label,
         colors.text_primary,
         Point::new(field.x0 + inset, field.y0 + 6.0),
@@ -392,7 +401,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let primary = Rect::new(left, top, left + 96.0, top + 30.0);
     paint.fill(&rounded(primary, radii.control), colors.intent.accent);
     paint.label(
-        "Share",
+        &CATALOG.t("themes-preview-share"),
         TextRole::Label,
         colors.intent.on_accent,
         Point::new(primary.x0 + 28.0, primary.y0 + 7.0),
@@ -400,7 +409,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     let secondary = Rect::new(primary.x1 + inset, top, primary.x1 + 96.0, top + 30.0);
     paint.fill(&rounded(secondary, radii.control), colors.surfaces.raised);
     paint.label(
-        "Cancel",
+        &CATALOG.t("themes-preview-cancel"),
         TextRole::Label,
         colors.text_primary,
         Point::new(secondary.x0 + 22.0, secondary.y0 + 7.0),
@@ -452,11 +461,18 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
         &rounded(armed, radii.concentric(radii.panel, space.s2)),
         colors.lift_on(colors.surfaces.overlay, 1.0),
     );
-    for (i, item) in ["Copy link", "Rename", "Move"].into_iter().enumerate() {
+    for (i, item) in [
+        "themes-preview-copy-link",
+        "themes-preview-rename",
+        "themes-preview-move",
+    ]
+    .into_iter()
+    .enumerate()
+    {
         #[allow(clippy::cast_precision_loss, reason = "three items")]
         let item_y = panel.y0 + 14.0 + i as f64 * 24.0;
         paint.label(
-            item,
+            &CATALOG.t(item),
             TextRole::Label,
             colors.text_primary,
             Point::new(panel.x0 + 18.0, item_y),

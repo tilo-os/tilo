@@ -1,5 +1,3 @@
-//! The decoder's own settings and the events it reports: the metadata a stream carries, the settings a rebuild applies, and what a decoded frame or a media event becomes.
-
 use super::{DecoderMetadata, Icon, PlayerSetting, PlayerState};
 
 impl PlayerState {
@@ -135,9 +133,8 @@ impl PlayerState {
         }
     }
 
-    /// Translate decoder-owned lifecycle events into app-visible state. The
-    /// shared widget remains the single engine pump; this layer owns only the
-    /// file-open contract and the user-facing error copy.
+    /// Turn the decoder's lifecycle events into app state. The widget stays the one engine
+    /// pump; this layer owns the file-open contract and the user-facing error copy.
     pub(super) fn drain_player_media_events(&mut self) {
         for event in self.player.take_media_events() {
             self.handle_media_event(event);
@@ -151,12 +148,12 @@ impl PlayerState {
                 self.dirty = true;
             }
             media::MediaEvent::Error(message) => {
-                // The decoder's own wording is for logs and agents; the
-                // person is told what it means for them.
+                // The decoder's wording is for logs and agents; the person is told what it
+                // means for them.
                 tracing::warn!(error = %message, "video player: the decoder reported an error");
                 self.fail_playback();
-                // A file this device cannot decode is no use in the queue:
-                // keeping it there leaves a dead entry beside the good ones.
+                // A file this device cannot decode is no use in the queue: keeping it
+                // leaves a dead entry beside the good ones.
                 if let Some(id) = self.current_queue_id.take() {
                     self.queue.retain(|entry| entry.id != id);
                 }
@@ -165,8 +162,7 @@ impl PlayerState {
                 }
             }
             media::MediaEvent::Ended => {
-                // Queue advancement belongs to the app, but remains gated
-                // on a real engine end event rather than the current
+                // Queue advancement is gated on the engine's end event, not on the
                 // playhead looking close to its duration.
                 self.advance_after_engine_end();
             }

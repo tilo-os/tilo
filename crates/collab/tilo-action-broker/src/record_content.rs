@@ -21,11 +21,18 @@
 //! - **Possessing a hash never grants access.** A device answers a peer's
 //!   request only when the host says the peer may read the record's route,
 //!   and only with content kept under that record's scope on this device.
+//!   What a peer may read is asked again when content it asked for earlier
+//!   is handed over later ([`ContentPeers::may_read`]).
 //! - **Bytes are verified, never trusted.** Content travels in bounded
 //!   pieces addressed by hash; the assembled bytes must hash to what was
 //!   asked for before they are kept or handed to an app.
 //! - **Nothing arrives unasked.** Pieces for content this device did not
 //!   ask for on that route are dropped.
+//! - **What was lacking follows.** A device asked for content it does not
+//!   keep yet says so, and hands it to the peers that asked, and may still
+//!   read the record, once it keeps it:
+//!   a record can name content a moment before its writer keeps the bytes
+//!   where peers are served from.
 //!
 //! A want is in one of three states, which its subscribers hear as they
 //! change ([`ContentNews`]):
@@ -119,6 +126,14 @@ pub trait ContentPeers: Send + Sync {
     /// The devices connected now that could hand over `route`'s content,
     /// never this device.
     fn sources(&self, route: &CrdtRoute) -> ContentSources;
+
+    /// Whether `peer` may read `route` now. An ask is answered on the
+    /// admission the workspace gave the peer; content owed to it is handed
+    /// over later, when no message of its own arrives, so the route's
+    /// devices are asked again then.
+    fn may_read(&self, route: &CrdtRoute, peer: ContentPeer) -> bool {
+        self.sources(route).all().contains(&peer)
+    }
 }
 
 /// The devices connected now that could hand over a route's content.
@@ -194,6 +209,17 @@ pub struct RouteContent {
 struct Wants {
     open: HashMap<(ContentScope, String), Want>,
     made: u64,
+    /// Content peers asked this device for while it kept none, and the peers
+    /// that asked: handed to them once it is kept here ([`RouteContent::owe`]).
+    owed: HashMap<(ContentScope, String), Owed>,
+}
+
+/// Content this device said it lacks to peers that may read it.
+struct Owed {
+    route: CrdtRoute,
+    /// When it was first owed among the owed ones: the oldest go first.
+    order: u64,
+    peers: BTreeSet<ContentPeer>,
 }
 
 impl Want {
@@ -263,6 +289,7 @@ impl RouteContent {
         self.shelf.keep(&scope, &hash, bytes)?;
         self.settle(&scope, &hash);
         self.tell(&scope, &ContentNews::arrived(&hash, bytes));
+        self.repay(&scope, &hash, bytes);
         Ok(())
     }
 
@@ -449,14 +476,89 @@ impl RouteContent {
         if !may_read || !valid_hash(&hash) {
             return;
         }
+        let scope = ContentScope::of(route);
         let Some(bytes) = self
             .shelf
-            .read(&ContentScope::of(route), &hash)
+            .read(&scope, &hash)
             .filter(|bytes| bytes.len() as u64 <= MAX_CONTENT_BYTES)
         else {
+            self.owe(route, &scope, peer, &hash);
             self.peers.lacks(route, peer, &hash);
             return;
         };
+        self.send(route, peer, &hash, &bytes);
+    }
+
+    /// Remember that `peer`, which may read `route`, asked for `hash` while
+    /// this device kept none of it. A record names content before every
+    /// device that holds it has kept it where peers are served from (the
+    /// writer publishes a change of its record and keeps the bytes beside
+    /// it), and a peer told it is lacking asks no more until a device
+    /// connects: so the device that keeps it later hands it over unasked.
+    fn owe(&self, route: &CrdtRoute, scope: &ContentScope, peer: ContentPeer, hash: &str) {
+        let Ok(mut wants) = self.wants.lock() else {
+            return;
+        };
+        let key = (scope.clone(), hash.to_owned());
+        if !wants.owed.contains_key(&key)
+            && wants.owed.len() >= MAX_OPEN_WANTS
+            && let Some(oldest) = wants
+                .owed
+                .iter()
+                .min_by_key(|(_, owed)| owed.order)
+                .map(|(key, _)| key.clone())
+        {
+            wants.owed.remove(&oldest);
+        }
+        wants.made = wants.made.wrapping_add(1);
+        let order = wants.made;
+        wants
+            .owed
+            .entry(key)
+            .or_insert_with(|| Owed {
+                route: route.clone(),
+                order,
+                peers: BTreeSet::new(),
+            })
+            .peers
+            .insert(peer);
+    }
+
+    /// `hash` is kept under `scope` now: hand it to the peers it was owed,
+    /// the ones that may still read its record.
+    fn repay(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) {
+        let owed = {
+            let Ok(mut wants) = self.wants.lock() else {
+                return;
+            };
+            wants.owed.remove(&(scope.clone(), hash.to_owned()))
+        };
+        let Some(owed) = owed else {
+            return;
+        };
+        if bytes.len() as u64 > MAX_CONTENT_BYTES {
+            return;
+        }
+        for peer in owed.peers {
+            // What a peer may read can change while the content it asked
+            // for is on its way here: the workspace may have removed it, or
+            // taken the record from it. The bytes go only to a device that
+            // may read them now.
+            if !self.peers.may_read(&owed.route, peer) {
+                tracing::debug!(
+                    peer,
+                    %hash,
+                    "content is not handed to a device that may no longer read its record"
+                );
+                continue;
+            }
+            self.send(&owed.route, peer, hash, bytes);
+        }
+    }
+
+    /// Send `bytes`, the content `hash`, to `peer` in pieces.
+    fn send(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str, bytes: &[u8]) {
+        let hash = hash.to_owned();
         let total = bytes.len() as u64;
         if bytes.is_empty() {
             self.peers.answer(
@@ -520,6 +622,7 @@ impl RouteContent {
                 }
                 self.settle(&scope, &hash);
                 self.tell(&scope, &ContentNews::arrived(&hash, &bytes));
+                self.repay(&scope, &hash, &bytes);
                 return;
             }
             Some(_) => {

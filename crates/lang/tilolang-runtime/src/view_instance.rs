@@ -14,7 +14,8 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
+    CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
+    SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
@@ -78,8 +79,6 @@ pub struct ViewInstance {
     subs: Vec<SubId>,
     subscribed: HashSet<DocId>,
     events: RefCell<Vec<ViewEvent>>,
-    /// Run every boundary again at the next poll.
-    refresh_all: std::cell::Cell<bool>,
 }
 
 /// The window a view over `args` runs in when the host names none: the window of its first
@@ -109,7 +108,6 @@ impl ViewInstance {
             subs: Vec::new(),
             subscribed: HashSet::new(),
             events: RefCell::new(Vec::new()),
-            refresh_all: std::cell::Cell::new(false),
         };
         me.subscribe_new();
         Ok(me)
@@ -152,15 +150,10 @@ impl ViewInstance {
     /// Mark what the changes heard since the last call reach.
     fn absorb(&mut self) {
         let heard = std::mem::take(&mut *self.changes.borrow_mut());
-        for change in &heard {
-            self.live.absorb(&self.core, change);
-        }
+        self.live.absorb(&self.core, &heard);
         self.live.check_states(&self.core);
         if let Some(now) = self.time_passed() {
             self.live.pass_time(now);
-        }
-        if self.refresh_all.take() {
-            self.live.mark_all();
         }
     }
 
@@ -190,10 +183,21 @@ impl ViewInstance {
         self.spaces.get(boundary).copied()
     }
 
-    /// Run the view again at the next poll although nothing it read changed: what it shows
-    /// without reading it (the names of principals) has changed.
-    pub fn refresh(&self) {
-        self.refresh_all.set(true);
+    /// Take `(resource, field)` reads the host took converting what the view shows, beside what
+    /// the view read: a card of a record inside the text it holds. A change to one of them runs
+    /// the root boundary, so the host converts what the window shows again. A host calls it
+    /// after converting; the boundary's own run replaces the reads with what it read then, and
+    /// the host registers its own again.
+    pub fn shows(&mut self, reads: impl IntoIterator<Item = (String, String)>) {
+        self.live.shows(reads);
+    }
+
+    /// Run again the boundaries that show something only the window knows — a participant's
+    /// name, a day or a time of day in the person's formats, a word in the language their window
+    /// speaks — and no others: the person reads another language, chose another clock, or the
+    /// window calls someone something else than it did.
+    pub fn person_moved(&mut self) {
+        self.live.person_moved();
     }
 
     /// When the time some boundary read (`today` in a query or a filter) next reads
@@ -214,17 +218,11 @@ impl ViewInstance {
     }
 
     /// Whether a field or view state some boundary read has changed since it last ran, or the
-    /// time one read has moved on.
-    pub fn is_stale(&self) -> bool {
-        self.refresh_all.get()
-            || self.live.is_dirty()
-            || self.time_passed().is_some()
-            || self
-                .changes
-                .borrow()
-                .iter()
-                .any(|c| self.live.reaches(&self.core, c))
-            || self.live.states_moved(&self.core)
+    /// time one read has moved on: what changed is taken in, marking the boundaries to run
+    /// again, so the run that follows does not work it out a second time.
+    pub fn is_stale(&mut self) -> bool {
+        self.absorb();
+        self.live.is_dirty()
     }
 
     /// Re-run the boundaries whose reads changed, and only those, and return the patches from
@@ -289,6 +287,13 @@ impl ViewInstance {
         self.live.list_len(list)
     }
 
+    /// The list's length as reading its rows left it: a listing that sizes itself before its
+    /// pages are read holds what it holds once a row past its end is read
+    /// ([`Live::settle_len`]).
+    pub fn settle_len(&mut self, list: &str) {
+        self.live.settle_len(list);
+    }
+
     /// The key of row `index` of `list`.
     pub fn row_key(&self, list: &str, index: usize) -> Option<String> {
         self.live.row_key(list, index)
@@ -305,6 +310,12 @@ impl ViewInstance {
         let key = self.live.show_row(&self.core, list, index)?;
         self.subscribe_new();
         Ok(key.and_then(|key| self.live.find(&key)))
+    }
+
+    /// The host shows the row at `open` of `list` standing open into its item: its document is
+    /// built with it, the row that stood open before drops its own, and both render again.
+    pub fn open_row(&mut self, list: &str, open: Option<&str>) {
+        self.live.open_row(list, open);
     }
 
     /// Forget the rows of `list` outside `keep`, which scrolled out of view: they no longer
@@ -639,8 +650,145 @@ impl ViewInstance {
                     other => Ok(other),
                 }
             }
+            CHOOSE_ACTION => self.platform_choose(aref),
+            SAVE_ACTION => self.platform_save(aref),
             _ => self.core.invoke_direct(&self.live.viewer, aref),
         }
+    }
+
+    /// `file.choose(a, accept)`: ask the person for a file and run `a` with it, as the argument
+    /// it still needs. What the person picks is a [`crate::blob::FileValue`], so the invocation
+    /// records its address and never its bytes.
+    fn platform_choose(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Action(next), Value::List(accept)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `file.choose`".into()));
+        };
+        let accept: Vec<String> = accept
+            .iter()
+            .filter_map(|media| media.as_text().map(str::to_owned))
+            .collect();
+        let request = crate::blob::FileRequest {
+            title: {
+                let label = self
+                    .core
+                    .registry
+                    .borrow()
+                    .action_package(&next.action)
+                    .and_then(|package| {
+                        package.action(&next.action).map(crate::platform::label_of)
+                    });
+                label.unwrap_or_else(|| "Choose a file".to_owned())
+            },
+            name: String::new(),
+            accept: accept.clone(),
+        };
+        let chosen = {
+            let blobs = self.core.blobs.borrow();
+            let Some(blobs) = blobs.as_ref() else {
+                return Err(RuntimeError::Package(
+                    "this host chooses no files".to_owned(),
+                ));
+            };
+            blobs.choose(&request).map_err(RuntimeError::Package)?
+        };
+        let Some(file) = chosen else {
+            // The person dismissed the chooser: nothing runs.
+            return Ok(InvokeOutcome::Done(Value::Unit));
+        };
+        if file.size > crate::blob::MAX_CHOSEN_BYTES {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+                file.name,
+                file.size,
+                MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
+            )));
+        }
+        if !crate::blob::accepts(&accept, &file.media) {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is a {}, and what is chosen here is {}",
+                file.name,
+                file.media,
+                if accept.is_empty() {
+                    "any file".to_owned()
+                } else {
+                    accept.join(", ")
+                }
+            )));
+        }
+        let Some(package) = self.core.registry.borrow().action_package(&next.action) else {
+            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        };
+        let Some(action) = package.action(&next.action) else {
+            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        };
+        let next_param = action.params.get(next.args.len());
+        let fills_a_file = next_param.is_some_and(|param| {
+            crate::meta::parse_ty(&param.ty, &package.meta.app).is_ok_and(|ty| ty == Ty::File)
+        });
+        if !fills_a_file {
+            return Err(RuntimeError::BadArgs(format!(
+                "`{}` has no file parameter next: a file fills the parameter it stands for",
+                crate::platform::label_of(action)
+            )));
+        }
+        let filled = ActionRef {
+            args: next
+                .args
+                .iter()
+                .cloned()
+                .chain(std::iter::once(Value::file(file)))
+                .collect(),
+            ..next.clone()
+        };
+        self.run(&filled)
+    }
+
+    /// `file.save(a, name)`: run `a`, and put what it made — text, or a file — in a file the
+    /// person names. What is saved is the device's: nothing is recorded.
+    fn platform_save(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Action(next), Value::Text(name)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `file.save`".into()));
+        };
+        let made = match self.run(next)? {
+            InvokeOutcome::Done(made) => made,
+            other => return Ok(other),
+        };
+        let (content, media) = match &made {
+            Value::Text(text) => (text.clone().into_bytes(), crate::blob::media_of(name)),
+            Value::File(file) => {
+                let bytes = self
+                    .core
+                    .blobs
+                    .borrow()
+                    .as_ref()
+                    .and_then(|blobs| blobs.read(&file.hash))
+                    .ok_or_else(|| {
+                        RuntimeError::Package(format!(
+                            "the content of `{}` is not on this device",
+                            file.name
+                        ))
+                    })?;
+                (bytes, file.media.clone())
+            }
+            other => {
+                return Err(RuntimeError::BadArgs(format!(
+                    "`file.save` saves text or a file, and the action made a {}",
+                    other.kind_name()
+                )));
+            }
+        };
+        let request = crate::blob::SaveRequest {
+            name: name.clone(),
+            media,
+        };
+        let blobs = self.core.blobs.borrow();
+        let Some(blobs) = blobs.as_ref() else {
+            return Err(RuntimeError::Package("this host saves no files".to_owned()));
+        };
+        blobs
+            .save(&request, &content)
+            .map_err(RuntimeError::Package)?;
+        Ok(InvokeOutcome::Done(Value::Unit))
     }
 
     /// `set(name, value)`: change the view state slot the reference names, in this view's
@@ -810,7 +958,7 @@ impl ViewInstance {
             }
         };
         match answer {
-            Invoked::Done(_) => Ok(EditOutcome::Applied),
+            Invoked::Done(_) | Invoked::Sent => Ok(EditOutcome::Applied),
             Invoked::Failed(reason) => Err(RuntimeError::Trap(reason)),
             Invoked::Refused(_) => Ok(EditOutcome::Denied),
             Invoked::Asks(_) => Ok(EditOutcome::NeedsApproval),

@@ -58,6 +58,53 @@ pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool
     }
 }
 
+/// Key, in a record's index entry, of what people call the record (a PDF's
+/// file name, a document's heading): what finds it by name where its id is a
+/// minted one that names nothing.
+const NAME: &str = "name";
+
+/// The longest name an entry is read with: the index is replicated input.
+const MAX_NAME_CHARS: usize = 256;
+
+/// Say what `id`, a record this workspace references, is called: `None`
+/// when its app gives it no name of its own. Whether the entry changed;
+/// a record the index does not reference is left alone.
+pub fn set_name(doc: &mut AutoCommit, id: &RecordId, name: Option<&str>) -> bool {
+    let Some(idx) = index_ro(doc) else {
+        return false;
+    };
+    let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
+        return false;
+    };
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
+    let held = match string_at(doc, &entry, NAME) {
+        StringAt::String(held) => Some(held),
+        StringAt::Missing => None,
+        StringAt::Invalid => return false,
+    };
+    if held.as_deref() == name {
+        return false;
+    }
+    match name {
+        Some(name) => doc.put(&entry, NAME, name).is_ok(),
+        None => doc.delete(&entry, NAME).is_ok(),
+    }
+}
+
+/// What the index says `id` is called, if it names it.
+pub fn name_of(doc: &AutoCommit, id: &RecordId) -> Option<String> {
+    let idx = index_ro(doc)?;
+    let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
+        return None;
+    };
+    let name: String = str_at(doc, &entry, NAME)?
+        .chars()
+        .take(MAX_NAME_CHARS)
+        .collect();
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
 /// Drop a record's reference from this workspace. The record itself is
 /// untouched — another workspace may hold an independently scoped replica.
 pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {

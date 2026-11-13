@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
 
-/// A key source the test controls.
 #[derive(Clone)]
 struct Switch {
     state: Arc<AtomicU8>,
@@ -32,19 +31,19 @@ impl KeySource for Switch {
     }
 }
 
-fn app(id: &str) -> AppId {
-    AppId::parse(id).unwrap()
+fn app(id: &str) -> CallerId {
+    CallerId::parse(id).unwrap()
 }
 
-fn system() -> AppId {
+fn system() -> CallerId {
     app("binary:/usr/bin/chromium")
 }
 
-fn other_system() -> AppId {
+fn other_system() -> CallerId {
     app("binary:/usr/bin/1password")
 }
 
-fn local() -> AppId {
+fn local() -> CallerId {
     app("local-process:/home/me/tool")
 }
 
@@ -148,7 +147,6 @@ fn items_persist_sealed_and_open_only_under_the_same_key() {
     assert_eq!(secret.expose(), b"correct horse");
     assert_eq!(content_type, "text/plain");
 
-    // Another device identity: locked, and the file is left untouched.
     let other = Switch::new(9);
     let foreign = store_at(dir.path(), &other);
     assert_eq!(foreign.locked(), Some(Locked::KeyChanged));
@@ -216,7 +214,6 @@ fn search_lookup_replace_and_delete_work_like_libsecret_expects() {
     assert_eq!(replaced, one);
     assert_eq!(store.read_secret(&me, &one).unwrap().0.expose(), b"p1b");
     assert_eq!(store.item_info(&me, &one).unwrap().label, "one!");
-    // Without replace it adds.
     let third = store
         .create_item(
             &me,
@@ -275,7 +272,6 @@ fn an_application_sees_only_what_it_made_or_the_system_shared() {
             true,
         )
         .unwrap();
-    // Another application, same attributes: a different item, not a hit.
     assert!(
         store
             .search(&onepassword, None, &attributes(&[("app", "c")]))
@@ -290,7 +286,6 @@ fn an_application_sees_only_what_it_made_or_the_system_shared() {
         store.delete_item(&tool, &mine),
         Err(StoreError::NoSuchObject)
     ));
-    // A replace by another app does not overwrite the first app's item.
     let theirs = store
         .create_item(
             &onepassword,
@@ -353,7 +348,6 @@ fn every_application_is_recorded_and_can_be_revoked_and_forgotten() {
     assert_eq!(apps.iter().find(|row| row.id == chromium).unwrap().items, 1);
     assert!(record.name.contains("not part of the system"));
 
-    // Recorded on disk: a new process sees the ledger.
     assert_eq!(store_at(dir.path(), &keys).apps().unwrap().len(), 2);
 
     store.set_access(&chromium, Access::Revoked).unwrap();
@@ -365,7 +359,6 @@ fn every_application_is_recorded_and_can_be_revoked_and_forgotten() {
         store.create_item(&chromium, "default", new_item("c", &[], b"s"), false),
         Err(StoreError::Revoked)
     ));
-    // Others are unaffected, and revocation survives a restart.
     assert!(store.search(&tool, None, &BTreeMap::new()).is_ok());
     assert!(matches!(
         store_at(dir.path(), &keys).search(&chromium, None, &BTreeMap::new()),
@@ -467,7 +460,6 @@ fn sandbox_master_secrets_are_stable_separate_and_revocable() {
     assert!(store.sandbox_secret("", None).is_err());
     assert!(store.sandbox_secret("a/b", None).is_err());
 
-    // A secret an earlier portal store kept is adopted once, then ignored.
     assert_eq!(
         *store
             .sandbox_secret("so.tilo.adopt", Some(&[9; 32]))
@@ -481,14 +473,13 @@ fn sandbox_master_secrets_are_stable_separate_and_revocable() {
         [9; 32]
     );
 
-    let id = AppId::sandbox("so.tilo.notes").unwrap();
+    let id = CallerId::sandbox("so.tilo.notes").unwrap();
     assert!(store.apps().unwrap().iter().any(|row| row.id == id));
     store.set_access(&id, Access::Revoked).unwrap();
     assert!(matches!(
         store.sandbox_secret("so.tilo.notes", None),
         Err(StoreError::Revoked)
     ));
-    // Forgetting drops the secret: the next one is a different secret.
     store.forget_app(&id).unwrap();
     assert_ne!(*one, *store.sandbox_secret("so.tilo.notes", None).unwrap());
 }
@@ -501,7 +492,6 @@ fn the_device_identity_releases_a_key_bound_to_device_person_and_salt() {
     let salt = dir.path().join("home/secrets/salt");
     let keys = DeviceIdentityKey::new(paths.clone(), salt.clone(), "1000");
 
-    // Before enrolment: no identity, no salt file minted.
     assert_eq!(keys.release().err(), Some(Locked::NoIdentity));
     assert!(!salt.exists());
 
@@ -518,7 +508,6 @@ fn the_device_identity_releases_a_key_bound_to_device_person_and_salt() {
             0o600
         );
     }
-    // Another person on the same device, or another salt, derives another key.
     let other_person = DeviceIdentityKey::new(paths.clone(), salt.clone(), "1001");
     assert_ne!(
         first.expose_secret(),
@@ -595,7 +584,6 @@ fn a_branched_machine_keeps_every_persons_secrets_under_its_new_key() {
         .unwrap();
     drop(store);
 
-    // Another person's vault on the same disk, sealed under another device.
     let elsewhere = IdentityPaths::under(dir.path().join("elsewhere"));
     load_or_create_device_key(&elsewhere).unwrap();
     let (stranger, bea) = person_vault(&dir.path().join("home/bea"), &elsewhere, "1001");
@@ -641,7 +629,6 @@ fn a_branched_machine_keeps_every_persons_secrets_under_its_new_key() {
     assert_eq!(secret.expose(), b"sk-ant-api");
     assert_eq!(std::fs::read(&bea.vault).unwrap(), theirs);
 
-    // The source's key opens the vault no more; the new one does.
     assert_eq!(ada.reseal(&[], &source).unwrap(), Resealed::Foreign);
     assert_eq!(ada.reseal(&[], &device).unwrap(), Resealed::AlreadyNew);
 }

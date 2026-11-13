@@ -1,10 +1,6 @@
-//! Tube's effects: everything it does that changes no document.
-//!
-//! [`TubeEffect`] covers navigating, playing, sharing, the person's own
-//! watch history and playback preferences, and Grayjay device sync. Fetched
-//! catalogue rows and paired devices are the surface's live rows
-//! (`crate::rows`); they offer effects. The shared library's changes are the
-//! resource's own ([`crate::resource::Library`]).
+//! Tube's effects: everything it does that changes no document. [`TubeEffect`] covers navigating,
+//! playing, sharing, the person's own watch history and playback preferences, and Grayjay device
+//! sync.
 
 use ui::tilo_resource::{self, Effect, NonBlank};
 
@@ -14,9 +10,6 @@ use crate::model::{Category, Route, Settings, SkipMode};
 const MAX_RESOURCE_LABEL_CHARS: usize = 160;
 pub(crate) const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
-/// What Tube does that changes no document, invoked from its own controls,
-/// the palette, an agent or a script alike. A live row offers the effects
-/// bound to its entity (open *this* video).
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "tube.effect")]
 pub enum TubeEffect {
@@ -86,7 +79,6 @@ pub enum TubeEffect {
         #[param("The video's id")]
         video: String,
     },
-    /// Download video.
     Download {
         #[param("The video's id")]
         video: String,
@@ -118,7 +110,6 @@ pub enum TubeEffect {
         #[param(secret, "Grayjay pairing invite; redacted from logs and history")]
         invite: String,
     },
-    /// Sync approved devices now.
     SyncDevices,
     /// Approve device.
     ///
@@ -204,8 +195,6 @@ impl TubeEffect {
         })
     }
 
-    /// The preferences `settings` becomes under this effect, or why it
-    /// cannot; `None` for an effect that sets no preference.
     pub(crate) fn preferences(&self, settings: &Settings) -> Option<Result<Settings, String>> {
         let mut changed = settings.clone();
         match self {
@@ -243,9 +232,6 @@ impl TubeEffect {
     }
 }
 
-/// Stable content identity for a comment. The upstream model has no comment
-/// id, so hash all immutable source fields with an explicitly fixed FNV-1a
-/// algorithm rather than addressing a row by its current list position.
 pub(crate) fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
     let mut hasher = fnv::FnvHasher::default();
     for field in [
@@ -261,8 +247,6 @@ pub(crate) fn comment_key(video_id: &str, comment: &crate::model::Comment) -> St
     format!("{video_id}#{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
-/// Remote metadata shown in global surfaces, kept single-line and bounded so a
-/// hostile title cannot dominate the palette or force unbounded shaping.
 pub(crate) fn resource_label(value: &str) -> String {
     let mut out = String::new();
     let mut chars = value.chars();
@@ -278,8 +262,6 @@ pub(crate) fn resource_label(value: &str) -> String {
     out
 }
 
-/// The quality after `current` in [`QUALITY_OPTIONS`], for a control that
-/// cycles through them.
 pub(crate) fn next_quality(current: &str) -> String {
     let index = QUALITY_OPTIONS
         .iter()

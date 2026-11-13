@@ -1,12 +1,5 @@
 //! Uploads: Graph upload sessions for any file with a body, a plain `PUT`
 //! for empty files (a session needs at least one byte).
-//!
-//! A session is created with its precondition, `If-Match` for a replace and
-//! `conflictBehavior: fail` for a create. Fragments go to the session's
-//! pre-authenticated URL without the token, in multiples of 320 KiB; the
-//! last one commits the file. Graph may only detect a name clash at that
-//! commit, so the final fragment can still fail with
-//! [`Error::AlreadyExists`]. The session URL is the resumable state.
 
 use std::io::Read;
 
@@ -20,7 +13,6 @@ use crate::graph::{DriveItem, UploadSessionInfo};
 use crate::http::{self, Auth, Http};
 use crate::{FRAGMENT_UNIT, OneDriveSource};
 
-/// What [`UploadState`] holds.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     url: String,
@@ -91,7 +83,6 @@ pub fn resume(source: &OneDriveSource, state: &UploadState) -> Result<Box<dyn Up
     Ok(Box::new(session))
 }
 
-/// A Graph upload session.
 struct Session {
     source: OneDriveSource,
     url: String,

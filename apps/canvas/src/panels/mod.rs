@@ -29,12 +29,10 @@ use ui::widget::{ButtonRole, ControlSize};
 
 use crate::model::Artwork;
 
-/// Small dimmed text beside a value.
 pub(crate) fn caption(text: &str) -> Element {
     Box::new(Text::new(text).with_role(TextRole::Caption).dimmed())
 }
 
-/// A section's heading.
 pub(crate) fn heading(id: &str) -> Element {
     Box::new(Text::new(id).with_role(TextRole::Label))
 }

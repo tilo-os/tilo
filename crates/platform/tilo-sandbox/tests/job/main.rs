@@ -1,8 +1,7 @@
-//! Integration tests for the job sandbox. They need a Linux host where
-//! unprivileged user namespaces (or root) work; elsewhere each prints why it
-//! skipped and passes, as the kernel can't be observed. Limits tests also
-//! need a delegated cgroup; quota tests need an XFS directory mounted with
-//! `prjquota` at `$JOB_SANDBOX_TEST_XFS`.
+//! Integration tests for the job sandbox. They need a Linux host where unprivileged user namespaces
+//! (or root) work; elsewhere each prints why it skipped and passes, as the kernel can't be
+//! observed. Limits tests also need a delegated cgroup; quota tests need an XFS directory mounted
+//! with `prjquota` at `$JOB_SANDBOX_TEST_XFS`.
 
 #![allow(
     clippy::unwrap_used,

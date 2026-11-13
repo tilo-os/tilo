@@ -11,13 +11,17 @@
 #
 #   e2e-remote.sh           what the e2e-remote check runs
 #
-# `t test e2e-remote --test hold` keeps the micro-VM and its guests up for an hour after the
-# run, whatever its outcome, for `t vm ssh` (and `t vm extend`).
+# `t test e2e-remote --test hold`, or a scripts/e2e-remote/HOLD in the working tree, keeps the
+# micro-VM and its guests up for an hour after the run, whatever its outcome, for `t vm ssh`
+# (and `t vm extend`).
 set -euo pipefail
 
 arch=x86_64
 work=/var/tmp/e2e-remote
-out=${CARGO_TARGET_DIR:-/target}/e2e-remote
+# The run writes its report and logs on the guest's own disk, and they are copied to the output
+# share once it ends: a file held open on /target's virtio-fs share can turn EBADF mid-run.
+outputs=${CARGO_TARGET_DIR:-/target}/e2e-remote
+out=$work/out
 gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 run_user=acceptance
@@ -37,8 +41,8 @@ python3 os/dev/probe-kvm.py "$arch" || {
   exit 1
 }
 
-rm -rf "$work" "$out"
-mkdir -p "$work" "$out"
+rm -rf "$work" "$outputs"
+mkdir -p "$work" "$out" "$outputs"
 
 disk=$gate/disk.qcow2
 [[ -s $disk && -s $gate/image-digest ]] \
@@ -81,7 +85,9 @@ for tap in "${taps[@]}"; do
   ip link set "$tap" master "$bridge" up
 done
 
-chown -R "$run_user:" "$work" "$out"
+# tilo-vm keeps its run receipts under the tree's target/dev-runs, which the session user writes.
+mkdir -p target/dev-runs
+chown -R "$run_user:" "$work" "$out" target/dev-runs
 keep=$(env | sed -n 's/^\(TILO_[A-Z0-9_]*\|T_[A-Z0-9_]*\)=.*/\1/p' | paste -sd, -)
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
 caps=$(as_user virsh --connect qemu:///session capabilities)
@@ -90,10 +96,25 @@ phase 'host ready'
 
 args=(--work "$work" --out "$out" --commit "$commit" --tilo-vm /usr/local/bin/tilo-vm
       --taps "$(IFS=,; echo "${taps[*]}")")
-[[ ${T_TEST_FILTER:-} != *hold* ]] || args+=(--hold 3600)
+echo "e2e-remote: test filter: ${T_TEST_FILTER:-none}"
+# A working tree holding scripts/e2e-remote/HOLD (never committed) holds the boxes too.
+[[ ${T_TEST_FILTER:-} != *hold* && ! -e scripts/e2e-remote/HOLD ]] || args+=(--hold 3600)
 status=0
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/e2e-remote/run.py "${args[@]}" || status=$?
+cp -a "$out/." "$outputs/" || true
+# A working tree holding scripts/e2e-remote/DEBUG (never committed) passes whatever the boxes did,
+# so t keeps its outputs (the boxes' logs, shots and listings) to read.
+if [[ -e scripts/e2e-remote/DEBUG ]]; then
+  echo "e2e-remote: DEBUG: the run's status was $status; outputs kept"
+  for f in "$out"/identity-*.json "$out"/targets-*.json; do
+    [[ -f $f ]] && { echo "=== $(basename "$f")"; head -c 3000 "$f"; echo; }
+  done
+  for f in "$out"/session-log-*.txt; do
+    [[ -f $f ]] && { echo "=== $(basename "$f")"; grep -iE "setup|onboard|identity|first|ceremony|error|warn" "$f" | tail -n 120 | cut -c1-400; }
+  done
+  status=0
+fi
 [[ ! -f $out/report.md ]] || cat "$out/report.md"
 phase 'done'
 exit "$status"

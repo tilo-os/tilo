@@ -20,7 +20,8 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::{DesktopAsk, desk_is_empty, fill};
-use crate::launchpad::{CollaborationLaunchpad, LaunchpadPress};
+use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadPress};
+use ui::widget::DrawChild;
 
 /// Where one display shows the start cards: which display it belongs to,
 /// where that display stands in the desk, whether it shows no window, and
@@ -69,6 +70,9 @@ pub(super) struct PadWant {
 pub(super) struct EmptyWorkspace {
     /// What each pad is made from: the words and scope the host gave it.
     pub(super) template: CollaborationLaunchpad,
+    /// The cards the desk offers now: the verbs whose apps this host has. Read every pass, so an
+    /// app installed or removed while the desk stands adds or takes away its card.
+    pub(super) cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
     pub(super) pads: Vec<DisplayPad>,
     /// Whether the pads were rebuilt, so the desk's layout has to follow.
     pub(super) rebuilt: bool,
@@ -128,13 +132,22 @@ impl EmptyWorkspace {
 
 impl Widget for EmptyWorkspace {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // The cards follow the apps the host has: an app installed or removed here changes what
+        // every display's desk offers.
+        let cards = (self.cards)();
+        let mut changed = cards != self.template.cards();
+        if changed {
+            for pad in &mut self.pads {
+                pad.launchpad.set_cards(cards.clone());
+            }
+            self.template.set_cards(cards);
+        }
         let wants = self.handle.read(Self::wants);
         let same_displays = wants.len() == self.pads.len()
             && wants
                 .iter()
                 .zip(&self.pads)
                 .all(|(want, pad)| want.display == pad.display);
-        let mut changed = false;
         if !same_displays {
             self.pads = wants
                 .iter()
@@ -204,7 +217,8 @@ impl Widget for EmptyWorkspace {
     ) {
         for pad in &mut self.pads {
             if pad.shown {
-                pad.launchpad.draw(scene, transform, text, theme, presence);
+                pad.launchpad
+                    .draw_child(scene, transform, text, theme, presence);
             }
         }
     }
@@ -264,10 +278,11 @@ impl Widget for EmptyWorkspace {
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ui::automerge::ObjId) {
         for pad in &self.pads {
             match pad.launchpad.take_press() {
-                Some(LaunchpadPress::Card(card)) => self
-                    .asks
-                    .borrow_mut()
-                    .push(DesktopAsk::HostAction(card.host_id())),
+                Some(LaunchpadPress::Card(card)) => super::ask(
+                    &self.handle,
+                    &self.asks,
+                    DesktopAsk::HostAction(card.host_id()),
+                ),
                 Some(LaunchpadPress::OpenApp) => {
                     self.handle.open_search(Scope::WindowGroup(None), None);
                 }

@@ -50,11 +50,9 @@ mod words;
 #[cfg(feature = "disk")]
 pub use disk::{DiskHit, DiskIndex, DiskWriter};
 pub use engine::{
-    Engine, IndexError, MakeEngine, Records, ScoreFn, engine_generation, engine_ready,
-    prepare_engine, tantivy_engine,
+    ENGINE, Engine, IndexError, MakeEngine, Records, ScoreFn, builtin_engine, engine_generation,
+    engine_ready, prepare_engine, tantivy_engine,
 };
-#[cfg(feature = "lazy-engine")]
-pub use engine::{defer_engine, engine_load_failed, install_engine};
 pub use fold::{fold, fold_char};
 pub use highlight::locate;
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};

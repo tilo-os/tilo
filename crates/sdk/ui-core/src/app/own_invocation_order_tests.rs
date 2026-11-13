@@ -248,7 +248,7 @@ fn a_window_whose_beside_record_never_opens_still_offers_its_actions() {
             .app
             .collaboration
             .manager
-            .document_route_publishable_for_test(&beside),
+            .document_route_publishable(&beside),
         "the beside record's route never opened"
     );
     assert!(probe.app.published_action_history_ready());

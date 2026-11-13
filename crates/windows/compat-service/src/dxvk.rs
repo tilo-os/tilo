@@ -127,7 +127,6 @@ fn prepare_at(
         // Do not upgrade while another managed launch is reading/running from
         // this prefix. Never wait for arbitrary application lifetimes here.
         prefix = prefix.try_convert(LockMode::Exclusive).map_err(busy)?;
-        // Another preparer could have finished between our two acquisitions.
         if !payload.ready(&prefix, mode)? {
             payload.remove_linked_destinations(&prefix)?;
             let action = if registry_ready(&prefix, mode)? {
@@ -270,8 +269,6 @@ impl Payload {
             let Some(directory) = optional_directory(&windows, dll.destination)? else {
                 continue;
             };
-            // O_PATH|O_NOFOLLOW lets fstat inspect the directory entry itself,
-            // including symlinks, without opening a target or blocking on a FIFO.
             let entry = match open_at(&directory, dll.name, OFlags::PATH) {
                 Ok(entry) => entry,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -395,7 +392,6 @@ fn optional_directory(parent: &File, name: &str) -> io::Result<Option<File>> {
 }
 
 fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
-    // O_NONBLOCK prevents a hostile FIFO from blocking before fstat rejects it.
     let file = open_at(parent, name, OFlags::RDONLY | OFlags::NONBLOCK)?;
     if !file.metadata()?.is_file() {
         return Err(invalid("expected a regular runtime file"));

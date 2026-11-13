@@ -40,7 +40,6 @@ fn verifier() -> PendingPeerChallenges {
 
 #[test]
 fn peer_auth_establishes_certified_identity_for_the_observed_endpoint() {
-    // Phase `establishes_human_and_device_identity`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -58,7 +57,6 @@ fn peer_auth_establishes_certified_identity_for_the_observed_endpoint() {
         assert_eq!(peer.device_label, "Alice's laptop");
         assert!(pending.is_empty());
     }
-    // Phase `proof_wire_round_trip_preserves_signed_bytes`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -75,7 +73,6 @@ fn peer_auth_establishes_certified_identity_for_the_observed_endpoint() {
             )
             .unwrap();
     }
-    // Phase `observed_endpoint_must_equal_certified_device`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -87,7 +84,6 @@ fn peer_auth_establishes_certified_identity_for_the_observed_endpoint() {
             PeerAuthError::EndpointMismatch
         );
     }
-    // Phase `another_users_revocation_does_not_poison_device_identity`.
     {
         let (_root, device, cert) = party(None);
         let other_root = SigningKey::from_bytes(&[33; 32]);
@@ -111,7 +107,6 @@ fn peer_auth_establishes_certified_identity_for_the_observed_endpoint() {
 
 #[test]
 fn peer_auth_challenges_are_one_use_bounded_and_fail_closed() {
-    // Phase `tampered_proof_is_rejected_and_burns_challenge`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -131,7 +126,6 @@ fn peer_auth_challenges_are_one_use_bounded_and_fail_closed() {
             PeerAuthError::UnknownOrReplayedChallenge
         );
     }
-    // Phase `valid_proof_cannot_be_replayed`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -147,7 +141,6 @@ fn peer_auth_challenges_are_one_use_bounded_and_fail_closed() {
             PeerAuthError::UnknownOrReplayedChallenge
         );
     }
-    // Phase `expired_or_changed_challenge_fails_closed`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -179,7 +172,6 @@ fn peer_auth_challenges_are_one_use_bounded_and_fail_closed() {
             PeerAuthError::ChallengeMismatch
         );
     }
-    // Phase `challenge_store_is_bounded_and_rejects_duplicate_nonce`.
     {
         let mut pending = PendingPeerChallenges::new(VERIFIER, 1, 100);
         let challenge = pending.register([10; 32], NOW, 1_000).unwrap();
@@ -200,7 +192,6 @@ fn peer_auth_challenges_are_one_use_bounded_and_fail_closed() {
 
 #[test]
 fn peer_auth_rejects_tampered_expired_future_or_revoked_certificates() {
-    // Phase `tampered_certificate_is_rejected`.
     {
         let (_root, device, cert) = party(None);
         let mut pending = verifier();
@@ -216,7 +207,6 @@ fn peer_auth_rejects_tampered_expired_future_or_revoked_certificates() {
             Err(PeerAuthError::Certificate(DeviceCertError::BadSignature))
         ));
     }
-    // Phase `expired_certificate_is_rejected`.
     {
         let (_root, device, cert) = party(Some(NOW));
         let mut pending = verifier();
@@ -231,7 +221,6 @@ fn peer_auth_rejects_tampered_expired_future_or_revoked_certificates() {
             Err(PeerAuthError::Certificate(DeviceCertError::Expired))
         ));
     }
-    // Phase `future_issued_certificate_is_rejected`.
     {
         let (root, device, mut cert) = party(None);
         cert.issued_at_ns = NOW + 1;
@@ -250,7 +239,6 @@ fn peer_auth_rejects_tampered_expired_future_or_revoked_certificates() {
             PeerAuthError::Certificate(DeviceCertError::NotYetValid)
         );
     }
-    // Phase `effective_same_user_revocation_is_rejected`.
     {
         let (root, device, cert) = party(None);
         let mut entry = RevocationEntry {

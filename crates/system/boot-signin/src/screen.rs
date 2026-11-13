@@ -2,10 +2,6 @@
 //! (docs/security/sign-in.md §3.4, "If the greeter can't start"). The list
 //! and the secret are asked through systemd's password agents, so they work
 //! on a serial console too.
-//!
-//! Plymouth leaves first. While it runs, the console agent does not ask and
-//! Plymouth's own agent would: it takes an empty answer as no answer and asks
-//! again, so the empty Enter that means "Can't sign in" would never arrive.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -25,7 +21,6 @@ pub struct ConsoleScreen {
 }
 
 impl ConsoleScreen {
-    /// Give the console to the password agents.
     fn take_console(&mut self) {
         if let Some(plymouth) = self.plymouth.take() {
             eprintln!("tilo-boot-signin: Plymouth ends; signing in on the console");
@@ -54,7 +49,6 @@ impl ConsoleScreen {
 }
 
 impl Screen for ConsoleScreen {
-    /// The list as one question, since nothing draws a list.
     fn pick(&mut self, people: &[Person], _highlighted: usize) -> Pick {
         self.take_console();
         let choices: Vec<String> = people

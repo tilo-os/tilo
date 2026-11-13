@@ -1,18 +1,8 @@
-//! External-monitor brightness over DDC/CI (VESA MCCS VCP code `0x10`).
-//!
-//! A monitor answers DDC/CI on I²C address `0x37` of the bus its connector
-//! carries (`/sys/class/drm/<card>-<connector>/ddc`, or a DP AUX adapter
-//! beneath the connector). Linux exposes those buses as `/dev/i2c-N`
-//! through the `i2c-dev` module; Tilo loads it and grants the session user
-//! access with a udev rule (`os/usr/lib/udev/rules.d/`), so this is a few
-//! `write`/`read` calls rather than a `ddcutil` process per slider step.
-//!
-//! Monitors are slow and forgetful: they need ~40 ms before a reply is
-//! ready and ~50 ms after a write before they accept the next command, and
-//! some answer a busy request with a null message or a garbled reply. Every
-//! exchange is checksummed and retried a bounded number of times; callers
-//! must keep this off any latency-sensitive thread (see
-//! [`crate::brightness::BrightnessService`]).
+//! External-monitor brightness over DDC/CI (VESA MCCS VCP code `0x10`). A monitor
+//! answers on I²C address `0x37` of the bus its connector carries, which Linux exposes
+//! as `/dev/i2c-N`. Monitors are slow and forgetful and answer busy or garbled, so
+//! every exchange is checksummed and retried a bounded number of times; keep this off
+//! latency-sensitive threads.
 
 use std::io;
 use std::time::Duration;
@@ -38,24 +28,16 @@ const WRITE_SETTLE: Duration = Duration::from_millis(50);
 const RETRY_DELAY: Duration = Duration::from_millis(60);
 const ATTEMPTS: usize = 3;
 
-/// The byte-level channel to one monitor. The real one is an `i2c-dev`
-/// node; tests substitute a scripted fake.
+/// The byte-level channel to one monitor: an `i2c-dev` node, or a scripted fake in tests.
 pub trait I2cTransport {
-    /// # Errors
-    ///
-    /// Returns the bus error; the caller retries.
     fn write(&mut self, bytes: &[u8]) -> io::Result<()>;
-    /// # Errors
-    ///
-    /// Returns the bus error; the caller retries.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<()>;
-    /// Wait for the monitor. Real transports sleep; fakes return at once.
+    /// Waits for the monitor: real transports sleep, fakes return at once.
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
     }
 }
 
-/// A VCP feature's current and maximum value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VcpValue {
     pub current: u16,
@@ -73,7 +55,6 @@ pub fn checksum(seed: u8, bytes: &[u8]) -> u8 {
     bytes.iter().fold(seed, |acc, b| acc ^ b)
 }
 
-/// Frame a request payload: source, length, data, checksum.
 pub fn request(data: &[u8]) -> Vec<u8> {
     let length = u8::try_from(data.len()).unwrap_or(0x7F) & 0x7F;
     let mut frame = Vec::with_capacity(data.len().saturating_add(3));
@@ -90,11 +71,9 @@ pub enum ReplyError {
     Busy,
     BadChecksum,
     Malformed,
-    /// The monitor says it does not implement this VCP code.
     Unsupported,
 }
 
-/// Parse a Get VCP Feature reply (`read` of 11 bytes).
 pub fn parse_get_vcp_reply(reply: &[u8], vcp: u8) -> Result<VcpValue, ReplyError> {
     // Null message: source, 0x80, checksum.
     if reply.get(1) == Some(&0x80) {
@@ -135,7 +114,6 @@ pub fn parse_get_vcp_reply(reply: &[u8], vcp: u8) -> Result<VcpValue, ReplyError
     })
 }
 
-/// DDC/CI error, with the last cause after all retries.
 #[derive(Debug, thiserror::Error)]
 pub enum DdcError {
     #[error("DDC/CI bus error: {0}")]
@@ -144,7 +122,7 @@ pub enum DdcError {
     Reply(ReplyError),
 }
 
-/// Read a VCP feature, retrying busy or garbled replies.
+/// Retries busy or garbled replies.
 pub fn get_vcp(transport: &mut dyn I2cTransport, vcp: u8) -> Result<VcpValue, DdcError> {
     let frame = request(&[GET_VCP, vcp]);
     let mut last = DdcError::Reply(ReplyError::Malformed);
@@ -174,9 +152,8 @@ pub fn get_vcp(transport: &mut dyn I2cTransport, vcp: u8) -> Result<VcpValue, Dd
     Err(last)
 }
 
-/// Write a VCP feature. DDC/CI has no acknowledgement for a set, so only
-/// bus errors are retried; the settle pause keeps the next command from
-/// arriving before the monitor is ready.
+/// Writes a VCP feature. DDC/CI does not acknowledge a set, so only bus errors are retried, and the
+/// settle pause keeps the next command from arriving before the monitor is ready.
 pub fn set_vcp(transport: &mut dyn I2cTransport, vcp: u8, value: u16) -> Result<(), DdcError> {
     let [hi, lo] = value.to_be_bytes();
     let frame = request(&[SET_VCP, vcp, hi, lo]);
@@ -196,9 +173,8 @@ pub fn set_vcp(transport: &mut dyn I2cTransport, vcp: u8, value: u16) -> Result<
     Err(last.map_or(DdcError::Reply(ReplyError::Malformed), DdcError::Io))
 }
 
-/// An `i2c-dev` node bound to the DDC/CI address.
-/// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
-/// carries the same 32 bits.
+/// An `i2c-dev` node bound to the DDC/CI address. The ioctl request code is glibc's `unsigned long` or
+/// musl's `int`, carrying the same 32 bits.
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn ioctl_request(code: u32) -> libc::c_ulong {
     libc::c_ulong::from(code)
@@ -225,8 +201,8 @@ impl I2cDevice {
             .read(true)
             .write(true)
             .open(path)?;
-        // SAFETY: `file` is an open descriptor for the whole call; I2C_SLAVE
-        // takes the 7-bit address by value and touches no memory of ours.
+        // SAFETY: `file` is an open descriptor for the whole call; I2C_SLAVE takes the 7-bit address
+        // by value and touches no memory of ours.
         let rc = unsafe {
             libc::ioctl(
                 file.as_raw_fd(),
@@ -259,7 +235,6 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    /// Scripted monitor: records writes, replays reads.
     #[derive(Default)]
     struct FakeMonitor {
         written: Vec<Vec<u8>>,

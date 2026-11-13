@@ -1057,7 +1057,11 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(counter(&app), 1, "the directed action was applied");
         let changes = app.state.doc.get_changes(&[]);
         let committed = changes.last().expect("the directed action committed");
-        assert_eq!(committed.actor_id().to_bytes(), b"agent:Scribe");
+        assert_eq!(
+            crate::history_source::authors::actor_handle(&committed.actor_id().to_hex_string())
+                .as_deref(),
+            Some("agent:Scribe")
+        );
         let context = committed
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
@@ -1298,7 +1302,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
     {
         /// A typed effect vocabulary as an app declares it.
         #[derive(Clone, Debug, tilo_resource::Effect)]
-        #[effect(operation = "test.counter")]
+        #[effect(operation = "test.counter", catalogue = "tests/locales")]
         enum Folder {
             /// Copy the folder to this computer's clipboard.
             #[effect(own_device)]
@@ -1614,7 +1618,8 @@ fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
         nodes: vec![
             node("Root", "1", None, true),
             node("Child", "2", Some("1"), false),
-        ],
+        ]
+        .into(),
         expanded: Some(if open {
             vec![crate::component::ResourceId("1".into())]
         } else {

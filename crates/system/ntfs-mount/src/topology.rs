@@ -4,27 +4,20 @@
 //! the disk says about itself: a USB stick can copy every serial number and
 //! GUID of the drive it imitates, but it cannot move itself onto the
 //! motherboard's SATA controller or an `NVMe` root port.
-//!
-//! Every path is read under a sysfs root the caller passes, so tests build
-//! the trees they need.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The storage controller nearest to a device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Controller {
-    /// An AHCI SATA controller.
     Ahci,
-    /// An `NVMe` controller attached directly to a `PCIe` root port.
     NvmeRootPort,
     /// An `NVMe` controller behind a switch or bridge: a Thunderbolt or USB4
     /// enclosure looks like this, so it never counts as internal.
     NvmeBehindBridge,
 }
 
-/// A link in a device's ancestry that can be unplugged while running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Link {
     Usb,
@@ -37,17 +30,14 @@ pub enum Link {
     ExternalPci,
 }
 
-/// The facts D5's location criteria are decided on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Topology {
     /// The device's canonical path below the sysfs root, such as
     /// `devices/pci0000:00/0000:00:17.0/ata1/host0/.../block/sda/sda3`.
     pub device_path: String,
-    /// The whole disk's kernel name (`sda`, `nvme0n1`).
     pub disk: String,
     pub controller: Option<Controller>,
     pub hotplug_link: Option<Link>,
-    /// The disk's own `removable` flag.
     pub removable: bool,
     /// A device with no hardware behind it (loop, device-mapper, `NVMe` over
     /// fabrics).
@@ -99,7 +89,6 @@ fn is_host_bridge(dir: &Path) -> bool {
         .is_some_and(|name| name.starts_with("pci"))
 }
 
-/// Read the topology of block device `name` (`sdb1`, `nvme0n1p3`).
 pub fn read(sys_root: &Path, name: &str) -> io::Result<Topology> {
     let device = fs::canonicalize(sys_root.join("class/block").join(name))?;
     let root = fs::canonicalize(sys_root)?;
@@ -178,7 +167,6 @@ pub(crate) mod fixture {
     use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
 
-    /// A sysfs tree under construction.
     pub struct Sys {
         pub root: PathBuf,
     }
@@ -203,7 +191,6 @@ pub(crate) mod fixture {
             }
         }
 
-        /// A directory at `path` belonging to `subsystem` (`pci`, `usb`...).
         pub fn device(&self, path: &str, subsystem: Option<&str>) -> PathBuf {
             let dir = self.root.join(path);
             fs::create_dir_all(&dir).unwrap();
@@ -253,7 +240,6 @@ pub(crate) mod fixture {
             let _ = symlink(&disk, self.root.join("block").join(&name));
         }
 
-        /// An `NVMe` drive on a root port: `nvme0n1p3`.
         pub fn onboard_nvme(&self) {
             self.pci("devices/pci0000:00/0000:00:1d.0", Some("pcieport"), false);
             self.pci(
@@ -274,7 +260,6 @@ pub(crate) mod fixture {
             );
         }
 
-        /// A SATA disk on the chipset's AHCI controller: `sda2`.
         pub fn onboard_sata(&self) {
             self.pci("devices/pci0000:00/0000:00:17.0", Some("ahci"), false);
             self.device("devices/pci0000:00/0000:00:17.0/ata1", None);
@@ -290,7 +275,6 @@ pub(crate) mod fixture {
             );
         }
 
-        /// A USB stick behind the xHCI controller: `sdb1`.
         pub fn usb_stick(&self, removable: bool) {
             self.pci("devices/pci0000:00/0000:00:14.0", Some("xhci_hcd"), false);
             self.device("devices/pci0000:00/0000:00:14.0/usb2", Some("usb"));
@@ -342,7 +326,6 @@ pub(crate) mod fixture {
             );
         }
 
-        /// An SD card in a PCI card reader: `mmcblk0p1`.
         pub fn sd_card(&self) {
             self.pci("devices/pci0000:00/0000:00:1c.0", Some("pcieport"), false);
             self.pci("devices/pci0000:00/0000:00:1c.0/0000:02:00.0", None, false);
@@ -362,7 +345,6 @@ pub(crate) mod fixture {
             );
         }
 
-        /// A loop device: `loop0p1`.
         pub fn loop_device(&self) {
             self.disk(
                 "devices/virtual/block/loop0",

@@ -34,7 +34,6 @@ fn emu_to_px(emu: f64) -> i64 {
     }
 }
 
-/// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, so the body parser can turn an `a:blip r:embed="rIdN"` into a stored image blob.
 pub(crate) fn build_image_map(container: &ZipPackage) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
     let Some(rels) = container.get("word/_rels/document.xml.rels") else {
@@ -50,7 +49,6 @@ pub(crate) fn build_image_map(container: &ZipPackage) -> BTreeMap<String, Vec<u8
                 let id = attr_val(&e, b"Id");
                 let target = attr_val(&e, b"Target");
                 if let (Some(id), Some(target)) = (id, target) {
-                    // Targets are relative to `word/`; absolute (`/word/...`) targets are de-slashed.
                     let t = target.trim_start_matches('/');
                     let part = if t.starts_with("word/") {
                         t.to_string()
@@ -69,24 +67,16 @@ pub(crate) fn build_image_map(container: &ZipPackage) -> BTreeMap<String, Vec<u8
     out
 }
 
-/// In-progress `w:drawing` capture: an embedded image with size + positioning.
 #[derive(Default)]
 struct DrawingState {
-    /// `false` = `wp:inline` (inline), `true` = `wp:anchor` (floating).
     floating: bool,
-    /// Display size in px from `wp:extent` (cx/cy in EMU).
     width: Option<i64>,
     height: Option<i64>,
-    /// Model wrap (`none`|`left`|`right`|`both`) from the wrap element.
     wrap: Option<String>,
-    /// Model anchor (`page` if positioned relative to the page, else `paragraph`).
     page_relative: bool,
-    /// The `r:embed` rel id of the `a:blip` referencing the media part.
     rel: Option<String>,
 }
 
-/// The docx-id → qdoc-id lookup tables [`BodyState::handle_empty`] resolves footnote/endnote/
-/// comment references against.
 pub(crate) struct RefMaps<'a> {
     pub foot: &'a BTreeMap<String, String>,
     pub end: &'a BTreeMap<String, String>,
@@ -94,8 +84,6 @@ pub(crate) struct RefMaps<'a> {
     pub links: &'a BTreeMap<String, String>,
 }
 
-/// Build an `rId → URL` map of the external hyperlink relationships in
-/// `word/_rels/document.xml.rels`, which `w:hyperlink r:id` references.
 pub(crate) fn build_link_map(container: &ZipPackage) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Some(rels) = container
@@ -137,7 +125,6 @@ struct BodyState {
     cur: Option<String>,
     cur_len: usize,
 
-    // Paragraph-property scratch, gathered from `w:pPr` then applied at its close.
     in_ppr: bool,
     in_numpr: bool,
     p_style: Option<String>,
@@ -146,7 +133,6 @@ struct BodyState {
     p_ilvl: i64,
     p_line_spacing: Option<f64>,
 
-    // Run marks are collected for `w:rPr` and applied over the run's text range at `</w:r>`.
     in_run: bool,
     in_char_props: bool,
     in_t: bool,
@@ -154,14 +140,11 @@ struct BodyState {
     run_marks: Vec<(String, MarkValue)>,
 
     pending_marks: Vec<(String, usize, usize, String, MarkValue)>,
-    // Paragraph-style inline marks for the current block, applied over [0, len].
     cur_para_marks: Vec<(String, MarkValue)>,
     note_refs: Vec<(String, usize, String)>,
-    // Open comment ranges keyed by docx id, awaiting their matching `w:commentRangeEnd`.
     open_comments: BTreeMap<String, (String, String, usize)>,
     comment_ranges: Vec<(String, usize, usize, String)>,
 
-    // Open bookmark ranges keyed by the OOXML `w:id`, matched on `w:bookmarkEnd`; the name comes from `w:bookmarkStart`'s `w:name`.
     open_bookmarks: BTreeMap<String, (String, usize, String)>,
     bookmark_ranges: Vec<(String, usize, usize, String)>,
 
@@ -179,7 +162,6 @@ struct BodyState {
     )>,
     change_ranges: Vec<(String, usize, usize, tilo_doc::snapshot::ChangeKind, String)>,
 
-    // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     table_id: Option<String>,
     trow: usize,
     tcol: usize,
@@ -187,68 +169,47 @@ struct BodyState {
 
     capture: Option<(usize, i32)>, // (start byte, open depth) of a fidelity atom
 
-    // In-progress `w:drawing`; becomes its own `image` block at `</w:drawing>`, replacing the enclosing empty paragraph.
     drawing: Option<DrawingState>,
     // Byte offset of the in-progress `w:drawing`, so a drawing that is not a resolvable image is kept verbatim.
     drawing_pos: usize,
 
-    // Inside a `w:p` (body or table cell): unmodeled children become inline atoms.
     in_para: bool,
-    // An image split the current paragraph: content after it continues in a new paragraph block.
     continue_para: bool,
-    // Paragraphs opened so far in the current table cell; the second and later are joined by `\n`.
     cell_paras: usize,
     // Byte offset of the current `w:r`, and the verbatim `w:rPr` of that run (start offset while open).
     run_pos: usize,
     rpr_start: usize,
     rpr_xml: String,
-    // In-progress verbatim capture of an unmodeled inline element or complex field.
     inline: Option<InlineCapture>,
     // (block, char index, verbatim XML) of each inline atom, marked once all text is in.
     atoms: Vec<(String, usize, usize, String)>,
 
-    // The table cell being read, and the open vertical merges: grid column → (the merge's
-    // first cell, rows it spans so far).
     cell: CellState,
     merges: BTreeMap<usize, (String, i64)>,
 
-    // The current `w:pPr`'s unmodeled children, verbatim; element depth inside it and the
-    // start of the direct child being read.
     ppr_kept: String,
     ppr_depth: usize,
     ppr_child: Option<(usize, Vec<u8>)>,
     // The current `w:pPr`'s `w:pStyle`, kept only when the model does not use the style.
     ppr_style: Option<String>,
-    // (block, start, end, kept run properties) of runs with unmodeled run properties.
     rpr_marks: Vec<(String, usize, usize, String)>,
 
-    // The current table's `w:tblPr`/`w:tblGrid` and row's `w:trPr`, until a cell takes them;
-    // the start, name and depth of the table/row/cell properties element being read.
     table_pr: Option<String>,
     table_grid: Option<String>,
     row_pr: Option<String>,
     table_part: Option<(usize, Vec<u8>, usize)>,
 }
 
-/// What the body parser tracks about the table cell being read.
 #[derive(Default)]
 struct CellState {
-    /// The cell's block, while it has one (a cell continuing a vertical merge has none).
     id: Option<String>,
-    /// The block before the cell's own, to fall back to when the cell turns out to be covered.
     prev: Option<String>,
-    /// Grid columns the cell spans (`w:gridSpan`).
     span: usize,
-    /// The cell takes part in a vertical merge (`w:vMerge`).
     merged: bool,
 }
 
-/// List-item attr holding the imported `w:numId`, reused on export while the item still
-/// numbers the same way.
 pub(super) const ATTR_NUM: &str = "docx_num";
 
-/// Paragraph children the body parser models; any other child of a `w:p` is kept verbatim as
-/// an inline atom.
 const PARA_MODELED: &[&[u8]] = &[
     b"w:pPr",
     b"w:r",
@@ -259,7 +220,6 @@ const PARA_MODELED: &[&[u8]] = &[
     b"w:bookmarkEnd",
     b"w:commentRangeStart",
     b"w:commentRangeEnd",
-    // Spell-check state: regenerated by the application, carrying nothing to keep.
     b"w:proofErr",
 ];
 
@@ -275,9 +235,7 @@ const RUN_MODELED: &[&[u8]] = &[
     b"w:footnoteReference",
     b"w:endnoteReference",
     b"w:drawing",
-    // Regenerated from the comment's range on export.
     b"w:commentReference",
-    // A layout cache of where the application last broke the page.
     b"w:lastRenderedPageBreak",
 ];
 
@@ -293,15 +251,11 @@ struct InlineCapture {
     /// Start offset of the segment being captured; `None` between the segments of a field.
     start: Option<usize>,
     depth: i32,
-    /// `<w:r>` + the run's properties, when the segment started inside a run; closed with `</w:r>`.
     prefix: Option<String>,
-    /// Open complex fields (`begin` minus `end`).
     field: i32,
-    /// The segment started at its run's start tag, so the run's end is consumed with it.
     owns_run: bool,
 }
 
-/// `begin`/`end` of a `w:fldChar` as a field-depth change.
 fn field_delta(e: &BytesStart) -> i32 {
     match attr_val(e, b"w:fldCharType").as_deref() {
         Some("begin") => 1,
@@ -311,7 +265,6 @@ fn field_delta(e: &BytesStart) -> i32 {
 }
 
 impl BodyState {
-    /// After an image split the paragraph, open the block that carries the rest of its content.
     fn ensure_continuation(&mut self, doc: &mut DocMut) {
         if self.cur.is_none() && self.continue_para && self.in_para {
             self.continue_para = false;
@@ -332,7 +285,6 @@ impl BodyState {
         }
     }
 
-    /// Whether an element starting here is paragraph content the model does not represent.
     fn is_unmodeled_para_child(&self, name: &[u8]) -> bool {
         self.in_para
             && !self.in_run
@@ -341,13 +293,11 @@ impl BodyState {
             && !PARA_MODELED.contains(&name)
     }
 
-    /// Whether an element starting here is run content the model does not represent.
     fn is_unmodeled_run_child(&self, e: &BytesStart) -> bool {
         if !self.in_run || self.in_char_props || self.in_t || self.drawing.is_some() {
             return false;
         }
         match e.name().as_ref() {
-            // A page or column break is layout, not a line break in the text.
             b"w:br" => attr_val(e, b"w:type").is_some_and(|t| t != "textWrapping"),
             name => !RUN_MODELED.contains(&name),
         }
@@ -399,7 +349,6 @@ impl BodyState {
         });
     }
 
-    /// Close the current capture segment at byte `end` into an inline atom.
     fn flush_inline(&mut self, s: &str, end: usize, doc: &mut DocMut) {
         let Some(cap) = self.inline.as_mut() else {
             return;
@@ -482,8 +431,6 @@ impl BodyState {
         true
     }
 
-    /// Keep an unmodeled element verbatim (or start capturing a complex field) when `e` is
-    /// one; `true` when it was.
     fn begin_unmodeled(
         &mut self,
         e: &BytesStart,
@@ -521,7 +468,6 @@ impl BodyState {
         }
     }
 
-    /// A `w:gridSpan` in the current cell's properties: the cell spans that many grid columns.
     fn grid_span(&mut self, e: &BytesStart, doc: &mut DocMut) {
         let span = attr_val(e, b"w:val")
             .and_then(|v| v.parse::<usize>().ok())
@@ -580,7 +526,6 @@ impl BodyState {
         }
     }
 
-    /// Opens a fresh top-level block anchored after the previous one, and makes it current.
     fn start_block(&mut self, doc: &mut DocMut, kind: &str) -> String {
         let id = doc.insert_block(self.prev.as_deref(), kind);
         self.prev = Some(id.clone());
@@ -709,7 +654,6 @@ impl BodyState {
         }
     }
 
-    /// Finalise the paragraph's properties: pick the block kind (`list_item`/heading/paragraph), set attrs, stash whole-block marks.
     fn finalize_ppr(&mut self, doc: &mut DocMut, reg: &StyleRegistry) {
         let Some(id) = self.cur.clone() else {
             return;
@@ -731,7 +675,6 @@ impl BodyState {
         if !kept.is_empty() {
             doc.set_attr(&id, super::paragraph::ATTR_PPR, kept.as_str());
         }
-        // Line spacing rides as `line_spacing` regardless of block kind; a direct `w:spacing` wins over inheriting from the style.
         let line_spacing = self.p_line_spacing.or_else(|| {
             self.p_style
                 .as_deref()
@@ -761,7 +704,6 @@ impl BodyState {
                     && s != 1
                 {
                     doc.set_attr(&id, "num_start", s);
-                    // OOXML numbering restarts by default; a non-1 start implies a restart at that value.
                     doc.set_attr(&id, "num_restart", true);
                 }
             }
@@ -786,8 +728,6 @@ impl BodyState {
                 doc.set_attr(&id, "align", a.as_str());
             }
         } else {
-            // A plain paragraph with a *named* style lifts the style's definition into the styles container and points the block at
-            // it via `style`, rather than also baking its formatting onto the block — which would break round-trip idempotency.
             let lifted = self
                 .p_style
                 .as_deref()
@@ -873,7 +813,6 @@ impl BodyState {
                                 dr.height = Some(emu_to_px(cy));
                             }
                         }
-                        // wrapNone/wrapTopAndBottom don't flow text beside the image → `none`; wrapSquare/wrapTight/wrapThrough use the wrapText side.
                         b"wp:wrapNone" | b"wp:wrapTopAndBottom" => {
                             dr.wrap = Some("none".to_string());
                         }
@@ -888,7 +827,6 @@ impl BodyState {
                                 .to_string(),
                             );
                         }
-                        // Page-relative horizontal/vertical positioning marks a page anchor.
                         b"wp:positionH" | b"wp:positionV" => {
                             if attr_val(e, b"relativeFrom").as_deref() == Some("page") {
                                 dr.page_relative = true;
@@ -908,8 +846,6 @@ impl BodyState {
                     .and_then(|dr| dr.rel.as_deref())
                     .is_some_and(|r| image_map.contains_key(r));
                 if !is_picture {
-                    // Not a picture the model can hold (a shape, chart, text box, linked
-                    // image): keep the drawing verbatim, in its run, where it stood.
                     self.drawing = None;
                     let raw = s.get(self.drawing_pos..pos_after).unwrap_or_default();
                     let atom = format!("<w:r>{}{raw}</w:r>", self.rpr_xml);
@@ -949,8 +885,6 @@ impl BodyState {
                     if let Some(w) = dr.wrap {
                         doc.set_attr(&id, "wrap", w.as_str());
                     }
-                    // An image block isn't a text container; close it. What follows the image
-                    // in its paragraph continues in a new paragraph block.
                     self.prev = Some(id);
                     self.cur = None;
                     self.continue_para = self.in_para && self.table_id.is_none();
@@ -962,8 +896,6 @@ impl BodyState {
         true
     }
 
-    /// Block-structure and run-open events: headings/paragraphs/lists/tables, tracked-change and
-    /// hyperlink openers, and the fidelity-atom capture start for anything unmodeled.
     fn handle_start(
         &mut self,
         e: &BytesStart,
@@ -976,7 +908,6 @@ impl BodyState {
         }
         match e.name().as_ref() {
             b"w:body" => self.in_body = true,
-            // A paragraph inside a table cell adds to the cell's text, on a new line after the first.
             b"w:p" if self.table_id.is_some() => {
                 self.in_para = true;
                 if self.cell_paras > 0 {
@@ -1027,12 +958,10 @@ impl BodyState {
                 self.in_char_props = true;
                 self.rpr_start = pos_before;
             }
-            // An embedded image: begin collecting size/positioning/blip until `</w:drawing>`.
             b"w:drawing" if self.in_body => {
                 self.drawing = Some(DrawingState::default());
                 self.drawing_pos = pos_before;
             }
-            // Deleted text in a `<w:del>` run uses `<w:delText>`; treated like `<w:t>` on import.
             b"w:t" | b"w:delText" if self.in_run => self.in_t = true,
             b"w:tbl" if self.in_body => {
                 self.table_seq = self.table_seq.saturating_add(1);
@@ -1065,7 +994,6 @@ impl BodyState {
                     }
                 }
             }
-            // Unknown block-level element → capture verbatim as a fidelity atom.
             _ if self.in_body && self.cur.is_none() && self.table_id.is_none() => {
                 self.capture = Some((pos_before, 1));
             }
@@ -1073,9 +1001,6 @@ impl BodyState {
         }
     }
 
-    /// Self-closing property/marker events: paragraph and run properties, tabs/breaks, note
-    /// references, comment/bookmark range markers, and the fidelity-atom capture for a single
-    /// unmodeled empty element.
     fn handle_empty(
         &mut self,
         e: &BytesStart,
@@ -1113,7 +1038,6 @@ impl BodyState {
             b"w:tab" if self.in_run => self.append(doc, "\t"),
             b"w:br" | b"w:cr" if self.in_run => self.append(doc, "\n"),
             b"w:footnoteReference" | b"w:endnoteReference" if self.in_run => {
-                // A note reference: resolve its docx id to a qdoc note id, splice a placeholder, and defer the marker until text is present.
                 let is_foot = e.name().as_ref() == b"w:footnoteReference";
                 let map = if is_foot { maps.foot } else { maps.end };
                 if let Some(docx_id) = attr_val(e, b"w:id")
@@ -1136,7 +1060,6 @@ impl BodyState {
                 }
             }
             b"w:commentRangeEnd" if self.in_body => {
-                // Closes a commented range: anchor a `comment` mark over `[start, cur_len)`.
                 if let Some(docx_id) = attr_val(e, b"w:id")
                     && let Some((cid, b, start)) = self.open_comments.remove(&docx_id)
                 {
@@ -1155,14 +1078,12 @@ impl BodyState {
                 }
             }
             b"w:bookmarkEnd" if self.in_body => {
-                // Closes a bookmark's range: anchor a `bookmark` mark valued with the name.
                 if let Some(id) = attr_val(e, b"w:id")
                     && let Some((b, start, name)) = self.open_bookmarks.remove(&id)
                 {
                     self.bookmark_ranges.push((b, start, self.cur_len, name));
                 }
             }
-            // `w:commentReference` carries no range info (defined by start/end), so it's ignored.
             _ if self.in_char_props => {
                 if let Some((k, v)) = mark_from_rpr_child(e) {
                     self.run_marks.retain(|(k2, _)| k2 != &k);
@@ -1186,8 +1107,6 @@ impl BodyState {
         }
     }
 
-    /// Closing events: property scope ends, tracked-change/hyperlink/run closes (which anchor
-    /// their deferred marks), and paragraph/table-cell/table-row/table closes.
     fn handle_end(
         &mut self,
         e: &BytesEnd,
@@ -1204,7 +1123,6 @@ impl BodyState {
             }
             b"w:pPr" => {
                 self.in_ppr = false;
-                // A cell's (first) paragraph properties ride on the cell.
                 let kept = self.ppr_style.take().unwrap_or_default() + &self.ppr_kept;
                 if self.cell_paras == 1
                     && !kept.is_empty()
@@ -1225,7 +1143,6 @@ impl BodyState {
             }
             b"w:t" | b"w:delText" => self.in_t = false,
             b"w:ins" | b"w:del" => {
-                // Close the tracked-change wrapper: anchor an `ins`/`del` mark over `[start, cur_len)`.
                 if let Some((cid, kind, block, start)) = self.change.take()
                     && let Some(b) = block
                 {
@@ -1249,7 +1166,6 @@ impl BodyState {
                 }
             }
             b"w:hyperlink" => {
-                // Close the cross-reference: anchor a `link` mark valued `#name` over `[start, cur_len)`.
                 if let Some((value, block, start)) = self.hyperlink.take()
                     && let Some(b) = block
                 {
@@ -1265,7 +1181,6 @@ impl BodyState {
             b"w:p" => self.in_para = false,
             b"w:tc" if self.table_id.is_some() => {
                 self.cur = None;
-                // The table's and the row's properties ride on their first cell with a block.
                 if let Some(id) = self.cell.id.take() {
                     for (key, value) in [
                         (super::paragraph::ATTR_TBLPR, self.table_pr.take()),
@@ -1277,7 +1192,6 @@ impl BodyState {
                         }
                     }
                 }
-                // A cell that is not part of a vertical merge ends any merge in its column.
                 if !self.cell.merged {
                     self.merges.remove(&self.tcol);
                 }
@@ -1302,7 +1216,6 @@ impl BodyState {
         Ok(())
     }
 
-    /// An entity or character reference inside `w:t` is the character it stands for.
     fn handle_general_ref(&mut self, r: &BytesRef, doc: &mut DocMut) {
         if self.in_t
             && let Some(c) = crate::resolve_general_ref(r)
@@ -1345,12 +1258,10 @@ impl BodyState {
         for (b, start, end, kept) in self.rpr_marks {
             doc.add_mark(&b, start, end, super::paragraph::MARK_RPR, kept.as_str());
         }
-        // A comment missing its `w:commentRangeEnd` anchors at start, extending to block end.
         for (_docx_id, (cid, b, start)) in std::mem::take(&mut self.open_comments) {
             let end = doc_block_len(doc, &b).max(start);
             self.comment_ranges.push((b, start, end, cid));
         }
-        // A zero-width comment range can't carry a mark, so it's widened to one character when the block has text after the anchor.
         for (b, start, mut end, cid) in self.comment_ranges {
             if end <= start {
                 let blen = doc_block_len(doc, &b);
@@ -1360,22 +1271,18 @@ impl BodyState {
                 doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
             }
         }
-        // Tracked-change anchor marks: cover each changed range with the matching `ins`/`del` mark.
         for (b, start, end, kind, cid) in self.change_ranges {
             if end > start {
                 doc.add_change_mark(kind, &b, start, end, &cid);
             }
         }
-        // A bookmark missing its `w:bookmarkEnd` anchors at start, extending to block end.
         for (_id, (b, start, name)) in std::mem::take(&mut self.open_bookmarks) {
             let end = doc_block_len(doc, &b).max(start);
             self.bookmark_ranges.push((b, start, end, name));
         }
-        // Bookmark anchor marks: a zero-width (point) range is widened to one character (see `add_bookmark`).
         for (b, start, end, name) in self.bookmark_ranges {
             doc.add_bookmark(&b, start, end, &name);
         }
-        // Cross-reference `link` marks cover each linked range, valued `#target`.
         for (b, start, end, value) in self.cross_refs {
             if end > start {
                 doc.add_mark(&b, start, end, tilo_doc::schema::MARK_LINK, value.as_str());
@@ -1474,7 +1381,6 @@ mod tests {
             assert_eq!(snap.blocks[1].text, "Hello");
         }
         {
-            // A custom style derived from Heading1 that also centres text: heading detection + alignment come from the resolved style.
             let styles = concat!(
                 r#"<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr></w:style>"#,
                 r#"<w:style w:type="paragraph" w:styleId="MyTitle"><w:basedOn w:val="Heading1"/></w:style>"#,
@@ -1728,7 +1634,6 @@ mod tests {
             assert_eq!(p1.text, "one\ntwo\tthree");
         }
         {
-            // A custom paragraph style carrying formatting lifts into the styles container, pointed at via `w:styleId`.
             let styles = concat!(
                 r##"<w:style w:type="paragraph" w:styleId="Fancy"><w:name w:val="Fancy"/>"##,
                 r##"<w:pPr><w:jc w:val="center"/><w:spacing w:after="180"/><w:ind w:left="360"/></w:pPr>"##,
@@ -1755,7 +1660,6 @@ mod tests {
                 "block points at the styleId: {:?}",
                 b.attrs
             );
-            // The formatting lives in the style, not directly on the block.
             assert_eq!(
                 b.attrs.get("align"),
                 None,
@@ -1808,7 +1712,6 @@ mod tests {
     fn imports_and_roundtrips_document_and_run_language() {
         {
             use tilo_doc::document::MarkValue;
-            // A run carrying `<w:lang w:val="fr"/>` → a `lang` run mark with the tag.
             let body = concat!(
                 r#"<w:p>"#,
                 r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
@@ -1922,7 +1825,6 @@ mod tests {
             .unwrap();
         let p = &d.materialize().blocks[0];
         let ph = tilo_doc::schema::FIELD_PLACEHOLDER;
-        // The field and the content control show their text; the page break shows none.
         assert_eq!(p.text, format!("page 7 and ctl{ph}end"));
         let atoms = p
             .marks
@@ -1931,7 +1833,6 @@ mod tests {
             .count();
         assert_eq!(atoms, 3, "{:?}", p.marks);
 
-        // An edit through the model, then export: every piece re-emits verbatim, in place.
         let id = p.id.clone();
         d.splice_text(&id, 0, 0, "The ");
         let out = DocxCodec
@@ -1989,7 +1890,6 @@ mod tests {
             )
             .unwrap();
         let snap = d.materialize();
-        // The picture's part is missing, so the drawing stays verbatim, inline, between the texts.
         assert_eq!(snap.blocks.len(), 1, "{snap:?}");
         assert_eq!(
             snap.blocks[0].text,

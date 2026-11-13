@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use crate::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
-/// The install-relevant fields from a `[Flatpak Ref]` keyfile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlatpakRef {
     pub app_id: String,
@@ -20,8 +19,6 @@ pub struct FlatpakRef {
 }
 
 impl FlatpakRef {
-    /// Parse a Flatpak reference. A non-empty `Name` is the one mandatory
-    /// field; title and branch receive the same fallbacks as Flatpak tooling.
     pub fn parse(content: &str, source_path: impl Into<PathBuf>) -> Option<Self> {
         let mut in_ref = false;
         let mut app_id = None;
@@ -73,9 +70,6 @@ impl FlatpakRef {
         })
     }
 
-    /// Read and parse a `.flatpakref` file. `Ok(None)` means the file read
-    /// fine but didn't have the required `[Flatpak Ref]` section/`Name` key;
-    /// see [`Self::parse`].
     pub fn from_path(path: &Path) -> std::io::Result<Option<Self>> {
         let content = std::fs::read_to_string(path)?;
         Ok(Self::parse(&content, path))
@@ -135,7 +129,6 @@ Title=GIMP\n\
 Url=https://dl.flathub.org/repo/\n\
 Comment=Create images and edit photographs\n";
 
-    /// .flatpakref fields, fallbacks, group/comment handling, conversion and argument scanning.
     #[test]
     fn flatpakref_parsing_and_install_conversion() {
         {

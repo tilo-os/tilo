@@ -1,9 +1,8 @@
-//! Who the app runs as and on what: the login's account and host names, and
-//! whether a desktop session is there to show capture and call UI.
+//! Who the app runs as and on what: the login's account and host names, and whether a
+//! desktop session is there to show capture and call UI.
 //!
-//! Apps use these only as hints (a display name to start from, a seed for a
-//! deterministic fallback id); none of them is an identity to trust. The web
-//! has none of them.
+//! Apps use these only as hints (a display name to start from, a seed for a fallback
+//! id).
 
 /// The login name of the account running this process: `$USER`, else
 /// `$USERNAME` (Windows), when non-empty. `None` in a page.
@@ -19,9 +18,6 @@ pub fn host_name() -> Option<String> {
     imp::host_name()
 }
 
-/// Whether the process runs inside an interactive desktop session with a
-/// session bus or a Wayland display, which live capture, calls and screen
-/// sharing need. Headless runs (CI, `--shots`) and pages have neither.
 #[must_use]
 pub fn has_desktop_session() -> bool {
     imp::has_desktop_session()

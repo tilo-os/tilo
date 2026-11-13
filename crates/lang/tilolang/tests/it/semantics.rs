@@ -343,6 +343,95 @@ fn a_templates_text_parameter_carries_its_callers_message() {
     );
 }
 
+/// Every word a person reads is a message: an action's label that follows its subject, why it
+/// cannot run, and the words its body writes with `say` into a record, each under the action's
+/// own message, its interpolation an argument (i18n.md §2).
+#[test]
+fn an_actions_label_its_reasons_and_what_it_says_are_messages() {
+    let c = compile(
+        "type Note {\n    title: Text\n    pinned: Bool\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot Book\ndefault view book for Book\naction pin(n: Note, pinned: Bool = not n.pinned) (\n    label: if pinned { \"Pin\" } else { \"Unpin\" },\n) {\n    require n.title != \"\" \"Name the note first\"\n    n.pinned = pinned\n}\naction tally(b: Book) {\n    let n = b.notes.count(x -> x.pinned)\n    b.notes.insert(Note(title: std.say(\"{n} pinned\")))\n}\nview book(b: Book) {\n    for n in b.notes {\n        button(pin(n))\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    let pin = tilolang::messages::key_of(c.ids.get("pin").expect("the action"));
+    let tally = tilolang::messages::key_of(c.ids.get("tally").expect("the action"));
+    for line in [
+        format!("{pin} = Pin"),
+        "    .w-pin = Pin".to_owned(),
+        "    .w-unpin = Unpin".to_owned(),
+        "    .w-name-the-note-first = Name the note first".to_owned(),
+        format!("{tally} = Tally"),
+        "    .w-pinned = { $n } pinned".to_owned(),
+    ] {
+        assert!(source.contains(&line), "{line:?} in {source}");
+    }
+    assert_eq!(
+        codes("action a() {\n    let t = \"x\"\n    let s = std.say(t)\n}"),
+        vec!["E022"],
+        "`std.say` takes the words themselves"
+    );
+}
+
+/// An app's own `say` action keeps its name. The words marker is the library's `std.say`, so the
+/// bare name is the package's to declare, a chat app's `say` posts a line, and the same package
+/// still writes messages a person reads in their own language (i18n.md §2).
+#[test]
+fn an_apps_own_say_action_and_the_words_marker_stand_side_by_side() {
+    let c = compile(
+        "type Line {\n    said: Text\n}\n\ntype Talk {\n    lines: Collection<Line>\n}\n\nroot Talk\n\ndefault view talk for Talk\n\n/// Posts a line.\naction say(t: Talk, said: Text) {\n    t.lines.insert(Line(said: said))\n}\n\n/// Posts a line that says how many came before it.\naction greet(t: Talk) {\n    let n = t.lines.count()\n    say(t, std.say(\"{n} lines before this\"))\n}\n\nview talk(t: Talk) {\n    for l in t.lines {\n        text(l.said)\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let say = tilolang::messages::key_of(c.ids.get("say").expect("the app's own action"));
+    let greet = tilolang::messages::key_of(c.ids.get("greet").expect("the action"));
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    for line in [
+        format!("{say} = Say"),
+        "    .doc = Posts a line.".to_owned(),
+        format!("{greet} = Greet"),
+        "    .w-lines-before-this = { $n } lines before this".to_owned(),
+    ] {
+        assert!(source.contains(&line), "{line:?} in {source}");
+    }
+    // With no action of its own named `say`, the marker is still `std.say`: a bare `say` names
+    // nothing, and the error says which call marks words.
+    assert_eq!(
+        codes("action a() {\n    let s = say(\"x\")\n}"),
+        vec!["E014"],
+        "the words marker is `std.say`"
+    );
+}
+
+/// What a parameter is called where a person gives it is the message its key holds: its
+/// `label:` when its name in words would read as something else beside the value, and its name
+/// in words otherwise. Its name is still the name its argument is recorded by (i18n.md §2).
+#[test]
+fn a_parameters_label_is_what_a_person_reads_and_its_name_records_the_argument() {
+    let c = compile(
+        "type Video {\n    title: Text\n    watch_later: Bool\n}\ntype Tube {\n    videos: Collection<Video>\n}\nroot Tube\ndefault view tube for Tube\n/// Keeps the video to watch later, or takes it off the list.\naction watch_later(v: Video, saved: Bool (label: \"On the Watch later list\") = not v.watch_later, at: Int = 0) {\n    v.watch_later = saved\n}\nview tube(t: Tube) {\n    for v in t.videos {\n        button(watch_later(v))\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let action = tilolang::messages::key_of(c.ids.get("watch_later").expect("the action"));
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    assert!(
+        source.contains(&format!("{action}-saved = On the Watch later list")),
+        "the label is the words a person reads: {source}"
+    );
+    assert!(
+        source.contains(&format!("{action}-at = At")),
+        "a parameter nothing labels reads its name in words: {source}"
+    );
+    let params = &c
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "watch_later")
+        .expect("the action")
+        .params;
+    assert_eq!(params[1].name, "saved", "the argument keeps its name");
+    assert_eq!(params[1].words(), "On the Watch later list");
+    assert_eq!(params[2].words(), "At");
+}
+
 // A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
 // declares `state` keeps it there: the host binds the state by the id the row's
 // body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.
@@ -389,4 +478,13 @@ fn a_view_answers_a_request_to_show_an_item_of_a_type_it_lists() {
     let unnamed = "type Note {\n    title: Text\n}\naction ping(n: Note) {\n    n.title = \"p\"\n}\n\
                     view v(n: Note) {\n    on show: ping(n)\n    text(\"the list\")\n}";
     assert_eq!(codes(unnamed), vec!["E063"]);
+    // The view's state is the live view's to start: a default that reads the view's own
+    // parameter is no part of the frame that answers with the item.
+    let held = compile(
+        "type Note {\n    title: Text\n}\ntype Book {\n    notes: Collection<Note>\n}\n\
+         root Book\ndefault view book for Book\n\
+         view book(b: Book) {\n    state opened: Option<Note> = b.notes.first()\n    \
+         on show(x: Note): set(opened, x)\n    text(\"the list\")\n}",
+    );
+    crate::common::validate(&held.wasm);
 }

@@ -116,14 +116,12 @@ mod integration_tests {
             );
         }
         {
-            // The "silence key": stop() on the speaker + clear() on the queue.
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("a long say-all").with_priority(Priority::Text));
             let mut spk = NullSpeaker::new();
             spk.speak("currently talking", true);
             assert!(spk.is_speaking());
 
-            // Silence:
             spk.stop();
             q.clear();
 

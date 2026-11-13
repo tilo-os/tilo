@@ -591,6 +591,7 @@ pub fn workspace_role_grants(workspace: &str, granted_by: &Subject) -> Vec<Grant
         .chain([
             session_app(workspace, granted_by.clone()),
             device_panel(workspace, granted_by.clone()),
+            files_app(workspace, granted_by.clone()),
         ])
         .collect()
 }
@@ -776,7 +777,7 @@ pub mod agent_policy {
 /// hands it the person whose message caused the turn, and the bound it holds
 /// for the agent's record ([`crate::turn::authority`]).
 #[must_use]
-pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> crate::Bound {
+pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
     let subject = Subject::Agent(agent.to_owned());
     let granted_by = Subject::Person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
@@ -795,7 +796,7 @@ pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) ->
         lifetime: Lifetime::UntilRevoked,
         granted_by: granted_by.clone(),
     }));
-    crate::Bound { subject, grants }
+    grants
 }
 
 /// The grant making application `app` an author of its own records in
@@ -859,11 +860,51 @@ pub fn is_device_panel(grant: &Grant) -> bool {
 
 /// Whether `grant` is one the code defines and every read of a stored policy
 /// restores ([`crate::WorkspacePolicy::with_current_roles`]): a built-in
-/// role's, or part of the room's make-up ([`session_app`], [`device_panel`]).
-/// Whatever narrows a policy and reads it back narrows these again.
+/// role's, or part of the room's make-up ([`session_app`], [`device_panel`],
+/// [`files_app`]). Whatever narrows a policy and reads it back narrows these
+/// again.
 #[must_use]
 pub fn is_code_defined(grant: &Grant) -> bool {
-    is_role_grant(grant) || is_session_app(grant) || is_device_panel(grant)
+    is_role_grant(grant) || is_session_app(grant) || is_device_panel(grant) || is_files_app(grant)
+}
+
+/// Whether `grant` is one of the room's make-up, never one a person gave and
+/// may take back: [`session_app`], [`device_panel`] or [`files_app`].
+#[must_use]
+pub fn is_make_up(grant: &Grant) -> bool {
+    is_session_app(grant) || is_device_panel(grant) || is_files_app(grant)
+}
+
+/// The app a workspace's files are the record of: the tree every device
+/// holding the workspace mounts or mirrors, published as this app's record.
+pub const FILES_APP: &str = "so.tilo.file-explorer";
+
+/// The id of the grant [`files_app`] makes.
+pub const FILES_APP_GRANT: &str = "files-app";
+
+/// Whether `grant` is the one [`files_app`] makes: part of the workspace's
+/// make-up, like [`session_app`]'s.
+#[must_use]
+pub fn is_files_app(grant: &Grant) -> bool {
+    grant.id.as_str() == FILES_APP_GRANT
+        && matches!(&grant.subject, Subject::App(app) if app == FILES_APP)
+}
+
+/// The grant making [`FILES_APP`] an author of `workspace`'s files: every
+/// workspace has files, kept as that app's record, so whoever the workspace
+/// lets change its content changes its files through it, and the first of
+/// them to hold any starts the record. Whether a member may write stays
+/// their role's: a viewer still writes nothing.
+#[must_use]
+pub fn files_app(workspace: &str, granted_by: Subject) -> Grant {
+    Grant::new(
+        FILES_APP_GRANT,
+        Subject::App(FILES_APP.to_owned()),
+        TreePath::workspace(workspace).app(FILES_APP),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        granted_by,
+    )
 }
 
 /// The app a person's device shows the session's own state in: quick
@@ -895,33 +936,36 @@ pub const SESSION_KIND: &str = "session";
 /// What a person may do from a device that is not theirs, in any workspace: read
 /// and change content, ask first before reaching outside it, never govern.
 #[must_use]
-pub fn foreign_device_bound() -> Vec<Grant> {
-    let issuer = Subject::ForeignDevice;
-    let mut grants = vec![
-        Grant::new(
-            "foreign-device:content",
+pub fn foreign_device_bound() -> &'static [Grant] {
+    static BOUND: std::sync::LazyLock<Vec<Grant>> = std::sync::LazyLock::new(|| {
+        let issuer = Subject::ForeignDevice;
+        let mut grants = vec![
+            Grant::new(
+                "foreign-device:content",
+                Subject::ForeignDevice,
+                TreePath::root(),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                issuer.clone(),
+            ),
+            Grant::new(
+                "foreign-device:outside",
+                Subject::ForeignDevice,
+                TreePath::root(),
+                KindSet::OUTSIDE,
+                Answer::Ask,
+                issuer.clone(),
+            ),
+        ];
+        grants.push(Grant::new(
+            "foreign-device:governance",
             Subject::ForeignDevice,
-            TreePath::root(),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            issuer.clone(),
-        ),
-        Grant::new(
-            "foreign-device:outside",
-            Subject::ForeignDevice,
-            TreePath::root(),
-            KindSet::OUTSIDE,
-            Answer::Ask,
-            issuer.clone(),
-        ),
-    ];
-    grants.push(Grant::new(
-        "foreign-device:governance",
-        Subject::ForeignDevice,
-        TreePath::root().any(Level::Workspace).kind(ROOM_KIND),
-        KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-        Answer::Deny,
-        issuer,
-    ));
-    grants
+            TreePath::root().any(Level::Workspace).kind(ROOM_KIND),
+            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+            Answer::Deny,
+            issuer,
+        ));
+        grants
+    });
+    &BOUND
 }

@@ -652,3 +652,23 @@ fn a_framed_card_without_a_caret_centres_over_the_display_it_was_given() {
         "and high up rather than off the top: {card:?}"
     );
 }
+
+/// A picker that is not up owes its host no frame: the desktop's bar holds one closed all the
+/// time, and a picker asking for frames while closed repainted the bar on every frame of the
+/// session, typing into another window included.
+#[test]
+fn a_closed_picker_rests_until_it_opens() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let mut picker = EmojiPicker::sheet();
+    picker.mark_drawn();
+    assert!(!picker.needs_redraw(), "never opened: nothing to draw");
+    let mut picker = opened(&Theme::dark());
+    picker.mark_drawn();
+    picker.close();
+    assert!(picker.needs_redraw(), "the frame that takes it down");
+    picker.mark_drawn();
+    assert!(!picker.needs_redraw(), "and nothing after it");
+    picker.reopen();
+    assert!(picker.needs_redraw(), "open again, it draws");
+}

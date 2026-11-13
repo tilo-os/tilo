@@ -194,6 +194,11 @@ pub trait Sink {
     /// it, reads without the resource's log.
     fn put_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError>;
 
+    /// Keep `stamp`'s version as the newest version of `resource`, whatever it holds there: the
+    /// newest version of a resource whose whole log was read anew, which may stand before the
+    /// one the index kept of a change a step took back.
+    fn set_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError>;
+
     /// Drop `resource` and everything inside it: fields, lists, and what search finds them by.
     /// The newest version kept of it stays, as the record's log keeps its versions.
     fn remove(&mut self, resource: &str) -> Result<(), IndexError>;
@@ -257,6 +262,10 @@ pub trait Sink {
 impl Sink for Writer<'_> {
     fn put_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError> {
         Writer::put_newest(self, resource, stamp)
+    }
+
+    fn set_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError> {
+        Writer::set_newest(self, resource, stamp)
     }
 
     fn field(&mut self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
@@ -338,7 +347,13 @@ impl Sink for Writer<'_> {
             .collect();
         Sink::remove(self, resource)?;
         for (held, field, bytes) in kept {
-            Writer::put_field(self, &held, &field, &super::codec::get_value(&bytes)?)?;
+            // Where it left from is a short text like the pseudo-fields beside it; the versions
+            // of a resource are field values.
+            if super::is_text(&field) {
+                Writer::put_text(self, &held, &field, &super::codec::get_text(&bytes)?)?;
+            } else {
+                Writer::put_field(self, &held, &field, &super::codec::get_value(&bytes)?)?;
+            }
         }
         Ok(())
     }
@@ -503,15 +518,46 @@ struct Whole<'a> {
     resolved: &'a Resolved,
 }
 
-/// Write what `end` holds of the resource's versions into an empty sink: the first and the
-/// last version, and when each field last changed ([`reflect::Ends`]).
-fn write_ends(sink: &mut impl Sink, resource: &str, end: &Ends) -> Result<(), IndexError> {
+/// Write what `end` holds of the resource's versions into a sink: the first and the last
+/// version, and when each field last changed ([`reflect::Ends`]). With the resource's `schema`,
+/// each of its fields is written: the one the ends do not name was last changed by the version
+/// that made it, which set it.
+fn write_ends(
+    sink: &mut impl Sink,
+    resource: &str,
+    end: &Ends,
+    schema: Option<&TypeSchema>,
+) -> Result<(), IndexError> {
     sink.put_field(resource, CREATED, &end.first.value())?;
     sink.put_field(resource, UPDATED, &end.last.value())?;
     for (field, stamp) in &end.fields {
         sink.put_field(resource, &reflect::changed_field(field), &stamp.value())?;
     }
+    for field in schema.map_or(&[][..], |schema| schema.fields.as_slice()) {
+        let stamp = end.fields.get(&field.id).unwrap_or(&end.first);
+        sink.put_field(resource, &reflect::changed_field(&field.id), &stamp.value())?;
+    }
     Ok(())
+}
+
+/// Note the version that last changed each field of the resource at `path` (of the type
+/// `schema`) which holds none yet: a field no version named was last changed by `made`, the
+/// version that made the resource, which set it. Returns the fields it wrote.
+fn note_field_changes(
+    sink: &mut impl Sink,
+    path: &str,
+    schema: &TypeSchema,
+    made: &Stamp,
+) -> Result<Vec<String>, IndexError> {
+    let mut written = Vec::new();
+    for field in &schema.fields {
+        let id = reflect::changed_field(&field.id);
+        if sink.field(path, &id)?.is_none() {
+            sink.put_field(path, &id, &made.value())?;
+            written.push(id);
+        }
+    }
+    Ok(written)
 }
 
 /// A row of what left a collection: the item, and the version that removed it, which says
@@ -550,13 +596,17 @@ fn read_removed(
     serde_json::from_str(&json).map_err(|_| IndexError::Corrupt)
 }
 
-/// Keep `left` as the items that left the collection `field` of `holder` ([`super::REMOVED`]).
+/// Keep `left` as the items that left the collection `field` of `holder` ([`super::REMOVED`]);
+/// none leaves nothing to keep, as a derivation anew of it writes no row then either.
 fn write_removed(
     sink: &mut impl Sink,
     holder: &str,
     field: &str,
     left: &[LeftRow],
 ) -> Result<(), IndexError> {
+    if left.is_empty() {
+        return sink.drop_text(holder, &removed_field(field));
+    }
     let mut left = left.to_vec();
     left.sort_by(|one, other| one.order().cmp(&other.order()));
     let json = serde_json::to_string(&left).map_err(|_| IndexError::Corrupt)?;
@@ -631,9 +681,9 @@ fn returned(sink: &mut impl Sink, path: &str) -> Result<(), IndexError> {
     sink.drop_text(path, LEFT)
 }
 
-/// The items that left the collections `schema` holds in `resource`, as `sink` keeps them:
-/// what a derivation anew of it writes back, as the record holds where an item is now, never
-/// where it was.
+/// The items that left the collections `schema` holds in `resource`, as `sink` keeps them, by
+/// the collection's field: what a derivation anew of it writes back, as the record holds where
+/// an item is now, never where it was.
 fn kept_removed(
     sink: &mut impl Sink,
     resource: &str,
@@ -645,22 +695,32 @@ fn kept_removed(
         .iter()
         .filter(|field| field.kind == MergeKind::Collection)
     {
-        let name = removed_field(&field.id);
-        if let Some(json) = sink.text(resource, &name)? {
-            held.push((name, json));
+        if let Some(json) = sink.text(resource, &removed_field(&field.id))? {
+            held.push((field.id.clone(), json));
         }
     }
     Ok(held)
 }
 
-/// Write back what [`kept_removed`] read off a resource before it was derived anew.
+/// Write back what [`kept_removed`] read off a resource before it was derived anew: the rows of
+/// the items the derivation found in no collection, which are the ones still out of every one.
 fn restore_removed(
     sink: &mut impl Sink,
     resource: &str,
     held: &[(String, String)],
 ) -> Result<(), IndexError> {
     for (field, json) in held {
-        sink.put_text(resource, field, json)?;
+        let rows: Vec<LeftRow> = serde_json::from_str(json).map_err(|_| IndexError::Corrupt)?;
+        let mut kept = Vec::with_capacity(rows.len());
+        for row in rows {
+            // An item in a collection again is no row of what left one.
+            if sink.text(&row.path, IN)?.is_none() {
+                kept.push(row);
+            } else {
+                sink.drop_text(&row.path, LEFT)?;
+            }
+        }
+        write_removed(sink, resource, field, &kept)?;
     }
     Ok(())
 }
@@ -978,7 +1038,7 @@ impl<'d> Derive<'d> {
             .filter(|(resource, _)| self.of_app(resource, app))
             .collect();
         for (resource, end) in &of_app {
-            write_ends(sink, resource, end)?;
+            write_ends(sink, resource, end, None)?;
         }
         self.all(sink, app)?;
         // What a mark reads of a resource without its log, once the records are derived: of a
@@ -1152,8 +1212,14 @@ impl<'d> Derive<'d> {
                 continue;
             }
             // The newest version of it, whatever the record holds of it now: a mark of an item
-            // the record no longer has reads the version that took it out of its collection.
-            sink.put_newest(resource, &end.newest())?;
+            // the record no longer has reads the version that took it out of its collection. A
+            // step took a change to it back, so the version the index holds may be one the
+            // record no longer counts: its whole log's newest replaces it.
+            if end.restored {
+                sink.set_newest(resource, &end.newest())?;
+            } else {
+                sink.put_newest(resource, &end.newest())?;
+            }
             let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
                 continue;
             };
@@ -1163,16 +1229,9 @@ impl<'d> Derive<'d> {
                     .and_then(Stamp::of_value))
             };
             // A step took a change to it back: its versions are its whole log read anew, so
-            // they replace what the index holds, and each field it was made with says so.
+            // they replace what the index holds.
             if end.restored {
-                let mut end = end.clone();
-                let made = end.first.clone();
-                for field in &schema.fields {
-                    end.fields
-                        .entry(field.id.clone())
-                        .or_insert_with(|| made.clone());
-                }
-                write_ends(sink, resource, &end)?;
+                write_ends(sink, resource, end, Some(schema))?;
                 self.links(sink, resource, schema)?;
                 if sink.keeps_columns() {
                     let placed = placed_in(sink, resource)?;
@@ -1193,9 +1252,22 @@ impl<'d> Derive<'d> {
                 continue;
             }
             let mut moved: Vec<String> = Vec::new();
-            if held(sink, CREATED)?.is_none_or(|held| end.first.before(&held)) {
+            let was = held(sink, CREATED)?;
+            if was.as_ref().is_none_or(|held| end.first.before(held)) {
                 sink.put_field(resource, CREATED, &end.first.value())?;
                 moved.push(CREATED.to_owned());
+                // The fields it made are the ones whose last change was the version that made
+                // it before: a version made on another replica at the same time, which this
+                // one reads after the other, made them too.
+                if let Some(was) = &was {
+                    for field in &schema.fields {
+                        let id = reflect::changed_field(&field.id);
+                        if held(sink, &id)?.as_ref() == Some(was) {
+                            sink.put_field(resource, &id, &end.first.value())?;
+                            moved.push(id);
+                        }
+                    }
+                }
             }
             if held(sink, UPDATED)?.is_none_or(|held| held.before(&end.last)) {
                 sink.put_field(resource, UPDATED, &end.last.value())?;
@@ -1209,6 +1281,10 @@ impl<'d> Derive<'d> {
                     moved.push(id);
                 }
             }
+            // The fields neither these versions nor the index named are the ones the version
+            // that made it set.
+            let made = held(sink, CREATED)?.unwrap_or_else(|| end.first.clone());
+            moved.extend(note_field_changes(sink, resource, schema, &made)?);
             if moved.is_empty() {
                 continue;
             }
@@ -1337,6 +1413,14 @@ impl<'d> Derive<'d> {
         }
         // What it links to, once its fields are as they are now.
         self.links(sink, path, schema)?;
+        // When each of its fields last changed: a field no version named, the one that made it.
+        if let Some(made) = sink
+            .field(path, CREATED)?
+            .as_ref()
+            .and_then(Stamp::of_value)
+        {
+            note_field_changes(sink, path, schema, &made)?;
+        }
         Ok(schema)
     }
 
@@ -1655,7 +1739,7 @@ impl<'d> Derive<'d> {
             );
             for (resource, end) in &ends {
                 if doc_of(resource) == doc {
-                    write_ends(sink, resource, end)?;
+                    write_ends(sink, resource, end, None)?;
                 }
             }
         }

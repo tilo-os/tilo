@@ -1,5 +1,4 @@
 //! Root-controller selected medium custody. No formatting or mount adoption.
-//! An uncertain worker exit leaves the owned mount quarantined, never released.
 mod boot;
 use super::*;
 use crate::setup::migration::PinnedDirectory;
@@ -114,7 +113,6 @@ fn mount_id(file: &File) -> io::Result<u64> {
     }
     Ok(stat.stx_mnt_id)
 }
-/// Count every alias, including read-only aliases: no foreign mount is adopted.
 fn unique_mount(number: &str, id: u64) -> io::Result<()> {
     let bytes =
         crate::record::read_bounded(File::open("/proc/self/mountinfo")?, 1024 * 1024, || {
@@ -215,7 +213,6 @@ pub(in crate::setup::home_capture) fn review_filesystem_witness(
     private.validate_destination()?;
     Ok(*uuid.as_bytes())
 }
-/// Cleanup guard only for construction, before any worker capability exists.
 struct MountBuilding {
     daemon: Option<Udisks>,
     partition: String,
@@ -242,8 +239,8 @@ pub struct NativeMediumOutput {
     inventory_scratch: Mutex<Option<super::inventory_scratch::MediumScratch>>,
 }
 impl NativeMediumOutput {
-    /// Root-only caller obtains all facts from retained authenticated admission.
-    /// No frontend mountpoint, selected partition path or deserialized grant.
+    /// All facts come from retained authenticated admission, never a frontend mountpoint, selected
+    /// partition path or deserialized grant.
     pub(super) fn mount(
         read: Arc<OfflineReadAdmission>,
         cancellation: ServiceCancellation,
@@ -254,7 +251,6 @@ impl NativeMediumOutput {
         let cancel = AtomicBool::new(false);
         let plan = read.output_selection_declaration(&cancel)?;
         let disk = read.output_raw_medium(&cancel)?;
-        // Refuse overlap before mounting or creating any target namespace.
         crate::setup::migration_handoff::validate_offline_source_disks(
             &read.output_source_plans(&cancel)?,
             disk.metadata()?.rdev(),
@@ -265,8 +261,8 @@ impl NativeMediumOutput {
         }
         let daemon =
             Udisks::system().map_err(|_| refused("Original output mount service unavailable"))?;
-        // The path is an exact current direct child of the held authenticated disk;
-        // actual returned FD and superblock are checked independently below.
+        // The path is a direct child of the held authenticated disk; the returned fd and superblock
+        // are checked independently below.
         let partition = daemon
             .open_read_only(&before.name)
             .map_err(|_| refused("Original output partition custody refused"))?;
@@ -308,7 +304,6 @@ impl NativeMediumOutput {
         if fs.f_flag & safety != safety || fs.f_flag & libc::ST_RDONLY != 0 {
             return Err(refused("Original output mount flags differ"));
         }
-        // Existing witness MUST be root private; no repair/chown/format fallback.
         let private = witness(&root, plan.media(), &before.uuid)?;
         let store_pin = match crate::setup::nofollow::metadata_nofollow(
             &private.file,
@@ -496,9 +491,8 @@ impl NativeMediumOutput {
         self.check()?;
         Ok(pin)
     }
-    /// Only the canonical supervisor can mint ConfirmedShutdown. Last mount lease
-    /// must be owned after every admission/Store clone has been dropped. This
-    /// confirms cleanup, never verifies ciphertext or publishes installation.
+    /// Only the canonical supervisor can mint `ConfirmedShutdown`: the last mount lease is owned
+    /// after every admission and store clone dropped.
     pub fn finish(
         self: Arc<Self>,
         exit: &launcher::owned_service::ConfirmedShutdown,
@@ -523,12 +517,12 @@ impl NativeMediumOutput {
             inventory_scratch,
             ..
         } = owned;
-        // Close all held paths only after actual namespace death. UDisks must
-        // report successful owned unmount before cleanup is acknowledged.
+        // Close held paths only after actual namespace death, and only once UDisks reports a
+        // successful owned unmount.
         drop((inventory_scratch, disk, partition, root, private, output));
         let source_retirement = read.retire();
-        // Attempt the independently owned output cleanup even if a source
-        // remains quarantined. Success requires BOTH observed retirements.
+        // Attempt the output cleanup even if a source stays quarantined; success needs both
+        // retirements.
         let output_retirement = daemon
             .unmount(&selected.name)
             .map_err(|_| refused("Original output owned unmount failed"));
@@ -582,8 +576,8 @@ impl OwnedMediumOutput for NativeMediumOutput {
         let cancel = AtomicBool::new(false);
         self.check()?;
         proof.validate_for(&self.read, &cancel)?;
-        // Uses the same approved source/projection admission as both supervised
-        // namespaces. Never launch or substitute ambient OSTree/GPG tools here.
+        // The same approved source and projection admission as both supervised namespaces; never
+        // launch or substitute ambient OSTree or GPG tools.
         proof.verify_signed_capsule()?;
         self.check_mount_custody()?;
         proof.validate_for(&self.read, &cancel)
@@ -665,9 +659,8 @@ impl OwnedMediumOutput for NativeMediumOutput {
         {
             return Err(refused("Original publication stage changed"));
         }
-        // Explicitly retire this fresh worker stage after the whole verifier's
-        // actual namespace is dead. No live writer authority survives ownership
-        // transfer, and unrelated/user-owned directories are never adopted.
+        // Retire this fresh worker stage only after the verifier namespace is dead: no live writer
+        // authority survives ownership transfer, and unrelated directories are never adopted.
         if held.uid() != 0 && unsafe { libc::fchown(self.output.as_raw_fd(), 0, 0) } < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -694,9 +687,8 @@ impl OwnedMediumOutput for NativeMediumOutput {
         let grant = crate::setup::portable_home_media::MediaGrant::from_reviewed_pin(pin)?;
         grant.publish_expectation(expected.home, &cancel)?;
         if let Some(applications) = expected.applications {
-            // The same independent paired verifier's whole namespace is dead.
-            // Publication rehashes the actual sealed application bytes before
-            // issuing its separate canonical receipt; it never decrypts here.
+            // The paired verifier namespace is dead; publication rehashes the sealed application
+            // bytes before its own receipt and never decrypts here.
             grant.publish_applications_expectation(applications, &cancel)?;
         }
         self.check_mount_custody()
@@ -730,9 +722,6 @@ impl OwnedMediumOutput for NativeMediumOutput {
         {
             return Err(refused("Original publication stage changed"));
         }
-        // Explicitly retire this fresh worker stage after the whole verifier's
-        // actual namespace is dead. No live writer authority survives ownership
-        // transfer, and unrelated/user-owned directories are never adopted.
         if held.uid() != 0 && unsafe { libc::fchown(self.output.as_raw_fd(), 0, 0) } < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -817,10 +806,9 @@ impl OwnedMediumOutput for NativeMediumOutput {
         Ok(self.binding.clone())
     }
 }
-// Deliberately no Drop unmount: this value can outlive callback return and cannot
-// establish namespace death. Explicit finish requires canonical ConfirmedShutdown
-// and last lease ownership. Uncertain attempts
-// retain their operation record and mount; they are not advertised as complete.
+// No Drop unmount: this value can outlive callback return and cannot establish namespace death.
+// Explicit finish needs `ConfirmedShutdown` and last lease ownership; an uncertain attempt keeps
+// its operation record and mount and is never advertised as complete.
 
 #[cfg(test)]
 mod tests {

@@ -596,7 +596,7 @@ mod tests {
         let (temporary, custody) = fixture();
         let child = temporary.path().join("child.pid");
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(r#"sleep 60 & child=$!; printf '%s' "$child" > "$2"; printf '%s' '{"state":"waiting_for_approval","verification_code":"ABCD-1234","error":"PRIVATE_DETAIL"}' > "$1"; wait"#)
+        command.arg("-c").arg(r#"sleep 3600 & child=$!; printf '%s' "$child" > "$2"; printf '%s' '{"state":"waiting_for_approval","verification_code":"ABCD-1234","error":"PRIVATE_DETAIL"}' > "$1"; wait"#)
             .arg("fixture").arg(&custody.status).arg(&child);
         let mut pairing = Pairing::default();
         assert!(!pairing.busy());
@@ -609,17 +609,16 @@ mod tests {
         assert!(!pairing.ready());
         let pid = std::fs::read_to_string(child)
             .unwrap()
-            .parse::<i32>()
+            .parse::<u32>()
             .unwrap();
         pairing.cancel().unwrap();
         assert!(!pairing.busy());
         assert!(!pairing.ready());
         assert_eq!(pairing.projection()["state"], "cancelled");
-        // A killed orphan may briefly remain a zombie; it must never run.
-        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            assert!(status.lines().any(|line| line.starts_with("State:")
-                && (line.contains("Z (zombie)") || line.contains("X (dead)"))));
-        }
+        // The orphan sleeps for an hour unless cancelling killed it. Cancel
+        // returns once the tree's pipes close, which a dying process does a
+        // moment before it is a zombie, so its end is waited for, not sampled.
+        tilo_test_env::exited("the cancelled helper's orphan", pid);
     }
     #[test]
     fn forged_complete_status_never_becomes_enrolled_custody() {

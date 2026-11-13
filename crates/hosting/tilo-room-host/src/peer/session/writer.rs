@@ -15,6 +15,23 @@ use super::SessionLoop;
 /// silence limit reconnects.
 const SLOW_WRITE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Most live frames the writer holds back while a replay is pending, to
+/// reach the answers queued behind them ([`SessionWriter::write_answer`]).
+const HELD_FRAMES: usize = 256;
+
+/// Whether `frame` answers this device, or asks it, on an action: it carries
+/// no workspace's state, so nothing a replay writes has to come before it.
+const fn answers_an_action(frame: &Envelope) -> bool {
+    matches!(
+        frame,
+        Envelope::RemoteAction { .. }
+            | Envelope::HostAction { .. }
+            | Envelope::WorkspacesReply { .. }
+            | Envelope::AgentRunAnswer { .. }
+            | Envelope::AgentRunStopped
+    )
+}
+
 /// What one pass over the ready queues did.
 enum WriterTurn {
     /// A frame was written; look at the queues again.
@@ -57,6 +74,10 @@ pub(super) struct SessionWriter<'s, W> {
     active: Option<ReplayWrite>,
     deferred_state: Option<StateDelivery>,
     deferred_frame: Option<Envelope>,
+    /// Live frames taken off the queue while a replay was pending, to reach
+    /// an action's answer behind them: written first, in order, once no
+    /// replay is pending.
+    held: std::collections::VecDeque<Envelope>,
     raw_turn: bool,
     /// What the last turn wrote, for the slow-write log.
     wrote: &'static str,
@@ -87,6 +108,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             active: None,
             deferred_state: None,
             deferred_frame: None,
+            held: std::collections::VecDeque::new(),
             raw_turn: false,
             wrote: "",
             ending: None,
@@ -116,7 +138,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
                 self.write.shutdown().await?;
                 return Ok(());
             }
-            let started = std::time::Instant::now();
+            let started = tilo_clock::now();
             let turn = self.write_ready(cx).await?;
             let held = started.elapsed();
             if held >= SLOW_WRITE {
@@ -148,6 +170,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             usize::from(self.active.is_some()),
             usize::from(self.deferred_state.is_some()),
             usize::from(self.deferred_frame.is_some()),
+            self.held.len(),
         ]
         .into_iter()
         .fold(0, usize::saturating_add)
@@ -179,14 +202,47 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
         if live && self.write_live(cx).await? {
             return Ok(WriterTurn::Wrote);
         }
+        if !live && self.write_answer(cx).await? {
+            return Ok(WriterTurn::Wrote);
+        }
         Ok(WriterTurn::Idle { live })
+    }
+
+    /// With a replay pending: the next answer to an action, past the live
+    /// frames queued before it, which are held until the replay is written.
+    /// A device entering many workspaces at once keeps a replay pending
+    /// almost all the time, and an answer in a workspace it already entered
+    /// would otherwise wait for every entry after it. `true` when one was
+    /// written.
+    async fn write_answer(&mut self, cx: SessionLoop<'_, '_>) -> Result<bool, PeerError> {
+        while self.held.len() < HELD_FRAMES {
+            let Some(frame) = self
+                .deferred_frame
+                .take()
+                .or_else(|| self.rx.try_recv().ok())
+            else {
+                break;
+            };
+            if !answers_an_action(&frame) {
+                self.held.push_back(frame);
+                continue;
+            }
+            self.wrote = "answer";
+            authorize_state_frame(&frame, cx.peer, cx.session).await?;
+            self.write
+                .write_all(&encode_charged(&frame, cx.session, false)?)
+                .await?;
+            trace_native_publication("written", &frame, Some(&cx.peer.device_public_key));
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// With no replay pending: a live frame or a state run, taking turns,
     /// then due presence. `true` when one was written.
     async fn write_live(&mut self, cx: SessionLoop<'_, '_>) -> Result<bool, PeerError> {
         if self.deferred_frame.is_none() {
-            self.deferred_frame = self.rx.try_recv().ok();
+            self.deferred_frame = self.held.pop_front().or_else(|| self.rx.try_recv().ok());
         }
         if self.deferred_state.is_none() {
             self.deferred_state = self.state_rx.try_recv().ok();
@@ -270,7 +326,9 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             state = self.state_rx.recv(), if live => {
                 self.deferred_state = state;
             }
-            frame = self.rx.recv(), if live => {
+            // While a replay is pending, an action's answer is still
+            // written ([`Self::write_answer`]).
+            frame = self.rx.recv(), if live || self.held.len() < HELD_FRAMES => {
                 self.deferred_frame = frame;
             }
             () = self.presence.ready(), if live => {}

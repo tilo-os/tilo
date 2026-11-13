@@ -4,7 +4,6 @@ publisher-create-key = Create key
 publisher-public-key-label = Public key
 publisher-proof-label = Proof line
 publisher-proof-help = Publish this line where only you can write, to prove a namespace.
-publisher-verbatim = { $text }
 publisher-copy-proof = Copy proof line
 publisher-copy-secret = Copy key for CI
 publisher-check-status = Check application
@@ -44,3 +43,22 @@ publisher-proof-places-help = Put the proof line where only you can write it, th
 publisher-key-exported = Exported your publisher key
 publisher-key-exported-detail = Keep publisher-key.json somewhere safe; it is the only copy outside this device.
 publisher-key-export-cancelled = Export cancelled
+
+## Window and accessibility copy
+publisher-status-heading = Application status
+publisher-status-empty = No application status has been checked in this window yet.
+publisher-proof-empty = Name a domain or forge account to see where its proof goes.
+
+## What the window shows
+publisher-publish-at = Publish at { $place }
+
+## Actions
+
+so-tilo-publisher-key-copy-proof = Copy proof
+so-tilo-publisher-key-export-key = Export key
+so-tilo-publisher-key-apply-for-namespaces = Apply for namespaces
+so-tilo-publisher-key-check-status = Check status
+publisher-profile = App Publisher
+
+## What the app is called in a window and in the launcher
+publisher-app-title = App Publisher

@@ -1,18 +1,6 @@
 //! Project text search: find a string across every text file under the project
 //! root, without the UI thread ever waiting for the filesystem. The platform
 //! search lists what it finds (see `search_provider.rs`).
-//!
-//! Searching this repository means walking tens of thousands of files. Doing
-//! that between two frames would freeze the window for seconds, so a [`Job`]
-//! runs the walk on a worker thread and streams batches of [`Hit`]s back over a
-//! channel that the provider drains — the same shape the portal and the
-//! language-server reader use. Results appear progressively as they are found
-//! rather than all at once at the end, and [`Job::cancel`] stops a walk
-//! the moment the query changes, so typing does not pile up eight live searches.
-//!
-//! The matcher itself is [`line_matches`], which is also what the in-buffer
-//! find bar uses — one definition of "what counts as a match" for both, so the
-//! count in the find bar and the hits in the palette can never disagree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,10 +9,6 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 
 use crate::disk;
 
-/// How many hits a single search will report before it stops. A query like `e`
-/// over a large repository matches millions of times; past a few thousand the
-/// list has stopped being a search result and become a denial of service
-/// against the person reading it. The editor says plainly when it truncated.
 pub const MAX_HITS: usize = 5_000;
 
 /// A no-match query must not be able to turn an arbitrarily huge checkout into
@@ -32,25 +16,16 @@ pub const MAX_HITS: usize = 5_000;
 /// partial search through its existing `truncated` state.
 pub const MAX_FILES_SCANNED: usize = 100_000;
 
-/// Directory listings are collected so each level can be sorted deterministically.
-/// Put a ceiling on that temporary allocation too; a generated directory with
-/// millions of entries is not a useful source-project view.
 const MAX_DIRECTORY_ENTRIES: usize = 50_000;
 
-/// At most this many batches may wait for the UI. The worker uses cancellable
-/// backpressure rather than an unbounded channel, preserving complete results
-/// up to `MAX_HITS` without turning a dense search into memory growth.
 const SEARCH_CHANNEL_BATCH_CAPACITY: usize = 8;
 
-/// Hits are shipped in batches rather than one message per hit — a channel send
-/// per match dominates the actual searching on a dense query.
 const BATCH: usize = 64;
 
 /// Characters of context kept around a match in the preview line. Long minified
 /// lines would otherwise blow out the results list.
 const PREVIEW_LIMIT: usize = 200;
 
-/// What to look for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     pub needle: String,
@@ -79,47 +54,28 @@ impl Query {
         self
     }
 
-    /// A query with nothing to look for matches nothing; the UI shows its empty
-    /// state rather than every line in the project.
     pub fn is_empty(&self) -> bool {
         self.needle.is_empty()
     }
 }
 
-/// One match: a file, a position, and the line it sits on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
-    /// Absolute path of the file the match is in.
     pub path: PathBuf,
-    /// Path relative to the project root, as shown in the results list.
     pub rel: String,
-    /// One-based line number, matching what every other tool prints.
     pub line: usize,
-    /// Zero-based character column of the match start.
     pub col: usize,
-    /// Character length of the match.
     pub len: usize,
-    /// The matched line, trimmed of leading whitespace and clipped for display.
     pub preview: String,
-    /// Character offset the preview was clipped by, so the highlight in the
-    /// preview lands on the same characters the match covers.
     pub preview_offset: usize,
 }
 
-/// A message from the search worker.
 #[derive(Debug)]
 pub enum Msg {
     Hits(Vec<Hit>),
-    /// The walk finished (or hit [`MAX_HITS`]).
-    Done {
-        /// How many files the walk covered, shown in the search summary and
-        /// asserted by the worker tests.
-        files: usize,
-        truncated: bool,
-    },
+    Done { files: usize, truncated: bool },
 }
 
-/// A running search. Dropping it cancels the worker.
 pub struct Job {
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
@@ -127,18 +83,14 @@ pub struct Job {
 }
 
 impl Job {
-    /// Whether the worker reported completion.
     pub fn is_finished(&self) -> bool {
         self.finished
     }
 
-    /// Stop the walk. The worker checks this between files, so a cancel takes
-    /// effect within one file rather than at the end of the tree.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Drain everything the worker produced since the last call. Never blocks.
     pub fn drain(&mut self) -> Vec<Msg> {
         let mut out = Vec::new();
         loop {
@@ -166,17 +118,12 @@ impl Drop for Job {
     }
 }
 
-/// Start searching `root` for `query` on a worker thread.
 pub fn start(root: &Path, query: Query) -> Job {
     let (tx, rx) = std::sync::mpsc::sync_channel(SEARCH_CHANNEL_BATCH_CAPACITY);
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
     let worker_query = query;
-    // The OS refusing to spawn a worker thread (resource exhaustion) is not
-    // fatal here: `tx` drops with the closure, so `rx` reports done
-    // immediately and the search just comes back empty instead of crashing
-    // the editor.
     let _ = std::thread::Builder::new()
         .name("code-editor-search".into())
         .spawn(move || {
@@ -191,9 +138,6 @@ pub fn start(root: &Path, query: Query) -> Job {
     }
 }
 
-/// Deliver one batch without allowing a busy UI to make the worker retain an
-/// unlimited result queue. Waiting is short and checks cancellation, so typing
-/// a new query or closing the editor tears an old walk down promptly.
 fn send_cancellable(tx: &SyncSender<Msg>, mut msg: Msg, cancel: &AtomicBool) -> bool {
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -239,8 +183,6 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        // Sorted so results arrive in a stable, explicable order rather than
-        // whatever order the filesystem happens to hand back.
         let mut dirs = Vec::new();
         let mut paths = Vec::new();
         for entry in entries.flatten() {
@@ -252,8 +194,6 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
             if name.starts_with('.') || disk::is_ignored_dir(&name) {
                 continue;
             }
-            // `file_type` does not follow symlinks, so a link pointing back up
-            // the tree is neither descended into nor read.
             let Ok(ft) = entry.file_type() else { continue };
             if ft.is_symlink() {
                 continue;
@@ -275,7 +215,6 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
                 truncated = true;
                 break 'walk;
             }
-            // Reuse the editor's bounded read: a file may grow after stat.
             let Ok(loaded) = disk::load(&path) else {
                 continue;
             };
@@ -305,7 +244,6 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
                 }
             }
         }
-        // Push in reverse so popping walks them in sorted order.
         for d in dirs.into_iter().rev() {
             stack.push(d);
         }
@@ -340,9 +278,6 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     } else {
         query.needle.chars().flat_map(char::to_lowercase).collect()
     };
-    // Case folding can change length (`ß` → `ss`), which would desynchronise
-    // the folded index from the caret index. When it does, fall back to a
-    // case-sensitive scan rather than reporting a column that is a lie.
     if !query.case_sensitive && hay.len() != line.chars().count() {
         return line_matches(
             line,
@@ -371,8 +306,6 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     out
 }
 
-/// Whether the span at `start..start+len` is bounded by non-word characters on
-/// both sides — the "whole word" rule.
 fn is_word_bounded(hay: &[char], start: usize, len: usize) -> bool {
     let before_ok = start == 0 || hay.get(start - 1).is_none_or(|&c| !is_word_char(c));
     let after = start + len;
@@ -384,8 +317,6 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Trim a line down to something that fits a results row, keeping the match
-/// visible. Returns the preview and the character offset it was clipped by.
 fn clip_preview(line: &str, col: usize) -> (String, usize) {
     let chars: Vec<char> = line.chars().collect();
     // Drop leading indentation — every hit in a deeply nested block would
@@ -404,8 +335,6 @@ fn clip_preview(line: &str, col: usize) -> (String, usize) {
     (preview, start)
 }
 
-/// `path` written relative to `root`, for the results list. Falls back to the
-/// full path when the file is somehow outside the root.
 pub fn relative_display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).map_or_else(
         |_| path.to_string_lossy().to_string(),
@@ -423,7 +352,6 @@ mod tests {
 
     #[test]
     fn line_matches_use_character_columns_and_honour_query_options() {
-        // Each phase matches its own line; no state is shared.
         finds_every_occurrence_in_a_line();
         overlapping_matches_are_not_double_counted();
         case_insensitive_by_default_and_exact_when_asked();
@@ -438,8 +366,6 @@ mod tests {
     }
 
     fn overlapping_matches_are_not_double_counted() {
-        // "aa" in "aaaa" is two matches, not three: after a hit we resume past
-        // its end, which is what every editor's find does.
         assert_eq!(line_matches("aaaa", &q("aa")), vec![(0, 2), (2, 2)]);
     }
 
@@ -461,9 +387,6 @@ mod tests {
     }
 
     fn case_folding_that_changes_length_does_not_shift_columns() {
-        // Lowercasing `ß` yields `ss`, one char becoming two. Reporting a folded
-        // index against the original line would put the caret in the wrong
-        // place, so the matcher falls back to an exact scan instead of lying.
         let line = "straße x";
         let hits = line_matches(line, &q("x"));
         assert_eq!(hits, vec![(7, 1)]);
@@ -472,8 +395,6 @@ mod tests {
     }
 
     fn whole_word_rejects_substrings() {
-        // Plain: `fs`, the `fs` inside `offset`, the one in `refs`, the one
-        // starting `fs_read`, and the standalone one at the end.
         let line = "fs offset refs fs_read fs";
         assert_eq!(line_matches(line, &q("fs")).len(), 5);
         let whole = line_matches(line, &q("fs").whole_word(true));
@@ -487,7 +408,6 @@ mod tests {
         assert!(q("").is_empty());
     }
 
-    /// Run a walk synchronously and collect every message it emitted.
     fn run(root: &Path, query: &Query) -> (Vec<Hit>, Option<(usize, bool)>) {
         let cancel = AtomicBool::new(false);
         let mut hits = Vec::new();
@@ -523,7 +443,6 @@ mod tests {
 
     #[test]
     fn tree_search_reports_source_hits_skips_non_source_and_clips_previews() {
-        // Each phase builds a fresh fixture tree (one phase adds a binary file).
         searches_the_tree_and_reports_file_line_and_column();
         build_output_and_vcs_directories_are_never_searched();
         binary_files_are_skipped();
@@ -564,8 +483,6 @@ mod tests {
                 h.rel
             );
         }
-        // Proof the fixture really does contain the needle in those places, so
-        // this test could fail if the skip regressed.
         assert!(
             std::fs::read_to_string(d.path().join("target/debug/out.txt"))
                 .unwrap()
@@ -605,7 +522,6 @@ mod tests {
         let d = fixture();
         let cancel = AtomicBool::new(false);
         let mut calls = 0;
-        // `emit` returning false stands in for a closed channel.
         walk(d.path(), &q("needle"), &cancel, &mut |_| {
             calls += 1;
             false

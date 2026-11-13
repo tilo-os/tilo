@@ -1,12 +1,5 @@
 //! RFC 8628 device authorization: a code the person enters on another
 //! page, for issuers that register no loopback redirect (GitHub).
-//!
-//! [`DeviceAuthorization::begin`] asks the issuer for a code; the person
-//! enters [`DeviceAuthorization::user_code`] at
-//! [`DeviceAuthorization::verification_uri`] in any browser, and
-//! [`DeviceAuthorization::complete`] (on a worker) asks the token endpoint
-//! at the interval the issuer set until they have. A [`DeviceCancel`] ends
-//! the wait at once.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -21,10 +14,8 @@ const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 /// What `slow_down` adds to the interval (RFC 8628 §3.5).
 const SLOW_DOWN: Duration = Duration::from_secs(5);
-/// The longest a code is waited for, whatever the issuer says.
 const MOST_WAIT: Duration = Duration::from_secs(15 * 60);
 
-/// One device sign-in in progress.
 pub struct DeviceAuthorization {
     provider: Provider,
     client: Registration,
@@ -36,12 +27,10 @@ pub struct DeviceAuthorization {
     cancel: DeviceCancel,
 }
 
-/// Ends a pending [`DeviceAuthorization::complete`] from another thread.
 #[derive(Clone, Default)]
 pub struct DeviceCancel(Arc<(Mutex<bool>, Condvar)>);
 
 impl DeviceCancel {
-    /// The wait returns [`OAuthError::Cancelled`].
     pub fn cancel(&self) {
         let (cancelled, wake) = &*self.0;
         *cancelled.lock_recover() = true;
@@ -114,12 +103,10 @@ impl DeviceAuthorization {
         })
     }
 
-    /// The code the person enters.
     pub fn user_code(&self) -> &str {
         &self.user_code
     }
 
-    /// The page they enter it on.
     pub fn verification_uri(&self) -> &str {
         &self.verification_uri
     }
@@ -171,7 +158,6 @@ impl DeviceAuthorization {
     }
 }
 
-/// What one token request of the wait said.
 #[derive(Debug, PartialEq, Eq)]
 enum Poll {
     Pending,

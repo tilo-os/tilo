@@ -20,7 +20,6 @@ pub(super) fn scan_items<T>(
         return;
     };
     let mut reader = Reader::from_str(s);
-    // The open item: its key, raw-XML start byte, and open depth.
     let mut capture: Option<(T, usize, i32)> = None;
     loop {
         let pos_before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
@@ -119,8 +118,6 @@ pub(super) fn import_paragraphs(
     }
 }
 
-/// Render blocks as `w:p` paragraphs of plain runs plus `w:tab`/`w:br` (richer inline
-/// styling is not modeled in these parts).
 pub(super) fn render_paragraphs(blocks: &[BlockView]) -> String {
     blocks
         .iter()

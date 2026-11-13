@@ -16,7 +16,6 @@ fn apply(deck: &mut Replica<Deck>, invoke: Invoke<Deck>) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// A destructive verb, confirmed.
 fn confirmed(deck: &mut Replica<Deck>, invoke: Invoke<Deck>) -> Result<(), String> {
     deck.apply_confirmed(invoke)
         .map(drop)
@@ -46,7 +45,6 @@ fn element_ids(deck: &Replica<Deck>, slide: &Id) -> Vec<Id> {
         .collect()
 }
 
-/// The words of every text box of `slide`, back to front.
 fn words(deck: &Replica<Deck>, slide: &Id) -> Vec<String> {
     state(deck)
         .slides
@@ -226,8 +224,6 @@ fn set_text_rewrites_title_and_body() {
     );
 }
 
-/// Elements are added on top, restacked, placed by field edits checked
-/// against the slide, and deleted.
 #[test]
 fn elements_are_added_restacked_placed_and_deleted() {
     let mut deck = Replica::<Deck>::new();

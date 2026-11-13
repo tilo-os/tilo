@@ -229,7 +229,6 @@ mod unix {
                     }
                 }
             }
-            // `host_names` names the host this one asks for first.
             if let Some((preferred, _)) = names.split_first() {
                 let build = format!("cargo build --locked -p tilo-runtime --bin {preferred}");
                 return Err(io::Error::new(

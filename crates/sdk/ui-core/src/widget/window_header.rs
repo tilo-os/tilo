@@ -31,6 +31,7 @@ use super::Widget;
 use super::capability::capability_mut;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 
 /// What the window's History control shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,15 +166,12 @@ pub trait WindowHeader {
         false
     }
 
-    /// Merge the window's bar into this header row while the window is
-    /// maximized, or stop (`None`). The row reserves `bar.controls_width` at
-    /// its trailing end for the window's controls, which the host paints
-    /// there when the person reaches for them, so the app's header and the
-    /// window's controls read as one bar instead of two stacked ones. A row
-    /// whose app put its header in the window's bar
-    /// ([`WindowBarSlot::hides_with_bar`]) shows only while `bar.revealed`,
-    /// over the app's content. Returns whether the row took the bar; a row
-    /// that does not leaves the host to float its controls over the window.
+    /// Merge the window's bar into this header row, or stop (`None`). The row reserves
+    /// `bar.controls_width` at its trailing end for the window's controls, which the host paints
+    /// there, so the app's header and the window's controls read as one bar instead of two
+    /// stacked ones. The row stands at every time: the window's controls come into the room it
+    /// keeps for them, never over the app's title or actions. Returns whether the row took the
+    /// bar; a row that does not leaves the host to float its controls over the window.
     fn set_window_bar(&mut self, bar: Option<WindowBar>) -> bool {
         let _ = bar;
         false
@@ -191,6 +189,27 @@ pub trait WindowHeader {
     fn header_row_height(&self) -> f64 {
         0.0
     }
+
+    /// Where each column the window shows stands and the header row it draws at that column's
+    /// top, after layout. A column's header — its title and the buttons that act on what it
+    /// shows — is the app's own and stands at every time, at the top of its column; the window's
+    /// bar holds only what is the window's.
+    fn column_frames(&self) -> Vec<ColumnFrame> {
+        Vec::new()
+    }
+}
+
+/// Where one column of a window stands, and the header row it draws at that column's top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnFrame {
+    /// Which column: `sidebar`, `overview`, `content` or `inspector`.
+    pub key: &'static str,
+    /// The column: docked beside the others, a floating drawer's panel, or a pushed screen.
+    pub column: Rect,
+    /// The header row at the column's top: zero where the column draws none.
+    pub header: Rect,
+    /// The column reads as a rail of icons, which say what it holds without a row of words.
+    pub rail: bool,
 }
 
 /// The window's bar, as the host offers it to a header row.
@@ -198,15 +217,6 @@ pub trait WindowHeader {
 pub struct WindowBar {
     /// Room the window's controls take at the row's trailing end.
     pub controls_width: f64,
-    /// Whether the person reached for the bar
-    /// ([`crate::widget::TopEdgeReveal`]).
-    pub revealed: bool,
-    /// How far below the window's top edge the bar stands: the height of
-    /// what overlays that edge now (the desktop's top bar, while it shows
-    /// over a window under an auto-hiding top bar), so the two stack instead
-    /// of one covering the other. A row whose header lives in the bar moves
-    /// down by it; a permanent row stays put.
-    pub top_inset: f64,
     /// The system already lists the window's actions where the person reaches
     /// them (the desktop bar's window menu, for the window in front): the row's
     /// actions that do not fit give way with no door of their own, since every
@@ -225,9 +235,6 @@ pub struct WindowBarSlot {
     /// Where the window's controls go: the trailing end of the row,
     /// `controls_width` wide and the row's height.
     pub controls: Rect,
-    /// The app put its header in the window's bar: it shows only with the
-    /// bar, over the content, instead of standing above it.
-    pub hides_with_bar: bool,
 }
 
 /// Offer the window's bar to the first header row in `root`'s tree. Returns
@@ -259,6 +266,238 @@ pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarSlot> {
         .flatten()
         .filter(|slot| slot.row.height() > 0.0)
 }
+
+/// The window's own furniture where it stands in a header row that holds the bar: the window's
+/// close/restore controls at the row's trailing end, the window's search before them, and its
+/// new-tab door. A row keeps [`merged_row_width`] at its trailing end for them, and the window
+/// paints them over its app's drawing and takes their presses — a window shows the same functions
+/// whether its row stands as the bar's slots or holds the bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RowFurniture {
+    /// The row the app draws at the window's top.
+    pub row: Rect,
+    /// The end of that row the app kept for the window ([`WindowBarSlot::controls`]).
+    pub trailing: Rect,
+    /// The window's close/restore controls, in a pill of the window's own.
+    pub controls: crate::widget::window_controls::WindowControls,
+    /// Where the window's search control stands, and where its open search reaches back to.
+    pub search: Rect,
+    /// The new-tab door.
+    pub new_tab: Rect,
+}
+
+impl RowFurniture {
+    /// The furniture of the row holding the bar in `slot`. Nothing a row has no room for is
+    /// placed, so a narrow window's furniture never runs into what the app draws.
+    pub(crate) fn of(slot: WindowBarSlot) -> Self {
+        use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX, LEAD_GAP, WindowControls};
+        let trailing = slot.controls;
+        let controls = WindowControls::lay_out(trailing);
+        if controls.pill.area() <= 0.0 {
+            return Self {
+                row: slot.row,
+                trailing,
+                ..Self::default()
+            };
+        }
+        let centred = |height: f64, x0: f64, x1: f64| {
+            let y0 = trailing.center().y - height / 2.0;
+            Rect::new(x0, y0, x1, y0 + height)
+        };
+        let controls_end = controls.content_limit(trailing);
+        let search = if controls_end - CONTROL_PX >= trailing.x0 {
+            centred(CONTROL_PX, controls_end - CONTROL_PX, controls_end)
+        } else {
+            Rect::ZERO
+        };
+        let chip = crate::widget::tabs::NEW_TAB_CHIP_PX;
+        let chip_end = if search.area() > 0.0 {
+            search.x0 - CONTROL_GAP
+        } else {
+            controls_end - LEAD_GAP
+        };
+        let new_tab = if chip_end - chip >= trailing.x0 {
+            centred(chip, chip_end - chip, chip_end)
+        } else {
+            Rect::ZERO
+        };
+        Self {
+            row: slot.row,
+            trailing,
+            controls,
+            search,
+            new_tab,
+        }
+    }
+
+    /// Place `search`, the window's search, where the furniture shows it at rest: its open search
+    /// then reaches back over the row the person's app draws.
+    pub(crate) fn place_search(&self, search: &mut crate::widget::WindowSearch) {
+        if self.search.area() > 0.0 {
+            search.place_trailing(self.search, self.row.x0, self.row.x0);
+        } else {
+            search.place(Rect::ZERO, 0.0);
+        }
+    }
+
+    /// Move the furniture `dx` across, as the window does while a retained strip draws it.
+    pub(crate) fn shift(&mut self, dx: f64) {
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.row = self.row + shift;
+        self.trailing = self.trailing + shift;
+        self.controls.pill = self.controls.pill + shift;
+        self.controls.minimize = self.controls.minimize + shift;
+        self.controls.maximize = self.controls.maximize + shift;
+        self.controls.close = self.controls.close + shift;
+        self.search = self.search + shift;
+        self.new_tab = self.new_tab + shift;
+    }
+
+    /// Paint the furniture over the app's own drawing: the window's controls and its new-tab door
+    /// in `state`, and the window's search on the row's ground. The control the keyboard is on
+    /// wears the toolkit's focus ring, so the row says where typing would go.
+    pub(crate) fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        search: &mut crate::widget::WindowSearch,
+        state: RowFurnitureState,
+    ) {
+        self.controls.paint(scene, transform, theme, state.controls);
+        if self.new_tab.area() > 0.0 {
+            crate::widget::tabs::paint_new_tab(
+                scene,
+                transform,
+                text,
+                theme,
+                self.new_tab,
+                state.new_tab_hovered,
+            );
+        }
+        search.set_ground(theme.tokens.colors.surfaces.content);
+        search.draw_child(scene, transform, text, theme, presence);
+        if let Some(control) = state.keyboard {
+            let rect = control.rect(self);
+            if rect.area() > 0.0 {
+                // The window's own controls stand on a pill, whose faces are round; the new-tab
+                // door is one control beside them, rounded as the toolkit rounds a control.
+                let radius = match control {
+                    RowControl::NewTab => f64::from(theme.tokens.radii.control),
+                    RowControl::Maximize | RowControl::Close => rect.height() / 2.0,
+                };
+                crate::widget::activation::paint_focus_ring(scene, transform, rect, radius, theme);
+            }
+        }
+    }
+}
+
+/// What the pointer leaves of the window's furniture in a held row: which of its controls it is
+/// on or pressing, whether it rests on the new-tab door, and which control the keyboard is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RowFurnitureState {
+    pub controls: crate::widget::window_controls::ControlsState,
+    pub new_tab_hovered: bool,
+    /// The control of the furniture with the keyboard.
+    pub keyboard: Option<RowControl>,
+}
+
+/// One control of the window's furniture in a header row that holds the bar: the window's new-tab
+/// door, its maximize (or restore) and its close, in the bar's order. Each is a widget of the
+/// window where the row draws it, so the keyboard reaches it in the window's Tab order after the
+/// row's own controls, and a screen reader reads it there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowControl {
+    /// The window's own door: the shell decides what a new place holds.
+    NewTab,
+    Maximize,
+    Close,
+}
+
+/// The furniture in the order a person reaches it, as the bar's own controls.
+pub(crate) const ROW_CONTROLS: [RowControl; 3] =
+    [RowControl::NewTab, RowControl::Maximize, RowControl::Close];
+
+impl RowControl {
+    /// Where the row draws this control, or nothing where it had no room for it.
+    pub(crate) fn rect(self, furniture: &RowFurniture) -> Rect {
+        match self {
+            RowControl::NewTab => furniture.new_tab,
+            RowControl::Maximize => furniture.controls.maximize,
+            RowControl::Close => furniture.controls.close,
+        }
+    }
+
+    /// The target assistive technology and automation act on it by: the bar's own.
+    pub(crate) fn target(self) -> &'static str {
+        match self {
+            RowControl::NewTab => crate::widget::tabs::NEW_TAB_TARGET,
+            RowControl::Maximize => crate::widget::tabs::WINDOW_MAXIMIZE_TARGET,
+            RowControl::Close => crate::widget::tabs::WINDOW_CLOSE_TARGET,
+        }
+    }
+
+    /// What a person reads for it, named as the bar names the same function. `resize` says which
+    /// way the maximize control acts.
+    pub(crate) fn name(self, resize: crate::widget::window_controls::Resize) -> String {
+        use crate::widget::window_controls::WindowControl;
+        match self {
+            RowControl::NewTab => crate::widget::tabs::new_tab_name(),
+            RowControl::Maximize => {
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(resize))
+            }
+            RowControl::Close => {
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
+            }
+        }
+    }
+}
+
+/// The room a header row keeps at its trailing end for the window's furniture
+/// ([`RowFurniture`]): the window's own controls, the window's search and its new-tab door, each
+/// with the gap the bar keeps between its sections. Every window that lets its row hold the bar
+/// reserves this, so its app's own controls end where the window's begin.
+///
+/// The furniture laid out in a row wider than any window says it: what a row keeps and what stands
+/// in it are one arrangement, never two that can drift apart.
+#[must_use]
+pub fn merged_row_width() -> f64 {
+    merged_row_width_in(WIDE_ENOUGH)
+}
+
+/// What a row `width` wide keeps at its trailing end for the window's furniture: everything
+/// [`merged_row_width`] names while the bar is wider than a phone's, and the window's own controls
+/// alone where it is not. A bar that narrow is the app's row, and the room its own controls need
+/// there is worth more than the window's search and new-tab door, which such a row draws for
+/// itself (its own search control, its own tabs `+`).
+#[must_use]
+pub fn merged_row_width_in(width: f64) -> f64 {
+    let wide = Rect::new(0.0, 0.0, WIDE_ENOUGH, WIDE_ENOUGH);
+    let slot = WindowBarSlot {
+        row: wide,
+        controls: wide,
+    };
+    let furniture = RowFurniture::of(slot);
+    let leading = if merged_row_holds_search(width) {
+        furniture.new_tab.x0
+    } else {
+        furniture.controls.pill.x0
+    };
+    (wide.x1 - leading).max(0.0)
+}
+
+/// Whether a bar `width` wide keeps room for the window's search beside the window's own controls
+/// ([`RowFurniture::place_search`]): not where the bar is no wider than a phone's, so a row there
+/// keeps its own search control instead ([`WindowHeader::set_window_presents_search`]).
+#[must_use]
+pub fn merged_row_holds_search(width: f64) -> bool {
+    width >= f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
+}
+
+/// A side wider than any window: the furniture is measured in one, so nothing it holds is cut.
+const WIDE_ENOUGH: f64 = 10_000.0;
 
 /// Whether `widget` is a window's frame: a window standing in a shell, which offers the bar to
 /// its own content's header row as it draws.

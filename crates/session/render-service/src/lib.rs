@@ -24,7 +24,7 @@
 //! driver libraries, and seccomp without sockets or exec.
 
 pub mod broker;
-mod buffers;
+pub mod buffers;
 #[cfg(target_os = "linux")]
 mod confine;
 mod gpu;

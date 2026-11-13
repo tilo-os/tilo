@@ -5,13 +5,17 @@ search-kind-answers = Antworten
 search-kind-web = Web
 search-kind-websites = Websites
 search-kind-ask = Antwort
+# The row that hands what was typed to the person's agent, and the group it
+# is listed under.
+search-kind-agent = Dein Agent
+search-send-to-agent = An { $agent } senden: { $query }
 search-ask-for = { $provider } fragen: { $query }
 search-ask-answering = Antwortet…
 search-ask-copy = Antwort kopieren
 search-ask-failed = { $provider } konnte nicht antworten: { $reason }
 search-ask-setup = KI-Anbieter einrichten
 search-ask-setup-detail = Fragen hier stellen, ohne die Suche zu verlassen
-search-ask-no-gateway = Es läuft kein Modelldienst
+search-ask-no-gateway = Es läuft kein KI-Anbieter.
 search-answer-sum = { $expression } =
 search-answer-money-stale = { $amount } zu Kursen von { $age }
 search-answer-open-address = { $address } öffnen
@@ -63,7 +67,6 @@ search-job-reported-counts = { $phase } ({ $completed } von { $total })
 search-job-reported-completed = { $phase } ({ $completed } fertig)
 search-job-reported-total = { $phase } (von { $total })
 search-job-cancel = { $name } abbrechen
-search-job-cancel-detail = Bittet die App, aufzuhören
 search-scope-workspace = Arbeitsbereich
 search-launcher-widen = In allen Arbeitsbereichen suchen
 search-source-switches = Suchquellen

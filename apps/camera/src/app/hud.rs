@@ -7,6 +7,7 @@
 //! takes the theme's media colours, and every control
 //! stands on a floating panel inked from the theme.
 
+use crate::CATALOG;
 use ui::TextRole;
 use ui::chrome::panel_ground;
 use ui::icons::Icon;
@@ -29,15 +30,10 @@ use ui::theme::Theme;
 /// Geometry every floating control shares, read from the theme.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HudMetrics {
-    /// Inset of floating chrome from the window edge.
     pub edge: f64,
-    /// Inset of controls inside their panel. It keeps the radii
-    /// concentric: a control's radius plus this inset is the panel's.
     pub pad: f64,
-    /// Height of one control.
     pub control: f64,
     pub gap: f64,
-    /// Between two controls of one cluster.
     pub item_gap: f64,
 }
 
@@ -54,7 +50,6 @@ impl HudMetrics {
         }
     }
 
-    /// Height of a panel holding one row of controls.
     pub(super) fn bar(&self) -> f64 {
         self.control + 2.0 * self.pad
     }
@@ -63,12 +58,9 @@ impl HudMetrics {
 /// One control in a floating cluster.
 #[derive(Clone, Debug)]
 pub(super) struct HudItem<'a> {
-    /// Visible label; empty for an icon-only control.
     pub label: &'a str,
     pub icon: Option<Icon>,
-    /// The accessible name and tooltip of an icon-only control.
     pub name: &'a str,
-    /// `Some` for a control that is on or off.
     pub on: Option<bool>,
     pub action: Action,
 }
@@ -99,12 +91,10 @@ impl HudItem<'_> {
     }
 }
 
-/// The theme for what stands on a floating panel.
 pub(super) fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(panel_ground(theme))
 }
 
-/// The width a cluster of `items` takes, panel padding included.
 pub(super) fn cluster_width(items: &[HudItem<'_>], tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let m = HudMetrics::of(theme);
     let gaps = items.len().saturating_sub(1) as f64 * m.item_gap;
@@ -351,11 +341,14 @@ impl CameraApp {
             Timer::S10 => "10 s",
         };
         let next_timer = super::cycle(&Timer::ALL, self.settings.timer);
+        let resolution = crate::CATALOG.t("camera-settings-resolution");
+        let timer = crate::CATALOG.t("camera-settings-timer");
+        let grid = crate::CATALOG.t("camera-settings-grid");
         let mut leading = vec![
             HudItem {
                 label: self.settings.resolution.label(),
                 icon: None,
-                name: "Resolution",
+                name: &resolution,
                 on: None,
                 action: Action::CycleResolution,
             },
@@ -369,14 +362,14 @@ impl CameraApp {
             HudItem {
                 label: timer_label,
                 icon: Some(Icon::Timer),
-                name: "Self-timer",
+                name: &timer,
                 on: Some(self.settings.timer != Timer::Off),
                 action: Action::SetTimer(next_timer),
             },
             HudItem {
                 label: "",
                 icon: Some(Icon::LayoutGrid),
-                name: "Rule-of-thirds grid",
+                name: &grid,
                 on: Some(self.settings.grid),
                 action: Action::ToggleGrid,
             },
@@ -414,7 +407,13 @@ impl CameraApp {
         let side = 2.0 * m.control - 2.0 * m.pad;
         let height = side + 2.0 * m.pad;
         let (_, destination) = crate::actions::capture_destination(capture.is_video());
-        let label = format!("Open in {destination}");
+        let label = crate::CATALOG.t_args(
+            "camera-open-in",
+            &[(
+                "destination",
+                ui::i18n::ArgValue::Text(destination.to_owned()),
+            )],
+        );
         let label_w = ButtonFace::new(Rect::ZERO, &label)
             .role(ButtonRole::Plain)
             .intrinsic_width(tr, theme);
@@ -471,7 +470,6 @@ impl CameraApp {
         self.push_region(panel, Action::OpenRecentCapture);
     }
 
-    /// Switch camera beside the shutter, with an accessible name and tooltip.
     fn draw_lens_switch(
         &mut self,
         scene: &mut Scene,
@@ -482,10 +480,11 @@ impl CameraApp {
         shutter: Rect,
     ) {
         let m = HudMetrics::of(theme);
+        let switch_camera = crate::CATALOG.t("camera-a11y-switch-camera-plain");
         let items = [HudItem {
             label: "",
             icon: Some(Icon::SwitchCamera),
-            name: "Switch camera",
+            name: &switch_camera,
             on: None,
             action: Action::CycleFacing,
         }];
@@ -496,7 +495,6 @@ impl CameraApp {
         self.draw_cluster(scene, t, tr, theme, origin, &items);
     }
 
-    /// "Recording" and the elapsed time, top centre, while a clip records.
     fn draw_recording_badge(
         &self,
         scene: &mut Scene,
@@ -517,7 +515,6 @@ impl CameraApp {
             .paint(scene, t, tr, theme);
     }
 
-    /// The running self-timer, top centre: how long is left, and how to stop it.
     fn draw_countdown(
         &self,
         scene: &mut Scene,
@@ -533,7 +530,7 @@ impl CameraApp {
         let duration = countdown.due.saturating_duration_since(ui::time::now());
         let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
         let count = remaining.to_string();
-        let hint = ui::i18n!("Tap the shutter to cancel");
+        let hint = CATALOG.t("camera-countdown-cancel-hint");
         let local = on_panel(theme);
         let m = HudMetrics::of(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -640,7 +637,6 @@ impl CameraApp {
         Some(slot)
     }
 
-    /// The one recovery a no-feed state offers.
     pub(super) fn recovery_action(&self) -> (&'static str, Action) {
         // A page's camera permission lives in the browser, which no
         // `settings://` link reaches: there the person allows it and refreshes.
@@ -676,7 +672,6 @@ impl CameraApp {
         }
     }
 
-    /// The recent-capture preview, decoded once per capture.
     pub(super) fn ensure_thumb(&mut self, cap: &crate::model::Capture) {
         if self.thumbs.contains_key(&cap.id) && !self.thumb_pending.contains_key(&cap.id) {
             return;

@@ -35,9 +35,8 @@ impl VerifiedCohort {
         self.packages.iter().map(|package| package.row.id.as_str())
     }
 
-    /// A no-op requires every authenticated cohort package to be selected,
-    /// not merely present in the system store. A held or missing selection
-    /// takes the ordinary installer path instead.
+    /// A no-op requires every authenticated cohort package to be selected, not merely present in
+    /// the system store; a held or missing selection takes the ordinary installer path instead.
     pub(crate) fn selections_identical(&self, selected: &SelectedApps) -> bool {
         self.packages.iter().all(|package| {
             let mut rows = selected.apps.iter().filter(|row| row.id == package.row.id);
@@ -76,8 +75,8 @@ impl Drop for Staging {
     }
 }
 
-/// An installed package `application` admitted: its signed record, and its
-/// payload tree at its path in the layer.
+/// An installed package `application` admitted: its signed record, and its payload tree at its path
+/// in the layer.
 struct Installed {
     package: InstalledPackage,
     record: package_store::integrity::Record,
@@ -102,12 +101,10 @@ impl BlobSource for InstalledBlobs {
     }
 }
 
-/// The complete signed archive of an installed cohort package, written into
-/// `staging` from the layer's own signed record and its verified payload.
-///
-/// An image ships each app once, as its installed tree. The archive the
-/// installer takes is the same package (the same signed root, so the same
-/// package id), rebuilt here instead of carried a second time as a `.tapp`.
+/// The complete signed archive of an installed cohort package, written into `staging` from the
+/// layer's own signed record and its verified payload. An image ships each app once, as its
+/// installed tree; the archive the installer takes is the same package, rebuilt here instead of
+/// carried a second time as a `.tapp`.
 fn archive(installed: &Installed, publisher: &str, staging: &Path) -> Result<PathBuf, DaemonError> {
     let Installed { package, record } = installed;
     let meta = PackageMeta::from_root(
@@ -154,10 +151,8 @@ fn archive(installed: &Installed, publisher: &str, staging: &Path) -> Result<Pat
     .map_err(invalid)?
     .into_inner()
     .map_err(|error| invalid(error.error()))?;
-    // Not synced: the archive lives only as long as its cohort, the installer
-    // reads it on this machine through the page cache and makes its own
-    // import durable, and nothing reads it after a crash. A sync would only
-    // wait on the disk's writeback, which on a busy disk takes seconds.
+    // Not synced: the archive lives only as long as its cohort, and the installer makes its own
+    // import durable, so a sync would only wait on the disk's writeback.
     if written.metadata().map_err(invalid)?.len() > tilo_app_package::MAX_APP_TAPP_BYTES {
         return Err(invalid("a cohort archive exceeds the application bound"));
     }
@@ -361,10 +356,9 @@ fn application(
     Ok((entry, Installed { package, record }))
 }
 
-/// Every native file `entries` reach through their `DT_NEEDED` inside
-/// `runtime`, the entries included: the graph an app process maps before
-/// `main`, and so the evidence that it uses the shipped toolkit instead of a
-/// copy of its own.
+/// Every native file `entries` reach through their `DT_NEEDED` inside `runtime`, the entries
+/// included: the graph an app process maps before `main`, and so the evidence that it uses the
+/// shipped toolkit.
 fn closure(
     runtime: &Path,
     entries: Vec<PathBuf>,
@@ -429,9 +423,9 @@ fn verify_engines(layer: &Path, engines: &[&fs::DirEntry], arch: &str) -> Result
     Ok(())
 }
 
-/// Membership is part of the signed toolkit payload, not an editable registry.
-/// Replacing that read-only system registry retires obsolete image packages;
-/// account-owned selections are deliberately not removed or rewritten here.
+/// Membership is part of the signed toolkit payload, not an editable registry. Replacing that
+/// read-only system registry retires obsolete image packages; account-owned selections are
+/// deliberately not removed or rewritten here.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SystemMembership {
@@ -465,9 +459,9 @@ fn membership(bundle: &Path) -> Result<Option<SystemMembership>, DaemonError> {
     Ok(Some(membership))
 }
 
-/// The cohort's one native toolkit, named by its payload-derived ABI, after
-/// verifying every other bundle as an engine the cohort's apps pin (the
-/// Browser's), shipped at the exact version so the swapped apps find it.
+/// The cohort's one native toolkit, named by its payload-derived ABI, after verifying every other
+/// bundle as an engine the cohort's apps pin, shipped at the exact version so the swapped apps find
+/// it.
 fn toolkit_after_engines(layer: &Path, arch: &str) -> Result<PathBuf, DaemonError> {
     let bundles = fs::read_dir(layer.join("usr/lib/tilo-runtime"))
         .map_err(invalid)?
@@ -534,8 +528,8 @@ pub(crate) fn verify(
                 .collect::<BTreeSet<_>>()
                 != ids
         }
-        // Legacy layers cannot authorize retirement. Preserve their stricter
-        // image-superset admission rather than silently ignoring absent apps.
+        // Legacy layers cannot authorize retirement: keep their stricter image-superset admission
+        // rather than silently ignoring absent apps.
         None => registry(base_store)?
             .entries()
             .iter()
@@ -570,11 +564,9 @@ pub(crate) fn verify(
         )?;
         native(&loader, arch)?;
         closure(&bundle, vec![loader], arch)?;
-        // An app reaches the toolkit as the graph it maps, not necessarily
-        // through its own entry: Settings' entry is a host over the engine
-        // dylib that links the toolkit. What must hold is that the app's
-        // closure reaches the toolkit this cohort ships, rather than a copy
-        // packed into the app.
+        // An app reaches the toolkit as the graph it maps, not necessarily through its own entry:
+        // what must hold is that the app's closure reaches the toolkit this cohort ships, rather
+        // than a copy packed into the app.
         if !closure(&bundle, vec![entry.clone()], arch)?.contains(&toolkit) {
             return Err(invalid(format!(
                 "the app {} does not link the shipped toolkit",

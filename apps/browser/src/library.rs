@@ -1,26 +1,21 @@
-//! Durable browser-library models. Bookmarks are intentionally separate from
-//! browsing history: history is private activity, while bookmarks are explicit
-//! user-created resources that may be shared through the app document.
+//! The browser document's bookmarks, apart from browsing history, which stays
+//! private.
 
 use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
 
 pub const MAX_BOOKMARKS: usize = 10_000;
 
-/// One bookmarked page, an item of the browser's bookmarks.
 #[derive(Model, Clone, Debug, PartialEq, Eq)]
 #[model(check = Bookmark::valid)]
 pub struct Bookmark {
-    /// Address: one absolute http(s) URL in its normalized form, so
-    /// `https://example.org` is `https://example.org/`.
+    /// Absolute http(s), normalized: `https://example.org` keeps its slash.
     #[model(readonly)]
     pub url: String,
-    /// Title
     #[model(label)]
     pub title: String,
 }
 
 impl Bookmark {
-    /// A bookmark names one web page, under a title that fits a row.
     fn valid(&self) -> Result<(), Refusal> {
         if crate::actions::normalized_bookmark_url(&self.url).as_deref() != Some(&self.url) {
             return Err(Refusal::new("a bookmark is a normalized http(s) URL"));
@@ -32,25 +27,21 @@ impl Bookmark {
     }
 }
 
-/// One bookmarked page as the chrome lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BookmarkEntry {
-    /// The bookmark's item in the document.
     pub id: Id,
     pub url: String,
     pub title: String,
 }
 
-/// The bookmarks the chrome shows: one per page, sorted by address. Two
-/// people bookmarking one page at once keep two items; the page is listed
-/// once.
+/// The bookmarks the chrome shows: one per page, sorted by address; two people
+/// bookmarking one page at once keep two items.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bookmarks {
     entries: Vec<BookmarkEntry>,
 }
 
 impl Bookmarks {
-    /// The bookmarks `collection` holds.
     pub fn of(collection: &Collection<Bookmark>) -> Self {
         let mut entries: Vec<BookmarkEntry> = collection
             .iter()
@@ -78,8 +69,6 @@ impl Bookmarks {
         &self.entries
     }
 
-    /// Whether `url` is bookmarked: the document keeps bookmarks under their
-    /// normalized URL, so `https://example.org` is `https://example.org/`.
     pub fn contains(&self, url: &str) -> bool {
         let normalized = crate::actions::normalized_bookmark_url(url);
         let url = normalized.as_deref().unwrap_or(url);

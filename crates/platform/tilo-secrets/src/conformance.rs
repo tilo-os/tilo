@@ -11,8 +11,6 @@ use crate::{PutOptions, SecretError, SecretStore};
 
 const KEY: &str = "tilo-conformance";
 
-/// Round trip, overwrite, delete, missing reads, idempotent delete, and
-/// malformed keys refused — through the async API.
 pub async fn check_store(store: &SecretStore) {
     store
         .delete(KEY)
@@ -59,7 +57,6 @@ pub async fn check_store(store: &SecretStore) {
     }
 }
 
-/// [`check_store`] through the `*_blocking` API.
 pub fn check_store_blocking(store: &SecretStore) {
     store
         .delete_blocking(KEY)

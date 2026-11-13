@@ -16,7 +16,6 @@ const ADDING: &[&str] = &[
     "Installing group/module packages:",
 ];
 
-/// Sections that would change the runtime.
 const CHANGING: &[&str] = &[
     "Upgrading:",
     "Downgrading:",
@@ -30,7 +29,6 @@ const CHANGING: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolution {
-    /// NEVRAs the transaction installs, in [`normalize_nevra`] form.
     pub install: Vec<String>,
     /// Requested names the runtime already provides.
     pub already_installed: Vec<String>,
@@ -151,7 +149,6 @@ fn quoted_after(line: &str, prefix: &str) -> Option<String> {
     Some(rest.trim_matches('"').to_owned())
 }
 
-/// Parse `rpm -qa --qf '%{NEVRA}\n'`-style output into a sorted set.
 pub fn parse_rpm_list(output: &str) -> Vec<String> {
     let mut list: Vec<String> = output
         .lines()

@@ -1,16 +1,10 @@
-//! What Sheets does that changes no workbook: reading and writing
-//! spreadsheet files, reading cells, and moving around the grid.
-//!
-//! Document changes are the workbook's own field edits and verbs
-//! ([`crate::resource`]). Presentation — the selection (incl. multi-range),
-//! scroll, which sheet tab is active, the formula-bar edit buffer until
-//! Enter — is never an action.
+//! What Sheets does that changes no workbook: reading and writing files, reading cells, moving
+//! around the grid. Document changes are the workbook's field edits and verbs, and presentation
+//! is never an action.
 
 use ui::tilo_resource::{self, Effect};
 
-/// What Sheets does that changes no workbook: reading spreadsheet files into
-/// new sheets and writing the workbook out as one, and moving around the grid
-/// (views). An import reaches the workbook as one `import-sheets`.
+/// What Sheets does that changes no workbook: file reads and writes, and moving around the grid.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "sheets.effect")]
 pub enum SheetsEffect {
@@ -33,18 +27,18 @@ pub enum SheetsEffect {
     /// Import Notion export
     ///
     /// Adds every database of a Notion export as a sheet.
-    #[effect(job, cancellable, opens_path = "zip", label = "Import Notion export")]
+    #[effect(
+        job,
+        cancellable,
+        opens_path = "zip",
+        label = "sheets-notion-import-title"
+    )]
     ImportNotion {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Adds every sheet of an `.ods` spreadsheet.
-    #[effect(
-        job,
-        cancellable,
-        opens_path = "ods",
-        label = "Import OpenDocument spreadsheet"
-    )]
+    #[effect(job, cancellable, opens_path = "ods")]
     ImportOds {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<tilo_resource::AbsolutePath>,
@@ -66,23 +60,15 @@ pub enum SheetsEffect {
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Saves every sheet as an `.ods` spreadsheet.
-    #[effect(
-        job,
-        cancellable,
-        risk = "export_risk",
-        label = "Export OpenDocument spreadsheet"
-    )]
+    #[effect(job, cancellable, risk = "export_risk")]
     ExportOds {
         #[param("Absolute path to write it to; omit to choose")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Import Excel workbook from content
     ///
-    /// Adds every sheet of an `.xlsx` workbook the workspace holds as content (an
-    /// attachment, a shared file, an export), with its formulas, money,
-    /// percent and date formats and hidden sheets; a new workbook's untouched
-    /// blank sheet gives way to them. The same content imported again is
-    /// not added twice.
+    /// Adds every sheet of an `.xlsx` workbook the workspace holds as content, with its formulas,
+    /// formats and hidden sheets; the same content is not added twice.
     #[effect(returns, kind = "undoable", audience = "agents")]
     ImportXlsxContent {
         #[param(content, "The workbook's content address, `tilo.content:<hash>`")]
@@ -92,9 +78,7 @@ pub enum SheetsEffect {
     },
     /// Export Excel workbook as content
     ///
-    /// Keeps every sheet as an `.xlsx` workbook in the content store, with no
-    /// file to write: the caller reads, attaches or sends it by the content
-    /// address it answers.
+    /// Keeps every sheet as an `.xlsx` workbook in the content store, with no file to write.
     #[effect(content, kind = "read", idempotent)]
     ExportXlsxContent,
     /// Open command palette
@@ -136,9 +120,8 @@ pub enum SheetsEffect {
     },
 }
 
-/// What an export risks: nothing when the person picks where in the save
-/// dialog, which is itself the confirmation; writing over whatever is at a
-/// path a caller names is destructive and asks first.
+/// What an export risks: nothing when the person picks the path themselves; writing over what a
+/// caller names is destructive.
 fn export_risk(effect: &SheetsEffect) -> ui::tilo_actions::RiskLevel {
     match effect {
         SheetsEffect::ExportCsv { path: Some(_) }

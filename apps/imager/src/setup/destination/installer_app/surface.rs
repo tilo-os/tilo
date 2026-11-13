@@ -1,22 +1,16 @@
-//! The installer's published effects — what each one is offered as right
-//! now, the items some are bound to, the tree its console enumerates — and
-//! [`InstallerApp::apply`], the one function every door ends in.
-//!
-//! Availability mirrors the wizard: an effect is available exactly when its
-//! control is live on screen, and otherwise carries the reason a person
-//! would be told. Nothing is hidden to make the surface look smaller; a
-//! caller that cannot see the screen learns the whole wizard from one
-//! enumeration and why each part is or is not reachable now.
+//! The installer's published effects: what each one is offered on, and why one
+//! cannot run now.
 
 use serde_json::{Map, Value};
 use ui::framework::{EffectStatus, LiveRow};
+use ui::i18n::ArgValue;
 use ui::tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation, ResourceSpec};
 use ui::tilo_resource::Effect as _;
 use zeroize::Zeroizing;
 
 use super::{
     ALONGSIDE_BOOT_GUIDANCE, ALONGSIDE_FILES_GUIDANCE, FILESYSTEMS, InstallMethod, InstallState,
-    InstallerApp, STEP_LABELS, Step, VerifiedBootState, alongside_install_impact,
+    InstallerApp, STEP_KEYS, Step, VerifiedBootState, alongside_install_impact,
     clear_secret_buffer, prev_step, secret_copy, step_index, valid_full_name, valid_hostname,
     valid_locale, valid_timezone_name, valid_username, validate_passwords,
     validate_startup_secret_for,
@@ -25,6 +19,7 @@ use crate::setup::destination::disk_row::capacity;
 use crate::setup::destination::effects::{
     DestinationEffect, PROVIDER, REVIEW, STORAGE, disk_row, reference, region_row, reviewed_digest,
 };
+use crate::setup::strings::{t, t_args};
 use imager_backend::destination::install::PowerAction;
 use imager_backend::destination::layouts;
 
@@ -32,12 +27,8 @@ use imager_backend::destination::layouts;
 /// into a password manager. Rebooting or powering off clears it sooner.
 const RECOVERY_KEY_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// A reason an effect cannot run now: a stable code and the sentence the
-/// wizard would show.
 type Blocked = Option<(&'static str, String)>;
 
-/// What one of the installer's own effects is offered as now: why it cannot
-/// run, and the label it carries when that is not its declared one.
 struct Gate {
     id: &'static str,
     blocked: Blocked,
@@ -58,7 +49,6 @@ impl Gate {
         self
     }
 
-    /// `spec` as this gate says it is offered now.
     fn overlay(&self, mut spec: ActionSpec) -> ActionSpec {
         if let Some(label) = &self.label {
             spec.type_mut().label.clone_from(label);
@@ -70,8 +60,6 @@ impl Gate {
     }
 }
 
-/// One item an effect is bound to: a disk, a free region, the capacity
-/// choice, the review, a visible network.
 struct Item {
     id: String,
     kind: &'static str,
@@ -87,7 +75,6 @@ fn gated(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
     }
 }
 
-/// Longest prefix of `text` within `limit` bytes, on a character boundary.
 fn bounded(text: &str, limit: usize) -> String {
     let mut end = text.len().min(limit);
     while !text.is_char_boundary(end) {
@@ -96,21 +83,18 @@ fn bounded(text: &str, limit: usize) -> String {
     text.get(..end).unwrap_or_default().to_owned()
 }
 
-fn step_name(step: Step) -> &'static str {
-    STEP_LABELS
-        .get(step_index(step))
-        .copied()
-        .unwrap_or("wizard")
+pub(super) fn step_name(step: Step) -> String {
+    let index = step_index(step).min(STEP_KEYS.len().saturating_sub(1));
+    t(STEP_KEYS[index])
 }
 
-/// Keep guidance within publication limits without silently dropping it.
 fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> ResourceSpec {
     for (index, sentence) in guidance.split(". ").enumerate() {
         resource = resource.with_child(
             ResourceSpec::new(
                 format!("{id}.guidance:{index}"),
                 "installer.guidance",
-                "Installation guidance",
+                crate::resource::CATALOG.t("imager-installer-guidance"),
             )
             .with_presentation(ResourcePresentation {
                 preview: Some(sentence.to_owned()),
@@ -121,20 +105,19 @@ fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> Resour
     resource
 }
 
-/// Everything an effect handler can report back to its caller.
 pub(super) type Applied = Result<ActionOutput, String>;
 
 impl InstallerApp {
-    /// `Some` when the wizard is not on `step`: the control for this effect
-    /// is not on screen, so the effect is not available either.
     fn off_step(&self, step: Step) -> Blocked {
         (self.step != step).then(|| {
             (
                 "other_step",
-                format!(
-                    "This belongs to the {} step; the installer is on {}. Use next or back to get there.",
-                    step_name(step),
-                    step_name(self.step)
+                t_args(
+                    "installer-blocked-other-step",
+                    &[
+                        ("wanted", ArgValue::Text(step_name(step))),
+                        ("current", ArgValue::Text(step_name(self.step))),
+                    ],
                 ),
             )
         })
@@ -161,7 +144,15 @@ impl InstallerApp {
         }
     }
 
-    /// What each of the installer's own (unbound) effects is offered as now.
+    pub(super) fn install_state_key(&self) -> &'static str {
+        match self.install_state {
+            InstallState::Idle => "installer-state-idle",
+            InstallState::Running => "installer-state-running",
+            InstallState::Done => "installer-state-done",
+            InstallState::Failed => "installer-state-failed",
+        }
+    }
+
     fn gates(&self) -> Vec<Gate> {
         let account = self.off_step(Step::Account);
         let options = self.off_step(Step::Options);
@@ -181,11 +172,7 @@ impl InstallerApp {
                 if self.unattended_mode {
                     account
                 } else {
-                    Some((
-                        "interactive_only",
-                        "A password hash is accepted only by an explicit unattended installation"
-                            .to_owned(),
-                    ))
+                    Some(("interactive_only", t("installer-blocked-password-hash")))
                 },
             ),
             Gate::new("set-filesystem", options.clone()),
@@ -202,9 +189,7 @@ impl InstallerApp {
         gates
     }
 
-    /// Why `effect` cannot run now, as its gate or the item it is bound to
-    /// says.
-    fn blocked(&self, effect: &DestinationEffect) -> Blocked {
+    pub(super) fn blocked(&self, effect: &DestinationEffect) -> Blocked {
         let id = effect.id();
         if let Some(gate) = self.gates().into_iter().find(|gate| gate.id == id) {
             return gate.blocked;
@@ -218,7 +203,10 @@ impl InstallerApp {
                     || {
                         Some((
                             "no_disk",
-                            format!("No disk {device} is listed; refresh disks"),
+                            t_args(
+                                "installer-blocked-no-such-disk",
+                                &[("device", ArgValue::Text(device.clone()))],
+                            ),
                         ))
                     },
                     |disk| self.disk_blocked(disk),
@@ -228,7 +216,6 @@ impl InstallerApp {
         }
     }
 
-    /// What the framework's door offers each effect as now.
     pub(super) fn effect_statuses(&self) -> Vec<EffectStatus> {
         self.gates()
             .into_iter()
@@ -248,7 +235,6 @@ impl InstallerApp {
             .collect()
     }
 
-    /// The items effects are bound to, as live rows beneath the installer.
     pub(super) fn published_rows(&self) -> Vec<LiveRow> {
         self.items()
             .into_iter()
@@ -263,23 +249,30 @@ impl InstallerApp {
             .collect()
     }
 
-    /// The tree the console enumerates and admits against: the installer
-    /// with its effects as offered now, and the items some are bound to.
-    /// Recomputed on every call; an address that stopped naming anything is
-    /// refused instead of reaching a stale handler.
     pub fn published(&self) -> Vec<ResourceSpec> {
         let gates = self.gates();
-        let mut root = ResourceSpec::new(PROVIDER, "installer.session", "Tilo installer")
-            .with_presentation(ResourcePresentation {
-                detail: Some(format!(
-                    "Step {} of {}: {}",
-                    step_index(self.step).saturating_add(1),
-                    STEP_LABELS.len(),
-                    step_name(self.step)
-                )),
-                badge: Some(self.install_state_name().to_owned()),
-                preview: None,
-            });
+        let mut root = ResourceSpec::new(
+            PROVIDER,
+            "installer.session",
+            crate::resource::CATALOG.t("imager-installer-title"),
+        )
+        .with_presentation(ResourcePresentation {
+            detail: Some(t_args(
+                "installer-detail-step",
+                &[
+                    (
+                        "number",
+                        ArgValue::Number(f64::from(
+                            u32::try_from(step_index(self.step).saturating_add(1)).unwrap_or(1),
+                        )),
+                    ),
+                    ("count", ArgValue::Number(f64::from(STEP_KEYS.len() as u32))),
+                    ("step", ArgValue::Text(step_name(self.step))),
+                ],
+            )),
+            badge: Some(t(self.install_state_key())),
+            preview: None,
+        });
         for spec in DestinationEffect::specs() {
             let spec = match gates.iter().find(|gate| gate.id == spec.id) {
                 Some(gate) => gate.overlay(spec),
@@ -310,20 +303,14 @@ impl InstallerApp {
                 if self.network.snapshot.connectivity
                     == imager_backend::destination::network::ConnectivityState::Full =>
             {
-                "Continue"
+                crate::resource::CATALOG.t("imager-installer-continue")
             }
-            Step::Network => "Continue offline",
-            _ => "Next",
+            Step::Network => crate::resource::CATALOG.t("imager-installer-continue-offline"),
+            _ => crate::resource::CATALOG.t("imager-installer-next"),
         };
         let blocked = match self.step {
-            Step::Review => Some((
-                "begin_required",
-                "Review ends with Begin installation (begin@installer.review), not Next".to_owned(),
-            )),
-            Step::Install => Some((
-                "install_started",
-                "The install has started; there is no next step".to_owned(),
-            )),
+            Step::Review => Some(("begin_required", t("installer-blocked-next-review"))),
+            Step::Install => Some(("install_started", t("installer-blocked-next-install"))),
             _ => None,
         };
         Gate::new("next", blocked).labelled(label)
@@ -334,71 +321,62 @@ impl InstallerApp {
         let blocked = if failed || prev_step(self.step).is_some() {
             None
         } else if self.step == Step::Install {
-            Some((
-                "install_started",
-                "The install has started; the wizard cannot go back".to_owned(),
-            ))
+            Some(("install_started", t("installer-blocked-back-install")))
         } else {
-            Some(("first_step", "Keyboard is the first step".to_owned()))
+            Some(("first_step", t("installer-blocked-back-first")))
         };
         let gate = Gate::new("back", blocked);
         if failed {
-            gate.labelled("Review storage")
+            gate.labelled(t("installer-action-review-storage"))
         } else {
             gate
         }
     }
 
-    /// Staged installs only: the way back to the retained operating system,
-    /// offered on every screen except while installing or once done.
     fn return_to_host_gate(&self) -> Gate {
         let Some(host) = self.internal_host() else {
             return Gate::new(
                 "return-to-host",
-                Some((
-                    "not_staged",
-                    "This installer was not staged next to an existing system".to_owned(),
-                )),
+                Some(("not_staged", t("installer-blocked-not-staged"))),
             );
         };
         let blocked = match self.install_state {
-            InstallState::Running => Some((
-                "install_running",
-                "The install is running; wait for it to finish or fail".to_owned(),
-            )),
-            InstallState::Done => Some((
-                "install_done",
-                "Tilo is installed; use Reboot now (reboot@installer) instead".to_owned(),
-            )),
+            InstallState::Running => {
+                Some(("install_running", t("installer-blocked-return-running")))
+            }
+            InstallState::Done => Some(("install_done", t("installer-blocked-return-done"))),
             InstallState::Idle | InstallState::Failed => None,
         };
-        Gate::new("return-to-host", blocked).labelled(format!("Return to {}", host.display_name()))
+        Gate::new("return-to-host", blocked).labelled(t_args(
+            "installer-action-return-to-host",
+            &[("host", ArgValue::Text(host.display_name().to_owned()))],
+        ))
     }
 
     fn network_gates(&self) -> Vec<Gate> {
         let on_step = self.off_step(Step::Network);
-        let busy = self.network.is_busy().then(|| {
-            (
-                "network_busy",
-                "A network operation is already in progress".to_owned(),
-            )
-        });
+        let busy = self
+            .network
+            .is_busy()
+            .then(|| ("network_busy", t("installer-blocked-network-busy")));
         let select = on_step.clone().or_else(|| busy.clone()).or_else(|| {
             self.network.snapshot.networks.is_empty().then(|| {
                 (
                     "no_networks",
-                    self.network.snapshot.wifi_error.clone().unwrap_or_else(|| {
-                        "No Wi-Fi networks are visible; refresh the list".into()
-                    }),
+                    self.network
+                        .snapshot
+                        .wifi_error
+                        .clone()
+                        .unwrap_or_else(|| t("installer-blocked-no-networks")),
                 )
             })
         });
         let connect = on_step.clone().or_else(|| busy.clone()).or_else(|| {
             match self.network.selected_network() {
-                None => Some(("no_selection", "Choose a Wi-Fi network first".to_owned())),
+                None => Some(("no_selection", t("installer-blocked-no-network-choice"))),
                 Some(network) if network.connected => Some((
                     "already_connected",
-                    "That Wi-Fi network is already connected".to_owned(),
+                    t("installer-blocked-network-connected"),
                 )),
                 Some(_) => None,
             }
@@ -421,18 +399,14 @@ impl InstallerApp {
             imager_backend::destination::online_accounts::AccountsController::status,
         );
         let on_step = self.off_step(Step::Accounts);
-        let signing_in = (status == AccountsStatus::SigningIn).then(|| {
-            (
-                "signing_in",
-                "Wait for sign-in to finish or cancel it".to_owned(),
-            )
-        });
+        let signing_in = (status == AccountsStatus::SigningIn)
+            .then(|| ("signing_in", t("installer-blocked-signing-in")));
         let add = Gate::new(
             "add-account",
             on_step.clone().or_else(|| signing_in.clone()),
         );
         let add = if status == AccountsStatus::ReviewCalendars {
-            add.labelled("Confirm selected calendars")
+            add.labelled(t("installer-action-confirm-calendars"))
         } else {
             add
         };
@@ -441,12 +415,8 @@ impl InstallerApp {
             Gate::new(
                 "retry-account",
                 on_step.clone().or(signing_in).or_else(|| {
-                    (status != AccountsStatus::Failed).then(|| {
-                        (
-                            "not_failed",
-                            "Retry is available after a failed sign-in".to_owned(),
-                        )
-                    })
+                    (status != AccountsStatus::Failed)
+                        .then(|| ("not_failed", t("installer-blocked-retry-not-failed")))
                 }),
             ),
             Gate::new("cancel-sign-in", on_step.clone()),
@@ -455,59 +425,43 @@ impl InstallerApp {
     }
 
     fn recovery_gates(&self) -> Vec<Gate> {
-        let no_key = self.recovery_key.is_none().then(|| {
-            (
-                "no_recovery_key",
-                "No recovery key has been generated".to_owned(),
-            )
-        });
+        let no_key = self
+            .recovery_key
+            .is_none()
+            .then(|| ("no_recovery_key", t("installer-blocked-no-recovery-key")));
         let finished = (self.step != Step::Install || self.install_state != InstallState::Done)
-            .then(|| {
-                (
-                    "not_finished",
-                    "Power actions are offered once the install has finished".to_owned(),
-                )
-            });
-        let unsaved = |verb: &str| {
-            finished.clone().or_else(|| {
-                (!self.recovery_key_saved).then(|| {
-                    (
-                        "recovery_key_unsaved",
-                        format!(
-                            "Save the recovery key off this computer and confirm it before {verb}"
-                        ),
-                    )
-                })
-            })
+            .then(|| ("not_finished", t("installer-blocked-power-not-finished")));
+        let unsaved = |key: &str| {
+            finished
+                .clone()
+                .or_else(|| (!self.recovery_key_saved).then(|| ("recovery_key_unsaved", t(key))))
         };
         vec![
             Gate::new("copy-recovery-key", no_key.clone()),
             Gate::new("confirm-recovery-saved", no_key),
-            Gate::new("reboot", unsaved("rebooting")),
-            Gate::new("power-off", unsaved("powering off")),
+            Gate::new(
+                "reboot",
+                unsaved("installer-blocked-recovery-unsaved-reboot"),
+            ),
+            Gate::new(
+                "power-off",
+                unsaved("installer-blocked-recovery-unsaved-power-off"),
+            ),
         ]
     }
 
     fn disk_blocked(&self, disk: &imager_backend::destination::Disk) -> Blocked {
         self.off_step(Step::Disk).or_else(|| {
             if disk.blocks_install() {
-                Some((
-                    "installer_disk",
-                    "The running installer disk cannot be used as its own destination".to_owned(),
-                ))
+                Some(("installer_disk", t("installer-blocked-installer-disk")))
             } else if disk.read_only {
-                Some((
-                    "read_only",
-                    "This disk is hardware or policy write-protected.".to_owned(),
-                ))
+                Some(("read_only", t("installer-blocked-read-only")))
             } else {
                 None
             }
         })
     }
 
-    /// The disks, the free regions, the capacity choice, the visible
-    /// networks and the review, each with the effect bound to it.
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
         for network in self.network.snapshot.networks.iter().take(5) {
@@ -545,7 +499,11 @@ impl InstallerApp {
                 label: disk.label(),
                 presentation: ResourcePresentation {
                     detail: Some(bounded(
-                        &format!("{}, {}", capacity(disk), disk.contents_summary()),
+                        &crate::contents::drive_line(
+                            &capacity(disk),
+                            disk.partitions.len(),
+                            &disk.partition_filesystems(),
+                        ),
                         160,
                     )),
                     badge: Some(badge.to_owned()),
@@ -566,10 +524,18 @@ impl InstallerApp {
                 items.push(Item {
                     id: region_row(index),
                     kind: "installer.region",
-                    label: format!(
-                        "{} free at {}",
-                        ui::format::memory(plan.free_size_bytes),
-                        ui::format::memory(plan.free_start_bytes)
+                    label: t_args(
+                        "installer-item-region",
+                        &[
+                            (
+                                "size",
+                                ArgValue::Text(ui::format::memory(plan.free_size_bytes)),
+                            ),
+                            (
+                                "start",
+                                ArgValue::Text(ui::format::memory(plan.free_start_bytes)),
+                            ),
+                        ],
                     ),
                     presentation: ResourcePresentation {
                         badge: (self.selected_guided_extent == Some(index))
@@ -589,12 +555,12 @@ impl InstallerApp {
         items.push(Item {
             id: STORAGE.to_owned(),
             kind: "installer.storage",
-            label: "Installation target".to_owned(),
+            label: t("installer-item-storage"),
             presentation: ResourcePresentation {
                 detail: Some(if self.install_method == InstallMethod::Alongside {
                     bounded(&self.alongside_storage_guidance(), 160)
                 } else {
-                    "Erase the selected disk".to_owned()
+                    t("installer-item-storage-erase")
                 }),
                 ..ResourcePresentation::default()
             },
@@ -606,8 +572,6 @@ impl InstallerApp {
         items
     }
 
-    /// The capacity choice of the selected free extent, bound to the disk
-    /// and extent it divides: `None` where there is none to make.
     pub(super) fn capacity_effect(&self) -> Option<DestinationEffect> {
         let extent = self.selected_full_guided_plan()?;
         let disk = self
@@ -619,7 +583,6 @@ impl InstallerApp {
         })
     }
 
-    /// The destructive `begin`, bound to the target and plan reviewed now.
     pub(super) fn begin_effect(&self) -> DestinationEffect {
         DestinationEffect::Begin {
             target: self.destructive_confirmation_target().unwrap_or_default(),
@@ -627,23 +590,18 @@ impl InstallerApp {
         }
     }
 
-    /// What stands between the Review step and a launch, in the order the
-    /// wizard would say it.
     fn begin_blocked(&self) -> Blocked {
         self.off_step(Step::Review)
             .or_else(|| {
-                self.destructive_confirmation_target().is_none().then(|| {
-                    (
-                        "no_target",
-                        "Select a disk (and, alongside, a region) before installing".to_owned(),
-                    )
-                })
+                self.destructive_confirmation_target()
+                    .is_none()
+                    .then(|| ("no_target", t("installer-blocked-begin-no-target")))
             })
             .or_else(|| {
                 (!self.recovery_ack).then(|| {
                     (
                         "recovery_key_promise",
-                        "Confirm you'll save your recovery key first".to_owned(),
+                        t("installer-blocked-begin-recovery"),
                     )
                 })
             })
@@ -674,23 +632,32 @@ impl InstallerApp {
         let target = self.destructive_confirmation_target();
         let erase = self.install_method == InstallMethod::Erase;
         let description = match (&target, erase) {
-            (Some(device), true) => format!(
-                "ERASES {device} and all data on it, then installs Tilo. Destructive: type the device name as the confirmation phrase."
+            (Some(device), true) => t_args(
+                "installer-review-erase",
+                &[("device", ArgValue::Text(device.to_owned()))],
             ),
-            (Some(device), false) => format!(
-                "{} {} {} Destructive: type the confirmation phrase.",
-                alongside_install_impact(self.uses_guided_alongside(), device),
-                crate::setup::strings::t(ALONGSIDE_BOOT_GUIDANCE),
-                crate::setup::strings::t(ALONGSIDE_FILES_GUIDANCE)
+            (Some(device), false) => t_args(
+                "installer-review-alongside",
+                &[
+                    (
+                        "impact",
+                        ArgValue::Text(alongside_install_impact(
+                            self.uses_guided_alongside(),
+                            device,
+                        )),
+                    ),
+                    ("boot", ArgValue::Text(t(ALONGSIDE_BOOT_GUIDANCE))),
+                    ("files", ArgValue::Text(t(ALONGSIDE_FILES_GUIDANCE))),
+                ],
             ),
-            (None, _) => "Select a destination first".to_owned(),
+            (None, _) => t("installer-item-review-no-target"),
         };
         let mut begin = gated(self.begin_effect().bound(), self.begin_blocked());
         begin.type_mut().description = Some(description);
         Item {
             id: REVIEW.to_owned(),
             kind: "installer.review",
-            label: "Review and install".to_owned(),
+            label: t("installer-item-review"),
             presentation: ResourcePresentation::default(),
             operation: Some(begin),
         }
@@ -712,10 +679,6 @@ impl InstallerApp {
         Ok(ActionOutput::default())
     }
 
-    /// Run a wizard control's effect through the same rules the console's
-    /// door applies: refused with the published reason while unavailable,
-    /// and the destructive one only when `phrase` names what it formats. A
-    /// refusal shows the sentence an external caller receives.
     pub(super) fn invoke_control(&mut self, effect: DestinationEffect, phrase: Option<&str>) {
         if let Some((_, reason)) = self.blocked(&effect) {
             self.set_status(&reason);
@@ -724,20 +687,15 @@ impl InstallerApp {
         if let Some(expected) = effect.confirmation_phrase()
             && phrase.map(str::trim) != Some(expected.as_str())
         {
-            let message = format!("Type {expected} exactly to confirm formatting it");
-            self.set_status(&message);
+            self.set_status(&t_args(
+                "installer-status-type-confirmation",
+                &[("phrase", ArgValue::Text(expected))],
+            ));
             return;
         }
-        // Handlers set the status or notice the wizard shows; the returned
-        // error only matters to a caller that cannot see it.
         let _ = self.apply(effect);
     }
 
-    /// Invoke one published effect exactly as the console door does:
-    /// resolve it in the current tree, refuse it when unavailable, enforce
-    /// its confirmation contract, bind its arguments strictly, then apply it.
-    /// The unattended driver and host-side tests use this instead of a second
-    /// path.
     pub fn invoke_published(
         &mut self,
         id: &str,
@@ -752,10 +710,6 @@ impl InstallerApp {
         self.apply(effect)
     }
 
-    /// Apply one effect. Every door ends here, after availability,
-    /// confirmation and binding; the handlers still re-check the wizard's own
-    /// preconditions, so a caller that reached this function some other way
-    /// cannot skip a step.
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per effect keeps each handler next to its siblings"
@@ -851,8 +805,6 @@ impl InstallerApp {
                     other => return Err(format!("Unknown install method {other:?}")),
                 };
                 if method == InstallMethod::Erase && self.selected_disk_hosts_installer() {
-                    // The backend refuses it too: this disk holds the running
-                    // installer and the operating system it was staged from.
                     return Err(
                         "This disk holds the running installer and your existing system; Tilo can only be installed alongside it"
                             .into(),
@@ -888,7 +840,12 @@ impl InstallerApp {
                     .disks
                     .iter()
                     .position(|disk| disk.name == device)
-                    .ok_or_else(|| format!("No disk {device} is listed; refresh disks"))?;
+                    .ok_or_else(|| {
+                        t_args(
+                            "installer-blocked-no-such-disk",
+                            &[("device", ArgValue::Text(device.clone()))],
+                        )
+                    })?;
                 let usable = self
                     .disks
                     .get(index)
@@ -1088,7 +1045,12 @@ impl InstallerApp {
                 let index = FILESYSTEMS
                     .iter()
                     .position(|candidate| *candidate == filesystem)
-                    .ok_or_else(|| format!("Unknown filesystem {filesystem:?}"))?;
+                    .ok_or_else(|| {
+                        t_args(
+                            "installer-error-unknown-filesystem",
+                            &[("filesystem", ArgValue::Text(filesystem.clone()))],
+                        )
+                    })?;
                 if self.supported_filesystems.get(index) != Some(&true) {
                     return Err(format!(
                         "{} cannot boot from this image's initramfs",
@@ -1163,8 +1125,6 @@ impl InstallerApp {
                             .into(),
                     );
                 }
-                // The door verified the typed phrase. Reflect it into the
-                // Review field so the screen and the launch agree.
                 self.set_erase_confirmation(target);
                 self.begin_install();
                 if self.install_launched {

@@ -6,8 +6,8 @@
 //! later grant does not apply". [`CapabilityFile`] owns the file and an
 //! [`AclHandle`]; [`CapabilityFile::refresh`] re-reads on change and swaps
 //! the result in underneath the live mount, and
-//! [`CapabilityFile::spawn_reload`] calls it whenever the host reports the
-//! file changed (#4224; it used to poll once a second).
+//! [`CapabilityFile::spawn_reload`] calls it whenever the host reports the file
+//! changed.
 //!
 //! The three outcomes are deliberately not treated alike. A changed,
 //! parseable file swaps in — the point. A **gone** file binds an empty
@@ -351,8 +351,7 @@ mod tests {
         .await;
     }
 
-    /// #4224. The reloader the daemon runs delivers each change through the
-    /// file watch. A revocation and a removal each reach the live mount, and a
+    /// The reloader the daemon runs delivers each change through the file watch. A revocation and a removal each reach the live mount, and a
     /// half-written file still keeps the previous list.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_revocation_reaches_the_live_mount_through_the_file_watch_alone() {

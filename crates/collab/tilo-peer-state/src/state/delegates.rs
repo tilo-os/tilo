@@ -14,18 +14,19 @@
 //! certificate's own root, names that device and this workspace, is inside its
 //! validity window, and the governor has not withdrawn it. It acts with its
 //! person's grants bounded by its delegation
-//! ([`tilo_action_policy::roles::agent_turn`]): an agent writes where
+//! ([`tilo_action_policy::roles::agent_grants`]): an agent writes where
 //! its person may write and governs nothing. Outside its window the
 //! identity stays on the roster, so the history it wrote stays attributed,
 //! but it is no reader of the workspace's channels and no op of it is admitted.
 
 use super::facades::{PeerGovernance, PeerGovernanceMut};
+use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::agent_policy;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::{Delegate, Delegation};
 
-use super::{GovernedIdentity, Role, SigningKey, SystemTime, err, now_ns, workspace};
+use super::{GovernedIdentity, Role, SystemTime, err, now_ns, workspace};
 
 /// What a governed identity carries when its device is a delegate of its
 /// person: an agent, or an installed bot.
@@ -164,7 +165,7 @@ impl PeerGovernance<'_> {
     ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
-        let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
+        let identity = GovernedIdentity::decode(&bytes).ok()?;
         let agent = identity.delegate?;
         agent.delegation.delegate.agent_id()?;
         Some((
@@ -183,7 +184,7 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         let mut agents = Vec::new();
         for bytes in doc.policy().identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            let identity = GovernedIdentity::decode(bytes).map_err(err)?;
             let acting = identity
                 .delegate_acting(&self.peer.core.workspace, now_ns(now))
                 .is_ok();
@@ -223,7 +224,7 @@ impl PeerGovernanceMut<'_> {
         self,
         cert: DeviceCert,
         delegation: Delegation,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         if delegation.delegate.agent_id().is_none() {
@@ -261,7 +262,7 @@ impl PeerGovernanceMut<'_> {
         let prior = workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
-            .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
+            .map(|bytes| GovernedIdentity::decode(bytes))
             .transpose()
             .map_err(err)?;
         let identity = match prior {
@@ -321,7 +322,7 @@ impl PeerGovernanceMut<'_> {
     pub fn withdraw_agent(
         self,
         device: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let doc = self
@@ -337,7 +338,7 @@ impl PeerGovernanceMut<'_> {
         else {
             return Ok(false);
         };
-        let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+        let mut identity = GovernedIdentity::decode(&bytes).map_err(err)?;
         let Some(agent) = identity.delegate.as_mut() else {
             return Err("the device is a member, not an agent".into());
         };
@@ -355,3 +356,19 @@ impl PeerGovernanceMut<'_> {
 #[cfg(test)]
 #[path = "delegates_tests.rs"]
 mod tests;
+
+/// Who a delegated device acts as in its workspace, and the grants that come
+/// with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActingAs {
+    pub actor: tilo_action_policy::Actor,
+    pub grants: Vec<tilo_action_policy::Grant>,
+}
+
+impl ActingAs {
+    /// The grant subject this actor is named by.
+    #[must_use]
+    pub fn subject(&self) -> tilo_action_policy::Subject {
+        self.actor.subject()
+    }
+}

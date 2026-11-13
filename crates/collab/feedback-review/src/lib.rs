@@ -41,7 +41,7 @@ mod locale_tests {
     use super::*;
 
     #[test]
-    fn every_label_title_has_an_english_message_with_its_argument() {
+    fn every_label_title_has_a_message_with_its_argument_in_each_language() {
         let titles = [
             LabelTitle::Opened { app: "a".into() },
             LabelTitle::Invoked { action: "a".into() },
@@ -50,13 +50,15 @@ mod locale_tests {
             LabelTitle::Edited { field: "a".into() },
             LabelTitle::Appeared { label: "a".into() },
         ];
-        for title in titles {
-            let line = FLUENT_EN_US
-                .lines()
-                .find(|line| line.starts_with(&format!("{} =", title.fluent_key())))
-                .unwrap_or_else(|| panic!("{} has no message", title.fluent_key()));
-            for (name, _) in title.args() {
-                assert!(line.contains(&format!("{{ ${name} }}")), "{line}");
+        for (locale, catalogue) in [("en-US", FLUENT_EN_US), ("de-DE", FLUENT_DE_DE)] {
+            for title in &titles {
+                let line = catalogue
+                    .lines()
+                    .find(|line| line.starts_with(&format!("{} =", title.fluent_key())))
+                    .unwrap_or_else(|| panic!("{locale}: {} has no message", title.fluent_key()));
+                for (name, _) in title.args() {
+                    assert!(line.contains(&format!("{{ ${name} }}")), "{locale}: {line}");
+                }
             }
         }
     }
@@ -322,6 +324,9 @@ impl LabelTitle {
 /// The English messages for every [`LabelTitle`]. Add them to the caller's
 /// Fluent bundle (for `ui`, `i18n::add_resource("en-US", ..)`).
 pub const FLUENT_EN_US: &str = include_str!("../locales/en-US.ftl");
+
+/// The German messages for every [`LabelTitle`], beside the source locale.
+pub const FLUENT_DE_DE: &str = include_str!("../locales/de-DE.ftl");
 
 /// What a step title says.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

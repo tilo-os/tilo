@@ -1,18 +1,5 @@
-//! What `app update` costs on a network far away: a registry that answers
-//! every request a round trip late and charges a handshake for every new
-//! connection, as a store behind a CDN does (the public store measured
-//! ~0.3 s to connect and ~0.4 s to the first byte from a laptop in Europe).
-//!
-//! The device has several apps installed and the registry offers each a
-//! newer version. Updating them is network-bound: the installs themselves
-//! are local work. So the test pins what decides the wait — one catalogue
-//! request, downloads that overlap instead of queueing app after app, and
-//! connections that are reused rather than opened per request — and reports
-//! the wall time without judging it: on the network the run costs the
-//! catalogue and two overlapped waves of downloads, the first on fresh
-//! connections.
-//!
-//! `cargo test -p app-cli --test it update_latency -- --nocapture`
+//! What `app update` costs on a network far away: a registry that answers slowly, many apps, and the
+//! requests each update makes.
 
 #![allow(
     clippy::unwrap_used,
@@ -37,9 +24,7 @@ use crate::registry_to_installed::{
     Device, author_tapp_version, registry_config, signed_entry_version, test_publisher,
 };
 
-/// What a new connection costs before its first request is read: TCP and TLS.
 const HANDSHAKE: Duration = Duration::from_millis(150);
-/// How long every request waits for its answer.
 const ROUND_TRIP: Duration = Duration::from_millis(150);
 /// Installed apps the registry offers an update for: more than are
 /// downloaded at once, so later downloads can reuse a connection.
@@ -51,16 +36,12 @@ const APPS: usize = 12;
 pub(crate) struct FarRegistry {
     objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     requests: Arc<Mutex<Vec<String>>>,
-    /// Every request, near or far, until [`Self::take_seen`].
     seen: Arc<Mutex<Vec<String>>>,
-    /// The `ETag` an object is served with, when it has one.
     etags: Arc<Mutex<HashMap<String, String>>>,
-    /// Requests answered `304 Not Modified`.
     not_modified: Arc<AtomicUsize>,
     connections: Arc<AtomicUsize>,
     open: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
-    /// Off while the fixture installs the old versions.
     far: Arc<AtomicBool>,
 }
 
@@ -93,7 +74,6 @@ impl FarRegistry {
         );
     }
 
-    /// Requests answered `304 Not Modified` so far.
     pub(crate) fn not_modified(&self) -> usize {
         self.not_modified.load(Ordering::SeqCst)
     }
@@ -169,7 +149,6 @@ impl FarRegistry {
         }
     }
 
-    /// The paths asked for since the last call.
     pub(crate) fn take_seen(&self) -> Vec<String> {
         std::mem::take(&mut *self.seen.lock().unwrap())
     }
@@ -245,7 +224,6 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
         &[("XDG_DATA_HOME", data.path())],
     );
 
-    // The device: every app installed at 1.0.0, without the far latency.
     let first = snapshot(publish(&registry, &base, "1.0.0"), &owner, None);
     registry.put("/entries", serde_json::to_vec(&first).unwrap());
     for offer in app_cli::available().apps {
@@ -253,7 +231,6 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
     }
     assert_eq!(package_store::list_installed().unwrap().len(), APPS);
 
-    // The registry now offers 2.0.0 of each, and is far away.
     let second = snapshot(publish(&registry, &base, "2.0.0"), &owner, Some(&first));
     registry.put("/entries", serde_json::to_vec(&second).unwrap());
     registry.far.store(true, Ordering::SeqCst);

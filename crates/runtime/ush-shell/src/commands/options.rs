@@ -8,7 +8,6 @@
 //! (`--max-count=`); a short one that takes a value is written bare (`-m`),
 //! the value going in the next word.
 
-/// One option a command takes, as Tab completion offers it.
 pub struct Opt {
     pub spelling: &'static str,
     pub help: &'static str,

@@ -20,6 +20,7 @@ use uuid::Uuid;
 pub use entry::{WebEntries, WebEntry};
 pub use error::LinkError;
 pub use json::{ModeJson, ResourceJson, RouteJson, ScopeJson, SpanJson, SpanUnitJson, TargetJson};
+pub use tilo_app_id::{AppId, InvalidAppId};
 
 use crate::{ResourceRef, Span, SpanUnit};
 
@@ -33,42 +34,10 @@ pub const MAX_VIEW_ID_BYTES: usize = 128;
 pub const MAX_SECRET_BYTES: usize = 4096;
 /// JavaScript's exact integer range: the page reads offsets as numbers.
 pub const MAX_SPAN_OFFSET: u64 = (1 << 53) - 1;
-const MAX_APP_ID_BYTES: usize = 255;
-/// The store's spelling of a package's primary record, written `-` in links.
+/// The store's spelling of an app's primary record, written `-` in links.
 pub(crate) const PACKAGE_PRIMARY: &str = "@tilo:package-primary";
 
-/// A package id as text (`so.tilo.chat`). Always the full id: no app gets a
-/// shorter spelling, and the dot keeps it apart from the scope tokens.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AppId(String);
-
-impl AppId {
-    /// # Errors
-    ///
-    /// [`LinkError::BadApp`] unless the id is dot-separated, non-empty parts
-    /// of ASCII letters, digits, `-` and `_`.
-    pub fn new(id: impl Into<String>) -> Result<Self, LinkError> {
-        let id = id.into();
-        let parts_ok = id.split('.').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        });
-        if parts_ok && id.contains('.') && id.len() <= MAX_APP_ID_BYTES {
-            Ok(Self(id))
-        } else {
-            Err(LinkError::BadApp)
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// The record part: the package's primary record, or a prefixed record id.
+/// The record part: the app's primary record, or a prefixed record id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordSegment {
     Primary,
@@ -117,8 +86,15 @@ pub struct HostOrigin {
     authority_at: usize,
 }
 
+/// Whether `host` is this computer: `localhost`, a name under it (which a
+/// browser resolves to loopback itself), a `127.x` address or `[::1]`.
 fn is_loopback(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    host == "localhost"
+        || host == "[::1]"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn split_authority(authority: &str) -> Result<(&str, Option<&str>), LinkError> {
@@ -476,7 +452,7 @@ impl LinkTarget {
             .strip_prefix("record:")
             .ok_or(LinkError::BadProvider)?;
         let (app, record) = rest.split_once(':').ok_or(LinkError::BadProvider)?;
-        Ok((AppId::new(app)?, RecordSegment::new(record)?))
+        Ok((AppId::parse(app)?, RecordSegment::new(record)?))
     }
 
     /// The structural rules a target must meet to be written.
@@ -718,9 +694,9 @@ mod tests {
 
     #[test]
     fn ids_have_one_spelling() {
-        assert!(AppId::new("so.tilo.chat").is_ok());
-        assert!(AppId::new("chat").is_err(), "an app id always has a dot");
-        assert!(AppId::new("so..chat").is_err());
+        assert!(AppId::parse("so.tilo.chat").is_ok());
+        assert!(AppId::parse("chat").is_err(), "an app id always has a dot");
+        assert!(AppId::parse("so..chat").is_err());
         assert_eq!(
             RecordSegment::new("@tilo:package-primary").unwrap(),
             RecordSegment::Primary
@@ -730,7 +706,10 @@ mod tests {
         assert!(RecordSegment::new(":x").is_err());
         assert_eq!(
             LinkTarget::from_provider("record:so.tilo.chat:").unwrap(),
-            (AppId::new("so.tilo.chat").unwrap(), RecordSegment::Primary)
+            (
+                AppId::parse("so.tilo.chat").unwrap(),
+                RecordSegment::Primary
+            )
         );
         assert_eq!(
             LinkTarget::from_provider("record:so.tilo.notes:uuid:1")
@@ -757,6 +736,18 @@ mod tests {
         assert_eq!(
             HostOrigin::from_authority("[::1]:8080").unwrap().as_str(),
             "http://[::1]:8080"
+        );
+        assert_eq!(
+            HostOrigin::from_authority("tilo.localhost:24120")
+                .unwrap()
+                .as_str(),
+            "http://tilo.localhost:24120",
+            "a name under localhost is this computer, as a browser resolves it"
+        );
+        assert!(WebEntry::new("http://tilo.localhost:24120/").is_ok());
+        assert!(
+            HostOrigin::new("http://localhost.tilo.so").is_err(),
+            "a name that only starts like this computer's leaves it"
         );
         assert!(
             HostOrigin::from_authority("tilo.so:443").is_err(),
@@ -795,7 +786,7 @@ mod tests {
         if let Scope::Room { slug, .. } = &mut target.scope {
             *slug = Slug::from_name("Reading Group");
         }
-        target.app = Some(AppId::new("so.tilo.word-processor").unwrap());
+        target.app = Some(AppId::parse("so.tilo.word-processor").unwrap());
         target.record =
             Some(RecordSegment::new("uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f").unwrap());
         target.resource = Some(ResourceAddress {
@@ -814,7 +805,7 @@ mod tests {
         assert_eq!(link.to_native().unwrap(), format!("tilo://open#{route}"));
 
         let calculator = LinkTarget {
-            app: Some(AppId::new("so.tilo.calculator").unwrap()),
+            app: Some(AppId::parse("so.tilo.calculator").unwrap()),
             ..LinkTarget::new(Scope::Own)
         };
         assert_eq!(
@@ -896,7 +887,7 @@ mod tests {
         );
         let ordered = plain(Mode::Desktop, {
             let mut target = LinkTarget::new(workspace("https://tilo.so"));
-            target.app = Some(AppId::new("so.tilo.chat").unwrap());
+            target.app = Some(AppId::parse("so.tilo.chat").unwrap());
             target.record = Some(RecordSegment::Primary);
             target.discuss = Some(Slug::parse("a-post").unwrap());
             target.view = Some("thread".into());
@@ -920,7 +911,7 @@ mod tests {
         let mut target = LinkTarget::new(Scope::Own);
         target.record = Some(RecordSegment::Primary);
         assert_eq!(target.check().unwrap_err().code(), "incomplete");
-        target.app = Some(AppId::new("so.tilo.chat").unwrap());
+        target.app = Some(AppId::parse("so.tilo.chat").unwrap());
         target.resource = Some(ResourceAddress {
             kind: "k".repeat(129),
             id: "x".into(),
@@ -938,7 +929,7 @@ mod tests {
         let link = Link {
             mode: Mode::App,
             target: LinkTarget {
-                app: Some(AppId::new("so.tilo.chat").unwrap()),
+                app: Some(AppId::parse("so.tilo.chat").unwrap()),
                 ..LinkTarget::new(Scope::Own)
             },
             secrets: LinkSecrets {

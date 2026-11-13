@@ -1,39 +1,29 @@
-//! Tracked changes ⇄ ODF `text:tracked-changes`. ODF declares every change up front as a
-//! `<text:changed-region xml:id="…">` (holding `<text:insertion>`/`<text:deletion>` +
-//! `<office:change-info>` author/date), then the body wraps the affected range in
-//! matching `<text:change-start>`/`<text:change-end>` markers (or a single empty
-//! `<text:change>` for a point change) referencing it by id.
+//! Tracked changes and ODF's `text:tracked-changes`.
 //!
-//! This maps onto an `ins`/`del` mark over the body range plus the change's
-//! author/date/kind in the `changes` container. qdoc *retains* deleted text in the body
-//! (struck, not removed) while ODF moves it into the changed-region's `text:deletion` and
-//! leaves a point `text:change` in the body: import splices the deleted text back in at the
-//! marker under a `del` mark, and export moves it out again (see `move_deletions_out`).
+//! ODF declares every change up front as a `<text:changed-region xml:id="…">` holding an insertion
+//! or deletion plus its author and date, and wraps the affected range in matching
+//! `<text:change-start>`/`<text:change-end>` markers. This maps onto an `ins`/`del` mark over the
+//! body range with the change's author, date and kind in the `changes` container; import splices
+//! ODF's deleted text back in at the marker under a `del` mark, and export moves it out again.
 
 use crate::xml_escape::{escape_attr, escape_text};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use tilo_doc::document::MarkSpan;
 use tilo_doc::schema::{FIELD_PLACEHOLDER, MARK_DEL};
 use tilo_doc::snapshot::{ChangeKind, ChangeView, DocSnapshot};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
-/// One imported changed-region: the ODF `xml:id`, change kind, and author/date.
 pub(super) struct ImportedChange {
     pub xml_id: String,
     pub kind: ChangeKind,
     pub author: String,
     pub date: String,
-    /// A deletion's deleted text (its paragraphs joined by `\n`).
     pub deleted: String,
 }
 
-/// Parse a `<text:tracked-changes>` block into its changed-region declarations. The body
-/// parser later wires each change-start/-end/change marker (by `xml:id`) onto these.
 pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
     let mut out = Vec::new();
     let mut reader = Reader::from_str(raw);
@@ -43,7 +33,6 @@ pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
     let mut date = String::new();
     let mut collecting: Option<bool> = None; // Some(true)=dc:creator, Some(false)=dc:date
     let mut deleted = String::new();
-    // Inside a `text:deletion`'s paragraphs, and how many of them have started.
     let mut in_deleted_para = false;
     let mut deleted_paras = 0usize;
     while let Ok(ev) = reader.read_event() {
@@ -137,7 +126,6 @@ pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
     out
 }
 
-/// Read the `text:change-id` (or `text:id`) attribute of a change marker.
 pub(super) fn marker_change_id(e: &quick_xml::events::BytesStart) -> Option<String> {
     e.attributes()
         .flatten()
@@ -178,7 +166,6 @@ pub(super) fn render_tracked_changes(
     out
 }
 
-/// The `<office:change-info>` (author + optional date) for a change.
 fn render_change_info(c: &ChangeView) -> String {
     let date = if c.date.is_empty() {
         String::new()
@@ -191,8 +178,6 @@ fn render_change_info(c: &ChangeView) -> String {
     )
 }
 
-/// The body to write (with deleted text moved out, see [`move_deletions_out`]) and the
-/// `<text:tracked-changes>` block declaring every change.
 pub(super) fn split_tracked_changes(snap: &DocSnapshot) -> (Cow<'_, DocSnapshot>, String) {
     match move_deletions_out(snap) {
         Some((body, deleted)) => {
@@ -236,8 +221,6 @@ pub(super) fn move_deletions_out(
         let chars: Vec<char> = b.text.chars().collect();
         let mut text = String::new();
         let mut at = 0usize;
-        // (old start, old end, replaced by a placeholder) of each removed range, to move the
-        // other marks with the text.
         let mut removed: Vec<(usize, usize, bool)> = Vec::new();
         let mut atoms: Vec<(usize, String)> = Vec::new();
         for (start, end, id) in ranges {
@@ -259,8 +242,6 @@ pub(super) fn move_deletions_out(
             at = end;
         }
         text.extend(chars.get(at..).unwrap_or_default());
-        // A position after a removed range moves back by what the range lost; one inside it
-        // moves to where the range starts now.
         let shift = |p: usize| -> usize {
             let mut lost = 0usize;
             for (s, e, placeholder) in &removed {
@@ -301,12 +282,10 @@ pub(super) fn move_deletions_out(
     Some((out, deleted))
 }
 
-/// The point `<text:change>` marker standing for a deletion in the body.
 fn render_change_point(id: &str) -> String {
     format!(r#"<text:change text:change-id="{}"/>"#, escape_attr(id))
 }
 
-/// The `<text:change-start>` marker opening a change's range in the body.
 pub(super) fn render_change_start(id: &str) -> String {
     format!(
         r#"<text:change-start text:change-id="{}"/>"#,
@@ -314,7 +293,6 @@ pub(super) fn render_change_start(id: &str) -> String {
     )
 }
 
-/// The `<text:change-end>` marker closing a change's range in the body.
 pub(super) fn render_change_end(id: &str) -> String {
     format!(r#"<text:change-end text:change-id="{}"/>"#, escape_attr(id))
 }

@@ -135,7 +135,8 @@ async fn connect_and_subscribe(
                 env,
                 Envelope::Ready {
                     workspace_id: w,
-                    pending_deltas: 0
+                    pending_deltas: 0,
+                    records_when_opened: false,
                 } if w == ws
             ),
             "{who} expected Ready(WS,0), got {env:?}"
@@ -191,6 +192,7 @@ async fn reconnect_b_and_catch_up(
             Envelope::Ready {
                 workspace_id: w,
                 pending_deltas,
+                records_when_opened: false,
             } if w == ws && pending_deltas >= 1
         ),
         "B expected Ready(WS) counting its catch-up replay, got {ready:?}"

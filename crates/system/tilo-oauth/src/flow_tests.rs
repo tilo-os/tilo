@@ -217,7 +217,6 @@ fn registered_ports_are_taken_in_order_and_the_code_can_be_pasted_when_all_are_b
     );
     drop(authorization);
 
-    // Every registered port busy: the provider displays the code instead.
     let busy = Registration {
         redirect_ports: RedirectPorts::Registered(vec![first_port]),
         ..registration

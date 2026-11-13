@@ -7,13 +7,8 @@
 //! and light** at 1× on the theme's own background, with the harness's
 //! inspection snapshot beside each PNG — the pair the 1× review batch reads:
 //! the picture for the eye, the rects for a geometry (overlap / touching) audit.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_harness [OUT_DIR]`
-//! Out:  `$GALLERY_HARNESS_OUT` or the first argument (default
-//!       `/tmp/gallery_harness`) — `gallery-dark.png`, `gallery-light.png`,
-//!       `gallery-dark.inspection.json`, `gallery-light.inspection.json`.
 //! Scale: `TILO_SHOTS_TEXT_SCALE=2` renders the large-text variant (the same
-//! switch every other capture honours).
 
 use std::path::PathBuf;
 

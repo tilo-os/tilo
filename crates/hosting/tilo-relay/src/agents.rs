@@ -32,7 +32,9 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::workspace_actions::{ShellRan, WorkspaceMember, WorkspaceShell};
+use tilo_agent_participant::workspace_actions::{
+    ShellRan, Watching, WorkspaceMember, WorkspaceShell,
+};
 use tilo_agent_participant::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
@@ -48,6 +50,7 @@ use tilo_user_identity::{
 use crate::certification::CertificationProtocol;
 use crate::daemon::{Relay, RelayError, RelayIdentity};
 use crate::peer::AgentRegistry;
+use tilo_content::WorkspaceStores;
 use tilo_lock::RwLockRecover as _;
 
 /// How long an agent's approval request waits for an approver.
@@ -111,16 +114,7 @@ impl AgentHostLink for RelayAgentLink {
             user_public_key: self.user_public_key,
             device_public_key: key.verifying_key().to_bytes(),
             device_label: format!("Agent: {}", proposal.label),
-            requested: DeviceCapabilities {
-                can_own_workspaces: false,
-                can_admit_devices: false,
-                can_act_as_host: false,
-                can_read_all_workspaces: false,
-                foreign: false,
-                can_administer_devices: false,
-                agent: None,
-                stand_in: false,
-            },
+            requested: DeviceCapabilities::nothing(),
             nonce,
             invite: [0; 16],
             issued_at_ns: now,
@@ -168,6 +162,11 @@ impl AgentHostLink for RelayAgentLink {
             workspaces.reconcile_agent(device, Some(&cert)).await;
             done();
         });
+    }
+
+    fn workspace_name(&self, workspace: u64) -> Option<String> {
+        self.runtime
+            .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
     }
 
     fn witness(&self, delegation: &Delegation) -> Option<Witness> {
@@ -241,6 +240,7 @@ impl RelayWitness {
                 .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
             workspace: workspace.to_owned(),
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+            ..PendingConfirmation::default()
         })
     }
 }
@@ -293,7 +293,7 @@ impl ActionHost for RelayWitness {
                     Confirmation::Witnessed(token),
                 )),
                 Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
-                Err(_) => Err(ActionHostError::ConfirmationRequired),
+                Err(_) => Err(ActionHostError::confirmation_required()),
             });
         });
         answer
@@ -316,6 +316,10 @@ pub struct AgentOptions {
     /// host ([`host_shells`]); `None` leaves them to the devices running
     /// them.
     pub shell: Option<Arc<HostShells>>,
+    /// The Browser this host places for its workspaces
+    /// ([`crate::hosted_browser::HostedBrowsers`]); `None` places none, and
+    /// opening Browser in a hosted workspace is refused in words that say so.
+    pub browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 }
 
 /// The shells of the workspaces this host serves.
@@ -333,7 +337,7 @@ pub struct AgentOptions {
 /// A placer is named, but its members or account are not usable.
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     Ok(Arc::new(
-        match crate::placed_shells::PlacedShells::from_env()? {
+        match crate::placed_shells::PlacedShells::shared_from_env()? {
             Some(placed) => HostShells::Placed(placed),
             None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
         },
@@ -341,15 +345,20 @@ pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
 }
 
 /// What a host lends its workspaces' records service: a model that looks
-/// over feedback reviews, and where Terminal sessions run their commands.
-type Lent = (Option<Arc<dyn FeedbackReviewer>>, Option<Arc<HostShells>>);
+/// over feedback reviews, where Terminal sessions run their commands, and the
+/// Browser it places.
+type Lent = (
+    Option<Arc<dyn FeedbackReviewer>>,
+    Option<Arc<HostShells>>,
+    Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+);
 
 /// Where the workspace actions run a session's commands.
 pub enum HostShells {
     /// Here: ush's workspace shells, in this process.
     Here(ush::workspace_shell::WorkspaceShells),
     /// On the member device holding the workspace's VM.
-    Placed(crate::placed_shells::PlacedShells),
+    Placed(Arc<crate::placed_shells::PlacedShells>),
 }
 
 impl HostShells {
@@ -368,13 +377,24 @@ impl WorkspaceShell for HostShells {
         session: &str,
         command: &str,
         agent: bool,
+        watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let shells = match self {
             Self::Here(shells) => shells,
-            Self::Placed(placed) => return placed.run(workspace, session, command, agent),
+            Self::Placed(placed) => {
+                return placed.run(workspace, session, command, agent, watching);
+            }
         };
         let ran = shells
-            .run(workspace, session, command, agent)
+            .run_for(
+                workspace,
+                session,
+                command,
+                agent,
+                None,
+                watching.stop,
+                watching.seen,
+            )
             .map_err(|error| error.to_string())?;
         Ok(ShellRan {
             command: ran.command,
@@ -382,6 +402,7 @@ impl WorkspaceShell for HostShells {
             exit: ran.exit,
             output: ran.output,
             truncated: ran.truncated,
+            cancelled: ran.cancelled,
             started_ms: ran.started_ms,
             ended_ms: ran.ended_ms,
             refusal: ran.refusal,
@@ -389,13 +410,24 @@ impl WorkspaceShell for HostShells {
     }
 }
 
-/// The host's app-serving plane: agents and the workspaces' page actions.
-struct HostActionsPlane(HostActions);
+/// The host's app-serving plane: agents and the workspaces' page actions,
+/// keeping what they make in the host's content.
+struct HostActionsPlane {
+    host: HostActions,
+    stores: Arc<WorkspaceStores>,
+    /// The Browser this host places for its workspaces, when it places one.
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+}
 
 /// The app-serving plane of a host that runs no agents: the workspaces' page
 /// actions alone. A member's own actions on a workspace record (linking their
 /// account on the workspace's Discord from the profile card) need nothing more.
-struct WorkspaceRecordsPlane(WorkspaceActions);
+struct WorkspaceRecordsPlane {
+    actions: WorkspaceActions,
+    stores: Arc<WorkspaceStores>,
+    /// The Browser this host places for its workspaces, when it places one.
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+}
 
 impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn serve(
@@ -416,7 +448,61 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         if agents {
             return None;
         }
-        self.0.serve(workspace_id, caller, message)
+        serve_with_browser(
+            self.browsers.as_ref(),
+            workspace_id,
+            caller,
+            message,
+            |message| self.actions.serve(workspace_id, caller, message),
+        )
+    }
+
+    fn route(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.browsers.as_ref()?.route(workspace_id, caller, message)
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.browsers
+            .as_ref()?
+            .route_certified(workspace_id, caller, certificate, message)
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::RemoteActionMessage> {
+        self.browsers.as_ref()?.relayed(workspace_id, from, message)
+    }
+
+    fn tracks(&self, workspace_id: u64) -> bool {
+        self.browsers
+            .as_ref()
+            .is_some_and(|browsers| browsers.tracks(workspace_id))
+    }
+
+    fn content(&self) -> Option<Arc<WorkspaceStores>> {
+        Some(Arc::clone(&self.stores))
+    }
+
+    fn forget_workspace(&self, workspace_id: u64) {
+        self.actions.forget_workspace(workspace_id);
+    }
+
+    fn run_arrived(&self, workspace_id: u64, caller: &tilo_actions::remote::Caller) {
+        self.actions.run_arrived(workspace_id, caller);
     }
 }
 
@@ -427,8 +513,129 @@ impl crate::AppServingPlane for HostActionsPlane {
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
-        self.0.serve(workspace_id, caller, message)
+        serve_with_browser(
+            self.browsers.as_ref(),
+            workspace_id,
+            caller,
+            message,
+            |message| self.host.serve(workspace_id, caller, message),
+        )
     }
+
+    fn route(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.browsers.as_ref()?.route(workspace_id, caller, message)
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.browsers
+            .as_ref()?
+            .route_certified(workspace_id, caller, certificate, message)
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::RemoteActionMessage> {
+        self.browsers.as_ref()?.relayed(workspace_id, from, message)
+    }
+
+    fn tracks(&self, workspace_id: u64) -> bool {
+        self.browsers
+            .as_ref()
+            .is_some_and(|browsers| browsers.tracks(workspace_id))
+    }
+
+    fn content(&self) -> Option<Arc<WorkspaceStores>> {
+        Some(Arc::clone(&self.stores))
+    }
+
+    fn forget_workspace(&self, workspace_id: u64) {
+        self.host.actions.forget_workspace(workspace_id);
+    }
+
+    fn run_arrived(&self, workspace_id: u64, caller: &tilo_actions::remote::Caller) {
+        self.host.actions.run_arrived(workspace_id, caller);
+    }
+}
+
+/// Serve a workspace's message, placing its Browser after an answered
+/// `app.so.tilo.browser#open`: the open answers once the window is live, and
+/// a Browser this host cannot place is refused in words that say so rather
+/// than as an app it does not know.
+fn serve_with_browser(
+    browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
+    workspace_id: u64,
+    _caller: &tilo_actions::remote::Caller,
+    message: tilo_actions::remote::RemoteActionMessage,
+    serve: impl FnOnce(
+        tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>>,
+) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
+    use tilo_actions::remote::RemoteActionMessage;
+    // A Linux app opens in the workspace's VM the way Browser does: the open
+    // makes its record, and the app is started in the workspace's apps
+    // session on it.
+    if let RemoteActionMessage::Invoke(request) = &message
+        && let Some(launch) = crate::hosted_browser::opens_linux_app(request)
+    {
+        let invocation = request.invocation;
+        let launch = match (launch, browsers) {
+            (Ok(launch), Some(_)) => launch,
+            (Err(reason), _) => {
+                return Some(Pending::ready(crate::hosted_browser::refused(
+                    invocation, reason,
+                )));
+            }
+            (Ok(_), None) => {
+                return Some(Pending::ready(crate::hosted_browser::refused(
+                    invocation,
+                    crate::hosted_browser::unplaced_linux_apps(),
+                )));
+            }
+        };
+        let browsers = Arc::clone(browsers?);
+        return Some(serve(message)?.map(move |message| {
+            crate::hosted_browser::placed_linux_app(
+                &browsers,
+                workspace_id,
+                invocation,
+                &launch,
+                message,
+            )
+        }));
+    }
+    let opens = match &message {
+        RemoteActionMessage::Invoke(request) if crate::hosted_browser::opens_browser(request) => {
+            Some(request.invocation)
+        }
+        _ => None,
+    };
+    let Some(invocation) = opens else {
+        return serve(message);
+    };
+    let Some(browsers) = browsers else {
+        return Some(Pending::ready(crate::hosted_browser::refused(
+            invocation,
+            crate::hosted_browser::unplaced(),
+        )));
+    };
+    let browsers = Arc::clone(browsers);
+    Some(serve(message)?.map(move |message| {
+        crate::hosted_browser::placed(&browsers, workspace_id, invocation, message)
+    }))
 }
 
 /// The relay's own device, as the workspace actions service joins its workspaces.
@@ -440,9 +647,71 @@ struct RelayRecordsLink {
     web_entry: Option<String>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<dyn WorkspaceShell>>,
+    stores: Arc<WorkspaceStores>,
+    /// Where a person is asked about an action run for them.
+    certification: CertificationProtocol,
 }
 
 impl WorkspaceRecordsLink for RelayRecordsLink {
+    /// On the approving devices of the person `caller` is or acts for: the
+    /// host's own person's, or a member's own root, as their device requests
+    /// are answered.
+    fn ask_person(
+        &self,
+        _workspace: u64,
+        caller: &Caller,
+        question: tilo_actions::remote::ConfirmationQuestion,
+    ) -> Option<Pending<Result<tilo_actions::remote::ConfirmationReply, ActionHostError>>> {
+        let person = *caller.user_public_key()?;
+        let agent_id = match caller.principal() {
+            CallerPrincipal::Agent(agent) => agent.clone(),
+            _ => String::new(),
+        };
+        let pending = PendingConfirmation {
+            id: question.id,
+            agent_id,
+            agent_label: question.device_label,
+            run: question.run,
+            action_label: question.action_label,
+            resource_label: question.resource_label,
+            arguments: question.arguments,
+            risk: question.risk,
+            kind: question.kind,
+            undoable: question.undoable,
+            workspace: question.workspace,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+            page: None,
+        };
+        let (completer, answer) = tilo_actions::remote::pending();
+        let certification = self.certification.clone();
+        let workspaces = self.workspaces.clone();
+        self.member.runtime.spawn(async move {
+            let mut pending = pending;
+            // The person reads the workspace by its name, not its id.
+            if let Some(workspaces) = workspaces
+                && let Ok(summary) = workspaces.summary(&pending.workspace).await
+            {
+                pending.workspace = summary.name;
+            }
+            completer.complete(match certification.confirm_for(person, pending).await {
+                Ok(ConfirmationAnswer::AllowOnce) => {
+                    Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
+                }
+                Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
+                Err(_) => Err(ActionHostError::confirmation_required()),
+            });
+        });
+        Some(answer)
+    }
+
+    fn workspace_content(&self, workspace: u64) -> Option<tilo_content::ContentStore> {
+        let identity = self
+            .member
+            .runtime
+            .block_on(self.workspaces.as_ref()?.workspace_identity(workspace))?;
+        self.stores.get(&identity).ok()
+    }
+
     fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
         self.feedback_reviewer.clone()
     }
@@ -459,6 +728,20 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         self.member.clone()
     }
 
+    fn workspace_name(&self, workspace: u64) -> Option<String> {
+        self.member
+            .runtime
+            .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
+    }
+
+    fn admits(&self, workspace: u64, caller: &tilo_actions::remote::Caller) -> bool {
+        self.workspaces.as_ref().is_some_and(|workspaces| {
+            self.member
+                .runtime
+                .block_on(workspaces.admits(workspace, caller))
+        })
+    }
+
     fn view_read_policy(
         &self,
         workspace: u64,
@@ -470,6 +753,18 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
             self.workspaces
                 .as_ref()?
                 .resource_view_policy(workspace, caller, app, record),
+        )
+    }
+
+    fn workspace_policy(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
+        self.member.runtime.block_on(
+            self.workspaces
+                .as_ref()?
+                .workspace_policy(workspace, caller),
         )
     }
 
@@ -491,10 +786,15 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
-    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
         self.member
             .runtime
             .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))
+    }
+
+    fn records(&self, channel: &str) -> Option<Vec<(String, String)>> {
+        let workspaces = self.workspaces.as_ref()?;
+        self.member.runtime.block_on(workspaces.records(channel))
     }
 
     fn view_locator(
@@ -532,6 +832,25 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
     }
 }
 
+/// The apps this host's workspaces offer: `catalogue` (this machine's
+/// registry when `None`), and Browser and the workspace's Linux apps when
+/// this host places their windows
+/// ([`HostedBrowsers`](crate::hosted_browser::HostedBrowsers)). A workspace
+/// lists Browser and opens a record for it like any app, though no worker of
+/// this host mounts it: the window runs in the workspace's VM.
+fn app_catalogue(
+    catalogue: Option<CatalogueFactory>,
+    browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
+) -> CatalogueFactory {
+    let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    if browsers.is_none() {
+        return catalogue;
+    }
+    let placed = crate::hosted_browser::placed_app();
+    let linux = crate::hosted_browser::placed_linux_apps();
+    Arc::new(move || catalogue().placing(placed).placing(linux))
+}
+
 /// Start `cfg`'s relay serving its workspaces' records to pages, without agents:
 /// the host mounts a record of an app in `catalogue` (this machine's
 /// registry when `None`) and runs an action on it for whoever the workspace's
@@ -546,19 +865,24 @@ pub async fn start_serving_records(
     catalogue: Option<CatalogueFactory>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
+    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<Relay, RelayError> {
     let host_cert = identity.device_cert.clone();
-    let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
-    let plane = Arc::new(WorkspaceRecordsPlane(WorkspaceActions::new(catalogue)));
+    let plane = Arc::new(WorkspaceRecordsPlane {
+        actions: WorkspaceActions::new(catalogue),
+        stores: crate::content::stores(&cfg.state_root),
+        browsers: browsers.clone(),
+    });
     let web_entry = cfg.web_entry.clone();
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
     attach_records(
-        &plane.0,
+        &plane.actions,
         &relay,
         &host_cert,
         web_entry,
-        (feedback_reviewer, shell),
+        (feedback_reviewer, shell, browsers),
     )?;
     Ok(relay)
 }
@@ -569,10 +893,40 @@ fn attach_records(
     relay: &Relay,
     host_cert: &DeviceCert,
     web_entry: Option<String>,
-    (feedback_reviewer, shell): Lent,
+    (feedback_reviewer, shell, browsers): Lent,
 ) -> Result<(), RelayError> {
     if let Some(shell) = &shell {
         shell.serve_from(relay);
+    }
+    if let Some(browsers) = &browsers {
+        // A session in a workspace's VM joins as a device of the person's,
+        // which a stand-in certifies: the one this host keeps for them, else
+        // a host that is itself one.
+        let user = relay.workspace_records().user_public_key();
+        let (key, cert) = relay.stand_in(&user).unwrap_or_else(|| {
+            (
+                relay.workspace_records().signing_key().clone(),
+                host_cert.clone(),
+            )
+        });
+        browsers.serve_from(crate::hosted_browser::Authority {
+            user_public_key: user,
+            cert,
+            key,
+            // The sessions in the environments dial this host from a machine
+            // that reaches the public internet and nothing of this network:
+            // the address they are given is the public one.
+            relay: crate::hosted_browser::relay_address().map_err(RelayError::Identity)?,
+            workspaces: relay.workspaces().cloned(),
+            environments: relay.web_context().relay.environments.clone(),
+            runtime: tokio::runtime::Handle::current(),
+            certification: relay.confirmations(),
+            hand: relay.hand(),
+        });
+        // The VM hosts start the sessions when this host's own device asks.
+        if let Some(workspaces) = relay.workspaces() {
+            browsers.ask_from(workspaces.plane(), relay.endpoint());
+        }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
     actions
@@ -583,6 +937,8 @@ fn attach_records(
             browser_origin: Arc::clone(&relay.browser_origin),
             web_entry,
             feedback_reviewer,
+            stores: relay.content(),
+            certification: relay.web_context().certification.clone(),
             member: WorkspaceMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.workspace_records().signing_key().clone(),
@@ -623,20 +979,23 @@ async fn start_inner(
     relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Relay, AgentHost), RelayError> {
     let host_cert = identity.device_cert.clone();
-    let catalogue = options
-        .catalogue
-        .unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
+    let content = crate::content::stores(&cfg.state_root);
     let mut agents = AgentHost::new(
         identity.user_public_key,
-        options.state_dir,
+        (options.state_dir, Arc::clone(&content)),
         options.model,
         Arc::clone(&catalogue),
     );
     cfg.services.app_serving = true;
-    let plane = Arc::new(HostActionsPlane(HostActions {
-        supervisor: SupervisorHost(agents.supervisor().clone()),
-        actions: WorkspaceActions::new(catalogue),
-    }));
+    let plane = Arc::new(HostActionsPlane {
+        host: HostActions {
+            supervisor: SupervisorHost(agents.supervisor().clone()),
+            actions: WorkspaceActions::new(catalogue),
+        },
+        stores: content,
+        browsers: options.browsers.clone(),
+    });
     let web_entry = cfg.web_entry.clone();
     let relay = match relay_mode {
         Some(mode) => {
@@ -646,12 +1005,13 @@ async fn start_inner(
         None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
     };
     attach_records(
-        &plane.0.actions,
+        &plane.host.actions,
         &relay,
         &host_cert,
         web_entry,
-        (options.feedback_reviewer, options.shell),
+        (options.feedback_reviewer, options.shell, options.browsers),
     )?;
+    drop(plane);
     agents
         .start(
             HostEndpoint::iroh(relay.node_addr(), host_cert),

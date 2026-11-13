@@ -1,14 +1,6 @@
-//! What this device does about its route through another of the person's
-//! devices, decided without doing it: the session's driver dials, asks
-//! the helper and waits, and asks here what each outcome means.
-//!
-//! The kill switch is the one subtle part. Once the tunnel has been up, the
-//! helper's link (routes, and the kill switch's block of everything else)
-//! stays while the tunnel is down and the person still wants it, so with the
-//! kill switch on nothing leaves directly; without it the link goes, and
-//! traffic goes out as usual until the tunnel is back. The person turning
-//! the route off, or the other device stopping it, always takes the link
-//! away.
+//! What this device does about its route through another of the person's devices:
+//! the session's driver dials, asks the helper and waits here, and this says what
+//! each outcome means.
 
 use std::time::Duration;
 
@@ -17,13 +9,11 @@ use crate::protocol::{Carrier, ClientLink, Routes as LinkRoutes};
 use crate::tunnel::{ClientError, Ended, Offer, Refusal};
 use settings_store::device_vpn::{ClientState, Refusal as ShownRefusal, Routes, Through};
 
-/// The longest wait between two attempts to reach the other device.
 pub const MAX_RETRY: Duration = Duration::from_secs(60);
 /// The wait after the other device said no for a reason that may change by
 /// itself (its switch, its room for devices).
 pub const REFUSED_RETRY: Duration = Duration::from_secs(30);
 
-/// The route the person wants, as the driver follows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Want {
     pub device: [u8; 32],
@@ -33,7 +23,6 @@ pub struct Want {
 }
 
 impl Want {
-    /// The route `through` names, if it names a device by a well-formed id.
     pub fn of(through: &Through) -> Option<Self> {
         let mut device = [0_u8; 32];
         hex::decode_to_slice(through.device.trim(), &mut device).ok()?;
@@ -46,17 +35,13 @@ impl Want {
     }
 }
 
-/// What to do once a tunnel ended or could not be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AfterEnd {
     /// Keep the helper's link: with the kill switch, it blocks traffic until
     /// the tunnel is back.
     pub keep_link: bool,
-    /// Clear the person's choice: the other device stopped this one.
     pub clear_through: bool,
-    /// Try again after this long; `None` waits for the person.
     pub retry: Option<Duration>,
-    /// What Settings shows meanwhile.
     pub state: ClientState,
 }
 
@@ -67,11 +52,9 @@ pub fn backoff(attempt: u32) -> Duration {
     Duration::from_secs(1_u64 << doublings).min(MAX_RETRY)
 }
 
-/// What a refusal from the other device means for this one.
 fn after_refusal(refusal: Refusal, link_held: bool, kill_switch: bool) -> AfterEnd {
     let blocking = link_held && kill_switch;
     let shown = match refusal {
-        // The person stopped this device from the other one: stop here too.
         Refusal::Stopped => {
             return AfterEnd {
                 keep_link: false,
@@ -154,9 +137,9 @@ pub fn after_failed_dial(
     }
 }
 
-/// Whether a held link must go when the person's choice becomes `want`:
-/// when they turned the route off, or chose another device. A change of
-/// routes, DNS or kill switch replaces the link when the tunnel is next up.
+/// Whether a held link must go when the person's choice becomes `want`: they turned
+/// the route off or chose another device. A change of routes, DNS or kill switch
+/// replaces the link when the tunnel is next up.
 pub fn link_must_go(held_for: Option<&Want>, want: Option<&Want>) -> bool {
     match (held_for, want) {
         (None, _) => false,
@@ -238,7 +221,6 @@ mod tests {
         assert!(after.keep_link);
         assert_eq!(after.state, ClientState::Reconnecting { blocking: true });
         assert_eq!(after.retry, Some(Duration::from_secs(4)));
-        // Before the tunnel was ever up there is no link to keep.
         let first = after_failed_dial(&unreachable, false, true, 1);
         assert!(!first.keep_link);
         assert_eq!(first.state, ClientState::Connecting);

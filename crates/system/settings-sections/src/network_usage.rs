@@ -243,7 +243,7 @@ impl ui::storage::SettingsSchema for NetworkUsage {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(SECTION);
 }
 
-#[tilo_resource::resource(kind = "settings.network-usage", label = "Data usage")]
+#[tilo_resource::resource(kind = "settings.network-usage")]
 impl NetworkUsage {
     /// Count traffic totals toward their connections: what the device
     /// reported, nobody's undo step.
@@ -263,7 +263,6 @@ impl NetworkUsage {
     /// connection or every mobile one.
     #[action(
         id = "reset-data-used",
-        label = "Reset data used",
         keywords = "data usage, cellular data, mobile data counter, data plan"
     )]
     pub fn reset_data_used(
@@ -294,7 +293,6 @@ impl NetworkUsage {
     /// Forget what was counted on one connection, or on every one.
     #[action(
         id = "forget-data-used",
-        label = "Forget data usage",
         keywords = "data usage history, clear network statistics"
     )]
     pub fn forget_data_used(
@@ -334,9 +332,6 @@ pub fn local_day(at: i64, offset: i32) -> Option<NaiveDate> {
 impl NetworkUsage {
     /// Take in the totals read at `at`: what moved since the totals last
     /// read counts toward the connection on each counter, on the local day.
-    /// A total lower than the last, or from another boot, started again from
-    /// zero; a counter never read before only starts its count. Days older
-    /// than [`HORIZON_DAYS`] are let go. Whether anything changed.
     pub fn account(
         &mut self,
         readings: &[Reading],

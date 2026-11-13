@@ -38,6 +38,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{NumericStyle, OpenTypeTag, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::DrawChild;
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, FieldRole, IconWidget,
     Presentation, Row, Scrollable, SecretKind, SecretPrompt, Spacer, Text, TextInput, Widget,
@@ -315,7 +316,7 @@ impl Widget for Stack {
         presence: &PresenceCtx,
     ) {
         for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
+            child.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -2468,7 +2469,7 @@ impl Widget for GreeterApp {
             ui::auth_backdrop::draw(scene, theme, transform, output, BACKDROP_PHASE_SECONDS);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

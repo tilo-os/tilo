@@ -1,15 +1,5 @@
-//! The collapsible bottom panel: a tabbed dock for Problems and Terminal.
-//! Problems lists diagnostics — the local linter merged with whatever the
-//! language server has published (see `app.rs`). Terminal hosts a live
-//! embedded shell, spawned on first open, and shows an honest empty-state
-//! note until then (never a fabricated build log).
-//!
-//! The tabs are the toolkit's [`TabBar`], the same strip as the document
-//! tabs above it, and the diagnostics are retained [`ListRow`]s in a
-//! [`Section`] inside the toolkit's scroll view, so hover, activation, focus
-//! and scrolling are the toolkit's. The panel renders the data the app feeds
-//! it and reports what the user chose; it owns no filesystem or
-//! language-server state of its own.
+//! The collapsible bottom panel: a tabbed dock for Problems and the terminal. Problems lists
+//! diagnostics: the local linter merged with the language server's.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -19,6 +9,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
+use ui::widget::DrawChild;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{
     Container, Element, EmptyState, ListRow, Scrollable, Section, TabBar, TabDescriptor, Widget,
@@ -27,10 +18,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-/// Rows of diagnostics the panel shows before it scrolls.
 const VISIBLE_ROWS: usize = 4;
 
-/// Which dock tab is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelTab {
     Problems,
@@ -57,41 +46,31 @@ impl PanelTab {
     }
 }
 
-/// One row in the Search tab: everything the panel needs to draw a hit and
-/// nothing about where it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HitRow {
     pub rel: String,
     pub line: usize,
     pub preview: String,
-    /// Character offset and length of the match *within `preview`*, so the
-    /// highlight lands on the matched text after the preview was clipped.
     pub highlight: (usize, usize),
 }
 
-/// What the Search tab is currently showing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchState {
     pub query: String,
     pub rows: Vec<HitRow>,
-    /// True while the worker is still walking the tree.
     pub running: bool,
-    /// True when the bounded walk stopped before it covered the whole project.
     pub truncated: bool,
     pub files_scanned: usize,
 }
 
-/// Severity of a diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
-    /// A hard error (LSP severity 1).
     Error,
     Warning,
     Info,
     Hint,
 }
 
-/// One diagnostic row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,
@@ -111,40 +90,20 @@ pub struct BottomPanel {
     search: SearchState,
     tabs: TabBar,
     tabs_node: Option<NodeId>,
-    /// Set when the user picks a tab — read and cleared by the app.
     tab_changed: bool,
-    /// Set when the user closes a tab, which closes the whole panel.
     close_requested: bool,
-    /// When true, the Terminal tab's body is owned by an embedded live
-    /// `TerminalWidget` the app draws over this panel's content rect, so the
-    /// panel leaves that region blank instead of rendering the static fallback.
     has_live_terminal: bool,
-    /// Note shown in the Terminal body when no live terminal is present (the
-    /// pre-spawn invitation, or "shell unavailable" on a spawn failure).
     terminal_note: Option<String>,
-    /// What the language server is doing, when it has not finished. While this
-    /// is `Some`, an empty Problems list means "not analysed yet" rather than
-    /// "analysed and clean", and the panel must say so — see
-    /// [`BottomPanel::set_analysis`].
+    /// What the language server is still doing. While it is `Some`, an empty Problems list means "not
+    /// analysed yet" and the panel must say so ([`BottomPanel::set_analysis`]).
     analysis: Option<String>,
-    /// The diagnostics as a scrolling list of rows; `None` while there are
-    /// none.
     list: Option<Scrollable>,
     list_node: Option<NodeId>,
-    /// Whether `list` still shows older problems or search hits. The rows
-    /// are built when the panel is next laid out: a hidden panel builds
-    /// none, however often the problems change while typing.
     list_stale: bool,
-    /// The body's empty state when the tab showing has nothing else, and
-    /// what it says.
     empty: Option<((ui::icons::Icon, String), EmptyState)>,
-    /// The scroll position, kept when the list is rebuilt for new problems.
     list_offset: Rc<Cell<(f32, f32)>>,
-    /// The index of the row the user activated, read and cleared by the app.
     activated: Rc<Cell<Option<usize>>>,
-    /// The tab strip's height, cached from layout.
     strip_height: f64,
-    /// The panel's own height, from the theme at layout time.
     height: f64,
     dirty: bool,
 }
@@ -177,7 +136,6 @@ impl BottomPanel {
         panel
     }
 
-    /// A tab strip over the two dock tabs.
     fn fresh_tabs(active: PanelTab, problems: usize) -> TabBar {
         let mut tabs = TabBar::new(
             "code-panel",
@@ -188,7 +146,6 @@ impl BottomPanel {
             ],
             active.id(),
         )
-        // Two fixed views: nothing to add, and the dock closes as a whole.
         .closable(false)
         .without_new_tab();
         tabs.set_show_maximize(false);
@@ -216,14 +173,12 @@ impl BottomPanel {
         }
     }
 
-    /// The height this panel wants: its tab strip plus a few rows.
     fn wanted_height(theme: &Theme) -> f64 {
         let spacing = &theme.tokens.spacing;
         let row = f64::from(theme.tokens.metrics.min_pointer_target + spacing.s2);
         ui::widget::tabs::TAB_BAR_HEIGHT + VISIBLE_ROWS as f64 * row
     }
 
-    /// Replace the Problems list.
     pub fn set_problems(&mut self, problems: Vec<Diagnostic>) {
         if self.problems != problems {
             self.problems = problems;
@@ -237,8 +192,6 @@ impl BottomPanel {
         self.list_node = None;
     }
 
-    /// One retained row per diagnostic, in a scroll view that keeps its
-    /// position across rebuilds.
     fn rebuild_list(&mut self) {
         if self.tab == PanelTab::Search {
             let rows: Vec<Element> = self
@@ -279,7 +232,13 @@ impl BottomPanel {
             .map(|(index, d)| {
                 let activated = Rc::clone(&self.activated);
                 let row = ListRow::new(format!("problem-{index}"), d.message.clone())
-                    .meta(format!("Ln {}, Col {}", d.line, d.col))
+                    .meta(crate::resource::CATALOG.t_args(
+                        "code-editor-cursor",
+                        &[
+                            ("line", ui::i18n::ArgValue::Number(d.line as f64)),
+                            ("column", ui::i18n::ArgValue::Number(d.col as f64)),
+                        ],
+                    ))
                     .on_view(move || activated.set(Some(index)));
                 let row = match d.severity {
                     Severity::Error => row.icon(ui::icons::Icon::Ban).error(),
@@ -293,8 +252,6 @@ impl BottomPanel {
             Scrollable::new_vertical()
                 .fill_parent_height()
                 .with_persisted_offset(Rc::clone(&self.list_offset))
-                // The panel body's padding, so rows stand off the panel's
-                // edges like every list in a page.
                 .with_child(Box::new(
                     Container::new()
                         .with_inset(Rhythm::Section)
@@ -303,8 +260,6 @@ impl BottomPanel {
         );
     }
 
-    /// The (line, column) of the diagnostic the user activated, once. Both are
-    /// 1-based, as listed.
     pub fn take_jump(&self) -> Option<(usize, usize)> {
         if self.tab != PanelTab::Problems {
             return None;
@@ -313,41 +268,31 @@ impl BottomPanel {
         self.problems.get(index).map(|d| (d.line, d.col))
     }
 
-    /// Say what the language server is still doing, or `None` once it has
-    /// answered.
+    /// Say what the language server is still doing, or `None` once it has answered.
     ///
-    /// This exists because "No problems detected in the workspace." is a claim,
-    /// and for the first seconds — or, on a cold crate graph this size, the
-    /// first minutes — it is not a true one: nothing has been analysed. An
-    /// editor that asserts a clean bill of health before it has looked is worse
-    /// than one that looks broken, because the user believes it.
+    /// "No problems detected" is a claim, and before the server answers it is not a true one.
     pub fn set_analysis(&mut self, note: Option<String>) {
         if self.analysis != note {
             self.analysis = note;
         }
     }
 
-    /// Mark whether a live embedded terminal owns the Terminal tab body.
     pub fn set_has_live_terminal(&mut self, live: bool) {
         if self.has_live_terminal != live {
             self.has_live_terminal = live;
         }
     }
 
-    /// Set (or clear) the note shown when there is no live terminal.
     pub fn set_terminal_note(&mut self, note: Option<String>) {
         if self.terminal_note != note {
             self.terminal_note = note;
         }
     }
 
-    /// The currently-visible dock tab.
     pub fn active_tab(&self) -> PanelTab {
         self.tab
     }
 
-    /// The body below the tab strip — where the embedded terminal is placed
-    /// and drawn.
     pub fn content_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0,
@@ -361,14 +306,12 @@ impl BottomPanel {
         self.problems.len()
     }
 
-    /// What the panel is saying in place of "no problems", if anything.
     #[cfg(test)]
     pub fn analysis(&self) -> Option<&str> {
         self.analysis.as_deref()
     }
 
-    /// The diagnostics currently listed, so callers can assert on what the user
-    /// is shown rather than only on how many rows there are.
+    /// The diagnostics listed, so a test can assert on what the user is shown.
     #[cfg(test)]
     pub fn problems(&self) -> &[Diagnostic] {
         &self.problems
@@ -387,28 +330,20 @@ impl BottomPanel {
         std::mem::take(&mut self.tab_changed)
     }
 
-    /// Whether the user closed a tab (which closes the panel), once.
     pub fn take_close_request(&mut self) -> bool {
         std::mem::take(&mut self.close_requested)
     }
 
-    /// Start the tab strip afresh. A closed panel keeps no half-faded tab.
     pub fn reset_tabs(&mut self) {
         self.tabs = Self::fresh_tabs(self.tab, self.problems.len());
         self.tabs_node = None;
     }
 
-    /// What the body says when the tab showing has nothing else to show.
     fn body_empty(&self) -> Option<(ui::icons::Icon, String)> {
         match self.tab {
             PanelTab::Problems if self.problems.is_empty() => {
-                // An empty list means two different things, and the panel
-                // must not state the wrong one. While a language server is
-                // still working nothing has been analysed yet; only once it
-                // has answered is "no problems" a finding. Scoped to the
-                // open file, because that is what was actually checked: the
-                // linter reads the active buffer, not every file under the
-                // root.
+                // An empty list means two things: nothing analysed yet while a server works, and no problems once
+                // it answered. Scoped to the open file, which is what the linter read.
                 Some(match &self.analysis {
                     Some(note) => (ui::icons::Icon::RotateCw, note.clone()),
                     None => (
@@ -417,8 +352,6 @@ impl BottomPanel {
                     ),
                 })
             }
-            // The embedded `TerminalWidget` renders a live body over
-            // `content_rect()`; nothing stale goes underneath it.
             PanelTab::Terminal if !self.has_live_terminal => self
                 .terminal_note
                 .clone()
@@ -427,7 +360,6 @@ impl BottomPanel {
         }
     }
 
-    /// Keep the body's empty state on what the tab says, in the body.
     fn sync_empty(&mut self) {
         let wanted = self.body_empty();
         if wanted.as_ref() != self.empty.as_ref().map(|(shown, _)| shown) {
@@ -463,8 +395,8 @@ impl Widget for BottomPanel {
         self.strip_height = ui::widget::tabs::TAB_BAR_HEIGHT;
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
         self.tabs_node = Some(tabs_node);
-        // The list sits under the strip in every tab so the panel's height is
-        // stable; it is drawn and reached only on the Problems tab.
+        // The list sits under the strip in every tab, so the panel's height is stable; only the Problems tab
+        // draws and reaches it.
         self.list_node = self
             .list
             .as_mut()
@@ -504,8 +436,6 @@ impl Widget for BottomPanel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The panel stands on the content ground the framework painted; one
-        // hairline parts it from the editor above.
         ui::surface::separator(
             scene,
             transform,
@@ -516,15 +446,15 @@ impl Widget for BottomPanel {
             theme.tokens.colors.surfaces.content,
         );
         self.tabs
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.sync_empty();
         if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let Some(list) = self.list.as_mut()
         {
-            list.draw(scene, transform, text_renderer, theme, presence);
+            list.draw_child(scene, transform, text_renderer, theme, presence);
         }
         if let Some((_, empty)) = self.empty.as_mut() {
-            empty.draw(scene, transform, text_renderer, theme, presence);
+            empty.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -622,8 +552,6 @@ impl Widget for BottomPanel {
 }
 
 impl BottomPanel {
-    /// What the search found and whether it is still going or stopped at its
-    /// limit: "3 results in 2 files — 410 files scanned".
     fn search_summary(&self) -> String {
         let search = &self.search;
         if search.query.is_empty() {
@@ -635,22 +563,42 @@ impl BottomPanel {
             seen.dedup();
             seen.len()
         };
+        let count = |value: usize| ui::i18n::ArgValue::Number(value as f64);
         let head = match (search.rows.len(), files) {
-            (0, _) if search.running => return "Searching…".to_string(),
-            (0, _) => format!("No results for \u{201C}{}\u{201D}", search.query),
-            (1, _) => "1 result in 1 file".to_string(),
-            (n, 1) => format!("{n} results in 1 file"),
-            (n, f) => format!("{n} results in {f} files"),
+            (0, _) if search.running => return crate::resource::CATALOG.t("code-search-running"),
+            (0, _) => crate::resource::CATALOG.t_args(
+                "code-search-none",
+                &[("query", ui::i18n::ArgValue::Text(search.query.clone()))],
+            ),
+            (1, _) => crate::resource::CATALOG.t("code-search-one-result"),
+            (n, 1) => crate::resource::CATALOG
+                .t_args("code-search-results-one-file", &[("count", count(n))]),
+            (n, f) => crate::resource::CATALOG.t_args(
+                "code-search-results",
+                &[("count", count(n)), ("files", count(f))],
+            ),
         };
         if search.running {
-            format!("{head} \u{2014} still searching…")
+            crate::resource::CATALOG.t_args(
+                "code-search-still-running",
+                &[("head", ui::i18n::ArgValue::Text(head))],
+            )
         } else if search.truncated {
-            format!(
-                "{head} \u{2014} search limit reached after {} files; narrow the search",
-                search.files_scanned
+            crate::resource::CATALOG.t_args(
+                "code-search-limit",
+                &[
+                    ("head", ui::i18n::ArgValue::Text(head)),
+                    ("files", count(search.files_scanned)),
+                ],
             )
         } else if search.files_scanned > 0 {
-            format!("{head} \u{2014} {} files scanned", search.files_scanned)
+            crate::resource::CATALOG.t_args(
+                "code-search-scanned",
+                &[
+                    ("head", ui::i18n::ArgValue::Text(head)),
+                    ("files", count(search.files_scanned)),
+                ],
+            )
         } else {
             head
         }
@@ -709,7 +657,7 @@ mod tests {
         panel.set_search(search.clone());
         assert_eq!(
             panel.search_summary(),
-            "3 results in 2 files \u{2014} 40 files scanned"
+            "3 results in 2 files, 40 files scanned"
         );
 
         search.truncated = true;

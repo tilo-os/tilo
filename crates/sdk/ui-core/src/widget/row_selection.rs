@@ -22,14 +22,43 @@ impl RowSelection {
 }
 
 /// What a list tells its row delegate about the row it builds, besides the model and the
-/// row's place in it: the row's selection, and whether it stands open into its item.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// row's place in it: the row's selection, whether it stands open into its item, and the step
+/// its tree indents by.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RowBuild {
     /// How the row stands in the list's selection.
     pub selection: RowSelection,
     /// The row stands open into its item where it stands in the list: the item's document
     /// shows under it, and the row is drawn to hold it.
     pub expanded: bool,
+    /// The gutter one depth of the list's tree indents a row's content by, as the theme draws
+    /// it: a row that is a view of the app's own stands in by the same step its list rows do.
+    pub nest: f32,
+    /// The column the list keeps for the chevrons that fold its tree, in front of its rows'
+    /// content and inside its own box (where it stands as a column's body): a row's content
+    /// starts after it, and the list draws the chevrons there. Zero for a list whose rows have
+    /// nothing to fold, and for one standing inside a page, where the step in front of the rows
+    /// is already the page's.
+    pub chevron_column: f32,
+}
+
+/// A chevron a list painted for one of its tree's rows, as it painted it: the box it takes and
+/// the row's own line it folds.
+///
+/// An audit holds the one to the other: a chevron that centres anywhere but the line it folds
+/// hangs off the words beside it, and a person reading down the tree loses the row it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowChevron {
+    /// The box the chevron was drawn in.
+    pub rect: Rect,
+    /// The row's own line: the box its words, its leading control and its lift stand in.
+    pub line: Rect,
+}
+
+/// A list that paints the chevrons of its tree says where it painted them.
+pub trait PaintedRowChevrons {
+    /// The chevrons the last painted frame drew, one for each row of its tree that shows one.
+    fn painted_row_chevrons(&self) -> Vec<RowChevron>;
 }
 
 /// A row that paints the selection the list holds for it, asked for through

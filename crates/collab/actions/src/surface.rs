@@ -1,7 +1,9 @@
 //! A resource kind's public surface as data: its verbs with their
-//! parameters and kinds, and its fields with their schema. An app's
-//! `surface.toml` holds it (written by `tilo-app surface` from the code), and
-//! it is what a receiver without the app knows about the app's changes.
+//! parameters, kinds and the value each answers with, and its fields with
+//! their schema. An app's `surface.toml` holds it (written by `tilo-app
+//! surface` from the code), and it is what a receiver without the app knows
+//! about the app's changes, and what another language compiles its actions
+//! and types against.
 //!
 //! The file keeps what receipt and the storage check need. The labels,
 //! descriptions, field titles and owners the code reports are for people and
@@ -70,6 +72,11 @@ pub struct VerbSurface {
     /// Left out of a surface file when it takes none.
     #[serde(default)]
     pub params: Vec<ParamSurface>,
+    /// What it answers its caller with, when it answers a value: a read
+    /// effect's fields, a verb's record. Absent when it answers nothing or a
+    /// job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<ReturnsSurface>,
     /// The units it writes (`tilo_resource::footprint`), when more than the
     /// record unit.
     #[serde(default = "record_unit", skip_serializing_if = "only_record")]
@@ -118,6 +125,28 @@ pub struct ParamSurface {
     /// nested under its name again ([`nest_arguments`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub within: Option<String>,
+}
+
+/// What an action answers its caller with: its JSON Schema, and its type
+/// ([`FieldType`]) with the records and enums it names declared in the
+/// surface's types.
+///
+/// A surface is what another language compiles against, so the value an
+/// action gives back has to be described as precisely as it takes: a script
+/// reads the fields of a PDF's form without opening the PDF.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReturnsSurface {
+    /// Its JSON Schema, from its type.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub schema: serde_json::Value,
+    /// Its type, left out when the schema says all there is (`any`).
+    #[serde(
+        rename = "type",
+        default,
+        skip_serializing_if = "FieldType::is_any",
+        deserialize_with = "crate::field_type::field_type_or_text"
+    )]
+    pub ty: FieldType,
 }
 
 /// The arguments of a call of `verb`, as `(name, value)`, with each argument of a parameter

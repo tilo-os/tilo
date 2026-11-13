@@ -1,5 +1,5 @@
-//! A job sees only itself: not its neighbours' processes or files, not the
-//! host's loopback, not another process's environment.
+//! A job sees only itself: not its neighbours' processes or files, not the host's loopback, not
+//! another process's environment.
 
 use std::io::Read;
 use std::net::TcpListener;
@@ -9,8 +9,8 @@ use tilo_sandbox::job::{JobSpec, Launch, Mount, Root};
 use crate::needs_sandbox;
 use crate::support::{pipe, run, shell};
 
-/// Fallback tunnel devices the kernel puts, down and leading nowhere, into
-/// every new network namespace on a host with those tunnel modules loaded.
+/// Fallback tunnel devices the kernel puts, down and leading nowhere, into every new network
+/// namespace on a host with those tunnel modules loaded.
 const FALLBACK_TUNNELS: &[&str] = &[
     "tunl0", "sit0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0",
 ];
@@ -18,8 +18,7 @@ const FALLBACK_TUNNELS: &[&str] = &[
 #[test]
 fn a_job_is_pid_1_and_sees_no_other_process() {
     needs_sandbox!();
-    // Its own PID namespace: pid 1 is the job's init, and nothing with the
-    // worker's pid exists.
+    // Its own PID namespace: pid 1 is the job's init, and nothing with the worker's pid exists.
     let (status, out) = run(|s| {
         shell(
             s,
@@ -34,8 +33,8 @@ fn a_job_is_pid_1_and_sees_no_other_process() {
         .split_whitespace()
         .filter_map(|p| p.parse().ok())
         .collect();
-    // Its own PID namespace: pid 1 is the job's init, and every pid is a low
-    // one the job itself started — never the worker's (a large host pid).
+    // Its own PID namespace: pid 1 is the job's init, and every pid is a low one the job itself
+    // started, never the worker's (a large host pid).
     assert!(pids.contains(&1), "no pid 1 in the job: {out}");
     assert!(
         pids.iter().max().copied().unwrap_or(0) < 1000,
@@ -85,8 +84,8 @@ fn a_job_cannot_reach_the_hosts_loopback() {
         "a job reached the host loopback: {out}"
     );
     assert!(!out.lines().any(|l| l == "reached"), "{out}");
-    // Only loopback exists in the job's netns (no egress attached here),
-    // besides the kernel's fallback tunnel devices.
+    // Only loopback exists in the job's netns (no egress attached here), besides the kernel's
+    // fallback tunnel devices.
     let ifaces: Vec<&str> = out
         .lines()
         .filter_map(|l| l.strip_prefix("iface "))
@@ -99,12 +98,12 @@ fn a_job_cannot_reach_the_hosts_loopback() {
 #[test]
 fn a_job_reads_only_its_own_environ_from_proc() {
     needs_sandbox!();
-    // The init's /proc/1/environ must not carry the worker's environment
-    // (which holds tokens): it is zeroed, and pid 1 is non-dumpable.
+    // The init's /proc/1/environ must not carry the worker's environment (which holds tokens): it
+    // is zeroed, and pid 1 is non-dumpable.
     let (status, out) = run(|s| {
         s.env("JOB_MARKER", "only-the-job");
-        // `cat` opens the file itself, so /proc/self is the reader. The init's
-        // environ is a different process; reading it must be refused.
+        // `cat` opens the file itself, so /proc/self is the reader. The init's environ is a
+        // different process; reading it must be refused.
         shell(
             s,
             "echo -- self --; cat /proc/self/environ | tr '\\0' '\\n'; \
@@ -127,8 +126,8 @@ fn a_job_reads_only_its_own_environ_from_proc() {
 #[test]
 fn two_jobs_each_have_their_own_network_namespace() {
     needs_sandbox!();
-    // Two jobs' loopbacks can't collide because their network namespaces
-    // differ; a server one starts on 127.0.0.1 is the other's business never.
+    // Two jobs' loopbacks can't collide because their network namespaces differ: a server one
+    // starts on 127.0.0.1 is never the other's.
     let one = run(|s| shell(s, "readlink /proc/self/ns/net"));
     let two = run(|s| shell(s, "readlink /proc/self/ns/net"));
     assert!(one.0.success() && two.0.success(), "{} {}", one.1, two.1);
@@ -157,8 +156,8 @@ fn a_job_runs_as_root_inside_mapped_to_an_unprivileged_id_outside() {
 #[test]
 fn the_setup_hook_sees_the_jobs_network_namespace_before_it_runs() {
     needs_sandbox!();
-    // What t uses to attach pasta: the hook runs with the job's pid, whose
-    // /proc/<pid>/ns/net names the namespace, before any of the job runs.
+    // What t uses to attach pasta: the hook runs with the job's pid, whose /proc/<pid>/ns/net names
+    // the namespace, before any of the job runs.
     let (reader, writer) = pipe();
     let spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/true"]);
     let seen = std::sync::Arc::new(std::sync::Mutex::new(None));

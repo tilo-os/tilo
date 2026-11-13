@@ -464,6 +464,11 @@ impl Container {
 }
 
 impl Widget for Container {
+    /// Its child, inside its padding.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,

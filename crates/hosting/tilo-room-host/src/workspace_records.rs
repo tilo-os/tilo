@@ -306,6 +306,45 @@ impl WorkspaceRecords {
         Ok(bodies)
     }
 
+    /// The channel governance `workspace_id` retains, each frame with its
+    /// author, in order: what a linking device is handed, as a relay session
+    /// replays it.
+    pub(crate) async fn channel_governance(
+        &self,
+        workspace_id: u64,
+    ) -> Vec<([u8; 32], neighbour_wire::NeighbourMsg)> {
+        let Ok(retained) = self.retained(workspace_id).await else {
+            return Vec::new();
+        };
+        retained
+            .into_iter()
+            .filter_map(|retained| {
+                let message: neighbour_wire::NeighbourMsg =
+                    postcard::from_bytes(&retained.body).ok()?;
+                message
+                    .channel_workspace()
+                    .is_some()
+                    .then_some((retained.author, message))
+            })
+            .collect()
+    }
+
+    /// Keep what `workspace_id` commits for `device` alone until the device
+    /// subscribes, which the door just let it in to do
+    /// ([`crate::peer::Arriving`]). False for a workspace this host does not
+    /// hold.
+    pub(crate) async fn expect_arrival(&self, workspace_id: u64, device: [u8; 32]) -> bool {
+        let workspace = {
+            let workspaces = self.workspaces.lock().await;
+            let Some(workspace) = workspaces.get(&workspace_id).cloned() else {
+                return false;
+            };
+            workspace
+        };
+        workspace.lock().await.arriving.expect(device);
+        true
+    }
+
     /// Wait until every host commit queued for `workspace_id` so far is
     /// durable.
     pub(crate) async fn settled(&self, workspace_id: u64) {
@@ -404,13 +443,40 @@ impl WorkspaceRecords {
     }
 
     /// [`Self::enqueue`] for a commit whose place `reservation` holds.
+    pub(crate) async fn enqueue_reserved(
+        &self,
+        workspace_id: u64,
+        commit: HostCommit,
+        reservation: Reservation,
+    ) -> Result<WorkspaceAdmission, String> {
+        self.enqueue_as(workspace_id, self.device, commit, reservation)
+            .await
+    }
+
+    /// Admit `commit`, `author`'s frame the workspace admitted on another
+    /// carrier (its direct link), in `author`'s name: ordered, retained and
+    /// fanned out to every subscriber like the host's own, so a member that
+    /// takes part through a relay session reads what a linked member wrote,
+    /// live and on catch-up.
+    pub(crate) async fn carry(
+        &self,
+        workspace_id: u64,
+        author: [u8; 32],
+        commit: HostCommit,
+    ) -> Result<WorkspaceAdmission, String> {
+        let reservation = self.reserve(workspace_id);
+        self.enqueue_as(workspace_id, author, commit, reservation)
+            .await
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
     )]
-    pub(crate) async fn enqueue_reserved(
+    async fn enqueue_as(
         &self,
         workspace_id: u64,
+        author: [u8; 32],
         commit: HostCommit,
         reservation: Reservation,
     ) -> Result<WorkspaceAdmission, String> {
@@ -435,7 +501,7 @@ impl WorkspaceRecords {
             .ok_or("the workspace is not hosted here")?;
         let envelope = Envelope::Delta {
             workspace_id,
-            author_device_public_key: self.device,
+            author_device_public_key: author,
             authored_at_ns: unix_now_ns(),
             delta,
             signature: [0; 64],

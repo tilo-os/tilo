@@ -17,7 +17,6 @@ use std::collections::BTreeSet;
 
 use crate::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
 
-/// What part of the desktop a shortcut belongs to; Settings groups by it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShortcutCategory {
     System,
@@ -28,9 +27,6 @@ pub enum ShortcutCategory {
     Accessibility,
 }
 
-/// Who carries out a shortcut: the desktop's own windows, strips and
-/// windows' places, or the session under them (the device, the surfaces over
-/// the desk, the people and agents here).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShortcutHome {
     Desk,
@@ -38,7 +34,6 @@ pub enum ShortcutHome {
 }
 
 impl ShortcutCategory {
-    /// Every category, in the order Settings shows them.
     pub const ALL: [Self; 6] = [
         Self::System,
         Self::Navigation,
@@ -48,7 +43,6 @@ impl ShortcutCategory {
         Self::Accessibility,
     ];
 
-    /// Stable id, as the action door publishes it.
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
@@ -61,15 +55,12 @@ impl ShortcutCategory {
         }
     }
 
-    /// Fluent key of the category's name.
     #[must_use]
     pub fn label_key(self) -> String {
         format!("shortcut-category-{}", self.id())
     }
 }
 
-/// One key under an exact set of modifiers, spelled as [`KeyChord`] spells
-/// it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FixedKey {
     pub modifiers: &'static [&'static str],
@@ -97,7 +88,6 @@ impl FixedKey {
 pub struct FixedShortcut {
     /// Stable id; `fixed-` keeps it apart from every rebindable action's.
     pub id: &'static str,
-    /// Fluent key of what it is called.
     pub label_key: &'static str,
     pub category: ShortcutCategory,
     pub keys: &'static [FixedKey],
@@ -250,8 +240,6 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         ShortcutCategory::Accessibility,
         &[key(&["Alt", "Shift"], "numlock")],
     ),
-    // The chord every screen answers, before sign-in too
-    // (`ui::screen_reader_chord`); the one Windows uses.
     fixed(
         "fixed-toggle-screen-reader",
         "shortcut-toggle-screen-reader",
@@ -286,7 +274,6 @@ pub static RESERVED_SHORTCUTS: &[FixedShortcut] = &[
     ),
 ];
 
-/// The fixed or reserved shortcut `id` names.
 #[must_use]
 pub fn fixed_shortcut(id: &str) -> Option<&'static FixedShortcut> {
     FIXED_SHORTCUTS
@@ -295,8 +282,6 @@ pub fn fixed_shortcut(id: &str) -> Option<&'static FixedShortcut> {
         .find(|fixed| fixed.id == id)
 }
 
-/// The fixed or reserved desktop shortcut `chord` belongs to, when it
-/// belongs to one: a chord no setting and no published action may take.
 #[must_use]
 pub fn desktop_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
     FIXED_SHORTCUTS
@@ -305,14 +290,6 @@ pub fn desktop_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
         .find(|fixed| fixed.owns(chord))
 }
 
-/// What a fixed shortcut does, for the ones a session dispatches by its own
-/// command. A fixed chord the keys already answer where it is resolved — the
-/// window walk, the workspace steps, the display sheet, Print — names no
-/// action here: its chord is answered before this table is asked.
-///
-/// Each action is the verb a menu row, a palette row and an agent's
-/// invocation name too, so a person's chord and an action row do the same
-/// thing.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FixedAction {
     CloseTab,
@@ -330,8 +307,6 @@ pub enum FixedAction {
 }
 
 impl FixedAction {
-    /// The action the catalogue's fixed shortcut `id` performs, when a
-    /// session carries one.
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
         Some(match id {
@@ -351,7 +326,6 @@ impl FixedAction {
         })
     }
 
-    /// The catalogue id of this action.
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
@@ -371,7 +345,6 @@ impl FixedAction {
     }
 }
 
-/// The fixed action `chord` asks for, when a session dispatches one.
 #[must_use]
 pub fn fixed_action(chord: &KeyChord) -> Option<FixedAction> {
     FIXED_SHORTCUTS
@@ -391,33 +364,24 @@ impl ShortcutConfig {
     }
 }
 
-/// One row of the catalogue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutEntry {
-    /// Stable id: a [`ShortcutAction::id`] or a [`FixedShortcut::id`].
     pub id: &'static str,
-    /// Fluent key of what it is called.
     pub label_key: String,
-    /// The chords it answers to now; empty when unassigned.
     pub chords: Vec<KeyChord>,
-    /// The chords it answers to out of the box.
     pub defaults: Vec<KeyChord>,
     pub rebindable: bool,
     pub category: ShortcutCategory,
-    /// The rebindable action this row is, for a row that is one.
     pub action: Option<ShortcutAction>,
 }
 
 impl ShortcutEntry {
-    /// Whether the current chords differ from the defaults.
     #[must_use]
     pub fn is_changed(&self) -> bool {
         self.chords != self.defaults
     }
 }
 
-/// Every desktop shortcut under `config`: the rebindable actions in
-/// [`ShortcutAction::ALL`] order, then the fixed shortcuts.
 #[must_use]
 pub fn catalogue(config: &ShortcutConfig) -> Vec<ShortcutEntry> {
     let defaults = ShortcutConfig::default();
@@ -449,20 +413,12 @@ pub fn catalogue(config: &ShortcutConfig) -> Vec<ShortcutEntry> {
         .collect()
 }
 
-/// The catalogue row `id` names under `config`.
 #[must_use]
 pub fn entry(config: &ShortcutConfig, id: &str) -> Option<ShortcutEntry> {
     catalogue(config).into_iter().find(|entry| entry.id == id)
 }
 
 impl ShortcutConfig {
-    /// Put `action` back on its default chord.
-    ///
-    /// # Errors
-    ///
-    /// The same refusals as [`Self::set`]: another action or a published
-    /// action holds the default now, and keeps it. The table is then
-    /// unchanged.
     pub fn reset(&mut self, action: ShortcutAction) -> Result<(), ShortcutConfigError> {
         let chord = Self::default()
             .bindings
@@ -471,13 +427,6 @@ impl ShortcutConfig {
         self.set(action, chord)
     }
 
-    /// Put every desktop action back on its default chord. Chords bound to
-    /// published actions stay as they are.
-    ///
-    /// # Errors
-    ///
-    /// [`ShortcutConfigError::TakenByAction`] when a published action now
-    /// holds one of the defaults; the table is then unchanged.
     pub fn reset_all(&mut self) -> Result<(), ShortcutConfigError> {
         let defaults = Self::default();
         if defaults
@@ -833,8 +782,6 @@ mod tests {
                 assert_eq!(fixed_action(&chord), Some(action), "{chord:?}");
             }
         }
-        // The chords the keys answer where they are resolved, and the
-        // accessibility ones, name no action here.
         for (text, id) in [
             ("Alt+Tab", "fixed-switch-windows"),
             ("Super+PageUp", "fixed-change-workspace"),

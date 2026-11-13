@@ -1,24 +1,4 @@
 //! Proving an installed package is still the package that was installed.
-//!
-//! Install-time verification only proves the bytes were signed by someone
-//! trusted — not what they look like a week later, since a payload tree is
-//! an ordinary directory an app, a user or a half-finished write can
-//! change. An install therefore keeps the three verified metadata blobs it
-//! checked (signed root, manifest, encoded payload collection) beside the
-//! tree, and [`verify`] replays the chain against disk:
-//!
-//! ```text
-//! blake3(signed-root)         == the package id         (identity)
-//! signature over the root     by the root's publisher   (authenticity)
-//! blake3(manifest.toml)       == root.manifest_hash     (signature covers it)
-//! blake3(collection.qcl)      == root.payload_root_hash (signature covers it)
-//! blake3(<each payload file>) == its collection entry   (contents)
-//! ```
-//!
-//! Every link is checked, so a mismatch is reported at the link that broke.
-//! The record lives outside the payload tree: the tree is bind-mounted into
-//! the app's sandbox, and an app has no business reading the evidence used
-//! to check it.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -29,7 +9,6 @@ use tilo_app_package::{BlobHash, Collection, SignedRoot};
 use crate::layout::{COLLECTION_FILE, MANIFEST_FILE, SIGNED_ROOT_FILE};
 use crate::registry::InstalledPackage;
 
-/// What went wrong, at the link where it went wrong.
 #[derive(Debug, thiserror::Error)]
 pub enum IntegrityError {
     #[error(
@@ -67,12 +46,13 @@ pub enum IntegrityError {
 /// A file in the payload that no longer matches what was installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileFault {
-    /// Named in the collection, absent on disk.
     Missing(String),
     /// Present, but its bytes hash to something else.
     Modified(String),
-    /// Unreadable (permissions, an I/O error).
-    Unreadable { path: String, detail: String },
+    Unreadable {
+        path: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for FileFault {
@@ -87,7 +67,6 @@ impl std::fmt::Display for FileFault {
     }
 }
 
-/// A completed re-verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub files_checked: usize,
@@ -339,8 +318,6 @@ fn collect_unexpected(
     Ok(())
 }
 
-/// Where a package ships its public surface: the resources its records
-/// hold, their verbs and fields, and which are the person's own.
 pub const SURFACE_FILE: &str = "surface.toml";
 
 /// The surface the signed package ships: its `surface.toml` bytes from the
@@ -361,8 +338,6 @@ mod tests {
 
     use super::*;
 
-    /// A materialised tree plus the record beside it, as an install writes
-    /// them.
     fn fixture(root: &Path) -> InstalledPackage {
         fixture_with_collection(
             root,
@@ -432,7 +407,6 @@ mod tests {
 
     #[test]
     fn verification_names_every_changed_payload_file() {
-        // phase: an_untouched_install_verifies
         {
             let tmp = tempfile::tempdir().unwrap();
             let package = fixture(tmp.path());
@@ -441,7 +415,6 @@ mod tests {
             assert_eq!(report.files_checked, 2);
             assert!(report.unexpected.is_empty());
         }
-        // phase: a_modified_payload_file_is_named
         {
             let tmp = tempfile::tempdir().unwrap();
             let package = fixture(tmp.path());
@@ -449,7 +422,6 @@ mod tests {
             let report = verify(&package, &package.payload_root).unwrap();
             assert_eq!(report.faults, vec![FileFault::Modified("bin/app".into())]);
         }
-        // phase: a_deleted_file_is_named_and_an_added_one_reported
         {
             let tmp = tempfile::tempdir().unwrap();
             let package = fixture(tmp.path());
@@ -463,7 +435,6 @@ mod tests {
 
     #[test]
     fn the_install_record_itself_is_under_integrity() {
-        // phase: a_record_that_does_not_hash_to_the_package_id_is_refused
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut package = fixture(tmp.path());
@@ -472,7 +443,6 @@ mod tests {
                 .expect_err("the record does not describe that package id");
             assert!(matches!(err, IntegrityError::RootIdMismatch));
         }
-        // phase: tampering_with_the_recorded_collection_is_caught_before_any_file_is_read
         {
             let tmp = tempfile::tempdir().unwrap();
             let package = fixture(tmp.path());
@@ -483,7 +453,6 @@ mod tests {
                 verify(&package, &package.payload_root).expect_err("covered by the signature");
             assert!(matches!(err, IntegrityError::CollectionMismatch));
         }
-        // phase: a_detached_record_lives_under_integrity
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut package = fixture(tmp.path());
@@ -502,7 +471,6 @@ mod tests {
                 "{report:?}"
             );
         }
-        // phase: a_package_with_no_record_says_so_rather_than_passing
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut package = fixture(tmp.path());

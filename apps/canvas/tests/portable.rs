@@ -90,13 +90,25 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
         )
         .unwrap();
     let art = painter.state();
-    let address = ui::tilo_actions::content_resource(&hash).unwrap();
     for id in ["first", "second"] {
         let Shape::Image { src, .. } = &art.mark(id).unwrap().shape else {
             panic!("{id} is not a picture");
         };
-        assert_eq!(src, &address);
+        // The record names the reference the window's store answered: it
+        // carries the key of content the workspace keeps sealed.
+        let reference = ui::tilo_actions::content_hash(src).expect("a content address");
+        assert!(tilo_content::is_sealed(reference), "{src}");
+        assert_eq!(painter.content().read(reference).as_deref(), Some(&png[..]));
     }
+    let Shape::Image { src, .. } = &art.mark("first").unwrap().shape else {
+        panic!("first is not a picture");
+    };
+    let reference = ui::tilo_actions::content_hash(src).unwrap().to_owned();
+    let address = tilo_content::content_address(&reference).unwrap();
+    assert!(
+        !painter.content().has(&hash),
+        "the painter's store holds no plaintext"
+    );
     shows_both(&painter);
     let saved = painter
         .call("save-artwork", json!({"path": path.display().to_string()}))
@@ -114,7 +126,7 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
     assert_eq!(names.len(), 3, "{names:?}");
     let mut kept = Vec::new();
     package
-        .by_name(&format!("content/{hash}"))
+        .by_name(&format!("content/{reference}"))
         .unwrap()
         .read_to_end(&mut kept)
         .unwrap();
@@ -131,19 +143,27 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
     assert_eq!(mimetype, canvas::document::MEDIA_TYPE);
     drop(painter);
 
-    // Another machine: its content store never had the picture.
+    // Another machine: its content store never had the picture. Opening the
+    // file keeps the picture under the reference the artwork names it by,
+    // sealed: the store holds ciphertext, and the marks find it there.
     let mut opener = TestApp::<App>::new().unwrap();
+    assert!(!opener.content().has(&address));
     assert!(!opener.content().has(&hash));
     opener
         .call("open-artwork", json!({"file": path.display().to_string()}))
         .unwrap();
-    assert!(opener.content().has(&hash));
+    assert!(opener.content().has(&address));
+    assert!(
+        !opener.content().has(&hash),
+        "nothing kept in the clear on the machine it opens on"
+    );
     assert_eq!(opener.state().marks.len(), 2);
     shows_both(&opener);
 
     // Opened by a person from Files, in yet another.
     let launched = TestApp::<App>::launched(&[&path.display().to_string()]).unwrap();
-    assert!(launched.content().has(&hash));
+    assert!(launched.content().has(&address));
+    assert!(!launched.content().has(&hash));
     shows_both(&launched);
 }
 

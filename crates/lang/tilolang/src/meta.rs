@@ -168,6 +168,28 @@ pub struct PackageMeta {
     /// as it is then. Each is exported as `e_<id>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at_event: Vec<FnMeta>,
+    /// The package's `template view`s, as source: a template is expanded where a caller writes
+    /// the call, its body the caller's UI, so another package that imports this one expands it
+    /// too (`shell.desk_style(a, false) { ... }`). Its body names this package's helpers, so it
+    /// is carried as the source the importer parses, and expanded in this package's namespace.
+    ///
+    /// It travels in the metadata JSON, because a `PackageMeta` handed to a compiler is the only
+    /// way an importer learns of another package's templates. [`Module hash`](Self::module_hash)
+    /// is computed over the module without this section, so a template's text never reaches it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<TemplateMeta>,
+}
+
+/// One of a package's `template view`s, as the source it was written in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateMeta {
+    /// The template's name: what a caller writes after the package's alias
+    /// (`shell.desk_style`).
+    pub name: String,
+    /// The file it is declared in, for a diagnostic that names it.
+    pub file: String,
+    /// The declaration, from `template view` to its closing brace, as its author wrote it.
+    pub source: String,
 }
 
 /// The views a window of a type switches between: the type's id and the views' ids, in the
@@ -504,6 +526,15 @@ pub struct FieldMeta {
     pub default: Option<serde_json::Value>,
 }
 
+impl FieldMeta {
+    /// Whether the field holds text as it is written: a `Text`, or a `RichText`, which the
+    /// store reads as the text it is written as (search.md, "What a type declares").
+    #[must_use]
+    pub fn holds_text(&self) -> bool {
+        matches!(self.ty.trim(), "Text" | "RichText" | "std.RichText")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParamMeta {
     pub name: String,
@@ -523,6 +554,22 @@ pub struct ParamMeta {
     /// (`crate::entry`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub entry: bool,
+    /// What the parameter is called where a person gives it, when the name in words does not
+    /// say what it holds (`saved: Bool (label: "On the Watch later list")`). It is the words the
+    /// catalogue's message for it carries (`d-<action>-<name>`), which a translation replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl ParamMeta {
+    /// What the parameter is called where a person gives it: its `label:` in the words the app
+    /// wrote, else its name in words.
+    #[must_use]
+    pub fn words(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| crate::messages::label(&self.name))
+    }
 }
 
 /// How an action parameter's default is computed.
@@ -651,6 +698,12 @@ pub struct ActionMeta {
     /// its writes; one that does not is one change and is never replayed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invokes: bool,
+    /// The outside capabilities its body's `outside(...)` calls name, as written
+    /// (`youtube.search`, `smtp.send`), in order: what the platform tags the action with
+    /// (`outside:youtube.search`), so a query naming a kind of an outside service finds the
+    /// action of that service's app that asks it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<String>,
 }
 
 impl ActionMeta {
@@ -659,6 +712,13 @@ impl ActionMeta {
     #[must_use]
     pub fn is_migration(&self) -> bool {
         self.role.as_deref() == Some("migration")
+    }
+
+    /// Whether the action takes a `File` — the person's own file, which the chooser a control
+    /// runs fills ([`Self::unbound`]'s exception): it is then no command, only a control's.
+    #[must_use]
+    pub fn takes_a_file(&self) -> bool {
+        self.params.iter().any(|param| param.ty.trim() == "File")
     }
 
     /// The parameters an invocation that has given `bound` arguments still lacks: those after
@@ -732,64 +792,62 @@ pub struct FnMeta {
 }
 
 impl TypeMeta {
-    /// What one is called in a sentence: its name in words, lower case (`TodoList` is a
-    /// `todo list`).
+    /// What one is called in a sentence: its name in words, lower case, in the singular (`TodoList`
+    /// is a `todo list`, `Tasks` a `task`).
     #[must_use]
     pub fn noun(&self) -> String {
-        in_words(&self.name)
+        singular(&in_words(&self.name))
     }
 
-    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun).
+    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun), which a name
+    /// that already names several leaves as it is.
     #[must_use]
     pub fn plural(&self) -> String {
-        plural(&self.noun())
+        plural(&in_words(&self.name))
     }
 }
 
-/// A declared name in words, lower case: `TodoList` and `todo_list` are `todo list`.
-#[must_use]
-pub fn in_words(name: &str) -> String {
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    for ch in name.chars() {
-        if ch == '_' || ch == ' ' {
-            if !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-            }
-        } else if ch.is_uppercase() && !word.is_empty() {
-            words.push(std::mem::take(&mut word));
-            word.extend(ch.to_lowercase());
-        } else {
-            word.extend(ch.to_lowercase());
-        }
-    }
-    if !word.is_empty() {
-        words.push(word);
-    }
-    words.join(" ")
-}
-
-/// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`.
-#[must_use]
-pub fn plural(noun: &str) -> String {
-    let consonant_y = noun.strip_suffix('y').is_some_and(|stem| {
-        stem.chars()
-            .last()
-            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
-    });
-    if consonant_y {
-        format!("{}ies", noun.strip_suffix('y').unwrap_or(noun))
-    } else if ["s", "x", "z", "ch", "sh"]
-        .iter()
-        .any(|end| noun.ends_with(end))
-    {
-        format!("{noun}es")
-    } else {
-        format!("{noun}s")
-    }
-}
+/// A declared name in words, lower case: `TodoList` and `todo_list` are `todo list`; and what one
+/// of them and several are, as English writes it (`todo list`, `todo lists`, `task` for `Tasks`).
+///
+/// The rules are [`tilo_words`]: the compiler writes a package's catalogue from them and the
+/// action model reads a Rust type's noun from them, so an app's words agree whichever it is
+/// written in.
+pub use tilo_words::{in_words, plural, singular};
 
 impl PackageMeta {
+    /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.
+    #[must_use]
+    pub fn type_named(&self, name: &str) -> Option<&TypeMeta> {
+        if let Some(found) = self.types.iter().find(|ty| ty.id == name) {
+            return Some(found);
+        }
+        // A qualified name (`so.tilo.todo.Item`) names a type of another app.
+        let (app, last) = name
+            .rsplit_once('.')
+            .map_or((None, name), |(app, last)| (Some(app), last));
+        if app.is_some_and(|app| app != self.app) {
+            return None;
+        }
+        self.types.iter().find(|ty| ty.name == last)
+    }
+
+    /// The type an action is on: that of its first parameter, when it is a declared record.
+    #[must_use]
+    pub fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
+        params.first().and_then(|param| self.type_named(&param.ty))
+    }
+
+    /// The parameters of an action beyond its subject, which the address carries: what an
+    /// invocation gives.
+    #[must_use]
+    pub fn arguments<'a>(&self, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
+        match (self.subject_of(params), params.split_first()) {
+            (Some(_), Some((_, rest))) => rest,
+            _ => params,
+        }
+    }
+
     /// The id of the default view of the type `ty` (an id), when the package declares one.
     pub fn default_view(&self, ty: &str) -> Option<&str> {
         self.default_views
@@ -829,13 +887,16 @@ impl PackageMeta {
     }
 
     /// The actions the platform offers: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself. This is the one list every surface draws from
-    /// — the header's buttons and menu, an item's menu, the palette — so an action is always
-    /// somewhere a person, an agent or a program can reach it.
+    /// migrations, which the platform runs itself, and but the ones that take a `File` — a file
+    /// is the person's own, and the chooser a control runs fills that parameter
+    /// (`file.choose(a)`), so it is no command a menu, a palette, an agent or a program runs.
+    /// This is the one list every surface draws from — the header's buttons and menu, an item's
+    /// menu, the palette — so an action is always somewhere a person, an agent or a program can
+    /// reach it.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
-            .filter(|a| !a.scenario && !a.is_migration())
+            .filter(|a| !a.scenario && !a.is_migration() && !a.takes_a_file())
     }
 
     /// The actions code may call by name: every action but the hidden ones of scenarios and the

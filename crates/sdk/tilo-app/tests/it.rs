@@ -41,8 +41,6 @@ pub mod gestures;
 pub mod history_actions;
 #[path = "host_context.rs"]
 pub mod host_context;
-#[path = "hosted_app.rs"]
-pub mod hosted_app;
 #[path = "identity.rs"]
 pub mod identity;
 #[path = "incremental.rs"]

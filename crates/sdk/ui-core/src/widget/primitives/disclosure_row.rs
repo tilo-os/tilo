@@ -264,6 +264,9 @@ pub struct DisclosureRow {
     id: Option<String>,
     title: String,
     secondary: String,
+    /// A third line under the secondary one: a second fact about the row's
+    /// thing, never joined into the first.
+    tertiary: String,
     /// A quiet line at the far end of the title's line (who and when), so
     /// the title keeps the width of its own words.
     side: String,
@@ -293,6 +296,8 @@ pub struct DisclosureRow {
     /// The display the body's own layout gives it, while it is not shut.
     body_display: taffy::Display,
     dirty: bool,
+    /// Opened or shut since the layout pass last placed it.
+    layout_dirty: bool,
     /// The motion the person allows, from the last layout.
     motion: EffectiveMotion,
     /// The pace its reveal plays at, when it says something other than the theme's.
@@ -307,6 +312,7 @@ impl DisclosureRow {
             id: None,
             title: title.into(),
             secondary: String::new(),
+            tertiary: String::new(),
             side: String::new(),
             leading: None,
             trailing: None,
@@ -325,6 +331,7 @@ impl DisclosureRow {
             laid_reveal: (0.0, true),
             body_display: taffy::Display::default(),
             dirty: true,
+            layout_dirty: true,
             motion: EffectiveMotion::default(),
             feel: crate::motion::Feel::Standard,
         }
@@ -364,6 +371,14 @@ impl DisclosureRow {
     #[must_use]
     pub fn secondary(mut self, text: impl Into<String>) -> Self {
         self.secondary = text.into();
+        self
+    }
+
+    /// A third line under the secondary one: a second fact, on a line of its
+    /// own (when it was last used under what it is).
+    #[must_use]
+    pub fn tertiary(mut self, text: impl Into<String>) -> Self {
+        self.tertiary = text.into();
         self
     }
 
@@ -477,6 +492,7 @@ impl DisclosureRow {
             told(open);
         }
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     /// Close if another row of the group opened.
@@ -492,10 +508,12 @@ impl DisclosureRow {
 
     fn header_height(&self, theme: &Theme) -> f64 {
         let m = &theme.tokens.metrics;
-        f64::from(if self.secondary.is_empty() {
-            m.row_single
-        } else {
-            m.row_double
+        let lines = self.face().lines();
+        f64::from(match lines {
+            1 => m.row_single,
+            2 => m.row_double,
+            // Each line past the second adds what the second added.
+            _ => m.row_double + (m.row_double - m.row_single),
         })
     }
 
@@ -518,7 +536,9 @@ impl DisclosureRow {
     }
 
     fn face(&self) -> TextStackFace<'_> {
-        TextStackFace::new(&self.title).secondary(&self.secondary)
+        TextStackFace::new(&self.title)
+            .secondary(&self.secondary)
+            .tertiary(&self.tertiary)
     }
 
     /// Where the title's text column starts from the row's leading edge:
@@ -600,7 +620,7 @@ impl DisclosureRow {
         if let Some(leading) = self.leading.as_ref() {
             // Beside two lines the icon belongs to the title, not to the
             // middle of the pair, where it reads as sitting low.
-            let icon_cy = if self.secondary.is_empty() {
+            let icon_cy = if self.face().lines() == 1 {
                 cy
             } else {
                 self.face().title_centre(text, ctx.text, theme)
@@ -811,6 +831,7 @@ impl Widget for DisclosureRow {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.layout_dirty = false;
         self.header = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -1011,7 +1032,7 @@ impl Widget for DisclosureRow {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.dirty
+        self.layout_dirty
             || self.state.is_moving()
             || self.body.is_layout_dirty()
             || self
@@ -1266,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_is_a_single_or_two_line_row_tall() {
+    fn a_row_is_as_tall_as_its_lines() {
         let theme = Theme::dark();
         let body = Box::new(crate::widget::Spacer::fixed(40.0));
         let one = DisclosureRow::new("Wi-Fi", body);
@@ -1274,6 +1295,13 @@ mod tests {
         let two = DisclosureRow::new("Wi-Fi", Box::new(crate::widget::Spacer::fixed(40.0)))
             .secondary("Home");
         assert!((two.header_height(&theme) - 52.0).abs() < 1e-6);
+        let three = DisclosureRow::new("Laptop", Box::new(crate::widget::Spacer::fixed(40.0)))
+            .secondary("Hosts your workspaces")
+            .tertiary("Active now");
+        assert!(
+            (three.header_height(&theme) - 68.0).abs() < 1e-6,
+            "a third line adds what the second did"
+        );
         let compact = theme.with_density(crate::tokens::Density::Compact);
         assert!((one.header_height(&compact) - 28.0).abs() < 1e-6);
     }

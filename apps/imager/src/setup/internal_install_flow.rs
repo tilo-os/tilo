@@ -1,13 +1,5 @@
-//! Full Tilo installed alongside the current system, without a USB drive.
-//!
-//! Contract: `docs/architecture/usb-free-install.md`
-//! §5 (capability gate) and §8 (Imager UI). This module holds the reviewed
-//! plan, host readiness and elevated helper runs. Nothing here writes to a
-//! disk or firmware: only the elevated staging helper does, after it re-probes
-//! the host and refuses a plan whose basis changed (`plan-stale`).
-//!
-//! Every host-facing function is injected through [`StagingRuntime`] so tests
-//! drive the whole flow with fakes and never reach the platform stubs.
+//! Full Tilo installed beside the current system: a reviewed staging plan, then
+//! the helper that carries it out.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -24,28 +16,18 @@ use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
 use tilo_lock::MutexRecover as _;
 
-/// Release jobs set this at build time only after the round trip passed.
 pub(super) const BUILD_GATE: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
-/// Development builds may opt in at run time.
 pub(super) const RUNTIME_GATE_VAR: &str = "TILO_IMAGER_ALLOW_INTERNAL_INSTALL";
 
 const GIB: u64 = 1 << 30;
 
-/// Device-local inputs already reviewed in the installer journey. This value
-/// retains encrypted custody; it is never shared UI state or helper authority.
 #[derive(Clone)]
 pub(crate) struct ReviewedFullOs {
     pub facts: HostFacts,
     pub plan: Plan,
     pub profile: crate::model::InstallProfile,
     pub migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
-    /// Present when a protected handoff was prepared. Interactive setups
-    /// defer identity and credential capture to the destination's first boot,
-    /// so this is absent rather than carrying plaintext or another machine's
-    /// sealed secret.
     pub prepared: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
-    /// The reviewed selection deliberately carries metadata only; the
-    /// destination's first login finishes the copy or application restore.
     pub deferred: bool,
 }
 
@@ -67,25 +49,18 @@ fn remember_tpm_handoff(
     Ok(())
 }
 
-/// Staging sizes assumed before the verified manifest is available (its
-/// `minimum_partition_bytes`). The staging consumer refuses with `plan-stale`
-/// when the manifest needs more than the reviewed plan holds; review then
-/// recomputes with the manifest's sizes.
 pub(super) use super::staging::{PROVISIONAL_STAGING_ESP_BYTES, PROVISIONAL_STAGING_ROOT_BYTES};
 
-/// The product gate of spec §9: build gate or explicit development opt-in.
 #[must_use]
 pub(super) fn gate_open(build: Option<&str>, runtime: Option<&str>) -> bool {
     build == Some("1") || runtime == Some("1")
 }
 
-/// The gate as this process sees it.
 #[must_use]
 pub(super) fn live_gate_open() -> bool {
     gate_open(BUILD_GATE, std::env::var(RUNTIME_GATE_VAR).ok().as_deref())
 }
 
-/// A running elevated helper, as the UI observes it.
 pub(super) trait HelperRun: Send {
     fn poll(&mut self) -> Poll;
 }
@@ -96,8 +71,6 @@ impl HelperRun for helper::Running {
     }
 }
 
-/// Host commands a person can ask for from Review. Each needs a restart or an
-/// administrator prompt, so none of them runs on the UI thread.
 pub(super) use imager_backend::setup::native_host::HostCommand;
 
 type ProbeFn = dyn Fn() -> HostFacts + Send + Sync;
@@ -108,7 +81,6 @@ type RecordsFn = dyn Fn() -> Vec<Record> + Send + Sync;
 type PathsFn = dyn Fn(&SelectedManifest) -> Result<ComponentPaths, String> + Send + Sync;
 type HostCommandFn = dyn Fn(HostCommand) -> Result<(), String> + Send + Sync;
 
-/// Every host-facing call of the install flow.
 #[derive(Clone)]
 pub(super) struct StagingRuntime {
     pub(super) probe: Arc<ProbeFn>,
@@ -122,7 +94,6 @@ pub(super) struct StagingRuntime {
 }
 
 impl StagingRuntime {
-    /// The staging core and platform commands of this build.
     pub(super) fn live() -> Self {
         Self {
             probe: Arc::new(probe::probe),
@@ -169,15 +140,12 @@ fn live_component_paths(_: &SelectedManifest) -> Result<ComponentPaths, String> 
     Err("Verified download paths are unavailable in this build.".into())
 }
 
-/// The UI-owned description of the next `stage` the consumer runs.
 #[derive(Clone)]
 struct Intent {
     migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     profile: serde_json::Map<String, serde_json::Value>,
     prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
-    /// Metadata-only consent: no prepared ciphertext exists because the
-    /// destination has not established its login password yet.
     deferred: bool,
     operation_id: String,
     plan: Plan,
@@ -186,8 +154,6 @@ struct Intent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Failure {
-    /// Stable helper refusal ID, or an Imager-side one (`launch-failed`,
-    /// `interrupted`, `download`).
     pub(super) code: Option<String>,
     pub(super) detail: String,
 }
@@ -214,12 +180,9 @@ struct RunShared {
     intent: Option<Intent>,
     state: RunState,
     revision: u64,
-    /// `(staging ESP, staging root)` minimum sizes learned from the verified
-    /// manifest, used for every later plan.
     requirements: Option<(u64, u64)>,
 }
 
-/// What the staging consumer and the UI share.
 #[derive(Clone)]
 pub(super) struct StagingLink {
     runtime: StagingRuntime,
@@ -269,9 +232,6 @@ fn refusal(code: &str, message: impl Into<String>) -> Outcome {
     }
 }
 
-/// Launch the helper and follow its progress until it reports an outcome.
-/// When the owner stops watching, the helper keeps running on its own; its
-/// host record, not this process, is the source of truth afterwards.
 fn drive(link: &StagingLink, request: &Request, cancelled: &dyn Fn() -> bool) -> Outcome {
     let mut running = match (link.runtime.launch)(request) {
         Ok(running) => running,
@@ -295,7 +255,6 @@ fn drive(link: &StagingLink, request: &Request, cancelled: &dyn Fn() -> bool) ->
     }
 }
 
-/// `(staging-esp, staging-root)` minimum partition sizes from verified bytes.
 fn manifest_requirements(selected: &SelectedManifest) -> Result<(u64, u64), String> {
     let manifest: serde_json::Value = serde_json::from_slice(selected.bytes())
         .map_err(|error| format!("The verified manifest could not be read: {error}"))?;
@@ -585,10 +544,6 @@ fn stage_request(
     })
 }
 
-/// The verified-cache consumer: runs on the download worker while both
-/// verified readers are held, so the component files the helper re-hashes are
-/// exactly the verified ones. It grants the helper nothing; the helper
-/// re-derives every authority itself.
 pub(super) fn staging_consumer(
     link: StagingLink,
 ) -> impl FnMut(
@@ -663,16 +618,11 @@ fn new_operation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Host readiness for Full Tilo, as shown on the experience page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Readiness {
-    /// Build gate closed: release builds until the round trip passes.
     Gated,
-    /// The probe has not reported yet.
     Checking,
-    /// No internal release for this architecture in the catalog.
     NoRelease,
-    /// Something blocks that Imager cannot help clear.
     Unsupported(Vec<Blocker>),
     Ready,
 }
@@ -680,7 +630,6 @@ pub(super) enum Readiness {
 /// A task for a background thread; the view's worker launcher runs it.
 pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 
-/// UI-side state of the Full Tilo installation.
 pub(super) struct InternalInstall {
     migration_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
@@ -739,7 +688,6 @@ impl InternalInstall {
         }
     }
 
-    /// The closed-gate state for deterministic fixtures.
     pub(super) fn gated(host: HostOs) -> Self {
         Self::new(StagingRuntime::live(), false, host)
     }
@@ -768,8 +716,6 @@ impl InternalInstall {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// A probe task, or `None` when the gate is closed. It returns the facts
-    /// and unfinished records for [`Self::accept_probe`].
     pub(super) fn probe_task(
         &mut self,
     ) -> Option<impl FnOnce() -> (HostFacts, Vec<Record>) + Send + 'static> {
@@ -791,8 +737,6 @@ impl InternalInstall {
         self.probing
     }
 
-    /// Apply a finished probe. `has_release` is whether the catalog offers an
-    /// internal release for this architecture.
     pub(super) fn accept_probe(
         &mut self,
         facts: HostFacts,
@@ -826,8 +770,6 @@ impl InternalInstall {
         &self.readiness
     }
 
-    /// Full Tilo may be chosen: the probe passed, the catalog has a release
-    /// and the build gate is open.
     pub(super) fn offers_full_os(&self) -> bool {
         self.readiness == Readiness::Ready
     }
@@ -852,7 +794,6 @@ impl InternalInstall {
         }
     }
 
-    /// Whole GiB the stepper may offer, when the disk has room at all.
     pub(super) fn bounds_gib(&self) -> Option<(u64, u64)> {
         let Some(Ok(bounds)) = &self.bounds else {
             return None;
@@ -897,7 +838,6 @@ impl InternalInstall {
         });
     }
 
-    /// The stepper's binding; committed changes are picked up by [`Self::poll`].
     pub(super) fn target_state(&self) -> &ui::LocalState<f64> {
         &self.target_gib
     }
@@ -906,7 +846,6 @@ impl InternalInstall {
         self.target_bytes
     }
 
-    /// Set the Tilo size in whole GiB within the offered bounds.
     pub(super) fn set_target_gib(&mut self, gib: u64) -> Result<(), String> {
         let (min, max) = self
             .bounds_gib()
@@ -930,8 +869,6 @@ impl InternalInstall {
         self.plan.as_ref()
     }
 
-    /// The digest an install must name: the current plan, or the plan of the
-    /// unfinished operation Continue resumes.
     pub(super) fn reviewed_digest(&self) -> Result<Option<String>, String> {
         if let Some(record) = self.pending() {
             return Ok(Some(record.plan_sha256.clone()));
@@ -950,7 +887,6 @@ impl InternalInstall {
         matches!(self.state, RunState::Running { .. })
     }
 
-    /// Why Install is not available, or `Ok` when it is.
     pub(super) fn install_blocker(&self, download_ready: bool) -> Result<(), String> {
         let t = super::strings::t;
         if !self.offers_full_os() {
@@ -984,9 +920,6 @@ impl InternalInstall {
         Ok(())
     }
 
-    /// Queue the reviewed `stage` for the staging consumer. The caller then
-    /// asks the download worker to consume; on failure it calls
-    /// [`Self::abort_stage`].
     pub(super) fn set_migration_intent(
         &mut self,
         intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
@@ -1052,7 +985,6 @@ impl InternalInstall {
         let mut canonical =
             (self.link.runtime.compute)(&reviewed.plan.basis, self.requirements(bytes))
                 .map_err(|_| refused())?;
-        // Partition UUIDs are minted once while reviewing, not placement inputs.
         canonical
             .staging_esp
             .partition_guid
@@ -1140,8 +1072,6 @@ impl InternalInstall {
         Ok(())
     }
 
-    /// The download worker refused or lost the consumption before or while
-    /// the consumer ran.
     pub(super) fn abort_stage(&mut self, code: &str, detail: String) {
         self.link.lock().intent = None;
         if matches!(
@@ -1162,8 +1092,6 @@ impl InternalInstall {
         self.poll();
     }
 
-    /// Start `arm` (Try again) or `remove` for the unfinished operation named
-    /// `operation`; the returned task runs the helper to its outcome.
     pub(super) fn helper_task(&mut self, action: Action, operation: &str) -> Result<Task, String> {
         let record = self
             .pending()
@@ -1177,9 +1105,6 @@ impl InternalInstall {
         if self.is_running() {
             return Err(super::strings::t("imager-setup-internal-error-running"));
         }
-        // `arm` and `remove` act on the recorded staging, never on download
-        // bytes, so no cache paths are named; the helper authorises them
-        // from its own host record for `operation_id`.
         let request = Request {
             schema: 1,
             operation_id: record.operation_id,
@@ -1209,7 +1134,6 @@ impl InternalInstall {
         }))
     }
 
-    /// A helper task could not be started at all.
     pub(super) fn helper_task_failed(&mut self, action: Action, detail: String) {
         self.link.set_state(RunState::Failed {
             action,
@@ -1221,7 +1145,6 @@ impl InternalInstall {
         self.poll();
     }
 
-    /// Restart is offered once the installer is set to start next.
     pub(super) fn can_restart(&self) -> bool {
         matches!(
             self.state,
@@ -1244,7 +1167,6 @@ impl InternalInstall {
         Ok(())
     }
 
-    /// The remedy command for `blocker`, when Imager offers one here.
     pub(super) fn remedy(&self, blocker: Blocker) -> Option<HostCommand> {
         match blocker {
             Blocker::SecureBootOn => Some(HostCommand::FirmwareSettings {
@@ -1261,7 +1183,6 @@ impl InternalInstall {
         }
     }
 
-    /// Whether `command` may run now.
     pub(super) fn command_available(&self, command: HostCommand) -> bool {
         match command {
             HostCommand::Restart => self.can_restart(),
@@ -1276,14 +1197,11 @@ impl InternalInstall {
         }
     }
 
-    /// The firmware-settings command this host would run, if offered.
     pub(super) fn firmware_command(&self) -> Option<HostCommand> {
         self.remedy(Blocker::SecureBootOn)
             .filter(|command| self.command_available(*command))
     }
 
-    /// Pick up helper progress and stepper commits. `true` when anything
-    /// shown changed.
     pub(super) fn poll(&mut self) -> bool {
         let mut changed = false;
         let (revision, state) = {
@@ -1319,14 +1237,11 @@ impl InternalInstall {
         changed
     }
 
-    /// Once per finished run that should re-probe: review again after
-    /// `plan-stale`, and refresh records after `remove`.
     pub(super) fn take_reprobe(&mut self) -> bool {
         std::mem::take(&mut self.reprobe_due)
     }
 }
 
-/// Fluent key naming a blocker.
 #[must_use]
 pub(super) fn blocker_key(blocker: Blocker) -> &'static str {
     match blocker {
@@ -1343,7 +1258,6 @@ pub(super) fn blocker_key(blocker: Blocker) -> &'static str {
     }
 }
 
-/// The person-facing text of a blocker.
 #[must_use]
 pub(super) fn blocker_text(blocker: Blocker, host: HostOs) -> String {
     super::strings::t_args(
@@ -1352,7 +1266,6 @@ pub(super) fn blocker_text(blocker: Blocker, host: HostOs) -> String {
     )
 }
 
-/// The `$host` selector value every host-naming message takes.
 #[must_use]
 pub(super) fn host_arg(host: HostOs) -> &'static str {
     match host {
@@ -1362,7 +1275,6 @@ pub(super) fn host_arg(host: HostOs) -> &'static str {
     }
 }
 
-/// Fluent key naming a helper step.
 #[must_use]
 pub(super) fn step_key(step: Step) -> &'static str {
     match step {
@@ -1383,7 +1295,6 @@ pub(super) fn step_key(step: Step) -> &'static str {
     }
 }
 
-/// The person-facing explanation of a failed run.
 #[must_use]
 pub(super) fn failure_text(failure: &Failure, host: HostOs) -> String {
     let key = match failure.code.as_deref() {
@@ -1403,7 +1314,6 @@ pub(super) fn failure_text(failure: &Failure, host: HostOs) -> String {
     )
 }
 
-/// Size of the staging partitions in `plan`, in bytes.
 #[must_use]
 pub(super) fn staging_bytes(plan: &Plan) -> u64 {
     partition_bytes(plan, plan.staging_esp.first_lba, plan.staging_esp.last_lba).saturating_add(
@@ -1424,13 +1334,10 @@ pub(super) fn target_extent_bytes(plan: &Plan) -> u64 {
     )
 }
 
-/// The platform remedies behind [`StagingRuntime::host_command`]. Tests and
-/// shots inject fakes; nothing here runs outside a live session.
 fn live_host_command(command: HostCommand) -> Result<(), String> {
     imager_backend::setup::native_host::run(command)
 }
 
-/// Deterministic host facts and a spec-shaped planner for tests.
 #[cfg(test)]
 pub(super) mod fixture {
     use super::{GIB, HostFacts, Plan, PlanError, Requirements, TargetBounds};
@@ -1483,7 +1390,6 @@ pub(super) mod fixture {
         bytes / SECTOR
     }
 
-    /// A plan shaped like spec §2: shrink C:, target extent, then staging.
     pub(in crate::setup) fn fake_plan(
         basis: &Basis,
         requirements: Requirements,
@@ -1554,7 +1460,6 @@ pub(super) mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A scripted helper: each poll returns the next entry, the last repeats.
     pub(in crate::setup) struct ScriptedHelper(pub VecDeque<Poll>);
 
     impl HelperRun for ScriptedHelper {
@@ -1589,7 +1494,6 @@ pub(super) mod tests {
         }
     }
 
-    /// Requests the fake helper was launched with, in order.
     pub(in crate::setup) type Launches = Arc<Mutex<Vec<Request>>>;
 
     pub(in crate::setup) struct Fakes {
@@ -1598,7 +1502,6 @@ pub(super) mod tests {
         pub script: Vec<Poll>,
         pub commands: Arc<Mutex<Vec<HostCommand>>>,
         pub launches: Launches,
-        /// Manifest bytes readable at each launch.
         pub manifests: Arc<Mutex<Vec<Vec<u8>>>>,
         pub probes: Arc<AtomicUsize>,
     }
@@ -1844,9 +1747,6 @@ pub(super) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn internal_install_gate_readiness_and_remedies_follow_blockers() {
-        // Phase `gate_requires_the_release_flag_or_the_explicit_development_opt_in`.
-        // Catches offering Full Tilo from platform identity alone or from a dev
-        // build without the explicit opt-in.
         {
             assert!(!gate_open(None, None));
             assert!(!gate_open(Some("0"), Some("true")));
@@ -1862,9 +1762,6 @@ pub(super) mod tests {
             assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
         }
 
-        // Phase `readiness_needs_probe_release_and_only_remediable_blockers`.
-        // Catches enabling Full Tilo while checking, without a release, or when
-        // a blocker without a remedy exists.
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = InternalInstall::new(fakes.runtime(), true, HostOs::Windows);
@@ -1897,9 +1794,6 @@ pub(super) mod tests {
             assert!(!install.offers_full_os());
         }
 
-        // Phase `remedies_follow_blockers_and_host`.
-        // Catches remedies offered where they do not apply, e.g. Fast Startup on
-        // Linux or BitLocker suspension without BitLocker.
         {
             let mut fakes = Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]);
             fakes.facts.bitlocker_protected = true;
@@ -1979,16 +1873,12 @@ pub(super) mod tests {
         }
     }
 
-    /// Target sizing and replanning.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn internal_install_target_size_replans_within_bounds() {
-        // Phase `target_size_stays_within_bounds_and_replans`.
-        // Catches a stepper value escaping the planner's bounds or a size change
-        // that leaves the shown plan stale.
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
@@ -2011,10 +1901,6 @@ pub(super) mod tests {
             assert_eq!(install.target_bytes(), max * GIB);
         }
 
-        // Phase `smaller_manifest_sizes_are_replanned_without_shrinking_further`.
-        // Catches the helper refusing every real install (its plan must be the
-        // planner's exact result for the bundle's sizes) and a replan that
-        // silently shrinks the system volume further than the person reviewed.
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
@@ -2044,9 +1930,6 @@ pub(super) mod tests {
             assert!(kept(&request.plan) >= kept(&reviewed));
         }
 
-        // Phase `undersized_plan_is_refused_as_stale_and_replanned_with_manifest_sizes`.
-        // Catches staging a plan whose installer partitions are smaller than the
-        // verified manifest requires, and a re-review that ignores the real size.
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
@@ -2082,16 +1965,12 @@ pub(super) mod tests {
         }
     }
 
-    /// Stage request binding, helper refusals, operation ids, retry/remove and progress.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn internal_install_staging_binds_the_reviewed_request_and_reports_outcomes() {
-        // Phase `retry_and_remove_act_on_the_current_record_only`.
-        // Catches arm/remove running without the unfinished record or against a
-        // record the person no longer sees.
         {
             let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
             assert!(probed(&fakes, true).helper_task(Action::Arm, "x").is_err());
@@ -2118,9 +1997,6 @@ pub(super) mod tests {
             assert!(launched[0].manifest_path.is_empty());
         }
 
-        // Phase `helper_refusals_keep_their_stable_codes`.
-        // Catches a refused helper being reported as success, or a plan-stale
-        // refusal that does not send the person back to review.
         {
             let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
             fakes.records = vec![record("op-1")];
@@ -2141,9 +2017,6 @@ pub(super) mod tests {
             }
         }
 
-        // Phase `stage_requires_the_reviewed_digest_and_launch_failures_settle`.
-        // Catches a launch failure hanging in Running or an install proceeding
-        // against a plan that changed after review.
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
@@ -2161,9 +2034,6 @@ pub(super) mod tests {
             assert!(install.link.lock().intent.is_none());
         }
 
-        // Phase `stage_request_binds_release_plan_paths_and_manifest_bytes`.
-        // Catches a request that names the wrong release, loses the reviewed
-        // plan digest, or hands the helper a manifest it cannot re-hash.
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);

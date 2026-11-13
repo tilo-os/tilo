@@ -469,6 +469,79 @@ pub trait WorkspaceRecordActions {
     }
 }
 
+/// The invocation that asks a host to run `action` of `app`'s workspace
+/// record with `arguments`: the record's own resource, as the app's door
+/// offers it. The receipt is held until the action settles, so a reading
+/// answers at once and one that went elsewhere answers once it is back.
+#[must_use]
+pub fn record_invocation(
+    invocation: tilo_actions::InvocationId,
+    app: &str,
+    action: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> tilo_actions::remote::InvokeRequest {
+    use tilo_actions::remote::{InvokeArgument, MAX_REMOTE_WAIT, RemoteActionTarget};
+
+    tilo_actions::remote::InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: format!("record:{app}:"),
+            address: tilo_actions::ActionAddress::new("", action),
+        },
+        argument: if arguments.is_empty() {
+            InvokeArgument::None
+        } else {
+            InvokeArgument::Json(arguments)
+        },
+        // Nothing else is the caller's to say: the host decides it as the
+        // person whose session asked.
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: Some(u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX)),
+        appearance: None,
+    }
+}
+
+/// What a host's answer to a record action says: the action's value, or why
+/// it did not run.
+pub fn record_answer(
+    answer: Option<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+    >,
+) -> ActionAnswer {
+    use tilo_actions::remote::{ActionHostError, InvocationReceipt, ReceiptStatus};
+
+    let unanswered = || "the workspace's host did not answer".to_owned();
+    match answer {
+        Some(Ok(InvocationReceipt {
+            status: ReceiptStatus::Completed { output },
+            ..
+        })) => Ok(output.value.unwrap_or(serde_json::Value::Null)),
+        Some(Ok(InvocationReceipt {
+            status: ReceiptStatus::Failed { error },
+            ..
+        })) => Err(error.message),
+        Some(
+            Ok(InvocationReceipt {
+                status: ReceiptStatus::Rejected { error },
+                ..
+            })
+            | Err(error),
+        ) => Err(ActionHostError::to_string(&error)),
+        Some(Ok(InvocationReceipt {
+            status: ReceiptStatus::Cancelled { message },
+            ..
+        })) => Err(message.unwrap_or_else(unanswered)),
+        Some(Ok(InvocationReceipt {
+            status: ReceiptStatus::Accepted,
+            ..
+        }))
+        | None => Err(unanswered()),
+    }
+}
+
 /// What [`WorkspaceAccounts`] learned so far.
 #[derive(Default)]
 struct Known {
@@ -1119,5 +1192,99 @@ mod tests {
             assert!(waits.len() <= 10, "the asks again end");
         }
         assert_eq!(host.asked.borrow().len() / 2, UNANSWERED_RETRIES as usize);
+    }
+
+    /// A record action is the record's own invocation, as the app's door
+    /// offers it: the app's record, its own resource, and the arguments the
+    /// action takes, held until it settles.
+    #[test]
+    fn a_record_action_asks_the_host_at_the_records_own_door() {
+        let invocation = tilo_actions::InvocationId::new();
+        let read = record_invocation(
+            invocation,
+            "so.tilo.discord",
+            READ_ACTION,
+            serde_json::Map::new(),
+        );
+        assert_eq!(read.target.provider, "record:so.tilo.discord:");
+        assert_eq!(read.target.address.resource, "");
+        assert_eq!(read.target.address.action, READ_ACTION);
+        assert_eq!(read.argument, tilo_actions::remote::InvokeArgument::None);
+        assert_eq!(read.invocation, invocation, "the answer names it");
+        assert!(
+            read.wait_ms.is_some(),
+            "a reading that goes elsewhere answers once it is back"
+        );
+        let asked = record_invocation(
+            invocation,
+            "so.tilo.discord",
+            "link-offer",
+            serde_json::Map::from_iter([("token".to_owned(), serde_json::json!("T0KEN"))]),
+        );
+        assert_eq!(
+            asked.argument,
+            tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                "token".to_owned(),
+                serde_json::json!("T0KEN")
+            )]))
+        );
+    }
+
+    /// What the host answered is what the accounts read: the action's value,
+    /// or why it did not run.
+    #[test]
+    fn the_hosts_answer_reads_as_the_action_s_value_or_its_reason() {
+        use tilo_actions::remote::{ActionHostError, InvocationReceipt, ReceiptStatus};
+        use tilo_actions::{ActionFailure, ActionOutput};
+        let receipt = |status| {
+            Some(Ok(InvocationReceipt {
+                invocation: tilo_actions::InvocationId::new(),
+                status,
+            }))
+        };
+        let value = serde_json::json!({"code": "ABCDEFGHJKLM"});
+        assert_eq!(
+            record_answer(receipt(ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value: Some(value.clone()),
+                    ..ActionOutput::default()
+                },
+            })),
+            Ok(value)
+        );
+        assert_eq!(
+            record_answer(receipt(ReceiptStatus::Completed {
+                output: ActionOutput::default(),
+            })),
+            Ok(serde_json::Value::Null),
+            "an action that says nothing answers nothing"
+        );
+        assert_eq!(
+            record_answer(receipt(ReceiptStatus::Failed {
+                error: ActionFailure {
+                    code: "unknown_action".into(),
+                    message: "no such action".into(),
+                    details: None,
+                    retryable: false,
+                },
+            })),
+            Err("no such action".to_owned())
+        );
+        assert_eq!(
+            record_answer(receipt(ReceiptStatus::Rejected {
+                error: ActionHostError::UnknownAction,
+            })),
+            Err("no such action is offered".to_owned())
+        );
+        assert_eq!(
+            record_answer(Some(Err(ActionHostError::Unavailable {
+                reason: "the session is closed".into(),
+            }))),
+            Err("remote actions are unavailable: the session is closed".to_owned())
+        );
+        assert_eq!(
+            record_answer(None),
+            Err("the workspace's host did not answer".to_owned())
+        );
     }
 }

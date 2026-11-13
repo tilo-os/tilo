@@ -1,22 +1,7 @@
-//! The workbook as stored: its sheets in order, each a [`Grid`] of cells
-//! under stable row and column ids, with the charts and comment threads
-//! anchored at them.
-//!
-//! `#[derive(Model)]` is the whole storage contract. A cell's input, format
-//! and boldness are field edits at the cell's path
-//! (`Workbook::paths().sheets.item(&sheet).cells.cell(&row, &column).raw`),
-//! so typing into a cell writes that cell only, and concurrent edits merge
-//! per cell. Rows and columns keep their identity when others are inserted
-//! or removed: a chart or a comment anchored at a cell stays with it.
-//!
-//! People and formulas address cells by position (`B3`). A sheet's
-//! [`Layout`] maps positions to ids; a sheet holds the rows and columns
-//! that were ever written to, and writing past them first adds the missing
-//! ones under ids every device derives the same way, so two people
-//! reaching the same row concurrently add one row, not two. The verbs in
-//! [`crate::resource`] are the operations that are more than writing a
-//! field: inserting and deleting rows (which rewrite the formulas pointing
-//! past them), sorting, importing, comments.
+//! The workbook as stored: its sheets in order, each a grid of cells under stable row and column
+//! ids, with charts and comment threads anchored at them. A cell's input, format and boldness
+//! are field edits at its path, so typing writes that cell only. Positions map to ids through a
+//! sheet's [`Layout`], and the ids are derived the same way on every device.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -26,20 +11,15 @@ use crate::model::{Addr, CellFormat};
 use crate::settings::DocSettings;
 use tilo_locale::Currency;
 
-/// The identity of a new workbook's first sheet. The genesis is the same
-/// change on every device, so two people creating the workspace's workbook before
-/// they sync converge on one first sheet rather than two.
+/// A new workbook's first sheet: the genesis is the same change on every device, so two people
+/// converge on one first sheet.
 pub const FIRST_SHEET_ID: &str = "00000000-0000-4000-8000-000000000001";
 
-/// The name of a new workbook's first sheet.
 pub const FIRST_SHEET_NAME: &str = "Sheet1";
-/// The longest workbook title.
 pub const MAX_TITLE_CHARS: usize = 200;
-/// The longest sheet name.
 pub const MAX_SHEET_NAME_CHARS: usize = 100;
-/// How many tab colours the palette offers.
 pub const TAB_COLOR_COUNT: u32 = 6;
-/// Excel-compatible grid bounds.
+/// The grid's bounds, as Excel's.
 pub const MAX_COLUMN: u32 = 16_383;
 pub const MAX_ROW: u32 = 1_048_575;
 /// The longest input one cell takes.
@@ -47,21 +27,17 @@ pub const MAX_CELL_INPUT_BYTES: usize = 32 * 1024;
 /// The longest comment or reply.
 pub const MAX_ANNOTATION_BYTES: usize = 4 * 1024;
 
-/// One cell: what was typed into it, how it shows and whether it is bold.
-/// A cell with none of these is not stored.
+/// One cell: what was typed, its format and boldness; a cell with none is not stored.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = Cell::valid)]
 pub struct Cell {
-    /// Input: a value, or a formula starting with `=`. Written whole.
+    /// The input: a value or a formula, written whole.
     pub raw: Atom,
-    /// Format
     pub format: CellFormat,
-    /// Bold
     pub bold: bool,
 }
 
 impl Cell {
-    /// A cell holding `raw`.
     pub fn of(raw: impl Into<String>) -> Self {
         Self {
             raw: Atom(raw.into()),
@@ -69,7 +45,6 @@ impl Cell {
         }
     }
 
-    /// Whether the cell holds nothing worth storing.
     pub fn is_blank(&self) -> bool {
         self.raw.0.is_empty() && self.format == CellFormat::General && !self.bold
     }
@@ -82,7 +57,6 @@ impl Cell {
     }
 }
 
-/// Which kind of chart.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChartKind {
     #[default]
@@ -98,7 +72,6 @@ impl ChartKind {
         }
     }
 
-    /// What the chart's picker calls it.
     pub fn label(self) -> &'static str {
         match self {
             Self::Column => "Column",
@@ -134,8 +107,7 @@ impl tilo_resource::JsonSchema for ChartKind {
     }
 }
 
-/// A rectangle of cells, by the ids of its first and last row and column:
-/// it moves with them when rows or columns are inserted around it.
+/// A rectangle of cells by the ids of its first and last row and column, so it moves with them.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Area {
     pub top: Id,
@@ -145,8 +117,8 @@ pub struct Area {
 }
 
 impl Area {
-    /// The area of the cells `start` to `end` of a sheet laid out as
-    /// `layout`; one naming no cell when the sheet does not reach them.
+    /// The area of `start` to `end` on a sheet laid out this way; none when the sheet does not
+    /// reach them.
     #[must_use]
     pub fn of(layout: &Layout, start: Addr, end: Addr) -> Self {
         match (layout.ids(start), layout.ids(end)) {
@@ -160,7 +132,6 @@ impl Area {
         }
     }
 
-    /// Whether it names no cell.
     #[must_use]
     pub fn is_unset(&self) -> bool {
         [&self.top, &self.left, &self.bottom, &self.right]
@@ -169,7 +140,6 @@ impl Area {
     }
 }
 
-/// A chart of a range of cells.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct Chart {
     /// Title
@@ -183,7 +153,6 @@ pub struct Chart {
     pub area: Area,
 }
 
-/// The cells a comment thread is about, on one sheet.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct CommentCells {
     /// Sheet
@@ -198,10 +167,8 @@ pub struct CommentCells {
     pub area: Area,
 }
 
-/// A comment thread anchored at a range of cells of one sheet.
 pub type Comment = tilo_rich_text::annotation::Comment<CommentCells>;
 
-/// One sheet of the workbook.
 #[derive(Model, Clone, Debug, PartialEq)]
 #[model(check = Sheet::valid, check_reads = "name color charts")]
 pub struct Sheet {
@@ -217,9 +184,7 @@ pub struct Sheet {
     ///
     /// An index into the palette, none for the plain tab.
     pub color: Option<u32>,
-    /// Cells
     pub cells: Grid<Cell>,
-    /// Charts
     pub charts: Collection<Chart>,
     /// Hidden
     ///
@@ -230,7 +195,6 @@ pub struct Sheet {
 }
 
 impl Sheet {
-    /// An empty sheet named `name`.
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             name: Atom(name.into()),
@@ -259,17 +223,15 @@ impl Sheet {
         Ok(())
     }
 
-    /// Where each row and column of the sheet is.
     pub fn layout(&self) -> Layout {
         Layout::of(&self.cells)
     }
 
-    /// The sheet's cells by position, as the grid shows them.
+    /// The sheet's cells by position.
     pub fn snapshot(&self) -> SheetSnapshot {
         self.snapshot_in(&self.layout())
     }
 
-    /// [`Self::snapshot`] with the layout already at hand.
     pub fn snapshot_in(&self, layout: &Layout) -> SheetSnapshot {
         let mut snapshot = SheetSnapshot {
             name: self.name.0.clone(),
@@ -293,7 +255,6 @@ impl Sheet {
         snapshot
     }
 
-    /// The raw input of every cell that holds any, by position.
     pub fn inputs(&self) -> HashMap<Addr, String> {
         let layout = self.layout();
         self.cells
@@ -305,14 +266,12 @@ impl Sheet {
             .collect()
     }
 
-    /// The cell at `addr`, if it holds anything.
     pub fn cell_at(&self, layout: &Layout, addr: Addr) -> Option<&Cell> {
         let (row, column) = layout.ids(addr)?;
         self.cells.cell(row, column)
     }
 
-    /// Add the rows and columns `addr` needs, under the ids every device
-    /// derives for them.
+    /// Add the rows and columns `addr` needs, under the ids every device derives.
     pub fn reach(&mut self, addr: Addr) {
         let (rows, columns) = Layout::of(&self.cells).missing(addr);
         for id in rows {
@@ -325,8 +284,7 @@ impl Sheet {
         }
     }
 
-    /// Write `cell` at `addr` (clearing it when blank), adding the rows and
-    /// columns it needs.
+    /// Write `cell` at `addr`, clearing it when blank, and add what it needs.
     pub fn write(&mut self, addr: Addr, cell: Cell) {
         if cell.is_blank() {
             let layout = self.layout();
@@ -342,7 +300,7 @@ impl Sheet {
         }
     }
 
-    /// Change the cell at `addr` with `change`, as it is or blank.
+    /// Change the cell at `addr` with `change`.
     pub fn update(&mut self, addr: Addr, change: impl FnOnce(&mut Cell)) {
         let layout = self.layout();
         let mut cell = self.cell_at(&layout, addr).cloned().unwrap_or_default();
@@ -350,7 +308,7 @@ impl Sheet {
         self.write(addr, cell);
     }
 
-    /// The area of `start..=end`, adding the rows and columns it needs.
+    /// The area of `start..=end`, adding what it needs.
     pub fn area(&mut self, start: Addr, end: Addr) -> Option<Area> {
         self.reach(end);
         let layout = self.layout();
@@ -364,7 +322,6 @@ impl Sheet {
         })
     }
 
-    /// The first and last cell of `area`, while its rows and columns exist.
     pub fn corners(layout: &Layout, area: &Area) -> Option<(Addr, Addr)> {
         let start = layout.addr(&area.top, &area.left)?;
         let end = layout.addr(&area.bottom, &area.right)?;
@@ -374,7 +331,6 @@ impl Sheet {
         ))
     }
 
-    /// The charts by position, as the sheet shows them.
     pub fn chart_snapshots(&self, layout: &Layout) -> Vec<ChartSnapshot> {
         let mut out: Vec<ChartSnapshot> = self
             .charts
@@ -394,8 +350,7 @@ impl Sheet {
         out
     }
 
-    /// The comment threads of `comments` on sheet `id`, by position, as the
-    /// sheet shows them.
+    /// The comment threads of `comments` on the sheet, by position.
     pub fn comment_snapshots(
         id: &Id,
         comments: &Collection<Comment>,
@@ -429,14 +384,12 @@ impl Sheet {
         out
     }
 
-    /// Whether the sheet holds nothing.
     pub fn is_blank(&self) -> bool {
         self.cells.cells().next().is_none() && self.charts.is_empty()
     }
 
-    /// Whether it is still the sheet a new workbook starts with: blank,
-    /// under its first name, neither coloured, hidden nor imported. A blank
-    /// sheet someone named ("Costs") is one they mean to fill.
+    /// Whether it is still the sheet a new workbook starts with. A blank sheet someone named is
+    /// one they mean to fill.
     pub fn is_untouched(&self) -> bool {
         self.is_blank()
             && self.name.0 == FIRST_SHEET_NAME
@@ -446,8 +399,7 @@ impl Sheet {
     }
 }
 
-/// Where each row and column of a sheet is: the ids in order, and the
-/// position of each.
+/// Where each row and column of a sheet is: the ids in order, and each one's position.
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
     rows: Vec<Id>,
@@ -457,7 +409,6 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The layout of `grid`.
     pub fn of(grid: &Grid<Cell>) -> Self {
         Self::from_ids(
             grid.rows().cloned().collect(),
@@ -473,12 +424,10 @@ impl Layout {
         &self.columns
     }
 
-    /// The position of the cell at `row`, `column`.
     pub fn addr(&self, row: &Id, column: &Id) -> Option<Addr> {
         Some((*self.column_at.get(column)?, *self.row_at.get(row)?))
     }
 
-    /// The row and column ids of the cell at `addr`, when the sheet has them.
     pub fn ids(&self, (col, row): Addr) -> Option<(&Id, &Id)> {
         Some((
             self.rows.get(usize::try_from(row).ok()?)?,
@@ -486,8 +435,7 @@ impl Layout {
         ))
     }
 
-    /// The rows and columns to add, in order, so the sheet reaches `addr`:
-    /// ids derived from what the sheet holds, the same on every device.
+    /// The rows and columns to add so the sheet reaches `addr`, under ids derived from what it holds.
     pub fn missing(&self, (col, row): Addr) -> (Vec<Id>, Vec<Id>) {
         (
             extension(&self.rows, row, 'r'),
@@ -495,7 +443,6 @@ impl Layout {
         )
     }
 
-    /// This layout with what [`Self::missing`] names added.
     #[must_use]
     pub fn extended(&self, addr: Addr) -> Self {
         let (rows, columns) = self.missing(addr);
@@ -521,8 +468,7 @@ impl Layout {
         }
     }
 
-    /// The edits that add what [`Self::missing`] names to the grid at
-    /// `cells`.
+    /// The edits that add what is missing to the grid.
     pub fn reaching<R>(&self, cells: &Path<R, Grid<Cell>>, addr: Addr) -> Vec<Edit<R>> {
         let (rows, columns) = self.missing(addr);
         let mut edits = Vec::new();
@@ -536,8 +482,7 @@ impl Layout {
     }
 }
 
-/// The ids to append to `line` so it has a line at `index`: `r0`, `r1`, …
-/// counting on from the highest such id it holds.
+/// The ids to append so the line reaches `index`, counting on from the highest it holds.
 fn extension(line: &[Id], index: u32, prefix: char) -> Vec<Id> {
     let Ok(index) = usize::try_from(index) else {
         return Vec::new();
@@ -563,7 +508,6 @@ fn extension(line: &[Id], index: u32, prefix: char) -> Vec<Id> {
 #[derive(Model, Clone, Debug, PartialEq)]
 #[model(check = Workbook::valid, check_items = "sheets")]
 pub struct Workbook {
-    /// Sheets
     pub sheets: Collection<Sheet>,
     /// Comments
     ///
@@ -571,7 +515,6 @@ pub struct Workbook {
     /// only comment writes nothing else.
     #[model(unit)]
     pub comments: Collection<Comment>,
-    /// Document settings
     pub settings: DocSettings,
     /// Title
     ///
@@ -595,7 +538,6 @@ impl Default for Workbook {
     }
 }
 
-/// How many sheet names a refusal naming no sheet lists.
 const NAMED_SHEETS_LISTED: usize = 20;
 
 impl Workbook {
@@ -614,9 +556,8 @@ impl Workbook {
         Ok(())
     }
 
-    /// The id of the sheet `key` names: its id, its item's resource id, or
-    /// its name (exactly, else ignoring case and surrounding space), so a
-    /// caller that knows a sheet by name needs no id.
+    /// The id of the sheet `key` names: its id, its item's resource id, or its name, case and
+    /// surrounding space ignored.
     ///
     /// # Errors
     /// Refuses a key that names no sheet, listing the sheets.
@@ -660,8 +601,7 @@ impl Workbook {
         )))
     }
 
-    /// The cells of sheet `id` by position, with the workbook's other sheets
-    /// when its formulas read them.
+    /// The cells of sheet `id` by position, with the other sheets when its formulas read them.
     pub fn snapshot_of(&self, id: &Id) -> Option<SheetSnapshot> {
         let sheet = self.sheet(id)?;
         let mut snap = sheet.snapshot();
@@ -684,24 +624,20 @@ impl Workbook {
         Some(snap)
     }
 
-    /// The sheet `id`.
     pub fn sheet(&self, id: &Id) -> Option<&Sheet> {
         self.sheets.get(id)
     }
 
-    /// The id of the sheet at `index`.
     pub fn sheet_id(&self, index: usize) -> Option<&Id> {
         self.sheets.ids().nth(index)
     }
 
-    /// The sheet `id`, to change.
     pub fn sheet_mut(&mut self, id: &Id) -> Result<&mut Sheet, Refusal> {
         self.sheets
             .get_mut(id)
             .ok_or_else(|| Refusal::new("no such sheet"))
     }
 
-    /// The next free `SheetN` name.
     pub fn next_sheet_name(&self) -> String {
         let taken: HashSet<&str> = self
             .sheets
@@ -715,40 +651,31 @@ impl Workbook {
             .unwrap_or_else(|| "Sheet".to_owned())
     }
 
-    /// Whether the workbook is still what a new one is: one untouched sheet
-    /// ([`Sheet::is_untouched`]), no comments and no title. An import or a
-    /// new sheet with content replaces it rather than leaving an empty first
-    /// tab; a renamed blank sheet is kept, so later steps still find it.
+    /// Whether the workbook is still what a new one is. An import replaces it rather than leaving an
+    /// empty first tab; a renamed blank sheet is kept.
     pub fn is_blank(&self) -> bool {
         self.sheets.len() == 1
             && self.sheets.values().all(Sheet::is_untouched)
             && self.comments.is_empty()
     }
 
-    /// The currency the workbook shows money in when a format names none.
     pub fn currency(&self) -> Currency {
         self.settings.currency.unwrap_or(Currency::USD)
     }
 }
 
-/// One sheet's cells by position, for the grid, the formula engine and the
-/// file formats.
+/// One sheet's cells by position.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SheetSnapshot {
     pub name: String,
-    /// raw input string per populated cell
     pub raw: HashMap<Addr, String>,
-    /// per-cell format (only present when not General)
     pub fmt: HashMap<Addr, CellFormat>,
-    /// cells whose text is bold
     pub bold: HashSet<Addr>,
-    /// Whether the sheet is hidden.
     pub hidden: bool,
-    /// The workbook's sheets, when formulas of this one read them.
+    /// The workbook's sheets, when this one's formulas read them.
     pub book: Option<std::sync::Arc<crate::calc::Book>>,
 }
 
-/// A chart by position, as the sheet shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChartSnapshot {
     pub id: String,
@@ -758,7 +685,6 @@ pub struct ChartSnapshot {
     pub end: Addr,
 }
 
-/// A reply, as the sheet shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentReply {
     pub id: String,
@@ -766,7 +692,6 @@ pub struct CommentReply {
     pub body: String,
 }
 
-/// A comment thread by position, as the sheet shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentThread {
     pub id: String,
@@ -778,9 +703,8 @@ pub struct CommentThread {
     pub replies: Vec<CommentReply>,
 }
 
-/// The edits that write `cells` (by position, blank ones clearing) into the
-/// sheet `id` of `workbook`: the rows and columns they need first, then each
-/// cell at its path. One group of these is one undo step.
+/// The edits that write `cells` into the sheet, the rows and columns they need first; one group
+/// is one undo step.
 pub fn cell_edits(workbook: &Workbook, id: &Id, cells: &[(Addr, Cell)]) -> Vec<Edit<Workbook>> {
     let Some(sheet) = workbook.sheet(id) else {
         return Vec::new();

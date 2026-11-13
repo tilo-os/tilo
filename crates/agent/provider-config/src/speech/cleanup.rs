@@ -90,8 +90,7 @@ const SPANISH_NUMBERS: &[&str] = &[
 /// This deliberately does not guess grammar, remove isolated hesitation words,
 /// rewrite proper names or infer an unspoken numeric correction.
 pub fn clean_final<'a>(text: &'a str, language: &str, literal: bool) -> Cow<'a, str> {
-    let primary = language.split('-').next().unwrap_or(language);
-    let Some(profile) = Profile::for_language(primary) else {
+    let Some(profile) = Profile::for_language(&tilo_paths::language_of(language)) else {
         return Cow::Borrowed(text);
     };
     if literal

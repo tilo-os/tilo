@@ -19,13 +19,6 @@ use crate::{
 };
 
 enum Request {
-    HistoryQuery(u64, EntryName, [u64; 2], Vec<u8>),
-    HistoryReadSubject(u64, EntryName),
-    CheckHistoryRead(u64, bool),
-    ObserveHistoryRead(u64),
-    ArmHistoryRead(u64, [u8; 32]),
-    RetireHistoryReadHandoff(u64, [u8; 16]),
-    ReleaseHistoryRead(u64),
     CheckPin(u64),
     CheckJob(u64),
     Check(u64),
@@ -44,39 +37,13 @@ enum Request {
     Directory(u64, EntryName),
     Open(u64, EntryName, OpenMode, Option<[u64; 2]>),
     Create(u64, EntryName, bool),
-    RetireCreated(u64, EntryName, [u64; 2]),
-    SetCreatedPermissions(u64, EntryName, [u64; 2], u32),
-    SetTemporaryPermissions(u64, u32),
     Rename(u64, EntryName, EntryName),
-    RenameReplace(u64, EntryName, EntryName),
-    AtomicSave(u64, EntryName, [u64; 2], EntryName),
     Recoveries(u64, Vec<u8>),
     RestoreCaptured(u64, [u8; 16], EntryName),
     Poll(u64),
     Cancel(u64),
     ReleaseDirectory(u64),
     ReleaseJob(u64),
-    PrepareReplacement(u64, EntryName, [u64; 2], EntryName, [u64; 2]),
-    ObservePendingReplacement(u64),
-    AcknowledgedCommittedPin(u64),
-    AcknowledgedCommittedJob(u64),
-    ArmPendingHandoff(u64, [u8; 32]),
-    RetirePendingHandoff(u64, [u8; 16]),
-    CheckPendingReplacement(u64),
-    StartPendingReplacement(u64, Vec<u8>),
-    CancelPendingReplacement(u64),
-    ReleasePendingReplacement(u64),
-    CreatedTemporary(u64),
-    CheckCreatedTemporary(u64),
-    RetireCreatedTemporary(u64),
-    PrepareCreatedReplacement(u64),
-    PrepareCreatedAtomicSave(u64),
-    ReleaseCreatedTemporary(u64),
-    ReplacementPin(u64),
-    CheckReplacementPin(u64),
-    CommitReplacementPin(u64, Vec<u8>),
-    ObserveReplacementPin(u64),
-    ReleaseReplacementPin(u64),
     HandleStat(u64),
     Read(u64, u64, u32),
     Write(u64, u64, Vec<u8>),
@@ -85,12 +52,6 @@ enum Request {
     Release(u64),
 }
 enum Response {
-    // Local alias availability only; true requires the actual remote scope check.
-    HistoryReadCurrent(bool),
-    AtomicPrepared(u64),
-    AtomicRefused(String),
-    AtomicUnknown(String),
-    HistoryReadObservation(crate::directory_types::HistoryReadObservation),
     CursorPage(DirectoryStreamPage),
     Metadata(Metadata),
     Stat(Option<DirectoryStat>),
@@ -99,8 +60,6 @@ enum Response {
     Rows(DirectoryRows),
     Recoveries(crate::directory_types::RecoveryPage),
     Poll(JobPoll),
-    ReplacementObservation(crate::directory_types::ReplacementObservation),
-    PendingReplacementObservation(crate::directory_types::PendingReplacementObservation),
     Handle(u64),
     Bytes(Vec<u8>),
     Written(u32),
@@ -171,70 +130,6 @@ impl DirectoryConnection {
     }
     pub fn check_scope(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Check(id))? {
-            Response::Empty => Ok(()),
-            _ => Err(refused()),
-        }
-    }
-    /// Retain actual readable source custody; names never construct a grant.
-    pub fn history_query(
-        &self,
-        directory: u64,
-        name: &EntryName,
-        expected: [u64; 2],
-        query: &[u8],
-    ) -> io::Result<Vec<u8>> {
-        crate::directory_types::validate_history_query(query).map_err(io::Error::other)?;
-        if expected[1] == 0 {
-            return Err(refused());
-        }
-        match self.call(Request::HistoryQuery(
-            directory,
-            name.clone(),
-            expected,
-            query.to_vec(),
-        ))? {
-            Response::Bytes(bytes) => Ok(bytes),
-            _ => Err(refused()),
-        }
-    }
-    /// # Errors
-    /// Refuses unsupported providers, missing Read, substitutions or source loss.
-    pub fn history_read_subject(&self, directory: u64, name: &EntryName) -> io::Result<u64> {
-        match self.call(Request::HistoryReadSubject(directory, name.clone()))? {
-            Response::Handle(id) => Ok(id),
-            _ => Err(refused()),
-        }
-    }
-    /// # Errors
-    /// Refuses expired custody; named=true also brackets exact selected name.
-    pub fn check_history_read(&self, id: u64, named: bool) -> io::Result<()> {
-        match self.call(Request::CheckHistoryRead(id, named))? {
-            Response::HistoryReadCurrent(true) => Ok(()),
-            _ => Err(refused()),
-        }
-    }
-    /// # Errors
-    /// Refuses stale source authority or malformed native observation.
-    pub fn observe_history_read(
-        &self,
-        id: u64,
-    ) -> io::Result<crate::directory_types::HistoryReadObservation> {
-        match self.call(Request::ObserveHistoryRead(id))? {
-            Response::HistoryReadObservation(observation) => Ok(observation),
-            _ => Err(refused()),
-        }
-    }
-    pub fn retire_history_read_handoff(&self, id: u64, ticket: [u8; 16]) -> io::Result<()> {
-        self.empty(Request::RetireHistoryReadHandoff(id, ticket))
-    }
-    pub fn arm_history_read_handoff(&self, id: u64, challenge: [u8; 32]) -> io::Result<[u8; 16]> {
-        match self.call(Request::ArmHistoryRead(id, challenge))? {
-            Response::Bytes(ticket) => ticket.try_into().map_err(|_| refused()),
-            _ => Err(refused()),
-        }
-    }
-    pub fn release_history_read(&self, id: u64) -> io::Result<()> {
-        match self.call(Request::ReleaseHistoryRead(id))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
@@ -328,40 +223,6 @@ impl DirectoryConnection {
     ) -> io::Result<u64> {
         self.handle(Request::Open(directory, name.clone(), mode, Some(expected)))
     }
-    pub fn set_created_permissions(
-        &self,
-        directory: u64,
-        name: &EntryName,
-        expected: [u64; 2],
-        mode: u32,
-    ) -> io::Result<()> {
-        if mode & !0o7777 != 0 {
-            return Err(refused());
-        }
-        self.empty(Request::SetCreatedPermissions(
-            directory,
-            name.clone(),
-            expected,
-            mode,
-        ))
-    }
-    pub fn set_temporary_permissions(&self, id: u64, mode: u32) -> io::Result<()> {
-        if mode & !0o7777 != 0 {
-            return Err(refused());
-        }
-        self.empty(Request::SetTemporaryPermissions(id, mode))
-    }
-    pub fn retire_created(
-        &self,
-        directory: u64,
-        name: &EntryName,
-        expected: [u64; 2],
-    ) -> io::Result<u64> {
-        match self.call(Request::RetireCreated(directory, name.clone(), expected))? {
-            Response::Handle(job) => Ok(job),
-            _ => Err(refused()),
-        }
-    }
     pub fn create_file(&self, directory: u64, name: &EntryName) -> io::Result<u64> {
         self.handle(Request::Create(directory, name.clone(), false))
     }
@@ -393,31 +254,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    pub fn atomic_save(
-        &self,
-        directory: u64,
-        temporary: &EntryName,
-        expected: [u64; 2],
-        target: &EntryName,
-    ) -> io::Result<()> {
-        match self.call(Request::AtomicSave(
-            directory,
-            temporary.clone(),
-            expected,
-            target.clone(),
-        ))? {
-            Response::Empty => Ok(()),
-            _ => Err(refused()),
-        }
-    }
-    pub fn rename_replace(
-        &self,
-        directory: u64,
-        name: &EntryName,
-        new: &EntryName,
-    ) -> io::Result<u64> {
-        self.handle(Request::RenameReplace(directory, name.clone(), new.clone()))
-    }
     pub fn rename_no_replace(
         &self,
         directory: u64,
@@ -425,133 +261,6 @@ impl DirectoryConnection {
         new: &EntryName,
     ) -> io::Result<u64> {
         self.handle(Request::Rename(directory, name.clone(), new.clone()))
-    }
-    /// Reserve genuine work under this connected source; wire IDs grant no rights.
-    pub fn prepare_replacement(
-        &self,
-        parent: u64,
-        temporary: &EntryName,
-        expected: [u64; 2],
-        victim: &EntryName,
-        old: [u64; 2],
-    ) -> io::Result<u64> {
-        if temporary.as_os_str().len() > 4096 || victim.as_os_str().len() > 4096 {
-            return Err(crate::native_reply::bounded_refusal());
-        }
-        self.handle(Request::PrepareReplacement(
-            parent,
-            temporary.clone(),
-            expected,
-            victim.clone(),
-            old,
-        ))
-    }
-    pub fn retire_pending_handoff(&self, id: u64, ticket: [u8; 16]) -> io::Result<()> {
-        match self.call(Request::RetirePendingHandoff(id, ticket))? {
-            Response::Empty => Ok(()),
-            _ => Err(refused()),
-        }
-    }
-    pub fn arm_pending_handoff(&self, id: u64, challenge: [u8; 32]) -> io::Result<[u8; 16]> {
-        match self.call(Request::ArmPendingHandoff(id, challenge))? {
-            Response::Bytes(bytes) => bytes.as_slice().try_into().map_err(|_| refused()),
-            _ => Err(refused()),
-        }
-    }
-    pub fn acknowledged_committed_job(&self, pending: u64) -> io::Result<u64> {
-        self.handle(Request::AcknowledgedCommittedJob(pending))
-    }
-    pub fn acknowledged_committed_pin(&self, pending: u64) -> io::Result<u64> {
-        self.handle(Request::AcknowledgedCommittedPin(pending))
-    }
-    pub fn observe_pending_replacement(
-        &self,
-        pending: u64,
-    ) -> io::Result<crate::directory_types::PendingReplacementObservation> {
-        match self.call(Request::ObservePendingReplacement(pending))? {
-            Response::PendingReplacementObservation(value) => Ok(value),
-            _ => Err(refused()),
-        }
-    }
-    pub fn check_pending_replacement(&self, pending: u64) -> io::Result<()> {
-        self.empty(Request::CheckPendingReplacement(pending))
-    }
-    pub fn start_pending_replacement(&self, pending: u64, receipt: &[u8]) -> io::Result<u64> {
-        if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
-            return Err(crate::native_reply::bounded_refusal());
-        }
-        self.handle(Request::StartPendingReplacement(pending, receipt.to_vec()))
-    }
-    pub fn cancel_pending_replacement(&self, pending: u64) -> io::Result<()> {
-        self.empty(Request::CancelPendingReplacement(pending))
-    }
-    pub fn release_pending_replacement(&self, pending: u64) -> io::Result<()> {
-        self.empty(Request::ReleasePendingReplacement(pending))
-    }
-    /// Retain actual remote capture custody for a completed genuine job.
-    pub fn pin_replacement(&self, job: u64) -> io::Result<u64> {
-        match self.call(Request::ReplacementPin(job))? {
-            Response::Handle(id) => Ok(id),
-            _ => Err(refused()),
-        }
-    }
-    pub fn created_temporary(&self, job: u64) -> io::Result<u64> {
-        match self.call(Request::CreatedTemporary(job))? {
-            Response::Handle(id) => Ok(id),
-            _ => Err(refused()),
-        }
-    }
-    pub fn check_created_temporary(&self, id: u64) -> io::Result<()> {
-        self.empty(Request::CheckCreatedTemporary(id))
-    }
-    pub fn prepare_created_atomic_save(
-        &self,
-        id: u64,
-    ) -> crate::directory_types::AtomicSavePreparation<u64> {
-        use crate::directory_types::AtomicSavePreparation as Outcome;
-        match self.call(Request::PrepareCreatedAtomicSave(id)) {
-            Ok(Response::AtomicPrepared(id)) => Outcome::Prepared(id),
-            Ok(Response::AtomicRefused(error)) => Outcome::Refused(error),
-            Ok(Response::AtomicUnknown(error)) => Outcome::Unknown(error),
-            Ok(_) => Outcome::Unknown("Unexpected AtomicSave preparation response".into()),
-            Err(error) => Outcome::Unknown(error.to_string()),
-        }
-    }
-    pub fn prepare_created_replacement(&self, id: u64) -> io::Result<u64> {
-        match self.call(Request::PrepareCreatedReplacement(id))? {
-            Response::Handle(pending) => Ok(pending),
-            _ => Err(refused()),
-        }
-    }
-    pub fn retire_created_temporary(&self, id: u64) -> io::Result<u64> {
-        match self.call(Request::RetireCreatedTemporary(id))? {
-            Response::Handle(job) => Ok(job),
-            _ => Err(refused()),
-        }
-    }
-    pub fn release_created_temporary(&self, id: u64) -> io::Result<()> {
-        self.empty(Request::ReleaseCreatedTemporary(id))
-    }
-    pub fn commit_replacement_pin(&self, pin: u64, receipt: &[u8]) -> io::Result<()> {
-        if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
-            return Err(refused());
-        }
-        self.empty(Request::CommitReplacementPin(pin, receipt.to_vec()))
-    }
-    pub fn check_replacement_pin(&self, pin: u64) -> io::Result<()> {
-        self.empty(Request::CheckReplacementPin(pin))
-    }
-    pub fn observe_replacement_pin(
-        &self,
-        pin: u64,
-    ) -> io::Result<crate::directory_types::ReplacementObservation> {
-        match self.call(Request::ObserveReplacementPin(pin))? {
-            Response::ReplacementObservation(value) => Ok(value),
-            _ => Err(refused()),
-        }
-    }
-    pub fn release_replacement_pin(&self, pin: u64) -> io::Result<()> {
-        self.empty(Request::ReleaseReplacementPin(pin))
     }
     pub fn poll(&self, job: u64) -> io::Result<JobPoll> {
         match self.call(Request::Poll(job))? {
@@ -641,123 +350,11 @@ struct WorkerState {
     directories: HashMap<u64, DirectoryClient>,
     handles: HashMap<u64, crate::FileHandle>,
     jobs: HashMap<u64, NativeJobClient>,
-    replacement_pins: HashMap<u64, crate::directory_client::ReplacementPinClient>,
-    created_temporaries: HashMap<u64, crate::directory_client::CreatedTemporaryClient>,
     cursors: HashMap<u64, DirectoryCursorClient>,
     pins: HashMap<u64, MetadataPinClient>,
-    history_reads: HashMap<u64, crate::directory_client::HistoryReadSubjectClient>,
-    pending_replacements: HashMap<u64, crate::directory_client::PendingReplacementClient>,
     next: u64,
 }
 impl WorkerState {
-    fn history_query(
-        &self,
-        id: u64,
-        name: EntryName,
-        expected: [u64; 2],
-        query: Vec<u8>,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.directories
-                .get(&id)
-                .ok_or_else(refused)?
-                .history_query(&name, expected, &query)
-                .await
-                .map(Response::Bytes)
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn history_read_subject(
-        &mut self,
-        id: u64,
-        name: EntryName,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.history_reads.len() >= 64 {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            if self.next == u64::MAX {
-                return Err(refused());
-            }
-            let subject = self
-                .directories
-                .get(&id)
-                .ok_or_else(refused)?
-                .history_read_subject(&name)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.history_reads.insert(self.next, subject);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn check_history_read(
-        &mut self,
-        id: u64,
-        named: bool,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            // A missing local alias has no authority to check. Its
-            // denial must not close unrelated live capabilities.
-            let Some(subject) = self.history_reads.get(&id) else {
-                return Ok(Response::HistoryReadCurrent(false));
-            };
-            if named {
-                subject.check().await
-            } else {
-                subject.check_scope().await
-            }
-            .map_err(crate::native_reply::client_error)?;
-            Ok(Response::HistoryReadCurrent(true))
-        })
-    }
-    fn retire_history_read_handoff(
-        &mut self,
-        id: u64,
-        ticket: [u8; 16],
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.history_reads
-                .get(&id)
-                .ok_or_else(refused)?
-                .retire_daemon_handoff(ticket)
-                .await
-                .map(|()| Response::Empty)
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn arm_history_read(
-        &mut self,
-        id: u64,
-        challenge: [u8; 32],
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.history_reads
-                .get(&id)
-                .ok_or_else(refused)?
-                .arm_daemon_handoff(challenge)
-                .await
-                .map(|ticket| Response::Bytes(ticket.to_vec()))
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn observe_history_read(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.history_reads
-                .get(&id)
-                .ok_or_else(refused)?
-                .observe()
-                .await
-                .map(Response::HistoryReadObservation)
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn release_history_read(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.history_reads.remove(&id).ok_or_else(refused)?;
-            Ok(Response::Empty)
-        })
-    }
     fn check_pin(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
         Box::pin(async move {
             self.pins
@@ -1069,50 +666,6 @@ impl WorkerState {
             Ok(Response::Handle(self.next))
         })
     }
-    fn atomic_save(
-        &self,
-        id: u64,
-        temporary: EntryName,
-        expected: [u64; 2],
-        target: EntryName,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.directories
-                .get(&id)
-                .ok_or_else(refused)?
-                .atomic_save(&temporary, expected, &target)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn rename_replace(
-        &mut self,
-        id: u64,
-        name: EntryName,
-        new: EntryName,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            room(
-                self.directories
-                    .len()
-                    .saturating_add(self.handles.len())
-                    .saturating_add(self.jobs.len())
-                    .saturating_add(self.cursors.len()),
-                self.next,
-            )?;
-            let job = self
-                .directories
-                .get(&id)
-                .ok_or_else(refused)?
-                .rename_replace(&name, &new)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.jobs.insert(self.next, job);
-            Ok(Response::Handle(self.next))
-        })
-    }
     fn rename(
         &mut self,
         id: u64,
@@ -1138,376 +691,6 @@ impl WorkerState {
             self.next = self.next.checked_add(1).ok_or_else(refused)?;
             self.jobs.insert(self.next, job);
             Ok(Response::Handle(self.next))
-        })
-    }
-    fn prepare_replacement(
-        &mut self,
-        id: u64,
-        temporary: EntryName,
-        expected: [u64; 2],
-        victim: EntryName,
-        old: [u64; 2],
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.pending_replacements.len() >= 64 || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let pending = self
-                .directories
-                .get(&id)
-                .ok_or_else(refused)?
-                .prepare_replace(&temporary, expected, &victim, old)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.pending_replacements.insert(self.next, pending);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn retire_pending_handoff(
-        &mut self,
-        id: u64,
-        ticket: [u8; 16],
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .retire_daemon_handoff(ticket)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn arm_pending_handoff(
-        &mut self,
-        id: u64,
-        challenge: [u8; 32],
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .arm_daemon_handoff(&challenge)
-                .await
-                .map(|ticket| Response::Bytes(ticket.to_vec()))
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn acknowledged_committed_job(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.jobs.len() >= 64 || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let job = self
-                .pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .acknowledged_committed_job()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.jobs.insert(self.next, job);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn acknowledged_committed_pin(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.replacement_pins.len() >= 64 || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let pin = self
-                .pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .acknowledged_committed_pin()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.replacement_pins.insert(self.next, pin);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn observe_pending_replacement(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .observe()
-                .await
-                .map(Response::PendingReplacementObservation)
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn check_pending_replacement(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .check_scope()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn start_pending_replacement(
-        &mut self,
-        id: u64,
-        receipt: Vec<u8>,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            room(
-                self.directories
-                    .len()
-                    .saturating_add(self.handles.len())
-                    .saturating_add(self.jobs.len())
-                    .saturating_add(self.pins.len())
-                    .saturating_add(self.cursors.len()),
-                self.next,
-            )?;
-            let job = self
-                .pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .start_with_history(&receipt)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            // Retain the same Pending for source-owned committed ACK.
-            // A lost response is unknown and no raw-start replay is attempted.
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.jobs.insert(self.next, job);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn cancel_pending_replacement(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.pending_replacements
-                .get(&id)
-                .ok_or_else(refused)?
-                .cancel()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn release_pending_replacement(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.pending_replacements.remove(&id).is_none() {
-                return Err(refused());
-            }
-            Ok(Response::Empty)
-        })
-    }
-    fn set_created_permissions(
-        &mut self,
-        directory: u64,
-        name: EntryName,
-        expected: [u64; 2],
-        mode: u32,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.directories
-                .get(&directory)
-                .ok_or_else(refused)?
-                .set_created_permissions(&name, expected, mode)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn set_temporary_permissions(
-        &mut self,
-        id: u64,
-        mode: u32,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.created_temporaries
-                .get(&id)
-                .ok_or_else(refused)?
-                .set_permissions(mode)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn retire_created(
-        &mut self,
-        directory: u64,
-        name: EntryName,
-        expected: [u64; 2],
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.jobs.len() >= HANDLES || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let job = self
-                .directories
-                .get(&directory)
-                .ok_or_else(refused)?
-                .retire_created(&name, expected)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.jobs.insert(self.next, job);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn created_temporary(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.created_temporaries.len() >= 64 || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let temporary = self
-                .jobs
-                .get(&id)
-                .ok_or_else(refused)?
-                .created_temporary()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.created_temporaries.insert(self.next, temporary);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn check_created_temporary(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.created_temporaries
-                .get(&id)
-                .ok_or_else(refused)?
-                .check()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn prepare_created_atomic_save(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            use crate::directory_types::AtomicSavePreparation as Outcome;
-            if self.pending_replacements.len() >= 64 || self.next == u64::MAX {
-                return Ok(Response::AtomicRefused(
-                    "Local reservation table full before source request".into(),
-                ));
-            }
-            match self
-                .created_temporaries
-                .get(&id)
-                .ok_or_else(refused)?
-                .prepare_atomic_save()
-                .await
-            {
-                Outcome::Prepared(pending) => {
-                    self.next = self.next.checked_add(1).ok_or_else(refused)?;
-                    self.pending_replacements.insert(self.next, pending);
-                    Ok(Response::AtomicPrepared(self.next))
-                }
-                Outcome::Refused(error) => Ok(Response::AtomicRefused(error)),
-                Outcome::Unknown(error) => Ok(Response::AtomicUnknown(error)),
-            }
-        })
-    }
-    fn prepare_created_replacement(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.pending_replacements.len() >= 64 || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let pending = self
-                .created_temporaries
-                .get(&id)
-                .ok_or_else(refused)?
-                .prepare_replace()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.pending_replacements.insert(self.next, pending);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn retire_created_temporary(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.jobs.len() >= HANDLES || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let job = self
-                .created_temporaries
-                .get(&id)
-                .ok_or_else(refused)?
-                .retire()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.jobs.insert(self.next, job);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn release_created_temporary(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.created_temporaries.remove(&id).is_none() {
-                return Err(refused());
-            }
-            Ok(Response::Empty)
-        })
-    }
-    fn replacement_pin(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            // Separate finite custody pool; dropping a job does not drop its pin.
-            if self.replacement_pins.len() >= 64 || self.next == u64::MAX {
-                return Err(crate::native_reply::bounded_refusal());
-            }
-            let pin = self
-                .jobs
-                .get(&id)
-                .ok_or_else(refused)?
-                .pin_replacement()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            self.next = self.next.checked_add(1).ok_or_else(refused)?;
-            self.replacement_pins.insert(self.next, pin);
-            Ok(Response::Handle(self.next))
-        })
-    }
-    fn commit_replacement_pin(
-        &self,
-        id: u64,
-        bytes: Vec<u8>,
-    ) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.replacement_pins
-                .get(&id)
-                .ok_or_else(refused)?
-                .commit_with_history(&bytes)
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn check_replacement_pin(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.replacement_pins
-                .get(&id)
-                .ok_or_else(refused)?
-                .check()
-                .await
-                .map_err(crate::native_reply::client_error)?;
-            Ok(Response::Empty)
-        })
-    }
-    fn observe_replacement_pin(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            self.replacement_pins
-                .get(&id)
-                .ok_or_else(refused)?
-                .observe()
-                .await
-                .map(Response::ReplacementObservation)
-                .map_err(crate::native_reply::client_error)
-        })
-    }
-    fn release_replacement_pin(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            if self.replacement_pins.remove(&id).is_none() {
-                return Err(refused());
-            }
-            Ok(Response::Empty)
         })
     }
     fn poll(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
@@ -1600,93 +783,9 @@ impl WorkerState {
             Ok(Response::Empty)
         })
     }
-    // Exhaustive routing keeps every capability operation on the production path.
     fn dispatch(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
         Box::pin(async move {
             match request {
-                request @ (Request::HistoryQuery(..)
-                | Request::HistoryReadSubject(..)
-                | Request::CheckHistoryRead(..)
-                | Request::RetireHistoryReadHandoff(..)
-                | Request::ArmHistoryRead(..)
-                | Request::ObserveHistoryRead(..)
-                | Request::ReleaseHistoryRead(..)
-                | Request::CheckPin(..)
-                | Request::CheckJob(..)
-                | Request::Check(..)
-                | Request::OpenCursor(..)
-                | Request::CursorPage(..)
-                | Request::ReleaseCursor(..)
-                | Request::Pin(..)
-                | Request::PinStat(..)
-                | Request::ReleasePin(..)
-                | Request::HandleStat(..)
-                | Request::Metadata(..)
-                | Request::SyncDirectory(..)
-                | Request::Statfs(..)) => self.dispatch_0(request).await,
-                request @ (Request::Readlink(..)
-                | Request::Stat(..)
-                | Request::List(..)
-                | Request::Directory(..)
-                | Request::Open(..)
-                | Request::Create(..)
-                | Request::Recoveries(..)
-                | Request::RestoreCaptured(..)
-                | Request::AtomicSave(..)
-                | Request::RenameReplace(..)
-                | Request::Rename(..)
-                | Request::PrepareReplacement(..)
-                | Request::RetirePendingHandoff(..)
-                | Request::ArmPendingHandoff(..)
-                | Request::AcknowledgedCommittedJob(..)
-                | Request::AcknowledgedCommittedPin(..)
-                | Request::ObservePendingReplacement(..)
-                | Request::CheckPendingReplacement(..)
-                | Request::StartPendingReplacement(..)
-                | Request::CancelPendingReplacement(..)) => self.dispatch_1(request).await,
-                request @ (Request::ReleasePendingReplacement(..)
-                | Request::SetCreatedPermissions(..)
-                | Request::SetTemporaryPermissions(..)
-                | Request::RetireCreated(..)
-                | Request::CreatedTemporary(..)
-                | Request::CheckCreatedTemporary(..)
-                | Request::PrepareCreatedAtomicSave(..)
-                | Request::PrepareCreatedReplacement(..)
-                | Request::RetireCreatedTemporary(..)
-                | Request::ReleaseCreatedTemporary(..)
-                | Request::ReplacementPin(..)
-                | Request::CommitReplacementPin(..)
-                | Request::CheckReplacementPin(..)
-                | Request::ObserveReplacementPin(..)
-                | Request::ReleaseReplacementPin(..)
-                | Request::Poll(..)
-                | Request::Cancel(..)
-                | Request::ReleaseDirectory(..)
-                | Request::ReleaseJob(..)
-                | Request::Read(..)) => self.dispatch_2(request).await,
-                request @ (Request::Write(..)
-                | Request::Append(..)
-                | Request::Flush(..)
-                | Request::Release(..)) => self.dispatch_3(request).await,
-            }
-        })
-    }
-    fn dispatch_0(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            match request {
-                Request::HistoryQuery(id, name, expected, query) => {
-                    self.history_query(id, name, expected, query).await
-                }
-                Request::HistoryReadSubject(id, name) => self.history_read_subject(id, name).await,
-                Request::CheckHistoryRead(id, named) => self.check_history_read(id, named).await,
-                Request::RetireHistoryReadHandoff(id, ticket) => {
-                    self.retire_history_read_handoff(id, ticket).await
-                }
-                Request::ArmHistoryRead(id, challenge) => {
-                    self.arm_history_read(id, challenge).await
-                }
-                Request::ObserveHistoryRead(id) => self.observe_history_read(id).await,
-                Request::ReleaseHistoryRead(id) => self.release_history_read(id).await,
                 Request::CheckPin(id) => self.check_pin(id).await,
                 Request::CheckJob(id) => self.check_job(id).await,
                 Request::Check(id) => self.check(id).await,
@@ -1700,13 +799,6 @@ impl WorkerState {
                 Request::Metadata(id) => self.metadata(id).await,
                 Request::SyncDirectory(id) => self.sync_directory(id).await,
                 Request::Statfs(id) => self.statfs(id).await,
-                _ => Err(refused()),
-            }
-        })
-    }
-    fn dispatch_1(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            match request {
                 Request::Readlink(id, name, expected) => self.readlink(id, name, expected).await,
                 Request::Stat(id, name) => self.stat(id, name).await,
                 Request::List(id, cursor) => self.list(id, cursor).await,
@@ -1719,83 +811,16 @@ impl WorkerState {
                 Request::RestoreCaptured(id, recovery, name) => {
                     self.restore_captured(id, recovery, name).await
                 }
-                Request::AtomicSave(id, temporary, expected, target) => {
-                    self.atomic_save(id, temporary, expected, target).await
-                }
-                Request::RenameReplace(id, name, new) => self.rename_replace(id, name, new).await,
                 Request::Rename(id, name, new) => self.rename(id, name, new).await,
-                Request::PrepareReplacement(id, temporary, expected, victim, old) => {
-                    self.prepare_replacement(id, temporary, expected, victim, old)
-                        .await
-                }
-                Request::RetirePendingHandoff(id, ticket) => {
-                    self.retire_pending_handoff(id, ticket).await
-                }
-                Request::ArmPendingHandoff(id, challenge) => {
-                    self.arm_pending_handoff(id, challenge).await
-                }
-                Request::AcknowledgedCommittedJob(id) => self.acknowledged_committed_job(id).await,
-                Request::AcknowledgedCommittedPin(id) => self.acknowledged_committed_pin(id).await,
-                Request::ObservePendingReplacement(id) => {
-                    self.observe_pending_replacement(id).await
-                }
-                Request::CheckPendingReplacement(id) => self.check_pending_replacement(id).await,
-                Request::StartPendingReplacement(id, receipt) => {
-                    self.start_pending_replacement(id, receipt).await
-                }
-                Request::CancelPendingReplacement(id) => self.cancel_pending_replacement(id).await,
-                _ => Err(refused()),
-            }
-        })
-    }
-    fn dispatch_2(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            match request {
-                Request::ReleasePendingReplacement(id) => {
-                    self.release_pending_replacement(id).await
-                }
-                Request::SetCreatedPermissions(directory, name, expected, mode) => {
-                    self.set_created_permissions(directory, name, expected, mode)
-                        .await
-                }
-                Request::SetTemporaryPermissions(id, mode) => {
-                    self.set_temporary_permissions(id, mode).await
-                }
-                Request::RetireCreated(directory, name, expected) => {
-                    self.retire_created(directory, name, expected).await
-                }
-                Request::CreatedTemporary(id) => self.created_temporary(id).await,
-                Request::CheckCreatedTemporary(id) => self.check_created_temporary(id).await,
-                Request::PrepareCreatedAtomicSave(id) => self.prepare_created_atomic_save(id).await,
-                Request::PrepareCreatedReplacement(id) => {
-                    self.prepare_created_replacement(id).await
-                }
-                Request::RetireCreatedTemporary(id) => self.retire_created_temporary(id).await,
-                Request::ReleaseCreatedTemporary(id) => self.release_created_temporary(id).await,
-                Request::ReplacementPin(id) => self.replacement_pin(id).await,
-                Request::CommitReplacementPin(id, bytes) => {
-                    self.commit_replacement_pin(id, bytes).await
-                }
-                Request::CheckReplacementPin(id) => self.check_replacement_pin(id).await,
-                Request::ObserveReplacementPin(id) => self.observe_replacement_pin(id).await,
-                Request::ReleaseReplacementPin(id) => self.release_replacement_pin(id).await,
                 Request::Poll(id) => self.poll(id).await,
                 Request::Cancel(id) => self.cancel(id).await,
                 Request::ReleaseDirectory(id) => self.release_directory(id).await,
                 Request::ReleaseJob(id) => self.release_job(id).await,
                 Request::Read(id, offset, len) => self.read(id, offset, len).await,
-                _ => Err(refused()),
-            }
-        })
-    }
-    fn dispatch_3(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
-        Box::pin(async move {
-            match request {
                 Request::Write(id, offset, bytes) => self.write(id, offset, bytes).await,
                 Request::Append(id, bytes) => self.append(id, bytes).await,
                 Request::Flush(id) => self.flush(id).await,
                 Request::Release(id) => self.release(id).await,
-                _ => Err(refused()),
             }
         })
     }
@@ -1825,12 +850,8 @@ impl bridge::Serve<Request, Response> for WorkerState {
                 directories: HashMap::from([(ROOT_DIRECTORY, directory)]),
                 handles: HashMap::new(),
                 jobs: HashMap::new(),
-                replacement_pins: HashMap::new(),
-                created_temporaries: HashMap::new(),
                 cursors: HashMap::new(),
                 pins: HashMap::new(),
-                history_reads: HashMap::new(),
-                pending_replacements: HashMap::new(),
                 next: ROOT_DIRECTORY,
             })
         })

@@ -116,7 +116,6 @@ fn windows_partition() -> Candidate {
     }
 }
 
-/// A stick that copies every identifier of the Windows partition.
 fn forged_stick(seq: u32) -> Candidate {
     let mut stick = windows_partition();
     stick.id = format!("sdb1:{seq}");
@@ -296,7 +295,6 @@ fn the_windows_partition_is_asked_about_once_then_opens_lazily() {
         Some(mounted.path.as_str())
     );
 
-    // Settings: "Open my Windows drive safely" applies from the next opening.
     let grant = remembered[0].grant.clone();
     assert!(matches!(
         service.as_person(Request::SetMode {
@@ -315,7 +313,6 @@ fn the_windows_partition_is_asked_about_once_then_opens_lazily() {
     };
     assert_eq!(mounted.mode, Mode::OpenSafely);
 
-    // Forgetting closes it and deletes the grant.
     assert!(matches!(
         service.as_person(Request::Forget { grant }),
         Response::Done
@@ -348,7 +345,6 @@ fn a_stick_that_copies_the_windows_ids_is_still_asked_about() {
         Response::NeedsConsent { .. }
     ));
 
-    // "Open" applies to this insertion only; remembering keeps Open safely.
     let Response::Opened { mounted } = service.open("sdb1:7", consent(Mode::Open, true)) else {
         panic!("consented open of the stick failed");
     };
@@ -367,7 +363,6 @@ fn a_stick_that_copies_the_windows_ids_is_still_asked_about() {
         Response::Refused { .. }
     ));
 
-    // Unplugged: closed. Plugged back in: a new insertion, asked again.
     service
         .world
         .lock()

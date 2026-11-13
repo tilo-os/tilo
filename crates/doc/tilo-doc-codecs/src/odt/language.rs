@@ -10,12 +10,8 @@ use tilo_doc::model::{DocMut, DocRef, language as model_language};
 
 use super::styles::reassemble_bcp47;
 use crate::xml_escape::escape_attr;
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
 
-/// Import the document default language from the first paragraph-family
-/// `style:default-style` in `styles.xml`. No-op when none carries `fo:language`.
 pub(super) fn import_default_language(styles_xml: &[u8], doc: &mut DocMut) {
     if let Some(code) = parse_default_language(styles_xml) {
         doc.set_language(&code);
@@ -52,7 +48,6 @@ fn parse_default_language(styles_xml: &[u8]) -> Option<String> {
     None
 }
 
-/// Read a quick-xml element attribute by key as an owned, unescaped `String`.
 fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
@@ -82,7 +77,6 @@ fn split_bcp47(code: &str) -> (String, Option<String>) {
     }
 }
 
-/// The `<style:text-properties …/>` attribute fragment for a language/country.
 fn lang_attrs(lang: &str, country: Option<&str>) -> String {
     let mut s = format!(r#"fo:language="{}""#, escape_attr(lang));
     if let Some(c) = country {
@@ -91,7 +85,6 @@ fn lang_attrs(lang: &str, country: Option<&str>) -> String {
     s
 }
 
-/// The full paragraph-family `style:default-style` element for a language.
 fn default_style_xml(lang: &str, country: Option<&str>) -> String {
     format!(
         r#"<style:default-style style:family="paragraph"><style:text-properties {}/></style:default-style>"#,
@@ -99,12 +92,9 @@ fn default_style_xml(lang: &str, country: Option<&str>) -> String {
     )
 }
 
-/// Splice the default language into `styles.xml`, reusing an existing paragraph
-/// `style:default-style` or injecting a fresh one into `<office:styles>`.
 fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>) -> Vec<u8> {
     let s = String::from_utf8_lossy(styles_xml).into_owned();
 
-    // Case 1: a paragraph default-style exists — rewrite it wholesale; other text-properties on a default style are uncommon, so re-synthesising keeps the splice simple.
     if let Some((start, end)) = find_para_default_style(&s) {
         let mut out = String::with_capacity(s.len());
         out.push_str(s.get(..start).unwrap_or_default());
@@ -115,7 +105,6 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
 
     let elem = default_style_xml(lang, country);
 
-    // Case 2: an `<office:styles>` section exists — inject right after its open tag (default styles conventionally lead the section).
     if let Some(open_end) = open_tag_end(&s, "<office:styles") {
         // A capacity hint only; bounded by the styles.xml + injected-element
         // sizes, nowhere near `usize::MAX`.
@@ -125,7 +114,6 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
         out.push_str(s.get(open_end..).unwrap_or_default());
         return out.into_bytes();
     }
-    // Case 2b: a self-closing `<office:styles/>` — expand it to a paired element.
     if let Some((sc_start, sc_end)) = self_closing_span(&s, "<office:styles") {
         // A capacity hint only; bounded by the styles.xml + injected-element
         // sizes, nowhere near `usize::MAX`.
@@ -138,7 +126,6 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
         return out.into_bytes();
     }
 
-    // Case 3: no `<office:styles>` at all — synthesise one. ODF orders `office:styles` before `office:automatic-styles`/`office:master-styles`.
     let section = format!("<office:styles>{elem}</office:styles>");
     let at = s
         .find("<office:automatic-styles")
@@ -159,7 +146,6 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
     }
 }
 
-/// Locate the first paragraph-family `<style:default-style>` (or self-closing form), by `(start, end)` byte span.
 fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
     let needle = "<style:default-style";
     let mut from = 0;
@@ -198,7 +184,6 @@ fn open_tag_end(s: &str, open_prefix: &str) -> Option<usize> {
     gt.checked_add(1)
 }
 
-/// The `(start, end)` byte span of a self-closing `{open_prefix} …/>` tag, or `None`.
 fn self_closing_span(s: &str, open_prefix: &str) -> Option<(usize, usize)> {
     let open = s.find(open_prefix)?;
     let gt = open.checked_add(s.get(open..)?.find('>')?)?;

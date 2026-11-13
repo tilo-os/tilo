@@ -2,9 +2,8 @@ use super::*;
 use accounts::cloud_types::{FilesMode, set_files_mode};
 
 pub(super) fn verify_process_handshake(service: &mut CloudService, mount: &Path) {
-    // Preparation travels over the same child control pipe as file requests.
-    // A just-finished upload/sync may still be flushing its metadata: retry only
-    // the protocol's explicit busy errors, never an unexpected failure.
+    // Retry only the protocol's busy errors: a just-finished upload may still
+    // be flushing its metadata.
     let deadline = std::time::Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .unwrap();
@@ -91,7 +90,6 @@ fn preparation_rejects_configuration_not_owned_by_the_active_mount() {
     changed.config["server_url"] = "https://changed.example/".into();
     store.upsert(changed);
     store.save_in(account.config_root.path()).unwrap();
-    // No watcher/reconcile has replaced the live mount yet.
     assert!(matches!(
         account.service.request(
             CloudRequest::PrepareImport {
@@ -214,7 +212,6 @@ fn mode_commit_consumes_hold_and_preserves_the_cache_directory() {
         ),
         CloudResponse::Done
     );
-    // Returning to Sync must mount immediately: a consumed hold cannot suppress it.
     mode(account.config_root.path(), FilesMode::Sync);
     account.service.reconcile();
     assert_eq!(account.service.mounted().len(), 1);

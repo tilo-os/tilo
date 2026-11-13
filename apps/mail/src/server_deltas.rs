@@ -66,8 +66,6 @@ pub(super) fn server_changes(
     (gone, reflagged)
 }
 
-/// The messages of `mail`'s drafts' server copies: each is the draft
-/// itself, so fetched back with Drafts it is kept as nothing.
 fn draft_copies(mail: &crate::resource::Mail) -> HashSet<MessageId> {
     mail.draft_copy_ids()
         .iter()
@@ -75,11 +73,6 @@ fn draft_copies(mail: &crate::resource::Mail) -> HashSet<MessageId> {
         .collect()
 }
 
-/// Take the copies servers keep of drafts out of what a sync of `folder`
-/// fetched, before anything is kept of them: no message, no entry in the
-/// record, nothing on this device or for its other devices. Their UIDs
-/// join what the folder's next sync counts as held, so they are not
-/// fetched again.
 pub(super) fn pass_over_draft_copies(
     st: &mut MailState,
     mail: &crate::resource::Mail,
@@ -106,9 +99,6 @@ pub(super) fn pass_over_draft_copies(
     }
 }
 
-/// What a server search found joins the mail this device holds, and so the
-/// search; nothing held is replaced, and a draft's server copy is not
-/// taken.
 pub(super) fn take_found(
     doc: &mut ui::widget::Edits<'_>,
     st: &mut MailState,
@@ -126,8 +116,6 @@ pub(super) fn take_found(
     }
 }
 
-/// The timing of an account's first fetch, starting now: its mail comes
-/// from the account's server.
 pub(super) fn first_fetch(config: &AccountConfig) -> ui::arriving::ArrivalClock {
     ui::arriving::ArrivalClock::new(
         ui::time::now(),

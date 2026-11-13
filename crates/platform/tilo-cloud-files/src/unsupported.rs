@@ -40,7 +40,6 @@ pub fn restore(
     Err(UNAVAILABLE.into())
 }
 
-/// Returns an explicit failure without touching paths or invoking callbacks.
 pub fn execute(
     _: ImportConsent,
     _: &AtomicBool,
@@ -53,7 +52,6 @@ pub fn execute(
     }
 }
 
-/// Returns an explicit failure without opening the supplied socket path.
 pub fn execute_at(
     _: &Path,
     consent: ImportConsent,

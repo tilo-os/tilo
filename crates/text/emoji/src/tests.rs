@@ -27,7 +27,6 @@ fn loads_every_group_in_unicode_order() {
         ]
     );
     assert_eq!(cat.groups()[0].label(), "Smileys & emotion");
-    // Every tab icon is a real catalogue entry.
     assert!(cat.groups().iter().all(|g| cat.get(g.icon()).is_some()));
     assert!(cat.emoji().len() > 1800, "{}", cat.emoji().len());
     let first = cat.group_emoji(&cat.groups()[0]);
@@ -36,7 +35,6 @@ fn loads_every_group_in_unicode_order() {
     let sub = &cat.subgroups(&cat.groups()[0])[0];
     assert_eq!(sub.id(), "face-smiling");
     assert_eq!(cat.subgroup_emoji(sub)[0].text(), "😀");
-    // Every entry is toneless: toned forms come from with_skin_tone.
     assert!(cat.emoji().iter().all(|e| {
         e.text()
             .chars()
@@ -58,15 +56,12 @@ fn ranking_prefers_prefix_then_word_then_substring() {
     let pos = |e: &str| found.iter().position(|f| *f == e).unwrap();
     assert!(pos("🐈") < pos("😸"), "{found:?}");
     assert_eq!(cat.search("pizza", 1)[0].text(), "🍕");
-    // A whole word beats the start of a longer name, and shorter names lead.
     assert_eq!(cat.search("heart", 1)[0].text(), "❤\u{FE0F}");
     // Keywords count: "+1" is a thumbs-up keyword.
     assert_eq!(cat.search("+1", 1)[0].text(), "👍");
-    // Multi-term queries need every term.
     assert_eq!(cat.search("thumbs down", 1)[0].text(), "👎");
     assert!(cat.search("zzzqqq", 5).is_empty());
     assert!(cat.search("  ", 5).is_empty());
-    // Diacritics fold.
     assert!(texts(&cat.search("cote d'ivoire", 3)).contains(&"🇨🇮"));
 }
 
@@ -84,7 +79,6 @@ fn thumbs_up_medium_tone_is_the_modifier_sequence() {
     let cat = cat();
     let toned = cat.with_skin_tone("👍", Some(SkinTone::Medium)).unwrap();
     assert_eq!(toned, "\u{1F44D}\u{1F3FD}");
-    // Re-toning and un-toning a toned emoji.
     assert_eq!(
         cat.with_skin_tone(toned, Some(SkinTone::Dark)),
         Some("\u{1F44D}\u{1F3FF}")
@@ -104,16 +98,12 @@ fn tone_replaces_presentation_selector_and_covers_zwj_people() {
         cat.with_skin_tone("☝️", Some(SkinTone::Light)),
         Some("\u{261D}\u{1F3FB}")
     );
-    // A multi-person sequence takes one uniform tone on every person, not on
-    // the handshake between them.
     assert_eq!(cat.with_skin_tone("🧑‍🤝‍🧑", Some(SkinTone::Medium)), Some("🧑🏽‍🤝‍🧑🏽"));
     assert_eq!(cat.with_skin_tone("👩‍❤️‍👨", Some(SkinTone::Dark)), Some("👩🏿‍❤️‍👨🏿"));
-    // A profession: tone lands on the person, not the tool.
     assert_eq!(
         cat.with_skin_tone("🧑‍⚕️", Some(SkinTone::MediumDark)),
         Some("🧑🏾‍⚕️")
     );
-    // Every toned form resolves back to its base.
     for e in cat.emoji().iter().filter(|e| e.takes_skin_tone()) {
         for tone in SkinTone::ALL {
             let toned = cat.with_skin_tone(e.text(), Some(tone)).unwrap();
@@ -132,7 +122,6 @@ fn gender_variants_map_person_man_woman() {
     assert_eq!(v.man.unwrap().text(), "🏃‍♂️");
     assert_eq!(v.woman.unwrap().text(), "🏃‍♀️");
     assert_eq!(cat.get("🏃‍♀️").unwrap().gender(), Some(Gender::Woman));
-    // Resolves from any member, and keeps the skin tone.
     assert_eq!(cat.gender_variants("👩‍⚕️").unwrap().neutral.text(), "🧑‍⚕️");
     assert_eq!(cat.with_gender("🧑🏽‍⚕️", Gender::Woman), Some("👩🏽‍⚕️"));
     assert!(cat.gender_variants("🍕").is_none());
@@ -182,7 +171,6 @@ fn locale_tags_resolve_to_their_language() {
     ] {
         assert_eq!(Catalogue::for_locale(tag).locale(), locale, "{tag}");
     }
-    // One catalogue per language, built once.
     assert!(std::ptr::eq(
         Catalogue::for_locale("de-DE"),
         Catalogue::for_locale("de-CH")
@@ -200,7 +188,6 @@ fn translated_names_and_search() {
 
     let fr = Catalogue::for_locale("fr-FR");
     assert_eq!(fr.search("pouce vers le haut", 1)[0].text(), "👍");
-    // "cœur" folds to "coeur".
     assert_eq!(fr.search("coeur rouge", 1)[0].text(), "❤\u{FE0F}");
     for (locale, query) in [
         ("fr", "pouce"),
@@ -217,7 +204,6 @@ fn translated_names_and_search() {
         Catalogue::for_locale("zh-TW").get("👍").unwrap().name(),
         "讚"
     );
-    // Structure is shared: tones and genders work the same in every locale.
     assert_eq!(de.with_skin_tone("👍", Some(SkinTone::Dark)), Some("👍🏿"));
     assert_eq!(de.emoji().len(), cat().emoji().len());
 }
@@ -253,7 +239,6 @@ fn recents_are_most_recent_first_deduped_and_capped() {
     assert_eq!(r.items(), ["🍕", "🎉", "👍"]);
     r.record("🚀");
     assert_eq!(r.items(), ["🚀", "🍕", "🎉"]);
-    // A new skin tone replaces the old spelling rather than duplicating it.
     r.record("🎉");
     r.record("👍🏽");
     r.record("👍🏿");
@@ -279,12 +264,10 @@ fn recents_round_trip_and_renormalise() {
 #[test]
 fn translated_search_also_matches_english_after_native_matches() {
     let de = Catalogue::for_locale("de-DE");
-    // English still finds emoji, shown by their German names.
     let found = de.search("thumbs", 5);
     assert_eq!(texts(&found)[..2], ["👍", "👎"]);
     assert_eq!(found[0].name(), "Daumen hoch");
     assert_eq!(de.search("thumbs up", 1)[0].text(), "👍");
-    // An emoji matching in both languages is listed once.
     let pizza = texts(&de.search("pizza", 50));
     assert_eq!(pizza.iter().filter(|e| **e == "🍕").count(), 1);
     // Every native match ranks before every English-only one. A term only
@@ -298,6 +281,5 @@ fn translated_search_also_matches_english_after_native_matches() {
     let first_english = found.iter().position(|e| !native(e)).unwrap();
     assert!(first_english > 0, "German has native \"hand\" matches");
     assert!(found[first_english..].iter().all(|e| !native(e)));
-    // The English catalogue has no second pass.
     assert!(cat().search("daumen", 5).is_empty());
 }

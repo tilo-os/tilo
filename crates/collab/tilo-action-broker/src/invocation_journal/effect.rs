@@ -195,7 +195,6 @@ impl InvocationJournal {
             return Err("cannot prepare a retired invocation".into());
         }
         record.prepared_effect = Some(prepared.clone());
-        self.snapshot.version = self.snapshot.version.max(5);
         let durable = self.commit(at, Injected::default())?;
         Ok((prepared, durable))
     }

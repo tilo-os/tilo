@@ -1,9 +1,8 @@
-//! Chunking and hashing: in memory, over a mapped file with the ranges an
-//! edit can have changed, or streamed from a reader in bounded memory.
+//! Chunking and hashing: in memory, over a mapped file with the ranges an edit
+//! can have changed, or streamed from a reader in bounded memory.
 //!
-//! Cut points are found sequentially (a `FastCDC` cut depends only on the
-//! bytes from the chunk's start); the chunks are then hashed on several
-//! threads, since BLAKE3 over large chunks is what costs.
+//! Cut points are found sequentially (a `FastCDC` cut depends only on the bytes
+//! from the chunk's start), then chunks are hashed on several threads.
 
 use std::io::{self, Read};
 use std::ops::Range;
@@ -16,13 +15,10 @@ use crate::tier::ChunkTier;
 /// Bytes read per step when chunking a stream; memory stays at about this
 /// plus one maximal chunk.
 const STREAM_BLOCK: usize = 16 * 1024 * 1024;
-/// Below this many bytes to hash, one thread does it.
 const PARALLEL_MIN: usize = 4 * 1024 * 1024;
-/// Below this many bytes, cut points are found on one thread.
 const PARALLEL_CUT_MIN: usize = 32 * 1024 * 1024;
 const MAX_HASH_THREADS: usize = 16;
 
-/// Work done to produce a manifest.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct ChunkStats {
     pub chunks_hashed: u64,
@@ -65,7 +61,6 @@ impl Cutter {
         })
     }
 
-    /// The largest chunk this cutter produces.
     pub const fn max(&self) -> usize {
         self.max
     }
@@ -88,8 +83,6 @@ impl Cutter {
     }
 }
 
-/// Cut points of `data` from `start` until the first cut at or past
-/// `until`, as chunk end offsets.
 fn cuts_from(data: &[u8], cutter: &Cutter, start: usize, until: usize) -> Vec<usize> {
     let mut ends = Vec::new();
     let mut pos = start;
@@ -104,15 +97,13 @@ fn cuts_from(data: &[u8], cutter: &Cutter, start: usize, until: usize) -> Vec<us
     ends
 }
 
-/// Every chunk end offset of `data`, found on several threads for a large
-/// body.
+/// Every chunk end offset of `data`, found on several threads for a large body.
 ///
-/// Each thread chunks its own segment as if a chunk started at the
-/// segment's first byte. A cut depends only on the bytes from its chunk's
-/// start, so once the true sequence (continued from the previous segment)
-/// reaches a cut the segment's thread also found, the two sequences agree
-/// from there on; the segment's remaining cuts are taken as they are. That
-/// usually happens within a few chunks.
+/// Each thread chunks its own segment as if a chunk started at the segment's
+/// first byte. A cut depends only on the bytes from its chunk's start, so once
+/// the true sequence reaches a cut the segment's thread also found, the two
+/// agree from there on and the segment's remaining cuts are taken as they are.
+/// That usually happens within a few chunks.
 fn chunk_ends(data: &[u8], cutter: &Cutter) -> Vec<usize> {
     let threads = std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
@@ -184,8 +175,6 @@ fn span(data: &[u8], start: usize, len: usize) -> &[u8] {
         .unwrap_or_default()
 }
 
-/// BLAKE3 of every `(start, len)` span of `data`, on several threads when
-/// there is enough to hash.
 fn hash_spans(data: &[u8], spans: &[(usize, usize)]) -> Vec<[u8; 32]> {
     let total: usize = spans.iter().map(|(_, len)| *len).sum();
     let threads = std::thread::available_parallelism()
@@ -241,7 +230,6 @@ fn to_len(len: usize) -> u32 {
     u32::try_from(len).unwrap_or(u32::MAX)
 }
 
-/// Chunks and hashes `data` from scratch.
 pub fn build(data: &[u8], previous_tier: Option<ChunkTier>) -> (Manifest, ChunkStats) {
     rebuild(None, data, &[], previous_tier)
 }
@@ -276,7 +264,6 @@ pub fn rebuild(
 
 enum Piece {
     Reused(ChunkRef),
-    /// A chunk of this length, hashed below.
     New(usize),
 }
 

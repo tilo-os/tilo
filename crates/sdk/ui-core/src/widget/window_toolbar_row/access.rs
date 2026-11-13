@@ -5,7 +5,7 @@ use super::{
     ACTION_TARGET_PREFIX, BACK_TARGET, CHOICE_TARGET_PREFIX, FORWARD_TARGET, LEADING_TARGET_PREFIX,
     LOCATION_TARGET, MenuEntry, NOTICE_TARGET_PREFIX, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX,
     SIDEBAR_TARGET, SUGGESTION_TARGET_PREFIX, Slot, ToolbarEvent, ToolbarRow, VIEW_TARGET_PREFIX,
-    VIEWS_MENU_TARGET, Widget, sidebar_key, trailing_word,
+    VIEWS_MENU_TARGET, Widget, listed_entries, sidebar_key, trailing_word,
 };
 
 impl ToolbarRow {
@@ -56,11 +56,12 @@ impl ToolbarRow {
                 ));
             }
         }
-        for (action, rect) in toolbar
+        for (index, (action, rect)) in toolbar
             .leading
             .iter()
             .zip(&self.slots.leading)
-            .filter(|(_, rect)| rect.area() > 0.0)
+            .enumerate()
+            .filter(|(_, (_, rect))| rect.area() > 0.0)
         {
             let mut node = button(
                 action.name.clone(),
@@ -71,6 +72,19 @@ impl ToolbarRow {
             if action.toggles || action.on {
                 node.role = Role::ToggleButton;
                 node.state.checked = Some(action.on);
+            }
+            // A menu button's items are its menu's, as a trailing one's are.
+            if !action.items.is_empty() {
+                let slot = Slot::Leading(index);
+                node.state.expanded = Some(self.menu_open_for(&slot));
+                let entries =
+                    (0..action.items.len()).map(|j| MenuEntry::Item(action.id.clone(), j));
+                node = node.with_children(vec![self.menu_node(
+                    action.name.clone(),
+                    &slot,
+                    *rect,
+                    entries,
+                )]);
             }
             nodes.push(node);
         }
@@ -252,7 +266,8 @@ impl ToolbarRow {
             if !action.items.is_empty() {
                 let slot = Slot::Action(i);
                 node.state.expanded = Some(self.menu_open_for(&slot));
-                let entries = (0..action.items.len()).map(|j| MenuEntry::Item(i, j));
+                let entries =
+                    (0..action.items.len()).map(|j| MenuEntry::Item(action.id.clone(), j));
                 node = node.with_children(vec![self.menu_node(
                     action.name.clone(),
                     &slot,
@@ -304,18 +319,18 @@ impl ToolbarRow {
         {
             entries.extend((0..views.choices.len()).map(MenuEntry::View));
         }
-        entries.extend(self.slots.folded_leading().map(MenuEntry::Leading));
+        for i in self.slots.folded_leading().collect::<Vec<_>>() {
+            if let Some(action) = toolbar.leading.get(i) {
+                entries.extend(listed_entries(action, MenuEntry::Leading(i)));
+            }
+        }
         for (i, action) in toolbar
             .actions
             .iter()
             .enumerate()
             .skip(self.slots.actions.len())
         {
-            if action.items.is_empty() {
-                entries.push(MenuEntry::Action(i));
-            } else {
-                entries.extend((0..action.items.len()).map(|j| MenuEntry::Item(i, j)));
-            }
+            entries.extend(listed_entries(action, MenuEntry::Action(i)));
         }
         entries
     }
@@ -340,12 +355,12 @@ impl ToolbarRow {
             .iter()
             .enumerate()
             .filter_map(|(position, entry)| {
-                let (name, target, enabled, checked) = self.entry_semantics(*entry)?;
+                let (name, target, enabled, checked) = self.entry_semantics(entry.clone())?;
                 let rect = open
                     .then(|| {
                         self.menu_entries
                             .iter()
-                            .position(|row| *row == Some(*entry))
+                            .position(|row| row.as_ref() == Some(entry))
                             .and_then(|row| self.menu.item_rect(row))
                     })
                     .flatten()
@@ -412,9 +427,11 @@ impl ToolbarRow {
                     (leading.toggles || leading.on).then_some(leading.on),
                 )
             }),
-            MenuEntry::Item(i, j) => toolbar
-                .actions
-                .get(i)
+            MenuEntry::Item(id, j) => toolbar
+                .leading
+                .iter()
+                .chain(&toolbar.actions)
+                .find(|menu| menu.id == *id)
                 .and_then(|menu| menu.items.get(j))
                 .map(action),
             MenuEntry::View(i) => {
@@ -528,7 +545,10 @@ impl ToolbarRow {
                     else {
                         return false;
                     };
-                    return self.run_leading(i);
+                    // A menu button opens its menu; any other runs.
+                    let opens = self.lists_items(&Slot::Leading(i));
+                    let ran = self.activate(&Slot::Leading(i));
+                    return if opens { ran } else { self.ran_from_menu(ran) };
                 }
                 if let Some(id) = target.strip_prefix(VIEW_TARGET_PREFIX) {
                     let Some(i) = self
@@ -555,17 +575,23 @@ impl ToolbarRow {
                     let ran = self.activate(&Slot::Action(i));
                     return if opens { ran } else { self.ran_from_menu(ran) };
                 }
-                let Some((i, j)) = toolbar.actions.iter().enumerate().find_map(|(i, action)| {
-                    action
-                        .items
+                let Some((action, j)) =
+                    toolbar
+                        .leading
                         .iter()
-                        .position(|item| item.id == id)
-                        .map(|j| (i, j))
-                }) else {
+                        .chain(&toolbar.actions)
+                        .find_map(|action| {
+                            action
+                                .items
+                                .iter()
+                                .position(|item| item.id == id)
+                                .map(|j| (action.id.clone(), j))
+                        })
+                else {
                     return false;
                 };
                 // A menu button's item runs without its menu open.
-                let ran = self.run_item(i, j);
+                let ran = self.run_item(&action, j);
                 return self.ran_from_menu(ran);
             }
         };

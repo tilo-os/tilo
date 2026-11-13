@@ -1,0 +1,22 @@
+[package]
+name = "tilolang-lex"
+version = "0.1.0"
+edition = "2024"
+publish = true
+# The toolkit colours a tilolang program with this same lexer, an editor that ships inside the
+# MIT SDK, so the tokens are MIT with the rest of the SDK and the compiler stays AGPL.
+license = "MIT"
+description = "The tilolang lexer: the tokens, source spans and literals a program's text is read as, so an editor colours it exactly as the compiler reads it."
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

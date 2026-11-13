@@ -1,25 +1,14 @@
 //! One person's displays across all of their devices, in one shared layout.
 //!
-//! Every device publishes the outputs it drives through the personal device
-//! fabric ([`DeviceOutput`]). The person's [`Arrangement`] is one roaming
-//! setting (`tilo.display_person.arrangement`): for each display, whether it takes
-//! part in the shared layout, its order, and its position in one coordinate
-//! space. Each display's entry carries its own revision, and devices merge
-//! the arrangement entry by entry ([`Arrangement::merge`]), so edits made
-//! at the same time to different displays on different devices all survive.
+//! Every device publishes the outputs it drives as [`DeviceOutput`], and the person's
+//! [`Arrangement`] is one roaming setting: for each display, whether it takes part in the shared
+//! layout, its order, and its position in one coordinate space. Each display's entry carries its
+//! own revision, so edits made at the same time to different displays on different devices all
+//! survive.
 //!
-//! Each device stays authoritative for its own hardware: modes, scale,
-//! rotation and how its own outputs sit next to each other come from its
-//! local display configuration. So [`Layout::resolve`] places a device's
-//! outputs as one rigid group, anchored by the first of them in arrangement
-//! order; the arrangement decides where the groups sit relative to each
-//! other. Arranging a device's screens among themselves happens on that
-//! device; arranging devices happens anywhere.
-//!
-//! The shell turns this layout into pointer and keyboard flow
-//! ([`Layout::step_pointer`]); Settings draws and edits it. Both resolve the
-//! same inputs with the same function, so what the canvas shows is where the
-//! pointer goes.
+//! Each device stays authoritative for its own hardware: modes, scale, rotation and how its own
+//! outputs sit next to each other come from its local display configuration. [`Layout::resolve`]
+//! places a device's outputs as one rigid group, and the arrangement decides where the groups sit.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,19 +16,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Settings section holding the arrangement leaf.
 pub const ARRANGEMENT_SECTION: &str = crate::hardware::DISPLAY_PERSON_SECTION;
-/// Leaf name of the arrangement within [`ARRANGEMENT_SECTION`].
 pub const ARRANGEMENT_LEAF: &str = "arrangement";
-/// The roaming key, as the device fabric names it.
 pub const ARRANGEMENT_KEY: &str = "tilo.display_person.arrangement";
-/// Bound on displays in one person's arrangement.
 pub const MAX_ARRANGED_DISPLAYS: usize = 128;
-/// Bound on outputs one device may publish.
 pub const MAX_DEVICE_OUTPUTS: usize = 16;
-/// Bound on identifier and name lengths.
 pub const MAX_NAME_BYTES: usize = 128;
-/// Coordinates stay well inside `i32` so every sum is safe.
 pub const MAX_COORDINATE: i32 = 1_000_000;
 
 /// One display's place in the person's shared layout.
@@ -70,7 +52,6 @@ pub struct ArrangedDisplay {
 crate::read_through_json_value!(ArrangedDisplay);
 
 impl ArrangedDisplay {
-    /// The same entry ignoring its revision.
     fn same_as(&self, other: &Self) -> bool {
         Self {
             rev: 0,
@@ -99,8 +80,6 @@ crate::read_through_json_value!(Arrangement);
 tilo_resource::json_model!(Arrangement);
 
 impl Arrangement {
-    /// Decode a stored arrangement, or `None` when it is malformed or out of
-    /// bounds. Duplicate entries keep the highest revision.
     pub fn from_value(value: &Value) -> Option<Self> {
         let decoded: Self = serde_json::from_value(value.clone()).ok()?;
         if decoded.displays.len() > MAX_ARRANGED_DISPLAYS {
@@ -147,7 +126,6 @@ impl Arrangement {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
 
-    /// The arrangement in a settings document; empty when absent or invalid.
     pub fn from_document(document: &Map<String, Value>) -> Self {
         document
             .get(ARRANGEMENT_SECTION)
@@ -156,13 +134,10 @@ impl Arrangement {
             .unwrap_or_default()
     }
 
-    /// The arrangement in the person's settings.
     pub fn load() -> Self {
         Self::from_document(&crate::load())
     }
 
-    /// Store this as the person's arrangement; the device fabric carries it
-    /// to their other devices.
     pub fn save(&self) -> std::io::Result<()> {
         let mut values = Map::new();
         values.insert(ARRANGEMENT_LEAF.into(), self.to_value());
@@ -191,9 +166,6 @@ impl Arrangement {
             .unwrap_or(0)
     }
 
-    /// This arrangement with `changes` applied. Only entries that really
-    /// change are written, each at a revision above every one here, so a
-    /// merge with edits made elsewhere to other displays keeps both.
     #[must_use]
     pub fn with_changes(&self, changes: impl IntoIterator<Item = ArrangedDisplay>) -> Self {
         let rev = self.max_rev().saturating_add(1);
@@ -230,34 +202,26 @@ fn valid_name(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_NAME_BYTES && !value.chars().any(char::is_control)
 }
 
-/// One output a device reports through the fabric.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceOutput {
     /// Stable monitor id: the EDID make, model and serial, with the
     /// connector only to tell identical monitors apart.
     pub id: String,
-    /// What a person calls it, e.g. `Built-in display` or `Dell U2720Q`.
     pub name: String,
     pub builtin: bool,
-    /// Logical rectangle in its device's own desktop, where that device's
-    /// pointer moves. Zero-sized while the output is off.
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
-    /// The mode it runs at, in pixels and millihertz.
     pub mode_width: u32,
     pub mode_height: u32,
     pub refresh_mhz: u32,
-    /// Scale times 1000.
     pub scale_milli: u16,
     pub connected: bool,
-    /// The device shows its desktop on it.
     pub enabled: bool,
 }
 
 impl DeviceOutput {
-    /// Whether the output shows part of its device's desktop right now.
     pub fn active(&self) -> bool {
         self.connected && self.enabled && self.width > 0 && self.height > 0
     }
@@ -283,18 +247,15 @@ impl DeviceOutput {
     }
 }
 
-/// One of the person's devices and the outputs it reports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonDevice {
     pub device: String,
     pub label: String,
-    /// The device this view was produced on.
     pub local: bool,
     pub online: bool,
     pub outputs: Vec<DeviceOutput>,
 }
 
-/// An axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rect {
     pub x: i32,
@@ -341,7 +302,6 @@ impl Rect {
         }
     }
 
-    /// Clamp a point inside, keeping it a hair short of the far edges.
     fn clamp(self, (x, y): (f64, f64)) -> (f64, f64) {
         let max_x = f64::from(self.right()) - EDGE_INSET;
         let max_y = f64::from(self.bottom()) - EDGE_INSET;
@@ -352,11 +312,8 @@ impl Rect {
     }
 }
 
-/// How far inside a far edge a clamped pointer rests: less than a pixel, so
-/// it still reads as that edge's last pixel.
 const EDGE_INSET: f64 = 1.0 / 64.0;
 
-/// One display placed in the shared layout.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent facts about one display, each read on its own"
@@ -368,21 +325,15 @@ pub struct ResolvedDisplay {
     pub name: String,
     pub device_label: String,
     pub builtin: bool,
-    /// On the device this layout was resolved on.
     pub local: bool,
     pub online: bool,
-    /// Takes part in the shared layout.
     pub enabled: bool,
-    /// Position in display order, from zero.
     pub order: usize,
-    /// Where it sits in its own device's desktop.
     pub local_rect: Rect,
-    /// Where it sits in the shared layout.
     pub rect: Rect,
 }
 
 impl ResolvedDisplay {
-    /// A shared-layout point as its device's desktop coordinates.
     pub fn to_device(&self, (x, y): (f64, f64)) -> (f64, f64) {
         (
             x - f64::from(self.rect.x) + f64::from(self.local_rect.x),
@@ -390,7 +341,6 @@ impl ResolvedDisplay {
         )
     }
 
-    /// One of its device's desktop coordinates as a shared-layout point.
     pub fn to_shared(&self, (x, y): (f64, f64)) -> (f64, f64) {
         (
             x - f64::from(self.local_rect.x) + f64::from(self.rect.x),
@@ -403,21 +353,13 @@ impl ResolvedDisplay {
     }
 }
 
-/// Where the pointer is after one motion through the shared layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PointerStep {
-    /// The new shared-layout position.
     pub shared: (f64, f64),
-    /// The display it is on, as an index into [`Layout::displays`].
     pub display: usize,
-    /// The same position in that display's device's desktop.
     pub device_point: (f64, f64),
 }
 
-/// Where each device's desktop sits in the shared layout: the offset from
-/// its own coordinates. Devices with a placed arranged output are anchored
-/// by the first of them in display order; the rest line up to the right,
-/// in the order given.
 fn device_offsets<'a>(
     sorted: &[&'a PersonDevice],
     arrangement: &Arrangement,
@@ -476,17 +418,11 @@ fn device_offsets<'a>(
     offsets
 }
 
-/// A resolved display with the order key it sorts by.
 type Keyed = (Option<i64>, ResolvedDisplay);
 
-/// The person's displays resolved into one layout.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
-    /// Every active display, in display order.
     pub displays: Vec<ResolvedDisplay>,
-    /// Connected displays their device has switched off: listed so they
-    /// can be shown and kept in or out of the layout, but not reachable.
-    /// Their rectangles are empty.
     pub inactive: Vec<ResolvedDisplay>,
 }
 
@@ -537,14 +473,6 @@ impl Layout {
         }
         Self::resolve(devices, &observed)
     }
-    /// Place every active output of `devices` per `arrangement`.
-    ///
-    /// A device's outputs keep their own desktop's relative layout. The
-    /// first of them in display order with a position anchors the group; a
-    /// device with none is put to the right of everything placed so far,
-    /// devices in id order, so every device resolves the same layout from
-    /// the same inputs. Displays missing from the arrangement are enabled
-    /// and ordered after the arranged ones.
     pub fn resolve(devices: &[PersonDevice], arrangement: &Arrangement) -> Self {
         let mut sorted: Vec<&PersonDevice> = devices.iter().collect();
         sorted.sort_by(|a, b| a.device.cmp(&b.device));
@@ -595,7 +523,6 @@ impl Layout {
                 }
             }
         }
-        // Arranged displays in their order, then the rest in device order.
         let by_order = |(order, _): &Keyed| (order.is_none(), order.unwrap_or_default());
         displays.sort_by_key(by_order);
         inactive.sort_by_key(by_order);
@@ -615,7 +542,6 @@ impl Layout {
         }
     }
 
-    /// Every display listed, active ones first, each in display order.
     pub fn listed(&self) -> impl Iterator<Item = &ResolvedDisplay> {
         self.displays.iter().chain(&self.inactive)
     }
@@ -626,7 +552,6 @@ impl Layout {
             .find(|display| display.is(device, output))
     }
 
-    /// The bounding box of `device`'s displays in the shared layout.
     pub fn device_bounds(&self, device: &str) -> Option<Rect> {
         self.displays
             .iter()
@@ -635,8 +560,6 @@ impl Layout {
             .reduce(Rect::union)
     }
 
-    /// The display of `device` under one of its desktop coordinates, as an
-    /// index into [`Self::displays`].
     pub fn locate(&self, device: &str, point: (f64, f64)) -> Option<usize> {
         self.displays
             .iter()
@@ -662,8 +585,6 @@ impl Layout {
             .find(|&(index, display)| {
                 display.rect.contains(proposed) && (index == current || reachable(display))
             });
-        // With nothing reachable there the pointer stops at this display's
-        // edge and keeps the motion along it, as at the edge of one screen.
         let (index, display, shared) = target.map_or_else(
             || (current, here, here.rect.clamp(proposed)),
             |(index, display)| (index, display, proposed),
@@ -675,8 +596,6 @@ impl Layout {
         })
     }
 
-    /// The entry that pins `display` where this layout shows it, keeping
-    /// the order key `previous` gives it, else `order`.
     fn pin(display: &ResolvedDisplay, previous: &Arrangement, order: i64) -> ArrangedDisplay {
         let entry = previous.entry(&display.device, &display.output);
         ArrangedDisplay {
@@ -691,9 +610,6 @@ impl Layout {
         }
     }
 
-    /// Entries for every shown display `previous` does not arrange yet, in
-    /// display order after the arranged ones, so an edit elsewhere does not
-    /// move them.
     fn pin_missing(&self, previous: &Arrangement) -> Vec<ArrangedDisplay> {
         let mut next_order = previous.max_order();
         self.displays
@@ -706,7 +622,6 @@ impl Layout {
             .collect()
     }
 
-    /// `device`'s displays moved together by `(dx, dy)`.
     #[must_use]
     pub fn move_device(
         &self,
@@ -730,8 +645,6 @@ impl Layout {
         pinned.with_changes(moved)
     }
 
-    /// One display taking part in the layout or not. A switched-off
-    /// display keeps the choice for when it is switched on again.
     #[must_use]
     pub fn set_enabled(
         &self,
@@ -740,8 +653,6 @@ impl Layout {
         output: &str,
         enabled: bool,
     ) -> Arrangement {
-        // Pinning what is not arranged yet keeps every device where it is
-        // shown: an arranged display moves the line-up of the others.
         let previous = &previous.with_changes(self.pin_missing(previous));
         let order = previous.max_order().saturating_add(ORDER_GAP);
         let entry = if let Some(display) = self.find(device, output) {
@@ -769,8 +680,6 @@ impl Layout {
         previous.with_changes([entry])
     }
 
-    /// One display moved to `index` in display order. Only its own order
-    /// key changes, unless the keys around it have no room left.
     #[must_use]
     pub fn move_to_order(
         &self,
@@ -812,7 +721,6 @@ impl Layout {
                 ..Self::pin(moving, &pinned, 0)
             }]);
         }
-        // No room between the neighbours: space every key out again.
         let mut sequence: Vec<&ResolvedDisplay> =
             others.iter().map(|(display, _)| *display).collect();
         sequence.insert(index, moving);
@@ -828,12 +736,8 @@ impl Layout {
     }
 }
 
-/// Current version of [`PersonDisplays`].
 pub const SCHEMA_VERSION: u16 = 1;
 
-/// The shell's read-only view of the person's devices and their displays,
-/// published for Settings. The shell owns the authenticated fabric; Settings
-/// reads this and edits only the arrangement.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PersonDisplays {
@@ -844,23 +748,18 @@ pub struct PersonDisplays {
     pub devices: Vec<PersonDevice>,
 }
 
-/// The view this process last published.
 static PUBLISHED: crate::published::Published<PersonDisplays> = crate::published::Published::new();
 
 impl PersonDisplays {
-    /// The live publisher's view, or `None` when no live shell published
-    /// one (no fabric identity, or the shell is gone).
     pub fn load() -> Option<Self> {
         let path = path()?;
         Self::load_at(&path)
     }
 
-    /// The view this process last [`saved`](Self::save), from memory.
     pub fn published() -> Option<std::sync::Arc<Self>> {
         PUBLISHED.get(&path()?)
     }
 
-    /// Moves every time this process publishes a view.
     pub fn published_generation() -> u64 {
         PUBLISHED.generation()
     }
@@ -878,10 +777,6 @@ impl PersonDisplays {
         .then_some(view)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the runtime directory is unavailable or the
-    /// file cannot be written.
     pub fn save(&self) -> std::io::Result<()> {
         let path = path().ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
         if PUBLISHED.get(&path).as_deref() != Some(self) {
@@ -890,9 +785,6 @@ impl PersonDisplays {
         self.save_at(&path)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be written.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
         // Equality includes the publisher identity and every output fact.
         // A regular observation is reusable only under its current live lease.
@@ -906,14 +798,11 @@ impl PersonDisplays {
         tilo_files::native::atomic::write_creating_parent(path, &body)
     }
 
-    /// The person's layout as resolved from this view and `arrangement`.
     pub fn layout(&self, arrangement: &Arrangement) -> Layout {
         Layout::resolve(&self.devices, arrangement)
     }
 }
 
-/// Where the shell publishes [`PersonDisplays`]: beside the display
-/// hardware snapshot in the private runtime directory.
 pub fn path() -> Option<PathBuf> {
     crate::hardware::display_snapshot_path().and_then(|snapshot| {
         snapshot
@@ -1016,11 +905,8 @@ mod tests {
             ],
         };
         let layout = Layout::resolve(&laptop_and_pi(), &arrangement);
-        // Arranged order first, then the rest.
         let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
         assert_eq!(names, ["pi-hdmi", "hdmi", "panel"]);
-        // The laptop's HDMI anchors its group; the panel keeps sitting left
-        // of it, whatever position was stored for it.
         let hdmi = layout.find("laptop", "hdmi").unwrap();
         let panel = layout.find("laptop", "panel").unwrap();
         assert_eq!((hdmi.rect.x, hdmi.rect.y), (5000, 5000));
@@ -1042,8 +928,6 @@ mod tests {
             .iter()
             .position(|d| d.output == "pi-hdmi")
             .unwrap();
-        // Rightward motion past the laptop's right edge lands on the Pi,
-        // carrying the part of the motion beyond the edge.
         let from = (3359.5, 500.25);
         let step = layout
             .step_pointer(hdmi, from, (4.0, 1.0), |_| true)
@@ -1051,13 +935,11 @@ mod tests {
         assert_eq!(step.display, pi);
         assert_eq!(step.shared, (3363.5, 501.25));
         assert_eq!(step.device_point, (3.5, 501.25));
-        // And back.
         let back = layout
             .step_pointer(pi, step.shared, (-8.0, 0.0), |_| true)
             .unwrap();
         assert_eq!(back.display, hdmi);
         assert_eq!(back.device_point, (3355.5, 501.25));
-        // An unreachable neighbour is a wall the pointer slides along.
         let blocked = layout
             .step_pointer(hdmi, from, (4.0, 3.0), |d| d.device != "pi")
             .unwrap();
@@ -1067,7 +949,6 @@ mod tests {
             blocked.shared.0 < 3360.0 && blocked.shared.0 > 3359.9,
             "rests at the edge"
         );
-        // Below the shorter panel there is nothing: it stays on the panel.
         let panel = layout
             .displays
             .iter()
@@ -1097,8 +978,6 @@ mod tests {
             previous.entry("tv", "tv-panel")
         );
 
-        // A toggle while some displays are not arranged yet keeps every
-        // device where it is shown.
         let first = layout.set_enabled(&previous, "pi", "pi-hdmi", false);
         assert_eq!(
             Layout::resolve(&devices, &first)
@@ -1138,22 +1017,17 @@ mod tests {
         let base = Layout::resolve(&devices, &Arrangement::default());
         let shared = base.move_device(&Arrangement::default(), "pi", 0, 0);
         let layout = Layout::resolve(&devices, &shared);
-        // On the laptop, the Pi is taken out of the layout; at the same
-        // time, on the Pi, the laptop's HDMI moves to the front.
         let on_laptop = layout.set_enabled(&shared, "pi", "pi-hdmi", false);
         let on_pi = layout.move_to_order(&shared, "laptop", "hdmi", 0);
         let merged = Arrangement::merge([("laptop", on_laptop.clone()), ("pi", on_pi.clone())]);
         let resolved = Layout::resolve(&devices, &merged);
         assert!(!resolved.find("pi", "pi-hdmi").unwrap().enabled);
         assert_eq!(resolved.displays[0].output, "hdmi");
-        // Merging is order independent and idempotent.
         assert_eq!(
             merged,
             Arrangement::merge([("pi", on_pi), ("laptop", on_laptop)])
         );
         assert_eq!(merged, Arrangement::merge([("x", merged.clone())]));
-        // The same display edited on both: the higher revision wins, and a
-        // tie goes to the same author everywhere.
         let a = shared.with_changes([arranged("pi", "pi-hdmi", true, 0, 1, 1)]);
         let b = shared.with_changes([arranged("pi", "pi-hdmi", true, 0, 2, 2)]);
         let winner = Arrangement::merge([("aa", a.clone()), ("bb", b.clone())]);
@@ -1180,7 +1054,6 @@ mod tests {
         let arrangement = layout.set_enabled(&Arrangement::default(), "pi", "pi-dp", false);
         let entry = arrangement.entry("pi", "pi-dp").unwrap();
         assert!(!entry.enabled && !entry.placed);
-        // Switched on, it is out of the layout and does not move its device.
         devices[1].outputs[1] = output("pi-dp", 1920, 0, 1920, 1080);
         let on = Layout::resolve(&devices, &arrangement);
         assert!(!on.find("pi", "pi-dp").unwrap().enabled);

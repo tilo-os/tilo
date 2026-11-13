@@ -14,33 +14,20 @@
 use crate::matte::grow;
 use crate::{Error, Matte, Picture};
 
-/// How smooth the refined edge is where the picture's colour is flat: the
-/// guided filter's regulariser, on colours `0..=1`.
+/// The guided filter's regulariser, on colours `0..=1`: how smooth the refined
+/// edge is where the picture's colour is flat.
 const SMOOTHNESS: f32 = 1e-3; // a colour variance, not a distance
-/// The largest window the filter looks through, in pixels: a wider one
-/// blurs fine strands together.
 const MOST_WINDOW: usize = 16; // pixels of the picture, not on-screen spacing
 
-/// How far apart, in squared colour, the subject's and the background's
-/// colours must be for the pixel's own colour to say how much of it is
-/// subject: below this the guided filter alone decides.
+/// How far apart, in squared colour, the subject's and the background's colours
+/// must be for a pixel's own colour to say how much of it is subject.
 const DISTINCT: f32 = 0.02; // a squared colour distance, not spacing
-/// How much the colours' own spread (fur's black and white, a busy
-/// background) weakens what a pixel's colour says.
 const SPREAD: f32 = 4.0; // a ratio of colour variances, not spacing
 
-/// `matte`'s edge refined to `picture` within `radius` pixels of it.
-///
-/// Along the edge (where the matte is undecided, or within `radius` of
-/// where it changes) each pixel's coverage becomes what the colours around
-/// it say. A colour guided filter (He, Sun and Tang) fits coverage to
-/// colour in each window, so the edge follows the picture's own edges and
-/// strands of fur and hair keep their partial coverage. Where the subject
-/// and the background nearby are distinct, even colours (an apple on a
-/// white table), the pixel's colour is also placed between theirs and can
-/// only take coverage away: an edge drawn a few pixels out into a plain
-/// background, which a filter cannot see past, comes back to the subject.
-/// Away from the edge the matte is kept whole or empty.
+/// `matte`'s edge refined to `picture` within `radius` pixels of it. Along the
+/// edge each pixel's coverage becomes what the colours around it say: a colour
+/// guided filter (He, Sun and Tang) fits coverage to colour in each window, so
+/// the edge follows the picture's own and strands of fur keep their wisps.
 pub fn refine_edge(picture: &Picture, matte: &Matte, radius: f32) -> Result<Matte, Error> {
     let count = picture.check()?;
     if (matte.width, matte.height) != (picture.width, picture.height) {
@@ -65,8 +52,8 @@ pub fn refine_edge(picture: &Picture, matte: &Matte, radius: f32) -> Result<Matt
                 let (between, sure) = placed[at];
                 let guided = guided[at];
                 let coverage = guided.min(sure * between + (1.0 - sure) * guided);
-                // Stretch so a strand's faint tail goes to nothing and its
-                // core to whole, keeping the soft part between.
+                // Stretch so a strand's faint tail goes to nothing and its core to whole,
+                // keeping the soft part between.
                 ((coverage - 0.1) / 0.8).clamp(0.0, 1.0)
             } else if hard[at] {
                 1.0
@@ -79,9 +66,9 @@ pub fn refine_edge(picture: &Picture, matte: &Matte, radius: f32) -> Result<Matt
 }
 
 /// For each pixel, where its colour lies between the subject's and the
-/// background's nearby (`0` the background's, `1` the subject's), and how
-/// sure that is (`0..=1`). Their colours are the means of the pixels
-/// surely in and surely out (further than `reach` from the edge) around it.
+/// background's (`0` the background's, `1` the subject's) and how sure that is.
+/// Their colours are the means of the pixels surely in and surely out around
+/// it.
 fn colour_line(
     colours: &[[f32; 3]],
     hard: &[bool],
@@ -105,7 +92,6 @@ fn colour_line(
     let mean = |plane: Vec<f32>| box_mean(&plane, width, height, around);
     let weight_in = mean(sure_in.clone());
     let weight_out = mean(sure_out.clone());
-    // Per channel: the weighted mean colour and mean square, in and out.
     let mut subject = vec![[0.0_f32; 3]; colours.len()];
     let mut background = vec![[0.0_f32; 3]; colours.len()];
     let mut spread = vec![0.0_f32; colours.len()];
@@ -151,8 +137,6 @@ fn colour_line(
         .collect()
 }
 
-/// The pixels near the matte's edge: where it changes within `reach`, or
-/// is undecided.
 fn edge_band(hard: &[bool], soft: &[f32], width: usize, height: usize, reach: usize) -> Vec<bool> {
     let inside = grow(hard, width, height, reach);
     let outside: Vec<bool> = hard.iter().map(|&inside| !inside).collect();
@@ -165,7 +149,6 @@ fn edge_band(hard: &[bool], soft: &[f32], width: usize, height: usize, reach: us
         .collect()
 }
 
-/// The colour guided filter of `p` by `guide` with a `(2r+1)²` window.
 fn guided_filter(guide: &[[f32; 3]], p: &[f32], width: usize, height: usize, r: usize) -> Vec<f32> {
     let count = width * height;
     let channel = |c: usize| guide.iter().map(|colour| colour[c]).collect::<Vec<f32>>();
@@ -184,7 +167,6 @@ fn guided_filter(guide: &[[f32; 3]], p: &[f32], width: usize, height: usize, r: 
                 .collect()
         })
         .collect();
-    // The guide's covariance in each window: rr, rg, rb, gg, gb, bb.
     let pairs = [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)];
     let var: Vec<Vec<f32>> = pairs
         .iter()
@@ -240,8 +222,8 @@ fn guided_filter(guide: &[[f32; 3]], p: &[f32], width: usize, height: usize, r: 
         .collect()
 }
 
-/// The mean of each pixel's `(2r+1)²` window, over the part of it inside
-/// the plane.
+/// The mean of each pixel's `(2r+1)²` window, over the part of it inside the
+/// plane.
 fn box_mean(plane: &[f32], width: usize, height: usize, r: usize) -> Vec<f32> {
     let across = box_line(plane, width, height, r, true);
     box_line(&across, width, height, r, false)
@@ -277,16 +259,9 @@ fn box_line(plane: &[f32], width: usize, height: usize, r: usize, rows: bool) ->
 }
 
 /// `picture` with the background's colour taken out of the pixels along
-/// `alpha`'s edge, so laid over anything else the subject brings no halo
-/// of what it stood in front of.
-///
-/// Each partly covered pixel is a mix of the subject's colour and the
-/// background's. Their colours nearby (the subject's from the covered
-/// pixels around, the background's from the uncovered ones) are estimated
-/// by blurs weighted by coverage, then the pixel's own colour is solved for
-/// the subject's part (Forte and Pitié's blur fusion, a wide pass then a
-/// close one). Pixels wholly in or out are kept as they are; alpha is
-/// never changed.
+/// `alpha`'s edge, so laid over anything else the subject brings no halo of what
+/// it stood in front of. Each partly covered pixel is a mix of the subject's
+/// colour and the background's, whose nearby colours say in which ratio.
 pub fn defringe(picture: &Picture, alpha: &Matte) -> Result<Vec<u8>, Error> {
     let count = picture.check()?;
     if (alpha.width, alpha.height) != (picture.width, picture.height) {
@@ -313,9 +288,6 @@ pub fn defringe(picture: &Picture, alpha: &Matte) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// One pass of blur fusion: the subject's colour estimated from `subject`
-/// and the background's from `background`, both blurred over `r` and
-/// weighted by coverage, then the pixel's colour solved for the subject.
 fn fuse(
     image: &[[f32; 3]],
     alpha: &[f32],
@@ -355,7 +327,6 @@ fn fuse(
 mod tests {
     use super::*;
 
-    /// A picture `width` wide: red left of `edge`, white from it on.
     fn red_on_white(width: usize, height: usize, edge: usize) -> Vec<u8> {
         (0..width * height)
             .flat_map(|at| {

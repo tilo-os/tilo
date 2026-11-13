@@ -5,6 +5,7 @@ use media::Source;
 use crate::component::{Component, Described, Event, Value};
 
 use super::{NowPlaying, PlaybackState, VideoPlayer};
+use crate::widget::DrawChild;
 
 /// A video with its playback controls over it: play/pause, the scrubber, the volume, mute and
 /// fullscreen. The app's player is the one truth; what the person does reaches the view as its
@@ -205,7 +206,8 @@ impl crate::widget::Widget for DeclaredVideo {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.player.draw(scene, transform, text, theme, presence);
+        self.player
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(

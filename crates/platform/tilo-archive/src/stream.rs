@@ -7,7 +7,6 @@ use std::time::{Duration, SystemTime};
 
 use crate::{Compression, Entry, Format, Kind, Observer, cancelled, safe_relative};
 
-/// What a visitor wants after an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
     Continue,
@@ -19,8 +18,8 @@ pub enum Flow {
 /// allowed to take the machine's memory.
 const XZ_MEMORY_KIB: u32 = 1024 * 1024;
 
-/// Reads a file, counting the bytes for the observer and stopping when it
-/// asks. Seeking (zip, 7z) moves without counting.
+/// Reads a file, counting the bytes for the observer and stopping when it asks;
+/// seeking (zip, 7z) moves without counting.
 struct Counted<'a, R> {
     inner: R,
     observer: &'a dyn Observer,
@@ -43,8 +42,7 @@ impl<R: Seek> Seek for Counted<'_, R> {
     }
 }
 
-/// The format of the archive at `path`: by its name, else by its first
-/// bytes.
+/// The format of the archive at `path`: by its name, else by its first bytes.
 fn format_of(path: &Path, file: &mut File) -> io::Result<Format> {
     if let Some(format) = Format::of_path(path) {
         return Ok(format);
@@ -86,18 +84,15 @@ fn format_of(path: &Path, file: &mut File) -> io::Result<Format> {
 }
 
 /// Visit every entry of the archive at `path` in order, with a reader of its
-/// contents (empty for anything but a file or, in zip and 7z, a symlink,
-/// whose contents are its target). A visitor that does not read an entry
-/// skips it.
+/// contents (empty for anything but a file or a symlink, whose contents are its
+/// target); a visitor that does not read an entry skips it.
 ///
-/// An entry whose name would land outside the archive's folder fails the
-/// walk ([`crate::is_unsafe`]) before any visitor sees it. Entries naming
-/// only the folder itself (`./`) are left out.
+/// An entry naming only the folder itself (`./`) is left out.
 ///
 /// # Errors
 ///
 /// The archive cannot be opened or decoded, a name is unsafe, the observer
-/// cancelled ([`crate::is_cancelled`]), or the visitor's error.
+/// cancelled, or the visitor's error.
 pub fn walk(
     path: &Path,
     observer: &dyn Observer,
@@ -131,11 +126,6 @@ pub fn walk(
     }
 }
 
-/// Every entry of the archive at `path`, in order.
-///
-/// # Errors
-///
-/// As [`walk`].
 pub fn list(path: &Path, observer: &dyn Observer) -> io::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     walk(path, observer, &mut |entry, _| {
@@ -145,8 +135,6 @@ pub fn list(path: &Path, observer: &dyn Observer) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Copy the file `member` of the archive at `path` to `out`; the bytes
-/// copied.
 pub fn read_member(
     path: &Path,
     member: &Path,
@@ -273,8 +261,6 @@ fn walk_zip<R: Read + Seek>(
     Ok(())
 }
 
-/// A zip entry's time, which zip keeps as a local time without a zone:
-/// read in this device's zone, as the tool that wrote it most likely meant.
 fn zip_time(time: zip::DateTime) -> Option<SystemTime> {
     let local = chrono::NaiveDate::from_ymd_opt(
         i32::from(time.year()),
@@ -299,8 +285,8 @@ fn zip_error(error: zip::result::ZipError) -> io::Error {
     }
 }
 
-/// The Unix mode 7z keeps in the high half of an entry's attributes, when
-/// the archiver set the flag that says so.
+/// The Unix mode 7z keeps in the high half of an entry's attributes, when the
+/// archiver set the flag that says so.
 fn sevenz_mode(entry: &sevenz_rust2::ArchiveEntry) -> Option<u32> {
     const UNIX_EXTENSION: u32 = 0x8000;
     (entry.has_windows_attributes && entry.windows_attributes & UNIX_EXTENSION != 0)
@@ -313,9 +299,8 @@ fn walk_7z<R: Read + Seek>(
 ) -> io::Result<()> {
     let mut archive = sevenz_rust2::ArchiveReader::new(reader, sevenz_rust2::Password::empty())
         .map_err(sevenz_error)?;
-    // The visitor's own error (a cancel, an unsafe name, a full disk) is
-    // kept here and the walk stopped, so it is returned as it was rather
-    // than as 7z's.
+    // The visitor's own error (a cancel, an unsafe name, a full disk) is kept here
+    // and the walk stopped, so it is returned as it was rather than as 7z's.
     let mut failure: Option<io::Error> = None;
     let walked = archive.for_each_entries(|item, contents| {
         if item.is_anti_item {
@@ -349,7 +334,6 @@ fn walk_7z<R: Read + Seek>(
     walked.map_err(sevenz_error)
 }
 
-/// `item` as an entry; `None` for one naming only the folder.
 fn sevenz_entry(
     item: &sevenz_rust2::ArchiveEntry,
     contents: &mut dyn Read,

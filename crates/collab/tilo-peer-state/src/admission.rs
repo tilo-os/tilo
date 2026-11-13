@@ -184,11 +184,33 @@ pub enum InputDisposition {
     MetadataOnly,
     UnsupportedFamily,
 }
+/// A message that waited in the prerequisite queue and was taken in with
+/// the input a report is about: what it waited for came with that input.
+#[derive(Clone, Debug)]
+pub struct Released {
+    /// The device that wrote it.
+    pub author: [u8; 32],
+    pub message: neighbour_wire::NeighbourMsg,
+    /// Whether it came as retained history rather than live.
+    pub retained: bool,
+}
+/// A held message decided again with the input a report is about that still
+/// waits, and what it waits for now: what it waited for came, and it needs
+/// something else besides.
+#[derive(Clone, Debug)]
+pub struct StillHeld {
+    pub message: neighbour_wire::NeighbourMsg,
+    pub waiting_for: MissingPrerequisite,
+}
 #[derive(Clone, Debug)]
 pub struct AdmissionReport {
     pub(crate) primary: InputDisposition,
     pub(crate) settled: Vec<DocumentAdmission>,
     pub(crate) summary: ReceiveOutcome,
+    /// The held messages taken in with this input, in the order they were.
+    pub(crate) released: Vec<Released>,
+    /// The held messages decided again with this input that still wait.
+    pub(crate) still_held: Vec<StillHeld>,
 }
 impl AdmissionReport {
     pub fn primary(&self) -> &InputDisposition {
@@ -197,8 +219,19 @@ impl AdmissionReport {
     pub fn settled(&self) -> &[DocumentAdmission] {
         &self.settled
     }
+    /// The messages that waited for something this input brought, taken in
+    /// with it: a reader of what was admitted reads these as well, or it
+    /// misses writes that came before the ones they build on.
+    pub fn released(&self) -> &[Released] {
+        &self.released
+    }
     pub fn summary(&self) -> &ReceiveOutcome {
         &self.summary
+    }
+    /// The held messages this input had decided again that still wait, with
+    /// what each waits for now.
+    pub fn still_held(&self) -> &[StillHeld] {
+        &self.still_held
     }
     pub(crate) fn new(primary: InputDisposition, summary: ReceiveOutcome) -> Self {
         let settled = match &primary {
@@ -209,7 +242,28 @@ impl AdmissionReport {
             primary,
             settled,
             summary,
+            released: Vec::new(),
+            still_held: Vec::new(),
         }
+    }
+    /// What deciding the held `message` again took in: the message itself
+    /// when it was accepted now, after whatever it released in turn.
+    pub(crate) fn taken_in(
+        &self,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+        retained: bool,
+    ) -> Vec<Released> {
+        let mut taken = Vec::new();
+        if matches!(self.primary, InputDisposition::Accepted(_)) {
+            taken.push(Released {
+                author,
+                message,
+                retained,
+            });
+        }
+        taken.extend(self.released.iter().cloned());
+        taken
     }
     pub(crate) fn metadata(summary: ReceiveOutcome) -> Self {
         Self::new(InputDisposition::MetadataOnly, summary)
@@ -356,6 +410,21 @@ impl ExactAdmissions {
             let recent = std::mem::take(&mut self.recent);
             self.settled_mut().extend(recent);
         }
+    }
+    /// Take the entry of `key` out: the write it admitted was withdrawn.
+    pub(crate) fn withdraw(&mut self, key: &AdmissionKey) -> Result<(), AdmissionError> {
+        let Some(operation_id) = self.get(key).copied() else {
+            return Ok(());
+        };
+        let bytes = resources::entry_bytes(&DocumentAdmission {
+            key: key.clone(),
+            operation_id,
+        })?;
+        if self.recent.remove(key).is_none() {
+            self.settled_mut().remove(key);
+        }
+        self.entry_bytes = self.entry_bytes.saturating_sub(bytes);
+        Ok(())
     }
     /// Add a decoded entry `check` measured as `bytes` to the settled or
     /// the recent entries, as the wire index placed it.

@@ -5,21 +5,14 @@
 use super::{Calendar, CalendarApp, Id, ListSel, NaiveDate, ToastKind};
 use crate::actions::CalendarCollectionResource;
 
-/// What an item's `open` shows, found where the calendar holds it.
 pub(crate) enum Opened {
-    /// An event or one occurrence of it, on the day it falls on.
     Event { id: Id, day: NaiveDate },
-    /// A task, on its due day when it has one.
     Task { id: Id, due: Option<NaiveDate> },
-    /// A task project's list.
     Project(Id),
-    /// One calendar's events.
     Calendar(CalendarCollectionResource),
 }
 
 impl Opened {
-    /// What the resource id `item` names in `model` or among `calendars`,
-    /// or why there is nothing to show.
     pub(crate) fn find(
         item: &str,
         model: &Calendar,
@@ -87,15 +80,12 @@ impl Opened {
 }
 
 impl CalendarApp {
-    /// Open an item — an event, an occurrence, a task, a project or a
-    /// calendar — by its resource id, as its `open` asks.
     pub(crate) fn open_item(&mut self, item: &str) -> Result<(), String> {
         let opened = Opened::find(item, &self.model, &self.calendar_collections())?;
         self.show_opened(opened);
         Ok(())
     }
 
-    /// Show what an `open` found.
     pub(crate) fn show_opened(&mut self, opened: Opened) {
         match opened {
             Opened::Event { id, day } => {
@@ -110,9 +100,8 @@ impl CalendarApp {
             }
             Opened::Project(id) => {
                 self.list_sel = Some(ListSel::Project(id));
-                // Opening a project is presentation-only. It must not route
-                // through Back/Close because those deliberately discard a
-                // pristine new-event draft via a durable delete action.
+                // Opening a project is presentation only: it must not route through Back/Close, which delete a
+                // pristine new-event draft.
                 self.detail_open = false;
                 self.selection = None;
                 self.blur_editor();

@@ -1,17 +1,10 @@
-//! Advisory whole-file locks with one guard type, [`FileLock`]: the native
-//! backend of [`Dir::lock`](crate::Dir::lock).
-//!
-//! The implementation lives in the `advisory-lock` crate; this module is that
-//! crate under the platform layer's path.
+//! Advisory whole-file locks with one guard type, [`FileLock`]: the native backend of
+//! [`Dir::lock`](crate::Dir::lock).
 
 pub use advisory_lock::*;
 
-/// Prepare a native lock file's parent before acquiring the lock.
-///
-/// On Unix, durably provision missing directories with inherited permissions:
-/// otherwise lock acquisition creates them without durability barriers, hiding
-/// their creation from a subsequent atomic write. Existing directories are left
-/// alone. Other targets retain the lock backend's parent-creation behavior.
+/// Prepares a lock file's parent before the lock is taken: on Unix durably, creating missing
+/// directories and syncing them leaf to root.
 pub fn prepare_parent(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

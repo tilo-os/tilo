@@ -1,17 +1,5 @@
 //! The exchange with a sibling over the peer network
 //! ([`tilo_unlock_protocol`], ALPN [`UNLOCK_ALPN`]).
-//!
-//! Early boot binds a fresh iroh endpoint of its own (its identity is the
-//! boot key's certificate, not the endpoint), with iroh's relays, so a sibling
-//! is reached directly on the local network or through a relay otherwise. All
-//! siblings are asked at once: the first release wins, and the owner's denial
-//! on any of them ends the attempt.
-//!
-//! Each exchange answers a fresh challenge from the sibling, signed with the
-//! boot key and bound to the device, this boot, the slot and an ephemeral key
-//! drawn for this request alone; the half comes back sealed to that key. The
-//! frames early boot sent are kept in [`TRANSCRIPT`] (they carry no secret),
-//! so a verification run can replay them and see them refused.
 
 use crate::token::{Sibling, Token};
 use crate::unlock::{Refusal, Siblings};
@@ -28,30 +16,21 @@ use tilo_unlock_protocol::{
     UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
 };
 
-/// Where the frames of the last exchange are kept for this boot.
 pub const TRANSCRIPT: &str = "/run/tilo-sibling-unlock/exchange.json";
 
-/// How long early boot keeps trying to reach a sibling at all.
 const REACH_FOR: Duration = Duration::from_secs(300);
-/// One dial attempt.
 const DIAL_FOR: Duration = Duration::from_secs(20);
-/// Between dial attempts, while the network comes up.
 const REDIAL_AFTER: Duration = Duration::from_secs(3);
 /// How long an exchange may wait for the owner, past the sibling's own
 /// approval timeout.
 const DECIDE_FOR: Duration =
     Duration::from_secs(tilo_unlock_protocol::APPROVAL_TIMEOUT_NS / 1_000_000_000 + 60);
 
-/// The frames early boot sent one sibling, as kept in [`TRANSCRIPT`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Transcript {
-    /// The sibling asked, hex.
     pub sibling: String,
-    /// Its address, as the token recorded it.
     pub endpoint: String,
-    /// Each [`ClientFrame`], base64 of its encoded frame.
     pub sent: Vec<String>,
-    /// How it ended.
     pub outcome: String,
 }
 
@@ -64,14 +43,11 @@ pub trait Progress: Sync {
     fn decided(&self, sibling: &Sibling, allowed: bool);
 }
 
-/// The real siblings, over iroh.
 pub struct Peers<'a, P: Progress> {
     pub progress: &'a P,
-    /// Where to keep the transcript; `None` keeps none.
     pub transcript: Option<&'a Path>,
 }
 
-/// Where to dial a sibling.
 pub fn address(sibling: &Sibling) -> Result<EndpointAddr> {
     if !sibling.endpoint.trim().is_empty() {
         return serde_json::from_str(&sibling.endpoint)

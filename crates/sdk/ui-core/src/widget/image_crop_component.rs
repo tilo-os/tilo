@@ -8,6 +8,7 @@ use crate::pictures::{Pictures, Shown};
 use crate::widget::{ImageCropEditor, TaffyTreeExt, Widget};
 
 use super::CropSelection;
+use crate::widget::DrawChild;
 use crate::widget::PictureSource;
 
 /// A picture with a crop its four corners set (a scanned page, a photo to trim): drag a corner
@@ -193,7 +194,7 @@ impl Widget for CropEditor {
         presence: &crate::presence::PresenceCtx,
     ) {
         if let Some(editor) = &mut self.editor {
-            editor.draw(scene, transform, text, theme, presence);
+            editor.draw_child(scene, transform, text, theme, presence);
         }
     }
 

@@ -127,7 +127,8 @@ impl Scenario {
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
-                | StepKind::Task { .. } => {
+                | StepKind::Task { .. }
+                | StepKind::Read { .. } => {
                     return Err(UnrunnableStep {
                         path: path.as_str().to_owned(),
                         step: step.id.clone(),
@@ -499,6 +500,7 @@ impl StepKind {
             Self::Ask { .. } => "ask",
             Self::Ai { .. } => "ai",
             Self::Task { .. } => "task",
+            Self::Read { .. } => "read",
         }
     }
 }
@@ -533,7 +535,8 @@ fn collect(steps: &[Step], path: &StepPath, out: &mut Vec<ScenarioStep>) {
             StepKind::SetVar { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
-            | StepKind::Task { .. } => {}
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
         }
     }
 }

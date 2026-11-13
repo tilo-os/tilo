@@ -103,11 +103,6 @@ pub struct Workspace {
     /// the person closed it, with the app this device opens.
     #[serde(skip)]
     pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
-    /// The fields a stored workspace holds that this one does not read (the
-    /// shell engine's tasks among them), kept exactly as they were: saving
-    /// the workspace again leaves them in place, and nothing is migrated.
-    #[serde(flatten)]
-    pub retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A workspace as stored: its policy names the workspace it was stored for, or is
@@ -140,18 +135,11 @@ struct StoredWorkspace {
     schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     #[serde(default)]
     shared_surfaces: SharedSurfaces,
-    #[serde(flatten)]
-    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<StoredWorkspace> for Workspace {
     fn from(stored: StoredWorkspace) -> Self {
         let identity = stored.id;
-        // What this workspace writes but never reads back is its own, not
-        // retired.
-        let mut retired_fields = stored.retired_fields;
-        retired_fields.remove("collaborators");
-        retired_fields.remove("bots");
         let policy = match stored.policy {
             Some(mut policy) => {
                 policy.rehome(identity.to_string());
@@ -176,7 +164,6 @@ impl From<StoredWorkspace> for Workspace {
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields,
         }
     }
 }
@@ -198,41 +185,11 @@ pub enum PresetMutationError {
 
 /// The app id the workspace's own resources are published under.
 pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
-/// Granting, published on the workspace: a grant of the workspace's tree to someone.
-pub const GRANT_ACTION_ID: &str = "grant";
-/// Revoking one grant.
-pub const REVOKE_ACTION_ID: &str = "revoke";
-/// Saving a named grant set.
-pub const PRESET_SAVE_ACTION_ID: &str = "preset.save";
-/// Assigning a named grant set to someone.
-pub const PRESET_ASSIGN_ACTION_ID: &str = "preset.assign";
-/// Letting one application use another's action.
+/// Letting one application use another's action, published on the workspace's
+/// governance with the app, the other app, its resource and the action.
 pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
-/// Taking such a grant back.
+/// Taking such a grant back, named the same way.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
-
-/// The workspace governance action a published governance action is, which
-/// decides who may take it: granting (or assigning a grant set) is
-/// granting, revoking is revoking, saving a grant set changes the workspace's
-/// settings.
-#[must_use]
-pub fn governance_of(action: &str) -> Option<&'static str> {
-    match action {
-        GRANT_ACTION_ID | PRESET_ASSIGN_ACTION_ID | APP_ACTION_GRANT_ACTION_ID => {
-            Some(roles::governance::GRANT)
-        }
-        REVOKE_ACTION_ID | APP_ACTION_REVOKE_ACTION_ID => Some(roles::governance::REVOKE),
-        PRESET_SAVE_ACTION_ID => Some(roles::governance::SETTINGS),
-        _ => None,
-    }
-}
-
-/// The resource a workspace publishes its governance actions on: the
-/// workspace itself (resource kind [`roles::ROOM_KIND`]).
-#[must_use]
-pub fn governance_resource_id(identity: &WorkspaceId) -> String {
-    tilo_actions::remote::workspace_governance_resource(&identity.to_string())
-}
 
 /// A role's stable name, as a collaborator row records it
 /// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
@@ -417,7 +374,7 @@ impl Workspace {
                 continue;
             };
             if let Some(desc) = Capability::from_capability(c) {
-                out.entry(app.clone()).or_default().push(desc);
+                out.entry(AppId::new(app)).or_default().push(desc);
             }
         }
         out
@@ -802,6 +759,21 @@ impl Workspace {
         agents
     }
 
+    /// The person who admitted the agent `agent` to the workspace: the one it acts for, whose
+    /// colour it is painted clear of.
+    #[must_use]
+    pub fn agent_keeper(&self, agent: &str) -> Option<&str> {
+        self.policy
+            .grants
+            .iter()
+            .find_map(|grant| match (&grant.subject, &grant.granted_by) {
+                (Subject::Agent(held), Subject::Person(person)) if held == agent => {
+                    Some(person.as_str())
+                }
+                _ => None,
+            })
+    }
+
     /// What a launch into this workspace hands its apps at `now`: the apps the
     /// workspace's grants make authors, and the workspace's sandbox.
     #[must_use]
@@ -1023,7 +995,6 @@ impl Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1052,7 +1023,6 @@ impl Workspace {
             bots,
             shared_surfaces,
             closed_tabs: _,
-            retired_fields: _,
         } = self;
         Self {
             slot: *slot,
@@ -1071,7 +1041,6 @@ impl Workspace {
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1125,7 +1094,6 @@ impl Default for Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 }

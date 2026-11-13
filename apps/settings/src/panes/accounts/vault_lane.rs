@@ -1,16 +1,4 @@
 //! The credential vault's work, off the UI thread and one piece at a time.
-//!
-//! Opening the vault asks the Secret Service for its key and saving it asks
-//! again: D-Bus round trips that take seconds on a slow or wedged service.
-//! The pane runs each on a worker and takes its result in on the UI thread,
-//! where the person's record and the rest of the pane live.
-//!
-//! An account mutation journals its intent, writes the vault, then the
-//! metadata, and clears the journal; loading the stores recovers a journal
-//! left behind. So the work the pane queues here runs strictly in order,
-//! each piece to its end before the next starts, as it did when all of it
-//! ran on the UI thread: two mutations never interleave, and no reload
-//! recovers a journal a running mutation still owns.
 
 use std::collections::VecDeque;
 
@@ -20,26 +8,18 @@ use super::AccountsPane;
 use crate::accounts::VaultOpener;
 use crate::device_read::{Erased, Landed, Landing};
 
-/// What a worker runs with the vault.
 type Work = Box<dyn FnOnce(&VaultOpener) -> Erased + Send>;
 
-/// What runs on the UI thread with a worker's result.
 type Then = Box<dyn FnOnce(&mut AccountsPane, Erased) -> Step>;
 
-/// A piece of queued work, started on the UI thread.
 type Start = Box<dyn FnOnce(&mut AccountsPane) -> Step>;
 
-/// What a piece of work does next.
 pub(super) enum Step {
-    /// It ended.
     Done,
-    /// It goes on once `work` has run with the vault on a worker.
     Vault { work: Work, then: Then },
 }
 
 impl Step {
-    /// Run `work` with the vault on a worker, then `then` with its result on
-    /// the UI thread.
     pub(super) fn vault<T: Send + 'static>(
         work: impl FnOnce(&VaultOpener) -> T + Send + 'static,
         then: impl FnOnce(&mut AccountsPane, T) -> Self + 'static,
@@ -49,7 +29,6 @@ impl Step {
             then: Box::new(move |pane: &mut AccountsPane, value: Erased| {
                 match value.downcast::<T>() {
                     Ok(value) => then(pane, *value),
-                    // The worker sends what this step's own work returned.
                     Err(_) => Self::Done,
                 }
             }),
@@ -57,17 +36,14 @@ impl Step {
     }
 }
 
-/// The queue of vault work and the piece a worker runs.
 #[derive(Default)]
 pub(super) struct VaultLane {
     running: Option<(Landing, Then)>,
     queued: VecDeque<Start>,
-    /// Work is being advanced: work queued meanwhile waits its turn.
     advancing: bool,
 }
 
 impl VaultLane {
-    /// Whether nothing runs or waits.
     pub(super) fn is_idle(&self) -> bool {
         self.running.is_none() && self.queued.is_empty()
     }
@@ -121,8 +97,6 @@ impl AccountsPane {
         self.lane.advancing = false;
     }
 
-    /// Run everything queued to its end, waiting for each worker: for a
-    /// caller off the UI thread (tests, and [`Self::remove`]).
     pub(super) fn settle_lane(&mut self) {
         crate::device_read::off_ui_thread();
         while !self.lane.is_idle() {

@@ -1577,7 +1577,6 @@ mod tests {
     )]
     #[test]
     fn layout_paginates_content_and_keys_on_settings() {
-        // --- phase: layout_produces_pages_and_lines ---
         {
             let mut tr = TextRenderer::new();
             let blocks = vec![
@@ -1613,7 +1612,6 @@ mod tests {
             assert!(ys.windows(2).all(|w| w[1] > w[0]));
         }
 
-        // --- phase: math_block_uses_shared_two_dimensional_layout ---
         {
             let mut tr = TextRenderer::new();
             let expr = ui::math::MathExpr {
@@ -1656,7 +1654,6 @@ mod tests {
             );
         }
 
-        // --- phase: narrow_tall_content_paginates_into_several_pages ---
         {
             let mut tr = TextRenderer::new();
             let big = "word ".repeat(400);
@@ -1674,7 +1671,6 @@ mod tests {
             assert!(layout.pages.windows(2).all(|w| w[1] > w[0]));
         }
 
-        // --- phase: layout_key_changes_with_settings_and_font ---
         {
             let base = LayoutKey::new(0, 300.0, 200.0, &book_settings(), 0, 1.0);
             let bigger_font = Settings {
@@ -1699,7 +1695,6 @@ mod tests {
             );
         }
 
-        // --- phase: selection_char_offsets_are_assigned_across_words ---
         {
             let mut tr = TextRenderer::new();
             let blocks = vec![para("alpha beta gamma")];
@@ -1733,7 +1728,6 @@ mod tests {
     )]
     #[test]
     fn microtypography_follows_language_and_composition() {
-        // --- phase: ragged_composition_disables_book_microtypography ---
         {
             let mut tr = TextRenderer::new();
             let settings = Settings {
@@ -1777,7 +1771,6 @@ mod tests {
             assert_eq!(lines[0].runs[0].x, 0.0, "opening punctuation does not hang");
         }
 
-        // --- phase: language_aware_hyphenation_paints_only_the_exercised_break ---
         {
             let mut tr = TextRenderer::new();
             let blocks = vec![para("characteristically")];
@@ -1811,7 +1804,6 @@ mod tests {
             );
         }
 
-        // --- phase: opening_punctuation_hangs_into_the_margin_without_changing_source ---
         {
             let mut tr = TextRenderer::new();
             let blocks = vec![para("“Typography begins at the edge.”")];
@@ -1838,7 +1830,6 @@ mod tests {
             }
         }
 
-        // --- phase: unspaced_cjk_uses_unicode_breaks_and_inter_character_justification ---
         {
             let mut tr = TextRenderer::new();
             let text = "天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏";
@@ -1862,7 +1853,6 @@ mod tests {
             );
         }
 
-        // --- phase: rtl_paragraphs_use_visual_bidi_order_and_right_align_the_final_line ---
         {
             let mut tr = TextRenderer::new();
             let layout = test_layout(
@@ -1947,7 +1937,6 @@ mod tests {
 
     #[test]
     fn verse_lays_out_one_ragged_line_per_source_line() {
-        // --- phase: verse_lines_are_ragged_indented_and_hang_when_wrapped ---
         {
             let mut tr = TextRenderer::new();
             let long =
@@ -2203,7 +2192,6 @@ mod tests {
     /// Pagination avoids single-line widows and orphans and keeps headings with their text.
     #[test]
     fn pagination_avoids_widows_orphans_and_stranded_headings() {
-        // --- phase: pagination_avoids_single_line_widows_and_orphans ---
         {
             let widow = block_with_lines(LayoutKind::Paragraph, 0.0, 5);
             assert_eq!(paginate(&[widow], 85.0), vec![0.0, 60.0]);
@@ -2213,7 +2201,6 @@ mod tests {
             assert_eq!(paginate(&[before, paragraph], 65.0), vec![0.0, 40.0, 100.0]);
         }
 
-        // --- phase: pagination_keeps_a_heading_with_following_text ---
         {
             let intro = block_with_lines(LayoutKind::Paragraph, 0.0, 1);
             let heading = block_with_lines(LayoutKind::Heading, 25.0, 1);

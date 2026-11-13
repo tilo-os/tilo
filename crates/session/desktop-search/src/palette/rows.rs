@@ -17,7 +17,7 @@ const KIND_FACET: &str = "kind";
 pub(super) fn kind_facets(groups: &[KindGroup<Hit>]) -> Vec<ui::search::Facet> {
     let mut facet = ui::search::Facet::new(KIND_FACET, "Kind");
     for group in groups {
-        facet = facet.value(group.kind.id(), group.kind.label());
+        facet = facet.value(group.kind.id(), group.kind.display_label());
     }
     vec![facet]
 }
@@ -65,7 +65,7 @@ pub(super) fn entries_for(
     rows.clear();
     let mut entries = Vec::new();
     for group in groups {
-        let label = group.kind.label().to_owned();
+        let label = group.kind.display_label();
         let capped = group.is_capped();
         let applications = browsing && !catalogue && group.kind == ResourceKind::Application;
         for hit in &group.results {
@@ -80,7 +80,9 @@ pub(super) fn entries_for(
             entries.push(entry.group(label.clone()).group_total(group.total));
             rows.push(hit.clone());
         }
-        if capped {
+        // The apps the empty card lists end in the one way to every app:
+        // "All apps", never a second "Show all" beside it.
+        if capped && !applications {
             entries.push(ui::search::system::show_all_entry(
                 format!("{MORE_PREFIX}{}", more.len()),
                 &label,
@@ -100,6 +102,18 @@ pub(super) fn entries_for(
         }
     }
     entries
+}
+
+/// Whether `groups` hold nothing but the web search every query is offered
+/// ("Search the web for …"): what was typed matched nothing. A service a query
+/// names ("youtube cats") is a match, and stays, and so does the row handing
+/// what was typed to the person's agent: it takes text nothing matched, as the
+/// canvas does.
+pub(super) fn nothing_matched(groups: &[KindGroup<Hit>]) -> bool {
+    groups
+        .iter()
+        .flat_map(|group| group.results.iter())
+        .all(crate::providers::WebSearch::is_every_query_row)
 }
 
 /// The row that lists every result the groups above had no room for.
@@ -172,6 +186,13 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                         entry = entry.with_preset();
                     }
                     entry
+                }
+                // An item a row opens opens in a window of its own beside, as an app does.
+                None if invoke.address.action == crate::model::OPEN_ACTION => {
+                    CommandEntry::new(id, hit.title.clone()).alternate(
+                        ui::search::ActivationModifier::Ctrl,
+                        crate::i18n::t("search-open-beside"),
+                    )
                 }
                 None => CommandEntry::new(id, hit.title.clone()),
             },
@@ -298,4 +319,74 @@ fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
         facts.push(fact.to_owned());
     }
     (subtitle, facts)
+}
+
+/// What each row a frame handed out stands for, by the entry id it was handed out under.
+pub(super) fn shown_rows(
+    rows: &[Hit],
+    more: &[ResourceKind],
+) -> std::collections::HashMap<String, ShownRow> {
+    let mut shown = std::collections::HashMap::new();
+    for (index, hit) in rows.iter().enumerate() {
+        shown.insert(format!("hit:{index}"), ShownRow::Thing(hit.thing()));
+    }
+    for (index, kind) in more.iter().enumerate() {
+        shown.insert(
+            format!("{MORE_PREFIX}{index}"),
+            ShownRow::ShowAll(kind.clone()),
+        );
+    }
+    shown
+}
+
+/// What a row the palette handed out stands for, by the entry id it was handed out under.
+#[derive(Clone)]
+pub(super) enum ShownRow {
+    /// A hit, by the thing it is about: one row per thing, so an answer that re-offers the same
+    /// thing under another source still names the row the person read.
+    Thing(crate::model::Thing),
+    /// A group asked whole, by its kind.
+    ShowAll(ResourceKind),
+}
+
+/// Take the press `id` names, as `DesktopSearch::observe` does for the palette's own outcome: a
+/// row the frame handed out, opened as the thing it stood for then, whatever place a rebuild of
+/// the list put it at.
+pub(super) fn take_the_press(search: &mut super::DesktopSearch, id: &str) {
+    match search.shown_rows.get(id) {
+        // A group asked whole, as the frame handed it out: its group, whatever place it stands
+        // at now.
+        Some(ShownRow::ShowAll(kind)) => {
+            if let Some(more) = search.more_rows.iter().position(|row| row == kind) {
+                search.expand(more);
+            }
+        }
+        Some(ShownRow::Thing(_)) => {
+            if let Some(hit) = pressed_hit(search, id) {
+                search.choose_hit(hit, None, None);
+            }
+        }
+        None => {
+            if let Some(more) = super::more_row(id) {
+                search.expand(more);
+            } else if let Some(hit) = search.hit(id) {
+                search.choose_hit(hit, None, None);
+            }
+        }
+    }
+}
+
+/// The row the press `id` names: the thing that stood under that id when the frame handed it
+/// out, as the rows hold it now. An answer that rebuilt the list in the same frame renumbered the
+/// rows; the press still opens the row the person saw. A row this search no longer lists is no
+/// press.
+pub(super) fn pressed_hit(search: &super::DesktopSearch, id: &str) -> Option<Hit> {
+    match search.shown_rows.get(id) {
+        Some(ShownRow::Thing(thing)) => search
+            .rows
+            .iter()
+            .find(|hit| hit.thing() == *thing)
+            .cloned(),
+        Some(ShownRow::ShowAll(_)) | None => search.hit(id),
+    }
 }

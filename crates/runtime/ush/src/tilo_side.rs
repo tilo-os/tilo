@@ -1,25 +1,14 @@
-//! A session's shell on the Tilo side, on a Linux device.
+//! A session's shell on the Tilo side, on a Linux device: ush's interpreter running in the
+//! process that serves the session's terminal, outside every guest, with
+//! [`ush_tilo::TiloHost`] as its host.
 //!
-//! A new Terminal session runs ush's interpreter here, in the process that
-//! serves the session's terminal, outside every guest, with
-//! [`ush_tilo::TiloHost`] as its host. This module gives that host what it
-//! needs from this device:
-//!
-//! - [`RecordEnvironment`]: the environment record's grants, and its file
-//!   actions through the session's broker, the same door a guest's `cp`
-//!   knocks on ([`crate::file_actions::brokered`]);
-//! - [`DevicePlace`]: the clock, account names, the session's pty for the
-//!   line editor (keys one at a time, its width), Ctrl-C and Ctrl+Z;
-//! - [`SessionGuest`]: the session's Linux guest, for the programs that are
-//!   none of the shell's own (tier 3). It starts the first time one is run
-//!   and is kept until the session ends, or until something in it asks for a
-//!   `restart`; each program runs in it on the shell's own streams
-//!   ([`crate::guest_exec`]), as part of the shell's job, which stops,
-//!   continues and ends its process group there. Tab completes the names of
-//!   the programs in the images the guest is built from.
-//!
-//! The granted files are read with [`ush_tilo::NativeFiles`]: they are on
-//! this device's disk, at the paths their grants name.
+//! This module gives that host what it needs from the device: [`RecordEnvironment`] (the
+//! record's grants and its file actions through the session's broker), [`DevicePlace`]
+//! (clock, account names, the pty, Ctrl-C and Ctrl-Z) and [`SessionGuest`] (the session's
+//! guest, started the first time a program that is none of the shell's own runs, kept until
+//! the session ends or something asks for a `restart`). Granted files are read with
+//! [`ush_tilo::NativeFiles`]: they are on this device's disk, at the paths their grants
+//! name.
 
 use std::os::fd::{AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -45,18 +34,15 @@ use crate::policy::Policy;
 use crate::supervisor::{Resolved, Session};
 use ush_shell::jobs::{Job, Signal};
 
-/// The environment record, through the session's broker.
 pub struct RecordEnvironment {
     state: Arc<Mutex<BrokerState>>,
     /// The record's document: its grants are read again only once it
     /// changed.
     document: Option<std::path::PathBuf>,
     grants: Mutex<Option<(Stamp, Vec<CapOverride>)>>,
-    /// Where a write too large to travel inside its action is kept.
     content: Option<crate::content::EnvironmentContent>,
 }
 
-/// What a document looked like when it was read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     len: u64,
@@ -140,7 +126,6 @@ impl Environment for RecordEnvironment {
     }
 }
 
-/// Set by the `SIGINT` handler: the person pressed Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 /// The write end of [`DevicePlace`]'s wake pipe, for the handler; -1 when
@@ -152,14 +137,12 @@ static WAKE: AtomicI32 = AtomicI32::new(-1);
 /// does not read the terminal).
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
-/// The write end of [`DevicePlace`]'s suspend pipe, for the handler.
 static SUSPEND_WAKE: AtomicI32 = AtomicI32::new(-1);
 
 fn wake(fd: &AtomicI32) {
     let fd = fd.load(Ordering::SeqCst);
     if fd >= 0 {
         let byte = 1_u8;
-        // SAFETY: write(2) is async-signal-safe; one byte from a local.
         unsafe { libc::write(fd, (&raw const byte).cast(), 1) };
     }
 }
@@ -174,39 +157,26 @@ extern "C" fn on_suspend(_: libc::c_int) {
     wake(&SUSPEND_WAKE);
 }
 
-/// A non-blocking pipe: its read end and its write end.
 fn wake_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
-    // SAFETY: pipe2 writes two descriptors into the array we own.
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: the kernel just returned these two descriptors.
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
-/// Read everything there is in a non-blocking pipe.
 fn drain(fd: &OwnedFd) {
     let mut buf = [0_u8; 64];
-    // SAFETY: a non-blocking read into a local buffer of its length.
     while unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
 }
 
-/// This device as the place the shell runs: its clock, its accounts, the
-/// session's terminal for the line editor, Ctrl-C, which also wakes
-/// whatever waits on [`Self::interrupts`], and Ctrl+Z, which wakes what
-/// waits on [`Self::suspends`].
 pub struct DevicePlace {
     wake_read: OwnedFd,
     _wake_write: OwnedFd,
     suspend_read: OwnedFd,
     _suspend_write: OwnedFd,
-    /// The session's terminal, when it has one.
     terminal: Option<OwnedFd>,
-    /// The terminal's settings as commands left them, while the line editor
-    /// has it taking keys one at a time: what it gets back afterwards.
     cooked: Mutex<Option<libc::termios>>,
-    /// Terminal's native editor capability, served by the line editor.
     field: Option<Arc<SessionField>>,
 }
 
@@ -223,7 +193,6 @@ impl DevicePlace {
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = on_interrupt as *const () as usize;
-            // No SA_RESTART: a read of the terminal returns at once.
             action.sa_flags = 0;
             libc::sigemptyset(&raw mut action.sa_mask);
             libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut());
@@ -232,8 +201,6 @@ impl DevicePlace {
             libc::sigaction(libc::SIGTSTP, &raw const action, std::ptr::null_mut());
             libc::signal(libc::SIGQUIT, libc::SIG_IGN);
             libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-            // Taking the terminal back from a program asks from the
-            // background.
             libc::signal(libc::SIGTTOU, libc::SIG_IGN);
             libc::signal(libc::SIGTTIN, libc::SIG_IGN);
         }
@@ -248,15 +215,12 @@ impl DevicePlace {
         })
     }
 
-    /// The session's terminal is `terminal`: the line editor takes keys
-    /// from it one at a time.
     #[must_use]
     pub fn on_terminal(mut self, terminal: OwnedFd) -> Self {
         self.terminal = Some(terminal);
         self
     }
 
-    /// Terminal edits the line at the prompt through `field`.
     #[must_use]
     pub fn with_field(mut self, field: Arc<SessionField>) -> Self {
         self.field = Some(field);
@@ -274,8 +238,6 @@ impl DevicePlace {
         self.suspend_read.as_fd()
     }
 
-    /// Give the session's terminal back to the shell's own process group:
-    /// the prompt is the shell's, whatever program had the terminal last.
     pub fn take_terminal(&self) {
         if let Some(fd) = &self.terminal {
             take_terminal(fd.as_raw_fd());
@@ -287,7 +249,6 @@ impl DevicePlace {
 /// when it is one. SIGTTOU is ignored ([`DevicePlace::install`]), so asking
 /// from the background is allowed.
 fn take_terminal(fd: libc::c_int) {
-    // SAFETY: plain calls on a descriptor we hold.
     unsafe {
         if libc::isatty(fd) == 1 {
             libc::tcsetpgrp(fd, libc::getpgrp());
@@ -326,8 +287,6 @@ impl Place for DevicePlace {
         let mut cooked = self.cooked.lock().unwrap_or_else(PoisonError::into_inner);
         if !on {
             if let Some(settings) = cooked.take() {
-                // SAFETY: tcsetattr reads the termios struct we own, for a
-                // descriptor we hold.
                 unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &raw const settings) };
             }
             return true;
@@ -341,8 +300,6 @@ impl Place for DevicePlace {
                 return false;
             }
             let mut raw = now;
-            // Keys one at a time, unechoed; Ctrl-C, Ctrl-Z and Ctrl-S are
-            // keys too, and Enter arrives as itself.
             raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
             raw.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
             raw.c_cc[libc::VMIN] = 1;
@@ -352,7 +309,6 @@ impl Place for DevicePlace {
             }
             now
         };
-        // Switched on twice, it goes back to what it was first.
         cooked.get_or_insert(was);
         true
     }
@@ -399,7 +355,6 @@ impl Place for DevicePlace {
             self.wake_read.as_raw_fd(),
             libc::POLLIN,
         )];
-        // Woken by Ctrl-C, else the whole time.
         let _ = crate::broker::poll_fds(&mut fds, Some(std::time::Duration::from_millis(millis)));
     }
 
@@ -421,7 +376,6 @@ impl Place for DevicePlace {
     }
 }
 
-/// The name an id has in `passwd` or `group`.
 fn account_name(file: &str, id: u32) -> Option<String> {
     let text = std::fs::read_to_string(file).ok()?;
     text.lines().find_map(|line| {
@@ -432,8 +386,6 @@ fn account_name(file: &str, id: u32) -> Option<String> {
     })
 }
 
-/// The session's own standard streams: what a program gets where the
-/// shell's stream is the session's (the terminal).
 pub struct SessionStreams {
     pub stdin: OwnedFd,
     pub stdout: OwnedFd,
@@ -449,8 +401,6 @@ impl SessionStreams {
         }
     }
 
-    /// The shell's streams over these: standard input and output, and
-    /// standard error.
     pub fn stdio(&self) -> std::io::Result<Stdio> {
         Ok(Stdio {
             stdin: Input::host(std::fs::File::from(self.stdin.try_clone()?)),
@@ -459,8 +409,6 @@ impl SessionStreams {
         })
     }
 
-    /// [`Self::stdio`], its input read by the line editor through `field`
-    /// when Terminal edits the line too ([`SessionField::keys`]).
     pub fn stdio_editing(&self, field: Option<&Arc<SessionField>>) -> std::io::Result<Stdio> {
         let mut io = self.stdio()?;
         if let Some(field) = field {
@@ -471,12 +419,8 @@ impl SessionStreams {
     }
 }
 
-/// A guest that serves programs: its control socket, and what keeps it
-/// running. Dropping it stops the guest.
 pub struct RunningGuest {
     control: UnixStream,
-    /// What else lives as long as the guest (its process, its network),
-    /// dropped after the control socket closes, in order.
     keep: Vec<Box<dyn Send + Sync>>,
 }
 
@@ -488,8 +432,6 @@ impl RunningGuest {
 
 impl Drop for RunningGuest {
     fn drop(&mut self) {
-        // Closing the control socket ends the server; then the guest's
-        // process, then its network.
         let _ = self.control.shutdown(std::net::Shutdown::Both);
         for kept in self.keep.drain(..) {
             drop(kept);
@@ -497,7 +439,6 @@ impl Drop for RunningGuest {
     }
 }
 
-/// A child process that is killed and reaped when dropped.
 pub struct Reaped(pub std::process::Child);
 
 impl Drop for Reaped {
@@ -513,24 +454,13 @@ type Launch = dyn Fn() -> anyhow::Result<RunningGuest> + Send + Sync;
 
 type Launched = std::sync::mpsc::Sender<anyhow::Result<RunningGuest>>;
 
-/// The session's Linux guest, started for the first program and kept for
-/// the session.
-///
-/// It is started on a thread of its own that lasts as long as this does:
-/// `bwrap` ends its guest when the thread that started it ends
-/// (`--die-with-parent`), and the program that asks first may be running on
-/// a pipeline's thread.
 pub struct SessionGuest {
     launch: Mutex<std::sync::mpsc::Sender<Launched>>,
-    /// Whether something in the guest asked for it to be built again from
-    /// the record (`restart`), taking the request.
     restart_asked: Box<dyn Fn() -> bool + Send + Sync>,
     guest: Mutex<Option<Arc<RunningGuest>>>,
     starts: AtomicUsize,
     streams: SessionStreams,
     place: Arc<DevicePlace>,
-    /// The roots of the images the guest is built from, for the names of
-    /// its programs.
     listing: Box<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
     roots: Mutex<Option<Vec<PathBuf>>>,
 }
@@ -562,20 +492,16 @@ impl SessionGuest {
         }
     }
 
-    /// The guest is built from the images whose roots `listing` answers:
-    /// Tab completes the names of the programs on their `PATH`.
     #[must_use]
     pub fn listing(mut self, listing: Box<dyn Fn() -> Vec<PathBuf> + Send + Sync>) -> Self {
         self.listing = listing;
         self
     }
 
-    /// How many times the guest was started.
     pub fn starts(&self) -> usize {
         self.starts.load(Ordering::SeqCst)
     }
 
-    /// The running guest, started now if there is none.
     fn guest(&self) -> anyhow::Result<Arc<RunningGuest>> {
         let mut guest = self.guest.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(running) = guest.as_ref() {
@@ -598,7 +524,6 @@ impl SessionGuest {
         Ok(running)
     }
 
-    /// Stop the guest: the next program starts it again from the record.
     fn forget(&self) {
         self.guest
             .lock()
@@ -610,8 +535,6 @@ impl SessionGuest {
             .take();
     }
 
-    /// The descriptor a program gets for one of the shell's streams, and,
-    /// when it is a pipe, the end the shell keeps.
     fn stream(&self, host: Option<Std>) -> std::io::Result<(OwnedFd, Option<OwnedFd>)> {
         if let Some(stream) = host {
             return Ok((self.streams.of(stream)?, None));
@@ -650,13 +573,9 @@ fn feed(from: &Input, to: OwnedFd) {
     }
 }
 
-/// A program's three streams as the guest gets them, and the shell's ends
-/// of those that are pipes.
 struct ProgramStreams {
     given: [OwnedFd; 3],
-    /// What the shell writes the program's input into.
     feed: Option<OwnedFd>,
-    /// What the shell reads the program's output and errors from.
     out: Option<OwnedFd>,
     err: Option<OwnedFd>,
 }
@@ -666,8 +585,6 @@ impl SessionGuest {
         let (stdin, feed) = self.stream(io.stdin.host_stream())?;
         let (stdout, out) = self.stream(io.stdout.host_stream())?;
         let (stderr, err) = self.stream(io.stderr.host_stream())?;
-        // A pipe's ends: for standard input the program reads and the shell
-        // writes; for the outputs the other way round.
         let (stdout, out) = match out {
             Some(writer) => (writer, Some(stdout)),
             None => (stdout, None),
@@ -684,7 +601,6 @@ impl SessionGuest {
         })
     }
 
-    /// What became of a program the guest answered for.
     fn ended(&self, name: &str, io: &Stdio, answer: std::io::Result<Answer>) -> Program {
         if (self.restart_asked)() {
             self.forget();
@@ -695,7 +611,6 @@ impl SessionGuest {
             Ok(Answer::Failed { reason }) => failed(name, io, &reason),
             Ok(other) => failed(name, io, &format!("the guest answered {other:?}")),
             Err(error) => {
-                // The guest went away: the next program starts another.
                 self.forget();
                 failed(
                     name,
@@ -706,7 +621,6 @@ impl SessionGuest {
         }
     }
 
-    /// The roots of the images the guest is built from, read once.
     fn image_roots(&self) -> Vec<PathBuf> {
         let mut roots = self.roots.lock().unwrap_or_else(PoisonError::into_inner);
         roots.get_or_insert_with(|| (self.listing)()).clone()
@@ -750,7 +664,6 @@ fn failed(name: &str, io: &Stdio, reason: &str) -> Program {
     Program::Exited(126)
 }
 
-/// Feed and drain a program's pipes on `scope`'s threads.
 fn pump<'scope>(
     scope: &'scope std::thread::Scope<'scope, '_>,
     io: &'scope Stdio,
@@ -772,8 +685,6 @@ fn pump<'scope>(
     }
 }
 
-/// The programs on `path` in the image roots `roots`: a directory of the
-/// guest's `PATH` is that directory in each of the images it is built from.
 pub fn programs_in(roots: &[PathBuf], path: &str) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt as _;
     let mut names = std::collections::BTreeSet::new();
@@ -784,8 +695,6 @@ pub fn programs_in(roots: &[PathBuf], path: &str) -> Vec<String> {
                 continue;
             };
             for entry in entries.flatten() {
-                // A link is the image's own, pointing into the image: taken
-                // as the program it names.
                 let runs = entry.file_type().is_ok_and(|ft| {
                     ft.is_symlink()
                         || (ft.is_file()
@@ -925,8 +834,6 @@ impl Programs for SessionGuest {
                 }
                 match woke.answer {
                     Some(Answer::Stopped) => {
-                        // Ctrl+Z reached it: the job stops, and the prompt
-                        // has the terminal again.
                         job.stopped();
                         self.place.take_terminal();
                     }
@@ -936,8 +843,6 @@ impl Programs for SessionGuest {
             }
         });
         drop(attached);
-        // The job's last program ended: the shell's own commands that follow
-        // in the line have the terminal again.
         if job.foreground() && job.programs_running() == 0 {
             self.place.take_terminal();
         }
@@ -949,11 +854,6 @@ impl Programs for SessionGuest {
     }
 }
 
-// The session that runs it: the record, the broker, the shell, and the guest
-// when a program needs one.
-
-/// Where the session's shell starts: `~` when the grants reach it, else the
-/// first directory they grant.
 fn starting_dir(policy: &Policy, home: &Path, now: Option<u64>) -> PathBuf {
     std::iter::once(home.to_path_buf())
         .filter(|home| policy.permits(home, collab_types::caps::Access::Read, now))
@@ -963,7 +863,6 @@ fn starting_dir(policy: &Policy, home: &Path, now: Option<u64>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// The text of `path`, read as every file is: through the grants.
 fn read_through(host: &dyn ush_shell::Host, path: &Path) -> std::io::Result<String> {
     let mut text = String::new();
     std::io::Read::read_to_string(&mut host.open_read(path)?, &mut text)?;
@@ -984,7 +883,6 @@ impl Session {
     pub fn run_tilo_side(&mut self, script: Option<&str>) -> anyhow::Result<i32> {
         self.store.ensure()?;
         let (key, environment) = self.resolve_record()?;
-        // Held for the session's life: the door closes with it.
         let door =
             crate::agent_door::open_for(&self.store, &self.environment_id(&key), &environment);
         self.opts.agent_door = door.as_ref().map(|door| door.path().to_path_buf());
@@ -996,9 +894,6 @@ impl Session {
         outcome
     }
 
-    /// The workspace environment's own VM, on a host that serves
-    /// workspaces: it sees the directories the record grants as of each
-    /// program.
     fn hosted_programs(
         &self,
         target: crate::hosted_vm::HostedTarget,
@@ -1017,8 +912,6 @@ impl Session {
             }),
         )
         .with_runs_key(self.opts.runs.clone());
-        // The session's terminal is its standard input, as for programs on
-        // a device.
         Arc::new(match std::io::stdin().as_fd().try_clone_to_owned() {
             Ok(terminal) => programs.terminal(terminal),
             Err(_) => programs,
@@ -1038,7 +931,6 @@ impl Session {
         let resolved = Resolved {
             key,
             environment,
-            // Resolved when the guest starts, if it ever does.
             images: Vec::new(),
         };
         let broker = Broker::start(
@@ -1052,8 +944,6 @@ impl Session {
             Ok(SessionStreams {
                 stdin: dup(std::io::stdin().as_fd())?,
                 stdout: dup(std::io::stdout().as_fd())?,
-                // Served, standard error is the supervisor's log; the
-                // shell's is the terminal.
                 stderr: match &self.opts.terminal {
                     Some(terminal) => dup(terminal.as_fd())?,
                     None => dup(std::io::stderr().as_fd())?,
@@ -1137,9 +1027,6 @@ impl Session {
         Ok(status)
     }
 
-    /// This device as the session's place: on the session's terminal, with
-    /// Terminal's native editor capability, when it asked for one, served
-    /// by the line editor.
     fn session_place(&self) -> anyhow::Result<(Arc<DevicePlace>, Option<Arc<SessionField>>)> {
         let field = self
             .opts
@@ -1203,8 +1090,6 @@ impl Session {
             .collect()
     }
 
-    /// The Tilo-side shell's variables: what a guest's processes start
-    /// with, since every program it runs runs there.
     fn shell_env(
         &self,
         resolved: &Resolved,
@@ -1248,10 +1133,6 @@ impl Session {
         env
     }
 
-    /// Start the session's guest for the Tilo-side shell's programs: its
-    /// first process serves them one command at a time on `control`
-    /// ([`crate::guest_exec`]). Answers the guest's process, its network
-    /// namespace and its egress, which live as long as it does.
     pub fn spawn_exec_guest(
         &self,
         resolved: &Resolved,

@@ -7,8 +7,8 @@ tool with `app_id` clicks, drags, types and scrolls in the window, in the
 window's pixels, and answers with what the window then shows. This script
 only sets up and tears down what is around it:
 
-  start APP   a headless Tilo compositor as the only display (nothing appears
-              on your desktop), a private home and runtime profile, and
+  start APP   a headless Tilo session as the only display (nothing appears on
+              your desktop), a private home and runtime profile, and
               `tilo-app dev APP`, which rebuilds and restarts the app on every
               source change. The runtime daemon owns the profile, so an MCP
               connection survives each restart. `--release` builds the app
@@ -25,11 +25,10 @@ only sets up and tears down what is around it:
               them), and what it cost, written to target/agent-runs/APP-TIME.
   stop APP    stop the session and remove its runtime directory.
 
-The app's own file choosers (Open, Add picture, Export...) show
-target/agent-loop/APP/files: put files there for the app to open, and find
-there what it saves. `start` has the session's workspace grant the app read
-and write on that folder, as the workspace's owner grants an app a folder in
-its Permissions, so the chooser the shell draws offers it and nothing else.
+The app opens in the workspace the session publishes in
+$XDG_RUNTIME_DIR/tilo-session/workspace-id, which is the one `tilo-app dev`
+joins; the session mints a throwaway identity first, as a development login
+does, so the desk has that workspace at all.
 
 Everything lives under target/agent-loop/APP (state, logs) and a private
 directory in $XDG_RUNTIME_DIR (sockets, the runtime profile). Your real home,
@@ -47,19 +46,18 @@ import os
 import pathlib
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
-import tomllib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import usage as cost  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TARGET = REPO / "target"
-SHELL = TARGET / "debug" / "shell"
+SESSION = TARGET / "debug" / "tilo-session"
+CONTROL = TARGET / "debug" / "tilo-control"
 RUNTIME_HOST = TARGET / "debug" / "tilo-runtime-mcp"
 TILO_APP = TARGET / "debug" / "tilo-app"
 
@@ -156,13 +154,13 @@ def start(args) -> int:
     if not (app_dir / "Cargo.toml").exists():
         sys.exit(f"FAIL: {app_dir} is not an app directory")
     session = Session(app_name(args.app))
-    if session.alive(session.load().get("compositor")):
+    if session.alive(session.load().get("session")):
         sys.exit(f"FAIL: a {session.name} session is already running; stop it first")
-    for binary in (SHELL, RUNTIME_HOST, TILO_APP):
+    for binary in (SESSION, CONTROL, RUNTIME_HOST, TILO_APP):
         if not binary.exists():
             sys.exit(
                 f"FAIL: {binary} is missing; build it with\n"
-                "  cargo build -p shell --bin shell --features agent-control && cargo build -p tilo-runtime --bin tilo-runtime-mcp && cargo build -p tilo-app-cli"
+                "  cargo build -p tilo-session --bin tilo-session -p tilo-control -p tilo-app-cli -p tilo-runtime"
             )
     prepare(session)
     env = session.env()
@@ -192,23 +190,22 @@ def start(args) -> int:
     wrapper.chmod(0o700)
     env["CARGO"] = str(wrapper)
     logs = session.root / "logs"
-    compositor = subprocess.Popen(
-        [str(SHELL), "--backend", "headless"],
-        env=env,
-        stdout=open(logs / "compositor.log", "wb"),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    # A desk with no identity shows setup, not a workspace, so a session that
+    # has none mints the throwaway identity a development login opens its desk
+    # with, and is started again onto it.
+    if not (session.root / "identity" / "device" / "cert.bin").exists():
+        mint_identity(session, env)
+    session_process = start_session(session, env)
     display_file = session.run / "tilo-session" / "wayland-display"
-    wait_for(display_file, compositor, args.timeout, "the compositor")
+    wait_for(display_file, session_process, args.timeout, "the session")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
-    # The workspace in front, which the app joins, is up once its workspace is.
-    wait_for(display_file.with_name("workspace-id"), compositor, args.timeout, "the compositor")
-    grant_files(session, app_dir)
+    # The desk's workspace in front is up with it, and `tilo-app dev` reads it
+    # for the app it starts.
+    wait_for(display_file.with_name("workspace-id"), session_process, args.timeout, "the session")
     # The app sees the desktop a Tilo login gives its apps, so it leaves
-    # History and its title to the shell's chrome as it does there, rather
-    # than drawing a standalone window's bar. The compositor is not told:
-    # a login's compositor exports its session to the user manager.
+    # History and its title to the session's chrome as it does there, rather
+    # than drawing a standalone window's bar. The session is not told: a
+    # login's session exports itself to the user manager.
     env["XDG_CURRENT_DESKTOP"] = "tilo:GNOME"
     dev_command = [str(TILO_APP), "dev", str(app_dir), "--app-only"]
     if args.release:
@@ -224,7 +221,7 @@ def start(args) -> int:
     )
     state = {
         "app": str(app_dir),
-        "compositor": compositor.pid,
+        "session": session_process.pid,
         "dev": dev.pid,
         "dev_command": dev_command[1:],
         "wayland_display": env["WAYLAND_DISPLAY"],
@@ -246,7 +243,7 @@ def start(args) -> int:
     print(f"READY {session.name}: display {env['WAYLAND_DISPLAY']}, profile {session.profile}")
     print(f"  app log      {logs / 'app.log'}")
     print(f"  MCP endpoint {pathlib.Path(__file__).resolve()} mcp {session.name}")
-    print(f"  files        {session.files} (what the app's file choosers show)")
+    print(f"  files        {session.files}")
     if args.foreground:
         try:
             dev.wait()
@@ -257,35 +254,61 @@ def start(args) -> int:
     return 0
 
 
-def grant_files(session: Session, app_dir: pathlib.Path) -> None:
-    """Have the workspace in front grant the app read and write on the
-    session's files folder: the shell records it as its owner granting it,
-    as the Permissions of a workspace do, and the app's choosers then offer
-    that folder."""
-    with open(app_dir / "tilo-app.toml", "rb") as manifest:
-        app_id = tomllib.load(manifest)["package"]["id"]
-    request = {
-        "op": "grant",
-        "subject": f"app:{app_id}",
-        "scope": f"fs:{session.files.resolve()}",
-        "verb": "write",
-        "id": "agent-loop-files",
-    }
+def start_session(session: Session, env: dict) -> subprocess.Popen:
+    """The session on its own private runtime directory, drawing into nothing:
+    the only display a person's desktop here is one a command is told about."""
+    logs = session.root / "logs"
+    return subprocess.Popen(
+        [str(SESSION), "--backend", "headless"],
+        env=env,
+        stdout=open(logs / "session.log", "wb"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+
+def mint_identity(session: Session, env: dict) -> None:
+    """Give the session the throwaway identity a development login opens its
+    desk with, through the door the tree's own development harnesses use, and
+    stop the session that minted it: the one started after it reads the desk
+    through that identity."""
+    control = pathlib.Path(env["TILO_TEST_CONTROL"])
+    minting = subprocess.Popen(
+        [str(SESSION), "--backend", "headless"],
+        env=env,
+        stdout=open(session.root / "logs" / "identity.log", "wb"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
     try:
-        with socket.socket(socket.AF_UNIX) as control:
-            control.settimeout(30)
-            control.connect(str(session.run / "control.sock"))
-            control.sendall(json.dumps(request).encode() + b"\n")
-            answer = control.makefile().readline()
-    except OSError as error:
-        answer = str(error)
-    try:
-        granted = "granted" in json.loads(answer).get("answer", {})
-    except (ValueError, AttributeError):
-        granted = False
-    if not granted:
-        # The session still runs; only the app's choosers have nothing to offer.
-        print(f"WARN: the workspace did not grant {app_id} its files folder: {answer}")
+        wait_for(control, minting, 90.0, "the session")
+        answer = subprocess.run(
+            [str(CONTROL), "--socket", str(control), "raw", '{"op":"provision_test_identity"}'],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        answered = False
+        for line in (answer.stdout + answer.stderr).splitlines():
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            answered = bool(parsed.get("answer", {}).get("throwaway"))
+            # A second session reads the identity the first one left.
+            answered |= parsed.get("err", {}).get("code") == "identity_exists"
+        if not answered:
+            sys.exit(
+                "FAIL: the session minted no identity: "
+                f"{answer.stdout.strip()} {answer.stderr.strip()}"
+            )
+    finally:
+        try:
+            os.killpg(minting.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        minting.wait(timeout=30)
 
 
 def profile_owners(session: Session) -> list:
@@ -316,7 +339,7 @@ def profile_owners(session: Session) -> list:
 
 def stop_session(session: Session) -> None:
     state = session.load()
-    for key in ("dev", "compositor"):
+    for key in ("dev", "session"):
         pid = state.get(key)
         if session.alive(pid):
             try:
@@ -324,9 +347,9 @@ def stop_session(session: Session) -> None:
             except OSError:
                 pass
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and any(session.alive(state.get(key)) for key in ("dev", "compositor")):
+    while time.monotonic() < deadline and any(session.alive(state.get(key)) for key in ("dev", "session")):
         time.sleep(0.2)
-    for key in ("dev", "compositor"):
+    for key in ("dev", "session"):
         pid = state.get(key)
         if session.alive(pid):
             try:
@@ -354,7 +377,7 @@ def stop(args) -> int:
 def status(args) -> int:
     session = Session(app_name(args.app))
     state = session.load()
-    up = session.alive(state.get("compositor")) and session.alive(state.get("dev"))
+    up = session.alive(state.get("session")) and session.alive(state.get("dev"))
     print(json.dumps({"running": up, **state, "files": str(session.files)}, indent=2))
     return 0 if up else 1
 
@@ -580,7 +603,7 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     begin = commands.add_parser("start", help="start an isolated session for an app")
     begin.add_argument("app", help="the app directory, e.g. apps/canvas")
-    begin.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the compositor")
+    begin.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the session")
     begin.add_argument("--foreground", action="store_true", help="stay attached; Ctrl+C stops the session")
     build = begin.add_mutually_exclusive_group()
     build.add_argument(

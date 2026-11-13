@@ -1,15 +1,6 @@
 //! Type specimens: matched script fallbacks in every role, and the text kinds
 //! (numeric columns, codes, identifiers), in the default and Hyperlegible
 //! faces, dark and light.
-//!
-//! ```bash
-//! cargo run -p ui-examples --example type-specimen-shots -- \
-//!     --shots target/look/type/specimen.png --viewport 1280x800
-//! ```
-//!
-//! Writes `<stem>-<page>-<face>-<theme>.png` next to the `--shots` path for
-//! the pages `scripts` and `kinds`, the faces `default` and `hyperlegible`
-//! and the themes `dark` and `light`.
 
 use std::path::{Path, PathBuf};
 

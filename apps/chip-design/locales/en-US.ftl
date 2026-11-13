@@ -39,7 +39,7 @@ chip-import-cancelled = Report import cancelled
 chip-import-too-large = Report exceeds the 1 MiB import limit
 chip-empty-title = Nothing in this project yet
 chip-empty-open-graph = Open the operator graph
-chip-empty-message = Chip Design lays out how a neural network maps onto hardware. Sketch its operators in the operator graph, or import an engineering report (JSON) to read the evidence it records.
+chip-empty-message = Sketch the operators in the operator graph, or import an engineering report (JSON) to read the evidence it records.
 chip-imported-evidence = Imported analytical storage report. Source authenticity and quantization quality are unverified.
 chip-remove = Remove report
 chip-show-all = All reports
@@ -201,7 +201,7 @@ chip-value-no = No
 chip-flow-disclaimer = Reported evidence only. Artifacts are not authenticated or executed. Library estimates are not silicon measurements, signoff, manufacturing approval, or model quality.
 chip-flow-artifacts = Original artifact references
 chip-flow-custody = Custody
-chip-flow-unverified = Reported / unverified
+chip-flow-unverified = Unverified
 chip-flow-receipt = Original receipt artifact
 chip-flow-producer = Declared producer SHA-256
 chip-flow-input = Declared input identity SHA-256
@@ -263,3 +263,28 @@ chip-design-operator-node-x = Moved an operator
 chip-design-operator-node-y = Moved an operator
 chip-design-operator-node-output-width = Changed the matrix output width of an operator
 chip-design-project-nodes = Changed the operators
+
+## Actions
+
+chip-design-project = Chip Design
+chip-design-project-import-report = Import analytical report
+chip-design-project-remove-report = Remove report
+chip-design-project-import-verification = Import verification receipt
+chip-design-project-remove-verification = Remove verification receipt
+chip-design-project-add-node = Add operator
+chip-design-project-set-shape = Set operator input shape
+chip-design-project-remove-node = Remove operator
+chip-design-project-connect = Connect operators
+chip-design-project-disconnect = Disconnect input
+chip-design-effect-import-file = Import report
+chip-design-effect-operator-graph = Open operator graph
+chip-design-effect-add-operator = Add operator
+chip-design-effect-inspect-operator = Inspect operator
+chip-design-effect-zoom-graph = Zoom the graph
+chip-design-effect-select-output = Choose output
+chip-design-effect-inspect-evidence = Inspect evidence
+chip-design-effect-open-evidence-subflow = Open evidence subflow
+chip-design-effect-inspect = Inspect report
+
+## What the app is called in a window and in the launcher
+chip-design-app-title = Chip Design

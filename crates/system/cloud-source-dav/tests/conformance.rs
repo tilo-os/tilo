@@ -1,17 +1,6 @@
-//! The cloud-source conformance suite for `WebDAV` and Nextcloud, in all
-//! three layers:
-//!
-//! - in-process fakes (always): plain `WebDAV`, `WebDAV` with
-//!   `sync-collection`, Nextcloud;
-//! - real servers in containers (`crates/system/cloud-source-dav/tests/servers.sh`
-//!   starts them and prints `TILO_TEST_WEBDAV_*` / `TILO_TEST_NEXTCLOUD_*`;
-//!   t's `cloud-servers` check);
-//! - live accounts (`TILO_LIVE_WEBDAV_*` / `TILO_LIVE_NEXTCLOUD_*` from t's
-//!   secrets, nightly in its `cloud-live` check).
-//!
-//! Server layers are skipped when their variables are absent, unless
-//! `TILO_REQUIRE_CLOUD_SERVERS=1`; `tools/ci/cloud-conformance.sh` fails the
-//! checks instead.
+//! The cloud-source conformance suite for `WebDAV` and Nextcloud: in-process fakes
+//! always, real servers in containers when their variables are set, and live accounts
+//! from t's secrets; each run works in its own `conformance-<uuid>` folder.
 
 #![allow(
     clippy::unwrap_used,
@@ -35,7 +24,6 @@ fn basic(user: &str, password: &str) -> Credential {
     }
 }
 
-/// An in-process fake server.
 struct FakeFixture {
     server: FakeDav,
     credentials: Arc<SwitchableCredential>,
@@ -116,7 +104,6 @@ fn listing_failures_name_their_cause() {
     fixture.server.clear();
     source.list(&root).expect("the fake lists the root");
 
-    // A body cut short after the head announced its full length.
     fixture.server.inject(FakeFault::TruncatedListing);
     let error = source.list(&root).expect_err("a truncated listing fails");
     assert!(
@@ -138,7 +125,6 @@ fn listing_failures_name_their_cause() {
         "a closed body names its cause: {error:?}"
     );
 
-    // A 200 that is an HTML page, not a listing.
     fixture.server.inject(FakeFault::NotMultistatus);
     let error = source
         .list(&root)
@@ -188,7 +174,6 @@ fn change_feed_failures_name_their_cause() {
         "a non-multistatus answer names its cause: {error:?}"
     );
 
-    // A 207 whose body is not a report: the body keeps its own cause.
     fixture.server.inject(FakeFault::NotMultistatus);
     let client = tilo_dav::DavClient::new(&tilo_dav::Options::default())
         .expect("dav client")
@@ -230,7 +215,6 @@ fn change_feed_failures_name_their_cause() {
         .expect("the server still lists");
 }
 
-/// A reset while probing is an outage, not a server without a change feed.
 #[test]
 fn probing_a_reset_server_fails() {
     let fixture = FakeFixture::start(FakeDav::generic());
@@ -254,7 +238,6 @@ struct ServerFixture {
     remote: DavSource,
     account_root: DavSource,
     folder: ItemId,
-    /// The Nextcloud trash bin of the account, when the root is one.
     trash: Option<DavSource>,
 }
 

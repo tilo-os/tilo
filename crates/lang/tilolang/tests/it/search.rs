@@ -209,9 +209,10 @@ type Person {
     assert_eq!(keys, ["n"]);
 }
 
-/// What a type is called is its name in words, its plural as English writes most; a search
-/// block says nothing about it, and no resource is singled out by a declaration: a query naming
-/// an app means its root, drawn as its app's default view.
+/// What a type is called is its name in words, one of it and several as English writes them: a
+/// name that already names several is one of them and all of them, and an irregular plural is
+/// English's. A search block says nothing about it, and no resource is singled out by a
+/// declaration: a query naming an app means its root, drawn as its app's default view.
 #[test]
 fn a_type_is_called_by_its_name() {
     let src = r"/// A mailbox.
@@ -227,6 +228,20 @@ type TodoList {
 /// A box of entries.
 type Entry {
     text: Text
+}
+
+/// The workspace's tasks.
+type Tasks {
+    items: Collection<TodoList>
+}
+
+/// Someone here.
+type Person {
+    name: Text
+}
+
+/// The day at a glance.
+type Today {
 }";
     let meta = compile_body(src).meta;
     let nouns = |name: &str| {
@@ -236,6 +251,21 @@ type Entry {
     assert_eq!(nouns("Mailbox"), ("mailbox".into(), "mailboxes".into()));
     assert_eq!(nouns("TodoList"), ("todo list".into(), "todo lists".into()));
     assert_eq!(nouns("Entry"), ("entry".into(), "entries".into()));
+    assert_eq!(
+        nouns("Tasks"),
+        ("task".into(), "tasks".into()),
+        "a name that already names several is one of them and all of them"
+    );
+    assert_eq!(
+        nouns("Person"),
+        ("person".into(), "people".into()),
+        "an irregular plural is English's"
+    );
+    assert_eq!(
+        nouns("Today"),
+        ("today".into(), "today".into()),
+        "a word English counts no number of keeps one form"
+    );
     for line in ["noun \"person\" \"people\"", "primary name == \"Inbox\""] {
         let body =
             format!("type Box {{\n    name: Text\n\n    search {{\n        {line}\n    }}\n}}");

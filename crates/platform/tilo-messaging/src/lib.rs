@@ -1,12 +1,10 @@
-//! Portable messaging account metadata supplied by the person-record host.
+//! Portable messaging account metadata supplied by the person-record host, read
+//! through `ViewCx::shared_person` under the host's owner and editor permissions.
+//! It exposes neither credential custody nor a transport connection: selecting an
+//! account does not authorize sending.
 //!
-//! Apps read these records through `ViewCx::shared_person`. The host enforces
-//! their existing owner/editor permissions. This API exposes neither credential
-//! custody nor a transport connection: selecting an account does not authorize
-//! sending, and an account record is not evidence of a linked device.
-//!
-//! Transport implementations remain behind the system messaging broker; they
-//! must validate the exact service, account, recipient and device grant again.
+//! Transport implementations stay behind the system messaging broker, which
+//! validates the exact service, account, recipient and device grant again.
 
 pub use accounts::person::{PersonAccount, PersonAccounts};
 

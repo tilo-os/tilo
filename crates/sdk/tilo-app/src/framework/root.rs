@@ -33,10 +33,13 @@ use super::scenario::Run;
 use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
+use ui_core::widget::DrawChild;
 
 mod controls;
 mod facts;
 mod live_head;
+mod overlay;
+use overlay::OverlayCache;
 mod read;
 mod search;
 mod shared_tree;
@@ -45,7 +48,8 @@ mod typed;
 mod widget;
 use live_head::LiveHead;
 pub(crate) use read::READ_TYPE;
-use read::{offer_document_reads, offer_item_reads, read, read_spec};
+pub(crate) use read::answer as answer_read;
+use read::{offer_document_reads, offer_item_reads, read};
 pub(crate) use search::{
     BodyText, IndexedEntries, LiveSearch, ResourceSearch, field_weight, index_entry,
 };
@@ -60,7 +64,10 @@ pub(crate) use widget::{RootApp, RootModel, RootPublishes, RootSearch, RootWidge
 pub(crate) struct ResourceRoot {
     title: &'static str,
     icon: IconDescriptor,
-    label: String,
+    /// The name the app gives the state it holds: [`ResourceApp::label`](super::ResourceApp::label),
+    /// published with every state the root publishes, so a library of one
+    /// book is named "1 book" the moment the book is on its shelf.
+    label_of: fn(&dyn std::any::Any) -> String,
     /// The resource type the root shows, and what it says of itself.
     resource: ResourceType,
     /// What depends on the resource type: its live state, the views'
@@ -150,31 +157,11 @@ pub(crate) struct ResourceRoot {
     native_presentation: crate::runner::Presentation,
     /// The links `share-link` is minting.
     share: super::share_link::ShareLinks,
-    /// Where the resource's state comes from and where its edits go: the
-    /// document the host lends each pass, or the session over the app's one
-    /// connection ([`super::Source`]).
-    source: super::Source,
+    /// The edits the views bound, as last built ([`OverlayCache`]).
+    overlay: std::cell::RefCell<Option<OverlayCache>>,
 }
 
 impl ResourceRoot {
-    /// Adopt the session's newest reading of the resource, when it moved:
-    /// what the view binds follows it as any change does.
-    fn sync_remote_state(&self) {
-        let (Some(resource), Some(connection)) =
-            (self.source.remote_resource(), self.source.connection())
-        else {
-            return;
-        };
-        let Some(reading) = connection.reading(resource) else {
-            // Nothing publishes it yet, or the person may not read it:
-            // denial is absence (`apps.md` §6), and the last state stands.
-            return;
-        };
-        if let Err(error) = self.typed.adopt(&reading) {
-            tracing::warn!(%error, kind = self.resource.kind, "the session's reading is not this resource's state");
-        }
-    }
-
     fn sync_over(&mut self, state: &AutoCommit, path: &automerge::ObjId) {
         self.refresh_access();
         if self.dispatch.take_represent() {
@@ -214,6 +201,15 @@ impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
         let view = app_view_in(self.content.as_ref())
             .is_some_and(ui_core::component_lifecycle::take_window_activation_intent);
         own || view
+    }
+}
+
+impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
+    /// The app's own view names what its window shows: the page, the record, the place it is at.
+    /// A view that names nothing lets the window go by its app's name.
+    fn window_title(&self) -> Option<&str> {
+        let view = app_view_in(self.content.as_ref())?;
+        ui_core::component_lifecycle::window_title(view)
     }
 }
 
@@ -328,7 +324,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .map(str::to_owned)
     .collect();
     ids.push(open_spec().id.clone());
-    ids.push(read_spec().id.clone());
+    ids.push(tilo_resource::read::spec(None).id.clone());
     ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
@@ -457,13 +453,12 @@ impl ResourceRoot {
     pub(crate) fn new<R: Resource>(
         title: &'static str,
         icon: IconDescriptor,
-        label: String,
+        label_of: fn(&dyn std::any::Any) -> String,
         cx: ViewCx<R>,
         alive: Rc<()>,
         content: Element,
     ) -> Self {
         let native_presentation = crate::runner::Presentation::new(&cx);
-        cx.dispatch.name_resource(&label);
         let ViewCx {
             env,
             updaters,
@@ -476,14 +471,13 @@ impl ResourceRoot {
         let dispatch = env.dispatch.core().clone();
         let typed = Typed {
             live: env.live,
-            reading: std::cell::RefCell::new(None),
             updaters,
             dispatch: env.dispatch,
             bindings,
             effects: env.effects,
         };
         Self::assemble(
-            (title, icon, label),
+            (title, icon, label_of),
             ResourceType::of::<R>(),
             Box::new(typed),
             action_bindings.table(),
@@ -504,7 +498,11 @@ impl ResourceRoot {
 
     /// [`Self::new`] past what names the resource type.
     fn assemble(
-        (title, icon, label): (&'static str, IconDescriptor, String),
+        (title, icon, label_of): (
+            &'static str,
+            IconDescriptor,
+            fn(&dyn std::any::Any) -> String,
+        ),
         resource: ResourceType,
         typed: Box<dyn TypedRoot>,
         action_bindings: super::controls::ActionTable,
@@ -525,7 +523,7 @@ impl ResourceRoot {
         Self {
             title,
             icon,
-            label,
+            label_of,
             resource,
             typed,
             action_bindings,
@@ -561,16 +559,8 @@ impl ResourceRoot {
             ground: true,
             native_presentation,
             share: super::share_link::ShareLinks::default(),
-            source: super::Source::Document,
+            overlay: std::cell::RefCell::new(None),
         }
-    }
-
-    /// Take the source the dispatcher submits over as the root's too, so the
-    /// view syncs from the reading the session publishes when the record is
-    /// the session's ([`super::Source::Connection`]).
-    pub(crate) fn reading_from_source(mut self) -> Self {
-        self.source = self.dispatch.source().clone();
-        self
     }
 
     /// A root whose resource keeps no document state: it publishes no
@@ -799,6 +789,12 @@ impl ResourceRoot {
         (self.typed.revision(), self.typed.loads())
     }
 
+    /// What the app calls the resource `state` is: the name it is published
+    /// and named in history and the catalogue by, as of what it holds now.
+    fn name_of(&self, state: &dyn std::any::Any) -> String {
+        (self.label_of)(state)
+    }
+
     /// The document-owned part of what controls bind to: the live
     /// resource's identity and own actions, without its children, published
     /// without building a child, so it costs the same however many items
@@ -806,6 +802,7 @@ impl ResourceRoot {
     #[inline(never)]
     fn binding_head(&self) -> BindingHead {
         let state = self.typed.state();
+        let label = self.name_of(&*state);
         let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
         let resource = if let Some(reason) = &self.typed.unreadable() {
@@ -814,18 +811,18 @@ impl ResourceRoot {
             // offered: every document action says why it does not apply.
             let mut head = self
                 .typed
-                .head(self.dispatch.resource_id(), &self.label, &*state);
+                .head(self.dispatch.resource_id(), &label, &*state);
             tilo_resource::withhold_document_actions(&mut head, reason);
             head.actions
                 .retain(|spec| spec.id != tilo_resource::FIELD_EDIT);
             Rc::new(head)
         } else if let Some(epoch) = &epoch {
-            self.live_head(&*state, epoch)
+            self.live_head(&*state, epoch, &label)
         } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
             Rc::new(
                 self.typed
-                    .head(self.dispatch.resource_id(), &self.label, &*state),
+                    .head(self.dispatch.resource_id(), &label, &*state),
             )
         };
         BindingHead {
@@ -854,10 +851,10 @@ impl ResourceRoot {
         let base = self.binding_base(head);
         let overlay = self.binding_overlay(&base);
         let mut resource = (*base.resource).clone();
-        for spec in overlay {
+        for spec in overlay.iter() {
             match resource.actions.iter_mut().find(|own| own.id == spec.id) {
-                Some(own) => *own = spec,
-                None => resource.actions.push(spec),
+                Some(own) => *own = spec.clone(),
+                None => resource.actions.push(spec.clone()),
             }
         }
         resource
@@ -904,78 +901,6 @@ impl ResourceRoot {
         base
     }
 
-    /// What the views add over `base` now, as
-    /// [`Self::decorate_publication`] adds it: the edits they bound, their
-    /// availability, and the app's effects. Few actions, built per refresh.
-    fn binding_overlay(&self, base: &BindingBase) -> Vec<tilo_actions::ActionSpec> {
-        let state = self.typed.state();
-        let bound = {
-            let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
-            self.typed.declarations(&*state)
-        };
-        let mut availability = Vec::new();
-        self.surfaces(&mut |surface| {
-            let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            availability.extend(surface.availability());
-        });
-        let own = base
-            .resource
-            .actions
-            .get(..base.head_len)
-            .unwrap_or_default();
-        let shadows = base
-            .resource
-            .actions
-            .get(..base.shadow_len)
-            .unwrap_or_default();
-        // The head's actions the edits bind over, refined where they say so.
-        let ids = self.typed.declaration_ids(&*bound);
-        let mut overlay = ResourceSpec::new("", "", "");
-        overlay.actions = own
-            .iter()
-            .filter(|spec| ids.contains(&spec.id.as_str()))
-            .cloned()
-            .collect();
-        overlay = self.typed.bind(overlay, bound);
-        for status in &availability {
-            if !overlay.actions.iter().any(|spec| spec.id == status.id())
-                && let Some(spec) = own.iter().find(|spec| spec.id == status.id())
-            {
-                overlay.actions.push(spec.clone());
-            }
-            for spec in overlay
-                .actions
-                .iter_mut()
-                .filter(|spec| spec.id == status.id())
-            {
-                status.overlay(spec);
-            }
-        }
-        let effects = {
-            let _profile = tilo_resource::profiling::Phase::start("framework.effect_specs");
-            self.typed.effect_specs()
-        };
-        for spec in effects {
-            let shadowed = shadows
-                .iter()
-                .chain(&overlay.actions)
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            overlay.actions.push(spec);
-        }
-        if base.key.causal {
-            mark_document_jobs(&mut overlay);
-        }
-        if let Some(unreadable) = &base.key.unreadable {
-            tilo_resource::withhold_document_actions(&mut overlay, unreadable);
-        }
-        overlay.actions
-    }
-
     /// Refresh the actions bound controls look up, reusing `head` while the
     /// live state and locale are those it was built at. Answers the head
     /// they were refreshed from.
@@ -992,10 +917,13 @@ impl ResourceRoot {
         // Read while the document did not: the fields these edits were bound
         // to are of the last state that read, not what it holds now.
         let overlay = if self.typed.unreadable().is_some() {
-            overlay
-                .into_iter()
-                .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
-                .collect()
+            Rc::new(
+                overlay
+                    .iter()
+                    .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
         } else {
             overlay
         };
@@ -1009,11 +937,7 @@ impl ResourceRoot {
     /// this view last synced.
     #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
-        // The session keeps the record: there is no document here to read
-        // the resource from, so what it publishes is the state the view
-        // syncs from the reading (`one-app-model.md` §4).
-        if !self.source.is_connection()
-            && !self.typed.follows(doc)
+        if !self.typed.follows(doc)
             && let Ok(current) = self.typed.read(doc)
         {
             // Publication can run after an edit and before the view syncs.
@@ -1048,6 +972,9 @@ impl ResourceRoot {
         mut resource: ResourceSpec,
         decoration: Decoration,
     ) -> ResourceSpec {
+        // The name the app gives the state it holds now: what History names a
+        // change by, and what the catalogue lists the record as.
+        self.dispatch.name_resource(&self.name_of(state));
         let children = decoration == Decoration::Tree;
         let bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
@@ -1081,6 +1008,19 @@ impl ResourceRoot {
             merge(&mut resource.children, rows);
             let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
             self.bind_row_declarations(&mut resource.children);
+            // The nested editors the views opened ([`Dispatcher::child`]):
+            // each is published at its own address, with its actions applying
+            // as this resource's, so the palette, agents and scripts address
+            // it like any resource.
+            for (id, nested) in self.dispatch.nested_resources() {
+                if !resource
+                    .children
+                    .iter()
+                    .any(|known| known.id.as_str() == id)
+                {
+                    resource.children.push(nested);
+                }
+            }
         }
         resource = self.with_presentation_specs(resource);
         // The app's own effects come before the framework's history and
@@ -1153,6 +1093,8 @@ impl ResourceRoot {
                 resource = resource.with_action(spec.clone());
             }
         }
+        // A link to the record opens it in this app, views or not.
+        tilo_resource::share::offer_record(&mut resource);
         resource
     }
 
@@ -1180,12 +1122,7 @@ impl ResourceRoot {
     /// Answers the document-owned head the bindings were refreshed from, for
     /// the refresh after the view synced to reuse.
     fn refresh(&self, doc: &AutoCommit) -> BindingHead {
-        // The session keeps the record: the state follows the reading
-        // (`sync_remote_state`), never a document this process lent an empty
-        // pass (`one-app-model.md` §4).
-        if !self.source.is_connection()
-            && let Err(error) = self.typed.sync(doc)
-        {
+        if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
         // Refresh the same declarations the host publishes before rebuilt
@@ -1280,7 +1217,7 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
         }
         let specs = Rc::new(FrameworkSpecs {
             native: with_native_presentations(ResourceSpec::new("", "", "")).actions,
-            read: read_spec(),
+            read: tilo_resource::read::spec(None),
             facts: facts::facts_spec(),
             history: super::history::specs(),
         });
@@ -1386,7 +1323,7 @@ fn indexes_off_frame(entries: &[SearchEntry]) -> bool {
     if let Some(forced) = FORCE_OFF_FRAME.with(std::cell::Cell::get) {
         return forced;
     }
-    cfg!(target_arch = "wasm32")
+    crate::runner::IN_A_PAGE
         || entries.len() >= OFF_THREAD_ENTRIES
         || entries.iter().any(|entry| entry.body.is_some())
 }
@@ -1529,7 +1466,9 @@ impl SearchCache {
             self.builds = self.builds.saturating_add(1);
         }
         if indexes_off_frame(&entries) {
-            let (send, arriving) = std::sync::mpsc::channel();
+            // The index landing wakes the window that asked: it is an
+            // answer its next sync takes up, never one a frame polls for.
+            let (send, arriving) = ui_core::wake::waking_channel();
             let building = entries.clone();
             let spawned = ui_core::background::Background::current().spawn(
                 "resource-search-index",
@@ -1594,7 +1533,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -1643,16 +1582,6 @@ impl RootModel for ResourceRoot {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.source.is_connection() {
-            // The session keeps the record: the view syncs from the reading
-            // it publishes, and the document the host lends this pass holds
-            // nothing of it (`one-app-model.md` §4). Everything the view
-            // binds is still synced, over the state this root now holds.
-            self.sync_remote_state();
-            let empty = AutoCommit::new();
-            self.sync_over(&empty, &automerge::ROOT);
-            return;
-        }
         let (state, path) = ui_core::doc::document_ref(state, path);
         self.sync_over(state, path);
     }
@@ -1672,7 +1601,8 @@ impl RootModel for ResourceRoot {
         presence: &PresenceCtx,
     ) {
         self.paint_ground(scene, transform, theme, presence);
-        self.content.draw(scene, transform, text, theme, presence);
+        self.content
+            .draw_child(scene, transform, text, theme, presence);
         // The window drew: what its bar says of the save is seen.
         self.save.seen();
     }
@@ -1721,6 +1651,7 @@ impl RootModel for ResourceRoot {
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
         handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
         handlers.insert(super::chain::CHAIN_ACTION_TYPE.to_owned());
+        handlers.insert(super::chain::CHAIN_READ_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_INVITE_TYPE.to_owned());
         if self.stages.opens() {
@@ -1730,11 +1661,9 @@ impl RootModel for ResourceRoot {
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
         // A resource reads itself when it says it does, and its items from
-        // its record's table when it does not (`offer_item_reads`): the read
-        // it publishes is always one it answers.
-        if self.resource.readable || self.resource.record_table.is_some() {
-            handlers.insert(READ_TYPE.to_owned());
-        }
+        // its record's table when it does not (`offer_item_reads`); a record
+        // kept beside it that reads itself is read through it too.
+        handlers.insert(READ_TYPE.to_owned());
         if self.resource.facts {
             handlers.insert(facts::FACTS_TYPE.to_owned());
         }
@@ -1812,6 +1741,11 @@ impl RootModel for ResourceRoot {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
+        if let Some(output) = self.start_record_operation(op, doc)? {
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
         if (self.resource.readable || self.resource.record_table.is_some())
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
@@ -1823,6 +1757,17 @@ impl RootModel for ResourceRoot {
                 doc,
                 request.payload,
             )?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        // A chain of parts kept beside the record reads from its parts: what
+        // it holds is not in the record's document, and a caller reading the
+        // chain by its address never meant the record.
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::chain::CHAIN_READ_TYPE
+        {
+            let output = self.storage.chain_read(request.payload)?;
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -1862,11 +1807,6 @@ impl RootModel for ResourceRoot {
                 ),
             ));
         }
-        if let Some(output) = self.start_record_operation(op, doc)? {
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
         // An effect reads the resource as the document stands, though no
         // frame has run since a collaborator's change arrived.
         if let Err(error) = self.typed.sync(doc) {
@@ -1891,7 +1831,8 @@ impl RootModel for ResourceRoot {
 impl ResourceRoot {
     /// The record-level requests every framework app answers the same way:
     /// its history at a version, an operation on one of its records or its
-    /// chain of parts, and the person's own record history.
+    /// chain of parts, the person's own record history, and a read of a
+    /// record kept beside its own.
     fn start_record_operation(
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
@@ -1910,6 +1851,10 @@ impl ResourceRoot {
                 .chain_action(self.dispatch.me(), request.payload, doc)?
         } else if request.type_id == super::person::HISTORY_TYPE {
             self.storage.person_history(request.payload)?
+        } else if request.type_id == READ_TYPE
+            && let Some(record) = tilo_resource::read::record_of(request.payload)
+        {
+            self.storage.record_read(&record, request.payload)?
         } else {
             return Ok(None);
         };
@@ -2508,7 +2453,8 @@ impl RootApp for ResourceRoot {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.save.record(&status, ui_core::time::now());
-        self.saved.set(status);
+        // Sampled on every sync: only a new status is a change.
+        self.saved.set_if_changed(status);
     }
 
     // The workspace refused what this record sent, and the record withdrew it:
@@ -2571,14 +2517,10 @@ mod search_tests;
 /// words, with the reason the record was refused (a path and a missing
 /// value) behind the state's "Details".
 fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
-    ui_core::widget::EmptyState::new(ui_core::i18n::I18nManager::lookup_plain(
-        "framework-unreadable",
-    ))
-    .with_icon(ui_core::icons::Icon::CircleAlert)
-    .with_message(ui_core::i18n::I18nManager::lookup_plain(
-        "framework-unreadable-hint",
-    ))
-    .with_details(reason)
+    ui_core::widget::EmptyState::new(ui_core::i18n::widget_text("framework-unreadable"))
+        .with_icon(ui_core::icons::Icon::CircleAlert)
+        .with_message(ui_core::i18n::widget_text("framework-unreadable-hint"))
+        .with_details(reason)
 }
 
 /// The window of a record that did not read as the resource when it was
@@ -2603,8 +2545,11 @@ impl Unopened {
         declarations: &[tilo_resource::Declaration],
         reason: &str,
     ) -> Self {
-        let mut resource =
-            ResourceSpec::new(kind, kind, tilo_resource::label::localized(kind, label));
+        let mut resource = ResourceSpec::new(
+            kind,
+            kind,
+            tilo_resource::label::localized(kind, label, None),
+        );
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }

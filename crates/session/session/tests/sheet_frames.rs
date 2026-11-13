@@ -16,8 +16,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::path::Path;
 
 use serde_json::{Value, json};
@@ -47,7 +45,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str) {
 
 /// The desk as `snapshot` writes it, the request `tilo-control snapshot` makes.
 fn snapshot(session: &mut Session, socket: &Path, path: &Path) -> image::RgbaImage {
-    let answer = common::control(
+    let answer = crate::common::control(
         session,
         socket,
         &json!({"op": "snapshot", "path": path.to_str().unwrap()}),
@@ -62,7 +60,7 @@ fn snapshot(session: &mut Session, socket: &Path, path: &Path) -> image::RgbaIma
 
 /// The controls the socket lists, by name.
 fn targets(session: &mut Session, socket: &Path) -> Vec<String> {
-    let answer = common::control(session, socket, &json!({"op": "list_targets"}));
+    let answer = crate::common::control(session, socket, &json!({"op": "list_targets"}));
     answer["targets"]
         .as_array()
         .unwrap_or_else(|| panic!("list_targets answers its targets: {answer}"))
@@ -90,7 +88,7 @@ fn differed(before: &image::RgbaImage, after: &image::RgbaImage) -> (u32, u32, u
 #[test]
 fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session(&socket);
 
@@ -133,13 +131,13 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
 
     // A press on one of them through the socket reaches the sheet: its tabs switch as they do under
     // a person's press.
-    let pressed = common::control(
+    let pressed = crate::common::control(
         &mut session,
         &socket,
         &json!({"op": "click_named", "name": agents, "verb": "activate"}),
     );
     assert_eq!(pressed, json!({"ok": {}}), "{pressed}");
-    common::until(
+    crate::common::until(
         &mut session,
         "the Agents tab to be the one shown",
         |session| {
@@ -153,7 +151,7 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
 #[test]
 fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session(&socket);
 
@@ -161,7 +159,7 @@ fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
     // The empty desk's launchpad is what the person presses to invite someone: the sheet it opens
     // is the session's own, drawn over the desk.
     let invite = tilo_desktop_surface::i18n::t("invite-title");
-    let pressed = common::control(
+    let pressed = crate::common::control(
         &mut session,
         &socket,
         &json!({"op": "click_named", "name": invite, "verb": "activate"}),

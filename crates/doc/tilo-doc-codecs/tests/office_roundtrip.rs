@@ -32,9 +32,6 @@ fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     d
 }
 
-/// The characters a mark of `name` covers in a block (its rendered
-/// substring), so tests can assert *what* is bold/italic without
-/// pinning exact offsets.
 fn covered(block: &BlockView, name: &str) -> Vec<String> {
     let chars: Vec<char> = block.text.chars().collect();
     block
@@ -121,25 +118,20 @@ fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
 
 #[test]
 fn real_office_files_parse_edit_and_diff_as_crdt() {
-    // Phase `odt_parses_real_file_into_crdt_model`.
     {
         let d = import(&OdtCodec, SAMPLE_ODT);
         assert_sample_structure(&d.materialize(), "odt");
     }
-    // Phase `docx_parses_real_file_into_crdt_model`.
     {
         let d = import(&DocxCodec, SAMPLE_DOCX);
         assert_sample_structure(&d.materialize(), "docx");
     }
-    // Phase `odt_edit_as_crdt_op_survives_reopen`.
     {
         edit_and_reopen(&OdtCodec, SAMPLE_ODT, "odt");
     }
-    // Phase `docx_edit_as_crdt_op_survives_reopen`.
     {
         edit_and_reopen(&DocxCodec, SAMPLE_DOCX, "docx");
     }
-    // Phase `version_diff_reports_structural_changes_on_real_docx`.
     {
         let mut d = import(&DocxCodec, SAMPLE_DOCX);
         let v1 = d.materialize();
@@ -301,7 +293,6 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
 
 #[test]
 fn hostile_office_inputs_are_rejected() {
-    // Phase `zip_bomb_is_rejected_not_inflated`.
     {
         // The production codec path must reject a decompression bomb, fast,
         // without OOMing. The fixture is ~300 KB on disk but declares a
@@ -320,10 +311,7 @@ fn hostile_office_inputs_are_rejected() {
             "expected a bounded-size rejection, got: {msg}"
         );
     }
-    // Phase `xxe_dtd_is_rejected_in_both_formats`.
     {
-        // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected
-        // outright (defence in depth against XXE/entity-expansion), both codecs.
         let mut d = Document::new();
         let err = DocxCodec
             .import(
@@ -350,7 +338,6 @@ fn hostile_office_inputs_are_rejected() {
             "odt: expected a DTD rejection, got: {err2}"
         );
     }
-    // Phase `garbage_input_is_rejected_cleanly`.
     {
         // Non-zip garbage must fail as a clean error, never a panic.
         let mut d = Document::new();
@@ -408,7 +395,6 @@ fn large_document_parse_and_serialize_does_constant_order_work() {
         let id = d.insert_block(prev.as_deref(), kind);
         let text = format!("Section {i}: the quick brown fox jumps over the lazy dog number {i}.");
         d.splice_text(&id, 0, 0, &text);
-        // A bold run on the leading "Section {i}" label — exercises the mark path.
         let label_len = format!("Section {i}").chars().count();
         d.add_mark(&id, 0, label_len, "strong", true);
         prev = Some(id);

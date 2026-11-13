@@ -79,14 +79,12 @@ fn round_trip(codec: &dyn FormatProvider, package: &[u8], part_name: &str) {
         saved.len()
     );
 
-    // Kept in a store, the part comes back out byte for byte.
     let store = ContentStore::memory();
     store.put_inputs(&inputs).unwrap();
     let reopened = Document::load(&saved).unwrap();
     let exported = codec.export(reopened.as_ref(), &store).unwrap();
     assert_eq!(part(&exported, part_name).as_deref(), Some(font.as_slice()));
 
-    // Without its content the part cannot be written; everything else still is.
     let exported = codec.export(reopened.as_ref(), &NoContent).unwrap();
     assert_eq!(part(&exported, part_name), None);
 }

@@ -1,33 +1,35 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "db-client.workspace"
 label = "Database"
 version = 1
 fields = [
-  { path = "connections", type = "Collection<SavedConnection>", stored = "collection" },
-  { path = "connections.*.name", type = "String", label = true },
-  { path = "connections.*.engine", type = "Engine" },
-  { path = "connections.*.host", type = "Atom" },
-  { path = "connections.*.port", type = "u16" },
-  { path = "connections.*.database", type = "Atom" },
-  { path = "connections.*.user", type = "Atom" },
-  { path = "connections.*.file_path", type = "Atom" },
-  { path = "saved_queries", type = "Collection<SavedQuery>", stored = "collection" },
-  { path = "saved_queries.*.name", type = "String", label = true },
-  { path = "saved_queries.*.sql", type = "String" },
-  { path = "sql", type = "String" },
+  { path = "connections", type = { collection = { named = "SavedConnection" } }, stored = "collection" },
+  { path = "connections.*.name", type = "text", label = true },
+  { path = "connections.*.engine", type = { named = "Engine" } },
+  { path = "connections.*.host", type = "text" },
+  { path = "connections.*.port", type = "int" },
+  { path = "connections.*.database", type = "text" },
+  { path = "connections.*.user", type = "text" },
+  { path = "connections.*.file_path", type = "text" },
+  { path = "saved_queries", type = { collection = { named = "SavedQuery" } }, stored = "collection" },
+  { path = "saved_queries.*.name", type = "text", label = true },
+  { path = "saved_queries.*.sql", type = "text" },
+  { path = "sql", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "add-connection"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "engine", required = true, schema = { type = "string" } },
-  { name = "location", required = false, schema = { type = ["string", "null"] } },
-  { name = "database", required = false, schema = { type = ["string", "null"] } },
-  { name = "user", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "engine", type = "text", required = true, schema = { type = "string" } },
+  { name = "location", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "database", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "user", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -35,15 +37,15 @@ id = "remove-connection"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "connection", required = true, schema = { type = "string" } },
+  { name = "connection", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "save-query"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "sql", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "sql", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -51,6 +53,33 @@ id = "remove-query"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "query", required = true, schema = { type = "string" } },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Engine"
+cases = [
+  { name = "sqlite" },
+  { name = "postgres" },
+  { name = "mysql" },
+]
+
+[[resources.types]]
+name = "SavedConnection"
+fields = [
+  { name = "name", type = "text" },
+  { name = "engine", type = { named = "Engine" } },
+  { name = "host", type = "text" },
+  { name = "port", type = "int" },
+  { name = "database", type = "text" },
+  { name = "user", type = "text" },
+  { name = "file_path", type = "text" },
+]
+
+[[resources.types]]
+name = "SavedQuery"
+fields = [
+  { name = "name", type = "text" },
+  { name = "sql", type = "text" },
 ]
 

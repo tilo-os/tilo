@@ -87,7 +87,6 @@ fn full_id(path: &Path) -> [u8; 32] {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
-    // Phase `first_epoch_captures_the_whole_tree_with_exact_content_ids`.
     fn first_epoch_captures_the_whole_tree_with_exact_content_ids() {
         let Some(s) = btrfs_scratch("capture_first") else {
             return;
@@ -148,7 +147,6 @@ fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
         assert_eq!(link.kind, NodeKind::Symlink(PathBuf::from("src/small.txt")));
         cap.release().unwrap();
     }
-    // Phase `an_in_place_edit_of_a_large_file_rehashes_only_the_changed_extent`.
     fn an_in_place_edit_of_a_large_file_rehashes_only_the_changed_extent() {
         let Some(s) = btrfs_scratch("capture_inplace") else {
             return;
@@ -185,7 +183,6 @@ fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
         assert!(chunks.chunks_reused > 200);
         cap.release().unwrap();
     }
-    // Phase `without_content_hashing_changes_are_still_found_by_metadata`.
     fn without_content_hashing_changes_are_still_found_by_metadata() {
         let Some(s) = btrfs_scratch("capture_nohash") else {
             return;
@@ -208,11 +205,8 @@ fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
         assert!(cs.ops.is_empty());
         cap.release().unwrap();
     }
-    // Phase `first_epoch_captures_the_whole_tree_with_exact_content_ids` (defined above).
     first_epoch_captures_the_whole_tree_with_exact_content_ids();
-    // Phase `an_in_place_edit_of_a_large_file_rehashes_only_the_changed_extent` (defined above).
     an_in_place_edit_of_a_large_file_rehashes_only_the_changed_extent();
-    // Phase `without_content_hashing_changes_are_still_found_by_metadata` (defined above).
     without_content_hashing_changes_are_still_found_by_metadata();
 }
 
@@ -222,7 +216,6 @@ fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn capture_follows_renames_links_and_subtree_moves() {
-    // Phase `a_rename_is_a_move_that_reads_nothing`.
     fn a_rename_is_a_move_that_reads_nothing() {
         let Some(s) = btrfs_scratch("capture_rename") else {
             return;
@@ -280,7 +273,6 @@ fn capture_follows_renames_links_and_subtree_moves() {
         assert_eq!(paths, [Path::new("c.bin")]);
         cap.release().unwrap();
     }
-    // Phase `hard_links_are_separate_files_and_a_write_through_one_updates_both`.
     fn hard_links_are_separate_files_and_a_write_through_one_updates_both() {
         let Some(s) = btrfs_scratch("capture_hardlinks") else {
             return;
@@ -311,7 +303,6 @@ fn capture_follows_renames_links_and_subtree_moves() {
         assert!(moves(&cs).is_empty());
         cap.release().unwrap();
     }
-    // Phase `directory_moves_and_deletes_cover_their_subtrees`.
     fn directory_moves_and_deletes_cover_their_subtrees() {
         let Some(s) = btrfs_scratch("capture_dirs") else {
             return;
@@ -405,11 +396,8 @@ fn capture_follows_renames_links_and_subtree_moves() {
         assert_eq!(cap.nodes().count(), 0);
         cap.release().unwrap();
     }
-    // Phase `a_rename_is_a_move_that_reads_nothing` (defined above).
     a_rename_is_a_move_that_reads_nothing();
-    // Phase `hard_links_are_separate_files_and_a_write_through_one_updates_both` (defined above).
     hard_links_are_separate_files_and_a_write_through_one_updates_both();
-    // Phase `directory_moves_and_deletes_cover_their_subtrees` (defined above).
     directory_moves_and_deletes_cover_their_subtrees();
 }
 
@@ -419,7 +407,6 @@ fn capture_follows_renames_links_and_subtree_moves() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
-    // Phase `a_rescan_finds_changes_the_journal_never_reported`.
     fn a_rescan_finds_changes_the_journal_never_reported() {
         let Some(s) = btrfs_scratch("capture_rescan") else {
             return;
@@ -450,7 +437,6 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         assert_eq!(cap.nodes().count(), 502);
         cap.release().unwrap();
     }
-    // Phase `a_resumed_capture_finds_what_changed_while_nothing_was_journaling`.
     fn a_resumed_capture_finds_what_changed_while_nothing_was_journaling() {
         let Some(s) = btrfs_scratch("capture_resume") else {
             return;
@@ -483,7 +469,6 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         assert_eq!(cs.stats.files_hashed, 2);
         cap.release().unwrap();
     }
-    // Phase `a_tracked_path_is_diffed_against_and_its_local_removal_is_captured`.
     fn a_tracked_path_is_diffed_against_and_its_local_removal_is_captured() {
         let Some(s) = btrfs_scratch("capture_track") else {
             return;
@@ -517,7 +502,6 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         assert!(cs.ops.is_empty(), "{:?}", op_paths(&cs));
         cap.release().unwrap();
     }
-    // Phase `a_path_marked_dirty_is_examined_without_a_journal_entry`.
     fn a_path_marked_dirty_is_examined_without_a_journal_entry() {
         let Some(s) = btrfs_scratch("capture_dirty") else {
             return;
@@ -532,7 +516,6 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         assert_eq!(op_paths(&cs), ["+quiet"]);
         cap.release().unwrap();
     }
-    // Phase `an_invalidated_path_is_captured_again_or_removed`.
     fn an_invalidated_path_is_captured_again_or_removed() {
         let Some(s) = btrfs_scratch("capture_invalidate") else {
             return;
@@ -565,21 +548,15 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         assert_eq!(moves(&cs), ["moved -> elsewhere *"]);
         cap.release().unwrap();
     }
-    // Phase `a_rescan_finds_changes_the_journal_never_reported` (defined above).
     a_rescan_finds_changes_the_journal_never_reported();
-    // Phase `a_resumed_capture_finds_what_changed_while_nothing_was_journaling` (defined above).
     a_resumed_capture_finds_what_changed_while_nothing_was_journaling();
-    // Phase `a_tracked_path_is_diffed_against_and_its_local_removal_is_captured` (defined above).
     a_tracked_path_is_diffed_against_and_its_local_removal_is_captured();
-    // Phase `a_path_marked_dirty_is_examined_without_a_journal_entry` (defined above).
     a_path_marked_dirty_is_examined_without_a_journal_entry();
-    // Phase `an_invalidated_path_is_captured_again_or_removed` (defined above).
     an_invalidated_path_is_captured_again_or_removed();
 }
 
 #[test]
 fn capture_skips_local_only_special_and_staging_files_while_writers_continue() {
-    // Phase `local_only_trees_and_special_files_are_never_captured`.
     fn local_only_trees_and_special_files_are_never_captured() {
         let Some(s) = btrfs_scratch("capture_local") else {
             return;
@@ -610,7 +587,6 @@ fn capture_skips_local_only_special_and_staging_files_while_writers_continue() {
         }
         cap.release().unwrap();
     }
-    // Phase `staging_files_are_never_captured`.
     fn staging_files_are_never_captured() {
         let Some(s) = btrfs_scratch("capture_staging") else {
             return;
@@ -622,7 +598,6 @@ fn capture_skips_local_only_special_and_staging_files_while_writers_continue() {
         assert_eq!(op_paths(&cs), ["+real"]);
         cap.release().unwrap();
     }
-    // Phase `writers_keep_writing_while_epochs_are_cut`.
     fn writers_keep_writing_while_epochs_are_cut() {
         let Some(s) = btrfs_scratch("capture_writers") else {
             return;
@@ -672,11 +647,8 @@ fn capture_skips_local_only_special_and_staging_files_while_writers_continue() {
         eprintln!("longest single 4 KiB append while capturing: {max_write:?}");
         cap.release().unwrap();
     }
-    // Phase `local_only_trees_and_special_files_are_never_captured` (defined above).
     local_only_trees_and_special_files_are_never_captured();
-    // Phase `staging_files_are_never_captured` (defined above).
     staging_files_are_never_captured();
-    // Phase `writers_keep_writing_while_epochs_are_cut` (defined above).
     writers_keep_writing_while_epochs_are_cut();
 }
 

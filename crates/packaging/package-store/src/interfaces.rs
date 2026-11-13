@@ -1,11 +1,4 @@
 //! Which system interfaces this OS serves, and whether a package fits it.
-//!
-//! The image declares the one version it serves of each system interface in
-//! [`SYSTEM_INTERFACES_FILE`]; a package names the version it speaks of each
-//! through the services of its manifest (see
-//! [`tilo_app_package::interfaces`]). A host without the declaration (a
-//! development machine, another distribution) judges nothing: every package
-//! fits it, and a missing service still fails at launch as it always did.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +7,6 @@ use tilo_app_package::interfaces::{InterfaceRequirement, ProvidedInterfaces, Unm
 
 use crate::dev_env::dev_override;
 
-/// Where the image declares the system interfaces it serves.
 pub const SYSTEM_INTERFACES_FILE: &str = "/usr/share/tilo/system-interfaces.toml";
 /// Names another declaration instead of [`SYSTEM_INTERFACES_FILE`], in
 /// builds that honour developer overrides ([`crate::dev_env::DEV_ENV_OVERRIDES`]).
@@ -32,7 +24,6 @@ pub enum InterfacesError {
     Parse { path: PathBuf, detail: String },
 }
 
-/// The declaration this session reads.
 pub fn system_interfaces_path() -> PathBuf {
     dev_override(SYSTEM_INTERFACES_ENV)
         .map_or_else(|| PathBuf::from(SYSTEM_INTERFACES_FILE), PathBuf::from)
@@ -119,8 +110,6 @@ pub fn unmet(provided: Option<&ProvidedInterfaces>, manifest: &Manifest) -> Vec<
     })
 }
 
-/// [`unmet`] for the manifest an installed row names. A manifest that
-/// cannot be read is not judged here; the launcher reports it on launch.
 pub fn unmet_at(provided: Option<&ProvidedInterfaces>, manifest_path: &Path) -> Vec<Unmet> {
     let Some(provided) = provided else {
         return Vec::new();

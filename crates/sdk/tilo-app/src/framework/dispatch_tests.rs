@@ -37,6 +37,39 @@ impl Resource for Document {
     }
 }
 
+/// A paragraph inside a record: the child resource a record's rich text edits as.
+struct Paragraph;
+
+#[cfg(test)]
+impl Resource for Paragraph {
+    const KIND: &'static str = "test.paragraph";
+    const LABEL: &'static str = "Paragraph";
+    type State = ();
+    type Action = Put;
+
+    fn read(_: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
+        Ok(())
+    }
+}
+
+/// A caret in a record's text is anchored to the record, as actions and History name it, never to
+/// the package the text is kept in: two viewers of the same paragraph then agree on its identity.
+#[test]
+fn a_child_resource_anchors_its_text_to_the_record_that_holds_it() {
+    let record = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+    assert_eq!(
+        record.anchored_kind(),
+        Document::KIND,
+        "a record is its own"
+    );
+    let paragraph = record.child::<Paragraph>("genesis.0", |put: Put| put);
+    assert_eq!(
+        paragraph.anchored_kind(),
+        Document::KIND,
+        "the record that holds it"
+    );
+}
+
 #[test]
 fn framework_edits_finish_before_observation_drain_and_a_full_queue_never_refuses_an_edit() {
     let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));

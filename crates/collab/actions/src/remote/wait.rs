@@ -17,7 +17,7 @@
 //! [`InvokeRequest`]: super::InvokeRequest
 
 use serde::{Deserialize, Serialize};
-use tilo_clock::{Duration, Instant};
+use tilo_clock::time::{Duration, Instant};
 
 use super::{
     ActionHost, Caller, Completer, InvocationReceipt, InvocationState, Pending, PendingPoll,

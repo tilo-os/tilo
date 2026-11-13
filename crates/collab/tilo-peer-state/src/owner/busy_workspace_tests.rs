@@ -121,8 +121,6 @@ struct BusyWorkspace {
     /// order: the governor's checkpoint of the chat, then every message.
     sync: Vec<([u8; 32], NeighbourMsg)>,
     texts: Vec<String>,
-    /// The joining device's own key, which signs what it writes.
-    device_key: SigningKey,
     now: SystemTime,
 }
 
@@ -274,7 +272,6 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         complete_bootstrap,
         sync,
         texts,
-        device_key,
         now,
     }
 }
@@ -353,7 +350,7 @@ fn a_busy_workspaces_messages_are_authorized_and_visible_once_its_app_syncs() {
             .map(|(author, message)| (TransportOrigin::RetainedRelayDelta(author), message))
             .collect();
         let reports = owner
-            .receive_batch(id, batch, Some(&workspace.device_key), workspace.now)
+            .receive_batch(id, batch, workspace.now)
             .expect("the batch commits");
         for report in reports {
             let report =

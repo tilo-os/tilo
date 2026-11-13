@@ -133,7 +133,6 @@ impl Native {
             reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|_| unavailable())?;
         let mut outgoing = self.http.request(method, url);
         for (name, value) in request.headers {
-            // The reviewed endpoint alone chooses routing and TLS identity.
             if name.eq_ignore_ascii_case("host") {
                 return Err(unavailable());
             }

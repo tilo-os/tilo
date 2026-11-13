@@ -916,7 +916,7 @@ def idle_apps(ctx, res):
     # last frame, size against its tile).
     try:
         motion = {"animating": (ctx.vm.state().get("chrome") or {}).get("animating"),
-                  "windows": ctx.vm.foreign_frames()}
+                  "windows": ctx.vm.windows()}
     except VmError as e:
         motion = {"error": str(e)}
     ctx.write("R02-motion.json", json.dumps(motion, indent=1))

@@ -649,12 +649,22 @@ mod tests {
         }
     }
 
+    /// The steps the fixture delivered, in order, as it printed them. The marker is
+    /// read wherever it stands: the fixture's own line may share the test harness's
+    /// progress line, which it prints without ending it.
     #[cfg(unix)]
     fn delivered_ids(output: &str) -> Vec<usize> {
         output
-            .lines()
-            .filter_map(|line| line.strip_prefix("gate-test-delivered "))
-            .map(|id| id.parse().unwrap())
+            .split("gate-test-delivered ")
+            .skip(1)
+            .map(|rest| {
+                let end = rest
+                    .find(|character: char| !character.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                rest[..end]
+                    .parse()
+                    .expect("the fixture prints the step's number after its marker")
+            })
             .collect()
     }
 

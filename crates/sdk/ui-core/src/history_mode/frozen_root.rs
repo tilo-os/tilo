@@ -10,6 +10,7 @@ use super::{HistoryPreview, PreviewAccessibility, PreviewNavigation, PreviewView
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::Widget;
 
 /// A past version drawn by a read-only root of the app over its frozen
@@ -118,7 +119,7 @@ impl HistoryPreview for FrozenRootPreview {
         let offset = Vec2::new(self.bounds.x0, self.bounds.y0 - self.view.scroll.1);
         let transform = transform.pre_translate(offset);
         self.root
-            .draw(scene, transform, text, theme, &PresenceCtx::empty());
+            .draw_child(scene, transform, text, theme, &PresenceCtx::empty());
     }
 
     fn navigate(&mut self, command: PreviewNavigation) -> bool {

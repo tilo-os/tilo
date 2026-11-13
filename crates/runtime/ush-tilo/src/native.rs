@@ -21,7 +21,6 @@ fn kind_of(file_type: std::fs::FileType) -> Kind {
     } else if file_type.is_file() {
         Kind::File
     } else {
-        // A fifo, a socket or a device.
         Kind::Other
     }
 }

@@ -1352,3 +1352,109 @@ fn the_engines_system_controls_hear_what_plays_and_the_player_follows_them() {
         "a pause there pauses here"
     );
 }
+
+/// A German desktop plays, mutes, seeks and fullscreens in German: the transport's tooltips and
+/// what a reader hears come from the locale catalogue, never from copy compiled into the widget.
+/// The source copy still reads in English.
+#[test]
+fn a_german_desktop_hears_the_transport_in_german() {
+    use crate::i18n::I18nManager;
+    const EN: &str = include_str!("../../../locales/en-US.ftl");
+    const DE: &str = include_str!("../../../locales/de-DE.ftl");
+    I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]).unwrap();
+
+    let mut engine = media::MediaEngine::new_synthesized();
+    engine.open(media::Source::Remote {
+        url: "https://x/v.mp4".into(),
+    });
+    let mut vp = VideoPlayer::new().with_engine(engine);
+    vp.rect = Rect::new(0.0, 0.0, 760.0, 480.0);
+    vp.reveal_controls();
+    draw_once(&mut vp);
+
+    fn hover(vp: &mut VideoPlayer, target: Rect) -> Option<String> {
+        dispatch(vp, &cursor_moved(target.center().x, target.center().y));
+        Widget::tooltip(vp).map(std::borrow::Cow::into_owned)
+    }
+    let (play, scrub, mute, volume, fullscreen) = (
+        vp.play_button_rect,
+        vp.scrub_track_rect,
+        vp.mute_button_rect,
+        vp.volume_track_rect,
+        vp.fullscreen_button_rect,
+    );
+    assert_eq!(
+        hover(&mut vp, play).as_deref(),
+        Some("Wiedergeben"),
+        "the play control's tooltip speaks German"
+    );
+    assert_eq!(hover(&mut vp, scrub).as_deref(), Some("Wiedergabeposition"));
+    assert_eq!(hover(&mut vp, mute).as_deref(), Some("Stummschalten"));
+    assert_eq!(hover(&mut vp, volume).as_deref(), Some("Lautstärke"));
+    assert_eq!(
+        hover(&mut vp, fullscreen).as_deref(),
+        Some("Vollbild öffnen"),
+        "entering fullscreen is named, not the state"
+    );
+
+    // What a reader hears is the same words: the transport, the seek slider with its position and
+    // the keys that reach it.
+    let node = Widget::accessibility(&vp).expect("the player is not presentational");
+    assert_eq!(node.name.as_deref(), Some("Videoplayer"));
+    assert_eq!(
+        node.description.as_deref(),
+        Some(
+            "Leertaste gibt wieder oder pausiert; Pfeil links und rechts springen; Pfeil hoch und runter ändern die Lautstärke; M schaltet stumm; F schaltet Vollbild"
+        ),
+        "the keys the player teaches are spoken in German too"
+    );
+    let names: Vec<&str> = node
+        .children
+        .iter()
+        .filter_map(|child| child.name.as_deref())
+        .collect();
+    for said in [
+        "Wiedergeben",
+        "Wiedergabeposition",
+        "Stummschalten",
+        "Lautstärke",
+        "Vollbild öffnen",
+    ] {
+        assert!(names.contains(&said), "{said} is missing from {names:?}");
+    }
+    let seek = node
+        .children
+        .iter()
+        .find(|child| child.name.as_deref() == Some("Wiedergabeposition"))
+        .expect("the seek control");
+    let value = seek.value.as_deref().unwrap_or_default();
+    assert!(
+        value.contains(" von "),
+        "the position reads in German: {value:?}"
+    );
+    let keys: Vec<&str> = node
+        .children
+        .iter()
+        .filter_map(|child| child.description.as_deref())
+        .collect();
+    assert!(keys.contains(&"Leertaste"), "{keys:?}");
+
+    // The other direction of each toggle, in German as well.
+    vp.play();
+    assert_eq!(hover(&mut vp, play).as_deref(), Some("Pausieren"));
+    vp.toggle_mute();
+    assert_eq!(hover(&mut vp, mute).as_deref(), Some("Ton einschalten"));
+    vp.toggle_fullscreen();
+    assert_eq!(
+        hover(&mut vp, fullscreen).as_deref(),
+        Some("Vollbild verlassen")
+    );
+
+    // Back to the source copy: the manager is thread-local, and the player's other tests read it.
+    I18nManager::init("en-US");
+    assert_eq!(
+        hover(&mut vp, scrub).as_deref(),
+        Some("Playback position"),
+        "an English desktop reads the source catalogue"
+    );
+}

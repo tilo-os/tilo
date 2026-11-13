@@ -1,14 +1,12 @@
-//! The publisher key file, `{"secret_key_hex": "<64 hex digits>"}`: the one
-//! form an Ed25519 signing key takes outside a secret store — a file a
-//! command names, a CI secret, a backup. Every tool that reads or writes a
-//! key does it here, so a key one tool wrote is a key every other reads.
+//! The publisher key file, `{"secret_key_hex": "<64 hex digits>"}`: the one form an Ed25519 signing
+//! key takes outside a secret store. Every tool reads and writes it here, so a key one wrote is a key
+//! every other reads.
 
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
 
-/// Why a key file could not be read.
 #[derive(Debug, thiserror::Error)]
 pub enum KeyFileError {
     #[error("read key file {path}: {source}")]
@@ -42,7 +40,6 @@ pub fn parse(text: &str) -> Result<SigningKey, KeyFileError> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
-/// The key in the key file at `path`.
 pub fn load(path: &Path) -> Result<SigningKey, KeyFileError> {
     let text = std::fs::read_to_string(path).map_err(|source| KeyFileError::Read {
         path: path.to_path_buf(),
@@ -51,7 +48,6 @@ pub fn load(path: &Path) -> Result<SigningKey, KeyFileError> {
     parse(&text)
 }
 
-/// `key` as a key file's contents, which [`parse`] reads back.
 #[must_use]
 pub fn encode(key: &SigningKey) -> String {
     format!(

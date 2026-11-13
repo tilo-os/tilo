@@ -32,7 +32,6 @@ pub struct Learned {
     pub touch: BTreeMap<String, KeyOffset>,
 }
 
-/// What typing taught the keyboard since it last saved.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Lesson {
     /// The language the transitions are in.
@@ -46,13 +45,24 @@ pub struct Lesson {
 }
 
 impl Lesson {
-    /// Whether it teaches nothing.
     pub fn is_empty(&self) -> bool {
         self.transitions.is_empty() && self.kept.is_empty() && self.touch.is_empty()
     }
 }
 
-#[resource(kind = "osk.learned", label = "What the keyboard learned")]
+impl Learned {
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "osk.learned",
+    read_content = Learned::read_document
+)]
 impl Learned {
     /// Remember what typing taught. Learning comes from use, so no undo
     /// takes it back.
@@ -85,7 +95,6 @@ impl Learned {
         }
     }
 
-    /// Forget everything learned.
     #[action]
     pub fn forget(&mut self) {
         *self = Self::default();
@@ -93,12 +102,10 @@ impl Learned {
 }
 
 impl Learned {
-    /// Whether nothing was learned.
     pub fn is_empty(&self) -> bool {
         self.transitions.is_empty() && self.kept.is_empty() && self.touch.is_empty()
     }
 
-    /// How often `word` was committed after `previous` in `language`.
     pub fn count(&self, language: &str, previous: &str, word: &str) -> u32 {
         self.transitions
             .get(language)
@@ -107,7 +114,6 @@ impl Learned {
             .map_or(0, |count| u32::try_from(count.get()).unwrap_or(u32::MAX))
     }
 
-    /// Where the person tends to hit each letter.
     pub fn touch_offsets(&self) -> BTreeMap<char, KeyOffset> {
         self.touch
             .iter()

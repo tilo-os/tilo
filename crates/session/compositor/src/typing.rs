@@ -116,6 +116,51 @@ pub fn stroke_for(
     None
 }
 
+/// Where a keymap types a mark: the key that carries it, as its keysym when pressed alone, and
+/// the shift levels [`stroke_for`] holds for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedMark {
+    /// The ASCII punctuation typed.
+    pub mark: char,
+    /// The keysym name of the key alone (`7`, `ssharp`, `dead_circumflex`), and the text it types
+    /// alone; empty for a dead key.
+    pub key_name: String,
+    pub key_text: String,
+    pub shift: bool,
+    /// The third level: `AltGr` on most European layouts.
+    pub level3: bool,
+}
+
+/// Where group `layout` of `keymap` types each ASCII mark it types at all, by the keys a person
+/// presses for it.
+pub fn typed_marks(
+    keymap: &xkb::Keymap,
+    layout: u32,
+    carries: impl Fn(u32) -> bool,
+) -> Vec<TypedMark> {
+    ('!'..='~')
+        .filter(char::is_ascii_punctuation)
+        .filter_map(|mark| {
+            let stroke = stroke_for(keymap, layout, mark, &carries)?;
+            let alone = *keymap
+                .key_get_syms_by_level(xkb::Keycode::new(stroke.key.saturating_add(8)), layout, 0)
+                .first()?;
+            let key_text = char::from_u32(xkb::keysym_to_utf32(alone))
+                .filter(|text| !text.is_control() && *text != '\0')
+                .map(String::from)
+                .unwrap_or_default();
+            let holds = |level: Level| stroke.modifiers.iter().any(|held| held.level == level);
+            Some(TypedMark {
+                mark,
+                key_name: xkb::keysym_get_name(alone),
+                key_text,
+                shift: holds(Level::Shift),
+                level3: holds(Level::Level3),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +212,25 @@ mod tests {
         assert_eq!(stroke(&de, 'ä'), Some((vec![], 40)));
         assert_eq!(stroke(&de, 'Ö'), Some((vec![SHIFT], 39)));
         assert_eq!(stroke(&us, ' '), Some((vec![], 57)));
+    }
+
+    #[test]
+    fn a_mark_is_the_key_that_types_it_with_its_levels() {
+        let at = |layout: &str, mark: char| {
+            typed_marks(&keymap(layout), 0, |code| code < 256)
+                .into_iter()
+                .find(|typed| typed.mark == mark)
+                .map(|typed| (typed.key_name, typed.key_text, typed.shift, typed.level3))
+        };
+        let key = |name: &str, text: &str, shift, level3| {
+            Some((name.to_owned(), text.to_owned(), shift, level3))
+        };
+        assert_eq!(at("us", '/'), key("slash", "/", false, false));
+        assert_eq!(at("us", '?'), key("slash", "/", true, false));
+        assert_eq!(at("de", '/'), key("7", "7", true, false));
+        assert_eq!(at("de", '?'), key("ssharp", "ß", true, false));
+        assert_eq!(at("de", '['), key("8", "8", false, true));
+        assert_eq!(at("de", '-'), key("minus", "-", false, false));
     }
 
     #[test]

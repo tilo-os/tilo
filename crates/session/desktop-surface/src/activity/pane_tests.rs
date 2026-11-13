@@ -676,6 +676,75 @@ mod tests {
         );
     }
 
+    /// A record grows by a few changes between refreshes, however long its history: each refresh
+    /// reads what was added since, from the document as the host reads it again, and never the
+    /// whole log over.
+    #[test]
+    fn a_refresh_reads_only_what_a_long_record_added_since() {
+        let workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(9), "Notes");
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(
+            automerge::ROOT,
+            tilo_desktop_model::projection::WORKSPACE_ID_KEY,
+            workspace.id().to_string(),
+        )
+        .unwrap();
+        doc.commit();
+        let mut tree = crate::activity::ActivitySnapshot::new(
+            tilo_desktop_model::DesktopTree {
+                active: workspace.slot,
+                workspaces: vec![workspace],
+                ..Default::default()
+            },
+            doc,
+        )
+        .unwrap();
+        let mut record = automerge::AutoCommit::new();
+        let body = record
+            .put_object(automerge::ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        let write = |record: &mut automerge::AutoCommit, lines: usize| {
+            for line in 0..lines {
+                let at = automerge::ReadDoc::length(record, &body);
+                record
+                    .splice_text(&body, at, 0, &format!("line {line}\n"))
+                    .unwrap();
+                record.commit();
+            }
+        };
+        write(&mut record, 2_000);
+        // The host reads the record from its store on every refresh: a document of its own.
+        let read = |record: &mut automerge::AutoCommit| crate::activity::DetachedRecordHistory {
+            app: "so.tilo.notes".into(),
+            checkout: ui::RecordCheckout::package_primary(ui::RecordKind::new("so.tilo.notes")),
+            document: Some(automerge::AutoCommit::load(&record.save()).unwrap()),
+        };
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_detached_records(&mut tree, vec![read(&mut record)]);
+        for _ in 0..3 {
+            write(&mut record, 3);
+            let before = pane.history_index.changes_read();
+            pane.refresh_detached_records(&mut tree, vec![read(&mut record)]);
+            assert_eq!(
+                pane.history_index.changes_read() - before,
+                3,
+                "a refresh reads the three changes made since"
+            );
+        }
+        let newest = ui::history_source::entry_id_from_hash(
+            &record.get_heads().first().expect("a head").to_string(),
+        );
+        assert!(
+            pane.history_index
+                .entries()
+                .iter()
+                .any(|row| row.id.change == newest),
+            "the newest change is listed"
+        );
+    }
+
     #[test]
     fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
         let (mut tree, workspace, _) = busy_workspace();

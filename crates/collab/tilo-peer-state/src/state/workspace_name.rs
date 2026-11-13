@@ -1,7 +1,8 @@
 //! The workspace's name, which its owner and those the workspace lets rename it
 //! write (`workspace::membership`).
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{ROOT, ReadDoc, SigningKey, SystemTime, Transactable, err};
+use super::{ROOT, ReadDoc, SystemTime, Transactable, err};
+use collab_types::signer::DeviceSigner;
 
 impl PeerGovernance<'_> {
     /// The workspace's name, as its governance document records it.
@@ -23,7 +24,7 @@ impl PeerGovernanceMut<'_> {
     pub fn author_workspace_name(
         self,
         name: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
         self.peer.require_member_writer(key, now)?;

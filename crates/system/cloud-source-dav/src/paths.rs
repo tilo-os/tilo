@@ -1,10 +1,4 @@
 //! Item ids ⇄ URLs, and the HTTP date format.
-//!
-//! A `WebDAV` item's id is its decoded path relative to the account root:
-//! `""` is the root, `"Docs/a b.txt"` a file. Hrefs from the server are
-//! resolved against the root and accepted only when they stay on its origin
-//! and under its path, and when no segment decodes to something that would
-//! change the path's meaning (`/`, `.`, `..`, controls).
 
 use std::time::SystemTime;
 
@@ -69,7 +63,6 @@ fn valid_segment(segment: &str) -> bool {
         && !segment.chars().any(char::is_control)
 }
 
-/// The parent id of a non-root id.
 pub fn parent_of(id: &ItemId) -> ItemId {
     match id.as_str().rsplit_once('/') {
         Some((parent, _)) => ItemId::new(parent),
@@ -77,14 +70,12 @@ pub fn parent_of(id: &ItemId) -> ItemId {
     }
 }
 
-/// The last segment of an id.
 pub fn name_of(id: &ItemId) -> &str {
     id.as_str()
         .rsplit_once('/')
         .map_or(id.as_str(), |(_, name)| name)
 }
 
-/// The id of `name` inside `parent`, if `name` is a valid segment.
 pub fn child_of(parent: &ItemId, name: &str) -> Option<ItemId> {
     if !valid_segment(name) {
         return None;
@@ -110,7 +101,6 @@ pub fn parse_http_date(value: &str) -> Option<SystemTime> {
     cloud_source::http::parse_http_date(value)
 }
 
-/// Format a time as an IMF-fixdate.
 pub fn format_http_date(time: SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time)
         .format("%a, %d %b %Y %H:%M:%S GMT")

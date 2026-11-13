@@ -9,10 +9,7 @@
 //! its location, its actions, its search — and the window's minimize,
 //! maximize and close stand in their pill at its trailing end. The app's
 //! frame starts under that one bar, never under a second title row.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- window_of_its_own [OUT_DIR]`
-//! Out:  `OUT_DIR` (default `target/look/window-of-its-own`):
-//!       `inbox-<width>-<theme>.png` at 1280 × 800 and 390 × 844.
 
 use std::path::{Path, PathBuf};
 

@@ -1,13 +1,7 @@
-//! The Calculator's toolbar, as slots in the window's bar
-//! ([`ui::window_toolbar`]).
-//!
-//! The bar names the mode as its location and shows the modes as its view
-//! switcher (Calculator, Graph 2D, Graph 3D, Convert), a graph's formulas as
-//! its sidebar and the angle unit in its menu. Each slot is a binding of an
-//! effect of the window ([`CalculatorEffect`]), which the app answers where
-//! it answers every effect: the same door an assistive technology, the
-//! palette and an agent take, so there is one state path for all of them.
-//! Past calculations are the window's History, which the bar opens itself.
+//! The Calculator's toolbar: the mode as the bar's location, the modes as its
+//! view switcher, a graph's formulas as its sidebar. Each slot binds a
+//! [`CalculatorEffect`], so the bar takes the same path as the palette and an
+//! agent.
 
 use ui::framework::{Choice, WindowBar};
 
@@ -16,7 +10,6 @@ use crate::actions::CalculatorEffect;
 use crate::model::Mode;
 use crate::resource::Calculator;
 
-/// What shows `mode`: the effect the mode's own semantic action runs.
 fn show(mode: Mode) -> CalculatorEffect {
     match mode {
         Mode::Calc => CalculatorEffect::ShowCalculator,
@@ -27,8 +20,6 @@ fn show(mode: Mode) -> CalculatorEffect {
 }
 
 impl CalculatorApp {
-    /// The window bar's slots for the mode shown, binding each to the effect
-    /// that takes it.
     pub(super) fn window_bar(&self) -> Option<WindowBar<Calculator>> {
         let dispatch = self.dispatch.as_ref()?;
         let mode = self.model.mode;

@@ -64,7 +64,6 @@ serde_json.workspace = true
 uuid.workspace = true
 url.workspace = true
 base64.workspace = true
-image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # Portal-selected cover art is normalised through the shared preview decoder.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tracing.workspace = true
@@ -92,6 +91,8 @@ rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider
 tilo-innertube = { path = "../../crates/platform/tilo-innertube", optional = true }
 
 [dev-dependencies]
+# Tests build their image fixtures.
+image = { workspace = true, features = ["png"] }
 test-http = { path = "../../crates/dev/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true

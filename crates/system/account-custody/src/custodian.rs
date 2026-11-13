@@ -21,11 +21,10 @@ use crate::providers::{
     valid_mailbox,
 };
 
-/// The protected grant wire protocol implemented by this loaded custodian.
-///
-/// Native runtime certification invokes this non-inlined symbol through the
-/// actual SDK dylib, separately from the installed credential helper. It is
-/// not a package version or a claim made by a prepared-account importer.
+/// The protected grant wire protocol this loaded custodian implements. Native
+/// runtime certification invokes this non-inlined symbol through the actual SDK
+/// dylib, separately from the installed credential helper; it is not a package
+/// version or a claim made by a prepared-account importer.
 #[inline(never)]
 pub fn protected_grant_protocol() -> u32 {
     1
@@ -34,10 +33,8 @@ pub fn protected_grant_protocol() -> u32 {
 /// How long a browser sign-in may take.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
-/// Why custody could not produce a credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CustodyError {
-    /// No client id is configured for this provider in this build.
     NotConfigured {
         provider: &'static str,
         key: &'static str,
@@ -50,7 +47,6 @@ pub enum CustodyError {
     Account(String),
     /// The vault or handoff store failed.
     Storage(String),
-    /// A sign-in step failed.
     SignIn(String),
 }
 
@@ -82,21 +78,20 @@ impl From<OAuthError> for CustodyError {
     }
 }
 
-/// What custody holds for one `OAuth` grant, without releasing it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrantState {
-    /// Nothing is sealed under this id on this device: never signed in
-    /// here (a setting that roamed from another device), or forgotten.
+    /// Nothing is sealed under this id on this device: never signed in here (a
+    /// setting that roamed from another device), or forgotten.
     Missing,
     /// A grant custody can refresh.
     Usable,
-    /// The provider revoked the grant, or it was sealed without offline
-    /// access: the person must sign in again.
+    /// The provider revoked the grant, or it was sealed without offline access: the
+    /// person must sign in again.
     SignInAgain,
 }
 
-/// The long-lived grant sealed in the vault's `token` field. Never handed
-/// out of this crate except to be sealed.
+/// The long-lived grant sealed in the vault's `token` field; never handed out of
+/// this crate except to be sealed.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Grant {
@@ -128,9 +123,9 @@ enum Grant {
     },
 }
 
-// Protected kinds deliberately differ from the legacy decoder's known variants.
-// Their credentials stay nested: an older decoder cannot fall back to TokenSet
-// or use/revoke an outer plaintext password after ignoring copy provenance.
+// Protected kinds deliberately differ from the legacy decoder's known variants,
+// and their credentials stay nested, so an older decoder cannot fall back to
+// TokenSet or use an outer plaintext password after ignoring copy provenance.
 impl Serialize for Grant {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -208,8 +203,9 @@ struct CopyOrigin {
     account_sha256: [u8; 32],
 }
 
-/// Original installed-app client registration, sealed with an imported cloud grant.
-/// This never contains provider endpoints and cannot override another issuer or use.
+/// Original installed-app client registration, sealed with an imported cloud
+/// grant. It never contains provider endpoints and cannot override another
+/// issuer or use.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportedRegistration {
@@ -285,7 +281,8 @@ pub fn imported_oauth_secret(tokens: &TokenSet, registration: &ImportedRegistrat
     registered_secret(tokens, Some(registration.clone()), true, None)
 }
 
-/// Test an existing sealed imported grant's exact original source/client binding.
+/// Test an existing sealed imported grant's exact original source and client
+/// binding.
 pub fn imported_oauth_matches(secret: &Secret, registration: &ImportedRegistration) -> bool {
     matches!(grant_of(secret), Some(Grant::Oauth2 { tokens, registration: Some(stored), .. })
         if !tokens.refresh_token.is_empty() && stored.issuer == registration.issuer && stored.client_id == registration.client_id
@@ -306,8 +303,8 @@ pub fn oauth_secret(tokens: &TokenSet) -> Secret {
     }
 }
 
-/// Seal an `iCloud` session into a vault secret. The Apple ID password is
-/// not part of it.
+/// Seal an `iCloud` session into a vault secret; the Apple ID password is not
+/// part of it.
 pub fn icloud_secret(apple_id: &str, session: &ICloudSessionState) -> Secret {
     icloud_secret_with_provenance(apple_id, session, false, None)
 }
@@ -330,9 +327,9 @@ fn icloud_secret_with_provenance(
     }
 }
 
-/// Copy canonical custody without transferring authority to revoke the original sign-in.
-/// The grant, original registration and password remain usable; this provenance is
-/// sealed and retained through refresh and portable resealing.
+/// Copy canonical custody without transferring authority to revoke the original
+/// sign-in: the grant, original registration and password remain usable, and this
+/// provenance is sealed and kept through refresh and portable resealing.
 pub fn copied_secret(account: &Account, secret: &Secret) -> Secret {
     use sha2::{Digest, Sha256};
     let digest = |domain: &[u8], encoded: String| {
@@ -422,8 +419,9 @@ fn copy_origin(secret: &Secret) -> Option<CopyOrigin> {
     }
 }
 
-/// Match an explicitly copied source after its target access/refresh token changed.
-/// Both original credential and owner/account metadata fingerprints must match.
+/// Match an explicitly copied source after its target access or refresh token
+/// changed. Both the original credential and the owner metadata fingerprints must
+/// match.
 pub fn copied_source_matches(stored: &Secret, expected: &Secret) -> bool {
     let usable = match grant_of(stored) {
         Some(Grant::Oauth2 { tokens, .. }) => !tokens.refresh_token.is_empty(),
@@ -444,8 +442,8 @@ pub fn copied_source_matches(stored: &Secret, expected: &Secret) -> bool {
     }
 }
 
-/// Read a password through canonical custody, including protected copied DAV grants.
-/// Other account types retain their existing plain password representation.
+/// Read a password through canonical custody, including protected copied `DAV`
+/// grants. Other account types keep their plain password representation.
 pub fn password_credential(secret: &Secret) -> Zeroizing<String> {
     if let Some(Grant::CopiedPassword {
         password: Some(password),
@@ -460,7 +458,7 @@ pub fn password_credential(secret: &Secret) -> Zeroizing<String> {
     Zeroizing::new(secret.password.clone())
 }
 
-/// Whether preserving this grant's client/copy authority requires protocol 1.
+/// Whether preserving this grant's client and copy authority requires protocol 1.
 pub fn requires_protected_consumer(secret: &Secret) -> bool {
     match grant_of(secret) {
         Some(Grant::Oauth2 {
@@ -491,17 +489,17 @@ pub fn is_copied_secret(secret: &Secret) -> bool {
     )
 }
 
-/// A sealed grant, and whether it is in the format Mail sealed before its
-/// grants moved into custody: the bare [`TokenSet`] JSON, without the
-/// `kind` tag. Such a grant reads as [`Grant::Oauth2`] and is resealed in
-/// the current format on first use.
+/// A sealed grant, and whether it is in the format Mail sealed before its grants
+/// moved into custody: bare [`TokenSet`] JSON without the `kind` tag. Such a
+/// grant reads as [`Grant::Oauth2`] and is resealed in the current format on
+/// first use.
 fn decode_grant(secret: &Secret) -> Option<(Grant, bool)> {
     let raw = secret.token.as_deref()?;
     if let Ok(grant) = serde_json::from_str(raw) {
         return Some((grant, false));
     }
-    // Tagged objects are never legacy bare tokens, even if they contain an
-    // access_token field. Refuse unknown future protected custody formats.
+    // Tagged objects are never legacy bare tokens, even with an access_token field;
+    // refuse unknown future protected custody formats.
     if has_grant_tag(secret) {
         return None;
     }
@@ -538,8 +536,8 @@ pub fn icloud_apple_id(secret: &Secret) -> Option<String> {
     }
 }
 
-/// Whether an account type's credential is held by this custodian (rather
-/// than being a password another app uses directly).
+/// Whether an account type's credential is held by this custodian rather than
+/// being a password another app uses directly.
 pub fn is_cloud_type(type_id: &str) -> bool {
     OAuthCloud::from_type_id(type_id).is_some()
         || matches!(type_id, ICLOUD_DRIVE_TYPE | NEXTCLOUD_TYPE | WEBDAV_TYPE)
@@ -584,8 +582,8 @@ impl Custodian {
         self
     }
 
-    /// Replace a provider's descriptor and registration (a client id, or a
-    /// whole [`Registration`]) for tests and private deployments.
+    /// Replace a provider's descriptor and registration (a client id, or a whole
+    /// [`Registration`]) for tests and private deployments.
     #[must_use]
     pub fn with_provider(
         mut self,
@@ -599,8 +597,7 @@ impl Custodian {
     }
 
     /// Sign in for `oauth_use` with `provider` and `registration` (a fake
-    /// authorization server's) instead of the client table's; see
-    /// [`Self::with_provider`].
+    /// authorization server's) instead of the client table's.
     #[must_use]
     pub fn with_use(
         mut self,
@@ -613,9 +610,9 @@ impl Custodian {
         self
     }
 
-    /// Send every request for `issuer` to the endpoints of `provider` (a
-    /// fake authorization server) while the scopes and the registration
-    /// still come from the client table, as they do in production.
+    /// Send every request for `issuer` to the endpoints of `provider` (a fake
+    /// authorization server) while the scopes and registration still come from the
+    /// client table, as they do in production.
     #[must_use]
     pub fn with_issuer_endpoints(mut self, issuer: OAuthIssuer, provider: Provider) -> Self {
         self.endpoints.insert(issuer, provider);
@@ -630,20 +627,17 @@ impl Custodian {
         self
     }
 
-    /// Start from `config` (the provider crate's serde configuration: a
-    /// fake server's API origin, a chosen folder) instead of the provider's
-    /// default when resolving a new account's storage.
+    /// Start from `config` (the provider crate's serde configuration: a fake
+    /// server's API origin, a chosen folder) instead of the provider's default when
+    /// resolving a new account's storage.
     #[must_use]
     pub fn with_storage_config(mut self, cloud: OAuthCloud, config: serde_json::Value) -> Self {
         self.storage.insert(cloud.type_id(), config);
         self
     }
 
-    /// The non-secret mount configuration of a newly signed-in account,
-    /// asked of the provider once with its fresh access token.
-    ///
-    /// # Errors
-    /// See [`crate::storage::resolve`].
+    /// The non-secret mount configuration of a newly signed-in account, asked of the
+    /// provider once with its fresh access token.
     pub fn resolve_storage(
         &self,
         cloud: OAuthCloud,
@@ -670,8 +664,8 @@ impl Custodian {
         )
     }
 
-    /// Use Apple's `iCloud` web sign-in ([`crate::icloud::WebICloud`]) for
-    /// `iCloud` Drive. Settings and the credential helper run with it.
+    /// Use Apple's `iCloud` web sign-in ([`crate::icloud::WebICloud`]) for `iCloud`
+    /// Drive; Settings and the credential helper run with it.
     #[must_use]
     pub fn with_apple_icloud(self) -> Self {
         match crate::icloud::WebICloud::apple() {
@@ -702,10 +696,8 @@ impl Custodian {
         }
     }
 
-    /// The handoff store the daemon reads.
-    ///
-    /// # Errors
-    /// [`CustodyError::Storage`] when no config directory resolves.
+    /// The handoff store the daemon reads; [`CustodyError::Storage`] when no config
+    /// directory resolves.
     pub fn handoff(&self) -> Result<HandoffStore, CustodyError> {
         HandoffStore::open_person(self.config_root.as_deref())
             .ok_or_else(|| CustodyError::Storage("no config directory".into()))
@@ -720,9 +712,6 @@ impl Custodian {
 
     /// The descriptor and registration for a storage provider, or the "not
     /// configured" state.
-    ///
-    /// # Errors
-    /// [`CustodyError::NotConfigured`].
     pub fn oauth_config(
         &self,
         cloud: OAuthCloud,
@@ -730,12 +719,7 @@ impl Custodian {
         self.use_config(cloud.oauth_use())
     }
 
-    /// The descriptor (the issuer's endpoints with the scopes of this use)
-    /// and the issuer's registration, or the "not configured" state.
-    ///
-    /// # Errors
-    /// [`CustodyError::NotConfigured`] when the issuer has no client id or
-    /// the table gives this use no scopes.
+    /// The descriptor and registration for a use, or the "not configured" state.
     pub fn use_config(
         &self,
         oauth_use: OAuthUse,
@@ -769,7 +753,6 @@ impl Custodian {
             return self.use_config(oauth_use);
         };
         imported.validate(oauth_use)?;
-        // Descriptors remain canonical. The sealed grant supplies only its own client.
         let provider = self
             .overrides
             .get(&oauth_use)
@@ -808,7 +791,6 @@ impl Custodian {
                     }
                 });
         if root.is_some() || drive.is_some() {
-            // A null configuration accepts selected fields just like an empty object.
             if config.is_null() {
                 config = serde_json::json!({});
             }
@@ -836,7 +818,6 @@ impl Custodian {
         crate::storage::resolve(cloud, Some(&config), &tokens.access_token)
     }
 
-    /// Validate an explicitly selected imported refresh grant under its original client.
     pub fn refresh_imported_cloud(
         &self,
         cloud: OAuthCloud,
@@ -852,17 +833,10 @@ impl Custodian {
             .stamp_now())
     }
 
-    /// Whether `oauth_use` can sign in in this build.
     pub fn is_configured(&self, oauth_use: OAuthUse) -> bool {
         self.use_config(oauth_use).is_ok()
     }
 
-    /// Start a browser sign-in. Non-blocking: open
-    /// [`Authorization::url`] with the desktop's URI opener, then pass the
-    /// value to [`Self::finish_sign_in`] on a worker.
-    ///
-    /// # Errors
-    /// [`CustodyError::NotConfigured`] or a loopback failure.
     pub fn begin_sign_in(
         &self,
         cloud: OAuthCloud,
@@ -871,11 +845,6 @@ impl Custodian {
         self.begin_sign_in_for(cloud.oauth_use(), login_hint)
     }
 
-    /// Start a browser sign-in for any use (Gmail, Outlook, a storage
-    /// provider); see [`Self::begin_sign_in`].
-    ///
-    /// # Errors
-    /// [`CustodyError::NotConfigured`] or a loopback failure.
     pub fn begin_sign_in_for(
         &self,
         oauth_use: OAuthUse,
@@ -885,8 +854,6 @@ impl Custodian {
         Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
     }
 
-    /// Start Google's files sign-in, optionally with explicitly requested Gmail
-    /// access. Both capabilities must be configured; never silently drop mail.
     pub fn begin_google_sign_in(&self, mail: bool) -> Result<Authorization, CustodyError> {
         let capabilities = if mail {
             &[crate::Capability::Files, crate::Capability::Mail][..]
@@ -896,7 +863,6 @@ impl Custodian {
         self.begin_sign_in_for_capabilities(OAuthIssuer::Google, capabilities, None)
     }
 
-    /// Start Google sign-in for only the selected files and mail services.
     pub fn begin_google_services_sign_in(
         &self,
         files: bool,
@@ -912,11 +878,6 @@ impl Custodian {
         self.begin_sign_in_for_capabilities(OAuthIssuer::Google, &capabilities, None)
     }
 
-    /// Start sign-in for exactly the selected capabilities, without implicitly
-    /// adding files. Google can combine files, mail and `CalDAV` in one consent.
-    /// Every selected use must be configured under the same registration and
-    /// endpoints. Microsoft Exchange mail must sign in separately from Graph
-    /// identity/files: those resources require different audience tokens.
     pub fn begin_sign_in_for_capabilities(
         &self,
         issuer: OAuthIssuer,
@@ -958,18 +919,12 @@ impl Custodian {
         Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
     }
 
-    /// Replace the Microsoft Graph identity endpoint for a local fixture.
     #[must_use]
     pub fn with_microsoft_profile_endpoint(mut self, endpoint: String) -> Self {
         self.microsoft_profile_endpoint = endpoint;
         self
     }
 
-    /// Obtain Microsoft's confirmed mailbox address using a **Graph identity**
-    /// token, obtained with `OAuthUse::identity(Microsoft)` (or files with
-    /// `User.Read`), not an Exchange mail token. Sign in for mail separately
-    /// with this address as the login hint, then validate that mail connection
-    /// before publishing it. A UPN is not necessarily a mailbox; do not guess.
     pub fn microsoft_mail_identity(&self, tokens: &TokenSet) -> Result<String, CustodyError> {
         let http = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(30))
@@ -999,15 +954,12 @@ impl Custodian {
         Ok(email.to_string())
     }
 
-    /// Replace the Gmail profile API origin for a local provider fixture.
     #[must_use]
     pub fn with_gmail_profile_endpoint(mut self, endpoint: String) -> Self {
         self.gmail_profile_endpoint = endpoint;
         self
     }
 
-    /// Validate Gmail access and obtain the provider-confirmed mailbox identity.
-    /// A Drive grant alone must never create a working Mail account.
     pub fn gmail_identity(&self, tokens: &TokenSet) -> Result<String, CustodyError> {
         if tokens.scope.as_deref().is_some_and(|scopes| {
             !scopes
@@ -1046,8 +998,6 @@ impl Custodian {
         Ok(email.to_string())
     }
 
-    /// Begin sign-in with a non-empty subset of this use's configured scopes.
-    /// Client registration, endpoints and PKCE validation remain unchanged.
     pub fn begin_sign_in_for_scopes(
         &self,
         oauth_use: OAuthUse,
@@ -1068,8 +1018,6 @@ impl Custodian {
         Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
     }
 
-    /// Provider-confirmed scope metadata, without releasing credentials.
-    /// `None` means the provider or an older grant did not supply metadata.
     pub fn oauth_scopes(&self, id: &AccountId) -> Result<Option<String>, CustodyError> {
         let vault = self.credentials()?;
         let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
@@ -1079,11 +1027,6 @@ impl Custodian {
         Ok(tokens.scope)
     }
 
-    /// Whether `id`'s `OAuth` grant is there and still refreshable, for a
-    /// "Sign in again" status. A grant the provider revoked is kept as an
-    /// empty one when a refresh learns of it (see
-    /// [`Self::oauth_access_token`]), which reads here as
-    /// [`GrantState::SignInAgain`].
     pub fn oauth_grant_state(&self, id: &AccountId) -> Result<GrantState, CustodyError> {
         let vault = self.credentials()?;
         let Some(secret) = vault.get(id) else {
@@ -1097,33 +1040,18 @@ impl Custodian {
         })
     }
 
-    /// Seal a sign-in result as `id`'s grant, replacing any earlier one.
-    ///
-    /// # Errors
-    /// [`CustodyError::Storage`] when the vault cannot be written.
     pub fn seal_oauth(&self, id: &AccountId, tokens: &TokenSet) -> Result<(), CustodyError> {
         let mut credentials = self.credentials()?;
         credentials.put(id, &oauth_secret(tokens));
         credentials.try_save().map_err(CustodyError::Storage)
     }
 
-    /// Forget a local OAuth grant. Provider-side revocation remains separate.
     pub fn forget_oauth(&self, id: &AccountId) -> Result<(), CustodyError> {
         let mut vault = self.credentials()?;
         vault.remove(id);
         vault.try_save().map_err(CustodyError::Storage)
     }
 
-    /// A current access token for `id`'s `OAuth` grant, for an app that
-    /// presents it itself (Mail's `XOAUTH2`). The grant is refreshed through
-    /// `oauth_use`'s client when it is due (or `force`) and the result
-    /// resealed; a grant in an earlier format is migrated on the way. The
-    /// refresh token never leaves custody.
-    ///
-    /// # Errors
-    /// [`CustodyError::NeedsAuthentication`] when there is no usable grant
-    /// or the provider revoked it, [`CustodyError::Offline`], or
-    /// [`CustodyError::NotConfigured`] when a due refresh has no client.
     pub fn oauth_access_token(
         &self,
         id: &AccountId,
@@ -1134,11 +1062,6 @@ impl Custodian {
             .map(|(token, _)| token)
     }
 
-    /// Return the same approved bearer with its provider-confirmed expiry.
-    /// Refresh and revocation checks remain owned by the custodian.
-    ///
-    /// # Errors
-    /// See [`Self::oauth_access_token`].
     pub fn oauth_access_token_with_expiry(
         &self,
         id: &AccountId,
@@ -1151,8 +1074,6 @@ impl Custodian {
         Ok((Zeroizing::new(tokens.access_token), expires))
     }
 
-    /// `id`'s sealed `OAuth` tokens, refreshed when due (or `force`), with
-    /// any change sealed back into `credentials`.
     fn fresh_oauth_tokens(
         &self,
         credentials: &mut AccountCredentials,
@@ -1191,9 +1112,6 @@ impl Custodian {
                 match OAuthClient::new()?.refresh(&provider, &client, &tokens.refresh_token) {
                     Ok(renewed) => renewed.stamp_now(),
                     Err(OAuthError::InvalidGrant) => {
-                        // The provider revoked the grant: its access token
-                        // must not be handed out again either. Keep the
-                        // account, drop the dead grant until the next sign-in.
                         credentials.put(
                             id,
                             &registered_secret(
@@ -1222,10 +1140,6 @@ impl Custodian {
         Ok(tokens)
     }
 
-    /// Wait for the browser and redeem the code. Blocking.
-    ///
-    /// # Errors
-    /// See [`OAuthError`], mapped into [`CustodyError`].
     pub fn finish_sign_in(authorization: Authorization) -> Result<TokenSet, CustodyError> {
         let client = OAuthClient::new()?;
         let tokens = authorization.complete(&client, SIGN_IN_TIMEOUT)?;
@@ -1237,13 +1151,6 @@ impl Custodian {
         Ok(tokens)
     }
 
-    /// Start a device sign-in for `oauth_use` (GitHub's): show the person
-    /// [`DeviceAuthorization::user_code`] and its page, then pass the value
-    /// to [`Self::finish_device_sign_in`] on a worker. Blocking: one request
-    /// to the issuer.
-    ///
-    /// # Errors
-    /// [`CustodyError::NotConfigured`], or the issuer's refusal.
     pub fn begin_device_sign_in(
         &self,
         oauth_use: OAuthUse,
@@ -1256,10 +1163,6 @@ impl Custodian {
         )?)
     }
 
-    /// Wait until the person entered the code. Blocking.
-    ///
-    /// # Errors
-    /// See [`OAuthError`], mapped into [`CustodyError`].
     pub fn finish_device_sign_in(
         authorization: DeviceAuthorization,
     ) -> Result<TokenSet, CustodyError> {
@@ -1272,11 +1175,6 @@ impl Custodian {
         Ok(tokens)
     }
 
-    /// Redeem the code the provider displayed, for a sign-in that
-    /// [`Authorization::needs_pasted_code`]. Blocking.
-    ///
-    /// # Errors
-    /// See [`OAuthError`], mapped into [`CustodyError`].
     pub fn finish_sign_in_with_code(
         authorization: Authorization,
         code: &str,
@@ -1291,25 +1189,11 @@ impl Custodian {
         Ok(tokens)
     }
 
-    /// After a sign-in was saved: clear a stale "sign in again" health
-    /// state and publish the first short-lived credential.
-    ///
-    /// # Errors
-    /// See [`Self::publish`].
     pub fn signed_in(&self, id: &AccountId) -> Result<(), CustodyError> {
         let _ = self.reporter(id).remove();
         self.publish(id, false)
     }
 
-    /// Publish a short-lived credential for one account in the handoff
-    /// store: refresh an `OAuth` access token when it is due (or `force`),
-    /// derive `iCloud` session headers, or pass through the server's own
-    /// Basic credential for `WebDAV` and Nextcloud. A grant the provider
-    /// no longer accepts marks the account as needing sign-in and withdraws
-    /// its handoff entry.
-    ///
-    /// # Errors
-    /// See [`CustodyError`].
     pub fn publish(&self, id: &AccountId, force: bool) -> Result<(), CustodyError> {
         let result = self.publish_inner(id, force);
         if result == Err(CustodyError::NeedsAuthentication) {
@@ -1390,9 +1274,6 @@ impl Custodian {
             .map_err(CustodyError::Storage)
     }
 
-    /// Give up an account's grant at its provider, best effort, after the
-    /// account was removed locally. `secret` is the credential the removal
-    /// took out of the vault.
     pub fn revoke(&self, account: &Account, secret: &Secret) {
         if let Ok(handoff) = self.handoff() {
             let _ = handoff.withdraw(&account.id);
@@ -1410,8 +1291,6 @@ impl Custodian {
             else {
                 return;
             };
-            // Imported custody is a copy of a still-used source grant. Detaching
-            // this account must not sign its original application out remotely.
             if registration.is_some() {
                 return;
             }
@@ -1442,8 +1321,6 @@ impl Custodian {
                     .unwrap_or_default()
                     .to_string()
             };
-            // Only app passwords minted by Login Flow v2 are revoked; an
-            // older account may hold the person's own password.
             if account
                 .config
                 .get("app_password")

@@ -16,20 +16,15 @@ use std::time::{Duration, Instant};
 use url::Url;
 use zeroize::Zeroizing;
 
-/// Name shown in the person's Nextcloud device list.
 const USER_AGENT: &str = "Tilo";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
-/// The server keeps a flow alive for 20 minutes.
 pub const FLOW_LIFETIME: Duration = Duration::from_secs(20 * 60);
-/// Pause between polls of the flow endpoint.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NextcloudError {
-    /// The server URL is not an HTTPS URL without credentials.
     InvalidServer(&'static str),
-    /// The server did not answer like a Nextcloud server.
     NotNextcloud,
     Offline(String),
     Cancelled,
@@ -52,9 +47,7 @@ impl fmt::Display for NextcloudError {
 
 impl std::error::Error for NextcloudError {}
 
-/// What a completed flow yields.
 pub struct NextcloudLogin {
-    /// The server root the app password is valid for.
     pub server: String,
     pub login_name: String,
     pub app_password: Zeroizing<String>,
@@ -130,7 +123,6 @@ fn read_json(response: reqwest::blocking::Response) -> Result<serde_json::Value,
     serde_json::from_str(&body).map_err(|_| NextcloudError::Protocol("not JSON"))
 }
 
-/// A started login flow.
 pub struct LoginFlow {
     http: reqwest::blocking::Client,
     server: Url,
@@ -147,11 +139,6 @@ impl fmt::Debug for LoginFlow {
     }
 }
 
-/// Start a login flow on `server`.
-///
-/// # Errors
-/// [`NextcloudError::InvalidServer`], [`NextcloudError::Offline`] or
-/// [`NextcloudError::NotNextcloud`].
 pub fn begin(server: &str) -> Result<LoginFlow, NextcloudError> {
     let server = server_url(server)?;
     let http = client()?;
@@ -202,18 +189,10 @@ pub fn begin(server: &str) -> Result<LoginFlow, NextcloudError> {
 }
 
 impl LoginFlow {
-    /// The page to open in the browser.
     pub fn login_url(&self) -> &str {
         &self.login_url
     }
 
-    /// Poll until the person approves access in the browser. Returns early
-    /// with [`NextcloudError::Cancelled`] once `cancel` receives a message or
-    /// its sender is dropped; the pause between polls is that same wait.
-    ///
-    /// # Errors
-    /// [`NextcloudError::Cancelled`], [`NextcloudError::TimedOut`],
-    /// [`NextcloudError::Offline`] or [`NextcloudError::Protocol`].
     pub fn wait(
         &self,
         cancel: &mpsc::Receiver<()>,
@@ -280,10 +259,6 @@ impl LoginFlow {
     }
 }
 
-/// Revoke an app password (account removal).
-///
-/// # Errors
-/// [`NextcloudError::Offline`] or [`NextcloudError::Protocol`].
 pub fn revoke_app_password(
     server: &str,
     login_name: &str,
@@ -299,7 +274,6 @@ pub fn revoke_app_password(
         .basic_auth(login_name, Some(app_password))
         .send()
         .map_err(|error| NextcloudError::Offline(error.without_url().to_string()))?;
-    // 401: the app password is already gone.
     if response.status().is_success() || response.status().as_u16() == 401 {
         Ok(())
     } else {

@@ -6,25 +6,36 @@ use std::collections::BTreeMap;
 use crate::{ActionKind, Answer, Grant, Level, Lifetime, Segment, TreePath};
 
 /// Names for nodes. The default uses ids; a host that knows app and resource
-/// names supplies them.
+/// names supplies them, and the words the whole tree is called in the
+/// person's language.
 pub trait Labels {
     fn label(&self, level: Level, id: &str) -> Option<String> {
         let _ = (level, id);
         None
     }
+
+    /// What the whole grant tree is called, in the words the person's
+    /// language uses for it.
+    fn everything(&self) -> String;
 }
 
-/// Labels nodes by their ids.
+/// Labels nodes by their ids, for a reader that speaks the ledger's own
+/// language (an agent, a bot's directory). A window passes its own labels,
+/// so the word it paints for the whole tree comes from its catalogue.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ids;
 
-impl Labels for Ids {}
+impl Labels for Ids {
+    fn everything(&self) -> String {
+        "Everything".to_owned()
+    }
+}
 
 /// A node as people read it: `Mail › every resource › Send`.
 #[must_use]
 pub fn describe_node(node: &TreePath, labels: &dyn Labels) -> String {
     if node.is_root() {
-        return "Everything".to_owned();
+        return labels.everything();
     }
     node.segments()
         .iter()

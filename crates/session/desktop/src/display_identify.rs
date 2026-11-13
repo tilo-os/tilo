@@ -155,7 +155,20 @@ impl DisplayIdentify {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = ui::time::now();
+        self.draw_at(displays, scene, transform, text, theme, ui::time::now());
+    }
+
+    /// [`Self::draw`] at `now`, the frame's instant: a test tells the cards they are on their way
+    /// with its own clock rather than whatever the machine's says when it happens to draw.
+    pub fn draw_at(
+        &mut self,
+        displays: &[(String, Rect)],
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) {
         let motion = theme.motion();
         let Some(gone) = self.gone(now).filter(|_| !self.labels.is_empty()) else {
             self.fade_from = None;
@@ -329,12 +342,21 @@ mod tests {
         vec![("eDP-1".to_owned(), LEFT), ("DP-2".to_owned(), RIGHT)]
     }
 
-    /// Paint the cards as one frame does and hand back what stood on screen.
-    fn painted(identify: &mut DisplayIdentify) -> Vec<Card> {
+    /// Paint the cards as one frame does, at the instant the test asks with, and hand back what
+    /// stood on screen: the frame's own clock is the machine's, which under load can pass the
+    /// cards' three seconds between the ask and the draw.
+    fn painted(identify: &mut DisplayIdentify, now: Instant) -> Vec<Card> {
         let theme = Theme::dark();
         let mut text = TextRenderer::default();
         let mut scene = Scene::new();
-        identify.draw(&displays(), &mut scene, Affine::IDENTITY, &mut text, &theme);
+        identify.draw_at(
+            &displays(),
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            now,
+        );
         identify.cards().to_vec()
     }
 
@@ -352,7 +374,7 @@ mod tests {
             "a frame is owed when the cards go"
         );
 
-        let cards = painted(&mut identify);
+        let cards = painted(&mut identify, t0);
         assert_eq!(cards.len(), 2, "one card per display: {cards:?}");
         let builtin = &cards[0];
         assert_eq!(
@@ -429,7 +451,7 @@ mod tests {
             ],
         };
         identify.follow(Some(ask), t0);
-        let cards = painted(&mut identify);
+        let cards = painted(&mut identify, t0);
         assert_eq!(cards.len(), 1, "only the display that is there: {cards:?}");
         assert_eq!(cards[0].name, "Built-in display");
     }
@@ -439,7 +461,7 @@ mod tests {
         let t0 = Instant::now();
         let mut identify = DisplayIdentify::default();
         identify.follow(Some(asked(7)), t0);
-        painted(&mut identify);
+        painted(&mut identify, t0);
         let node = identify
             .accessibility(t0)
             .expect("the cards are announced while they stand");

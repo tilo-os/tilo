@@ -1,7 +1,4 @@
 //! `tilo-device-vpn`: the device VPN's root helper.
-//!
-//! - `serve`: answer the session's shell on the control socket.
-//! - `reset`: undo what a helper left behind, at boot.
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {

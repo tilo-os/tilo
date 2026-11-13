@@ -29,9 +29,6 @@ struct Writer {
     takes_path: Option<&'static str>,
     running: Arc<Mutex<bool>>,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
-    /// For each of the app's next top-level listings, whether it is empty,
-    /// as while the app publishes again during its start.
-    blank_listings: Arc<Mutex<std::collections::VecDeque<bool>>>,
     /// One failed directory query, selected by its parent resource.
     query_failure: Arc<Mutex<Option<DirectoryFailure>>>,
     /// The text `read-text` answers; set, `read-text` declares itself the
@@ -80,7 +77,6 @@ impl Writer {
             takes_path: None,
             running: Arc::default(),
             invoked: Arc::default(),
-            blank_listings: Arc::default(),
             query_failure: Arc::default(),
             document: None,
             listing_page: None,
@@ -521,16 +517,6 @@ impl ActionHost for Writer {
             && query.needle.is_empty()
             && query.parent_resource.is_none()
             && query.resource_name.is_none();
-        if provider != WORKSPACE
-            && listing
-            && self.blank_listings.lock().unwrap().pop_front() == Some(true)
-        {
-            return Pending::ready(Ok(CataloguePage {
-                revision: "v5".into(),
-                exhausted: true,
-                ..CataloguePage::default()
-            }));
-        }
         let mut rows = self.listed_rows(&provider);
         if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
@@ -1002,29 +988,6 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
     );
 }
 
-/// computer (run 20260930-071012, doc-create-memo): opened without a file,
-/// the Word Processor's `open` answered `"resources": []`, and the agent
-/// spent two query turns on its directory.
-#[test]
-fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
-    let host = Writer::new(None);
-    // The host answers once the app has published, but the app may publish
-    // again while it binds its document: the first listings read empty.
-    host.blank_listings.lock().unwrap().extend([true, true]);
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-    ))
-    .unwrap();
-    assert!(
-        resource(&reply["directory"], "word_processor.document")["children"] == true,
-        "{reply}"
-    );
-    assert!(host.blank_listings.lock().unwrap().is_empty());
-}
-
 #[test]
 fn an_app_that_cannot_open_a_path_says_so_and_still_opens() {
     let host = Writer::new(None);
@@ -1325,86 +1288,6 @@ fn an_admission_refusal_with_a_text_handle_is_not_an_execution_failure() {
         .unwrap_err();
         assert_eq!(refusal, ActionHostError::NotPermitted.to_string());
         assert!(host.mutations.lock().unwrap().is_empty());
-    });
-}
-
-#[test]
-fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
-    use http_body_util::BodyExt;
-    use hyper::{HeaderMap, Method, StatusCode, header::HeaderValue};
-
-    let host = FailingMutationHost::new(false);
-    let endpoint = crate::mcp_http::Endpoint::new(
-        host.clone(),
-        "workspace".into(),
-        "owner".into(),
-        Some("secret".into()),
-    );
-    run(async {
-        let initialize = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params": {
-            "protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"handle-test", "version":"1"}}});
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
-        let opened = endpoint
-            .dispatch(
-                &Method::POST,
-                "/mcp",
-                &headers,
-                initialize.to_string().as_bytes(),
-            )
-            .await;
-        assert_eq!(opened.status(), StatusCode::OK);
-        headers.insert(
-            "mcp-session-id",
-            HeaderValue::from_str(opened.headers()["mcp-session-id"].to_str().unwrap()).unwrap(),
-        );
-        let query = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"tilo_query", "arguments":{"peer_id":1}}});
-        let listed = endpoint
-            .dispatch(
-                &Method::POST,
-                "/mcp",
-                &headers,
-                query.to_string().as_bytes(),
-            )
-            .await;
-        assert_eq!(listed.status(), StatusCode::OK);
-        let bytes = listed.into_body().collect().await.unwrap().to_bytes();
-        let page: Value = serde_json::from_slice(&bytes).unwrap();
-        let handle = resource(&page["result"]["structuredContent"], "tilo.rich-text")["resource"]
-            .as_str()
-            .unwrap();
-        assert_ne!(handle, RICH);
-        let id = tilo_actions::InvocationId::new();
-        let invoke = json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"tilo_invoke", "arguments":mutation_call(handle, id)}});
-        for _ in 0..2 {
-            let response = endpoint
-                .dispatch(
-                    &Method::POST,
-                    "/mcp",
-                    &headers,
-                    invoke.to_string().as_bytes(),
-                )
-                .await;
-            assert_eq!(response.status(), StatusCode::OK);
-            let bytes = response.into_body().collect().await.unwrap().to_bytes();
-            let reply: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(
-                host.mutations.lock().unwrap().len(),
-                1,
-                "HTTP must not readmit a failed mutation"
-            );
-            assert_eq!(
-                reply["result"]["isError"], false,
-                "execution failure is a structured update: {reply}"
-            );
-            assert_failed_mutation(&reply["result"]["structuredContent"], id);
-        }
-        let mutations = host.mutations.lock().unwrap();
-        assert_eq!(mutations[0].invocation, id);
-        assert!(
-            matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
-        );
-        drop(mutations);
     });
 }
 

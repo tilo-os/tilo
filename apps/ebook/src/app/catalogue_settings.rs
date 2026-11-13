@@ -79,7 +79,7 @@ impl BooksApp {
             col.row_span(theme),
             y,
             &SettingsRow {
-                title: crate::catalogue::KEEP_CATALOGUES,
+                title: &crate::resource::CATALOG.t("ebook-keep-catalogues"),
                 secondary: Some(
                     "Search finds books from Project Gutenberg at once, also when you\u{2019}re offline.",
                 ),

@@ -1,6 +1,6 @@
-//! Compact snapshots and version indexes end to end: snapshots signed by the
-//! real CLI, served over HTTP from real storage, read by clients that ask for
-//! the compact form and by released clients that do not.
+//! Compact snapshots and version indexes end to end: snapshots signed by the real CLI, served over
+//! HTTP from real storage, read by clients that ask for the compact form and by released clients
+//! that do not.
 
 #![cfg(unix)]
 #![allow(
@@ -179,8 +179,8 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     let addr = crate::support::serve(&registry.storage);
     let base_url = format!("http://{addr}");
 
-    // A released client asks for /entries and gets exactly what it always
-    // got: the full signed snapshot, every version included.
+    // A released client asks for /entries and gets exactly what it always got: the full signed
+    // snapshot, every version included.
     let response = get(&format!("{base_url}/entries"), None);
     assert!(response.status().is_success());
     let full_etag = etag(&response);
@@ -219,7 +219,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     );
     assert_eq!(revalidated.status(), reqwest::StatusCode::NOT_MODIFIED);
 
-    // The index is static, immutable and is the complete signed entry.
+    // The index is static, immutable, and is the complete signed entry.
     let index = &compact.entries[0].version_index;
     let response = get(
         &format!("{base_url}/indexes/{}.json", index.blake3_hex),
@@ -238,8 +238,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
         full.entries[0]
     );
 
-    // The native client reads the compact form, and the index for every
-    // version.
+    // The native client reads the compact form, and the index for every version.
     let config = RegistryConfig {
         name: "test".into(),
         base_url: base_url.clone(),
@@ -273,8 +272,8 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     assert!(!response.status().is_success());
     std::fs::write(&index_path, &index_bytes).unwrap();
 
-    // Replaying the older snapshot, whose compact form names the older
-    // index, is refused by the checkpoint as behind the one accepted.
+    // Replaying the older snapshot, whose compact form names the older index, is refused by the
+    // checkpoint as behind the one accepted.
     registry.serve_raw(&old_full, &old_compact);
     let replayed = get(&format!("{base_url}/entries?format=compact"), None)
         .json::<CompactRegistrySnapshot>()
@@ -288,8 +287,8 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
             if held_sequence == full.sequence && served_sequence == old_full.sequence
     ));
 
-    // Without a compact form of the current snapshot, compact requests get
-    // the full one: a stale compact pointer is not served.
+    // Without a compact form of the current snapshot, compact requests get the full one: a stale
+    // compact pointer is not served.
     registry.serve_raw(&full, &old_compact);
     let fallback: SignedRegistrySnapshot = get(&format!("{base_url}/entries?format=compact"), None)
         .json()
@@ -306,8 +305,8 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     .unwrap();
     assert_eq!(all.entry, full.entries[0]);
 
-    // The next signing publishes the compact form again and keeps only the
-    // indexes it and its predecessor name.
+    // The next signing publishes the compact form again and keeps only the indexes it and its
+    // predecessor name.
     let (_, latest) = registry.sign();
     assert_eq!(latest.sequence, 3);
     let kept = std::fs::read_dir(registry.dir.path().join("version-indexes"))

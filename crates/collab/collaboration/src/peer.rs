@@ -22,16 +22,6 @@ pub trait PeerTransport {
     }
     fn send(&mut self, request: CollabRequest) -> Result<(), String>;
     fn poll(&mut self) -> Vec<CollabEvent>;
-    /// The whole action the change `change` was part of, when the peer keeps
-    /// the index of the actions it carries in `workspace`: every unit the
-    /// action wrote, which is what one undo takes back.
-    fn action_of(
-        &self,
-        _workspace: &str,
-        _change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        None
-    }
     /// The real broker acknowledgement of the latest Hello, never an optimistic echo.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         None
@@ -221,18 +211,6 @@ impl super::CollabTransport for PeerTransportAdapter {
         if self.closed.is_none() {
             out.extend(self.peer.poll());
         }
-    }
-
-    fn action_of(
-        &self,
-        workspace: &str,
-        change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        self.check_owner();
-        if self.closed.is_some() {
-            return None;
-        }
-        self.peer.action_of(workspace, change)
     }
 
     fn set_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {

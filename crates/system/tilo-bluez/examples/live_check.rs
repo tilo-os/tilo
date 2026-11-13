@@ -6,17 +6,6 @@
 //! refuses to register, a decline that does not come back as a decline —
 //! exits non-zero.
 //!
-//! ```text
-//! cargo run -p tilo-bluez --example live_check                 # adapter + agent round trip
-//! cargo run -p tilo-bluez --example live_check -- --scan 15    # ...and scan for 15s
-//! cargo run -p tilo-bluez --example live_check -- --pair AA:BB:CC:DD:EE:FF
-//! ```
-//!
-//! `--pair` runs the pairing flow and answers the agent from the
-//! terminal, which is what a compositor prompt does with a pointer.
-//!
-//! # Why part of this runs as root
-//!
 //! Fedora's `/usr/share/dbus-1/system.d/bluetooth.conf` grants
 //! `send_interface="org.bluez.Agent1"` to the **root** policy only. The one
 //! thing on the machine allowed to invoke a pairing agent is therefore
@@ -39,7 +28,6 @@ const DEV: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
 
 #[tokio::main]
 async fn main() {
-    // Re-executed under sudo to stand in for bluetoothd.
     if let Some(target) = arg_value("--as-bluez") {
         std::process::exit(match bluez_side(&target).await {
             Ok(line) => {
@@ -132,7 +120,6 @@ async fn as_bluez(unique_name: &str, path: &str, passkey: u32) -> Result<String,
     .map_err(|e| e.to_string())?
 }
 
-/// Step 1: reach `bluetoothd` and report the machine's adapter.
 async fn connect_and_show_adapter() -> Result<(BluezClient, AdapterInfo), String> {
     let client = BluezClient::connect()
         .await
@@ -149,7 +136,6 @@ async fn connect_and_show_adapter() -> Result<(BluezClient, AdapterInfo), String
     Ok((client, adapter))
 }
 
-/// Step 2: report every device `bluetoothd` already knows about.
 async fn list_devices(client: &BluezClient) -> Result<Vec<DeviceInfo>, String> {
     let devices = client
         .devices()
@@ -306,7 +292,6 @@ async fn timeout_round_trip(client: &BluezClient) -> Result<AgentRegistration, S
     Ok(reg3)
 }
 
-/// Step 8: discovery, if `--scan` was given.
 async fn run_scan(
     client: &BluezClient,
     adapter: &AdapterInfo,

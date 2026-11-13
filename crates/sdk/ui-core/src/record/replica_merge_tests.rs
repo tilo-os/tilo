@@ -154,6 +154,13 @@ fn a_change_from_another_replica_wakes_the_windows_reading_the_store() {
         "a record kept for the window"
     );
 
+    // Merged on another window's route: this window's own merge finds nothing.
+    let answer = collab_types::DocumentMutation::Incremental(peer_change("reply"));
+    let merge = || crate::bound_dispatch::merge_remote_owned_document(&store, &want, &answer);
+    assert_eq!(merge().unwrap().changed, Some(true));
+    assert_eq!(woken.load(Ordering::SeqCst), 3, "merged on a route");
+    assert_eq!(merge().unwrap().changed, Some(false));
+
     window.close();
     store
         .merge_replica(
@@ -163,7 +170,7 @@ fn a_change_from_another_replica_wakes_the_windows_reading_the_store() {
         .unwrap();
     assert_eq!(
         woken.load(Ordering::SeqCst),
-        2,
+        3,
         "a closed window is not woken"
     );
 }

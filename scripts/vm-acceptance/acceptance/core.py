@@ -24,6 +24,7 @@ AREAS = {
     "basics": "Basics: hardware controls, keyboard, displays",
     "agent": "Agent door: the in-session MCP path",
     "agents-e2e": "Coding agents in two workspaces, end to end (e2e-agents)",
+    "ws-branch-e2e": "A workspace set up once and branched, end to end (e2e-ws-branch)",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
     "secrets": "Security and identity: secret custody",
 }

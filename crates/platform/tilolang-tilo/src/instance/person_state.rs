@@ -7,13 +7,16 @@
 use super::Instance;
 
 impl Instance {
-    /// What the person has seen, as their entries of the workspace's record keep it: per
-    /// resource the newest version they saw (`None` takes a mark back), and the runs they
-    /// reviewed. What `unseen(r)` and the marks the host draws read; each view that read one
-    /// runs again.
+    /// What people have seen, as the workspace's record of each person's own state keeps it:
+    /// per person and resource the newest version they saw (`None` takes a mark back), and the
+    /// runs the person looking reviewed. What `unseen(r)`, the marks the host draws and
+    /// `seen_by(c, m)` read; each view that read one runs again.
+    ///
+    /// Everyone's marks reach the runtime, not the person looking's alone: a conversation says
+    /// who has read to a line, and the line is theirs, not a count the app keeps.
     pub fn set_seen(
         &mut self,
-        marks: impl IntoIterator<Item = (String, Option<crate::runtime::seen::SeenMark>)>,
+        marks: impl IntoIterator<Item = (String, String, Option<crate::runtime::seen::SeenMark>)>,
         runs: &[String],
     ) {
         let Some(host) = self.host() else {
@@ -21,8 +24,8 @@ impl Instance {
         };
         let person = host.viewer().0.clone();
         let runtime = host.runtime();
-        for (resource, mark) in marks {
-            runtime.set_seen(&person, &resource, mark);
+        for (who, resource, mark) in marks {
+            runtime.set_seen(&who, &resource, mark);
         }
         runtime.set_seen_runs(&person, runs);
     }

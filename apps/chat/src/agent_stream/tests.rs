@@ -277,8 +277,6 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
                 app: None,
                 did: Some("Read source".into()),
                 about: Some("Evidence".into()),
-                route: None,
-                why: None,
                 trace: vec![crate::record::StepUpdate {
                     id: "step".into(),
                     sequence: 0,
@@ -339,7 +337,7 @@ fn rendering_discloses_only_provider_reasoning_and_preserves_public_work_card() 
             .iter()
             .any(|block| block.text.contains("Provider summary"))
     );
-    app.expanded_reasoning.insert(message.id.clone());
+    app.expanded_agent.insert(message.id.clone());
     let expanded = app.agent_display_blocks(&message);
     assert!(
         expanded
@@ -368,7 +366,7 @@ fn stream_fixtures_are_durable_and_long_thread_uses_the_shared_scroll_service() 
         assert!(message.work.as_ref().unwrap().stream.is_some());
         app.with_chat(|surface| {
             assert_eq!(
-                surface.expanded_reasoning.contains(&message.id),
+                surface.expanded_agent.contains(&message.id),
                 matches!(scenario, "agent-reasoning" | "agent-long-thread")
             );
             if scenario == "agent-long-thread" {

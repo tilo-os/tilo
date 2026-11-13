@@ -12,8 +12,6 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -228,7 +226,7 @@ fn app(
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
-    common::wait_for(session, "the app to finish its calls", |session| {
+    crate::common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))

@@ -16,8 +16,6 @@ fn interaction_costs() {
         .expect("browser opens its capture");
 }
 
-/// What opening browser costs on the UI thread, warm (its record already on the
-/// profile): from the host preparing the launch to the first frame drawn.
 #[test]
 fn start_cost() {
     ui::framework::testing::perf::start::<browser::BrowserShell>(8)

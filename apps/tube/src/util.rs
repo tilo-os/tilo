@@ -1,15 +1,10 @@
-//! Small pure helpers: human-readable number and duration formatting.
-//!
-//! None of this touches the CRDT or the toolkit — it's leaf logic, so it
-//! lives on its own and is unit-tested in isolation.
+//! Small pure helpers: human-readable number and duration formatting. None of this touches the CRDT
+//! or the toolkit — it's leaf logic, so it lives on its own and is unit-tested in isolation.
 
-/// Format a view/subscriber count the way every video site does:
-/// `1.2M`, `874K`, `12K`, `342`.
 pub fn human_count(n: u64) -> String {
     ui::format::compact_count(n)
 }
 
-/// `views` with the trailing noun, e.g. `1.2M views`.
 pub fn human_views(n: u64) -> String {
     crate::i18n::t_args(
         "tube-views",
@@ -20,9 +15,6 @@ pub fn human_views(n: u64) -> String {
     )
 }
 
-/// The height a quality choice allows (`"480p"` is `Some(480)`), or `None`
-/// for `"auto"` and anything that is not a height: then the best available
-/// stream is the answer.
 pub fn quality_height(quality: &str) -> Option<u32> {
     quality
         .trim()
@@ -31,10 +23,7 @@ pub fn quality_height(quality: &str) -> Option<u32> {
         .filter(|height: &u32| *height > 0)
 }
 
-/// Seconds → `mm:ss` always two-field, used by the scrubber time labels.
 pub fn clock(secs: f64) -> String {
-    // Clamped non-negative immediately above; truncating the fractional
-    // second is intended for a `mm:ss` display label.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -53,7 +42,6 @@ mod tests {
         assert_eq!(quality_height("720p"), Some(720));
         assert_eq!(quality_height("1080p"), Some(1080));
         assert_eq!(quality_height("480p"), Some(480));
-        // "auto" asks for the best the source has, not for a height.
         assert_eq!(quality_height("auto"), None);
         assert_eq!(quality_height(""), None);
     }

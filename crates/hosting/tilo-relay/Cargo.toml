@@ -20,8 +20,8 @@ test-support = ["tilo-room-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm"]
-web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
+agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
+web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac"]
 
 [[bin]]
 name = "tilo-relay"
@@ -38,6 +38,10 @@ path = "src/enroll.rs"
 [[bin]]
 name = "tilo-home-peer-control"
 path = "src/home_peer_control/main.rs"
+
+[[bin]]
+name = "tilo-approve"
+path = "src/approve.rs"
 
 # The host / relay daemon.
 #
@@ -154,21 +158,27 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-# The pages' live plane: the WebTransport listener beside the HTTPS one, and
-# the relay that copies its sealed bytes (admission preface, moq-lite, and the
-# same relay the native carrier reaches over iroh).
+# The workspaces' live plane: the relay that copies its sealed bytes
+# (admission preface and moq-lite) for every device, a page included, which
+# reaches it over iroh.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
-# SHA-256 of the live listener's certificate, which a page pins.
+# SHA-256 of the development certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
-# Who-is-here lines may be summarised by a model provider the operator
-# configures, in the dialects shared with the model gateway.
-tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
-agent-provider-config = { path = "../../agent/provider-config", optional = true }
+# The fetch proxy a page's apps reach the web through, and the mail the door
+# sends over HTTPS.
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"], optional = true }
+# The door's mail outbox awaits a send in its own future.
+futures = { workspace = true, optional = true }
+# The keyed hash of a visitor's address the door's wait-list windows count.
+hmac = { workspace = true, optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # The workspaces' shells a host serving their records runs: ush's own
 # commands here, Linux programs in the workspace's hosted VM.
 ush = { path = "../../runtime/ush", optional = true }
 legacy-vm = { path = "../../runtime/legacy-vm", optional = true }
+# What the host's account standing is read from: its plans file and the
+# ledger of the Browser page actions this host ran for it.
+tilo-host-account = { path = "../tilo-host-account", optional = true }
 # Who may close, move or rename what is on a room's shared desktop, and the
 # strips a persistent room's shared desktop starts with.
 tilo-desktop-model = { path = "../../session/desktop-model" }
@@ -190,9 +200,11 @@ tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional 
 # The room's default record id, the one members' first windows open.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer", optional = true }
+tilo-session-client = { path = "../../session/client", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The host keeps its workspaces' content in directories, one per workspace.
+tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
@@ -213,6 +225,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
+# A workspace's files as the record that carries them: the relay reads a
+# governed workspace's tree to learn which content its files are made of.
+fs-protocol = { path = "../../system/fs-protocol" }
 # The scope of a room's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
@@ -223,8 +238,10 @@ collab-types = { path = "../../collab/collab-types" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# The room host every device runs, which the relay embeds.
-tilo-room-host = { path = "../tilo-room-host" }
+# The room host every device runs, which the relay embeds. Every relay build
+# follows the sealed records of the workspaces it governs and opens them with
+# the channels' keys it holds there, whether or not it serves pages.
+tilo-room-host = { path = "../tilo-room-host", features = ["web"] }
 # Retained-store primitives the workspace store keeps its retained data with.
 # Owners pre-admit people by the SHA-256 of a token someone else hands them.
 sha2.workspace = true
@@ -247,12 +264,18 @@ uuid = { workspace = true, features = ["js"] }
 # The TLS tests write a PEM pair and read it back.
 rcgen.workspace = true
 # The room host's fixtures: a certified test host and the devices around it.
-tilo-room-host = { path = "../tilo-room-host", features = ["test-support"] }
+# The tests author a room's record through the host's app plane
+# (`author_room_record`), which the `agents` feature carries: asking for it here
+# keeps them building on their own, rather than only when another crate in the
+# same build turns it on.
+tilo-room-host = { path = "../tilo-room-host", features = ["test-support", "agents"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# Text a test lays out uses the pinned catalog, never the fonts the machine
+# running it has installed.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
@@ -271,6 +294,9 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
 test-http = { path = "../../dev/test-http" }
+# The packet relay on this machine's loopback these tests run their hosts and devices on, and
+# the keys no two runs share: no test reaches a relay or directory out on the internet.
+test-relay = { path = "../../dev/test-relay" }
 
 [[test]]
 name = "it"
@@ -288,6 +314,20 @@ path = "tests/held_memory.rs"
 # An example, not a binary, so relay images that build `--bins` leave it out.
 [[example]]
 name = "relay_load"
+test = true
+
+# A one-off: moves a host's content into one store per workspace at the
+# upgrade that gave each workspace its own.
+[[example]]
+name = "move_relay_content"
+required-features = ["web"]
+test = true
+
+# A one-off: repairs a record whose history holds a writer's sequence twice,
+# keeping what both of its branches wrote.
+[[example]]
+name = "repair_record_sequences"
+required-features = ["agents"]
 test = true
 
 [lints]

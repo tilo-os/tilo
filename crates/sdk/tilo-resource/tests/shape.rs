@@ -22,7 +22,7 @@ pub struct Meta {
     pub by: String,
 }
 
-#[resource(kind = "test.board", label = "Board")]
+#[resource(kind = "test.board", catalogue = "tests/locales")]
 impl Board {
     /// Rename the board.
     #[action]

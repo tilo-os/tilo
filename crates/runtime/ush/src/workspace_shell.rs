@@ -1,33 +1,25 @@
-//! A hosted workspace's shell, run on the workspace's host.
+//! A hosted workspace's shell, run on the workspace's host: one shell per Terminal session,
+//! running a command line the way a device's session runs what is typed at its prompt.
 //!
-//! A workspace whose host serves it (tilo.sh) has no device of the person's
-//! running its Terminal sessions: its shell lives with the workspace, beside
-//! the host's hosted-VM service. [`WorkspaceShells`] keeps one shell per
-//! Terminal session there and runs a command line in it, the way a device's
-//! Terminal session runs what is typed at its prompt:
+//! ush's own commands (`ls`, `cat`, `grep`, `echo`) run in-process on the workspace's
+//! directory and cost nothing; the file-changing ones are the environment's file actions,
+//! checked against its one grant and keeping what they replace; any other program (`cargo`,
+//! `npm`, `python`) runs in the workspace's jailed VM through [`HostedPrograms`], metered
+//! per second, and a host that runs no VMs says which tier the program needs.
 //!
-//! - ush's own commands (`ls`, `cat`, `grep`, `echo`, …) run in-process, on
-//!   the workspace's own directory on the host, and cost nothing;
-//! - the file-changing ones (`cp`, `mv`, `rm`, a `>` redirect) are the
-//!   environment's file actions, checked against its one grant (the
-//!   workspace's directory) and carried out keeping what they replace;
-//! - any other program (`cargo`, `npm`, `python`) runs in the workspace's own
-//!   jailed VM through [`HostedPrograms`], metered per second, with the
-//!   workspace's directory shared at the same path. A host that runs no VMs
-//!   runs none, and the shell says which tier the program needs.
-//!
-//! A session's shell keeps its working directory and variables from one
-//! command to the next. What a command printed comes back whole (standard
-//! output and error, in the order written), up to [`MAX_OUTPUT`], with how it
-//! ended and, when the host refused it a VM, the host's typed refusal: the
-//! words ush already gives an agent, and the steps that let it through.
+//! A shell keeps its working directory and variables between commands. Output comes back
+//! whole and in order up to [`MAX_OUTPUT`], with how the command ended and, when the host
+//! refused it a VM, the host's typed refusal. A caller passing [`Seen`] is shown output as it
+//! grows, and [`Stopping`] ends a command as Ctrl+C does, in the shell and in the VM.
 
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
+use tilo_actions::remote::environment_runs::RunOutput;
 use tilo_actions::remote::host_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
@@ -38,48 +30,40 @@ use crate::file_actions::{FileAction, Recoverable};
 use crate::hosted_vm::{HostedPrograms, HostedTarget, shares_of};
 use crate::policy::Policy;
 
-/// The most a run's output keeps; past it the newest bytes are dropped and
-/// the run says it was cut.
 pub const MAX_OUTPUT: usize = 1 << 20;
 
-/// What the workspace's VM is called on its host: one per workspace.
 const ENVIRONMENT: &str = "default";
 
-/// How one command line went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellRun {
-    /// The command line, as run.
     pub command: String,
-    /// The directory it ran in.
     pub cwd: String,
     /// Its exit status: 126 when the host refused what it needed.
     pub exit: i32,
-    /// What it printed, standard output and error as written.
     pub output: Vec<u8>,
-    /// It printed more than [`MAX_OUTPUT`].
     pub truncated: bool,
+    pub cancelled: bool,
     pub started_ms: i64,
     pub ended_ms: i64,
     /// Why the host would not run a program it needed, typed.
     pub refusal: Option<Refusal>,
 }
 
-/// The shells of the workspaces one host serves.
 pub struct WorkspaceShells {
     /// Each workspace's content and kept files, and its directory unless
     /// [`Self::with_files`] says where it is, below here.
     state: PathBuf,
     /// Where each workspace's files are, when not below `state`.
     files_of: Option<Box<FilesOf>>,
-    /// Where Linux programs run, when this host runs them.
     vms: Option<HostedTarget>,
+    /// The hosted-VM service the workspaces' Browser starts on, when it is
+    /// not the one the environment names.
+    browsers: Option<PathBuf>,
     sessions: Mutex<HashMap<(String, String), Shared>>,
 }
 
-/// Where a workspace's files are on this host.
 type FilesOf = dyn Fn(&str) -> PathBuf + Send + Sync;
 
-/// Who pays for a workspace's VM, and its size, when the one asking says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payer {
     pub account: String,
@@ -88,12 +72,17 @@ pub struct Payer {
 
 /// What a caller is shown of a command while it runs: everything it printed
 /// so far, each time that grew.
-pub type Seen<'a> = &'a (dyn Fn(&[u8]) + Sync);
+pub type Seen<'a> = &'a (dyn Fn(&RunOutput) + Sync);
 
-/// How often a running command's output is looked at for [`Seen`].
+/// Whether the caller asked the command to stop: a person's Ctrl+C, or an
+/// agent's cancel. Looked at between the command's own steps, so a loop, a
+/// wait or a running program ends within a fraction of a second.
+pub type Stopping<'a> = &'a (dyn Fn() -> bool + Sync);
+
 const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// One session's shell, which its runs take turns in.
+const STOP_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
+
 type Shared = Arc<Mutex<Session>>;
 
 struct Session {
@@ -102,23 +91,21 @@ struct Session {
     captured: ush_shell::io::Captured,
     notices: ush_shell::io::Captured,
     refused: Arc<Mutex<Option<Refusal>>>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl WorkspaceShells {
-    /// Shells keeping each workspace's files under `state`, running Linux
-    /// programs in `vms` when given.
     #[must_use]
     pub fn new(state: impl Into<PathBuf>, vms: Option<HostedTarget>) -> Self {
         Self {
             state: state.into(),
             files_of: None,
             vms,
+            browsers: None,
             sessions: Mutex::new(HashMap::new()),
         }
     }
 
-    /// The same shells, each workspace's working in the directory `files_of`
-    /// names: its files as this host holds them, a member's synced replica.
     #[must_use]
     pub fn with_files(
         mut self,
@@ -128,20 +115,40 @@ impl WorkspaceShells {
         self
     }
 
-    /// Shells under `state`, running Linux programs in the VMs the host's
-    /// environment names ([`HostedTarget::from_env`]).
     #[must_use]
     pub fn from_env(state: impl Into<PathBuf>) -> Self {
         Self::new(state, HostedTarget::from_env())
     }
 
-    /// Whether this host runs Linux programs in VMs.
     #[must_use]
     pub fn runs_programs(&self) -> bool {
         self.vms.is_some()
     }
 
-    /// The directory `workspace`'s shells work in: its files on this host.
+    /// The same shells, whose workspaces' Browser starts on the hosted-VM
+    /// service at `socket` (the one the environment names, unless a host
+    /// names it another way).
+    #[must_use]
+    pub fn with_browsers_on(mut self, socket: Option<PathBuf>) -> Self {
+        self.browsers = socket;
+        self
+    }
+
+    #[must_use]
+    pub fn hosted_socket(&self) -> Option<PathBuf> {
+        self.browsers
+            .clone()
+            .or_else(|| self.vms.as_ref().map(|target| target.socket.clone()))
+    }
+
+    #[must_use]
+    pub fn hosted_size(&self) -> legacy_vm::hosted::size::VmSize {
+        self.vms
+            .as_ref()
+            .map(|target| target.size)
+            .unwrap_or_default()
+    }
+
     #[must_use]
     pub fn files(&self, workspace: &str) -> PathBuf {
         self.files_of.as_ref().map_or_else(
@@ -164,13 +171,13 @@ impl WorkspaceShells {
         command: &str,
         agent: bool,
     ) -> io::Result<ShellRun> {
-        self.run_for(workspace, session, command, agent, None, None)
+        self.run_for(workspace, session, command, agent, None, None, None)
     }
 
     /// [`Self::run`], its VM paid for by `payer` rather than this host's
     /// own account when given (the first run of a workspace's session
-    /// decides it), and `seen` shown what the command printed so far while
-    /// it runs.
+    /// decides it), ended when `stopping` says so, and `seen` shown what the
+    /// command printed so far while it runs.
     ///
     /// # Errors
     ///
@@ -182,11 +189,12 @@ impl WorkspaceShells {
         command: &str,
         agent: bool,
         payer: Option<&Payer>,
+        stopping: Option<Stopping<'_>>,
         seen: Option<Seen<'_>>,
     ) -> io::Result<ShellRun> {
         let shell = self.session(workspace, session, payer)?;
         let mut session = shell.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(session.run(command, agent, seen))
+        Ok(session.run(command, agent, stopping, seen))
     }
 
     fn session(&self, workspace: &str, session: &str, payer: Option<&Payer>) -> io::Result<Shared> {
@@ -244,11 +252,14 @@ impl WorkspaceShells {
             None => Arc::new(NoPrograms),
         };
         let (notices_out, notices) = Output::buffer();
+        let stopped = Arc::new(AtomicBool::new(false));
         let host = TiloHost::new(
             environment,
             Arc::new(NativeFiles),
             programs,
-            Arc::new(HostPlace),
+            Arc::new(HostPlace {
+                stopped: Arc::clone(&stopped),
+            }),
             notices_out,
         );
         let (output, captured) = Output::buffer();
@@ -269,14 +280,22 @@ impl WorkspaceShells {
             captured,
             notices,
             refused,
+            stopped,
         })
     }
 }
 
 impl Session {
-    fn run(&mut self, command: &str, agent: bool, seen: Option<Seen<'_>>) -> ShellRun {
+    fn run(
+        &mut self,
+        command: &str,
+        agent: bool,
+        stopping: Option<Stopping<'_>>,
+        seen: Option<Seen<'_>>,
+    ) -> ShellRun {
         let cwd = self.shell.cwd().to_string_lossy().into_owned();
         *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.stopped.store(false, Ordering::SeqCst);
         self.shell.set_stdio(Stdio {
             stdin: ush_shell::Input::null(),
             stdout: self.output.clone(),
@@ -289,31 +308,14 @@ impl Session {
             id: format!("{started_ms:x}"),
             label: command.to_owned(),
         }));
-        let exit = match seen {
-            Some(seen) => {
-                let printed = self.captured.clone();
-                let done = std::sync::atomic::AtomicBool::new(false);
-                std::thread::scope(|scope| {
-                    scope.spawn(|| {
-                        let mut shown = 0;
-                        while !done.load(std::sync::atomic::Ordering::Acquire) {
-                            std::thread::sleep(SEEN_EVERY);
-                            let now = printed.peek();
-                            if now.len() != shown {
-                                shown = now.len();
-                                seen(&now);
-                            }
-                        }
-                    });
-                    let exit = self.shell.run_script(command);
-                    done.store(true, std::sync::atomic::Ordering::Release);
-                    exit
-                })
-            }
-            None => self.shell.run_script(command),
+        let exit = if stopping.is_none() && seen.is_none() {
+            self.shell.run_script(command)
+        } else {
+            self.run_watched(command, stopping, seen)
         };
         self.shell.set_run(None);
         let ended_ms = now_ms();
+        let cancelled = self.stopped.swap(false, Ordering::SeqCst);
         let mut output = self.captured.take();
         output.extend(self.notices.take());
         let truncated = output.len() > MAX_OUTPUT;
@@ -324,6 +326,7 @@ impl Session {
             exit,
             output,
             truncated,
+            cancelled,
             started_ms,
             ended_ms,
             refusal: self
@@ -333,9 +336,44 @@ impl Session {
                 .take(),
         }
     }
+
+    fn run_watched(
+        &mut self,
+        command: &str,
+        stopping: Option<Stopping<'_>>,
+        seen: Option<Seen<'_>>,
+    ) -> i32 {
+        let stopped = Arc::clone(&self.stopped);
+        let printed = self.captured.clone();
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut shown = 0;
+                let mut shown_at = std::time::Instant::now();
+                while !done.load(Ordering::Acquire) {
+                    std::thread::sleep(STOP_EVERY);
+                    if stopping.is_some_and(|stopping| stopping()) {
+                        stopped.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(seen) = seen
+                        && shown_at.elapsed() >= SEEN_EVERY
+                    {
+                        let now = printed.peek();
+                        if now.len() != shown {
+                            shown = now.len();
+                            shown_at = std::time::Instant::now();
+                            seen(&RunOutput::of(&now));
+                        }
+                    }
+                }
+            });
+            let exit = self.shell.run_script(command);
+            done.store(true, Ordering::Release);
+            exit
+        })
+    }
 }
 
-/// A workspace id as one directory name.
 fn safe(workspace: &str) -> String {
     workspace
         .chars()
@@ -353,8 +391,6 @@ fn now_ms() -> i64 {
     i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
-/// The workspace's directory as the shell's environment: one grant, and its
-/// file actions carried out there, keeping what they replace.
 struct Files {
     grants: Vec<CapOverride>,
     kept: Recoverable,
@@ -382,10 +418,19 @@ impl Environment for Files {
     }
 }
 
-/// What the host offers the shell besides files and programs: its clock.
-struct HostPlace;
+struct HostPlace {
+    stopped: Arc<AtomicBool>,
+}
 
 impl Place for HostPlace {
+    fn interrupted(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    fn clear_interrupt(&self) {
+        self.stopped.store(false, Ordering::SeqCst);
+    }
+
     fn now(&self) -> i64 {
         i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX)
     }
@@ -395,7 +440,16 @@ impl Place for HostPlace {
     }
 
     fn sleep(&self, millis: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(millis));
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(millis))
+            .unwrap_or_else(std::time::Instant::now);
+        while !self.interrupted() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            std::thread::sleep(left.min(STOP_EVERY));
+        }
     }
 
     fn hostname(&self) -> String {

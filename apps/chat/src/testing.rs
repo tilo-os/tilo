@@ -243,7 +243,7 @@ pub(crate) fn call_row(channel: &str) -> String {
 }
 
 pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
-    use crate::model::{AgentRoute, AgentStepOutcome, AgentWorkState};
+    use crate::model::{AgentStepOutcome, AgentWorkState};
 
     let (state, app, did, about) = match &work.state {
         AgentWorkState::Taken => ("taken", None, None, None),
@@ -270,17 +270,6 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::Work
         app,
         did,
         about,
-        route: work.reasoning.as_ref().map(|reasoning| {
-            match reasoning.route {
-                AgentRoute::Model => "model",
-                AgentRoute::Floor => "floor",
-            }
-            .to_owned()
-        }),
-        why: work
-            .reasoning
-            .as_ref()
-            .map(|reasoning| reasoning.why.clone()),
         trace: work
             .trace
             .iter()

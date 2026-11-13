@@ -2,7 +2,6 @@
 //! `${x#pat}` and pathname expansion read them. A quoted character is
 //! always itself.
 
-/// One character of a pattern's text, and whether it was quoted.
 pub type PatChar = (char, bool);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,14 +22,12 @@ enum Tok {
     },
 }
 
-/// A compiled pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     toks: Vec<Tok>,
 }
 
 impl Pattern {
-    /// Compile `text`. Backslash escapes the next unquoted character.
     pub fn new(text: &[PatChar]) -> Self {
         let mut toks = Vec::new();
         let mut i = 0_usize;
@@ -68,19 +65,16 @@ impl Pattern {
         Self { toks }
     }
 
-    /// A pattern of unquoted text.
     #[cfg(test)]
     pub fn parse(text: &str) -> Self {
         let chars: Vec<PatChar> = text.chars().map(|c| (c, false)).collect();
         Self::new(&chars)
     }
 
-    /// Whether the pattern has anything but literal characters.
     pub fn is_literal(&self) -> bool {
         self.toks.iter().all(|t| matches!(t, Tok::Lit(_)))
     }
 
-    /// The literal text, when [`Self::is_literal`].
     pub fn literal(&self) -> String {
         self.toks
             .iter()
@@ -97,13 +91,11 @@ impl Pattern {
         self.toks.first() == Some(&Tok::Lit('.'))
     }
 
-    /// Whether all of `s` matches.
     pub fn matches(&self, s: &str) -> bool {
         let chars: Vec<char> = s.chars().collect();
         matches_at(&self.toks, &chars)
     }
 
-    /// Whether all of `chars` matches.
     pub fn matches_chars(&self, chars: &[char]) -> bool {
         matches_at(&self.toks, chars)
     }

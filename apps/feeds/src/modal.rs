@@ -21,18 +21,15 @@ use ui::tokens::TextRole;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Text, TextInput, TextInputKind, Widget};
 
 use crate::model::Id;
+use ui::widget::DrawChild;
 
 /// What a feeds dialog is asking for, so the submit handler knows which
 /// mutation to run against the store and the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModalIntent {
-    /// Add a new subscription from the typed address.
     AddSubscription,
-    /// Create a named folder in the sidebar.
     AddFolder,
-    /// Rename an existing feed.
     RenameFeed { feed_id: Id },
-    /// Replace the selected article's comma-separated tags.
     EditArticleTags { article_id: Id },
 }
 
@@ -60,7 +57,6 @@ pub struct ModalBody {
 }
 
 impl ModalBody {
-    /// A sentence of guidance over a focused field announced as `label`.
     pub fn input(
         caption: &str,
         label: &str,
@@ -92,12 +88,10 @@ impl ModalBody {
         Text::new(text).with_role(TextRole::Body).dimmed()
     }
 
-    /// The field's value (trimmed by the caller); empty for a confirmation.
     pub fn value(&self) -> &str {
         self.input.as_deref().map_or("", TextInput::value)
     }
 
-    /// Put `s` into the field, caret at its end.
     pub fn set_value(&mut self, s: &str) {
         if let Some(input) = &mut self.input {
             input.set_text(s);
@@ -162,9 +156,10 @@ impl Widget for ModalBody {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.caption.draw(scene, transform, text, theme, presence);
+        self.caption
+            .draw_child(scene, transform, text, theme, presence);
         if let Some(input) = &mut self.input {
-            input.draw(scene, transform, text, theme, presence);
+            input.draw_child(scene, transform, text, theme, presence);
         }
     }
 

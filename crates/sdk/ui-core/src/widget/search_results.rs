@@ -161,11 +161,12 @@ impl FloatingRow for Row {
             ),
             Self::Loading(_) => {
                 let style = ctx.theme.text(TextRole::Caption);
-                let (_, h) = ctx.text.measure_style("Searching…", None, &style);
+                let searching = crate::i18n::widget_format("widget-searching", &[]);
+                let (_, h) = ctx.text.measure_style(&searching, None, &style);
                 let y = crate::widget::text::centered_text_top(row.y0, row.height(), f64::from(h));
                 ctx.text.draw_style(
                     ctx.scene,
-                    "Searching…",
+                    &searching,
                     ctx.theme.tokens.colors.text_tertiary,
                     ctx.transform
                         .pre_translate(Vec2::new(row.x0 + ROW_TEXT_X, y)),
@@ -276,6 +277,14 @@ impl RowBands {
 /// `n` lines as a multiplier of a line's height.
 fn line_count(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// The number a group's heading shows, when the number is worth reading
+/// ([`super::section::heading_count`]): a group of one row saying "1" restates the row's own
+/// presence; a group of several says how many, and a group the list cut short says how many it
+/// left out.
+fn heading_count(group: &SearchGroup) -> Option<usize> {
+    super::section::heading_count(group.results.len(), group.total)
 }
 
 /// A group's heading: its label on the band's bottom edge, and its count at
@@ -744,11 +753,7 @@ impl SearchResultsView {
                 heads.push(if group.section.is_some() {
                     (group.kind.clone(), None, HeaderLevel::Subgroup)
                 } else {
-                    (
-                        group.kind.clone(),
-                        Some(group.total.unwrap_or(group.results.len())),
-                        HeaderLevel::Group,
-                    )
+                    (group.kind.clone(), heading_count(group), HeaderLevel::Group)
                 });
             }
             let headed = !heads.is_empty();
@@ -1959,13 +1964,13 @@ impl Widget for SearchResultsView {
         if self.loading && !self.flat.is_empty() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Searching…")
+                    .with_name(crate::i18n::widget_format("widget-searching", &[]))
                     .with_live(crate::a11y::Politeness::Polite),
             );
         }
         Some(
             AccessNode::new(Role::List)
-                .with_name("Search results")
+                .with_name(crate::i18n::widget_format("widget-search-results", &[]))
                 .with_children(children),
         )
     }
@@ -2102,6 +2107,47 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    /// The counts the headings draw, in order.
+    fn heading_counts(view: &SearchResultsView) -> Vec<Option<usize>> {
+        view.list
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Header { count, .. } => Some(*count),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A count on a heading is news: a group of one row saying "1" restates the row standing
+    /// under it, so the heading names the group alone; a group of several says how many, and a
+    /// group the card cut short says how many it has in all.
+    #[test]
+    fn a_group_heading_counts_only_where_the_number_says_something() {
+        let mut view = SearchResultsView::new();
+        view.set_results(vec![SearchResult::new("Web", "Tilo", "w:1")]);
+        assert_eq!(heading_counts(&view), vec![None], "one row counts nothing");
+
+        view.set_results(vec![
+            SearchResult::new("Mail", "Invoice", "m:1"),
+            SearchResult::new("Mail", "Receipt", "m:2"),
+        ]);
+        assert_eq!(heading_counts(&view), vec![Some(2)], "two rows say so");
+
+        view.set_groups(vec![SearchGroup {
+            total: Some(46),
+            ..SearchGroup::new("Files", vec![SearchResult::new("Files", "plan.pdf", "f:1")])
+        }]);
+        assert_eq!(
+            heading_counts(&view),
+            vec![Some(46)],
+            "a group the card cut short says how many it has"
+        );
+
+        view.set_groups(vec![]);
+        assert!(heading_counts(&view).is_empty());
     }
 
     fn view_from(query: &str) -> SearchResultsView {

@@ -1,9 +1,6 @@
-//! A clean mount stays absent between preparation and an acknowledged metadata commit.
-//! Preparation expires, but begin-commit durably pins the hold before acknowledging
-//! the writer. Neither expiry, account watchers nor restart may release a pinned
-//! hold. Completion verifies the saved mode; explicit recovery takes the writer
-//! fence before restoring Sync or consuming an already saved Import change.
-//! The service loop owns holds; stopping a FUSE process never blocks that loop.
+//! A clean mount stays absent between preparation and an acknowledged metadata
+//! commit. Preparation expires, but a pinned hold survives expiry, watchers and
+//! restart. The service loop owns holds; stopping a FUSE process never blocks it.
 
 use super::{
     AccountId, AccountStore, CloudResponse, CloudService, Duration, Instant, MountReply, Sender,
@@ -52,7 +49,6 @@ fn hold_deadline() -> Instant {
 }
 
 fn generation(account: &accounts::Account) -> String {
-    // Account config is explicitly public. The vault and handoff are never read.
     let bytes = serde_json::to_vec(account).unwrap_or_default();
     blake3::hash(&bytes).to_hex().to_string()
 }
@@ -204,8 +200,7 @@ impl CloudService {
         }) {
             self.complete_import(account, &token)
         } else {
-            // Explicit recovery owns the writer fence. Even an external config
-            // edit can now be reconciled safely: the old mount was clean and
+            // Explicit recovery owns the writer fence. The old mount was clean, and
             // its cache and upload queue are never deleted here.
             if let Err(error) = self.save_import_commits(Some(account)) {
                 return CloudResponse::Error(error);
@@ -314,7 +309,6 @@ impl CloudService {
                 .stop()
                 .and_then(|()| fs::remove_dir(directory))
                 .map_err(|error| error.to_string());
-            // Only remove the empty mount point; cache, queue and user data remain.
             let _ = signals.send(Signal::ImportStopped(id, result));
         });
     }
@@ -383,7 +377,6 @@ impl CloudService {
         let mut stopping = Vec::new();
         for (id, hold) in &mut self.import_holds {
             if hold.phase == Phase::Committing {
-                // Never infer completion or remount from a timer or watcher.
                 continue;
             }
             let current = store.get(&AccountId::from(id.as_str()));
@@ -415,9 +408,9 @@ impl CloudService {
     }
 
     pub(super) fn expire_import_holds(&mut self) {
-        // A vanished Settings writer is an actionable error, not permission to
-        // remount. The account row exposes explicit recovery even before the
-        // daemon restarts; a surviving writer keeps its fence across restart.
+        // A vanished Settings writer is an error, not permission to remount: the
+        // account row exposes explicit recovery, and a surviving writer keeps its
+        // fence across restart.
         if let Some(root) = self
             .config
             .config_root

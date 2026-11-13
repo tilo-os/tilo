@@ -172,7 +172,7 @@ pub fn admit_workspace_changes(
             // Changes waiting in the document that the batch shows to be of
             // another history go before the batch is applied.
             let pruned = super::base::pruned(input.before, replaced);
-            let mut candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
+            let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
                 .map_err(WorkspaceRefusal::Malformed)?;
             // One who only reads the workspace records only their own receipts
             // and gives only their own shares.
@@ -197,25 +197,22 @@ pub fn admit_workspace_changes(
                 .map_err(membership)?;
                 true
             } else if !governs && !super::governance_unchanged(input.before, &candidate) {
-                membership_authorized(&input, &changes)?;
-                true
+                // A change to the workspace's governance is an operation's: a
+                // batch that changes it without one changes nothing.
+                return Err(WorkspaceRefusal::GovernanceWriter);
             } else {
                 false
             };
             let media = checked(&input, &candidate, governed)?;
-            crate::members::settle(&mut candidate, input.workspace)
-                .map_err(WorkspaceRefusal::Malformed)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 media,
                 rebased: false,
             })
         }
-        super::base::Lineage::Newer(changes) if governs => {
-            let mut candidate =
-                super::candidate(None, &changes).map_err(WorkspaceRefusal::Malformed)?;
-            crate::members::settle(&mut candidate, input.workspace)
-                .map_err(WorkspaceRefusal::Malformed)?;
+        super::base::Lineage::Newer { base, changes } if governs => {
+            let candidate =
+                super::candidate_on(*base, &changes).map_err(WorkspaceRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
             let media = checked(&input, &candidate, false)?;
@@ -225,33 +222,8 @@ pub fn admit_workspace_changes(
                 rebased: true,
             })
         }
-        super::base::Lineage::Newer(_) => Err(WorkspaceRefusal::GovernanceWriter),
+        super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter),
     }
-}
-
-/// A member's batch that changes governance, judged as a membership change
-/// where its writer made it ([`super::membership`]). Returns whether it was
-/// admitted as one.
-fn membership_authorized(
-    input: &WorkspaceAdmission<'_>,
-    changes: &[Vec<u8>],
-) -> Result<bool, WorkspaceRefusal> {
-    let (Some(before), Standing::Member { person, foreign }) =
-        (input.before, input.source.standing)
-    else {
-        return Err(WorkspaceRefusal::GovernanceWriter);
-    };
-    let (at, after) = super::membership::position(before, changes).map_err(membership)?;
-    super::membership::authorize(
-        input.workspace,
-        (&person, input.source.key, foreign),
-        &at,
-        changes,
-        &after,
-        input.now_ns,
-    )
-    .map_err(membership)?;
-    Ok(true)
 }
 
 fn membership(refusal: super::membership::MembershipRefusal) -> WorkspaceRefusal {
@@ -392,13 +364,13 @@ fn may_write(
         return Ok(true);
     };
     let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
-    let policy = tilo_desktop_model::projection::workspace_policy_of(before, workspace);
+    let policy = crate::workspace::policy_of(before, workspace);
     let person = hex::encode(person);
     if policy.active_role(&person).is_none() {
         return Err(WorkspaceRefusal::WriteForbidden);
     }
     let bound = tilo_action_policy::roles::foreign_device_bound();
-    let authority = policy.person_on_device(&person, foreign, &bound);
+    let authority = policy.person_on_device(&person, foreign, bound);
     let cx = Context::at_secs(now_ns / 1_000_000_000);
     let allows = |kind| {
         authority

@@ -1,29 +1,14 @@
-//! Whether a slot's next generation can read the system-interface
-//! declaration it ends up with.
-//!
-//! `/usr/share/tilo/system-interfaces.toml` is read by every component of
-//! the matched session set ([`USERSPACE_COMPONENTS`]): the session, the
-//! launcher, `tilo-install`, the app host and the runtime services judge
-//! apps by it. The file a slot sees is the one its layers ship (only
-//! `tilo-session` does, `os/components.toml`), else the image's. A
-//! generation in which one of those components was built for another
-//! declaration than the one it reads is refused before anything is
-//! activated: on 2026-10-22 a desktop layer from main shipped a
-//! one-version-per-interface declaration over an image whose app host and
-//! `ush` read lists of versions, and the next session start left the app
-//! host unable to read it.
-//!
-//! A component speaks the declaration of the tree it was built from
-//! ([`Provenance::interfaces`]); the image's own components speak the
-//! image's declaration, which the early-boot unit records before any layer
-//! is merged ([`crate::image::recorded_declaration`]).
-//!
-//! The runtime services that run VM-wide ([`VM_RUNTIME_SERVICES`], tilo-fs)
-//! serve apps of every slot, so they are judged too, by the runtime version
-//! alone: a slot's swap is refused when the `vm` slot's fs (or the image's)
-//! serves another runtime version than the slot's declaration, and an fs
-//! swap is refused when it would leave any slot reading another one
-//! ([`vm_conflict`]).
+//! Whether a slot's next generation can read the system-interface declaration it
+//! ends up with. `/usr/share/tilo/system-interfaces.toml` is read by every
+//! component of the matched session set — the session, the launcher,
+//! `tilo-install`, the app host and the runtime services judge apps by it — and the
+//! file a slot sees is the one its layers ship (only `tilo-session` does), else the
+//! image's. A generation in which one of those components was built for another
+//! declaration than the one it reads is refused before anything is activated. A
+//! component speaks the declaration of the tree it was built from
+//! ([`Provenance::interfaces`]), and the image's own components speak the image's
+//! declaration, which the early-boot unit records before any layer merges. The
+//! VM-wide runtime services are judged too, by the runtime version alone.
 
 use std::collections::BTreeMap;
 
@@ -39,17 +24,16 @@ pub struct Member {
     pub ships: Option<Declaration>,
 }
 
-/// The runtime services apps reach that run VM-wide, outside any slot's
-/// session set: their components are `vm`-scope, swapped into the `vm` slot
-/// and shared by every slot. Each speaks the runtime interface alone, so it
-/// is judged by the [`RUNTIME`] version of the declaration a slot reads.
+/// The runtime services apps reach that run VM-wide, outside any slot's session set: their
+/// components are `vm`-scope and shared by every slot. Each speaks the runtime interface alone, so
+/// it is judged by the [`RUNTIME`] version of the declaration a slot reads.
 pub use tilo_vm_protocol::VM_RUNTIME_SERVICES;
 
 /// The interface every runtime service speaks to apps.
 pub use tilo_vm_protocol::RUNTIME;
 
-/// The declaration a slot of `members` reads and whose it is: the one layer
-/// that ships it, else the image's. `Err` when two layers ship it.
+/// The declaration a slot of `members` reads and whose it is: the one layer that ships it, else the
+/// image's. `Err` when two layers ship it.
 fn effective<'a>(
     image: Option<&'a Declaration>,
     members: &'a [Member],
@@ -81,8 +65,7 @@ fn speaks(member: &Member) -> Option<&BTreeMap<String, u32>> {
         .filter(|interfaces| !interfaces.is_empty())
 }
 
-/// Why the VM-wide runtime service `member` cannot serve a slot reading
-/// `served`, if it cannot.
+/// Why the VM-wide runtime service `member` cannot serve a slot reading `served`, if it cannot.
 fn service_problem(member: &Member, served: Option<&BTreeMap<String, u32>>) -> Option<String> {
     let Some(speaks) = speaks(member) else {
         return Some(format!(
@@ -107,11 +90,10 @@ fn service_problem(member: &Member, served: Option<&BTreeMap<String, u32>>) -> O
     }
 }
 
-/// `None` when every component of `members` (a slot's generation), every
-/// VM-wide runtime service in `vm_services` (the `vm` slot's) and every one
-/// the image still provides reads or serves the declaration the slot ends up
-/// with; otherwise what is wrong and what to swap together. `image` is the
-/// image's own declaration, `None` when no boot has recorded it.
+/// `None` when every component of `members`, every VM-wide runtime service in `vm_services` and
+/// every one the image still provides reads or serves the declaration the slot ends up with;
+/// otherwise what is wrong and what to swap together. `image` is the image's own declaration,
+/// `None` when no boot has recorded it.
 #[must_use]
 pub fn conflict(
     image: Option<&Declaration>,
@@ -199,10 +181,8 @@ pub fn conflict(
     ))
 }
 
-/// `None` when the VM-wide runtime services `vm_services` (the `vm` slot's
-/// next generation) serve every slot of `slots` (each slot's name and
-/// current generation) the runtime version the declaration it reads
-/// serves; otherwise which slots they would leave behind.
+/// `None` when the VM-wide runtime services `vm_services` serve every slot of `slots` the runtime
+/// version the declaration it reads serves; otherwise which slots they would leave behind.
 #[must_use]
 pub fn vm_conflict(
     image: Option<&Declaration>,
@@ -302,8 +282,7 @@ mod tests {
         }
     }
 
-    /// The image the user's laptop ran on 2026-10-22: built before
-    /// interfaces had one version each, its declaration lists versions.
+    /// An image built before interfaces had one version each: its declaration lists versions.
     fn list_format_image() -> Declaration {
         Declaration::parse("[interfaces]\nsystem = [1]\napp-host = [1]\nshell-ui = [1]\n")
     }

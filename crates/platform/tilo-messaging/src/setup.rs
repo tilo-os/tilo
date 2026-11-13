@@ -49,8 +49,8 @@ pub type LinkingFuture =
     Pin<Box<dyn Future<Output = Result<LinkedAccount, SendError>> + Send + 'static>>;
 pub trait SetupHost: Send + Sync {
     fn state(&self) -> AccountState;
-    /// Time until private presentation must be rechecked on the owning UI loop.
-    /// This schedules a frame; it never extends the provider's expiry.
+    /// Time until the private presentation must be rechecked on the owning UI loop.
+    /// It schedules a frame; the provider's expiry still decides.
     fn wake_after(&self) -> Option<std::time::Duration> {
         None
     }
@@ -58,7 +58,6 @@ pub trait SetupHost: Send + Sync {
     fn finish(&self, attempt: String) -> LinkingFuture;
     fn cancel(&self);
 }
-/// Lent by the native host to one person, service/account and link generation.
 #[derive(Clone)]
 pub struct SetupClient {
     principal: String,
@@ -117,8 +116,6 @@ impl SetupClient {
         }
         Ok(private)
     }
-    /// # Errors
-    /// Refuses a mismatched provider account or generation after completion.
     pub async fn finish(&self, attempt: String) -> Result<LinkedAccount, SendError> {
         if attempt.is_empty()
             || attempt.len() > 512

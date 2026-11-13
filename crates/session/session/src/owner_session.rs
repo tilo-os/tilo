@@ -21,7 +21,7 @@
 
 use std::time::Instant;
 
-use tilo_device_fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession};
+use crate::platform::fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession};
 
 use crate::Session;
 use tilo_compositor::Error;

@@ -33,10 +33,24 @@ pub(crate) fn apply_keyboard(
     keyboard: &tilo_compositor::KeyboardLayout,
 ) {
     compositor.set_keyboard_layout(keyboard);
-    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
-        &keyboard.layout,
-        &keyboard.variant,
-    ));
+    let keycaps = ui::keycaps::Keycaps::from_xkb(&keyboard.layout, &keyboard.variant);
+    ui::keycaps::set_active(keycaps);
+    // A chord on a mark is shown as the keys this layout presses for it, read from the keymap the
+    // chords are matched with.
+    ui::keycaps::set_typed_marks(
+        compositor
+            .typed_marks()
+            .into_iter()
+            .map(|typed| {
+                let key = ui::keycaps::TypedMark {
+                    key: keycaps.native_symbol(&typed.key_name, &typed.key_text),
+                    shift: typed.shift,
+                    alt_gr: typed.level3,
+                };
+                (typed.mark, key)
+            })
+            .collect(),
+    );
 }
 
 /// The operation type the session's own actions carry.
@@ -50,7 +64,7 @@ pub const SESSION_RESOURCE: &str = "session:screen";
 /// The resource of the night light.
 pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
 /// The resource of this device's clipboard, which the clipboard publishes itself:
-/// [`crate::mount::clipboard`].
+/// [`crate::clipboard`].
 pub const CLIPBOARD_RESOURCE: &str = "session:clipboard";
 
 /// What the session's resources ask of the compositor.

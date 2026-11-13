@@ -13,24 +13,25 @@
 )]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId};
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::environment_runs::{self, RunCommand};
+use tilo_actions::remote::environment_runs::{self, RunCommand, RunOutput};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest,
 };
+use tilo_agent_participant::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_relay::host::HostMode;
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
 use tilo_runtime::standalone::take_work;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on};
+use crate::common::{Hosted, TestUser, device_endpoint, host_on};
 
 /// The VM host the placer names, as the operator's `StatefulSet` calls it.
 const VM_HOST: &str = "tilo-vm-host-0";
@@ -80,8 +81,8 @@ fn host_address(hosted: &Hosted) -> String {
 }
 
 /// `device`'s address, as the relay reaches the member it asks.
-fn member_at(device: &TestDevice, address: &str) -> EndpointAddr {
-    let id = EndpointId::from_bytes(&device.device_pubkey()).unwrap();
+fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
+    let id = EndpointId::from_bytes(&device).unwrap();
     EndpointAddr::from_parts(
         id,
         std::net::ToSocketAddrs::to_socket_addrs(address)
@@ -116,8 +117,27 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
+/// A workspace whose VM host is a member device that takes its work, with the
+/// relay's placed shells asking it.
+struct Placed {
+    workspace: String,
+    shells: Arc<PlacedShells>,
+    /// The member device that runs the workspace's shells.
+    member: take_work::Member,
+    /// That member's device key.
+    member_device: [u8; 32],
+    /// Where that member is reached.
+    member_address: String,
+    /// How often the placer was asked.
+    asked: Arc<AtomicUsize>,
+    hosted: Hosted,
+    /// The member's profile, up for as long as the member is.
+    _profile: tempfile::TempDir,
+}
+
+/// Arrange a workspace with a VM host that takes its work, as the operator's
+/// fleet does.
+async fn placed() -> Arc<Placed> {
     let operator = TestUser::fresh("operator");
     let desk = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
@@ -140,8 +160,9 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     let member = take_work::Member::open(
         profile.path(),
         (vm_host.sk.clone(), vm_host.cert.clone()),
-        member_endpoint.clone(),
+        member_endpoint,
         take_work::Relay::new(&hex::encode(desk.device_pubkey()), &host_address(&hosted)).unwrap(),
+        None,
     )
     .unwrap();
 
@@ -164,23 +185,50 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         hosted.host.workspaces().plane(),
         hosted.router.endpoint().clone(),
     );
+    Arc::new(Placed {
+        workspace,
+        shells,
+        member,
+        member_device: vm_host.device_pubkey(),
+        member_address,
+        asked,
+        hosted,
+        _profile: profile,
+    })
+}
+
+/// Run `command` in `session` on the member, off this thread.
+async fn run(placed: &Arc<Placed>, session: &str, command: &str) -> Result<ShellRan, String> {
+    let (shells, workspace) = (Arc::clone(&placed.shells), placed.workspace.clone());
+    let (session, command) = (session.to_owned(), command.to_owned());
+    tokio::task::spawn_blocking(move || {
+        shells.run(&workspace, &session, &command, true, Watching::default())
+    })
+    .await
+    .unwrap()
+}
+
+/// Stop the host, once nothing else holds the arrangement.
+async fn stop(placed: Arc<Placed>) {
+    let Ok(placed) = Arc::try_unwrap(placed) else {
+        panic!("nothing else holds the arrangement");
+    };
+    placed.hosted.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
+    let placed = placed().await;
 
     // Nothing in this test admitted the member to the workspace: the relay's
     // first run is what makes it enter, and that run is answered.
-    let ran = {
-        let (shells, workspace) = (Arc::clone(&shells), workspace.clone());
-        tokio::task::spawn_blocking(move || {
-            shells.run(
-                &workspace,
-                "run:1",
-                "mkdir out && echo built > out/artifact && cat out/artifact",
-                true,
-            )
-        })
-        .await
-        .unwrap()
-        .unwrap()
-    };
+    let ran = run(
+        &placed,
+        "run:1",
+        "mkdir out && echo built > out/artifact && cat out/artifact",
+    )
+    .await
+    .unwrap();
     let output = String::from_utf8(ran.output).unwrap();
     assert_eq!(ran.exit, 0, "{output}");
     assert!(
@@ -191,25 +239,20 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     );
     assert!(output.ends_with("built\n"), "{output}");
     assert_eq!(
-        asked.load(Ordering::SeqCst),
+        placed.asked.load(Ordering::SeqCst),
         2,
         "asked again once there was room"
     );
     assert_eq!(
-        std::fs::read_to_string(member.files(&workspace).join("out/artifact")).unwrap(),
+        std::fs::read_to_string(placed.member.files(&placed.workspace).join("out/artifact"))
+            .unwrap(),
         "built\n",
         "the command worked on the VM host's own copy of the workspace's files"
     );
 
     // The session's shell lives on there: the next command starts where
     // the last one left off.
-    let again = {
-        let (shells, workspace) = (Arc::clone(&shells), workspace.clone());
-        tokio::task::spawn_blocking(move || shells.run(&workspace, "run:1", "cd out && pwd", true))
-            .await
-            .unwrap()
-            .unwrap()
-    };
+    let again = run(&placed, "run:1", "cd out && pwd").await.unwrap();
     let output = String::from_utf8(again.output).unwrap();
     assert!(output.trim_end().ends_with("/out"), "{output}");
 
@@ -220,18 +263,17 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     let asking = ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions));
     let member_device = asking.remote(
         &stranger_endpoint,
-        &member_at(&vm_host, &member_address),
-        &workspace,
+        &member_at(placed.member_device, &placed.member_address),
+        &placed.workspace,
     );
-    let answered = match member_device
+    let Ok(Some(answered)) = member_device
         .invoke(
             &Caller::local_app("tilo.relay"),
             run_request("run:2", "echo stranger > stranger.txt"),
         )
         .wait_timeout(Duration::from_secs(30))
-    {
-        Ok(Some(answered)) => answered,
-        _ => panic!("the member's plane answers, and refuses it"),
+    else {
+        panic!("the member's plane answers, and refuses it");
     };
     let refused = match answered {
         Ok(receipt) => panic!(
@@ -245,33 +287,208 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         "the member refuses a device of another person: {refused:?}"
     );
     assert!(
-        !member.files(&workspace).join("stranger.txt").exists(),
+        !placed
+            .member
+            .files(&placed.workspace)
+            .join("stranger.txt")
+            .exists(),
         "nothing ran on the member for another person"
     );
 
     // A workspace the relay places here later is entered the same way: the
     // member takes the work of every workspace the relay governs, not only
     // the first it heard of.
-    let later = hosted
+    let later = placed
+        .hosted
         .host
         .workspaces()
         .create("Second")
         .await
         .unwrap()
         .workspace;
-    let ran = {
-        let (shells, later) = (Arc::clone(&shells), later.clone());
-        tokio::task::spawn_blocking(move || shells.run(&later, "run:1", "pwd", true))
-            .await
-            .unwrap()
-            .unwrap()
-    };
+    let (shells, asked_later) = (Arc::clone(&placed.shells), later.clone());
+    let ran = tokio::task::spawn_blocking(move || {
+        shells.run(&asked_later, "run:1", "pwd", true, Watching::default())
+    })
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(ran.exit, 0);
     assert_eq!(
         String::from_utf8(ran.output).unwrap().trim_end(),
-        member.files(&later).to_string_lossy(),
+        placed.member.files(&later).to_string_lossy(),
         "the second workspace's shell runs in its own files here"
     );
 
-    hosted.stop().await;
+    stop(placed).await;
+}
+
+/// The workspace's governance generation: it moves when a device is admitted.
+async fn generation(placed: &Placed, workspace: &str) -> u64 {
+    placed
+        .hosted
+        .host
+        .workspaces()
+        .membership(workspace)
+        .await
+        .unwrap()
+        .0
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_relay_makes_the_member_enter_a_workspace() {
+    let placed = placed().await;
+    let later = placed
+        .hosted
+        .host
+        .workspaces()
+        .create("Second")
+        .await
+        .unwrap()
+        .workspace;
+    let before = generation(&placed, &later).await;
+
+    // Another device naming a workspace the member does not hold is refused,
+    // and the relay admits nothing for it.
+    let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
+    let stranger_endpoint = device_endpoint(&stranger).await;
+    let asking = ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions));
+    let answered = asking
+        .remote(
+            &stranger_endpoint,
+            &member_at(placed.member_device, &placed.member_address),
+            &later,
+        )
+        .invoke(
+            &Caller::local_app("tilo.relay"),
+            run_request("run:1", "echo stranger > stranger.txt"),
+        )
+        .wait_timeout(Duration::from_secs(30));
+    assert!(
+        matches!(answered, Ok(Some(Err(_)))),
+        "a device that is not the relay is refused a workspace the member does not hold"
+    );
+    assert_eq!(
+        generation(&placed, &later).await,
+        before,
+        "a stranger's request made the member enter a workspace"
+    );
+
+    // The relay's own run is what enters it.
+    let (shells, asked) = (Arc::clone(&placed.shells), later.clone());
+    let ran = tokio::task::spawn_blocking(move || {
+        shells.run(&asked, "run:1", "pwd", true, Watching::default())
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(ran.exit, 0);
+    assert_ne!(
+        generation(&placed, &later).await,
+        before,
+        "the relay's run admitted the member"
+    );
+
+    stop(placed).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runs_output_reaches_the_caller_before_it_ends() {
+    let placed = placed().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<RunOutput>::new()));
+    let ended = Arc::new(AtomicBool::new(false));
+    let (recorded, running) = (Arc::clone(&seen), Arc::clone(&ended));
+    let (shells, workspace) = (Arc::clone(&placed.shells), placed.workspace.clone());
+
+    let ran = tokio::task::spawn_blocking(move || {
+        let watch = |printed: &RunOutput| {
+            if !running.load(Ordering::SeqCst) {
+                recorded.lock().unwrap().push(printed.clone());
+            }
+        };
+        let ran = shells.run(
+            &workspace,
+            "run:1",
+            "echo first && sleep 3 && echo second",
+            true,
+            Watching {
+                seen: Some(&watch),
+                stop: None,
+            },
+        );
+        ended.store(true, Ordering::SeqCst);
+        ran
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let output = String::from_utf8(ran.output).unwrap();
+    assert_eq!(ran.exit, 0, "{output}");
+    assert!(output.ends_with("first\nsecond\n"), "{output}");
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .any(|printed| printed.tail == "first\n" && printed.total == 6),
+        "the first line reached the caller while the command ran: {seen:?}"
+    );
+    stop(placed).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_ends_the_command_on_the_member() {
+    let placed = placed().await;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let printed = Arc::new(AtomicBool::new(false));
+    let (shells, workspace) = (Arc::clone(&placed.shells), placed.workspace.clone());
+    let (stopping, seen) = (Arc::clone(&cancel), Arc::clone(&printed));
+
+    let run = tokio::task::spawn_blocking(move || {
+        let stop = || stopping.load(Ordering::SeqCst);
+        let watch = |printed: &RunOutput| {
+            if printed.tail.contains("started") {
+                seen.store(true, Ordering::SeqCst);
+            }
+        };
+        shells.run(
+            &workspace,
+            "run:1",
+            "echo started && sleep 120 && echo never",
+            true,
+            Watching {
+                seen: Some(&watch),
+                stop: Some(&stop),
+            },
+        )
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !printed.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the command's first line never reached the caller"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // The person's Ctrl+C in the session, or the agent's cancel of the
+    // invocation that asked for the run.
+    let asked_at = Instant::now();
+    cancel.store(true, Ordering::SeqCst);
+    let ran = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("a cancelled run ends")
+        .unwrap()
+        .unwrap();
+    assert!(
+        asked_at.elapsed() < Duration::from_secs(20),
+        "the run ended promptly: {:?}",
+        asked_at.elapsed()
+    );
+    assert!(ran.cancelled, "the run says it was cancelled: {ran:?}");
+    assert_eq!(ran.exit, 130, "{ran:?}");
+    let output = String::from_utf8(ran.output).unwrap();
+    assert!(
+        output.trim_end().ends_with("started") && !output.contains("never"),
+        "it printed what it had and stopped: {output}"
+    );
+    stop(placed).await;
 }

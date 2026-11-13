@@ -1089,7 +1089,7 @@ pub struct SlotShowResult {
 pub struct SlotFile {
     pub component: String,
     pub layer: String,
-    /// Where the slot sees it, e.g. `/usr/bin/shell`.
+    /// Where the slot sees it, e.g. `/usr/bin/tilo-session`.
     pub path: String,
     /// SHA-256 (hex) of a regular file's contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,7 +1,7 @@
 //! The names a network setting can carry: the bands a hotspot offers, how a
-//! connection counts its data, which hardware address it shows, how it gets
-//! an IPv6 address and whether it uses a proxy, each written both as the
-//! value it is stored as and in the person's language.
+//! connection counts its data, which hardware address it shows, how it gets an
+//! IPv6 address and whether it uses a proxy, each written both as the value it
+//! is stored as and in the person's language.
 
 use os_actions::network_settings::Ipv6Method;
 use os_actions::{ConnectivityState, HotspotBand};
@@ -9,19 +9,14 @@ use os_actions::{ConnectivityState, HotspotBand};
 use super::Radio;
 use crate::i18n::t;
 
-/// The bands a hotspot can use.
 pub(crate) const HOTSPOT_BANDS: &[&str] = &["Automatic", "2.4 GHz", "5 GHz"];
-/// Whether a connection's data counts against a limit.
 pub(crate) const METERED_POLICIES: &[&str] = &["Automatic", "Metered", "Unmetered"];
-/// Which hardware address a Wi-Fi connection shows.
 pub(crate) const MAC_POLICIES: &[&str] = &[
     "Device address",
     "Random for this network",
     "Random each time",
 ];
-/// How a connection gets its IPv6 address.
 pub(crate) const IPV6_METHODS: &[&str] = &["Automatic", "Manual", "Link-local only", "Off"];
-/// Whether a connection goes through a proxy, and how it finds it.
 pub(crate) const PROXY_MODES: &[&str] = &["None", "Automatic", "Manual"];
 
 pub(crate) fn connectivity_shown(state: ConnectivityState) -> String {

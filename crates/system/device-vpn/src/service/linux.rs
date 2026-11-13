@@ -12,13 +12,11 @@ use super::Backend;
 use super::plan::{Command, Program};
 use super::record::Record;
 
-/// Where the helper finds what it runs and keeps.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub ip: PathBuf,
     pub nft: PathBuf,
     pub busctl: PathBuf,
-    /// The record of what is set up, gone at reboot with everything it names.
     pub record: PathBuf,
     /// Present while `NetworkManager`'s global DNS points at the tunnel, which
     /// `NetworkManager` keeps across reboots.
@@ -43,7 +41,6 @@ impl Default for Config {
     }
 }
 
-/// `/usr/bin/<name>`, or `/usr/sbin/<name>` where the two are not merged.
 fn program(name: &str) -> PathBuf {
     let bin = Path::new("/usr/bin").join(name);
     if bin.exists() {
@@ -62,13 +59,11 @@ impl LinuxBackend {
         Self { config }
     }
 
-    /// The record an earlier helper left, or an empty one.
     pub fn load(&self) -> Record {
         fs::read(&self.config.record)
             .map_or_else(|_| Record::default(), |bytes| Record::parse(&bytes))
     }
 
-    /// Whether `NetworkManager`'s DNS was left pointing at a tunnel.
     pub fn dns_marked(&self) -> bool {
         self.config.dns_marker.exists()
     }

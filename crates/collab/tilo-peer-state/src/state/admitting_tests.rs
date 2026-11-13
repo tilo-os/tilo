@@ -117,13 +117,16 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
         Role::Viewer
     );
     let governance = received(&peer);
-    let receipt: RedemptionReceipt = serde_json::from_slice(
+    let ledgered = crate::state::LedgerReceipt::decode(
         &governance.invitation_receipts[&hex::encode(invited.join().invite_id())][0],
     )
     .unwrap();
-    assert!(
-        receipt.invitation.is_some(),
-        "the ledger keeps the invitation"
+    assert_eq!(
+        ledgered
+            .invitation(|digest| invitation_ledger::part_in(&governance.invitation_parts, digest))
+            .as_deref(),
+        Some(invited.join().signed_invitation()),
+        "the ledger keeps the invitation, its issuer's certificate named once"
     );
     assert_eq!(editor.user_public_key, user);
 
@@ -172,8 +175,13 @@ fn an_invitation_admits_only_what_its_issuer_could_invite() {
     assert!(peer.permissions(guest.1.device_public_key, now).is_err());
 }
 
-#[test]
-fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
+/// What a receiver says to an administrator's admission of a guest, its
+/// ledger changed by `tamper` before it is sent: the ledger's map, the
+/// receipt's key, the receipt as written, and the document. The guest is
+/// admitted only by the admission as written.
+fn refusal_of_tampered_admission(
+    tamper: impl FnOnce(&mut AutoCommit, &str, crate::state::LedgerReceipt, &VerifiedRedemption),
+) -> String {
     let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
     let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
@@ -181,8 +189,8 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         .set_member_administrator(user, &owner_key, now)
         .unwrap();
     // The administrator's device admits the guest as every device does — the
-    // rows its operation names beside the receipt — and files under that
-    // invitation a receipt naming another one in the same batch.
+    // rows its operation names beside the receipt — and then changes what
+    // the ledger holds in the same batch.
     let guest = device(78, 79);
     let owner = peer.owner_certificates()[0].clone();
     let invited = redemption(
@@ -194,20 +202,6 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         80,
         now,
     );
-    let before = (**peer.core.workspace_doc.as_ref().unwrap())
-        .clone()
-        .get_heads();
-    let mut writer = peer.clone();
-    writer
-        .governance_mut()
-        .admit_invited_member(&invited, &editor_key, now)
-        .unwrap();
-    let mut doc = (**writer.core.workspace_doc.as_ref().unwrap()).clone();
-    let ledger = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
-    let key = hex::encode(invited.join().invite_id());
-    let mut receipt: RedemptionReceipt =
-        serde_json::from_slice(&crate::workspace::invitation_receipts(&doc).unwrap()[&key][0])
-            .unwrap();
     let other = redemption(
         &peer,
         &owner,
@@ -217,18 +211,24 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         81,
         now,
     );
-    receipt.invitation = Some(crate::join::encode_invitation_text(
-        other.join().signed_invitation(),
-    ));
+    let before = (**peer.core.workspace_doc.as_ref().unwrap())
+        .clone()
+        .get_heads();
+    let mut writer = peer.clone();
+    writer
+        .governance_mut()
+        .admit_invited_member(&invited, &editor_key, now)
+        .unwrap();
+    let mut doc = (**writer.core.workspace_doc.as_ref().unwrap()).clone();
+    let key = hex::encode(invited.join().invite_id());
+    let receipt = crate::state::LedgerReceipt::decode(
+        &crate::workspace::invitation_receipts(&doc).unwrap()[&key][0],
+    )
+    .unwrap();
     doc.set_actor(automerge::ActorId::from(
         editor_key.verifying_key().to_bytes().to_vec(),
     ));
-    doc.put(
-        &ledger,
-        key.as_str(),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&receipt).unwrap()),
-    )
-    .unwrap();
+    tamper(&mut doc, &key, receipt, &other);
     doc.commit();
     let changes = doc
         .get_changes(&before)
@@ -246,8 +246,86 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
             now,
         )
         .unwrap_err();
-    assert!(refused.contains("names another invitation"), "{refused}");
     assert!(peer.permissions(guest.1.device_public_key, now).is_err());
+    refused
+}
+
+fn put_receipt(doc: &mut AutoCommit, key: &str, receipt: &crate::state::LedgerReceipt) {
+    let ledger = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
+    doc.put(
+        &ledger,
+        key,
+        automerge::ScalarValue::Bytes(receipt.encode().unwrap()),
+    )
+    .unwrap();
+}
+
+fn put_part(doc: &mut AutoCommit, key: &str, bytes: Vec<u8>) {
+    let parts = doc.get(ROOT, "invitation_parts_v1").unwrap().unwrap().1;
+    doc.put(&parts, key, automerge::ScalarValue::Bytes(bytes))
+        .unwrap();
+}
+
+#[test]
+fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
+    // A receipt filed under one invitation that spells another.
+    let refused = refusal_of_tampered_admission(|doc, key, mut receipt, other| {
+        receipt.invitation = vec![invitation_ledger::Piece::Own(
+            other.join().signed_invitation().to_vec(),
+        )];
+        put_receipt(doc, key, &receipt);
+    });
+    assert!(refused.contains("names no invitation"), "{refused}");
+}
+
+#[test]
+fn a_receiver_refuses_a_receipt_whose_own_bytes_were_changed() {
+    let refused = refusal_of_tampered_admission(|doc, key, mut receipt, _| {
+        let own = receipt
+            .invitation
+            .iter_mut()
+            .rev()
+            .find_map(|piece| match piece {
+                invitation_ledger::Piece::Own(bytes) => Some(bytes),
+                invitation_ledger::Piece::Shared(_) => None,
+            })
+            .unwrap();
+        // The invitation's signature, at its end.
+        let last = own.len() - 1;
+        own[last] ^= 1;
+        put_receipt(doc, key, &receipt);
+    });
+    assert!(refused.contains("names no invitation"), "{refused}");
+}
+
+#[test]
+fn a_receiver_refuses_a_part_changed_under_its_digest() {
+    let refused = refusal_of_tampered_admission(|doc, _, receipt, _| {
+        let digest = *receipt.shared().next().expect("the issuer is named once");
+        let parts = invitation_ledger::parts(doc).unwrap();
+        let mut forged = invitation_ledger::part_in(&parts, &digest)
+            .unwrap()
+            .to_vec();
+        forged[0] ^= 1;
+        put_part(doc, &invitation_ledger::part_key(&digest), forged);
+    });
+    assert!(refused.contains("part under another key"), "{refused}");
+}
+
+#[test]
+fn a_receiver_refuses_a_part_no_receipt_names() {
+    let refused = refusal_of_tampered_admission(|doc, _, _, other| {
+        let stray = other.join().signed_invitation().to_vec();
+        put_part(
+            doc,
+            &invitation_ledger::part_key(blake3::hash(&stray).as_bytes()),
+            stray,
+        );
+    });
+    assert!(
+        refused.contains("no receipt of the batch names"),
+        "{refused}"
+    );
 }
 
 #[test]

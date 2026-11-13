@@ -1,8 +1,7 @@
-//! A VPN profile's kill switch on its page: the switch and its action write
-//! the person's choice, the session's block shows as the profile's state,
-//! and turning the profile off asks the session to lift it. And what a
-//! `WireGuard` tunnel routes is a list, each address added and removed on
-//! its own.
+//! A VPN profile's kill switch on its page: the switch and its action write the
+//! person's choice, the session's block shows as the profile's state, and
+//! turning the profile off asks the session to lift it. And what a `WireGuard`
+//! tunnel routes is a list, each address added and removed on its own.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -31,7 +30,6 @@ fn document(app: &mut App) -> ui::storage::SettingsDocument {
     .unwrap()
 }
 
-/// Whether the switch `id` is drawn on, where it is drawn.
 fn checked(widget: &dyn Widget, id: &str) -> Option<bool> {
     if widget.test_id() == Some(id) {
         return widget
@@ -44,7 +42,6 @@ fn checked(widget: &dyn Widget, id: &str) -> Option<bool> {
         .find_map(|child| checked(child, id))
 }
 
-/// Whether the page says `text`.
 fn draws(app: &mut App, text: &str) -> bool {
     app.settle();
     provider_settings_ui::widgets::announced_text(app.harness().root_widget())
@@ -52,8 +49,6 @@ fn draws(app: &mut App, text: &str) -> bool {
         .any(|line| line.contains(text))
 }
 
-/// The window over `fake`, on the page of the "Work" tunnel, its session's
-/// status followed by hand.
 fn on_the_profile(fake: &Arc<FakeNetwork>) -> (App, Rc<crate::watch::Watched>) {
     let vpn = work_vpn();
     *fake.vpns.lock().unwrap() = vec![vpn.clone()];
@@ -80,9 +75,6 @@ fn on_the_profile(fake: &Arc<FakeNetwork>) -> (App, Rc<crate::watch::Watched>) {
     (app, watched)
 }
 
-/// The kill switch is off until the person turns it on, by its switch or
-/// its action; while on, "Allow local network" is offered and kept when the
-/// switch is turned on again by the action alone; and off forgets it.
 #[test]
 fn a_vpns_kill_switch_is_off_until_turned_on_and_offers_the_local_network() {
     let fake = Arc::new(FakeNetwork::default());
@@ -125,7 +117,6 @@ fn a_vpns_kill_switch_is_off_until_turned_on_and_offers_the_local_network() {
         Some(&ProfileKillSwitch { allow_local: true })
     );
 
-    // The action, on the profile's row: on again keeps the local network.
     app.call_on(&row, "set-kill-switch", serde_json::json!({"on": true}))
         .unwrap();
     app.settle();
@@ -159,10 +150,6 @@ fn a_vpns_kill_switch_is_off_until_turned_on_and_offers_the_local_network() {
     );
 }
 
-/// While the session holds a profile's block, its page says "Blocking
-/// traffic" with its switch on; turning the switch off asks the session to
-/// lift the block, each request after the last, and brings nothing up or
-/// down; and the session failing to block is said.
 #[test]
 fn a_blocking_vpn_shows_it_and_turning_it_off_lifts_the_block() {
     let fake = Arc::new(FakeNetwork::default());
@@ -203,8 +190,6 @@ fn a_blocking_vpn_shows_it_and_turning_it_off_lifts_the_block() {
     );
     assert!(!draws(&mut app, &t("net-vpn-kill-switch-failed")));
 
-    // Off, on purpose: the session is asked to lift the block, after a
-    // request made before.
     let mut earlier = serde_json::Map::new();
     earlier.insert(
         PROFILE_RELEASE.name().into(),
@@ -256,9 +241,6 @@ fn a_blocking_vpn_shows_it_and_turning_it_off_lifts_the_block() {
     assert!(draws(&mut app, &t("net-vpn-kill-switch-failed")));
 }
 
-/// Turning off a connected VPN whose kill switch is on asks the session to
-/// lift its block before it goes down; one without a kill switch writes
-/// nothing.
 #[test]
 fn turning_off_a_connected_vpn_with_its_kill_switch_releases_it() {
     let fake = Arc::new(FakeNetwork::default());
@@ -302,9 +284,6 @@ fn turning_off_a_connected_vpn_with_its_kill_switch_releases_it() {
     );
 }
 
-/// What a `WireGuard` tunnel routes is a list: each address is added on
-/// its own, what is no address with a prefix is refused, and each is
-/// removed by its own button.
 #[test]
 fn a_tunnels_routed_addresses_are_a_list() {
     let fake = Arc::new(FakeNetwork::default());

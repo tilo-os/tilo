@@ -1192,19 +1192,18 @@ fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
     );
 }
 
-/// The project's commands are the window bar's: its Operator graph opens
-/// the graph.
+/// The project's commands stand in the window's header row, which is its
+/// bar: its Operator graph opens the graph.
 #[test]
 fn the_window_bars_operator_graph_opens_the_graph() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.harness().present_in_window_bar();
     app.settle();
-    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+    let names = app.harness().header_row_names();
     for command in ["Operator graph", "All reports", "Import report"] {
         assert!(
-            bar.actions.iter().any(|action| action.name == command),
-            "{command} is a bar action: {:?}",
-            bar.actions
+            names.iter().any(|name| name == command),
+            "{command} stands in the header row, which is the window's bar: {names:?}"
         );
     }
     assert!(!app.harness().targets().contains_key("chip-graph-add"));

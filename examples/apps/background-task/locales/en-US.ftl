@@ -8,3 +8,8 @@ task-done = { $count ->
     [one] Found one prime below { $limit }.
    *[other] Found { $count } primes below { $limit }.
 }
+
+## What the record and its actions are called
+example-prime-search = Prime search
+example-prime-search-task-run = Count primes
+example-prime-search-task-cancel = Cancel the count

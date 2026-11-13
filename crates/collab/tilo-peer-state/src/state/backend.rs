@@ -45,13 +45,16 @@ pub(crate) struct SealedLog {
     len: usize,
     /// The payload bytes of every write held.
     bytes: usize,
+    /// The ops and payload bytes of the compaction set it starts with: its
+    /// leading compaction and the segments it names.
+    set: (usize, usize),
 }
 
 #[derive(Default)]
 struct SealedChunk {
     ops: Vec<collab_types::SignedOp>,
     /// The concatenated postcard encoding of `ops`, once asked for.
-    encoded: OnceLock<Vec<u8>>,
+    encoded: OnceLock<Arc<[u8]>>,
 }
 impl Clone for SealedChunk {
     /// A copy is only ever made to be changed: it starts unencoded.
@@ -77,11 +80,40 @@ impl SealedLog {
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
     }
+    /// The writes held since the compaction set it starts with, and their
+    /// payload bytes.
+    pub(crate) fn writes(&self) -> (usize, usize) {
+        (
+            self.len.saturating_sub(self.set.0),
+            self.bytes.saturating_sub(self.set.1),
+        )
+    }
+    /// Whether the history is within its bounds: its compaction set within
+    /// the set's, the writes after it within theirs.
+    pub(crate) fn within_bounds(&self) -> bool {
+        super::sealed_within_bounds(self.set, self.writes())
+    }
+    /// Whether a write of `payload` bytes after the history keeps it within
+    /// its bounds.
+    pub(crate) fn takes(&self, payload: usize) -> bool {
+        let (writes, bytes) = self.writes();
+        writes < super::MAX_SEALED_OPS && bytes.saturating_add(payload) <= super::MAX_SEALED_BYTES
+    }
+    /// Whether the writes since the last compaction have used three quarters
+    /// of their bound.
+    pub(crate) fn due(&self) -> bool {
+        let (writes, bytes) = self.writes();
+        writes >= super::MAX_SEALED_OPS / 4 * 3 || bytes >= super::MAX_SEALED_BYTES / 4 * 3
+    }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &collab_types::SignedOp> {
         self.chunks.iter().flat_map(|chunk| chunk.ops.iter())
     }
     pub(crate) fn first(&self) -> Option<&collab_types::SignedOp> {
         self.iter().next()
+    }
+    /// The write admitted last.
+    pub(crate) fn last(&self) -> Option<&collab_types::SignedOp> {
+        self.chunks.last()?.ops.last()
     }
     pub(crate) fn to_vec(&self) -> Vec<collab_types::SignedOp> {
         self.iter().cloned().collect()
@@ -89,6 +121,10 @@ impl SealedLog {
     pub(crate) fn push(&mut self, op: collab_types::SignedOp) {
         self.len = self.len.saturating_add(1);
         self.bytes = self.bytes.saturating_add(op.payload.len());
+        // Only a compaction leads a history, and only its segments follow it.
+        if op.kind == collab_types::OpKind::Compaction && self.set.0 == self.len.saturating_sub(1) {
+            self.set = (self.len, self.set.1.saturating_add(op.payload.len()));
+        }
         match self.chunks.last_mut() {
             Some(chunk) if chunk.ops.len() < SEALED_CHUNK => {
                 let chunk = Arc::make_mut(chunk);
@@ -101,23 +137,29 @@ impl SealedLog {
             })),
         }
     }
-    /// Append the postcard encoding of `(route, every write held)` to
-    /// `out`: what `postcard` makes of `(Route, Vec<SignedOp>)`, with each
-    /// chunk encoded once per state of it.
-    pub(super) fn encode_into(&self, route: &Route, out: Vec<u8>) -> Result<Vec<u8>, String> {
-        let mut out = postcard::to_extend(&(route, self.len), out).map_err(err)?;
+    /// What `postcard` makes of `(route, every write held)`, in parts: the
+    /// route and count, then each chunk, encoded once per state of it and
+    /// the same allocation while it lasts. A write changes the last chunk
+    /// alone.
+    pub(super) fn encode_parts(&self, route: &Route) -> Result<Vec<Arc<[u8]>>, String> {
+        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(1));
+        parts.push(
+            postcard::to_allocvec(&(route, self.len))
+                .map_err(err)?
+                .into(),
+        );
         for chunk in &self.chunks {
             if let Some(encoded) = chunk.encoded.get() {
-                out.extend_from_slice(encoded);
+                parts.push(Arc::clone(encoded));
                 continue;
             }
             let mut encoded = Vec::new();
             for op in &chunk.ops {
                 encoded = postcard::to_extend(op, encoded).map_err(err)?;
             }
-            out.extend_from_slice(chunk.encoded.get_or_init(|| encoded));
+            parts.push(Arc::clone(chunk.encoded.get_or_init(|| encoded.into())));
         }
-        Ok(out)
+        Ok(parts)
     }
 }
 
@@ -149,11 +191,11 @@ pub(super) struct StoredDocument {
 /// A record's part of a durable peer encoding.
 pub(super) struct EncodedDocument {
     pub(super) route: Route,
-    /// Its `DurableDocument`.
-    pub(super) document: Arc<[u8]>,
+    /// Its `DurableDocument`, in stretches.
+    pub(super) document: Vec<super::durable::Piece>,
     /// Its `(Route, Vec<SignedOp>)` sealed history entry, when it holds
-    /// sealed writes.
-    pub(super) sealed: Option<Arc<[u8]>>,
+    /// sealed writes, in parts ([`SealedLog::encode_parts`]).
+    pub(super) sealed: Option<Vec<Arc<[u8]>>>,
 }
 impl Clone for StoredDocument {
     fn clone(&self) -> Self {

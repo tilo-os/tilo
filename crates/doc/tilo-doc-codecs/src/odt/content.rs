@@ -35,21 +35,17 @@ pub(super) fn parse_len_px(v: &str) -> Option<i64> {
         "in" => n * 96.0,
         "pt" => n * 96.0 / 72.0,
         "pc" => n * 16.0,
-        // "px" | "" and anything unrecognized: already in px.
         _ => n,
     };
     Some(px.round() as i64)
 }
 
-/// In-progress `draw:frame` capture: an image, or a verbatim fidelity atom when the picture is missing.
 struct FrameState {
     raw_start: usize,
     depth: i32,
     width: Option<String>,
     height: Option<String>,
-    /// Model anchor (`inline`|`paragraph`|`page`) from `text:anchor-type`.
     anchor: Option<String>,
-    /// Model wrap (`none`|`left`|`right`|`both`) resolved from the frame's graphic style's `style:wrap`.
     wrap: Option<String>,
     href: Option<String>,
     title: String,
@@ -62,7 +58,6 @@ struct FrameState {
 }
 
 impl FrameState {
-    /// The picture's alt text, size and positioning, as attrs on its `image` block `id`.
     fn set_image_attrs(&self, doc: &mut DocMut, id: &str) {
         let alt = if self.title.is_empty() {
             &self.desc
@@ -78,7 +73,6 @@ impl FrameState {
         if let Some(h) = self.height.as_deref().and_then(parse_len_px) {
             doc.set_attr(id, "height", h);
         }
-        // Positioning: anchor (inline/paragraph/page) + wrap.
         if let Some(a) = self.anchor.as_deref() {
             doc.set_attr(id, "anchor", a);
         }
@@ -110,7 +104,6 @@ fn start_block(
     id
 }
 
-/// A `fidelity` block holding `raw`, an unmodeled body element kept verbatim.
 fn fidelity_block(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -136,8 +129,6 @@ fn append(doc: &mut DocMut, cur: Option<&str>, cur_len: &mut usize, txt: &str) {
     }
 }
 
-/// Open a paragraph or heading depending on the referenced paragraph style, set
-/// level/alignment, and return the paragraph-level inline marks to apply over the block.
 fn open_para(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -161,7 +152,6 @@ fn open_para(
     if let Some(l) = level {
         doc.set_attr(&id, "level", l);
     }
-    // Line spacing rides as a direct `line_spacing` attr, not a CRDT named-style prop, so it's always lifted onto the block even when the paragraph references a named style below.
     if let Some(lh) = style.and_then(|s| reg.table.para_line_height(s)) {
         doc.set_attr(&id, "line_spacing", lh);
     }
@@ -300,7 +290,6 @@ impl BodyState {
                             doc.remove_block(pid);
                         }
                     } else {
-                        // Not a picture in the container (text box, formula, chart…): keep it verbatim, in place.
                         let raw = s.get(fr.raw_start..end_pos).unwrap_or_default().to_string();
                         if fr.enclosing_para.is_some() {
                             self.frame = None;
@@ -319,12 +308,9 @@ impl BodyState {
     }
 }
 
-/// What a `draw:frame` event left behind.
 enum FrameOutcome {
     Open,
-    /// The frame became a block (an `image`, or a verbatim `fidelity` block).
     Block,
-    /// The frame, kept verbatim, belongs inline at the current position of its paragraph.
     Inline(String),
 }
 
@@ -384,11 +370,9 @@ fn advance_annotation(
                 if let Some(b) = block.clone() {
                     let (name, cid) = super::comments::import_annotation(&raw, doc);
                     match name {
-                        // A ranged comment: stash it until its annotation-end.
                         Some(n) => {
                             open_comments.insert(n, (cid, b, *idx));
                         }
-                        // A point comment (no office:name): anchor a 1-char range at the insertion point if there's a character there, else a zero-width range that import drops.
                         None => comment_ranges.push((b, *idx, *idx, cid)),
                     }
                 }
@@ -450,7 +434,6 @@ struct BodyState {
     cur_len: usize,
     in_item: bool,
 
-    // Span marks + paragraph-style marks, applied after all text is in (so text appended after a span doesn't expand its mark).
     span_stack: Vec<(Vec<(String, MarkValue)>, usize)>,
     link_stack: Vec<LinkStackEntry>,
     pending_marks: Vec<(String, usize, usize, String, MarkValue)>,
@@ -475,48 +458,31 @@ struct BodyState {
     annotation: Option<(usize, i32, Option<String>, usize)>,
     // Pending comment ranges keyed by ODF `office:name` → (comment id, block, start char index), awaiting the matching `office:annotation-end`.
     open_comments: BTreeMap<String, (String, String, usize)>,
-    // (block, start, end, comment id) anchor marks, applied after all text is in.
     comment_ranges: Vec<(String, usize, usize, String)>,
 
     // Open bookmark ranges keyed by ODF `text:name` → (block, start char index), awaiting the matching `text:bookmark-end`.
     open_bookmarks: BTreeMap<String, (String, usize)>,
-    // (block, start, end, bookmark name) anchor marks, applied after all text is in.
     bookmark_ranges: Vec<(String, usize, usize, String)>,
 
-    // An in-progress `text:tracked-changes` block, captured whole then parsed into change records on close.
     tracked: Option<(usize, i32)>,
-    // ODF `xml:id` → (qdoc change id, kind), from the parsed tracked-changes block; the body's change-start/-end/change markers reference changes by this id.
     change_decls: BTreeMap<String, (String, ChangeKind)>,
-    // ODF `xml:id` → a deletion's deleted text, spliced back in at its point marker.
     deleted_texts: BTreeMap<String, String>,
     // Open tracked-change ranges keyed by ODF `xml:id` → (change id, kind, block, start char index), awaiting the matching `text:change-end`.
     open_changes: BTreeMap<String, (String, ChangeKind, String, usize)>,
-    // (block, start, end, kind, change id) anchor marks, applied after all text is in.
     change_ranges: Vec<(String, usize, usize, ChangeKind, String)>,
 
-    // Inside a `text:p`/`text:h`: unmodeled children become inline atoms.
     in_para: bool,
-    // A picture frame split the current paragraph: content after it continues in a new block.
     continue_para: bool,
-    // Paragraphs opened so far in the current table cell / list item; later ones join with `\n`.
     item_paras: usize,
-    // (start byte, open depth) of an in-progress inline atom.
     inline: Option<(usize, i32)>,
-    // Grid columns the open (or covered) table cell takes: its `table:number-columns-repeated`.
     cell_repeat: usize,
-    // The outermost open list's style.
     list_style: Option<String>,
-    // The current table's style and columns, and row's style, until a cell takes them.
     table_style: Option<String>,
     table_columns: Option<String>,
     row_style: Option<String>,
 }
 
-/// Block attr: a paragraph's automatic style, referenced again on export while the block's
-/// modeled paragraph attributes still agree with it.
 pub(super) const ODT_STYLE: &str = "odt_style";
-/// Whether an automatic style is one the exporter generates from the model (`qdoc` in its
-/// name), which says nothing the model does not.
 fn is_generated_style(name: &str) -> bool {
     // Export invents `Lqdoc{n}` list styles (and historically `tilo-doc*`) when the
     // model had no preserved ODT name. Re-import must not persist those as
@@ -527,11 +493,7 @@ fn is_generated_style(name: &str) -> bool {
 /// List-item attr: the style of the list it is in, referenced again on export (with every
 /// level's numbering and bullets) while the item still numbers the way it says.
 pub(super) const ODT_LIST_STYLE: &str = "odt_list_style";
-/// Mark: a text style (a character style, or one with properties no mark represents) the
-/// covered text is wrapped in again on export.
 pub(super) const MARK_ODT_SPAN: &str = "odt_span";
-/// Attrs on a table's first cell (its style and `table:table-column` elements), a row's first
-/// cell (the row's style) and each cell (its style).
 pub(super) const ODT_TABLE_STYLE: &str = "odt_table_style";
 pub(super) const ODT_COLUMNS: &str = "odt_columns";
 pub(super) const ODT_ROW_STYLE: &str = "odt_row_style";
@@ -545,16 +507,12 @@ fn columns_repeated(e: &BytesStart) -> usize {
         .clamp(1, 1024)
 }
 
-/// A table cell's span in the `table:number-columns-spanned`/`-rows-spanned` attribute `key`,
-/// when it spans more than one.
 fn span(e: &BytesStart, key: &[u8]) -> Option<i64> {
     attr_val(e, key)
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|n| *n > 1)
 }
 
-/// Paragraph content the body parser models; any other element inside a `text:p`/`text:h` is
-/// kept verbatim as an inline atom.
 const PARA_MODELED: &[&[u8]] = &[
     b"text:span",
     b"text:a",
@@ -570,12 +528,10 @@ const PARA_MODELED: &[&[u8]] = &[
     b"text:tab",
     b"text:line-break",
     b"text:s",
-    // A layout hint of where the application last broke the page.
     b"text:soft-page-break",
 ];
 
 impl BodyState {
-    /// After a picture frame split the paragraph, open the block carrying the rest of it.
     fn ensure_continuation(&mut self, doc: &mut DocMut) {
         if self.cur.is_none() && self.continue_para && self.in_para {
             self.continue_para = false;
@@ -640,7 +596,6 @@ impl BodyState {
         }
     }
 
-    /// A second or later paragraph of a list item or table cell continues its text on a new line.
     fn join_item_paragraph(&mut self, doc: &mut DocMut) {
         if self.item_paras > 0 {
             append(doc, self.cur.as_deref(), &mut self.cur_len, "\n");
@@ -657,7 +612,6 @@ impl BodyState {
         name != b"draw:frame" || self.in_item || self.table_id.is_some()
     }
 
-    /// While an inline atom is being captured, consume events until its end tag.
     fn advance_inline(&mut self, ev: &Event, s: &str, end_pos: usize, doc: &mut DocMut) {
         let Some((start, depth)) = self.inline.as_mut() else {
             return;
@@ -686,17 +640,6 @@ impl BodyState {
         self.cur_para_marks.clear();
     }
 
-    /// Block-opening and stack-pushing events: notes/annotations/tracked-changes captures,
-    /// headings, paragraphs, lists, tables, spans, links, and image frames.
-    // A single-pass SAX dispatch over ~15 office:text element types
-    // (paragraph/heading/list/table/span/link nesting, note/comment/
-    // bookmark/change range tracking); the five self-contained
-    // in-progress captures (fidelity/frame/note/annotation/tracked-changes)
-    // are already split into the advance_* functions above — the rest
-    // shares this whole struct's state across every arm, so further
-    // extraction would need either a large per-event-kind helper
-    // signature or a lifetime-entangled parser-state struct, neither
-    // safe to introduce without compiling.
     #[allow(clippy::too_many_lines, reason = "see comment above the function")]
     fn handle_start(
         &mut self,
@@ -719,8 +662,6 @@ impl BodyState {
         }
         match e.name().as_ref() {
             b"text:note" if self.in_text && self.cur.is_some() => {
-                // A footnote/endnote reference: splice the placeholder char now (so later text in this
-                // paragraph lands after it), capture the element verbatim, and defer the `note-ref` mark until all text is in place.
                 let idx = self.cur_len;
                 append(
                     doc,
@@ -794,7 +735,6 @@ impl BodyState {
                     .or_else(|| numbering.and_then(|n| n.num_start));
                 let continuing = attr_val(e, b"text:continue-numbering")
                     .is_some_and(|v| v == "true" || v == "1");
-                // A list that doesn't continue restarts; an explicit start-value also implies a restart at that value.
                 let restart = !continuing || num_start.is_some();
                 if ordered && num_format.is_none() {
                     num_format = Some("decimal");
@@ -854,7 +794,6 @@ impl BodyState {
                 }
             }
             b"text:p" if self.in_text && self.table_id.is_some() => {
-                // The paragraph inside a table cell: lift its alignment onto the cell block so centred/right-aligned cells round-trip.
                 self.join_item_paragraph(doc);
                 if let Some(id) = self.cur.clone()
                     && let Some(a) = attr_val(e, b"text:style-name")
@@ -883,15 +822,12 @@ impl BodyState {
                     .as_deref()
                     .map(|s| reg.table.text_marks(s))
                     .unwrap_or_default();
-                // A style that says more than its marks (a character style, unmodeled text
-                // properties) is referenced again on export.
                 if let Some(s) = style.filter(|s| reg.text_extra.contains(s)) {
                     marks.push((MARK_ODT_SPAN.to_string(), MarkValue::Str(s)));
                 }
                 self.span_stack.push((marks, self.cur_len));
             }
             b"text:a" if self.in_text => {
-                // A hyperlink: model the href as an inline `link` mark over the linked range (so it merges with concurrent text edits), plus any text marks the link's own style carries.
                 let href = attr_val(e, b"xlink:href");
                 let marks = attr_val(e, b"text:style-name")
                     .map(|s| reg.table.text_marks(&s))
@@ -910,7 +846,6 @@ impl BodyState {
                 } else {
                     (None, false)
                 };
-                // `text:anchor-type`: `as-char` → inline; `page` → page; everything else (`paragraph`/`char`/`frame`) → paragraph-anchored floating.
                 let anchor = attr_val(e, b"text:anchor-type").map(|a| match a.as_str() {
                     "as-char" => "inline".to_string(),
                     "page" => "page".to_string(),
@@ -981,10 +916,6 @@ impl BodyState {
         }
     }
 
-    /// Self-closing property/marker events: paragraph and heading shorthand, comment/bookmark/
-    /// tracked-change range markers, tabs/breaks/spaces, table cells, and the fidelity-atom
-    /// capture for a single unmodeled empty element.
-    // See the comment on `handle_start` above — same shared-state dispatch shape.
     #[allow(clippy::too_many_lines, reason = "see comment above handle_start")]
     fn handle_empty(
         &mut self,
@@ -1045,7 +976,6 @@ impl BodyState {
                 self.cur = None;
             }
             b"office:annotation-end" if self.in_text => {
-                // Closes a comment's range: match by `office:name` to the open annotation and anchor a `comment` mark over `[start, cur_len)`.
                 if let Some(name) = attr_val(e, b"office:name")
                     && let Some((cid, b, start)) = self.open_comments.remove(&name)
                 {
@@ -1059,7 +989,6 @@ impl BodyState {
                 }
             }
             b"text:bookmark-end" if self.in_text => {
-                // Closes a bookmark's range: anchor a `bookmark` mark valued with the name over `[start, cur_len)`.
                 if let Some(name) = attr_val(e, b"text:name")
                     && let Some((b, start)) = self.open_bookmarks.remove(&name)
                 {
@@ -1083,7 +1012,6 @@ impl BodyState {
                 }
             }
             b"text:change-end" if self.in_text => {
-                // Closes a tracked-change range: anchor an `ins`/`del` mark over `[start, cur_len)` for the matching change id.
                 if let Some(id) = super::changes::marker_change_id(e)
                     && let Some((cid, kind, b, start)) = self.open_changes.remove(&id)
                 {
@@ -1091,10 +1019,6 @@ impl BodyState {
                 }
             }
             b"text:change" if self.in_text && self.cur.is_some() => {
-                // A point change marker. A deletion's text comes back into the body here, under a
-                // `del` mark (qdoc keeps deleted text, struck). A collapsed insertion anchors a
-                // 1-char range if there's a character after it (widened on apply), else a
-                // zero-width range that drops.
                 if let Some(id) = super::changes::marker_change_id(e)
                     && let (Some((cid, kind)), Some(b)) =
                         (self.change_decls.get(&id).cloned(), self.cur.clone())
@@ -1127,7 +1051,6 @@ impl BodyState {
                 self.cur = None;
                 self.tcol = self.tcol.saturating_add(self.cell_repeat);
             }
-            // A cell covered by a spanning neighbour holds a grid position but no content.
             b"table:covered-table-cell" if self.in_text => {
                 self.tcol = self.tcol.saturating_add(columns_repeated(e));
             }
@@ -1140,8 +1063,6 @@ impl BodyState {
         }
     }
 
-    /// Closing events: property scope ends, and the span/link/list/table/paragraph closes that
-    /// anchor their deferred marks.
     fn handle_end(&mut self, e: &quick_xml::events::BytesEnd) {
         if matches!(e.name().as_ref(), b"text:p" | b"text:h") {
             self.in_para = false;
@@ -1233,7 +1154,6 @@ impl BodyState {
         Ok(())
     }
 
-    /// An entity or character reference in paragraph text is the character it stands for.
     fn handle_general_ref(&mut self, r: &quick_xml::events::BytesRef, doc: &mut DocMut) {
         if let Some(b) = self.cur.as_ref()
             && let Some(c) = crate::resolve_general_ref(r)
@@ -1261,7 +1181,6 @@ pub(crate) fn content_head(content_xml: &[u8]) -> Option<ContentHead> {
     let mut root = None;
     let mut prelude = String::new();
     let mut automatic_styles = String::new();
-    // Start of the root child being read and whether it is the automatic styles.
     let mut child: Option<(usize, bool)> = None;
     loop {
         let before = usize::try_from(reader.buffer_position()).ok()?;
@@ -1329,11 +1248,9 @@ pub(crate) fn parse_body(
             continue;
         }
 
-        // Inside a draw:frame: collect the image href + alt, then on close emit either an `image` block (if the Pictures part exists) or a verbatim fidelity atom.
         if st.frame.is_some() {
             match st.advance_frame(&ev, s, pos_after(), container, doc, inputs)? {
                 FrameOutcome::Open => {}
-                // A picture split its paragraph: what follows continues in a new block.
                 FrameOutcome::Block => st.continue_para = st.in_para,
                 FrameOutcome::Inline(raw) => st.push_atom(doc, raw),
             }
@@ -1345,14 +1262,11 @@ pub(crate) fn parse_body(
             continue;
         }
 
-        // Inside an inline `text:note`: collect its raw XML until it closes, then parse it into a note + record a reference marker at the captured position.
         if st.note.is_some() {
             advance_note(&ev, s, pos_after(), &mut st.note, doc, &mut st.note_refs);
             continue;
         }
 
-        // Inside an inline `office:annotation` (comment): collect its raw XML until it closes, then
-        // parse it, remembering the start so the matching `annotation-end` (or, for a point comment, the same position) anchors a `comment` mark.
         if st.annotation.is_some() {
             advance_annotation(
                 &ev,
@@ -1366,7 +1280,6 @@ pub(crate) fn parse_body(
             continue;
         }
 
-        // Inside the `text:tracked-changes` block: capture its raw XML until it closes, then parse the changed-region declarations into an `xml:id → (change id, kind)` map for body markers.
         if st.tracked.is_some() {
             advance_tracked(
                 &ev,
@@ -1412,7 +1325,6 @@ impl BodyState {
             mut change_ranges,
             ..
         } = self;
-        // Apply marks now that all text is present (exact ranges, no expansion).
         for (b, start, end, name, value) in pending_marks {
             if start >= end {
                 continue;
@@ -1423,7 +1335,6 @@ impl BodyState {
                 MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
             }
         }
-        // Note-reference markers: cover the placeholder spliced when each `text:note` opened, with a `note-ref` mark valued with the note id.
         for (b, idx, nid) in note_refs {
             doc.add_mark(&b, idx, idx.saturating_add(1), MARK_NOTE_REF, nid.as_str());
         }
@@ -1433,7 +1344,6 @@ impl BodyState {
             let end = doc_block_len(doc, &b).max(start);
             comment_ranges.push((b, start, end, cid));
         }
-        // Comment anchor marks: cover the commented range with a `comment` mark valued with the comment id, widened to one character when zero-width and text follows.
         for (b, start, mut end, cid) in comment_ranges {
             if end <= start {
                 let blen = doc_block_len(doc, &b);
@@ -1448,8 +1358,6 @@ impl BodyState {
             let end = doc_block_len(doc, &b).max(start);
             bookmark_ranges.push((b, start, end, name));
         }
-        // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued with the
-        // name, widened to one character when zero-width and text follows; an end-of-block point sits over the last character.
         for (b, start, end, name) in bookmark_ranges {
             doc.add_bookmark(&b, start, end, &name);
         }
@@ -1458,7 +1366,6 @@ impl BodyState {
             let end = doc_block_len(doc, &b).max(start);
             change_ranges.push((b, start, end, kind, cid));
         }
-        // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark matching the change's kind, widened to one character when zero-width.
         for (b, start, mut end, kind, cid) in change_ranges {
             if end <= start {
                 let blen = doc_block_len(doc, &b);
@@ -1636,7 +1543,6 @@ mod tests {
             );
         }
         {
-            // A centred table cell: alignment lives on the inner paragraph in ODF.
             let styles = r#"<style:style style:name="Pc" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#;
             let body = concat!(
                 r#"<table:table table:name="T1"><table:table-row>"#,
@@ -1970,7 +1876,6 @@ mod tests {
         }
     }
 
-    /// A valid 1x1 truecolor PNG so the in-paragraph image resolves to a real `image` block (a missing picture would fall back to a fidelity atom).
     const TINY_PNG: [u8; 69] = [
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
@@ -2078,7 +1983,6 @@ mod tests {
     fn imports_and_roundtrips_document_and_run_language() {
         {
             use tilo_doc::document::MarkValue;
-            // A text style carrying `fo:language` + `fo:country` → a `lang` run mark with the reassembled BCP-47 tag.
             let styles = r#"<style:style style:name="Lf" style:family="text"><style:text-properties fo:language="fr" fo:country="FR"/></style:style>"#;
             let body = r#"<text:p>a <text:span text:style-name="Lf">bonjour</text:span></text:p>"#;
             let odt = minimal_odt_styled(styles, body);
@@ -2103,7 +2007,6 @@ mod tests {
         }
         {
             use tilo_doc::document::MarkValue;
-            // Author a document with a `de-DE` default language and a `fr`-marked run, export to `.odt`, re-import: both survive with BCP-47 reassembled from `fo:language`+`fo:country`.
             let mut d = Document::new();
             d.set_language("de-DE");
             let id = d.insert_block(None, "paragraph");
@@ -2163,7 +2066,6 @@ mod tests {
         let ph = tilo_doc::schema::FIELD_PLACEHOLDER;
         assert_eq!(snap.blocks.len(), 1, "{snap:?}");
         let p = &snap.blocks[0];
-        // The field shows its text; the shape and the text box show none.
         assert_eq!(p.text, format!("{ph}Page 3 of  two{ph} after\ttab"));
         assert_eq!(
             p.marks
@@ -2185,7 +2087,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} in {xml}"))
         };
         assert!(at(shape) < at("Page ") && at("Page ") < at(field) && at(field) < at(text_box));
-        // Runs of spaces and tabs are written so ODF whitespace handling keeps them.
         assert!(xml.contains("of <text:s/>two"), "{xml}");
         assert!(xml.contains("after<text:tab/>tab!"), "{xml}");
         let mut again = Document::new();

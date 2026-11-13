@@ -127,7 +127,6 @@ pub fn pane(presses: &Presses) -> Column {
     if all.is_empty() {
         return Column::new().with_no_padding().push(Box::new(
             EmptyState::new(crate::i18n::widget_format("jobs-none", &[]))
-                .with_message(crate::i18n::widget_format("jobs-none-message", &[]))
                 .with_icon(Icon::Timer)
                 .with_id("jobs-empty"),
         ));

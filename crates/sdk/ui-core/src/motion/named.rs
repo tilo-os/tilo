@@ -393,6 +393,13 @@ impl Extent {
         self.value.target()
     }
 
+    /// Whether it has measured its content yet: the first extent is taken as it is, so a window
+    /// that follows it can ask for that height before the first frame that follows it is drawn.
+    #[must_use]
+    pub const fn is_known(&self) -> bool {
+        self.known
+    }
+
     #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.value.is_moving(now)

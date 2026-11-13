@@ -25,10 +25,12 @@ pub enum AgentIdentityStyle {
 
 /// Paint Tilo's shared agent identity mark into `rect`.
 ///
-/// `color` is the principal's stable identity colour. Interior ink is chosen
-/// through the active theme rather than fixed black or white, preserving the
-/// same contrast behaviour as other themed controls. The geometry scales down
-/// to the 9px live-presence badge without relying on a font or a UTF symbol.
+/// `color` is the principal's stable identity colour. The tile wears it, and the mark is inked
+/// as a person's initials are on a face of the same colour
+/// ([`initial_ink`](crate::widget::avatar::initial_ink)): chosen through the active theme and
+/// tinted with the tile's hue, so an agent beside a person reads at the same weight in every
+/// theme instead of wearing a fixed black or white glyph. The geometry scales down to the 9px
+/// live-presence badge without relying on a font or a UTF symbol.
 pub fn draw_agent_identity_mark(
     scene: &mut Scene,
     transform: Affine,
@@ -47,7 +49,10 @@ pub fn draw_agent_identity_mark(
     let ink = match style {
         AgentIdentityStyle::Solid => {
             scene.fill(Fill::NonZero, transform, color, None, &tile);
-            theme.on_surface(color).ink
+            // The mark is inked as a person's initials are on their face (`initial_ink`): one
+            // direction per theme, tinted with the tile's own hue, so software and people read at
+            // the same weight on a light ground or a dark one.
+            crate::widget::avatar::initial_ink(color, theme)
         }
         AgentIdentityStyle::Outline { alpha } => {
             let stroke_color = color.with_alpha_factor(alpha.clamp(0.0, 1.0));

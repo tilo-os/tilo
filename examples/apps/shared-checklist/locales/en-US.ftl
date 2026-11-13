@@ -19,3 +19,8 @@ shared-checklist-item-done = { $new ->
     [true] Checked { $item }
    *[false] Unchecked { $item }
 }
+
+## What the record and its actions are called
+example-checklist = Checklist
+example-checklist-add = Add an item
+example-checklist-clear-done = Remove checked items

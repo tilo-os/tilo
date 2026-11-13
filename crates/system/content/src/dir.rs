@@ -36,10 +36,8 @@ pub struct DirBackend {
     /// layout kept it.
     also_read: Vec<PathBuf>,
     limits: ContentLimits,
-    /// Whether an item is flushed to disk before it is published under its address.
     durable: bool,
     state: Mutex<Index>,
-    /// Items this backend has hashed and found intact, by the identity their file had then.
     verified: Mutex<HashMap<PathBuf, FileSig>>,
     #[cfg(test)]
     probes: Probes,
@@ -92,14 +90,11 @@ impl FileSig {
     }
 }
 
-/// Counts of the expensive operations, so tests can assert they do not happen.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Probes {
-    /// Whole-file hashes of an item already in the store.
     pub(crate) verifications: AtomicUsize,
     pub(crate) scans: AtomicUsize,
-    /// Directory flushes.
     pub(crate) dir_syncs: AtomicUsize,
 }
 
@@ -132,7 +127,6 @@ impl DirBackend {
         &self.probes
     }
 
-    /// Also read content from `dir` (same layout) when it is not under this backend's root.
     #[must_use]
     pub fn reading_also(mut self, dir: impl Into<PathBuf>) -> Self {
         self.also_read.push(dir.into());
@@ -168,7 +162,6 @@ impl DirBackend {
         Some(root.join(prefix).join(&hash))
     }
 
-    /// The file holding `hash`, under the root or a read-only directory, if one is there.
     fn existing(&self, hash: &str) -> Option<PathBuf> {
         std::iter::once(&self.root)
             .chain(&self.also_read)
@@ -197,7 +190,6 @@ impl DirBackend {
     /// the root write lock still held), and bring `index` — already updated for the change — to
     /// the new generation.
     fn bump_generation(&self, index: &mut Index, current: Option<u64>) {
-        // From an unknown generation, start somewhere no other backend can have kept: the clock.
         let next = current.map_or_else(
             || tilo_clock::try_unix_now_ns().unwrap_or(1),
             |current| current.wrapping_add(1),
@@ -241,7 +233,6 @@ impl DirBackend {
     fn load_index(&self, index: &mut Index) -> Result<(), ContentError> {
         #[cfg(test)]
         self.probes.scans.fetch_add(1, Ordering::Relaxed);
-        // Whatever happens below, the kept index is no longer known to match any generation.
         index.generation = None;
         let shards = match std::fs::read_dir(&self.root) {
             Ok(shards) => shards,
@@ -277,7 +268,6 @@ impl DirBackend {
                 let item = item?;
                 count()?;
                 let name = item.file_name();
-                // Canonical lower-case names only: no aliases, and a deterministic index order.
                 let Some(hash) = name.to_str().filter(|hash| {
                     valid_hash(hash) && !hash.bytes().any(|b| b.is_ascii_uppercase())
                 }) else {
@@ -301,7 +291,6 @@ impl DirBackend {
         Ok(())
     }
 
-    /// Copy `reader` into a fresh temporary file under the root, hashing as it goes.
     fn receive(&self, reader: &mut dyn Read) -> Result<(PathBuf, String, usize), ContentError> {
         std::fs::create_dir_all(&self.root)?;
         let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -416,16 +405,18 @@ impl ContentBackend for DirBackend {
             let Some(path) = Self::path_in(&self.root, &hash) else {
                 return Err(ContentError::InvalidHash(hash.clone()));
             };
-            // Content already here is an idempotent write, even if a later configuration tightened
-            // the limits.
-            if self.intact(&path, &hash, usize::MAX) {
-                return Ok(());
-            }
             let mut index = self
                 .state
                 .lock()
                 .map_err(|_| ContentError::Io("content store lock poisoned".into()))?;
             let root_lock = self.lock_root_for_write()?;
+            // Content already here is an idempotent write, even if a later configuration tightened
+            // the limits. It is written again just now, as far as a collection that spares what
+            // was written lately goes: under the lock, so no collection removes it in between.
+            if self.intact(&path, &hash, usize::MAX) {
+                self.written_now(&path);
+                return Ok(());
+            }
             // The kept index is authority for admission only while no other writer has written
             // since: every writer bumps the generation under this lock.
             let (generation, scanned) = self.refresh_index(&mut index)?;
@@ -455,19 +446,16 @@ impl ContentBackend for DirBackend {
             }
             index.bytes = index.bytes.saturating_add(len);
             self.bump_generation(&mut index, generation);
-            // Hashed while it streamed in: `has` need not read it again.
             match std::fs::metadata(&path) {
                 Ok(meta) => self.remember_intact(path.clone(), FileSig::of(&meta)),
                 Err(_) => self.forget_intact(&path),
             }
-            // The rename is durable only once the directory holding the new name is.
             self.sync_dir(dir)?;
             drop(root_lock);
             drop(index);
             Ok(())
         };
         let result = admit();
-        // After a successful rename the temporary name is gone and this is a no-op.
         let _ = std::fs::remove_file(&tmp);
         result.map(|()| stored)
     }
@@ -509,6 +497,58 @@ impl ContentBackend for DirBackend {
     }
 
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
+        self.remove_where(|hash| !live.contains(hash))
+    }
+
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.remove_where(|kept| kept == hash)
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
+
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
+    }
+}
+
+impl DirBackend {
+    /// Remove every item not in `live` that was last written before `before`: what a store
+    /// collects when an item may be referenced only after it is written (an upload a record
+    /// names once it is kept). Writing an item that is already here counts as writing it.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read or changed.
+    pub fn collect_unreferenced_before(
+        &self,
+        live: &BTreeSet<String>,
+        before: SystemTime,
+    ) -> Result<Collected, ContentError> {
+        self.remove_where(|hash| {
+            !live.contains(hash)
+                && Self::path_in(&self.root, hash)
+                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+                    .is_some_and(|written| written < before)
+        })
+    }
+
+    fn written_now(&self, path: &Path) {
+        let touched = std::fs::File::options()
+            .append(true)
+            .open(path)
+            .and_then(|file| {
+                file.set_modified(tilo_clock::to_std(tilo_clock::wall()))?;
+                file.metadata()
+            });
+        match touched {
+            Ok(meta) => self.remember_intact(path.to_path_buf(), FileSig::of(&meta)),
+            Err(_) => self.forget_intact(path),
+        }
+    }
+
+    fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut index = self
             .state
             .lock()
@@ -519,7 +559,7 @@ impl ContentBackend for DirBackend {
         let stale: Vec<(String, usize)> = index
             .entries
             .iter()
-            .filter(|(hash, _)| !live.contains(*hash))
+            .filter(|(hash, _)| gone(hash))
             .map(|(hash, len)| (hash.clone(), *len))
             .collect();
         let mut collected = Collected::default();

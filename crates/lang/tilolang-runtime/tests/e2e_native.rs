@@ -1,14 +1,9 @@
-//! The native vocabulary run: `std.list`'s items and rows, its sort as view state and its
-//! places as the item type's filters with a count each, a row view, and the choice and facts a
-//! document shows.
-
-#[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
+//! The native vocabulary run: `std.list`'s items and rows, its places as the item type's filters
+//! with a count each, a row view, and the choice and facts a document shows.
 
 #[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.notes "Notes" (icon: .bookmark)
@@ -52,9 +47,8 @@ view note_line(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    state order: Option<Sort<Note>> = .none
     state place: Text = ""
-    let shown = nb.notes.matching(if let o = order { place + " " + o.query } else { place })
+    let shown = nb.notes.matching(place)
     ui.NavShell(
         content_kind: .document,
         sidebar_title: .some(meta(Notebook).title),
@@ -63,9 +57,6 @@ view notebook(nb: Notebook) {
     ) {
         sidebar: {
             std.places(place, of: filters(Note).filter(f -> f.toggle), everything: "All notes", icon: meta(Note).icon)
-        }
-        overview_actions: {
-            std.sorts(order, [Note.title])
         }
         overview: {
             if shown.is_empty() {
@@ -200,7 +191,7 @@ view detail(n: Note) {
     }
 
     #[test]
-    fn the_sort_is_view_state_and_its_places_show_no_count() {
+    fn the_place_chosen_is_view_state_and_its_places_show_no_count() {
         let (rt, app, nb) = setup();
         let mut view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
@@ -222,18 +213,6 @@ view detail(n: Note) {
         let tree = view.tree();
         assert_eq!(text_prop(of_kind(tree, "ui.NavList")[0], "selected"), "all");
         assert_eq!(counts(tree), [None, None]);
-        let checked = |tree: &UiNode, label: &str| {
-            node_with(tree, "ui.MenuItem", "label", label)
-                .props
-                .get("checked")
-                .cloned()
-        };
-        // The list's own order stands first, named by the host's phrase: no phrase source is
-        // hosted here, so its entry reads as the phrase's key.
-        let orders = of_kind(tree, "ui.MenuItem");
-        assert_eq!(text_prop(orders[0], "label"), "tilolang-order-default");
-        assert_eq!(checked(tree, "tilolang-order-default"), Some(Value::Int(1)));
-        assert_ne!(checked(tree, "Title"), Some(Value::Int(1)));
         // Rows are read here as a host that draws every row does.
         view.set_lazy_rows(false).unwrap();
         let pinned = node_with(view.tree(), "ui.NavItem", "key", "is:pinned")
@@ -252,10 +231,6 @@ view detail(n: Note) {
             [None, None],
             "the places show no count whichever is chosen"
         );
-        let title = node_with(tree, "ui.MenuItem", "label", "Title").key.clone();
-        view.fire(&title, "choose").unwrap();
-        view.poll_patches().unwrap();
-        assert_eq!(checked(view.tree(), "Title"), Some(Value::Int(1)));
     }
 
     #[test]

@@ -1,9 +1,9 @@
-//! Native capture through `GStreamer` (everywhere native but macOS):
-//! `v4l2src` for cameras, `autoaudiosrc` for microphones, and `pipewiresrc` on
-//! the node the `ScreenCast` portal grants.
-//! Frames arrive on the streaming thread of `GStreamer` and are handed over through
-//! a single latest-frame slot, so a slow UI never queues camera-sized
-//! allocations.
+//! Native capture through `GStreamer` (everywhere native but macOS): `v4l2src` for
+//! cameras, `autoaudiosrc` for microphones, and `pipewiresrc` on the node the
+//! `ScreenCast` portal grants.
+//!
+//! Frames arrive on the streaming thread and are handed over through a single
+//! latest-frame slot, so a slow UI never queues camera-sized allocations.
 
 #[cfg(gst_microphone)]
 use std::collections::VecDeque;
@@ -25,7 +25,6 @@ fn init() -> Result<(), CaptureError> {
     gst::init().map_err(|e| CaptureError::Failed(format!("GStreamer: {e}")))
 }
 
-/// State shared with the streaming thread.
 struct Shared<T> {
     latest: Option<T>,
     state: Option<CaptureState>,
@@ -221,8 +220,8 @@ impl Drop for Video {
     }
 }
 
-/// Only characters a device path or index can contain, so an id can never
-/// add pipeline syntax.
+/// Only characters a device path or index can contain, so an id can never add
+/// pipeline syntax.
 #[cfg(gst_camera)]
 fn safe_id(id: &str) -> Option<&str> {
     (!id.is_empty()
@@ -247,7 +246,6 @@ pub(crate) fn camera(request: &CameraRequest) -> Result<Box<dyn VideoSource>, Ca
     Ok(Box::new(Video::open(&source, &caps)?))
 }
 
-/// A `pipewiresrc` on the node the ScreenCast portal granted.
 #[cfg(portal_screen)]
 pub(crate) fn pipewire_node(
     fd: std::os::fd::RawFd,

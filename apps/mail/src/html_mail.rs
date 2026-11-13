@@ -1,45 +1,12 @@
 //! An HTML mail as a sealed document for the reader's web engine.
 //!
-//! A message's `text/html` part is hostile input. It can carry script,
-//! forms that post what is typed into them, frames, plugins, a `<meta>`
-//! refresh that navigates the moment the message opens, and remote images,
-//! fonts and style sheets whose requests tell the sender the message was
-//! read. [`prepare`] never hands the engine the mail's own markup: it parses
-//! the markup into a tree as an HTML engine does (html5ever, the WHATWG
-//! parsing algorithm, so unterminated tags, comments, raw text and foreign
-//! content end where the engine ends them) and writes a new document from
-//! the tree that holds only what a mail needs to look like itself.
-//!
-//! * **Only known elements and attributes survive.** Script, style sheets
-//!   from elsewhere, frames, objects, embeds, SVG and `MathML`, templates,
-//!   forms and their controls, `<base>`, `<meta>` and `<link>` are gone, and
-//!   so is every event handler, `target`, `ping`, `srcdoc` and `formaction`.
-//!   Unknown elements lose their tags and keep their text. Text is written
-//!   escaped, attribute values quoted and escaped, so nothing in the mail can
-//!   open a tag the sanitizer did not write.
-//! * **Links are web and mail addresses only.** A link opens in a new
-//!   window (`target="_blank"`), which the engine hands to Mail and Mail to
-//!   the Browser; nothing navigates inside the message. Every link the
-//!   document can open is listed in [`Prepared::links`].
-//! * **Remote content is off until the person allows it.** Remote image
-//!   sources, `srcset` candidates, `background` attributes, CSS `url()`s and
-//!   `@import`s are removed and counted ([`Prepared::remote`]); allowed, they
-//!   are kept and nothing else is. Inline parts (`cid:`) become `data:`
-//!   images and always show, as do the mail's own `data:` images.
-//! * **The document seals itself twice more.** A Content-Security-Policy is
-//!   the first thing in its head ([`content_security_policy`]): no script,
-//!   no frames, no objects, no form submission, no connections, and remote
-//!   images, fonts and styles only when allowed. The engine's request filter
-//!   ([`filter_rules`]) refuses every web request the same way before it
-//!   leaves the process.
-//! * **The mail's own colours stay.** A mail that says it has a dark form
-//!   (a `color-scheme` naming `dark`, or a `prefers-color-scheme` query) is
-//!   set dark in a dark reader, its dark rules on; every other mail is set
-//!   light, on its own light sheet, never inverted. The queries are rewritten
-//!   to what the reader chose, so the engine's own preference never decides.
-//!
-//! The document is loaded as a `data:` URL ([`data_url`]), an opaque origin
-//! with no cookies and no storage.
+//! A message's `text/html` part is hostile input: script, forms, frames, a meta refresh, and
+//! remote images that report the mail was read. [`prepare`] parses the markup as an HTML
+//! engine does (html5ever) and writes a new document holding only what a mail needs to look
+//! like itself: known elements and attributes, web and mail links that open in a new window,
+//! no remote content until the person allows it, and a Content-Security-Policy plus a request
+//! filter that refuse every other connection. It loads as a `data:` URL, an opaque origin with
+//! no cookies and no storage.
 
 use std::fmt::Write as _;
 
@@ -47,56 +14,38 @@ use html5ever::tendril::TendrilSink as _;
 use html5ever::{Attribute, LocalName, ns};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
-/// The longest `data:` URL the engine loads: Chromium refuses URLs over 2 MiB.
 const MAX_DATA_URL: usize = 2 * 1024 * 1024 - 1024;
 
-/// How much of the document inline images may take, base64 included, so the
-/// document still fits a `data:` URL.
 const INLINE_BUDGET: usize = 1024 * 1024;
 
-/// The most links a document lists.
 const MAX_LINKS: usize = 512;
 
-/// The longest URL kept in an attribute.
 const MAX_URL: usize = 8192;
 
-/// An inline part of the message, named by its `Content-ID`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlinePart {
-    /// The part's `Content-ID`, without angle brackets.
     pub id: String,
-    /// Its MIME type, such as `image/png`.
     pub mime: String,
     pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Policy<'a> {
-    /// The person allowed remote content for this message.
     pub remote: bool,
     pub dark: bool,
-    /// The reader's ground and ink as `#rrggbb`, for a mail set dark.
     pub ground: &'a str,
     pub ink: &'a str,
-    /// The message's inline parts, for `cid:` references.
     pub inline: &'a [InlinePart],
 }
 
-/// A mail as a sealed document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Prepared {
-    /// The whole document, to load as [`data_url`].
     pub document: String,
-    /// Every address a link in it opens, in reading order, once each.
     pub links: Vec<String>,
-    /// How many remote references the mail makes: removed unless allowed.
     pub remote: usize,
-    /// The document is set dark: the mail has a dark form and the reader is
-    /// dark. Otherwise it is a light sheet.
     pub dark: bool,
 }
 
-/// The mail `html` as a sealed document under `policy`.
 pub fn prepare(html: &str, policy: &Policy<'_>) -> Prepared {
     let dark = policy.dark && dark_ready(html);
     let mut sanitizer = Sanitizer::new(policy, dark);
@@ -136,7 +85,6 @@ pub fn prepare(html: &str, policy: &Policy<'_>) -> Prepared {
     }
 }
 
-/// Every web and mail address a link in `html` opens.
 pub fn links(html: &str) -> Vec<String> {
     let policy = Policy {
         remote: false,
@@ -150,8 +98,6 @@ pub fn links(html: &str) -> Vec<String> {
     sanitizer.links
 }
 
-/// Every address a link of `message` opens: the links of its HTML, or
-/// the addresses its text names.
 pub fn message_links(message: &crate::model::Message) -> Vec<String> {
     if let Some(html) = &message.html_body {
         return links(html);
@@ -165,9 +111,6 @@ pub fn message_links(message: &crate::model::Message) -> Vec<String> {
     found
 }
 
-/// The web and mail addresses in plain `text` and where each is:
-/// `https://…` and `http://…`, `www.…` (opened over HTTPS) and `name@host`
-/// (written to). Punctuation that ends a sentence is not part of one.
 pub fn text_links(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     let mut found = Vec::new();
     let bytes = text.as_bytes();
@@ -201,7 +144,6 @@ pub fn text_links(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
             && let Some((start, end)) = email_extent(text, i)
         {
             let address = text.get(start..end).unwrap_or_default();
-            // An address inside a web link was taken with it.
             if found
                 .last()
                 .is_none_or(|(range, _): &(std::ops::Range<usize>, String)| range.end <= start)
@@ -216,9 +158,6 @@ pub fn text_links(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     found
 }
 
-/// How far the web address starting `text` goes: to a space or a bracket
-/// that cannot be in one, less the punctuation that ends a sentence, and a
-/// closing parenthesis it did not open.
 fn url_extent(text: &str) -> usize {
     let mut end = text
         .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`' | '{' | '}'))
@@ -237,8 +176,6 @@ fn url_extent(text: &str) -> usize {
     }
 }
 
-/// The mail address around the `@` at `at`: a local part before it and a
-/// host with a dot after it.
 fn email_extent(text: &str, at: usize) -> Option<(usize, usize)> {
     let local = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-');
     let host = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-');
@@ -266,8 +203,6 @@ fn email_extent(text: &str, at: usize) -> Option<(usize, usize)> {
     valid.then_some((start, at + 1 + end))
 }
 
-/// The document as a `data:` URL, or `None` when it is too large to load as
-/// one. Base64 keeps `#`, `%` and non-ASCII text intact.
 pub fn data_url(document: &str) -> Option<String> {
     use base64::Engine as _;
     const PREFIX: &str = "data:text/html;charset=utf-8;base64,";
@@ -281,10 +216,6 @@ pub fn data_url(document: &str) -> Option<String> {
     Some(url)
 }
 
-/// The document's Content-Security-Policy. Script, objects, frames,
-/// workers, connections, form submission and `<base>` are always refused;
-/// images, fonts and styles come only from the document itself (`data:`)
-/// unless remote content is allowed.
 pub fn content_security_policy(remote: bool) -> String {
     let web = if remote { " https: http:" } else { "" };
     format!(
@@ -295,10 +226,6 @@ font-src data:{web}; img-src data:{web}; media-src data:{web}"
     )
 }
 
-/// The engine's request rules (adblock syntax) for a mail document: every
-/// web request refused, or with remote content allowed, everything but
-/// images, fonts, style sheets and media. One type per rule, so a rule the
-/// matcher does not know costs only itself.
 pub fn filter_rules(remote: bool) -> String {
     const ALWAYS: &[&str] = &[
         "document",
@@ -323,9 +250,6 @@ pub fn filter_rules(remote: bool) -> String {
     rules
 }
 
-/// Whether the mail says it has a dark form: a `color-scheme` (the meta tag
-/// or the property, `supported-color-schemes` too) naming `dark`, or a
-/// `prefers-color-scheme: dark` query.
 fn dark_ready(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     let mut from = 0;
@@ -334,7 +258,6 @@ fn dark_ready(html: &str) -> bool {
         let window = lower
             .get(at..(at + 64).min(lower.len()))
             .unwrap_or_default();
-        // Up to the end of the declaration, attribute or query.
         let end = window.find([';', '}', '>', ')']).unwrap_or(window.len());
         if window
             .get(..end)
@@ -347,22 +270,6 @@ fn dark_ready(html: &str) -> bool {
     false
 }
 
-/// The document's end mark: a square in the view's bottom-right corner,
-/// blended to differ from what is under it by one level, so it is invisible
-/// yet unlike the colour beside it. Offscreen Chromium on Linux paints a
-/// resized view before the page has drawn at its new size: the page's old
-/// frame, and the page's background colour in the rest. Only the page's own
-/// frame at the size the view has carries the mark there, so the reader
-/// shows a body once a frame has it (`reader::html`). A pseudo-element of the root,
-/// above everything, so nothing the mail lays out moves or covers it.
-///
-/// The mail's style cannot remove it: the rules are important declarations in
-/// the document's first cascade layer, which win over every important
-/// declaration after it, layered or not, and the layer has no name for a
-/// mail's rule to join. The mark resets every property it does not set, and
-/// the root keeps nothing that would hide, move or contain it. The mail's own
-/// root element, with its attributes, is never written.
-/// `apps/browser/chromium/tests/resize_frames.py` holds Chromium to it.
 pub const END_MARK: &str = "@layer{html::after{all:initial!important;content:\"\"!important;\
 display:block!important;position:fixed!important;right:0!important;bottom:0!important;\
 width:2px!important;height:2px!important;margin:0!important;\
@@ -376,9 +283,6 @@ container-type:normal!important;content-visibility:visible!important;\
 will-change:auto!important;clip-path:none!important;mask:none!important;\
 zoom:1!important;isolation:auto!important;mix-blend-mode:normal!important}}";
 
-/// The document's own style, before the mail's: a light sheet or the
-/// reader's dark ground, preformatted text that wraps, long words that
-/// break, and images without a set height that fit the width.
 fn base_css(dark: bool, policy: &Policy<'_>) -> String {
     let ground = css_color(policy.ground);
     let ink = css_color(policy.ink);
@@ -399,7 +303,6 @@ img:not([height]){max-width:100%}",
     css
 }
 
-/// `color` if it is a `#rrggbb` colour, else black.
 fn css_color(color: &str) -> &str {
     let hex = color.strip_prefix('#').unwrap_or_default();
     if hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -409,7 +312,6 @@ fn css_color(color: &str) -> &str {
     }
 }
 
-/// Elements kept with their attributes.
 const ALLOWED: &[&str] = &[
     "a",
     "abbr",
@@ -493,17 +395,14 @@ const ALLOWED: &[&str] = &[
     "wbr",
 ];
 
-/// Allowed elements without content or an end tag.
 const VOID: &[&str] = &["br", "col", "hr", "img", "wbr"];
 
-/// Elements removed with everything inside them.
 const DROPPED: &[&str] = &[
     "applet", "audio", "canvas", "dialog", "frameset", "iframe", "math", "noembed", "noframes",
     "noscript", "object", "portal", "script", "select", "svg", "template", "textarea", "title",
     "video", "xmp",
 ];
 
-/// Attributes kept as they are, on any allowed element.
 const PLAIN_ATTRIBUTES: &[&str] = &[
     "abbr",
     "align",
@@ -560,7 +459,6 @@ const PLAIN_ATTRIBUTES: &[&str] = &[
     "width",
 ];
 
-/// What the sanitizer does with an element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Allowed,
@@ -568,7 +466,6 @@ enum Kind {
     Link,
     Style,
     Dropped,
-    /// Its tags go; its content stays.
     Unwrapped,
 }
 
@@ -588,7 +485,6 @@ fn kind_of(name: &str) -> Kind {
     }
 }
 
-/// The value of the attribute `name`, as the parser decoded it.
 fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
     attributes
         .iter()
@@ -596,8 +492,6 @@ fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
         .map(|attribute| &*attribute.value)
 }
 
-/// The mail's doctype as written again: an HTML doctype keeps the mode the
-/// mail was written for. The parser keeps one only before any content.
 fn doctype(name: &str, public: &str, system: &str) -> Option<String> {
     if !name.eq_ignore_ascii_case("html") || public.len() + system.len() > 512 {
         return None;
@@ -619,7 +513,6 @@ fn doctype(name: &str, public: &str, system: &str) -> Option<String> {
     })
 }
 
-/// The text inside `node`, such as a style sheet's.
 fn text_content(node: &Handle) -> String {
     let mut text = String::new();
     for child in node.children.borrow().iter() {
@@ -630,7 +523,6 @@ fn text_content(node: &Handle) -> String {
     text
 }
 
-/// One step of the walk over the parsed document.
 enum Step {
     Enter(Handle),
     Close(LocalName),
@@ -638,18 +530,12 @@ enum Step {
 
 struct Sanitizer<'p> {
     policy: &'p Policy<'p>,
-    /// The document is set dark: `prefers-color-scheme: dark` holds.
     dark: bool,
     out: String,
     links: Vec<String>,
     remote: usize,
-    /// The mail's doctype, when it has one: an HTML doctype keeps the mode
-    /// the mail was written for; without one it renders in quirks mode, as
-    /// in the mail clients it was written for.
     doctype: Option<String>,
-    /// The attributes the mail gives its body, written ` name="value"`.
     body: String,
-    /// What inline images may still take of the document.
     inline_budget: usize,
 }
 
@@ -667,8 +553,6 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// Parse `src` as the engine would and write what survives of it. The
-    /// walk keeps its own stack, so no nesting depth can exhaust ours.
     fn run(&mut self, src: &str) {
         let dom =
             html5ever::parse_document(RcDom::default(), html5ever::ParseOpts::default()).one(src);
@@ -754,7 +638,6 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// Text, escaped so nothing in it opens markup.
     fn text(&mut self, text: &str) {
         for c in text.chars() {
             match c {
@@ -767,9 +650,6 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// A `<link>`: a remote style sheet, kept only while remote content is
-    /// allowed. Every other kind (prefetch, preconnect, DNS prefetch, icons)
-    /// goes.
     fn link(&mut self, attributes: &[Attribute]) {
         let stylesheet = attribute(attributes, "rel").is_some_and(|rel| {
             rel.split_ascii_whitespace()
@@ -793,7 +673,6 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// The attributes an allowed element keeps, written ` name="value"`.
     fn attributes(&mut self, element: &str, attributes: &[Attribute]) -> String {
         let mut out = String::new();
         let mut fragment = false;
@@ -873,7 +752,6 @@ impl<'p> Sanitizer<'p> {
             let _ = write!(out, " style=\"{}\"", escape_decoded(&style));
         }
         if element == "a" {
-            // A link opens outside the message; one to a place in it stays.
             if fragment {
                 out.push_str(" target=\"_self\"");
             } else {
@@ -883,8 +761,6 @@ impl<'p> Sanitizer<'p> {
         out
     }
 
-    /// What an image source becomes: an inline part as a `data:` image, the
-    /// mail's own `data:` image, a remote image while allowed; else nothing.
     fn image(&mut self, url: &str) -> Option<String> {
         let scheme = scheme_of(url);
         match scheme.as_deref() {
@@ -898,8 +774,6 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// The inline part a `cid:` reference names, as a `data:` image, while
-    /// the document has room for it.
     fn inline_image(&mut self, reference: &str) -> Option<String> {
         use base64::Engine as _;
         let id = percent_decode(reference);
@@ -923,7 +797,6 @@ impl<'p> Sanitizer<'p> {
         Some(url)
     }
 
-    /// The `srcset` candidates whose images may show.
     fn srcset(&mut self, value: &str) -> String {
         let mut kept: Vec<String> = Vec::new();
         let mut rest = value;
@@ -965,9 +838,6 @@ impl<'p> Sanitizer<'p> {
         kept.join(", ")
     }
 
-    /// A style sheet or a `style` attribute rewritten: its `url()`s and
-    /// `@import`s as [`Self::image`] allows them, the colour-scheme queries
-    /// answered for the reader, and no `<` left in it.
     fn css(&mut self, css: &str, sheet: bool) -> String {
         let css = plain_css_names(css);
         let mut out = String::with_capacity(css.len());
@@ -995,7 +865,6 @@ impl<'p> Sanitizer<'p> {
                     out.push_str("@import");
                     rest = rest.get(7..).unwrap_or_default();
                 } else {
-                    // The whole rule goes, its address with it.
                     rest = rest.get(at_rule_end(rest)..).unwrap_or_default();
                     out.push(' ');
                 }
@@ -1014,9 +883,6 @@ impl<'p> Sanitizer<'p> {
         out
     }
 
-    /// A CSS string token. A string that is a function's argument may be
-    /// fetched (`image-set("…")`, `@import "…"`): an address in one is an
-    /// image as [`Self::image`] allows it, or the empty string.
     fn css_string_token(&mut self, out: &mut String, string: &str, quote: char) {
         let argument = out.trim_end().ends_with(['(', ',']);
         let inner = string
@@ -1034,8 +900,6 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// The `url(…)` at the start of `css`: what replaces it and how much of
-    /// `css` it took.
     fn css_url(&mut self, css: &str) -> (String, usize) {
         let open = 4;
         let inner = css.get(open..).unwrap_or_default();
@@ -1063,9 +927,6 @@ impl<'p> Sanitizer<'p> {
         (replacement, used.min(css.len()))
     }
 
-    /// `prefers-color-scheme: dark` (or `light`) at the start of `css`,
-    /// answered for the reader: a feature that always holds, or one that
-    /// never does.
     fn color_scheme_query(&self, css: &str) -> (String, usize) {
         let name = "prefers-color-scheme";
         let after = css.get(name.len()..).unwrap_or_default();
@@ -1096,8 +957,6 @@ impl<'p> Sanitizer<'p> {
     }
 }
 
-/// How far the statement at-rule at the start of `css` runs: through its
-/// `;` outside strings and brackets, or to the end.
 fn at_rule_end(css: &str) -> usize {
     let mut at = 0;
     let mut depth = 0_usize;
@@ -1119,12 +978,9 @@ fn at_rule_end(css: &str) -> usize {
     css.len()
 }
 
-/// A transparent image one pixel square: what an image held back shows.
 const HELD_BACK_IMAGE: &str =
     "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
-/// An image's `width` or `height` attribute as a length in pixels, if it
-/// is one.
 fn image_length(raw: &str) -> Option<u32> {
     let raw = raw.trim();
     raw.strip_suffix("px")
@@ -1135,7 +991,6 @@ fn image_length(raw: &str) -> Option<u32> {
         .filter(|length| *length > 0)
 }
 
-/// Whether the declarations in `css` set the property `name`.
 fn css_declares(css: &str, name: &str) -> bool {
     css.split(';').any(|declaration| {
         declaration
@@ -1144,15 +999,11 @@ fn css_declares(css: &str, name: &str) -> bool {
     })
 }
 
-/// Whether `text` starts with the ASCII `prefix`, in any case.
 fn starts_ci(text: &str, prefix: &str) -> bool {
     text.get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-/// `css` with the escapes outside strings that spell a name character
-/// resolved, so `u\72l(` reads as the `url(` the engine reads and
-/// `@\69mport` as `@import`. Other escapes, and strings, stay as written.
 fn plain_css_names(css: &str) -> String {
     let mut out = String::with_capacity(css.len());
     let mut chars = css.char_indices().peekable();
@@ -1209,8 +1060,6 @@ fn plain_css_names(css: &str) -> String {
     out
 }
 
-/// The end of the CSS string that starts `css` with `quote`, just past its
-/// closing quote (or the end).
 fn string_end(css: &str, quote: char) -> usize {
     let mut escaped = false;
     for (at, c) in css.char_indices().skip(1) {
@@ -1225,7 +1074,6 @@ fn string_end(css: &str, quote: char) -> usize {
     css.len()
 }
 
-/// CSS text with `<` escaped.
 fn push_css_text(out: &mut String, text: &str) {
     for c in text.chars() {
         if c == '<' {
@@ -1236,7 +1084,6 @@ fn push_css_text(out: &mut String, text: &str) {
     }
 }
 
-/// `value` as the inside of a double-quoted CSS string.
 fn css_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -1251,7 +1098,6 @@ fn css_string(value: &str) -> String {
     out
 }
 
-/// CSS escapes resolved: `\75 rl` is `url`, `\"` a quote.
 fn css_unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
@@ -1276,7 +1122,6 @@ fn css_unescape(value: &str) -> String {
     out
 }
 
-/// What a link opens: a place in the message, or a web or mail address.
 enum Target {
     Fragment(String),
     Address(String),
@@ -1293,8 +1138,6 @@ fn link_target(url: &str) -> Option<Target> {
     }
 }
 
-/// `url` as a remote address, protocol-relative ones on HTTPS; `None` for
-/// any other kind.
 fn remote_url(url: &str) -> Option<String> {
     match scheme_of(url).as_deref() {
         Some("http" | "https") => Some(url.to_owned()),
@@ -1303,7 +1146,6 @@ fn remote_url(url: &str) -> Option<String> {
     }
 }
 
-/// The lower-case scheme of `url`, if it has one.
 fn scheme_of(url: &str) -> Option<String> {
     let colon = url.find(':')?;
     let scheme = url.get(..colon)?;
@@ -1317,7 +1159,6 @@ fn scheme_of(url: &str) -> Option<String> {
     valid.then(|| scheme.to_ascii_lowercase())
 }
 
-/// Whether `url` is a `data:` URL of an image kind a page shows.
 fn data_image(url: &str) -> bool {
     let mime = url
         .get(5..)
@@ -1346,8 +1187,6 @@ fn image_mime(mime: &str) -> bool {
     )
 }
 
-/// `url` without tabs and newlines anywhere, or controls and spaces at its
-/// ends, as URL parsers read it; bounded.
 fn clean_url(url: &str) -> String {
     let cleaned: String = url
         .chars()
@@ -1360,7 +1199,6 @@ fn clean_url(url: &str) -> String {
     trimmed.to_owned()
 }
 
-/// `%XX` escapes decoded.
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1381,9 +1219,6 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A value already decoded (an address, a rewritten style) as an attribute
-/// value: every `&` escaped, so nothing in it is decoded a second time, and
-/// control characters as spaces.
 fn escape_decoded(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {

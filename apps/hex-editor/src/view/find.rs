@@ -1,13 +1,7 @@
-//! Find and replace in the buffer, for the window bar's search: the view is
-//! the [`Findable`] the bar drives in place.
-//!
-//! A hex query is a byte pattern (`de ad be ef`); a text query is matched as
-//! UTF-8, honouring the search's Match case and Whole word. Matches are byte
-//! ranges; the grid paints each with `paint_find_match` over the matched
-//! cells only. A replacement is bytes in the same mode as the query, and
-//! goes through the view's own edit path as one undoable action. Find
-//! (Ctrl+F) and Replace (Ctrl+H) open the bar's search; the view draws no
-//! find field of its own.
+//! Find and replace for the window bar's search, which drives the view in place. A
+//! hex query is a byte pattern and a text query is matched as UTF-8 under Match case
+//! and Whole word; a replacement goes through the view's edit path as one undoable
+//! action.
 
 use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
 use ui::window_toolbar::SearchOpening;
@@ -16,7 +10,6 @@ use super::{Editor, HexView, byte_edit};
 use crate::model::ChangesLength;
 use crate::search::{self, MatchRules, SearchKind};
 
-/// The query the search last ran: its bytes and how they match.
 #[derive(Clone, Debug, Default)]
 pub(super) struct FindQuery {
     needle: Option<Vec<u8>>,
@@ -121,7 +114,6 @@ impl Findable for Editor {
     }
 }
 
-/// The window's search runs on the editor it hosts.
 impl Findable for HexView {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
         self.state().find(query, options)
@@ -157,14 +149,11 @@ impl Findable for HexView {
 }
 
 impl Editor {
-    /// Open the window bar's search on the buffer: on its query for Find,
-    /// on its replacement for Replace.
     pub(super) fn open_find(opening: SearchOpening) {
         ui::window_toolbar::open_search(opening);
     }
 
-    /// The bytes `with` stands for in the mode of the last query: hex bytes
-    /// in hex mode, its UTF-8 bytes in text mode.
+    /// The bytes `with` stands for in the last query's mode.
     fn replacement(&self, with: &str) -> Option<Vec<u8>> {
         match self.query.mode {
             FindMode::Hex => crate::actions::parse_bytes(with).ok(),
@@ -172,9 +161,7 @@ impl Editor {
         }
     }
 
-    /// Replace `spans` with `with` in the view's copy and submit what that
-    /// did as one action of the record, one undo step. Returns how many
-    /// spans changed.
+    /// Replace `spans` with `with` as one action of the record, one undo step.
     fn replace_spans(&mut self, spans: &[(usize, usize)], with: &str) -> usize {
         let Some(bytes) = self.replacement(with) else {
             self.problem(
@@ -199,8 +186,7 @@ impl Editor {
         }
     }
 
-    /// Submit the edits a replacement or a paste made as one action: a step
-    /// of its own, never joined to typing before or after it.
+    /// Submit the edits as one step of its own, never joined to typing.
     pub(super) fn submit_one_step(&mut self) {
         let edits = self.model.take_edits();
         self.content_changed();
@@ -218,7 +204,6 @@ impl Editor {
         dispatch.settle();
     }
 
-    /// The bytes changed: an open search finds again, keeping its place.
     pub(super) fn content_changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;

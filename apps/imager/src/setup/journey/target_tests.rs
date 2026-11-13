@@ -1,5 +1,5 @@
-//! Destination compatibility for another computer, through the production
-//! preview effects rather than a standalone parser.
+//! Destination compatibility for another computer, through the production preview
+//! effects.
 
 use super::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
 use imager_backend::support_report::{
@@ -163,8 +163,6 @@ fn model_only_never_authorizes_boot_partition_or_protection() {
     assert_eq!(projection["report"]["components"], serde_json::json!([]));
     assert!(preview.storage.facts.is_none());
 
-    // The medium cannot be prepared for a destination the journey has not
-    // identified, and a model is not a grant for anything on that computer.
     preview.target.clear_report();
     for field in ["manufacturer", "model", "variant"] {
         preview
@@ -221,8 +219,6 @@ fn imported_report_must_name_a_supported_architecture_and_model() {
         "a rejected file leaves the accepted report in place"
     );
 
-    // Another architecture is a target, not an error: the verified catalog
-    // selects that payload when the medium is prepared.
     let other_architecture = report(Some(other), vec![supported_graphics()])
         .to_json()
         .unwrap();
@@ -258,9 +254,6 @@ fn imported_report_must_name_a_supported_architecture_and_model() {
     );
 }
 
-/// A computer Tilo can never run on is refused with the reason, not only the
-/// absence of an image. The three boundaries are the issue's: 32-bit, a
-/// big-endian byte order, and a processor with no Vulkan compute driver.
 #[test]
 fn architecture_boundaries_state_why_tilo_cannot_run_there() {
     let boundaries: [(&[&str], &str); 3] = [
@@ -287,8 +280,6 @@ fn architecture_boundaries_state_why_tilo_cannot_run_there() {
         }
     }
 
-    // A 64-bit little-endian architecture Tilo has not built or boot-tested is
-    // not refused as impossible: it has no image yet, and the page says so.
     for architecture in ["riscv64", "ppc64le", "x86_64", "aarch64"] {
         assert_eq!(
             crate::release::unqualified_architecture(architecture),
@@ -341,8 +332,6 @@ fn a_selected_or_imported_architecture_boundary_is_refused_with_its_reason() {
     );
     assert_ne!(preview.target.architecture(), "ppc64");
 
-    // An imported report from that computer says the same thing, before the
-    // medium could be prepared for a processor Tilo cannot use.
     let bytes = report(Some("i686"), vec![supported_graphics()])
         .to_json()
         .unwrap();
@@ -536,10 +525,6 @@ fn a_medium_for_another_architecture_never_falls_back_to_this_ones_payload() {
         .import_bytes(Some("elsewhere.json".into()), &bytes)
         .unwrap();
     assert_eq!(preview.target.architecture(), other);
-    // The catalog publishes no payload for that architecture, so a
-    // cross-architecture medium is refused here instead of quietly writing
-    // this computer's image. The empty test catalog also keeps this test
-    // deterministic while another test holds the environment lock.
     let catalog = tempfile::tempdir().unwrap();
     let path = catalog.path().join("catalog.json");
     std::fs::write(&path, r#"{"schema":1,"tag":"unreleased","releases":[]}"#).unwrap();
@@ -595,8 +580,6 @@ fn a_saved_target_choice_restores_the_same_model_and_report_without_a_path() {
         .unwrap();
     let draft = preview.target.draft_choices();
     let encoded = serde_json::to_vec(&draft).unwrap();
-    // The private restart record carries the selection and the evidence, not
-    // the source path or file name the person picked.
     assert!(!String::from_utf8_lossy(&encoded).contains("private-destination"));
     assert!(!String::from_utf8_lossy(&encoded).contains("Prepared Setup"));
     let restored_draft: super::draft::TargetDraft = serde_json::from_slice(&encoded).unwrap();

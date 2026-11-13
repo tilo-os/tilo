@@ -27,12 +27,9 @@ pub struct PublishedApplication {
     /// Allow-listed `RemoteApp` alias registered in the guest, never an executable path.
     #[serde(rename = "remoteAppAlias", alias = "remote_app_alias")]
     pub remote_app_alias: String,
-    /// Content hash of the icon returned separately by the guest bridge.
     #[serde(rename = "iconSha256", alias = "icon_sha256")]
     pub icon_sha256: Option<String>,
     pub associations: Vec<Association>,
-    /// The guest has a safely typed, administrator-owned uninstall record.
-    /// No command or product code is exposed through the catalogue.
     #[serde(default, rename = "uninstallAvailable", alias = "uninstall_available")]
     pub uninstall_available: bool,
 }

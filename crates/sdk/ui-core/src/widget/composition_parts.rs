@@ -1,5 +1,6 @@
 //! Shared retained-child lifecycle only; each composition owns its policy.
 use super::{Element, TaffyTreeExt, Widget};
+use crate::widget::DrawChild;
 use crate::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use std::collections::HashMap;
 use taffy::{NodeId, Style, TaffyTree};
@@ -54,7 +55,7 @@ impl Parts {
         presence: &PresenceCtx,
     ) {
         for child in &mut self.children {
-            child.draw(scene, transform, text, theme, presence);
+            child.draw_child(scene, transform, text, theme, presence);
         }
     }
 }

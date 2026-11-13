@@ -21,6 +21,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::{Button, Widget};
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -38,15 +39,12 @@ pub enum Command {
     Fit,
     ToggleProblems,
     ToggleOutline,
-    /// Narrow window: show the source editor pane.
     ShowEditor,
-    /// Narrow window: show the rendered preview pane.
     ShowPreview,
 }
 
 type Queue = Rc<RefCell<Vec<Command>>>;
 
-/// The slots' ids, which come back in [`ToolbarEvent::Action`].
 const COMPILE: &str = "typst.compile";
 const PROBLEMS: &str = "typst.problems";
 const OUTLINE: &str = "typst.outline";
@@ -59,7 +57,6 @@ const EXPORT_PDF: &str = "typst.export-pdf";
 const EDITOR_PANE: &str = "typst.view.editor";
 const PREVIEW_PANE: &str = "typst.view.preview";
 
-/// The height of one control in `theme`, measured at the current text scale.
 pub(crate) fn control_height(tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let metrics = &theme.tokens.metrics;
     let line = tr
@@ -100,7 +97,6 @@ pub struct Chrome {
     queue: Queue,
     close_problems: Button,
     held: Held,
-    /// The Problems panel's close button is laid out and in the tree.
     close: bool,
     structure_dirty: bool,
 }
@@ -111,12 +107,11 @@ impl Default for Chrome {
     }
 }
 
-/// The Problems toggle's name: the count of problems, when there are any.
 fn problems_name(problems: usize) -> String {
     if problems == 0 {
-        ui::i18n::I18nManager::lookup_plain("typst-problems")
+        crate::resource::CATALOG.t("typst-problems")
     } else {
-        ui::i18n::I18nManager::format("typst-problems-count", &[("count", problems.into())])
+        crate::resource::CATALOG.t_args("typst-problems-count", &[("count", problems.into())])
     }
 }
 
@@ -127,7 +122,7 @@ impl Chrome {
             close_problems: Button::icon_only(
                 "typst.close-problems",
                 Icon::X,
-                &ui::i18n::I18nManager::lookup_plain("typst-close-problems"),
+                &crate::resource::CATALOG.t("typst-close-problems"),
             )
             .on_view({
                 let queue = Rc::clone(&queue);
@@ -140,7 +135,6 @@ impl Chrome {
         }
     }
 
-    /// Bind the panel's close button to the resource's declared operation.
     pub(crate) fn attach_actions(
         &mut self,
         actions: &ui::framework::Actions<crate::resource::Workspace>,
@@ -149,14 +143,13 @@ impl Chrome {
             Button::icon_only(
                 "typst.close-problems",
                 Icon::X,
-                &ui::i18n::I18nManager::lookup_plain("typst-close-problems"),
+                &crate::resource::CATALOG.t("typst-close-problems"),
             ),
             &crate::actions::TypstEffect::Problems,
         );
         self.structure_dirty = true;
     }
 
-    /// Everything the slots were asked to do since the last call.
     pub fn take(&mut self) -> Vec<Command> {
         std::mem::take(&mut *self.queue.borrow_mut())
     }
@@ -168,9 +161,8 @@ impl Chrome {
         self.held = held;
     }
 
-    /// The window bar's slots for what the editor holds now.
     fn toolbar(&self) -> WindowToolbar {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::resource::CATALOG.t(key);
         let editor = ToolbarView {
             id: EDITOR_PANE.to_owned(),
             label: lookup("typst-view-editor"),
@@ -241,7 +233,6 @@ impl Chrome {
         asked
     }
 
-    /// What one thing done in the bar asks the editor to do.
     fn handle(&self, event: &ToolbarEvent) -> bool {
         let command = match event {
             ToolbarEvent::Action { id } => match id.as_str() {
@@ -266,15 +257,12 @@ impl Chrome {
         command.is_some()
     }
 
-    /// Whether the slots were rebuilt since the layout tree was.
     pub fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty)
     }
 
-    /// The layout tree was rebuilt.
     pub fn layout_rebuilt(&mut self) {}
 
-    /// Place the Problems panel's close button; `None` hides it.
     pub fn place_close(&mut self, rect: Option<Rect>) {
         let shown = rect.is_some();
         if shown != self.close {
@@ -311,7 +299,6 @@ impl Chrome {
         children
     }
 
-    /// Paint the controls that show in the current layout.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -321,7 +308,7 @@ impl Chrome {
         presence: &PresenceCtx,
     ) {
         for child in self.children_mut() {
-            child.draw(scene, transform, tr, theme, presence);
+            child.draw_child(scene, transform, tr, theme, presence);
         }
     }
 

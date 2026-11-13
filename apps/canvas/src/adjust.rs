@@ -26,7 +26,6 @@ const TONE_SAMPLES: usize = 1024;
 const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 impl Adjust {
-    /// Whether it changes nothing.
     pub fn is_identity(&self) -> bool {
         self.clone().normalized().is_none()
     }
@@ -124,13 +123,11 @@ impl Adjust {
         None
     }
 
-    /// The steps that act on each pixel alone, prepared.
     pub fn grade(&self) -> Option<Grade> {
         Grade::new(self)
     }
 }
 
-/// The per-pixel steps of an [`Adjust`], prepared to run over many pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Grade {
     /// Per channel: the tone each input level becomes.
@@ -202,7 +199,6 @@ impl Grade {
         (!identity).then_some(grade)
     }
 
-    /// One colour, each channel `0..=1`, graded.
     #[allow(
         clippy::many_single_char_names,
         reason = "r, g, b are the channels' names"
@@ -248,7 +244,6 @@ impl Grade {
         [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
     }
 
-    /// A colour as `#rrggbbaa`, graded; its alpha kept.
     pub fn colour(&self, [r, g, b, a]: [u8; 4]) -> [u8; 4] {
         let [r, g, b] = self.rgb([r, g, b].map(|channel| f32::from(channel) / 255.0));
         [byte(r), byte(g), byte(b), a]
@@ -421,7 +416,6 @@ fn saturate_matrix(amount: f32) -> [[f32; 3]; 3] {
     ]
 }
 
-/// `a` after `b`.
 fn multiply(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
     let column = |index: usize| b.map(|row| row.get(index).copied().unwrap_or(0.0));
     a.map(|row| {
@@ -434,7 +428,6 @@ fn multiply(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
     })
 }
 
-/// Straight RGBA pixels graded by each of `grades` in turn; alpha kept.
 pub fn grade_pixels(pixels: &mut [u8], grades: &[Grade]) {
     if grades.is_empty() {
         return;
@@ -521,12 +514,10 @@ fn reciprocal(span: u32) -> u64 {
     (1_u64 << 32).div_ceil(u64::from(span.max(1)))
 }
 
-/// The rounded mean of `span` bytes summing to `sum`.
 fn mean(sum: u32, span: u32, scale: u64) -> u8 {
     ((u64::from(sum + span / 2) * scale) >> 32).min(255) as u8
 }
 
-/// Each row averaged over `reach` pixels either side.
 fn box_rows(pixels: &mut [u8], width: usize, reach: usize) {
     let row_bytes = width * 4;
     let last = width.saturating_sub(1);
@@ -564,7 +555,6 @@ fn box_rows(pixels: &mut [u8], width: usize, reach: usize) {
     });
 }
 
-/// Each column averaged over `reach` pixels above and below.
 fn box_columns(pixels: &mut [u8], width: usize, height: usize, reach: usize) {
     let row_bytes = width * 4;
     let source = pixels.to_vec();

@@ -1,18 +1,11 @@
-//! Display layouts remembered per set of attached monitors.
+//! Display layouts remembered per set of attached monitors: the office dock restores the office
+//! arrangement whichever DP port it enumerates first, and a different monitor on a familiar port
+//! never inherits a stranger's position or mode.
 //!
-//! A layout belongs to the monitors it was arranged for, not to the ports
-//! they happened to use: the office dock restores the office arrangement
-//! whichever DP port the dock enumerates first, and a different monitor
-//! on a familiar port never inherits a stranger's position or mode. Each
-//! attached sink contributes a token — its EDID make, model and serial, or
-//! its connector label when it has no EDID — and the sorted tokens form the
-//! set's key. Two identical monitors (same make, model and serial, or both
-//! reporting no serial) are told apart by their connector.
-//!
-//! Each monitor also keeps the modes and scales it has shown in a layout
-//! that was kept, so a display tool's change to something it has shown
-//! before can apply without asking, and the scale and rotation it was last
-//! shown at, which it keeps in a set of monitors never arranged before.
+//! Each attached sink contributes a token (its EDID make, model and serial, or its connector label
+//! when it has no EDID) and the sorted tokens form the set's key; two identical monitors are told
+//! apart by their connector. Each monitor also keeps the modes and scales it has shown in a kept
+//! layout, so a display tool's change to one of them needs no confirmation.
 
 use std::collections::BTreeMap;
 
@@ -20,12 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{DisplayConfig, MonitorIdentity, OutputDescriptor, OutputMode, OutputTransform};
 
-/// One attached sink as set matching sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct AttachedOutput<'a> {
-    /// Collision-free persistence key (see [`OutputDescriptor::connector`]).
     pub connector: &'a str,
-    /// Raw DRM connector label, e.g. `DP-2`.
     pub connector_label: &'a str,
     pub monitor: Option<&'a MonitorIdentity>,
 }
@@ -40,13 +30,10 @@ impl<'a> From<&'a OutputDescriptor> for AttachedOutput<'a> {
     }
 }
 
-/// The monitors attached right now, and the key their layout is saved
-/// under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct DisplaySet {
     pub key: String,
-    /// Persistence key of each attached output → its identity token.
     pub members: BTreeMap<String, String>,
 }
 
@@ -93,8 +80,6 @@ impl DisplaySet {
     }
 }
 
-/// An EDID identity token, or `None` when the EDID names nothing that
-/// could recognise the monitor again.
 fn monitor_token(monitor: &MonitorIdentity) -> Option<String> {
     if monitor.make.is_empty() && monitor.model.is_empty() && monitor.serial.is_empty() {
         return None;
@@ -105,31 +90,21 @@ fn monitor_token(monitor: &MonitorIdentity) -> Option<String> {
     ))
 }
 
-/// A layout together with the identity of each output it arranged, so it
-/// can follow a monitor that comes back on another port.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayProfile {
-    /// Persistence key at save time → identity token.
     pub members: BTreeMap<String, String>,
     pub config: DisplayConfig,
 }
 
-/// What one monitor has shown in a layout that was kept.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MonitorHistory {
     pub modes: Vec<OutputMode>,
     pub scales: Vec<f64>,
-    /// The scale and rotation it had in the most recently kept layout.
-    /// `None` in a file written before this was recorded.
     pub last: Option<MonitorLast>,
 }
 
-/// The scale and rotation a monitor was shown at in the most recently kept
-/// layout: what it keeps when it joins a set of monitors never arranged
-/// before, so a 1.25x laptop panel stays at 1.25x the first time it is
-/// docked.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MonitorLast {
     pub scale: f64,
@@ -137,8 +112,6 @@ pub struct MonitorLast {
 }
 
 impl MonitorHistory {
-    /// Enough for every scale step and a monitor's usual modes; the oldest
-    /// entry makes room for a new one.
     const LIMIT: usize = 32;
 
     pub fn has_mode(&self, mode: OutputMode) -> bool {
@@ -165,13 +138,10 @@ impl MonitorHistory {
     }
 }
 
-/// Whether two scales are the same step; they travel as 24.8 fixed point.
 pub fn same_scale(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-3
 }
 
-/// Every remembered layout, keyed by [`DisplaySet::key`], and what each
-/// monitor has shown, keyed by its identity token.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayProfiles {
@@ -189,10 +159,6 @@ impl DisplayProfiles {
         .unwrap_or_default()
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
     pub fn save(&self) -> std::io::Result<()> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         crate::update_section(
@@ -201,9 +167,6 @@ impl DisplayProfiles {
         )
     }
 
-    /// The layout saved for exactly this set of monitors, with each output
-    /// re-keyed to where that monitor is attached now. `None` for a set
-    /// never arranged before: the compositor then lays it out itself.
     pub fn layout_for(&self, set: &DisplaySet) -> Option<DisplayConfig> {
         let profile = self.profiles.get(&set.key)?;
         let mut current_by_token = BTreeMap::<&str, &str>::new();
@@ -235,14 +198,10 @@ impl DisplayProfiles {
         Some(config)
     }
 
-    /// What the monitor attached at `connector` in `set` has shown in a
-    /// kept layout.
     pub fn history_for(&self, set: &DisplaySet, connector: &str) -> Option<&MonitorHistory> {
         self.monitors.get(set.members.get(connector)?)
     }
 
-    /// What each monitor attached in `set` was last shown at, keyed by where
-    /// it is attached now. Monitors never shown in a kept layout are absent.
     pub fn last_shown_in(&self, set: &DisplaySet) -> BTreeMap<String, MonitorLast> {
         set.members
             .iter()
@@ -252,9 +211,6 @@ impl DisplayProfiles {
             .collect()
     }
 
-    /// Remember `config` as the layout for `set`, and each enabled output's
-    /// mode, scale and rotation as shown by its monitor. Entries for outputs that are
-    /// not part of the set are dropped: they describe another set.
     pub fn remember(&mut self, set: &DisplaySet, config: &DisplayConfig) {
         let mut kept = DisplayConfig::default();
         for (connector, output) in &config.outputs {
@@ -284,10 +240,6 @@ impl DisplayProfiles {
 }
 
 impl DisplayConfig {
-    /// [`Self::load_effective`], together with what each attached monitor
-    /// was last shown at ([`DisplayProfiles::last_shown_in`]) — the scale
-    /// and rotation an output the configuration does not name keeps — from
-    /// one read of the saved layouts.
     pub fn load_effective_remembering(set: &DisplaySet) -> (Self, BTreeMap<String, MonitorLast>) {
         let profiles = DisplayProfiles::load();
         let committed = profiles.layout_for(set).unwrap_or_default();
@@ -498,7 +450,6 @@ mod tests {
             "a monitor never shown in a kept layout has nothing to keep"
         );
 
-        // The most recent kept layout is the one a monitor remembers.
         let mut alone = DisplayConfig::default();
         alone
             .outputs

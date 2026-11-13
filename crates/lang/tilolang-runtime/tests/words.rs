@@ -3,12 +3,8 @@
 //! interpolations as arguments; a literal that is data, or that a view compares, is not.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value, Words};
 
     const SOURCE: &str = r#"app so.tilo.inbox "Inbox"

@@ -1,11 +1,11 @@
-//! The window's decisions: deleting a contact, leaving unsaved edits, an
-//! imported card whose identity collides with one in the book, merging a
-//! duplicate, and the format of an export. Each is a [`ModalDialog`] in the
-//! window's top layer; its buttons queue a [`DialogChoice`] that the app
-//! applies to whichever decision is open.
+//! The window's decisions: deleting a contact, leaving unsaved edits, an imported
+//! card whose identity collides with one in the book, merging a duplicate, and
+//! the format of an export. Each is a [`ModalDialog`] in the window's top layer,
+//! whose buttons queue a [`DialogChoice`] that the app applies.
 
 use std::collections::HashSet;
 
+use ui::i18n::ArgValue;
 use ui::widget::{
     Button, Column, ControlSize, Dropdown, Element, Field, ModalDialog, Property, PropertyList,
     Row, Text, Widget,
@@ -13,12 +13,12 @@ use ui::widget::{
 use ui::{LocalState, TextRole};
 
 use super::{ContactsApp, DuplicateReview};
+use crate::account_editor::CATALOG;
 use crate::actions::MergeField;
 use crate::model::{Contact, ContactId};
 use crate::vcard::VCardVersion;
 use crate::view::{DialogChoice, Request, Shared, queue};
 
-/// Which decision a dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DialogKey {
     Unsaved(ContactId),
@@ -27,13 +27,10 @@ pub(super) enum DialogKey {
     Export,
 }
 
-/// The export formats, newest first: the stored value and the label.
 const FORMATS: &[(&str, &str)] = &[("4.0", "vCard 4.0"), ("3.0", "vCard 3.0, for older apps")];
 
-/// The export the person is choosing a format for.
 pub(super) struct ExportDraft {
     pub(super) ids: Vec<ContactId>,
-    /// One sentence: what is exported.
     pub(super) summary: String,
     pub(super) format: LocalState<String>,
     pub(super) selected: LocalState<HashSet<ContactId>>,
@@ -49,9 +46,8 @@ impl ExportDraft {
     }
 }
 
-/// A shared checkbox table whose six-row window follows the current type
-/// and density. The full directory remains data; layout and AT mount only
-/// its viewport rather than a checkbox widget per contact.
+/// A checkbox table whose six-row window follows the type and density: layout
+/// and assistive technology mount only its viewport, not a widget per contact.
 struct ExportSelection {
     table: ui::widget::data_table::DataTable<Contact>,
 }
@@ -126,26 +122,31 @@ pub(super) fn duplicate_field_value(contact: &Contact, field: MergeField) -> Str
     }
 }
 
-/// What two duplicate cards have in common, as a phrase: "an email, a
-/// phone number and a name".
+/// What two duplicate cards share, as a phrase: "an email, a phone number and a
+/// name".
 pub(super) fn shared_facts(reasons: &[crate::actions::DuplicateReason]) -> String {
     use crate::actions::DuplicateReason;
-    let facts: Vec<&str> = reasons
+    let facts: Vec<String> = reasons
         .iter()
         .map(|reason| match reason {
-            DuplicateReason::Email => "an email",
-            DuplicateReason::Phone => "a phone number",
-            DuplicateReason::Name => "a name",
+            DuplicateReason::Email => CATALOG.t("contacts-fact-email"),
+            DuplicateReason::Phone => CATALOG.t("contacts-fact-phone"),
+            DuplicateReason::Name => CATALOG.t("contacts-fact-name"),
         })
         .collect();
     match facts.split_last() {
-        None => "their details".to_owned(),
-        Some((last, [])) => (*last).to_owned(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => CATALOG.t("contacts-facts-details"),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => CATALOG.t_args(
+            "contacts-facts-and",
+            &[
+                ("first", rest.join(", ").into()),
+                ("last", last.as_str().into()),
+            ],
+        ),
     }
 }
 
-/// The single-value fields two duplicates disagree on.
 pub(super) fn duplicate_conflicts(survivor: &Contact, source: &Contact) -> Vec<MergeField> {
     let differs = |left: &str, right: &str| {
         !left.trim().is_empty() && !right.trim().is_empty() && left != right
@@ -173,8 +174,6 @@ pub(super) fn duplicate_conflicts(survivor: &Contact, source: &Contact) -> Vec<M
 }
 
 impl DuplicateReview {
-    /// Open a review of `source` merging into `survivor`, keeping the
-    /// survivor's value of every field until the person chooses otherwise.
     pub(super) fn new(
         survivor: Contact,
         source: Contact,
@@ -192,7 +191,6 @@ impl DuplicateReview {
         }
     }
 
-    /// The fields whose value comes from the contact that is merged away.
     pub(super) fn take_from_source(&self) -> HashSet<MergeField> {
         self.choices
             .iter()
@@ -201,7 +199,6 @@ impl DuplicateReview {
             .collect()
     }
 
-    /// Keep the merged-away contact's value of `field` (or the survivor's).
     #[cfg(test)]
     pub(super) fn choose(&self, field: MergeField, take_source: bool) {
         if let Some((_, choice)) = self.choices.iter().find(|(f, _)| *f == field) {
@@ -211,7 +208,6 @@ impl DuplicateReview {
 }
 
 impl ContactsApp {
-    /// The decision the window asks for now, topmost first.
     pub(super) fn wanted_dialog(&self) -> Option<DialogKey> {
         if let Some(review) = &self.duplicate_review {
             return Some(DialogKey::Duplicate(review.survivor.id, review.source.id));
@@ -246,7 +242,7 @@ impl ContactsApp {
                 Box::new(
                     dialog(
                         &format!("Save changes to {name}?"),
-                        body("Your changes are lost if you don't save them."),
+                        body(&CATALOG.t("contacts-changes-lost")),
                         shared,
                         "Save",
                         "Don't save",
@@ -269,9 +265,13 @@ impl ContactsApp {
                 let existing = self.name_of(conflict.existing);
                 Box::new(
                     dialog(
-                        &format!("Import {} as a new contact?", conflict.incoming.display_name()),
-                        body(&format!(
-                            "The imported card has the same identity as {existing} in your book, but different details."
+                        &format!(
+                            "Import {} as a new contact?",
+                            conflict.incoming.display_name()
+                        ),
+                        body(&CATALOG.t_args(
+                            "contacts-import-same-identity",
+                            &[("existing", ui::i18n::ArgValue::Text(existing))],
                         )),
                         shared,
                         "Import as new",
@@ -292,21 +292,25 @@ impl ContactsApp {
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
-            .push(Box::new(body(&format!(
-                "These cards share {}. This card stays, with every phone number, email, address and group of both.",
-                shared_facts(&review.reasons)
+            .push(Box::new(body(&CATALOG.t_args(
+                "contacts-cards-share",
+                &[(
+                    "facts",
+                    ui::i18n::ArgValue::Text(shared_facts(&review.reasons)),
+                )],
             ))));
-        // Each field the cards disagree on: its name and which value the
-        // merged card keeps, then both values in full.
         for (field, choice) in &review.choices {
             let label = duplicate_field_label(*field);
             let current = duplicate_field_value(&review.survivor, *field);
             let other = duplicate_field_value(&review.source, *field);
-            let keep = "Keep this card's".to_owned();
-            let take = "Keep the other card's".to_owned();
+            let keep = CATALOG.t("contacts-keep-this-card");
+            let take = CATALOG.t("contacts-keep-other-card");
             let mut menu = Dropdown::from_state(vec![keep.clone(), take.clone()], choice)
                 .with_id(&format!("contacts.duplicate.{field:?}"))
-                .with_accessible_name(format!("{label} to keep"));
+                .with_accessible_name(CATALOG.t_args(
+                    "contacts-keep-field",
+                    &[("field", ArgValue::Text(label.to_owned()))],
+                ));
             menu.set_value_options(vec![
                 ("current".to_owned(), keep),
                 ("other".to_owned(), take),
@@ -316,8 +320,6 @@ impl ContactsApp {
                 .with_justify(taffy::JustifyContent::SpaceBetween)
                 .push(Box::new(Text::new(label).with_role(TextRole::Subheading)))
                 .push(Box::new(menu.control_size(ControlSize::Small)));
-            // A field's name, choice and values hold together; the next
-            // field stands a section apart.
             content = content.push(Box::new(
                 Column::new()
                     .with_no_padding()
@@ -325,8 +327,8 @@ impl ContactsApp {
                     .with_rhythm(ui::tokens::Rhythm::Related)
                     .push(Box::new(heading))
                     .push(Box::new(PropertyList::new(vec![
-                        Property::new("This card", current),
-                        Property::new("Other card", other),
+                        Property::new(CATALOG.t("contacts-this-card"), current),
+                        Property::new(CATALOG.t("contacts-other-card"), other),
                     ]))),
             ));
         }
@@ -384,7 +386,7 @@ impl ContactsApp {
             .with_text(|row: &Contact| row.display_name()),
         ])
         .with_id("contacts.export.selection")
-        .with_accessible_name("Contacts to export")
+        .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-export-list"))
         .selectable(true)
         .on_check_view("contacts.export.selection", move |index, checked| {
             if let Some(id) = toggled_ids.get(index) {
@@ -409,14 +411,16 @@ impl ContactsApp {
                 Row::new()
                     .with_padding_rhythm(None, None)
                     .push(Box::new(
-                        Button::new("contacts.export.all", "Select all").on_view(move || {
-                            all_state.set(ids.iter().copied().collect());
-                        }),
+                        Button::new("contacts.export.all", &CATALOG.t("contacts-select-all"))
+                            .on_view(move || {
+                                all_state.set(ids.iter().copied().collect());
+                            }),
                     ))
                     .push(Box::new(
-                        Button::new("contacts.export.none", "Select none").on_view(move || {
-                            none_state.set(HashSet::new());
-                        }),
+                        Button::new("contacts.export.none", &CATALOG.t("contacts-select-none"))
+                            .on_view(move || {
+                                none_state.set(HashSet::new());
+                            }),
                     )),
             ))
             .push(Box::new(ExportSelection { table }))
@@ -428,7 +432,6 @@ impl ContactsApp {
         ))
     }
 
-    /// Apply the person's answer to the open decision.
     pub(super) fn answer_dialog(&mut self, doc: &mut ui::widget::Edits<'_>, choice: DialogChoice) {
         let Some(key) = self.wanted_dialog() else {
             return;
@@ -520,9 +523,9 @@ impl ContactsApp {
         Ok(())
     }
 
-    /// Merge as reviewed. The host asks the person to confirm; the review
-    /// stays up behind its question and closes once the book no longer
-    /// holds the merged-away contact, so a cancelled merge returns to it.
+    /// Merge as reviewed. The host asks the person to confirm; the review stays up
+    /// behind its question and closes once the book no longer holds the merged-away
+    /// contact, so a cancelled merge returns to it.
     pub(super) fn merge_duplicate_review(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(review) = &self.duplicate_review else {
             return;

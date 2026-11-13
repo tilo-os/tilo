@@ -336,6 +336,20 @@ impl Client {
 
         let mut report = Report::default();
 
+        // TILO PATCH: in a browser the only probe is an HTTPS `GET /ping` to
+        // each relay, which ranks relays by latency to choose the home one. A
+        // page that knows one relay has nothing to rank, and the browser keeps
+        // each probe's connection idle in its pool until the relay drops it as
+        // a connection that never became a relay session (an error on the
+        // relay, every report). So that relay is home without a probe.
+        #[cfg(wasm_browser)]
+        if num_relays == 1 {
+            report.preferred_relay = self.relay_map.urls::<Vec<RelayUrl>>().into_iter().next();
+            self.add_report_history_and_set_preferred_relay(&mut report);
+            debug!(?report, "net_report generated without probes: one relay");
+            return report;
+        }
+
         // Start the reportgen client to start any needed probes
         let (actor, mut probe_rx) = reportgen::Client::new(
             self.reports.last.clone(),

@@ -1,14 +1,5 @@
 //! Offscreen renders of the unified Ctrl+K palette (`tilo_ui::ActionPalette`).
-//!
-//! One surface, driven by the resource/action model: the focused app's exported
-//! `ActionSpec`s form the **Actions** group, and a folded-in `SearchProvider`
-//! (here, contacts) forms a **Contacts** results group. Rendered by the shared
-//! `SearchField` + `SearchResultsView` — the same widgets the "find things"
-//! surface uses — so the pixels match the live Ctrl+K.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- ctrl_k_palette`
-//! Out:  `$CTRLK_PALETTE_OUT` (default `/tmp/ctrl_k_palette`) —
-//!       `ctrlk-{dark,light}-browse.png`, `ctrlk-dark-query.png`
 
 use std::path::{Path, PathBuf};
 

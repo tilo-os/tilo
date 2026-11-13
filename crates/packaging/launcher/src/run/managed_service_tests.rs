@@ -7,9 +7,9 @@ fn manifest(kind: &str, entrypoint_type: &str) -> ManifestView {
     )
 }
 
-/// A page opened for an agent reaches the app as its address and then
-/// the app's visitor switch, so the window browses without the person's
-/// sign-ins; without the switch the app is handed the address alone.
+/// A page opened for an agent reaches the app as its address and then the app's visitor switch, so the
+/// window browses without the person's sign-ins; without the switch the app is handed the address
+/// alone.
 #[test]
 fn a_visitor_launch_hands_the_app_its_visitor_switch() {
     let mut opts = RunOptions {

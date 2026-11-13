@@ -1,35 +1,15 @@
-//! Starting a host application, and what that means.
+//! Starting a host application, and what that means. A Tilo package runs inside
+//! Tilo's sandbox: bubblewrap, a seccomp deny-list, Landlock, one writable
+//! directory. A host application does not, and cannot be made to: a Flatpak
+//! brings its own sandbox, which Tilo's seccomp filter denies, and a plain
+//! binary has no manifest to derive a policy from.
 //!
-//! # The decision this module encodes
-//!
-//! A Tilo package runs inside Tilo's sandbox: bubblewrap with `--unshare-all`, a seccomp
-//! deny-list, Landlock, one writable directory, and an environment carrying the app's room. A
-//! host application **does not**, and cannot be made to:
-//!
-//! - A Flatpak brings its own sandbox, which needs `unshare(2)`/`mount(2)`/`pivot_root(2)` —
-//!   denied by Tilo's baseline seccomp filter — plus `/usr/bin` and its own runtime tree, not
-//!   bound in Tilo's sandbox. `flatpak run` inside Tilo's sandbox doesn't doubly-confine it;
-//!   it just fails to start.
-//! - A plain distribution binary has no sandbox and no manifest to derive a policy from —
-//!   Tilo's sandbox is built out of a package manifest, and a `.desktop` file is not one.
-//!
-//! So a host application runs **unconfined**, as the user, with the user's own files and
-//! network: no `TILO_WORKSPACE_ID` (no collaboration room, nothing partitioned per room), no
-//! capability file (there's no sandbox to enforce workspace grants against, and passing them
-//! would falsely imply the app was limited to them), and no per-room state partition (it
-//! writes to the user's real `$HOME`).
-//!
-//! Those absences are why [`HostLaunch::is_confined`] is `false`, and why the desktop labels
-//! these apps separately everywhere. The failure mode guarded against is not "a host app
-//! escapes the sandbox" (it never had one) but "the user cannot tell which kind of app they
-//! are looking at" — blurring the two is the bug.
-//!
-//! # What is still controlled
-//!
-//! The environment. A host app is spawned from an explicit allowlist of the launcher's own
-//! variables plus a fixed set of overrides, not whatever the compositor happens to be
-//! carrying — keeping Tilo's internal variables (room id, app directory, identity path) from
-//! leaking into a process not entitled to them.
+//! So it runs unconfined, as the user, with the user's own files and network,
+//! and the launcher controls only its environment: an explicit allowlist plus
+//! fixed overrides, so Tilo's own variables do not leak into a process not
+//! entitled to them. The failure mode guarded against is not a host app
+//! escaping a sandbox it never had but a person unable to tell which kind of
+//! app they are looking at.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -38,9 +18,9 @@ use std::process::Command;
 use crate::entry::{DesktopEntry, EntrySource, EntryType};
 use crate::exec::{ExecError, ExpandContext, expand, split_exec};
 
-/// Variables inherited from the launching process, when set. Everything a normal desktop
-/// app needs to find its user, theme, locale and session bus — nothing that describes Tilo's
-/// own confinement, since a host app is not subject to it.
+/// Variables inherited from the launching process, when set: what a normal
+/// desktop app needs to find its user, theme, locale and session bus, and
+/// nothing that describes Tilo's own confinement.
 const INHERITED_ENV: &[&str] = &[
     "HOME",
     "USER",
@@ -78,13 +58,11 @@ const INHERITED_ENV: &[&str] = &[
     "SDL_IM_MODULE",
 ];
 
-/// Variables that are always cleared, whatever the parent had. `DISPLAY` is
-/// accepted only as the explicit workspace display in [`LaunchEnv`]; a stale
-/// value from the preceding desktop can point at another session's X server,
-/// or at the display of a workspace this app is not in. `XAUTHORITY` is never
-/// handed on: a workspace's display authenticates no one, and a stale cookie
-/// file names a server that is not there. `TILO_*` describe confinement this
-/// process does not have.
+/// Variables always cleared, whatever the parent had. `DISPLAY` is accepted
+/// only as the explicit workspace display in [`LaunchEnv`]: a stale value can
+/// point at another session's X server. `XAUTHORITY` is never handed on: a
+/// workspace's display authenticates no one. `TILO_*` describe confinement
+/// this process does not have.
 const CLEARED_ENV: &[&str] = &[
     "DISPLAY",
     "XAUTHORITY",
@@ -97,12 +75,13 @@ const CLEARED_ENV: &[&str] = &[
     "TILO_HOST_ACTIVATION_TOKEN",
 ];
 
-/// The desktop name Tilo announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
+/// The desktop name Tilo announces, and what `OnlyShowIn`/`NotShowIn` are
+/// matched against.
 pub const XDG_CURRENT_DESKTOP: &str = "tilo:GNOME";
 
-/// Marker set in a host application's environment. Not a capability and not read by anything
-/// Tilo enforces — there so `ps`, a crash report or a confused user can tell it was started by
-/// Tilo and is not confined by it.
+/// Marker set in a host application's environment. Not a capability and not
+/// enforced by anything: there so `ps`, a crash report or a confused person can
+/// tell it was started by Tilo and is not confined by it.
 pub const HOST_APP_ENV: &str = "TILO_HOST_APP";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -133,34 +112,32 @@ pub enum HostLaunchError {
     NotAProgram { program: std::path::PathBuf },
 }
 
-/// A resolved host-application launch: the exact argv and environment. Pure data — building
-/// one performs no I/O and starts nothing, so the command it *would* use is assertable in a
-/// test without a process appearing.
+/// A resolved host-application launch: the exact argv and environment. Pure
+/// data — building one performs no I/O and starts nothing, so the command it
+/// would use is assertable in a test without a process appearing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostLaunch {
-    /// Desktop-file id of the entry this came from.
     pub desktop_id: String,
-    /// The entry's `Name=`, for the UI.
     pub display_name: String,
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// The child's complete environment. Not overrides — the child is spawned with `env_clear()`
-    /// and then exactly this.
+    /// The child's complete environment, not overrides: the child is spawned with
+    /// `env_clear()` and then exactly this.
     pub env: BTreeMap<String, String>,
-    /// Where its window is expected to announce itself. See [`DesktopEntry::window_identities`].
+    /// Where its window is expected to announce itself. See
+    /// [`DesktopEntry::window_identities`].
     pub window_identities: Vec<String>,
     pub source: EntrySource,
 }
 
 impl HostLaunch {
-    /// Always `false`, and a method rather than a constant so a caller asking "is this app
-    /// confined?" gets an answer from the type that knows, not a comment. Nothing in this crate
-    /// can return `true` here — a confined launch is a `.tapp` going through `tilo-launcher run`.
+    /// Always `false`: a method rather than a constant, so a caller asking "is this
+    /// app confined?" gets an answer from the type that knows, not a comment. A
+    /// confined launch is a `.tapp` going through `tilo-launcher run`.
     pub fn is_confined(&self) -> bool {
         false
     }
 
-    /// Build the `Command` this launch describes.
     pub fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
@@ -176,37 +153,27 @@ impl HostLaunch {
 #[derive(Debug, Clone, Default)]
 pub struct LaunchEnv {
     /// Host path of the compositor's Wayland socket, e.g. `/run/user/1000/wayland-1`.
-    /// `WAYLAND_DISPLAY` is set to its file name and `XDG_RUNTIME_DIR` to its directory, so a
-    /// host app connects to the compositor that launched it rather than whatever the launcher's
-    /// own environment pointed at.
+    /// `WAYLAND_DISPLAY` is set to its file name and `XDG_RUNTIME_DIR` to its
+    /// directory, so a host app connects to the compositor that launched it.
     pub wayland_socket: Option<PathBuf>,
     /// The X11 display of the workspace this app opens in: its own
-    /// compositor-bound sockets, whose server starts when the app connects.
-    /// A display is never shared across workspaces, because X11 does not
-    /// isolate its clients from each other. Native Wayland clients still
-    /// receive it and choose Wayland normally; X11-only applications use it.
+    /// compositor-bound sockets, whose server starts when the app connects. A
+    /// display is never shared across workspaces, because X11 does not isolate its
+    /// clients from each other; Wayland clients ignore it.
     pub x11_display: Option<String>,
-    /// A compositor-minted, single-use activation token for this user
-    /// initiated launch. It selects/focuses the first toplevel only; it is
-    /// not a sandbox capability or Tilo authority.
+    /// A compositor-minted, single-use activation token for this person-initiated
+    /// launch. It selects or focuses the first toplevel only; it is not a sandbox
+    /// capability or Tilo authority.
     pub activation_token: Option<String>,
-    /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and `%u`/`%U` as `file://` URLs.
+    /// Documents to open, as absolute host paths; `%u`/`%U` take them as `file://`
+    /// URLs when no URL was given.
     pub files: Vec<String>,
-    /// URLs to open. Feed `%u`/`%U`.
     pub urls: Vec<String>,
     /// Prefer a declared desktop action that opens a new window. This keeps a
     /// D-Bus-activatable singleton useful after its last window was closed.
     pub prefer_new_window: bool,
 }
 
-/// Resolve an entry into a launch.
-///
-/// # Errors
-///
-/// Returns [`HostLaunchError::NotAnApplication`] if `entry` is not
-/// `Type=Application`, [`HostLaunchError::NeedsTerminal`] if it declares
-/// `Terminal=true`, [`HostLaunchError::NoExec`] if it has no usable `Exec=`,
-/// or [`HostLaunchError::BadExec`] if `Exec=` fails to parse.
 pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
     if entry.entry_type != EntryType::Application {
         return Err(HostLaunchError::NotAnApplication {
@@ -245,14 +212,11 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
     })
 }
 
-/// Let a Flatpak reach the workspace's X11 bridge.
-///
-/// With a Wayland socket in its environment, `flatpak run` leaves X11 out of
-/// the sandbox for an app that lists `fallback-x11`, DISPLAY unset, even
-/// when the same app also lists `x11`. Apps that are Wayland windows with an
-/// X11 clipboard (1Password's Rust core opens the X server for it) then fail
-/// every copy. Asking for the socket explicitly exposes the display (and a
-/// matching Xauthority) that `build_env` names.
+/// Let a Flatpak reach the workspace's X11 bridge. With a Wayland socket in
+/// its environment, `flatpak run` leaves X11 out of the sandbox for an app that
+/// lists `fallback-x11` and `x11` both, even with `DISPLAY` unset. Apps that
+/// are Wayland windows with an X11 clipboard (1Password's Rust core opens the X
+/// server for it) then fail every copy, so the socket is asked for explicitly.
 fn grant_flatpak_x11(program: &std::path::Path, args: &mut Vec<String>, env: &LaunchEnv) {
     let is_flatpak = program.file_name().is_some_and(|name| name == "flatpak");
     if is_flatpak && env.x11_display.is_some() && args.first().is_some_and(|arg| arg == "run") {
@@ -260,7 +224,6 @@ fn grant_flatpak_x11(program: &std::path::Path, args: &mut Vec<String>, env: &La
     }
 }
 
-/// `Exec=` split and field-code expanded for `env`'s files and URLs.
 fn expanded_argv(entry: &DesktopEntry, env: &LaunchEnv) -> Result<Vec<String>, HostLaunchError> {
     let new_window_exec = env.prefer_new_window.then(|| {
         entry.actions.iter().find_map(|action| {
@@ -300,14 +263,6 @@ fn expanded_argv(entry: &DesktopEntry, env: &LaunchEnv) -> Result<Vec<String>, H
     Ok(argv)
 }
 
-/// The argv a `Terminal=true` entry asks a terminal emulator to run, with `%f`/`%u` field
-/// codes expanded from `env`. Only the files and URLs of `env` are used: the terminal that
-/// runs it supplies its own environment.
-///
-/// # Errors
-///
-/// Returns [`HostLaunchError::NotAnApplication`] if `entry` is not `Type=Application`,
-/// [`HostLaunchError::NoExec`] or [`HostLaunchError::BadExec`] for an unusable `Exec=`.
 pub fn terminal_argv(
     entry: &DesktopEntry,
     env: &LaunchEnv,
@@ -321,10 +276,9 @@ pub fn terminal_argv(
     expanded_argv(entry, env)
 }
 
-/// The parent's environment that a host app may inherit ([`INHERITED_ENV`]),
-/// as this process has it. A caller that starts another process to do the
-/// launch — the session starting `tilo-launcher run-host` — hands it exactly
-/// these, so that process builds the environment this one would have.
+/// The parent's environment that a host app may inherit ([`INHERITED_ENV`]), as
+/// this process has it. A caller that starts another process to launch — the
+/// session starting `tilo-launcher run-host` — hands it exactly these.
 #[must_use]
 pub fn inherited_environment() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
@@ -338,13 +292,13 @@ pub fn inherited_environment() -> BTreeMap<String, String> {
     env
 }
 
-/// The child's whole environment: an allowlist of the parent's, plus the overrides the
-/// desktop is authoritative for.
+/// The child's whole environment: an allowlist of the parent's, plus the
+/// overrides the desktop is authoritative for.
 fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     let mut env = inherited_environment();
-    // The compositor's socket wins over anything inherited. Both halves must move together:
-    // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an
-    // app ends up connecting to a different compositor.
+    // The compositor's socket wins over anything inherited. Both halves must move
+    // together: WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing
+    // sources here is how an app ends up connecting to a different compositor.
     if let Some(socket) = env_spec.wayland_socket.as_deref() {
         if let Some(name) = socket.file_name() {
             env.insert(
@@ -373,18 +327,17 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         crate::scan::CURRENT_DESKTOP.to_string(),
     );
     env.insert("XDG_SESSION_TYPE".to_string(), "wayland".to_string());
-    // Electron releases differ on whether Wayland auto-selection is the
-    // default.  This asks Electron to inspect the authoritative Wayland/X11
-    // pair above instead of inheriting a stale backend preference.
+    // Electron releases differ on whether Wayland auto-selection is the default;
+    // this asks it to inspect the authoritative Wayland/X11 pair instead of
+    // inheriting a stale backend preference.
     env.insert(
         "ELECTRON_OZONE_PLATFORM_HINT".to_string(),
         "auto".to_string(),
     );
-    // The desktop draws every window's frame. Firefox on Wayland assumes it
-    // must draw its own, whatever the compositor says: it puts its tabs in a
-    // client-drawn title bar with a shadow margin around the window, and asks
-    // to keep that frame. This is the switch it reads instead; with it the
-    // window asks for the desktop's frame and fills its tab exactly.
+    // The desktop draws every window's frame. Firefox on Wayland assumes it must
+    // draw its own: it puts its tabs in a client-drawn title bar with a shadow
+    // margin and asks to keep that frame. This switch has it ask for the desktop's
+    // frame and fill its tab exactly.
     env.insert(
         "MOZ_GTK_TITLEBAR_DECORATION".to_string(),
         "none".to_string(),
@@ -403,16 +356,15 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     if let Some(display) = &env_spec.x11_display {
         env.insert("DISPLAY".to_string(), display.clone());
         env.insert("_JAVA_AWT_WM_NONREPARENTING".to_string(), "1".to_string());
-        // The session's composing input method serves each workspace display
-        // over XIM; X11 toolkits find it through this name.
+        // The session's composing input method serves each workspace display over XIM;
+        // X11 toolkits find it through this name.
         env.insert("XMODIFIERS".to_string(), "@im=fcitx".to_string());
-        // XSETTINGS + Xft.dpi cover GTK and Xft. Qt still needs these to
-        // honour the same DPI instead of painting a 96-DPI window.
+        // XSETTINGS + Xft.dpi cover GTK and Xft. Qt still needs these to honour the same
+        // DPI instead of painting a 96-DPI window.
         env.insert("QT_AUTO_SCREEN_SCALE_FACTOR".to_string(), "1".to_string());
         env.insert("QT_ENABLE_HIGHDPI_SCALING".to_string(), "1".to_string());
-        // Keep the conventional startup-id channel for X11 clients.  The
-        // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
-        // from the X client's environment and relays it on map.
+        // The conventional startup-id channel for X11 clients; xwayland-satellite also
+        // reads XDG_ACTIVATION_TOKEN above from the X client's environment.
         if let Some(token) = env_spec
             .activation_token
             .as_deref()
@@ -424,14 +376,6 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     env
 }
 
-/// Plan a launch for the desktop file at `path` — an autostart entry, which need not sit in
-/// any `applications` directory. Its id is the file name without `.desktop`, and its name
-/// comes from the language `locales` names ([`crate::locale::language_candidates`]).
-///
-/// # Errors
-///
-/// Returns [`HostLaunchError::NotFound`] if the file cannot be read or is not a desktop entry,
-/// or any error [`plan`] can return.
 pub fn plan_file(
     path: &std::path::Path,
     env: &LaunchEnv,
@@ -449,12 +393,8 @@ pub fn plan_file(
 }
 
 /// Plan running the program file at `path` itself, as opening a downloaded
-/// `AppImage` or executable in Files does: no desktop entry, no arguments,
-/// the environment and confinement of every host launch.
-///
-/// # Errors
-///
-/// [`HostLaunchError::NotAProgram`] when `path` is not absolute.
+/// `AppImage` or executable in Files does: no desktop entry, no arguments, the
+/// environment and confinement of every host launch.
 pub fn plan_program(
     path: &std::path::Path,
     env: &LaunchEnv,
@@ -479,15 +419,10 @@ pub fn plan_program(
     })
 }
 
-/// Make the program file at `path` runnable by the person, as opening it
-/// does: a downloaded file arrives without the executable bit. Only a
-/// compiled program (an ELF file, which every `AppImage` is) is touched; a
-/// script is never made runnable this way.
-///
-/// # Errors
-///
-/// [`HostLaunchError::NotAProgram`] for anything but a regular ELF file, or
-/// when its mode can't be changed.
+/// Make the program file at `path` runnable by the person, as opening it does:
+/// a downloaded file arrives without the executable bit. Only a compiled
+/// program (an ELF file, which every `AppImage` is) is touched; a script is
+/// never made runnable this way.
 #[cfg(unix)]
 pub fn make_runnable(path: &std::path::Path) -> Result<(), HostLaunchError> {
     use std::io::Read as _;
@@ -515,13 +450,6 @@ pub fn make_runnable(path: &std::path::Path) -> Result<(), HostLaunchError> {
     Ok(())
 }
 
-/// Find the entry with this desktop-file id on the current system and plan a launch for it,
-/// from the entries named in the language `locales` names.
-///
-/// # Errors
-///
-/// Returns [`HostLaunchError::NotFound`] if no scanned entry has this id, or
-/// any error [`plan`] can return.
 pub fn plan_by_id(
     desktop_id: &str,
     env: &LaunchEnv,
@@ -554,9 +482,9 @@ mod tests {
         )
     }
 
-    /// `flatpak run` drops X11 for a `fallback-x11` app when a Wayland socket
-    /// is set, so 1Password's X11 clipboard had no server to open. The plan
-    /// asks for the socket whenever there is a workspace display to give.
+    /// `flatpak run` drops X11 for a `fallback-x11` app when a Wayland socket is
+    /// set, so 1Password's X11 clipboard had no server to open. The plan asks for
+    /// the socket whenever there is a workspace display to give.
     #[test]
     fn a_flatpak_is_given_the_x11_bridge_it_would_otherwise_drop() {
         let bridged = LaunchEnv {
@@ -583,7 +511,6 @@ mod tests {
 
     #[test]
     fn launch_plans_unwrap_flatpaks_refuse_unrunnable_entries_and_carry_documents() {
-        // Phase `a_flatpak_launch_is_the_flatpak_command_line_unwrapped`.
         {
             let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
             assert_eq!(launch.program, PathBuf::from("/usr/bin/flatpak"));
@@ -598,14 +525,10 @@ mod tests {
                 }
             );
         }
-        // Phase `a_host_launch_is_never_confined`.
-        // The whole point of the module. A host launch is never confined, and the type says so
-        // rather than a comment.
         {
             let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
             assert!(!launch.is_confined());
         }
-        // Phase `a_document_reaches_the_command_line`.
         {
             let launch = plan(
                 &spotify(),
@@ -627,7 +550,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_terminal_entry_is_refused_with_a_reason`.
         {
             let e = entry(
                 "[Desktop Entry]\nType=Application\nName=htop\nExec=/usr/bin/htop\nTerminal=true\n",
@@ -638,7 +560,6 @@ mod tests {
                 Err(HostLaunchError::NeedsTerminal { .. })
             ));
         }
-        // Phase `a_link_entry_has_nothing_to_run`.
         {
             let e = entry(
                 "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.com\n",
@@ -649,7 +570,6 @@ mod tests {
                 Err(HostLaunchError::NotAnApplication { .. })
             ));
         }
-        // Phase `window_identities_ride_along_for_correlation`.
         {
             let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
             assert_eq!(
@@ -665,8 +585,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn launch_environment_carries_only_the_display_handoff_and_no_tilo_authority() {
-        // Phase `the_environment_carries_no_room_no_app_dir_and_no_identity`.
-        // The three things a confined Tilo app has and a host app must not be told it has.
         {
             let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
             for absent in [
@@ -682,7 +600,6 @@ mod tests {
             }
             assert_eq!(launch.env.get(HOST_APP_ENV).map(String::as_str), Some("1"));
         }
-        // Phase `the_wayland_socket_sets_both_halves_of_the_display_handoff`.
         {
             let launch = plan(
                 &spotify(),
@@ -709,7 +626,6 @@ mod tests {
                 "without an explicit Xwayland bridge, a stale DISPLAY is worse than none"
             );
         }
-        // Phase `activation_token_is_standard_child_environment_not_tilo_authority`.
         {
             let launch = plan(
                 &spotify(),
@@ -731,7 +647,6 @@ mod tests {
             );
             assert!(!launch.env.contains_key("TILO_HOST_ACTIVATION_TOKEN"));
         }
-        // Phase `a_rootless_xwayland_bridge_adds_an_authenticated_x11_fallback`.
         {
             let launch = plan(
                 &spotify(),
@@ -770,9 +685,6 @@ mod tests {
                 Some("1")
             );
         }
-        // Phase `to_command_starts_from_an_empty_environment`.
-        // `env_clear()` then the map: nothing from the launcher's own environment reaches the
-        // child except through the allowlist.
         {
             let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
             let cmd = launch.to_command();
@@ -785,7 +697,6 @@ mod tests {
             }
             assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
         }
-        // Phase `a_real_host_process_receives_only_the_planned_desktop_handoff`.
         {
             let probe = entry(
                 "[Desktop Entry]\nType=Application\nName=Environment probe\nExec=/usr/bin/env\n",

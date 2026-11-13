@@ -136,7 +136,6 @@ fn names_are_case_insensitive_and_paths_resolve() {
     ));
     assert_eq!(source.item_at("/report.TXT").unwrap().id, created.id);
     assert!(source.capabilities().case_insensitive);
-    // Renaming only the case of an item is not a clash with itself.
     let renamed = source
         .move_item(
             &created.id,
@@ -218,7 +217,6 @@ fn uploads_use_320_kib_fragments_and_skip_what_the_server_already_has() {
     assert_eq!(server.open_uploads(), 0);
     assert_eq!(server.stats().bearer_leaks, 0);
 
-    // An aborted session is gone.
     let session = source
         .begin_upload(
             UploadTarget::Create {
@@ -351,7 +349,6 @@ fn ranged_reads_fetch_only_the_range() {
     let after = server.stats();
     assert_eq!(after.ranged_downloads, before.ranged_downloads + 1);
     assert_eq!(after.bytes_served - before.bytes_served, 100);
-    // A range past the end is empty without a download.
     let empty = source.read(&item.id, Some(20_000..20_010), None).unwrap();
     assert_eq!(empty.range.start, empty.range.end);
 }

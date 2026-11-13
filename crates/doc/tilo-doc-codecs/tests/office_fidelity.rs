@@ -29,8 +29,6 @@ struct Fixture {
 
 const STRUCTURE_SHOWS: &[&str] = &[];
 const ANNOTATIONS_SHOWS: &[&str] = &["See Notes and comments above."];
-// LibreOffice's conversion shows the page field as 0 (a text file has no pages), the model
-// the result the document stores; the page line is left out.
 const FIELDS_SHOWS: &[&str] = &[
     "Title field: Fields fixture; date: 06.05.24.",
     "is the codename; again: Falcon.",
@@ -179,7 +177,6 @@ fn unzip(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-/// Element-name counts of an XML part, restricted to `kinds`.
 fn census(xml: &[u8], kinds: &[&str]) -> BTreeMap<String, usize> {
     let mut reader = quick_xml::Reader::from_reader(xml);
     let mut out: BTreeMap<String, usize> = kinds.iter().map(|k| ((*k).to_string(), 0)).collect();
@@ -221,8 +218,6 @@ fn text_nodes(xml: &[u8]) -> Vec<String> {
     out
 }
 
-/// Parse `xml` resolving every element and attribute prefix; an error names the first
-/// undeclared prefix or the parse failure.
 fn namespace_well_formed(xml: &[u8]) -> Result<(), String> {
     let mut reader = quick_xml::NsReader::from_reader(xml);
     let mut buf = Vec::new();
@@ -258,7 +253,6 @@ fn namespace_well_formed(xml: &[u8]) -> Result<(), String> {
     }
 }
 
-/// Import `bytes`, keeping the binary content the file embeds in `content` (as an app would).
 fn import(
     codec: &dyn FormatProvider,
     bytes: &[u8],
@@ -276,8 +270,6 @@ fn import(
     d
 }
 
-/// Edit through the model: append to the last non-empty paragraph and insert a new paragraph
-/// after the first heading (or at the start).
 fn edit(d: &mut Document, what: &str) {
     let snap = d.materialize();
     let last = snap
@@ -347,8 +339,6 @@ fn norm(snap: &DocSnapshot) -> Norm {
         .collect()
 }
 
-/// Page-region content: the parts holding headers and footers (every docx header/footer part;
-/// the ODF master pages live in styles.xml), and the constructs to count in them.
 struct Regions {
     parts: fn(&str) -> bool,
     kinds: &'static [&'static str],
@@ -385,7 +375,6 @@ const ODT_REGIONS: Regions = Regions {
     ],
 };
 
-/// Summed element census and text nodes of the region parts of a package.
 fn region_census(
     parts: &BTreeMap<String, Vec<u8>>,
     regions: &Regions,
@@ -419,7 +408,6 @@ fn check_parts(
     if !missing.is_empty() {
         problems.push(format!("{what}: parts dropped on export: {missing:?}"));
     }
-    // A part the codec does not write itself comes back byte for byte.
     let changed: Vec<&String> = original
         .iter()
         .filter(|(name, bytes)| {
@@ -432,7 +420,6 @@ fn check_parts(
             "{what}: carried parts changed on export: {changed:?}"
         ));
     }
-    // A part the codec merges the model into keeps every definition of the original.
     for (part, element, attr) in MERGED_DEFINITIONS {
         let (Some(before), Some(after)) = (original.get(*part), exported.get(*part)) else {
             continue;
@@ -448,7 +435,6 @@ fn check_parts(
     }
 }
 
-/// The kinds counted fewer times `after` than `before`, as `kind: before -> after`.
 fn lost_counts(before: &BTreeMap<String, usize>, after: &BTreeMap<String, usize>) -> Vec<String> {
     before
         .iter()
@@ -479,8 +465,6 @@ fn check_shown_text(what: &str, snap: &DocSnapshot, shows: &[&str], problems: &m
         &snap.notes,
     ))
     .expect("utf-8");
-    // HTML and RTF have no notes and print a note reference's placeholder; any placeholder
-    // beyond those stands for a kept element.
     let note_refs = snap
         .blocks
         .iter()
@@ -523,8 +507,6 @@ fn check_fixture(
         .export(d.as_ref(), &content)
         .unwrap_or_else(|e| panic!("{what}: export failed: {e}"));
     let exported = unzip(&out);
-    // Hand the export to an outside check (LibreOffice re-opening it, see
-    // `fixtures/src/regenerate.sh --check`) when asked to.
     if let Some(dir) = std::env::var_os("QDOC_FIDELITY_OUT") {
         let path = std::path::Path::new(&dir).join(format!("edited-{what}"));
         std::fs::write(&path, &out).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -532,7 +514,6 @@ fn check_fixture(
 
     check_parts(what, &original, &exported, regenerated, problems);
 
-    // (b) The regenerated body is well-formed and keeps every unmodeled construct.
     let body_in = original.get(body_part).expect("original body part");
     let body_out = exported.get(body_part).expect("exported body part");
     if let Err(e) = namespace_well_formed(body_out) {
@@ -547,7 +528,6 @@ fn check_fixture(
             "{what}: unmodeled constructs lost on export: {lost:?}"
         ));
     }
-    // Headers and footers keep their fields and text.
     let (regions_in, region_text_in) = region_census(&original, regions);
     let (regions_out, region_text_out) = region_census(&exported, regions);
     let lost = lost_counts(&regions_in, &regions_out);
@@ -557,7 +537,6 @@ fn check_fixture(
         ));
     }
 
-    // Every piece of text of the original body is still somewhere in the exported body.
     let exported_text = text_nodes(body_out).concat();
     let dropped: Vec<String> = text_nodes(body_in)
         .into_iter()
@@ -573,7 +552,6 @@ fn check_fixture(
         ));
     }
 
-    // (c) Re-import yields the edited model.
     let again = import(codec, &out, &format!("{what} (re-import)"), &content).materialize();
     let (want, got) = (norm(&edited), norm(&again));
     if want != got {
@@ -590,7 +568,6 @@ fn check_fixture(
             got.get(first)
         ));
     }
-    // Modeled side content survives too.
     if edited.notes.len() != again.notes.len()
         || edited.comments.len() != again.comments.len()
         || edited.changes.len() != again.changes.len()
@@ -607,7 +584,6 @@ fn check_fixture(
     }
 }
 
-/// The definitions (element, identifying attribute) of the parts a codec merges into.
 const MERGED_DEFINITIONS: &[(&str, &str, &str)] = &[
     ("word/styles.xml", "w:style", "w:styleId"),
     ("word/numbering.xml", "w:num", "w:numId"),
@@ -620,8 +596,6 @@ const MERGED_DEFINITIONS: &[(&str, &str, &str)] = &[
     ("meta.xml", "meta:user-defined", "meta:name"),
 ];
 
-/// The values of `attr` on every `element` of an XML part (the element's text when `attr`
-/// is empty).
 fn attr_values(xml: &[u8], element: &str, attr: &str) -> BTreeSet<String> {
     let mut reader = quick_xml::Reader::from_reader(xml);
     let mut out = BTreeSet::new();
@@ -649,7 +623,6 @@ fn attr_values(xml: &[u8], element: &str, attr: &str) -> BTreeSet<String> {
     out
 }
 
-/// Parts a codec writes itself (from the model, or merging the model into the original).
 fn rewritten(name: &str) -> bool {
     const DOCX: &[&str] = &[
         "[Content_Types].xml",
@@ -676,7 +649,6 @@ fn rewritten(name: &str) -> bool {
         || name.starts_with("Pictures/")
 }
 
-/// Parts the docx exporter legitimately rewrites under another name: none today.
 const DOCX_REGENERATED: &[&str] = &[];
 
 #[test]
@@ -713,8 +685,6 @@ fn odt_fixtures_keep_unmodeled_content_through_edit_and_export() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// The exported package opens as a zip whose part set is a superset of the original, so a
-/// second export of the re-import is byte-stable in its part list.
 #[test]
 fn second_round_trip_keeps_part_set() {
     for (codec, fixtures) in [
@@ -743,7 +713,6 @@ fn second_round_trip_keeps_part_set() {
 /// means nothing there, and its placeholders are not text.
 #[test]
 fn cross_format_export_leaves_out_the_other_formats_markup() {
-    /// Fixtures, the codec they are imported with, the one exported with, its body part.
     type Case<'a> = (
         &'a [Fixture],
         &'a dyn FormatProvider,

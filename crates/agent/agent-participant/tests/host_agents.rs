@@ -30,21 +30,9 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
-mod support;
-
-mod common;
-mod harness;
-
-// Agents hold each record in a confined app worker (this binary, started
-// again), whose changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
@@ -60,9 +48,9 @@ use tilo_relay_protocol::agents::{
 
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use harness::hosted::{Hosted, Laptop, Options, Unlisted};
-use harness::page::Page as Browser;
-use support::{Device, WORKSPACE, enrol, workspace};
+use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
+use crate::harness::page::Page as Browser;
+use crate::support::{Device, WORKSPACE, enrol, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -74,11 +62,11 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
 }
 
 async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: ModelChoice) -> Hosted {
-    harness::hosted::start(
+    crate::harness::hosted::start(
         root,
         host,
         state,
-        Options::offering(common::catalogue, model),
+        Options::offering(crate::common::catalogue, model),
     )
     .await
 }
@@ -91,7 +79,7 @@ async fn stop(hosted: Hosted) {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, _) = common::member_documents(
+    let (readable, _) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
@@ -125,7 +113,7 @@ impl Browser {
                 );
                 // Until the change that sets the record up arrives, the app
                 // refuses to open what came before it.
-                let page = match common::open(
+                let page = match crate::common::open(
                     app,
                     "ada",
                     ReplicaActor::Owner,
@@ -177,11 +165,11 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
 
     let hosted = start(&root, &host, state.path()).await;
 
-    let mut channels = participant::Participant::start(&hosted.relay, &root).await;
+    let mut channels = crate::participant::Participant::start(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -451,7 +439,7 @@ struct Page {
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page = common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+        let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
@@ -459,7 +447,7 @@ impl Page {
         };
         browser
             .peer
-            .publish(route.clone(), &page.take_mutation().unwrap())
+            .write(route.clone(), &page.take_mutation().unwrap().unwrap())
             .unwrap();
         Self {
             app: page,
@@ -480,7 +468,7 @@ impl Page {
                 .get(&creator.route)
                 .filter(|c| !c.is_empty())
             {
-                let mut app = common::open(
+                let mut app = crate::common::open(
                     SHEETS,
                     "bea",
                     ReplicaActor::Owner,
@@ -490,8 +478,8 @@ impl Page {
                     },
                 )
                 .unwrap();
-                if let Some(own) = app.take_mutation() {
-                    browser.peer.publish(creator.route.clone(), &own).unwrap();
+                if let Some(own) = app.take_mutation().unwrap() {
+                    browser.peer.write(creator.route.clone(), &own).unwrap();
                 }
                 return Self {
                     app,
@@ -546,21 +534,23 @@ impl Page {
 
 /// An agent's later task edits the record people have open as live as its
 /// first one did, and a session that joins afterwards replays both edits
-/// once each.
+/// once each. A task that only reads opens nothing; the first edit starts the
+/// workspace's desk, under the workspace's name, holding the record's window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     // The person opens a workbook before any agent exists, and it is in the
     // workspace (sealed and durable on the host) before the agent arrives.
+    // Nobody has opened a desk in the workspace yet.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
@@ -573,13 +563,40 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             InvokeArgument::Json(
                 serde_json::json!({
                     "grant": grant,
-                    "task": "Add a new sheet named \"Budget\"",
+                    "task": "Read the cells of the sheet \"Sheet1\"",
                     "room": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
                 .clone(),
             ),
+        )
+        .await
+        .unwrap();
+    browser
+        .until("the reading task to read and end", |status| {
+            status.agents.iter().any(|agent| {
+                agent.id == grant
+                    && agent.tasks.first().is_some_and(|task| {
+                        task.state != TaskState::Running
+                            && task
+                                .steps
+                                .iter()
+                                .any(|step| step.action == "read-cells" && step.error.is_none())
+                    })
+            })
+        })
+        .await;
+    assert!(
+        browser.desk().is_none(),
+        "a task that only read opened nothing"
+    );
+
+    browser
+        .call(
+            &agent_resource(&grant),
+            MESSAGE_ACTION,
+            InvokeArgument::Text("Add a new sheet named \"Budget\"".into()),
         )
         .await
         .unwrap();
@@ -596,12 +613,11 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     page.until_sheets(&mut browser, &["Sheet1", "Budget", "Q4"])
         .await;
     browser
-        .until("both tasks to complete", |status| {
+        .until("every task to complete", |status| {
             status.agents.iter().any(|agent| {
                 agent.id == grant
-                    && agent.tasks.len() == 2
-                    && agent
-                        .tasks
+                    && agent.tasks.len() == 3
+                    && agent.tasks[1..]
                         .iter()
                         .all(|task| task.state == TaskState::Completed)
             })
@@ -620,7 +636,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .get(&page.route)
             .filter(|c| !c.is_empty())
         {
-            let replayed = common::open(
+            let replayed = crate::common::open(
                 SHEETS,
                 "ada",
                 ReplicaActor::Owner,
@@ -643,6 +659,34 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         assert!(Instant::now() < deadline, "the reload replayed nothing");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // The workbook the agent worked in is open on the workspace's desk, once,
+    // as a window of the person's that the agent's run opened, on the desk the
+    // agent started under the workspace's name.
+    let person = hex::encode(root.verifying_key().to_bytes());
+    loop {
+        let desktop = reloaded.desk();
+        let windows: Vec<u64> = desktop
+            .iter()
+            .flat_map(|desktop| &desktop.records)
+            .filter(|(_, record)| *record == page.route.record)
+            .map(|(tab, _)| *tab)
+            .collect();
+        if let (Some(desktop), [tab]) = (&desktop, windows.as_slice()) {
+            assert_eq!(desktop.authors.get(tab), Some(&person), "{desktop:?}");
+            assert_eq!(desktop.tree.workspaces[0].name, "Workspace", "{desktop:?}");
+            let run = desktop.opened_by.get(tab);
+            assert!(
+                run.is_some_and(|run| !run.run.is_empty() && !run.label.is_empty()),
+                "the window names the agent's run: {desktop:?}"
+            );
+            break;
+        }
+        assert!(
+            windows.len() < 2 && Instant::now() < deadline,
+            "the agent's workbook is open on the desk once: {desktop:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     stop(hosted).await;
 }
 
@@ -656,9 +700,9 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let first_device = enrol(&root, "browser", DeviceCapabilities::member());
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
@@ -758,9 +802,9 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start_with(&root, &host, state.path(), model).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);
@@ -922,9 +966,9 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let (_endpoint, mut device) = person_device(&hosted.relay, &laptop).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -952,7 +996,10 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     assert_eq!(question.workspace, WORKSPACE);
     // The action as the reader offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove from library");
-    assert_eq!(question.resource_label, "Books");
+    // The record by the name its app gives the state it holds: the book the
+    // agent shelved is on the shelf when it asks to remove it, and one of them
+    // is a book.
+    assert_eq!(question.resource_label, "1 book");
     assert_eq!(question.risk, "destructive");
     assert!(
         question.question().starts_with("Careful wants to ")
@@ -1100,7 +1147,7 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;

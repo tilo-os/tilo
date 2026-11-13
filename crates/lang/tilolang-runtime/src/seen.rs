@@ -146,6 +146,7 @@ mod tests {
             placed: Vec::new(),
             from: None,
             suggested_by: None,
+            gesture: None,
         }
     }
 

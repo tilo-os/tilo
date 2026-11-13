@@ -1,8 +1,5 @@
-//! Drag-and-drop move: dragging a row (or a multi-selection) onto a folder row
-//! — or onto the Up affordance for the parent — performs a real filesystem
-//! move. Driven end to end through the widget's real event + layout paths: a
-//! press, a threshold-crossing move that starts the drag, a move over the
-//! target that highlights it, and a release that commits the move.
+//! Drag and drop: a row, or a multi-selection, carried into a folder or onto
+//! the sidebar.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -24,13 +21,9 @@ fn folder_center(h: &Harness, name: &str) -> Point {
     rect.center()
 }
 
-/// Press the source row, cross the drag threshold to start the drag, hover the
-/// target point, and release — the full gesture.
 fn drag_from_to(h: &mut Harness, source: Point, target: Point) {
     h.move_cursor(source);
     h.press();
-    // Cross the drag threshold (>6px) on the source row → the view emits the
-    // drag-begin the app turns into a live drag.
     h.move_cursor(Point::new(source.x + 16.0, source.y));
     assert!(
         h.w.state().debug_pin_dragging(),
@@ -40,7 +33,6 @@ fn drag_from_to(h: &mut Harness, source: Point, target: Point) {
     h.release();
 }
 
-/// Each drag scenario runs on its own fresh fixture directory and harness.
 #[test]
 fn drag_and_drop_moves_files_selections_and_up_but_not_into_itself() {
     dragging_a_file_onto_a_folder_moves_it();
@@ -83,7 +75,6 @@ fn dragging_a_multi_selection_moves_every_item() {
 
     let a_pt = row_center(d.path(), 1);
     let mut h = Harness::new(d.path());
-    // Select both files, then drag one of them: the whole selection travels.
     h.w.state().debug_select(&[1, 2]);
     h.layout();
     let dest_pt = folder_center(&h, "dest");
@@ -131,8 +122,6 @@ fn dropping_a_folder_on_itself_is_a_noop() {
     let folder_pt = row_center(d.path(), 0);
     let mut h = Harness::new(d.path());
 
-    // Drag the folder and release back over its own row: it is excluded from its
-    // own drop targets, so nothing moves.
     drag_from_to(&mut h, folder_pt, folder_pt);
 
     assert!(

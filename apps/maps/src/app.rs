@@ -1,14 +1,8 @@
 //! Root widget for the Maps app.
 //!
-//! `MapsApp` owns the in-memory [`MapModel`] and the static vector [`Basemap`].
-//! [`crate::workspace::Workspace`] holds its explicitly durable resources;
-//! the rest is per-window presentation state. It
-//! is a single full-window custom widget: the map is full-bleed and the
-//! chrome (the places panel, the control column, the place card) floats on
-//! top as floating panels built from the toolkit's faces. Interaction —
-//! pan, zoom-to-cursor, marker hit-testing, panel buttons — is handled
-//! directly in `handle_event`; finding places is the platform search, which
-//! [`crate::place_search`] answers.
+//! `MapsApp` owns the in-memory [`MapModel`] and the vector [`Basemap`];
+//! [`crate::workspace::Workspace`] holds the durable resources, and the rest is this window's
+//! state.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -84,82 +78,52 @@ mod window;
 use window::MapWindow;
 pub(crate) use window::window;
 
-// Geometry comes from the theme: the window margin is `s4`, the gap between
-// floating elements `s3`, the panel the list-panel width, the controls the
-// Regular control height — read through `MapsApp::margin` & co. from the
-// cached theme tokens.
-
-/// One semantic live-activity identity for the current turn-by-turn session.
-/// Rerouting changes its content, not the surface the user positioned.
+/// One semantic live-activity identity for the current turn-by-turn session. Rerouting changes its
+/// content, not the surface the user positioned.
 const NAVIGATION_FLOAT_ID: &str = "maps.active-navigation";
 /// Idle gap after the last pan/zoom before refetching viewport POIs (Overpass).
 const POI_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
-/// Only fetch POIs at city-block scale and closer — a whole-country viewport
-/// would return an unbounded, meaningless marker set.
+/// Only fetch POIs at city-block scale and closer — a whole-country viewport would return an
+/// unbounded, meaningless marker set.
 const POI_MIN_ZOOM: f64 = 14.0;
 /// Cap on POI markers drawn so a dense area stays legible.
 const POI_MAX: usize = 140;
 /// How many nearby POIs the Explore panel lists (the closest to the anchor).
 const NEARBY_MAX: usize = 10;
-/// The menu the map's one [`ContextMenu`] shows: the ⋯ button's utilities or
-/// the layers button's layers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapMenu {
     More,
     Layers,
 }
-/// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
 enum Hit {
-    /// Swallow the click (panel chrome) — don't pan the map.
     Consume,
-    /// Open the platform search over this app.
     OpenSearch,
-    /// The separate search action in the empty places panel.
     OpenEmptySearch,
-    /// Collapse / expand the side panel (docked layouts).
     ToggleCollapse,
-    /// Return from the Directions view to the plain places list.
     PanelBack,
     Mode(TravelMode),
     SelectPlace(String),
-    /// Select a nearby POI from the Explore list: centre the map on it and open
-    /// its info card, linking the list to the marker layer.
     SelectPoi(String),
     ClosePoi,
-    /// Route to the POI whose info card is open.
     PoiDirections,
-    /// Search for a recent query again, in the platform search.
     Recent(String),
-    /// Clear collaborative recent-search history through its canonical action.
     ClearRecents,
-    /// Toggle the overlay drawer (narrow layouts only).
     ToggleNav,
-    /// Dismiss the overlay drawer (scrim tap).
     CloseNav,
     Directions,
     Transit,
     ToggleSave,
     ClearRoute,
-    /// Look at the next route the service offered for this trip.
     NextRoute,
-    /// Fetch the device's real location (portal / `GeoClue`) and use it as origin.
     UseMyLocation,
-    /// Set the Transit depart/arrive anchor.
     TransitTimeMode(TransitTimeMode),
-    /// Shift the Transit time anchor by ±minutes.
     TransitTimeDelta(i32),
-    /// Reset the Transit time anchor to "leave now".
     TransitTimeNow,
     Journey(usize),
-    /// Toggle the bottom-right ⋯ overflow menu (attribution / offline / licenses).
     ToggleOverflow,
 }
 
-/// One immediately-painted control exposed to assistive technology.  `target`
-/// is deliberately derived from a durable command/id rather than its frame
-/// position: result ordering and responsive reflow must not change what an
-/// agent or screen reader has addressed.
 struct AccessibilityTarget {
     rect: Rect,
     label: String,
@@ -169,16 +133,11 @@ struct AccessibilityTarget {
 }
 
 fn stable_access_key(id: &str) -> u64 {
-    // FNV-1a keeps accessibility child identity stable across responsive
-    // reordering without depending on a process-random hash seed.
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, id.as_bytes());
     std::hash::Hasher::finish(&hasher)
 }
 
-/// The app's end of its network fetches: a result is queued and the app woken
-/// to take it, so nothing polls for it frame by frame while a slow or failing
-/// service keeps a request open.
 #[derive(Clone)]
 struct NetSender {
     tx: Sender<NetMsg>,
@@ -193,11 +152,6 @@ impl NetSender {
     }
 }
 
-/// Run a network fetch as a task on the app runtime; its result arrives on
-/// the app's channel.
-/// What the map says while no imagery shows. It never claims to be loading
-/// what nothing is fetching, and an unreachable tile server is not blamed on
-/// being offline, which a page cannot tell apart from a blocked request.
 fn imagery_hint(can_fetch: bool, fault: Option<TileFault>) -> String {
     failure::t(match fault {
         _ if !can_fetch => "maps-imagery-unavailable",
@@ -225,177 +179,82 @@ pub struct MapsApp {
     rect: Rect,
     node: Option<NodeId>,
 
-    /// The framework's door for the map's edits (save a place, clear the
-    /// route): one undo step each, replayed byte-identically on peers — the
-    /// same path a Ctrl+K palette dispatch takes. `None` until the view
-    /// attaches it; an unattached map only shows its edits.
     dispatch: Option<ui::framework::Dispatcher<Workspace>>,
-    /// The offline areas record and this device's id; `None` when the map
-    /// has no host to keep them.
     offline_areas: Option<(
         ui::framework::PersonRecord<crate::offline_areas::OfflineAreas>,
         String,
     )>,
 
-    // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
     segmented_touch: SegmentedTouch,
-    /// Floating zoom/location/traffic stack. Owns geometry, drawing,
-    /// hit-testing, traffic UI state, and shared tooltip timing.
     map_controls: MapControls,
-    /// The geocoder lookups behind the platform search: the query to send,
-    /// the ones on their way, and the places that came back.
     place_search: PlaceSearch,
-    /// Opens the platform search from the painted search buttons.
     search_opener: ui::search::SearchOpener,
-    /// The window's History control, which heads the map control column:
-    /// the full-bleed map is the window's header row.
     history: ui::widget::HistoryOpener,
-    /// Where the listed search results were ranked from: their distances
-    /// read from there, so moving the camera to a result never changes them.
     results_anchor: Option<LatLon>,
-    /// The floating surfaces drawn over the map this frame (the panel, the
-    /// controls, the cards, the footer); the markers keep clear of them.
     chrome_rects: Vec<Rect>,
-    /// Transient status (searching, routing, a download, a failure).
-    /// The model's status (searching, routing, a download's progress, a
-    /// recoverable failure), said in the window's bar while it is news.
     status_notice: ui::widget::toast::Transient<String>,
-    /// The status last said in the bar, so only a change is news.
     status_said: String,
-    /// Directions From/To fields, dropdown, focus, debounce and hit routing.
     endpoints: EndpointEditor,
     left_down: bool,
     dragging: bool,
     drag_last: Point,
     drag_moved: bool,
     click_targets: Vec<(Rect, Hit)>,
-    /// The renderer's text scale, captured at the top of each paint so the
-    /// panel's hand-laid rows size and centre their text from the same lines
-    /// the renderer draws.
     text_scale: f32,
-    /// Whole-interface scale, also used by marker hit-testing and decluttering.
     ui_scale: f64,
-    /// The theme's spacing and density metrics, cached in `build_layout` so
-    /// the renderer-less geometry reads the same tokens the painters do.
     spacing: Spacing,
     metrics: Metrics,
-    /// Frame the route (or journey) once the window has its size: a staged
-    /// or restored route fits the map beside the panel and the turn card.
     pending_fit: bool,
-    /// A place to bring to the centre of the visible map once the window has
-    /// its size.
     pending_focus: Option<LatLon>,
-    /// Bring the place whose card is open clear of the card on the next
-    /// frame, once the card is laid out.
     pending_poi_focus: bool,
-    /// Where the open place card was drawn this frame.
     poi_card_rect: Rect,
-    /// The turn card's intrinsic size in the current theme.
     nav_card_size: vello::kurbo::Size,
-    /// Where each block of the panel's content ends (rows, cards, groups),
-    /// measured from the content's top: the panel clips and scrolls on these
-    /// so no row shows as a sliver.
     panel_edges: Vec<f64>,
-    /// The y of the panel content's top this frame, scroll included.
     panel_origin: f64,
     scroll: f64,
     content_h: f64,
     content_view_h: f64,
 
-    // networking
     net_tx: NetSender,
     net_rx: Receiver<NetMsg>,
     pending: u32,
-    /// The places of a committed search on their way from the geocoder:
-    /// the query and when it was asked. Their placeholder rows stand under
-    /// the results until they land.
     search_asked: Option<(String, Instant)>,
-    /// Whether background network/portal work may be spawned. False for the
-    /// offline `--shots`/test app so it never touches the wire or D-Bus.
     online: bool,
-    /// True from the moment a download starts until its tiles are in, so
-    /// the completion notice knows the status line is still its own.
     offline_downloading: bool,
 
-    // device location (portal / GeoClue), off the UI thread
     location_rx: Option<LocationChannel>,
-    /// True while a location fix is being acquired (drives the "Locating…" UI).
     locating: bool,
-    /// The answer owed to whoever invoked the locate effect: the portal's
-    /// result, rather than its admission, finishes it.
     location_reply: Option<ui::framework::EffectReply>,
 
-    // raster basemap (non-blocking OSM tiles)
     tiles: TileLayer,
 
-    // live POI marker layer (Overpass), our own themed layer over the basemap
-    /// POIs for the current viewport (ephemeral render cache — re-fetched on
-    /// pan/zoom, never persisted in the CRDT).
     pois: Vec<crate::model::Poi>,
-    /// The POI whose info card is open, if any. Held apart from `model.selected`
-    /// (a persisted Place) so opening a POI never disturbs the saved pins.
     selected_poi: Option<String>,
-    /// Debounce deadline for the viewport POI refetch (armed on pan/zoom).
     poi_debounce: Option<Instant>,
-    /// The padded bbox last fetched for POIs, so small pans reuse the cache.
     poi_fetched_bounds: Option<GeoBounds>,
-    /// Monotonic query generation so a stale Overpass reply for an old viewport
-    /// is discarded rather than drawn over the current one.
     poi_generation: u64,
 
-    // bottom-right ⋯ overflow menu (attribution / offline maps / licenses), or
-    // the layers button's menu of layers — a shared ContextMenu so it is
-    // themed, keyboard-navigable and a11y-correct.
     overflow: ContextMenu,
-    /// Which menu `overflow` shows now: the ⋯ utilities or the map's layers.
     menu_for: MapMenu,
-    /// Attribution/licence modal. Owns state, drawing geometry, and hit-testing.
     info_sheet: MapInfoSheet,
 
-    /// Offline download/cache-management component. It owns its widget state,
-    /// drawing, and hit-testing; this app only performs requested tile effects.
     offline_panel: OfflinePanel,
 
-    /// Whether the side panel drawer is open. Only consulted in the narrow
-    /// overlay layout; when docked the panel is always shown. Re-evaluated
-    /// against the live window width every frame — never cached at startup.
     nav_open: bool,
 
-    /// Whether the docked side panel is collapsed to its header bar (an
-    /// expand/collapse toggle, not a tab). Only meaningful in the docked
-    /// layout; the narrow layout hides/shows the whole drawer instead.
     panel_collapsed: bool,
 
-    /// The current traffic-congestion picture. Empty until real peer reports
-    /// arrive — the honest live state (see [`crate::traffic`]).
     traffic: TrafficData,
-    /// One-shot request emitted by the overflow action and drained by the
-    /// shared shell floating-surface host.
     pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
-    /// Whether the running route's card was asked for: asked once per trip,
-    /// and asked again when the next trip starts. Whether it stands, and
-    /// where, is the shell's to decide.
     presented_navigation: bool,
-    /// One geometry/drag state for the attached and shell-presented live turn
-    /// card. Ownership changes; the Maps widget and route data never do.
     navigation_placement: ui::floating_surface::FloatingPlacement,
     navigation_drag_handle: Rect,
-    /// Compact, always-available end-navigation action in the live turn card.
-    /// Kept separate from the title-bar drag target so a quick stop can never
-    /// accidentally begin an app -> shell ownership handoff.
     navigation_end_rect: Rect,
     navigation_end_hovered: bool,
-    /// Effective accessibility motion policy supplied by the host. Floating
-    /// handoff geometry already draws settled under reduced motion; retaining
-    /// this bit also stops its decorative timer from requesting idle frames.
     motion_reduced: bool,
-    /// Authoritative combined-output bounds supplied by the shell. Standalone
-    /// app/test hosts leave this empty and fall back to the app rect.
     floating_surface_bounds: Rect,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -412,7 +271,6 @@ const ARRIVING_RESULTS: usize = 3;
 
 impl MapsApp {}
 
-/// The endpoint a geocoder reply is for.
 fn endpoint_of(origin: bool) -> Endpoint {
     if origin {
         Endpoint::Origin
@@ -421,7 +279,6 @@ fn endpoint_of(origin: bool) -> Endpoint {
     }
 }
 
-/// Whether `outer` fully contains `inner` (both lat/lon extents).
 fn bounds_contains(outer: GeoBounds, inner: GeoBounds) -> bool {
     outer.min.lat <= inner.min.lat
         && outer.min.lon <= inner.min.lon
@@ -429,10 +286,6 @@ fn bounds_contains(outer: GeoBounds, inner: GeoBounds) -> bool {
         && outer.max.lon >= inner.max.lon
 }
 
-/// Intrinsic size of the floating navigation card in `theme`: the list-panel
-/// width (grown with the text scale so the instruction keeps its character
-/// budget), and the stack it holds — a title row with the End button, the
-/// next instruction and its distance, a rule, and the trip summary.
 fn navigation_card_size(theme: &Theme) -> vello::kurbo::Size {
     let sp = &theme.tokens.spacing;
     let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
@@ -449,32 +302,20 @@ fn navigation_card_size(theme: &Theme) -> vello::kurbo::Size {
     )
 }
 
-/// The theme for what is drawn on floating chrome: ink re-measured against
-/// the panel ground, the selection lift stepped from it.
 fn on_panel(theme: &Theme) -> Theme {
     theme.on_ground(ui::chrome::panel_ground(theme))
 }
 
-/// A travel time read as a clock: `10:57` or `10:57 AM`.
 fn clock_label(at: chrono::DateTime<chrono::Local>) -> String {
     ui::clock::time_of_day(&at)
 }
 
-// ===========================================================================
-// The route as the shell's live activity
-// ===========================================================================
 impl MapsApp {
-    /// Say what the route reads as, and ask for its card: whether the card
-    /// stands, and where, is the shell's to decide — while Maps' own window
-    /// shows the directions, Maps draws them there and the card waits.
     fn publish_navigation(&mut self) {
         crate::live::publish(&crate::live::published(self.model.route.as_ref()));
         self.present_navigation_card();
     }
 
-    /// Ask the shell for the route's card, once per trip: the request is the
-    /// route's geometry as Maps lays it out, and its place on the desk is the
-    /// shell's.
     fn present_navigation_card(&mut self) {
         if self.model.route.is_none() {
             self.presented_navigation = false;
@@ -485,7 +326,6 @@ impl MapsApp {
         }
         let card = self.navigation_rect();
         if card.width() <= 0.0 || card.height() <= 0.0 {
-            // The window has no size yet; the next frame asks with one.
             return;
         }
         self.pending_floating = self.active_navigation_request_from(card.inflate(8.0, 8.0));
@@ -493,14 +333,8 @@ impl MapsApp {
     }
 }
 
-// ===========================================================================
-// Drawing
-// ===========================================================================
 impl MapsApp {}
 
-// ===========================================================================
-// Widget impl
-// ===========================================================================
 impl FloatingSurfaceProvider for MapsApp {
     fn take_floating_surface_request(
         &mut self,
@@ -605,7 +439,6 @@ impl FloatingSurfaceProvider for MapsApp {
             let app = self.rect;
             let desktop = self.desktop_floating_bounds();
             self.navigation_placement.reattach_to_app(app, desktop);
-            // The card's window went away: the route asks for it again.
             if matches!(
                 message,
                 ui::floating_surface::FloatingSurfaceHostMessage::Reattach { .. }
@@ -631,21 +464,15 @@ impl Widget for MapsApp {
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        // A control pressed on the route's card or pill stands in for the
-        // press the person would make in Maps' own window.
         for command in crate::live::take_commands() {
             match command {
                 crate::live::Command::End => self.clear_route(),
             }
         }
-        // Pull any background network results into the model first.
         self.drain_net();
-        // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
         self.pump_place_search();
-        // Refetch viewport POIs once a pan/zoom settles.
         self.tick_poi_debounce(ui::time::now());
-        // Fire the offline panel's live city geocode once its field settles.
         if let Some(query) = self.offline_panel.take_due_query(ui::time::now()) {
             self.pending += 1;
             if self.online {
@@ -656,13 +483,10 @@ impl Widget for MapsApp {
                 });
             }
         }
-        // Fold in any tiles / download progress the worker finished. This is a
-        // non-blocking try_recv drain — it never waits on the network.
         let before = self.tiles.progress();
         self.tiles.drain();
         let after = self.tiles.progress();
         if before != after && !after.is_active() && after.total > 0 {
-            // A download just finished — refresh the on-disk size readout.
             self.offline_panel.set_cache_bytes(self.tiles.cache_bytes());
             if self.offline_downloading {
                 self.offline_downloading = false;
@@ -671,7 +495,6 @@ impl Widget for MapsApp {
             }
         }
 
-        // Another window may have downloaded or deleted an offline area.
         self.follow_offline_areas();
         self.endpoints
             .sync_queries(&self.model.origin_query, &self.model.dest_query);
@@ -688,14 +511,9 @@ impl Widget for MapsApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The text scale is read here, in the layout pass, so the panel
-        // width, the navigation card's intrinsic size and every row solved
-        // before the first paint already follow the type they will carry.
         let scale_changed = (self.ui_scale - f64::from(theme.ui_scale)).abs() > f64::EPSILON
             || (self.text_scale - theme.text_scale).abs() > f32::EPSILON;
         if scale_changed {
-            // New chrome dimensions change the unobscured map area. Fit the
-            // existing plan again rather than leaving its ends under a panel.
             self.pending_fit = self.model.route.is_some() || self.model.mode.is_transit();
             self.pending_poi_focus = self.selected_poi.is_some();
             self.scroll = 0.0;
@@ -715,7 +533,6 @@ impl Widget for MapsApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        // Arm the first POI fetch once a real viewport exists (live app only).
         if self.online
             && self.poi_fetched_bounds.is_none()
             && self.poi_debounce.is_none()
@@ -737,8 +554,6 @@ impl Widget for MapsApp {
         self.draw_app(scene, transform, text_renderer, theme);
     }
 
-    /// The window's top layer: the offline-maps sheet and the information
-    /// sheet, over the whole window and its chrome.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -781,8 +596,6 @@ impl Widget for MapsApp {
                   branch is a short, independent dispatch to an already-extracted helper"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // The shared information dialog is modal and owns its event routing.
-        // Covered map controls must never observe the same event.
         if self
             .info_sheet
             .handle_event(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state)
@@ -796,7 +609,6 @@ impl Widget for MapsApp {
             *ctx.handled = true;
             return;
         }
-        // A click, scroll or keypress dismisses any shown control tooltip.
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -830,15 +642,12 @@ impl Widget for MapsApp {
                     self.navigation_end_hovered = end_hovered;
                     *ctx.handled = true;
                 }
-                // Keep the field inputs' hover state current so a click lands a
-                // caret and a press-drag extends a selection.
                 self.forward_move_to_field_inputs(
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
                     &mut ctx.state,
                 );
-                // Track hover in the open overflow menu / offline city dropdown.
                 if self.overflow.is_open() {
                     self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state);
                 }
@@ -857,21 +666,10 @@ impl Widget for MapsApp {
                     if dx.abs() > 0.5 || dy.abs() > 0.5 {
                         self.drag_moved = true;
                         self.pan_by(dx, dy);
-                        // Mark the move handled so the `ui` App requests a repaint
-                        // for this pointer event. Its per-frame redraw is gated on
-                        // `CursorMoved` events being `handled` (the hover-spam
-                        // guard, see ui::app), so without this the map centre
-                        // updates but the screen never repaints — drag-to-pan
-                        // reads as frozen. This mirrors the wheel-zoom path, which
-                        // already marks its events handled for the same reason.
                         *ctx.handled = true;
                     }
                     self.drag_last = p;
                 }
-                // Retarget the control hover tooltip. Suppressed while dragging
-                // (the pointer is panning, not resting on a control). A state
-                // change marks the move handled so the `ui` App repaints it,
-                // clearing or updating the chip promptly.
                 let extra_targets = self
                     .menu_rect()
                     .map(|menu| (menu, failure::t("maps-menu")))
@@ -912,8 +710,6 @@ impl Widget for MapsApp {
                 }
                 self.left_down = true;
                 self.drag_moved = false;
-                // The open ⋯ overflow menu owns the pointer: a row press selects,
-                // an outside press dismisses. Route to it before the map/chrome.
                 if self.overflow.is_open() {
                     self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state);
                     if let Some(idx) = self.overflow.take_selection() {
@@ -922,9 +718,6 @@ impl Widget for MapsApp {
                     *ctx.handled = true;
                     return;
                 }
-                // The offline dialog's city field / dropdown takes its own clicks
-                // first; a click elsewhere in the dialog falls through to the
-                // buttons below (download / clear / delete / close / scrim).
                 if self.offline_panel.is_open() {
                     if self.offline_panel.route_field_event(
                         event,
@@ -955,7 +748,6 @@ impl Widget for MapsApp {
                     *ctx.handled = true;
                     return;
                 }
-                // Hit-test recorded UI targets (topmost = last drawn).
                 let mut consumed = false;
                 if let Some(hit) = self
                     .click_targets
@@ -971,19 +763,13 @@ impl Widget for MapsApp {
                 }
                 if !consumed {
                     self.endpoints.dismiss();
-                    // The standalone control stack is below modal/panel targets
-                    // above, but above the actual map surface.
                     if let Some(action) = self.map_controls.hit_test(p) {
                         self.dispatch_map_control(action);
                     } else if let Some(id) = self.marker_at(p) {
-                        // Map interaction: marker select, POI select, or begin pan.
                         self.select_place(&id);
                     } else if let Some(pid) = self.poi_at(p) {
                         self.select_poi(&pid);
                     } else {
-                        // Empty map: close any open POI card and begin a pan.
-                        // Claim the press so the compositor/ui App treats the map
-                        // as the interaction target for the gesture that follows.
                         self.selected_poi.take();
                         self.dragging = true;
                         self.drag_last = p;
@@ -1027,8 +813,6 @@ impl Widget for MapsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
-                // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
-                // Esc) via its own handling before the map shortcuts.
                 if self.overflow.is_open() {
                     self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state);
                     if let Some(idx) = self.overflow.take_selection() {
@@ -1037,8 +821,6 @@ impl Widget for MapsApp {
                     *ctx.handled = true;
                     return;
                 }
-                // While the offline dialog is open, Escape closes it and every
-                // other key types into its city search field.
                 if self.offline_panel.is_open() {
                     if matches!(key_event.logical_key, Key::Named(NamedKey::Escape)) {
                         self.offline_panel.close();
@@ -1054,9 +836,6 @@ impl Widget for MapsApp {
                     *ctx.handled = true;
                     return;
                 }
-                // A focused text field (search or an endpoint) owns the
-                // keystroke via the shared TextInput; otherwise the map-level
-                // shortcuts apply.
                 let field_focused = self.endpoints.is_focused();
                 if field_focused {
                     if self.route_field_key(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state)
@@ -1153,9 +932,6 @@ impl Widget for MapsApp {
         _path: &ModelPath,
     ) -> bool {
         if self.offline_panel.is_open() {
-            // Text input needs the framework's exact-rectangle pointer
-            // fallback so it can place its caret. All buttons dispatch through
-            // the same effect path as pointer input.
             if target == "maps.offline.search" {
                 return false;
             }
@@ -1206,13 +982,6 @@ impl Widget for MapsApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep idling only while real work is outstanding: net requests, the
-        // initial load, tiles genuinely in flight, or an active offline
-        // download. This lets the app fold in worker results and repaint as
-        // imagery arrives without the user touching the input device. A tile
-        // whose fetch failed is *not* counted — it is negative-cached with a
-        // backoff (see `TileLayer::request`), so `has_inflight()` drops to
-        // false and the loop settles instead of re-requesting every frame.
         self.pending > 0
             || self.place_search.is_busy()
             || self.locating
@@ -1223,14 +992,8 @@ impl Widget for MapsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Only motion takes a frame every vsync. Network replies, tiles and
-        // download ticks wake the app when they land, however long a slow or
-        // failing service keeps them open; debounces are wake deadlines; the
-        // search caret does not blink.
         self.locating
             || self.location_rx.is_some()
-            // Keep pumping frames while a control tooltip counts toward its
-            // reveal, so the dwell elapses even when the map is otherwise idle.
             || self.navigation_placement.is_dragging()
             || self.navigation_placement.is_handoff_animating()
             || self.map_controls.needs_frame()
@@ -1258,15 +1021,11 @@ impl Widget for MapsApp {
 }
 
 impl ui::widget::controls::ActionControls for MapsApp {
-    /// History opened from the control column; search opened from the
-    /// painted search buttons and recent searches.
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.history.take().or_else(|| self.search_opener.take())
     }
 }
 
-/// A location request answered by a recording host with `outcome` — the
-/// production request path, without the device's location service.
 #[cfg(test)]
 fn host_location(outcome: LocationOutcome) -> LocationChannel {
     let (services, recorder) = ui::host::HostServices::recording();

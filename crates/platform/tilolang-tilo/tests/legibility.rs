@@ -11,7 +11,7 @@ use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Store as _, Value}
 
 use tilolang_tilo::host::{Host, Opening};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -43,13 +43,6 @@ pub(crate) fn call(r: &Replica, who: &str, app: &str, action: &str, args: Vec<Va
     {
         InvokeOutcome::Done(v) => v,
         other => panic!("{action}: {other:?}"),
-    }
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
     }
 }
 

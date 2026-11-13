@@ -20,7 +20,7 @@
 /// reports the drop with the canvas point under the pointer, and the shell runs the system's
 /// `place`, which is what an agent's `place_at` runs too. The shell never handles the drop
 /// itself, exactly as it never handles an attachment's press.
-view canvas(a: Arrangement, name: Text, framed: Bool) {
+view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     stack(gap: .related, fill) {
         canvas_entry(here_x(a), here_y(a))
         ui.Map(name: name, fill) {
@@ -36,7 +36,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool) {
                             height: pin_height(s),
                         ) {
                             if framed {
-                                framed_place(a, p)
+                                framed_place(a, p, lists and p.key == front_place(a))
                             } else {
                                 space_content(a, p)
                             }
@@ -139,10 +139,15 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 /// was let go. The pin and close controls are buttons on that bar and take their presses; the
 /// body is never a source, so a press inside it stays the app's — a field, a row, a message
 /// takes input as it always did.
-view framed_place(a: Arrangement, p: ArrangementPlace) {
-    ui.WindowFrame(name: place_title(p), carries: p.record, fill) {
+view framed_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
+    ui.WindowFrame(
+        name: place_title(p),
+        carries: p.record,
+        lists_actions: lists_the_place(p),
+        fill,
+    ) {
         controls: {
-            place_controls(a, p)
+            place_controls(a, p, lists)
         }
         body: {
             place_content(p)
@@ -155,7 +160,9 @@ view framed_place(a: Arrangement, p: ArrangementPlace) {
 /// outside it, and the content itself is `place_content`'s, as every preset draws it.
 view space_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related, fill) {
-        place_controls(a, p)
+        // A space has no frame bar: its content's own header row carries the window's actions,
+        // so the shell's controls keep theirs off (`listed`), and each command stands once.
+        place_controls(a, p, true)
         ui.Text(place_title(p), role: .label, secondary: true)
         place_content(p)
     }

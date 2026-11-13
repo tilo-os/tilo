@@ -24,6 +24,7 @@ use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
 use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
 use sctk::shell::wlr_layer::LayerSurfaceConfigure;
 use sctk::shell::xdg::window::{DecorationMode, WindowConfigure};
+use sctk::shell::WaylandSurface;
 use sctk::shm::slot::SlotPool;
 use sctk::shm::Shm;
 use sctk::subcompositor::SubcompositorState;
@@ -123,6 +124,10 @@ pub struct WindowState {
 
     /// The text inputs observed on the window.
     text_inputs: Vec<ZwpTextInputV3>,
+
+    /// Where the caret the IME composes at stands, as last set: enabling a text input resets
+    /// what it was told, so every enable states it again.
+    ime_cursor_area: Option<(i32, i32, i32, i32)>,
 
     /// The inner size of the window, as in without client side decorations.
     size: LogicalSize<u32>,
@@ -248,6 +253,7 @@ impl WindowState {
             initial_size: Some(initial_size),
             layer_configured: false,
             text_inputs: Vec::new(),
+            ime_cursor_area: None,
             theme,
             title: String::default(),
             transparent: false,
@@ -845,6 +851,14 @@ impl WindowState {
 
     /// Try to resize the window when the user can do so.
     pub fn request_inner_size(&mut self, inner_size: Size) -> PhysicalSize<u32> {
+        // A layer surface asks the compositor for its size, which answers
+        // with a configure: the window takes the size that gives it.
+        if let Some(layer) = self.window.layer() {
+            let size: LogicalSize<u32> = inner_size.to_logical(self.scale_factor());
+            layer.set_size(size.width, size.height);
+            layer.commit();
+            return logical_to_physical_rounded(self.inner_size(), self.scale_factor());
+        }
         if self
             .last_configure
             .as_ref()
@@ -1248,24 +1262,36 @@ impl WindowState {
         for text_input in &self.text_inputs {
             applied = true;
             if allowed {
-                text_input.enable();
-                text_input.set_content_type_for(self.ime_purpose, self.ime_content_type);
+                self.enable_text_input(text_input);
             } else {
                 text_input.disable();
+                text_input.commit();
             }
-            text_input.commit();
         }
 
         applied
     }
 
+    /// Enable `text_input` for this window: its content type and the caret it composes at, which
+    /// an enable resets, then commit.
+    pub fn enable_text_input(&self, text_input: &ZwpTextInputV3) {
+        text_input.enable();
+        text_input.set_content_type_for(self.ime_purpose, self.ime_content_type);
+        if let Some((x, y, width, height)) = self.ime_cursor_area {
+            text_input.set_cursor_rectangle(x, y, width, height);
+        }
+        text_input.commit();
+    }
+
     /// Set the IME position.
-    pub fn set_ime_cursor_area(&self, position: LogicalPosition<u32>, size: LogicalSize<u32>) {
+    pub fn set_ime_cursor_area(&mut self, position: LogicalPosition<u32>, size: LogicalSize<u32>) {
         // FIXME: This won't fly unless user will have a way to request IME window per seat, since
         // the ime windows will be overlapping, but winit doesn't expose API to specify for
         // which seat we're setting IME position.
         let (x, y) = (position.x as i32, position.y as i32);
         let (width, height) = (size.width as i32, size.height as i32);
+        // Kept for the text inputs that enter or enable later: the caret is told after each.
+        self.ime_cursor_area = Some((x, y, width, height));
         for text_input in self.text_inputs.iter() {
             text_input.set_cursor_rectangle(x, y, width, height);
             text_input.commit();
@@ -1282,11 +1308,6 @@ impl WindowState {
         }
     }
 
-    /// Get the IME purpose.
-    pub fn ime_purpose(&self) -> ImePurpose {
-        self.ime_purpose
-    }
-
     pub fn set_ime_content_type(
         &mut self,
         content: Option<crate::platform::wayland::ImeContentType>,
@@ -1299,10 +1320,6 @@ impl WindowState {
             text_input.set_content_type_for(self.ime_purpose, content);
             text_input.commit();
         }
-    }
-
-    pub fn ime_content_type(&self) -> Option<crate::platform::wayland::ImeContentType> {
-        self.ime_content_type
     }
 
     /// Set the scale factor for the given window.

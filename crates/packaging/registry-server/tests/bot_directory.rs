@@ -1,5 +1,5 @@
-//! Bot entries end to end: program uploads, submission checks, review and
-//! serving the approved program as a content-addressed blob.
+//! Bot entries end to end: program uploads, submission checks, review and serving the approved
+//! program as a content-addressed blob.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,8 +26,8 @@ struct Bots {
     owner: SigningKey,
 }
 
-/// A registry on a loopback port whose base URL names that port, so the
-/// program URLs it hands out are fetchable by the client under test.
+/// A registry on a loopback port whose base URL names that port, so the program URLs it hands out
+/// are fetchable by the client under test.
 async fn spawn() -> Bots {
     let port = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .unwrap()
@@ -70,8 +70,6 @@ async fn spawn() -> Bots {
     }
 }
 
-/// A one-step program: post a fixed text in Chat whenever a chat message
-/// arrives.
 fn echo_program() -> Vec<u8> {
     let shortcut: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
         "id": "echo",
@@ -363,8 +361,8 @@ impl tilo_bot_directory::HostConnectors for NoConnectors {
     }
 }
 
-/// Promote the approved entries into a snapshot the owner signs, as the
-/// operator's publish step does.
+/// Promote the approved entries into a snapshot the owner signs, as the operator's publish step
+/// does.
 fn publish_snapshot(bots: &Bots) {
     let storage = &bots.storage;
     let previous = storage.load_snapshot().unwrap();

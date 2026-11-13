@@ -26,6 +26,32 @@ mod windows;
 #[cfg(all(target_os = "android", feature = "native"))]
 pub(crate) use android::android_font_system;
 
+/// What a process does when no root in [`catalog_roots`] holds a catalog it
+/// accepts: say so in the log, and, where the run was promised one
+/// (`TILO_REQUIRE_FONTS=1`, [`crate::host::RunnerDiagnostics::fonts_required`]),
+/// stop. Text falls back to the host's faces either way, which is nearly right
+/// and wrong in a way only a review of the picture notices — so a run that was
+/// promised the catalog fails here, naming where a catalog comes from.
+#[allow(
+    clippy::panic,
+    reason = "a run promised the product's font catalog: a frame set in the host's faces is not \
+              evidence about this product, so the process stops rather than drawing one"
+)]
+fn no_catalog(errors: &[FontCatalogError]) {
+    tracing::error!(?errors, "Tilo font catalog unavailable");
+    if !crate::host::environment().diagnostics.fonts_required {
+        return;
+    }
+    #[cfg(feature = "native")]
+    let why = catalog_missing_message();
+    #[cfg(not(feature = "native"))]
+    let why = "no font catalog for this build, which TILO_REQUIRE_FONTS promises every process \
+               that sets text. A binary built on another machine names that machine's checkout, \
+               so it finds none of this one's."
+        .to_owned();
+    panic!("{why}");
+}
+
 /// The product catalog with the system's fonts behind it, for every process
 /// that is not handed a host font database or Android's own catalog. The
 /// catalog is verified and the system fonts discovered once per process; each
@@ -40,6 +66,10 @@ pub(crate) use android::android_font_system;
 /// ([`mapped`]), so shaping never opens a file.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
+    // A test binary of another crate links this one without `cfg(test)`.
+    if cfg!(feature = "test-support") {
+        return Some(fixture_font_system());
+    }
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
         let roots = catalog_roots();
@@ -58,7 +88,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
                 Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)))
             }
             Err(errors) => {
-                tracing::error!(?errors, "Tilo font catalog unavailable");
+                no_catalog(&errors);
                 None
             }
         }
@@ -74,9 +104,14 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     allow(dead_code, reason = "unit tests build the fixture font system instead")
 )]
 pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
-    let (locale, loaded) = load_first_catalog(&catalog_roots(), locale, |_| {})
-        .ok()?
-        .into_locale_and_db();
+    let (locale, loaded) = match load_first_catalog(&catalog_roots(), locale, |_| {}) {
+        Ok(loaded) => loaded,
+        Err(errors) => {
+            no_catalog(&errors);
+            return None;
+        }
+    }
+    .into_locale_and_db();
     let mut held = fontdb::Database::new();
     let mut read = HashSet::new();
     for face in loaded.faces() {
@@ -122,13 +157,12 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     roots.push(
         PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
     );
-    // A build materializes the pinned catalog into the machine's font cache
-    // (`tools/font-catalog.py`) and bakes *that* path in. A binary built on
-    // another machine therefore names a directory this one does not have, and
-    // every frame it renders is set in the host's faces — nearly right, and
-    // wrong in a way only a screenshot review notices. The cache is keyed by
-    // what it was prepared from, so any prepared catalog whose manifest is
-    // this build's is the catalog this build expects.
+    // A build prepared its catalog beside its own profile directory and baked *that* path in. A
+    // binary built on another machine therefore names a directory this one does not have, and
+    // every frame it renders is set in the host's faces — nearly right, and wrong in a way only a
+    // screenshot review notices. Catalogs are published under the name of what they were
+    // prepared from, so any prepared catalog whose manifest is this build's is the catalog this
+    // build expects, wherever on this machine it was materialized (`tools/font-catalog.py`).
     let paths = &crate::host::environment().paths;
     for cache in paths.font_artifact_cache.iter().cloned().chain(
         paths
@@ -145,10 +179,20 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// [`bundled_font_system`] tries, checked for a manifest this build pins. A
 /// run whose answer is `None` would render every frame in the host's faces,
 /// which is not the product, so a capture asks this before it draws anything.
+///
+/// A program that starts another build's binary and has it draw — a test
+/// running the app beside it, which was built beside a different build
+/// directory — names this as [`OVERRIDE_ENV`] in the child, so the child sets
+/// text in the catalog this process verified rather than the one its own build
+/// path names.
 #[cfg(feature = "native")]
-pub(crate) fn catalog_root() -> Option<PathBuf> {
+pub fn catalog_root() -> Option<PathBuf> {
     tilo_font_catalog::find_root(catalog_roots())
 }
+
+/// `TILO_FONT_CATALOG`: the variable that names the catalog a build reads
+/// instead of the one its compiled-in path names.
+pub use tilo_font_catalog::OVERRIDE_ENV;
 
 /// Why no root holds this build's catalog, naming the places that were
 /// tried: the message a capture fails with, so the answer is one line away
@@ -353,14 +397,36 @@ pub fn shipped_families() -> Vec<String> {
     families
 }
 
-#[cfg(any(test, all(feature = "native", feature = "test-support")))]
-pub(crate) fn fixture_catalog() -> FontCatalog {
-    FontCatalog::controlled_fixture(checkout_root(), "en-US")
+/// The catalog every test lays its text out in: this build's pinned faces,
+/// none of the machine's.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_catalog() -> FontCatalog {
+    fixture_catalog_in("en-US")
 }
 
-#[cfg(test)]
+/// [`fixture_catalog`] for a test that shows text in another language.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_catalog_in(locale: impl Into<String>) -> FontCatalog {
+    FontCatalog::controlled_fixture(fixture_root(), locale)
+}
+
+/// The roots the product reads: a build directory carried from another machine
+/// still finds the catalog its test environment prepared.
+fn fixture_root() -> PathBuf {
+    #[cfg(feature = "native")]
+    if let Some(root) = catalog_root() {
+        return root;
+    }
+    checkout_root()
+}
+
+/// [`fixture_catalog`] loaded: what a test's renderer is built from.
+#[allow(
+    clippy::expect_used,
+    reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
+)]
 pub(crate) fn fixture_font_system() -> FontSystem {
-    fixture_catalog()
+    FontCatalog::controlled_fixture(fixture_root(), "en-US")
         .load()
         .expect("prepared canonical font fixture")
 }
@@ -372,12 +438,12 @@ pub(crate) fn catalog_font_system(root: &Path) -> Result<FontSystem, FontCatalog
     FontCatalog::product(root, "en-US").load_with_system(|_| {})
 }
 
-#[cfg(any(test, all(feature = "native", feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 #[allow(
     clippy::expect_used,
     reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
 )]
-pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
+pub fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("prepared canonical renderer fixture")
 }

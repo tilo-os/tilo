@@ -1,4 +1,4 @@
-//! Files' actions wear pictures of their own in every list of actions.
+//! Files' actions wear pictures of their own in every language.
 
 use ui::tilo_resource::{Effect as _, EffectDecl, Resource as _, declaration_spec};
 
@@ -17,9 +17,6 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
     actions
 }
 
-/// Every icon an action declares is one the toolkit draws, and the actions
-/// people reach for most each declare one: an app's search shows the
-/// action's own picture beside its label, not only the app's.
 #[test]
 fn actions_wear_icons_the_toolkit_draws() {
     let actions = actions();
@@ -64,8 +61,6 @@ fn actions_wear_icons_the_toolkit_draws() {
     }
 }
 
-/// What acts on the person's selection says so in its contract, so an app's
-/// search lists it before the other actions.
 #[test]
 fn what_acts_on_the_selection_says_so() {
     let actions = actions();

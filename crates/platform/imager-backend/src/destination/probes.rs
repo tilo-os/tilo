@@ -1,7 +1,6 @@
-//! What this computer proves about its boot chain and what its image can
-//! mount, sampled by the live installer before it offers encryption and
-//! filesystem choices. Each probe only observes; the privileged backend
-//! repeats the real checks before it writes anything.
+//! What this computer proves about its boot chain and what its image can mount.
+//!
+//! Each probe only observes; the privileged backend repeats the real checks before writing.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -10,11 +9,9 @@ use std::time::Duration;
 use install_profile_model::FILESYSTEMS;
 use serde_json::Value;
 
-/// The image's list of drivers its initramfs leaves out.
 const OMITTED_INITRAMFS_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers.txt";
 
-/// Which of [`FILESYSTEMS`] the image's initramfs can mount, from its list of
-/// omitted drivers.
+/// From the image's list of omitted drivers.
 pub fn filesystem_support_from_manifest(
     manifest: &str,
 ) -> Result<[bool; FILESYSTEMS.len()], String> {
@@ -33,9 +30,8 @@ pub fn filesystem_support_from_manifest(
             };
             *flag = false;
         } else {
-            // Every image also omits the large-firmware GPU drivers to keep its
-            // UKI small. Those entries do not change which filesystem the
-            // installer can offer.
+            // Every image also omits the large-firmware GPU drivers to keep its UKI small; those
+            // entries do not change which filesystem the installer can offer.
             if !matches!(line, "amdgpu" | "nouveau" | "xe") {
                 return Err("The image has an invalid initramfs driver manifest".into());
             }
@@ -44,7 +40,6 @@ pub fn filesystem_support_from_manifest(
     Ok(supported)
 }
 
-/// Which of [`FILESYSTEMS`] this image's initramfs can mount.
 pub fn filesystem_support() -> Result<[bool; FILESYSTEMS.len()], String> {
     use std::os::unix::fs::MetadataExt as _;
     let path = std::path::Path::new(OMITTED_INITRAMFS_DRIVERS);
@@ -57,19 +52,12 @@ pub fn filesystem_support() -> Result<[bool; FILESYSTEMS.len()], String> {
         .map_err(|_| "The image's initramfs driver manifest is unreadable".to_string())?;
     filesystem_support_from_manifest(&manifest)
 }
-/// Does this machine have a TPM2 device for the ordinary wizard? Encryption
-/// does not require one — the volume is always built around a recovery key and
-/// the TPM is an extra key slot — but it decides whether the disk can unlock
-/// itself, and therefore whether the secret below is optional convenience or
-/// the only thing standing between the user and typing a 48-character recovery
-/// key at every boot.
+/// Encryption does not require a TPM, but the TPM decides whether the disk unlocks itself, so this
+/// decides whether the secret below is convenience or the only way in.
 ///
-/// The unprivileged wizard session cannot open the TPM's character device, so
-/// it can only observe the node; the privileged backend repeats the real probe
-/// before enrollment. When this process already runs as root (the explicit
-/// unattended path), the canonical `tilo-rollback tpm-status` protocol probe is
-/// used instead, so a busy or non-responsive TPM is not mistaken for a usable
-/// one. The result is sampled once per process.
+/// The unprivileged wizard can only observe the device node; the backend repeats the real probe, and
+/// a root process uses the canonical `tilo-rollback tpm-status` protocol instead. Sampled once per
+/// process.
 pub fn has_tpm2() -> bool {
     static PROBE: OnceLock<bool> = OnceLock::new();
     let present =
@@ -96,7 +84,6 @@ pub fn has_tpm2() -> bool {
     })
 }
 
-/// Whether firmware reports Secure Boot on.
 pub fn secure_boot_enabled() -> bool {
     std::fs::read_dir("/sys/firmware/efi/efivars")
         .ok()
@@ -114,18 +101,14 @@ pub fn secure_boot_enabled() -> bool {
         == Some(1)
 }
 
-/// Whether the running kernel enforces lockdown.
 pub fn kernel_lockdown_active() -> bool {
     std::fs::read_to_string("/sys/kernel/security/lockdown")
         .is_ok_and(|state| state.contains("[integrity]") || state.contains("[confidentiality]"))
 }
 
-/// Does this installer image prove that the target it writes will retain the
-/// verified-boot boundary after reboot? The current split install flow cannot
-/// make that promise merely because the live medium itself booted securely.
-/// A future UKI/signing integration owns this executable and must fail closed
-/// unless the target UKI, initramfs, command line and firmware trust chain are
-/// all covered.
+/// Whether this image proves that the target it writes keeps the verified-boot boundary after
+/// reboot. A future UKI signing integration owns this and must fail closed unless the target UKI,
+/// initramfs, command line and firmware trust chain are all covered.
 pub fn target_verified_boot_ready() -> bool {
     bounded_command::run(
         "/usr/libexec/tilo-verified-boot-install-preflight",
@@ -141,7 +124,6 @@ const ROLLBACK_BIN: &str = "/usr/libexec/tilo/tilo-rollback";
 const VERIFIED_BOOT_PREFLIGHT: &str = "/usr/libexec/tilo-verified-boot-install-preflight";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// What the canonical probes established about the actual destination.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each field is an independent probe result, not a state combination"
@@ -155,17 +137,15 @@ pub struct ProtectionReport {
     pub target_verified_boot: bool,
 }
 
-/// The canonical probes of the actual destination, run as root by the
-/// unattended installation.
+/// Run as root by the unattended installation.
 pub struct SystemProtection;
 
 impl SystemProtection {
-    /// What the destination's TPM2 and its installed target's
-    /// measured-boot preflight establish.
+    /// What the destination's TPM2 and its installed target's measured-boot preflight establish.
     pub fn probe(&mut self) -> Result<ProtectionReport, String> {
-        // A real TPM2 protocol read, not a device-node presence test. The
-        // dictionary-attack capability is what makes a short PIN defensible;
-        // the first boot hardens it, and the value is reported to the operator.
+        // A real TPM2 protocol read, not a device-node test: the dictionary-attack capability is
+        // what makes a short PIN defensible, the first boot hardens it, and the value reaches the
+        // operator.
         let rollback = bounded_command::run(
             ROLLBACK_BIN,
             &["tpm-status", "--json"],

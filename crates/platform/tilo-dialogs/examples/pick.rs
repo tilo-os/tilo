@@ -40,8 +40,6 @@ fn main() {
     }
 }
 
-/// Block until the answer arrives. On macOS the panel lives on the main run
-/// loop, so this thread keeps running it while it waits.
 #[cfg(target_os = "macos")]
 fn wait<T>(answer: &Receiver<T>) -> T {
     use objc2::MainThreadMarker;

@@ -442,11 +442,9 @@ fn requests_renew_an_expired_lease_and_keep_a_hold() {
     assert_eq!(fs::read(daemon.lease_path()).unwrap(), held);
 }
 
-/// The laptop on 2026-10-22: a shell layer from main ships its
-/// one-version-per-interface declaration over an image whose app host
-/// reads lists of versions. The swap is refused before anything is
-/// activated, naming the image's components to swap with it; the desktop
-/// keeps running on the generation it had.
+/// A shell layer from main ships its one-version-per-interface declaration over an image whose app
+/// host reads lists of versions. The swap is refused before anything is activated, naming the
+/// image's components to swap with it, and the desktop keeps running on the generation it had.
 #[test]
 fn a_swap_that_leaves_the_app_host_unable_to_read_the_declaration_is_refused() {
     let root = tempfile::tempdir().unwrap();
@@ -932,7 +930,6 @@ fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
         })
     };
     let session = session_unit("a");
-    // Phase `a_new_throwaway_restarts_the_session_with_fresh_desktop_state`.
     {
         let result: SlotCreateResult =
             serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
@@ -967,7 +964,6 @@ fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
             })
         );
     }
-    // Phase `a_kept_throwaway_keeps_the_running_session`.
     {
         let result: SlotCreateResult =
             serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
@@ -978,13 +974,11 @@ fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
         assert!(!result.actions.contains(&Action::ResetDesktopState));
         assert!(!result.actions.contains(&Action::StopUnit { unit: session }));
     }
-    // Phase `a_refused_identity_fails_the_create`.
     {
         let error = daemon.handle(create(true)).unwrap_err();
         assert!(matches!(error, DaemonError::TestIdentity { .. }), "{error}");
         assert!(error.to_string().contains("identity_exists"), "{error}");
     }
-    // Phase `a_plain_create_leaves_identity_alone`.
     {
         let result: SlotCreateResult =
             serde_json::from_value(daemon.handle(create(false)).unwrap()).unwrap();
@@ -1116,6 +1110,44 @@ fn restored_slot_views_preserve_global_layers_and_refuse_missing_layers() {
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].slot, "proof");
     assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
+}
+
+/// The VM's person runs on the machine's identity tree and comes back on it when the VM boots: a
+/// restore that handed its session a private identity root left the person, after a cold boot, in
+/// identity recovery on a device key of nobody's.
+#[test]
+fn the_vms_person_comes_back_at_boot_on_the_machines_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let slots = SlotStore::new(root.path());
+    let layers = LayerStore::new(root.path());
+    let locks = Locks::new(root.path());
+    let mut apply = RecordingApply::default();
+    let (mut me, _) = slots
+        .create("proof", SlotKind::Headless, Owner::default(), &[])
+        .unwrap();
+    me.device_identity = true;
+    slots.save(&me).unwrap();
+    let hash = "05".repeat(32);
+    fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
+    let (_, generation) = slots
+        .prepare_swap(
+            &me,
+            "shell",
+            &hash,
+            ComponentInfo::new(Scope::Session, Vec::new()),
+        )
+        .unwrap()
+        .unwrap();
+    slots.set_current(&mut me, generation.number).unwrap();
+    assert!(restore_slots(&slots, &layers, &locks, &mut apply).is_empty());
+    for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
+        let dropin = &apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())];
+        assert!(!dropin.contains("TILO_IDENTITY_ROOT"), "{unit}: {dropin}");
+        assert!(
+            dropin.contains("TILO_TEST_CONTROL_FIRST_USE=keep"),
+            "{unit}: {dropin}"
+        );
+    }
 }
 
 #[test]
@@ -1360,7 +1392,6 @@ fn a_board_merges_the_device_and_vm_slots_layers_whichever_applies() {
 
 #[test]
 fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
-    // Phase `exec_needs_a_user_slot_with_a_running_session`.
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::new(
@@ -1391,7 +1422,6 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
             DaemonError::SlotNotFound(_)
         ));
     }
-    // Phase `headful_seats_are_recreated_at_start`.
     {
         let root = tempfile::tempdir().unwrap();
         let slots = SlotStore::new(root.path());
@@ -1413,7 +1443,6 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
         assert_eq!(apply.calls, ["allocate_seat a"]);
         drop(busy);
     }
-    // Phase `restore_brings_back_seats_then_sessions`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let slots = SlotStore::new(tmp.path());
@@ -1439,7 +1468,6 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
             "{calls:?}"
         );
     }
-    // Phase `installed_line_names_the_app`.
     {
         assert_eq!(
             parse_installed("tilo-install: WARN self-signed\ninstalled: so.tilo.notes 0.1.0\n"),
@@ -1451,7 +1479,6 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
 
 #[test]
 fn abi_checks_refuse_foreign_builds_and_compare_targets_and_locks() {
-    // Phase `abi_refuses_foreign_arch_and_builder`.
     {
         let base = BaseInfo {
             image_digest: Some("sha256:base".into()),
@@ -1476,14 +1503,13 @@ fn abi_checks_refuse_foreign_builds_and_compare_targets_and_locks() {
         layer.base_image_digest = Some("sha256:older".into());
         layer.toolchain = Some("1.96.0".into());
         assert_eq!(abi_check(&layer, &base, "x86_64").unwrap().len(), 2);
-        // Nothing known about the VM: nothing to compare.
+        // Thin apps share `libruntime_dylib.so` with the image, so another `Cargo.lock` is refused.
         assert!(
             abi_check(&layer, &BaseInfo::default(), "x86_64")
                 .unwrap()
                 .is_empty()
         );
     }
-    // Phase `abi_compares_the_dev_images_target_and_cargo_lock`.
     {
         let base = dev_base();
         let mut layer = Provenance::local("shell");
@@ -1638,7 +1664,6 @@ fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
             "onboarding.finish.button",
         ]
     );
-    // Phase `a_second_person_is_refused`.
     {
         let error = daemon.handle(create("other")).unwrap_err();
         assert!(
@@ -1647,7 +1672,6 @@ fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
         );
         assert!(error.to_string().contains("'me'"), "{error}");
     }
-    // Phase `the_person_is_kept_on_a_second_create`.
     {
         let result: SlotCreateResult =
             serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();

@@ -3,8 +3,8 @@
 //! itself rather than lift the lock, which only the right password lifts.
 
 use super::lock::{
-    apart, lock_screen, lockable_session, pictures, private_home, type_and_enter, until_back,
-    until_drawn,
+    apart, lock_screen, lockable_session, pictures, private_home,
+    take_back_the_notice_of_the_locks_own_view, type_and_enter, until_back, until_drawn,
 };
 use super::*;
 
@@ -163,6 +163,9 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
     });
+    // The lock the person saw was the session's own drawing, and the desk they come back to says
+    // so until they take that back.
+    take_back_the_notice_of_the_locks_own_view(&mut session);
     // And the desk is back, which is what the person gets once they unlock.
     until_back(&mut session, &DISPLAYS, &desk);
 }

@@ -1,10 +1,9 @@
-//! Helpers: a fresh mount namespace holding none of the caller's mounts, born in the given
-//! cgroup, in the given network namespace. They run as the caller in the initial user
-//! namespace, so these tests need root; elsewhere each says why it skipped.
+//! Helpers: a fresh mount namespace holding none of the caller's mounts, born in the given cgroup,
+//! in the given network namespace. They run as the caller in the initial user namespace, so these
+//! tests need root; elsewhere each says why it skipped.
 
 use crate::support::{TestCgroup, is_root, reap, start_in_child, status_file};
 
-/// A cgroup for a helper, or why the test skips.
 fn ready() -> Result<TestCgroup, String> {
     if !is_root() {
         return Err("helpers need root".into());
@@ -24,7 +23,6 @@ macro_rules! needs_root {
     };
 }
 
-/// Run `script` as a helper of `kind`; its output.
 fn run(cg: &TestCgroup, dir: &std::path::Path, kind: &str, script: &str) -> String {
     std::fs::write(dir.join("kind"), kind).unwrap();
     std::fs::write(dir.join("script"), script).unwrap();

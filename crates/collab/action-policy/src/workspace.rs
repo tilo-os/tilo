@@ -298,6 +298,15 @@ impl WorkspacePolicy {
                 .map_or(Subject::Role(Role::Owner), Subject::Person);
             self.grants.push(roles::device_panel(&self.workspace, by));
         }
+        // And the one its files are authored through, which a workspace
+        // written before it was granted gains too.
+        if !self.grants.iter().any(roles::is_files_app) {
+            let by = self
+                .owner
+                .clone()
+                .map_or(Subject::Role(Role::Owner), Subject::Person);
+            self.grants.push(roles::files_app(&self.workspace, by));
+        }
         self
     }
 
@@ -476,6 +485,13 @@ impl WorkspacePolicy {
             .decide(&self.node().app(app), ActionKind::Undoable, cx)
             .answer
             == Answer::Allow
+    }
+
+    /// The grants naming the work on the issue `issue`.
+    pub fn task_grants<'a>(&'a self, issue: &'a str) -> impl Iterator<Item = &'a Grant> + 'a {
+        self.grants
+            .iter()
+            .filter(move |grant| matches!(&grant.subject, Subject::Task(task) if task == issue))
     }
 
     /// The grants naming `subject`.

@@ -1,14 +1,6 @@
-//! A file's bytes as a field of the record: [`ByteBuffer`].
-//!
-//! The bytes are stored as a list of pages of a few KiB each. An edit
-//! rewrites only the pages it touches: typing over one byte of a large file
-//! writes one page, an insert grows one page (split when it gets long), and
-//! collaborators editing different pages merge cleanly. Two people editing
-//! the same page concurrently keep one of their versions of it.
-//!
-//! Its edits are field edits in its own vocabulary, a [`BufferEdit`]:
-//! `HexEditor::paths().bytes.perform(&edit)`. They apply at the path and
-//! read only the pages they touch, never the whole file.
+//! A file's bytes as a field of the record, stored as pages of a few KiB: an edit
+//! rewrites only the pages it touches, so two people editing different pages merge
+//! cleanly. A [`BufferEdit`] applies at the path and reads only those pages.
 
 use std::fmt;
 use std::ops::Range;
@@ -26,14 +18,11 @@ use ui::tilo_resource::{
 
 use crate::model::{BufferEdit, common_suffix};
 
-/// The bytes a page holds when a file is opened or a long page is split.
 pub(crate) const PAGE: usize = 4096;
-/// The longest a page grows by inserts before it is split.
 pub(crate) const MAX_PAGE: usize = 2 * PAGE;
 
-/// Bytes as hexadecimal text: how they travel in an edit, a verb's
-/// arguments and history, and what a person or an agent writes
-/// (`"de ad be ef"`).
+/// Bytes as hexadecimal text: how they travel in an edit, a verb's arguments and
+/// history, and what a person writes (`"de ad be ef"`).
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Hex(pub Vec<u8>);
 
@@ -44,7 +33,6 @@ impl fmt::Debug for Hex {
 }
 
 impl Hex {
-    /// The bytes as lowercase hexadecimal digits, two per byte.
     #[must_use]
     pub fn text(&self) -> String {
         hex::encode(&self.0)
@@ -87,14 +75,13 @@ impl JsonSchema for Hex {
     }
 }
 
-/// A file's bytes, kept in pages. See the [module docs](self).
+/// A file's bytes, kept in pages.
 #[derive(Clone, Default)]
 pub struct ByteBuffer {
     pages: Vec<Arc<[u8]>>,
 }
 
 impl ByteBuffer {
-    /// `bytes` as a buffer of fresh pages.
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
         Self {
@@ -112,25 +99,21 @@ impl ByteBuffer {
         self.pages.iter().all(|page| page.is_empty())
     }
 
-    /// Every byte, in order.
     pub fn iter(&self) -> impl Iterator<Item = u8> + '_ {
         self.pages.iter().flat_map(|page| page.iter().copied())
     }
 
-    /// The bytes as one contiguous copy.
     #[must_use]
     pub fn to_vec(&self) -> Vec<u8> {
         self.pages.concat()
     }
 
-    /// How many pages hold the bytes.
     #[must_use]
     pub fn page_lengths(&self) -> Vec<usize> {
         self.pages.iter().map(|page| page.len()).collect()
     }
 
-    /// Make `edit` to these bytes, as the edit at its path does to the
-    /// stored pages: a verb's change, written back page by page.
+    /// Make `edit` to these bytes as the edit at its path does to the stored pages.
     pub fn edit(&mut self, edit: &BufferEdit) -> Result<(), Refusal> {
         let lengths = self.page_lengths();
         let pages = &self.pages;
@@ -186,8 +169,8 @@ fn beyond(offset: usize, len: usize) -> ModelError {
     ))
 }
 
-/// The page holding `offset` and where in it; the end of the buffer is the
-/// end of its last page.
+/// The page holding `offset` and where in it; the end of the buffer is the end of
+/// its last page.
 fn locate(lengths: &[usize], offset: usize) -> Option<(usize, usize)> {
     let mut start = 0;
     for (index, length) in lengths.iter().enumerate() {
@@ -200,8 +183,7 @@ fn locate(lengths: &[usize], offset: usize) -> Option<(usize, usize)> {
     (offset == start).then_some((last, *length))
 }
 
-/// The pages that hold any byte of `from..to`, and the offset the first of
-/// them starts at.
+/// The pages that hold a byte of `from..to`, and the offset the first starts at.
 fn pages_over(lengths: &[usize], from: usize, to: usize) -> (Range<usize>, usize) {
     let mut start = 0;
     let mut first = None;
@@ -224,12 +206,10 @@ fn pages_over(lengths: &[usize], from: usize, to: usize) -> (Range<usize>, usize
     }
 }
 
-/// The range of pages an edit replaces and the pages that take their place.
 type Spliced = (Range<usize>, Vec<Vec<u8>>);
 
-/// What `edit` does to pages of `lengths`: the range of pages it replaces
-/// and the pages that take their place, or `None` when it changes nothing.
-/// `read` copies the pages of a range, so only the touched ones are read.
+/// What `edit` does to pages of `lengths`: the pages it replaces and those that take
+/// their place. `read` copies a range's pages, so only the touched ones are read.
 fn splice(
     lengths: &[usize],
     edit: &BufferEdit,
@@ -309,7 +289,6 @@ fn splice(
     }
 }
 
-/// The page at `index` of the stored list, borrowed.
 fn with_page<T>(
     doc: &Doc,
     list: &ObjId,
@@ -325,15 +304,13 @@ fn with_page<T>(
     }
 }
 
-/// How long each stored page is, read without copying any of them.
 fn stored_lengths(doc: &Doc, list: &ObjId) -> Result<Vec<usize>, ModelError> {
     (0..doc.length(list))
         .map(|index| with_page(doc, list, index, <[u8]>::len))
         .collect()
 }
 
-/// Write `new` over the stored pages `range`, touching only the pages that
-/// differ.
+/// Write `new` over the stored pages `range`, touching only the pages that differ.
 fn write_pages(
     doc: &mut Doc,
     list: &ObjId,
@@ -366,8 +343,7 @@ fn write_pages(
     Ok(())
 }
 
-/// How many leading and trailing stored pages equal `pages`' own, compared
-/// in place.
+/// How many leading and trailing stored pages equal `pages`' own, compared in place.
 fn shared_ends(doc: &Doc, list: &ObjId, pages: &[Arc<[u8]>]) -> Result<(usize, usize), ModelError> {
     let stored = doc.length(list);
     let mut prefix = 0;
@@ -392,7 +368,6 @@ fn shared_ends(doc: &Doc, list: &ObjId, pages: &[Arc<[u8]>]) -> Result<(usize, u
 impl Operations for ByteBuffer {
     type Op = BufferEdit;
 
-    /// The next nibble or byte typed, the next byte deleted.
     fn coalesces(previous: &BufferEdit, next: &BufferEdit) -> bool {
         previous.continues(next)
     }
@@ -420,7 +395,6 @@ impl Model for ByteBuffer {
     tilo_resource::leaf_paths!();
     tilo_resource::operations_model!();
 
-    /// The bytes as hexadecimal text.
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(hex::encode(self.to_vec()))
     }
@@ -460,8 +434,7 @@ impl Model for ByteBuffer {
         Ok(Self::default())
     }
 
-    /// Write the pages that differ from the stored ones: a verb that
-    /// changed one page writes that page.
+    /// Write the pages that differ from the stored ones.
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let list = slot.object(doc, ObjType::List)?;
         let (prefix, suffix) = shared_ends(doc, &list, &self.pages)?;
@@ -476,7 +449,6 @@ impl Model for ByteBuffer {
         write_pages(doc, &list, prefix..stored - suffix, &new)
     }
 
-    /// Re-read the pages that changed, keeping the ones that did not.
     fn refresh(
         &mut self,
         doc: &Doc,

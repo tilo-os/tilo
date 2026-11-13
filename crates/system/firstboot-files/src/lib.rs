@@ -9,19 +9,13 @@
 //!
 //! Omit SKELETON when a separate attesting helper owns default publication.
 //!
-//! Only complete files are published: each is written under a random
-//! temporary name, synced, and renamed into place with `RENAME_NOREPLACE`, so
-//! an interrupted run leaves the final name absent and a retry starts clean.
-//! An existing file is never replaced, which keeps the installer's seeds and an
-//! unexpected intent. Destination directory descriptors anchor every edge,
-//! including the ownership repair, and no symlink below the account's parent
-//! directory is ever followed.
+//! Only complete files are published: each is written under a random temporary
+//! name, synced, and renamed into place with `RENAME_NOREPLACE`, so an interrupted
+//! run leaves the final name absent and a retry starts clean. An existing file is
+//! never replaced. Destination directory descriptors anchor every edge, and no
+//! symlink below the account's parent directory is ever followed.
 //!
 //! Exit status 0 when done, 1 on any failure (with the reason on stderr).
-//!
-//! The calls tests need to interrupt or observe (listing a directory, syncing
-//! a descriptor, publishing one name) go through [`Files`], whose provided
-//! methods are the production behaviour.
 
 pub mod py;
 
@@ -51,7 +45,6 @@ const INTENT_LOCK: &[u8] = b":!tilo-firstboot-";
 const COPY_BLOCK: usize = 1024 * 1024;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-/// A failure, by the kind of exception the original raised.
 #[derive(Debug)]
 pub enum Error {
     /// The operating system refused `call` on `name` (`OSError`).
@@ -66,7 +59,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// The operating-system error behind this failure, if it is one.
     #[must_use]
     pub const fn os_error(&self) -> Option<&io::Error> {
         match self {
@@ -110,10 +102,8 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// `Result` with this crate's [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Maps a failed `call` on `name` to an [`Error`].
 fn at(call: &'static str, name: &OsStr) -> impl FnOnce(Errno) -> Error {
     let name = name.to_owned();
     move |errno| Error::Os {
@@ -131,11 +121,10 @@ fn on(call: &'static str) -> impl FnOnce(Errno) -> Error {
     }
 }
 
-/// Writes one temporary name in a directory; [`Files::publish`] runs it.
+/// Writes one temporary name in a directory.
 pub type Writer<'a> = dyn FnMut(&OsStr) -> Result<()> + 'a;
 
-/// The calls tests interrupt or observe. The provided methods are the
-/// production behaviour; [`System`] uses them all.
+/// The calls tests interrupt or observe; the provided methods are production.
 pub trait Files {
     /// The names in `directory`, without `.` and `..`, in directory order
     /// (`os.listdir`).
@@ -152,15 +141,10 @@ pub trait Files {
         Ok(names)
     }
 
-    /// Flushes `fd` to stable storage.
     fn fsync(&self, fd: BorrowedFd<'_>) -> Result<()> {
         rustix::fs::fsync(fd).map_err(on("fsync"))
     }
 
-    /// Publishes `name` in `directory` whole or not at all: see [`publish`].
-    ///
-    /// # Errors
-    /// See [`publish`].
     fn publish(
         &self,
         directory: BorrowedFd<'_>,
@@ -171,15 +155,14 @@ pub trait Files {
     }
 }
 
-/// The machine itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
 impl Files for System {}
 
 /// Who the published files belong to, as the command line gave it: Python
-/// integers, refused only when a `chown` needs them (`-1` and `2**32 - 1`
-/// leave that id unchanged).
+/// integers, refused only when a `chown` needs them (`-1` and `2**32 - 1` leave
+/// that id unchanged).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner {
     pub uid: i128,
@@ -187,7 +170,6 @@ pub struct Owner {
 }
 
 impl Owner {
-    /// The calling process's real ids.
     #[must_use]
     pub fn current() -> Self {
         Self {
@@ -406,10 +388,9 @@ pub fn ownership<F: Files + ?Sized>(
                 if opened.st_nlink != 1 {
                     return Err(Error::value("hardlinked home file"));
                 }
-                // A chown strips set-id bits; ownership transfer must not
-                // restore them.
-                // Even a no-op chown changes ctime and invalidates an
-                // attesting helper's content-source witness on retry.
+                // A chown strips set-id bits, and ownership transfer must not restore
+                // them. Even a no-op chown changes ctime and invalidates an attesting
+                // helper's content-source witness on retry.
                 if !owner.matches(&opened) {
                     let (uid, gid) = owner.ids()?;
                     fchown(&fd, uid, gid).map_err(at("chown", &name))?;
@@ -479,7 +460,7 @@ fn read_intent(stdin: &mut dyn Read) -> Result<Vec<u8>> {
     Ok(record)
 }
 
-/// The command line, without the program name. Sets the umask to 0 first:
+/// The command line, without the program name. Sets the umask to 0 first, so
 /// every mode is the one given.
 ///
 /// # Errors

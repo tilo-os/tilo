@@ -9,13 +9,9 @@ use std::sync::Arc;
 
 use crate::engine::{Canvas, LayerSim, Mark, MediumEngine, Settings};
 
-/// How many marks apart checkpoints are taken.
 const CHECKPOINT_EVERY: usize = 24;
-/// How many checkpoints a layer keeps; each is a full copy of its fields.
 const CHECKPOINTS_KEPT: usize = 4;
 
-/// One mark as a layer paints it: its content fingerprint, the seed of its
-/// randomness, and the mark in cell coordinates.
 #[derive(Clone, Debug)]
 pub struct Painted {
     pub fingerprint: [u8; 32],
@@ -24,9 +20,6 @@ pub struct Painted {
 }
 
 impl Painted {
-    /// A mark addressed by its stable `id`. The seed follows the id alone,
-    /// so recolouring or nudging a stroke keeps its character; the
-    /// fingerprint follows the content too, so any edit re-simulates it.
     pub fn new(id: &str, mark: Mark) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(id.as_bytes());
@@ -90,7 +83,6 @@ pub fn windowed(
         .collect()
 }
 
-/// The seed of the randomness of the mark addressed by `id`.
 pub fn seed_of(id: &str) -> u64 {
     let hash = blake3::hash(id.as_bytes());
     let mut bytes = [0_u8; 8];
@@ -98,7 +90,6 @@ pub fn seed_of(id: &str) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// One layer's simulation, kept in step with its marks.
 pub struct LayerPainter {
     engine: Arc<dyn MediumEngine>,
     canvas: Canvas,
@@ -107,12 +98,9 @@ pub struct LayerPainter {
     sim: Box<dyn LayerSim>,
     checkpoints: Vec<(usize, Box<dyn LayerSim>)>,
     pixels: Option<(usize, Vec<u8>)>,
-    /// The last preview's simulation and the marks it laid over the
-    /// applied ones, so laying exactly those marks next costs nothing.
     ahead: Option<Ahead>,
 }
 
-/// A preview's simulation: the applied marks with `laid` painted over them.
 struct Ahead {
     laid: Vec<[u8; 32]>,
     sim: Box<dyn LayerSim>,
@@ -144,12 +132,10 @@ impl LayerPainter {
             && self.settings.resolved() == settings.resolved()
     }
 
-    /// How many marks the last [`Self::paint`] had to simulate.
     pub fn applied(&self) -> usize {
         self.applied.len()
     }
 
-    /// The layer with exactly `marks` painted, as straight-alpha sRGB RGBA8.
     pub fn paint(&mut self, marks: &[Painted]) -> &[u8] {
         let common = self
             .applied
@@ -171,8 +157,6 @@ impl LayerPainter {
                 .zip(&laid)
                 .all(|(mark, laid)| mark.fingerprint == *laid)
         {
-            // What the last preview laid is what is being laid now: its
-            // simulation is the result, already.
             self.sim = sim;
             self.applied.extend(laid);
             self.checkpoint();
@@ -217,8 +201,6 @@ impl LayerPainter {
         pixels
     }
 
-    /// Keep a copy of the simulation when the marks applied reach the next
-    /// checkpoint.
     fn checkpoint(&mut self) {
         let count = self.applied.len();
         if count.is_multiple_of(CHECKPOINT_EVERY)
@@ -231,7 +213,6 @@ impl LayerPainter {
         }
     }
 
-    /// Go back to the state after the first `keep` marks.
     fn rewind(&mut self, keep: usize) {
         self.checkpoints.retain(|(count, _)| *count <= keep);
         if let Some((count, sim)) = self.checkpoints.last() {

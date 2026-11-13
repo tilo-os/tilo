@@ -17,8 +17,6 @@ pub const INVENTORY_SCRATCH_BYTES_ENV: &str = "TILO_INVENTORY_SCRATCH_BYTES";
 pub(super) const INVENTORY_SCRATCH_FD: RawFd = 1797;
 
 /// A directory authenticated through its caller's signed runtime/package review.
-/// The held identity is checked against the exact native projection path again
-/// before every use; a replacement path cannot silently move the exclusion.
 pub(super) struct ReadRoot {
     directory: File,
     path: PathBuf,
@@ -97,9 +95,8 @@ impl Scratch {
         }
         self.refuse_overlap(source)?;
         let filesystem = filesystem(&self.directory)?;
-        // Accept only supported local filesystems, rejecting direct RAM,
-        // overlay, network and unknown mounts. This is not physical backing
-        // proof: the broker must separately exclude RAM-backed loop devices.
+        // Accept only supported local filesystems, rejecting direct RAM, overlay, network and unknown
+        // mounts.
         let mut flags = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         if unsafe { libc::fstatvfs(self.directory.as_raw_fd(), flags.as_mut_ptr()) } < 0 {
             return Err(io::Error::last_os_error());
@@ -186,7 +183,6 @@ pub(super) fn identity(directory: &File) -> io::Result<(u64, u64, u64)> {
 }
 
 // Shared retained source exclusion.
-// It does not mint source read/write permission or disclose either ancestor.
 pub(in crate::owned_service) fn refuse_retained_overlap(
     source: &File,
     input: &File,

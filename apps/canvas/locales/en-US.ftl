@@ -97,7 +97,7 @@ canvas-dock-unfold = Show the layers and history
 canvas-medium-plain = Plain
 canvas-medium-oil = Oil
 canvas-medium-watercolour = Watercolour
-canvas-layer-rename = Layer name, double-click to rename
+canvas-layer-rename = Layer name
 canvas-layer-hide-name = Hide { $name }
 canvas-layer-show-name = Show { $name }
 canvas-layer-lock-name = Lock { $name }
@@ -199,7 +199,7 @@ canvas-checkpoint-name = Checkpoint { $number }
 canvas-history-now = Now
 canvas-history-steps = { $steps } steps
 canvas-history-created = Created
-canvas-viewing-past = Shown on the canvas
+canvas-viewing-past = Viewing this version
 canvas-restore = Restore
 canvas-preview-banner = An earlier version. Esc returns to now
 canvas-kind-image = Picture
@@ -350,7 +350,7 @@ canvas-export-view = What’s in view
 canvas-export-selection = Selection
 canvas-export-transparent = Transparent background
 canvas-export-summary = { $width } × { $height } pixels, { $format }
-canvas-export-svg-summary = { $width } × { $height } units, vector; painted layers as pictures
+canvas-export-svg-summary = { $width } × { $height } units, vector. Painted layers become pictures.
 canvas-export-bytes = about { $size }
 canvas-export-jpeg-opaque = JPEG keeps the ground
 canvas-export-too-large = Too large: a picture is at most { $pixels } pixels a side
@@ -370,9 +370,10 @@ canvas-save = Save
 canvas-copy-of = { $title } copy
 canvas-duplicated = Saved a copy as { $name }
 canvas-save-failed = Could not save: { $why }
-canvas-chooser-gone = the file chooser went away
-canvas-files-failed = Files could not answer: { $why }
+canvas-chooser-gone = the file chooser was closed
+canvas-files-failed = Files didn’t respond: { $why }
 canvas-picture-failed = The picture was not added: { $why }
+canvas-write-refused = The artwork was not changed: { $why }
 canvas-export-edited = { $title } edited
 
 canvas-rendering-artwork = Rendering the artwork…
@@ -397,9 +398,9 @@ canvas-workspace-pixel = Pixel
 canvas-tools-focused = Suggested tools
 canvas-tools-all = All tools
 
-canvas-size-pixel-32 = Sprite · 32 × 32
-canvas-size-pixel-64 = Sprite · 64 × 64
-canvas-size-pixel-128 = Scene · 128 × 128
+canvas-size-pixel-32 = Sprite
+canvas-size-pixel-64 = Sprite
+canvas-size-pixel-128 = Scene
 canvas-start-transparent = Transparent
 
 ## History: what each change did, by field and by verb
@@ -476,3 +477,55 @@ canvas-combine = Combined shapes
 # no GPU, or (in a browser page) a request answered at once, such as an
 # agent's diff, compare or measure, which the page cannot render in time.
 canvas-pictures-unavailable = This needs a picture of the artwork, which can’t be made here yet.
+
+# Said when an answer must show the artwork's pictures themselves and one is
+# still being decoded: a browser page cannot wait for the decoder, so the
+# same request answers once the pixels are here.
+canvas-pictures-decoding = This needs a picture that is still being decoded. Ask again in a moment.
+
+## Facts, property labels and section titles
+canvas-a11y-artwork = { $width } by { $height } units, { $layers } layers, { $marks } marks, { $selected } selected; inspect lists them and look shows them
+
+## What the window shows
+canvas-resource-artwork = Artwork
+
+## Actions
+
+canvas-recent-artworks = Recent artworks
+canvas-recent-artworks-remember = Record a recent artwork
+canvas-recent-artworks-forget = Forget a recent artwork
+canvas-view-look = Look at artwork
+canvas-view-inspect = Inspect marks
+canvas-view-measure = Measure ink
+canvas-view-media = List media
+canvas-view-export = Export picture
+canvas-view-compare-versions = Compare versions
+canvas-view-export-svg = Export SVG
+canvas-view-compare = Compare with reference
+canvas-view-save-artwork = Save artwork
+canvas-view-find-area = Find image area
+canvas-artwork-paint = Paint strokes
+canvas-artwork-draw = Draw shapes
+canvas-artwork-chart = Draw chart
+canvas-artwork-edit-marks = Edit marks
+canvas-artwork-remove-marks = Remove marks
+canvas-artwork-arrange = Arrange marks
+canvas-artwork-edit-layer = Edit layer
+canvas-artwork-remove-layer = Remove layer
+canvas-artwork-set-artwork = Set artwork
+canvas-artwork-save-medium = Save medium
+canvas-artwork-remove-medium = Remove medium
+canvas-artwork-align = Align marks
+canvas-artwork-set-reference = Set reference
+canvas-artwork-import-svg = Import SVG
+canvas-artwork-open-picture = Open picture
+canvas-artwork-open-artwork = Open artwork
+canvas-artwork-select = Select area
+canvas-artwork-use-selection = Use selection
+canvas-artwork-combine = Combine shapes
+canvas-tools-use-brush = Use brush
+canvas-tools-use-colour = Use colour
+canvas-tools-use-pigment = Load pigment
+
+## What the app is called in a window and in the launcher
+canvas-app-title = Canvas

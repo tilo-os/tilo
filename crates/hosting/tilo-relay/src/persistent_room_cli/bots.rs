@@ -107,7 +107,9 @@ pub(super) async fn start_bots(
     if installed_bots.is_empty() {
         return Ok((Vec::new(), None));
     }
-    let blobs = connector_host.blobs(workspaces);
+    let blobs = connector_host
+        .blobs(workspace)
+        .map_err(|error| anyhow::anyhow!("the workspace's content: {error}"))?;
     // The workspace serves without its bots rather than not at all: a connector
     // whose worker does not start (a missing binary, an unreachable service)
     // leaves the bots that need it out, said in the log, as a bridge that
@@ -128,7 +130,16 @@ pub(super) async fn start_bots(
         }
     };
     let mut runners = Vec::new();
+    // The devices the bots this host runs sign as: a record's repair puts a
+    // bot's own change back only as the bot's, and the workspace's copy takes
+    // it from the bot's device.
+    let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
     for (dir, bot) in installed_bots {
+        workspaces.keep_bot_device(
+            workspace,
+            &bot.installation,
+            certifier.device_key(&bot.installation),
+        );
         runners.extend(run_bot(
             workspaces,
             workspace,

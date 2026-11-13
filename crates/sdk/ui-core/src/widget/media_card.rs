@@ -36,6 +36,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction};
 use crate::widget::{Element, TaffyTreeExt, Widget, card_column_width, card_columns};
 
@@ -2020,7 +2021,7 @@ impl Widget for MediaGrid {
             }
         }
         for card in &mut self.cards {
-            card.draw(scene, transform, text_renderer, theme, presence);
+            card.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

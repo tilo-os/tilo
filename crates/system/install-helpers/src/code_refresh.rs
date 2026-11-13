@@ -1,16 +1,11 @@
 //! `tilo-vm-install-proof code-refresh`: refreshes allowlisted installer
 //! helpers inside an explicitly attached development VM.
 //!
-//! The host (`os/dev/refresh-installer-code.py`) sends one bounded,
-//! named-file packet over the `org.tilo.installer-code` virtio port; the
-//! daemon validates it, stages every file beside the runtime state and
-//! bind-mounts each over the helper it replaces, read-only, with the
-//! original's mode, owner and `SELinux` label. The receipt is the canonical
-//! packet's SHA-256, its file manifest and the host's source revision.
-//!
-//! The Python host side and the seed old CI media run
-//! (`os/dev/installer-code-bootstrap/`) speak the same protocol; the receipt
-//! and its digest must stay byte-identical with theirs.
+//! The host (`os/dev/refresh-installer-code.py`) sends one bounded, named-file
+//! packet over the `org.tilo.installer-code` virtio port; the daemon validates
+//! it, stages every file beside the runtime state and bind-mounts each over the
+//! helper it replaces, read-only, with the original's mode, owner and `SELinux`
+//! label.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -30,12 +25,8 @@ use crate::{Error, Result, require};
 pub const SCHEMA: &str = "tilo.installer-code-refresh.v1";
 pub const LIMIT: usize = 2 * 1024 * 1024;
 const FILE_LIMIT: usize = 512 * 1024;
-/// Text helpers only. The compiled helpers (tilo-install-handoff-copy,
-/// tilo-install-dev-ssh, tilo-vm-bootc-copy-cache,
-/// tilo-installer-offline-target with its development target UKI,
-/// tilo-staging-handoff, tilo-vm-install-proof with this daemon) come from
-/// the base image's install-helpers component; a checkout holds no file to
-/// send for them.
+/// Text helpers only. The compiled helpers come from the base image's
+/// install-helpers component; a checkout holds no file to send for them.
 pub const ALLOWLIST: [&str; 2] = [
     "usr/libexec/tilo-install",
     "usr/libexec/tilo-boot-mount-contract",
@@ -211,9 +202,6 @@ pub fn validate(raw: &[u8]) -> Result<(Files, Value)> {
 }
 
 /// `read_exact`: exactly `count` bytes, however the stream fragments them.
-///
-/// # Errors
-/// The stream ending first, or failing.
 pub fn read_exact(stream: &mut dyn Read, count: usize) -> Result<Vec<u8>> {
     let mut output = vec![0; count];
     let mut filled = 0;
@@ -242,9 +230,6 @@ fn bounded_packet(stream: &mut dyn Read, prefix: &[u8]) -> Result<(Files, Value)
 }
 
 /// `receive`: one length-prefixed packet, validated.
-///
-/// # Errors
-/// As [`read_exact`] and [`validate`].
 pub fn receive(stream: &mut dyn Read) -> Result<(Files, Value)> {
     let prefix = read_exact(stream, 4)?;
     bounded_packet(stream, &prefix)
@@ -287,9 +272,6 @@ impl<T: Read + Write> Stream for T {}
 /// `bootstrap_receive`: the old-media bootstrap's handshake. Leftover boot
 /// output and repeated hellos are skipped, each answered with readiness,
 /// within bounds.
-///
-/// # Errors
-/// No recognizable hello, too many repeats, or as [`receive`].
 pub fn bootstrap_receive(stream: &mut dyn Stream) -> Result<(Files, Value)> {
     let mut greeted = false;
     for _ in 0..64 {
@@ -322,17 +304,14 @@ pub fn bootstrap_receive(stream: &mut dyn Stream) -> Result<(Files, Value)> {
 /// The development VM the daemon refreshes. The provided methods are the
 /// production behaviour; tests replace the seams.
 pub trait Guest {
-    /// Where generations, the lock and the receipts live.
     fn base(&self) -> PathBuf {
         PathBuf::from("/run/tilo-installer/code-refresh")
     }
 
-    /// The root the allowlisted paths are relative to.
     fn root(&self) -> PathBuf {
         PathBuf::from("/")
     }
 
-    /// Where the running processes are listed.
     fn proc_root(&self) -> PathBuf {
         PathBuf::from("/proc")
     }
@@ -342,8 +321,8 @@ pub trait Guest {
         let name = crate::process::name(argv.first().copied().unwrap_or_default());
         let output = match crate::process::run(argv, None, TIMEOUT) {
             Ok(output) => output,
-            // process::run reports only its timeout as "Command '…'"; a
-            // missing program carries the OS error instead.
+            // process::run reports only its timeout as "Command '…'"; a missing program
+            // carries the OS error instead.
             Err(error) if error.0.starts_with("Command '") => {
                 return Err(Error::new(format!(
                     "{name} timed out refreshing installer code"
@@ -440,12 +419,10 @@ pub trait Guest {
         crate::process::run(argv, Some(b""), TIMEOUT)
     }
 
-    /// Whether the cached-target fixture disk is attached.
     fn fixture_disk(&self) -> bool {
         Path::new("/dev/disk/by-id/virtio-tilo-code-fixture").exists()
     }
 
-    /// Opens the host channel.
     fn open_port(&self) -> Result<Box<dyn Stream>> {
         let port = File::options()
             .read(true)
@@ -454,34 +431,27 @@ pub trait Guest {
         Ok(Box::new(port))
     }
 
-    /// Tells systemd the first refresh is in place.
     fn ready(&self) -> Result<()> {
         notify_ready()
     }
 
-    /// Whether the old-media bootstrap seeded this VM before the packet.
-    ///
-    /// The seed writes `bootstrap.json` into [`Guest::base`] and then starts
-    /// this daemon in the same process, so the receipt is the durable record of
-    /// the handshake. It is read from the root-owned runtime directory rather
-    /// than from the environment: an environment variable is inherited by every
-    /// child and set by anyone who can start the unit, while the seed's receipt
-    /// can only be written by root into a 0700 directory it owns.
+    /// Whether the old-media bootstrap seeded this VM before the packet. The seed
+    /// writes `bootstrap.json` into [`Guest::base`] and then starts this daemon in
+    /// the same process, so the receipt is the durable record of the handshake. It
+    /// is read from the root-owned runtime directory rather than from the
+    /// environment: an environment variable is inherited by every child and set by
+    /// anyone who can start the unit.
     fn bootstrap_handshake(&self) -> bool {
         self.base().join("bootstrap.json").is_file()
     }
 
     /// The pause before the port is reopened; an error ends the loop.
-    ///
-    /// # Errors
-    /// Never in production.
     fn pause(&self) -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
         Ok(())
     }
 }
 
-/// The development VM as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -502,9 +472,9 @@ fn notify_ready() -> Result<()> {
     Ok(())
 }
 
-/// `idle`: no installer transient unit and no `tilo-install` process.
-/// Independent of the replaceable helper's flock protocol: older helpers
-/// must not be refreshed while an installer launcher or backend is alive.
+/// `idle`: no installer transient unit and no `tilo-install` process,
+/// independent of the replaceable helper's flock protocol, so an installer
+/// launcher or backend that is alive is never refreshed under.
 pub fn idle(guest: &dyn Guest) -> Result<()> {
     let units = guest.command(&[
         "systemctl",
@@ -589,8 +559,8 @@ fn is_generation(name: &OsStr) -> bool {
 /// recording the transaction so a backend never runs on a partial view.
 pub fn apply(guest: &dyn Guest, files: &Files, receipt: &Value) -> Result<Value> {
     guest.gate()?;
-    // Held until this returns, so the backend's own flock waits for the
-    // whole transaction.
+    // Held until this returns, so the backend's own flock waits for the whole
+    // transaction.
     let _lock = match advisory_lock::FileLock::try_exclusive(guest.lock()?) {
         Ok(lock) => lock,
         Err(advisory_lock::TryLockError::WouldBlock) => {
@@ -670,8 +640,8 @@ pub fn apply(guest: &dyn Guest, files: &Files, receipt: &Value) -> Result<Value>
             previous.as_ref(),
         );
         if rollback.is_err() {
-            // Do not let an old UI/backend lacking the new lock protocol
-            // operate with a partial view. This is a disposable dev VM.
+            // Do not let an old UI/backend lacking the new lock protocol operate with a
+            // partial view. This is a disposable dev VM.
             guest.command(&["systemctl", "stop", "greetd.service"])?;
         }
         return Err(error);
@@ -743,8 +713,8 @@ fn byte_lines(bytes: &[u8]) -> Vec<&[u8]> {
 }
 
 /// `backend_probe`: when the refreshed backend carries the probe, run it
-/// through its real transient, enforcing path and require its row to name
-/// the exact helper bytes; otherwise `None`.
+/// through its real transient, enforcing path and require its row to name the
+/// exact helper bytes; otherwise `None`.
 pub fn backend_probe(guest: &dyn Guest, files: &Files) -> Result<Value> {
     let helper = files
         .iter()
@@ -826,13 +796,9 @@ fn exchange(guest: &dyn Guest, stream: &mut dyn Stream, ready_sent: &mut bool) -
 }
 
 /// The daemon: gate once, then answer every packet the host sends, with
-/// readiness after the first successful refresh. Host connections may
-/// close between refreshes, so the port is reopened rather than spinning on
-/// end of file or treating it as new code.
-///
-/// # Errors
-/// The gate refusing, the port failing to open, or [`Guest::pause`]
-/// ending the loop.
+/// readiness after the first successful refresh. Host connections may close
+/// between refreshes, so the port is reopened rather than spinning on end of
+/// file or treating it as new code.
 pub fn serve(guest: &dyn Guest) -> Result<()> {
     guest.gate()?;
     let mut ready_sent = false;
@@ -848,9 +814,9 @@ pub fn serve(guest: &dyn Guest) -> Result<()> {
     }
 }
 
-/// `tilo-vm-install-proof code-refresh-check STATE_DIR`: the installer
-/// backend, holding the refresh lock, refuses to run over a refresh that
-/// did not finish applying.
+/// `tilo-vm-install-proof code-refresh-check STATE_DIR`: the installer backend,
+/// holding the refresh lock, refuses to run over a refresh that did not finish
+/// applying.
 pub fn check_applied(base: &Path) -> Result<()> {
     let marker = base.join("active.json");
     if !marker.exists() {

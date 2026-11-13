@@ -61,7 +61,7 @@ impl RecordSet {
             .portable
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
-        let target = key(&self.package_id, &self.home, &want.id);
+        let target = key(&self.app_id, &self.home, &want.id);
         if cache.get(&target).is_none() {
             self.take_from_retired_workspace_in_cache(cache, want)?;
         }
@@ -108,7 +108,7 @@ impl RecordSet {
         let Some(retired) = self.retired.as_deref() else {
             return Ok(());
         };
-        let Some(former) = cache.get(&key(&self.package_id, retired, &want.id)) else {
+        let Some(former) = cache.get(&key(&self.app_id, retired, &want.id)) else {
             return Ok(());
         };
         let mut doc = AutoCommit::load_with_options(
@@ -135,7 +135,7 @@ impl RecordSet {
         let actor = doc.get_actor().to_bytes().to_vec();
         cache
             .put_document(
-                key(&self.package_id, &self.home, &want.id),
+                key(&self.app_id, &self.home, &want.id),
                 &mut doc,
                 Some(actor),
             )
@@ -157,7 +157,7 @@ impl RecordSet {
             .ok_or_else(|| format!("{id}: record is busy"))?;
         slot.action_state.commit_for_save(doc);
         let actor = doc.get_actor().to_bytes().to_vec();
-        cache.put_document(key(&self.package_id, &self.home, id), doc, Some(actor))
+        cache.put_document(key(&self.app_id, &self.home, id), doc, Some(actor))
     }
 
     /// Hand the open records to the cache. With `accepted_is_written` the
@@ -184,7 +184,7 @@ impl RecordSet {
             };
             let edited = doc.pending_ops() != 0;
             slot.action_state.commit_for_save(doc);
-            let key = key(&self.package_id, &self.home, id);
+            let key = key(&self.app_id, &self.home, id);
             let actor = doc.get_actor().to_bytes().to_vec();
             match cache
                 .put_document(key.clone(), doc, Some(actor))
@@ -219,9 +219,7 @@ impl RecordStore {
             .ok_or(RecordOpenError::IdentityMismatch)?;
         if set.pending.contains_key(&want.id)
             || set.open.contains_key(&want.id)
-            || cache
-                .get(&key(&set.package_id, &set.home, &want.id))
-                .is_some()
+            || cache.get(&key(&set.app_id, &set.home, &want.id)).is_some()
         {
             return Err(RecordOpenError::Busy);
         }
@@ -293,7 +291,7 @@ impl RecordReservation {
             .ok_or(RecordOpenError::IdentityMismatch)?;
         cache
             .put(
-                key(&set.package_id, &set.home, &self.checkout.id),
+                key(&set.app_id, &set.home, &self.checkout.id),
                 doc.save(),
                 Some(doc.get_actor().to_bytes().to_vec()),
             )
@@ -478,6 +476,91 @@ mod tests {
             changes.len(),
             "one change per writer and sequence, whichever page wrote it"
         );
+    }
+
+    /// A page sends what a person writes in a record as soon as it is made.
+    /// When the workspace refuses one of those changes, the page takes it
+    /// back, but the relay already holds it: the person's next change from
+    /// that page must not carry the refused change's writer and sequence,
+    /// or the record would hold two changes under one number and read whole
+    /// nowhere.
+    #[test]
+    fn a_change_after_a_refused_one_never_reuses_its_sequence() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let store = RecordOwners::portable(cache.clone())
+            .open("so.tilo.test", "workspace")
+            .unwrap();
+        store.create_record(&checkout).unwrap();
+        let mut relay = AutoCommit::load(
+            &cache
+                .get(&key("so.tilo.test", "workspace", &checkout.id))
+                .unwrap()
+                .bytes,
+        )
+        .unwrap();
+        // What a person's action writes: a change under their writer on
+        // this copy, sent to the relay at once.
+        let mut send = |value: &str| {
+            let (hash, sent) = store
+                .with_action_state(&checkout.id, |doc, _, _| {
+                    let heads = doc.get_heads();
+                    let copy = doc.get_actor().clone();
+                    doc.set_actor(automerge::ActorId::from(
+                        crate::bound_dispatch::document_writer("alice", doc),
+                    ));
+                    doc.put(automerge::ROOT, "message", value).unwrap();
+                    let hash = doc.commit().unwrap();
+                    doc.set_actor(copy);
+                    (hash, doc.save_after(&heads))
+                })
+                .unwrap();
+            crate::history_mode::routes::load_incremental(&mut relay, &sent).unwrap();
+            hash
+        };
+        send("hello");
+        let refused = send("not allowed here");
+        store
+            .withdraw_refused(
+                &checkout.id,
+                &[refused],
+                "This workspace doesn't allow that.",
+            )
+            .unwrap()
+            .expect("withdrawn");
+        let next = send("hello again");
+
+        let changes = relay.get_changes(&[]);
+        let sequences: std::collections::HashSet<_> = changes
+            .iter()
+            .map(|change| (change.actor_id().to_bytes(), change.seq()))
+            .collect();
+        assert_eq!(
+            sequences.len(),
+            changes.len(),
+            "one change per writer and sequence, a refused one among them"
+        );
+        let author = relay
+            .get_change_by_hash(&next)
+            .unwrap()
+            .actor_id()
+            .to_hex_string();
+        assert_eq!(
+            crate::history_source::authors::actor_handle(&author).as_deref(),
+            Some("alice"),
+            "the change after a refusal is still the person's"
+        );
+        // The page keeps saving the record under the writer it moved to.
+        store.try_flush().unwrap_or_else(|error| {
+            assert!(
+                error.contains(crate::portable_storage::PENDING_ACKNOWLEDGEMENT),
+                "{error}"
+            );
+        });
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
+        store.try_flush().unwrap();
     }
 
     #[test]

@@ -1,32 +1,6 @@
-//! Pure editor input primitives.
-//!
-//! Every function here is what the keyboard, toolbar, menus, Ctrl+K and an
-//! agent all call to turn "what the participant did" into positional
-//! [`RichTextAction`] envelopes plus the participant's next view:
-//!
-//! ```text
-//! (&ParticipantView, &AutoCommit, args) -> Result<(Vec<RichTextAction>, ParticipantView), EditingError>
-//! ```
-//!
-//! - Pure: no widget state, clock, or RNG. The returned envelopes stay
-//!   positional (`SpliceText`, `ReplaceSelection`, `SplitBlock`, …) so replay
-//!   is unchanged; only the build step reads the invoker's view.
-//! - View-only operations (`move_caret`, `select_*`, `find`) return no
-//!   envelopes and only a new view.
-//! - An empty envelope list with an unchanged view is a no-op (for example
-//!   Backspace at document start), not an error.
-//! - An edit that creates a block whose id is minted at apply time (Enter,
-//!   a multi-paragraph paste) returns a view with a
-//!   [`PendingCaret`](crate::actions::participant::PendingCaret); it resolves through
-//!   [`ParticipantView::settle`](crate::actions::participant::ParticipantView::settle) once the envelope is applied, and every
-//!   function here settles its input first.
-//!
-//! The same logic backs the root operations published on
-//! `word-processor.document` (`add_operations`): each operation resolves a
-//! small *target* from the invoker's view at tree-build time and its build
-//! closure finishes the same computation from the arguments, so an operation
-//! invoked through Ctrl+K or by an agent encodes byte-for-byte what the
-//! matching keyboard/toolbar path dispatches for the same view.
+//! Pure editor input primitives: what the keyboard, the palette and an agent call to turn
+//! a participant's input into positional [`RichTextAction`]s and that participant's next
+//! view. Nothing here reads a widget, a clock or a random number.
 
 use automerge::AutoCommit;
 #[cfg(test)]
@@ -43,27 +17,18 @@ use super::{
 };
 use crate::word_processor::ClipBlock;
 
-/// Most characters one `erase-text` may remove without a selection
-/// (an unattended caller cannot wipe a document one large delete at a time).
+/// The most one `erase-text` removes without a selection.
 pub const MAX_ERASE_COUNT: usize = 256;
-/// A selection larger than this (characters, a paragraph join counting as
-/// one) is refused by the published `type-text`, `erase-text`, `paste` and
-/// `replace-selection` operations, for every invoker, so a remote caller cannot
-/// replace a large selection in one step;
-/// the keyboard path is unaffected.
+/// A replacement of the selection larger than this is refused for every invoker, so a
+/// remote caller cannot remove a large selection in one step; the keyboard path is unaffected.
 pub const LARGE_REMOVAL_CHARS: usize = 2_048;
-/// Longest Find query accepted, bounding the per-participant state and the
-/// search work one remote caller can request.
+/// Bounds the Find state and the work one caller can ask for.
 pub const MAX_FIND_QUERY_BYTES: usize = 256;
 
-/// Why a primitive produced no edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditingError {
-    /// The view has no caret, or its caret block is not in the document.
     NoCaret,
-    /// The primitive needs a non-empty selection.
     NeedsSelection,
-    /// Arguments are out of range or stale for this document.
     Invalid(String),
 }
 
@@ -79,18 +44,15 @@ impl std::fmt::Display for EditingError {
 
 impl std::error::Error for EditingError {}
 
-/// Envelopes to dispatch, and the participant's view after them.
 pub type EditOutcome = (Vec<RichTextAction>, ParticipantView);
 pub type EditResult = Result<EditOutcome, EditingError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteDirection {
-    /// Backspace.
     Backward,
     Forward,
 }
 
-/// Toggleable inline marks (Ctrl+B/I/U, toolbar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineMark {
     Strong,
@@ -111,8 +73,7 @@ impl InlineMark {
         Self::Subscript,
     ];
 
-    /// The tilo-doc mark name (`strong`, `em`, `underline`, `strike`, `super`,
-    /// `sub`); also the `toggle-mark` argument spelling.
+    /// The tilo-doc mark name, also the `toggle-mark` argument spelling.
     pub fn name(self) -> &'static str {
         match self {
             Self::Strong => "strong",
@@ -128,8 +89,7 @@ impl InlineMark {
         Self::ALL.into_iter().find(|mark| mark.name() == name)
     }
 
-    /// Super/subscript are a mutually exclusive pair that, like the toolbar,
-    /// also apply to the whole caret block without a selection.
+    /// The other of the super and sub pair, which also cover the whole caret block.
     fn sibling(self) -> Option<Self> {
         match self {
             Self::Superscript => Some(Self::Subscript),
@@ -150,8 +110,6 @@ impl InlineMark {
     }
 }
 
-/// Paragraph kind for the style menu. `kind` is a tilo-doc block kind
-/// (`paragraph`, `heading`, `list_item`, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParagraphStyle {
     pub kind: String,
@@ -165,37 +123,23 @@ pub enum PasteContent {
     Markdown(String),
 }
 
-/// Where `move-caret` puts the caret. Serialized inside the
-/// `word-processor.view-operation` payload.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "to", rename_all = "kebab-case")]
 pub enum CaretTarget {
-    /// A character offset in one block of the view's region.
-    Point {
-        block: String,
-        offset: usize,
-    },
+    Point { block: String, offset: usize },
     DocumentStart,
     DocumentEnd,
     BlockEnd,
 }
 
-// ---------------------------------------------------------------------------
-// Reading the participant's region
-// ---------------------------------------------------------------------------
-
 type Range3 = (String, usize, usize);
 
-/// Read access to one region. The body's order comes from the caller's kept
-/// [`BodyOrder`] when it has one, so finding a block's neighbours costs
-/// `O(log n)`; otherwise the region is listed (a scan and sort of the whole
-/// region) only when an operation needs it, so typing and erasing inside one
-/// block touch only that block (keystroke latency).
+/// Read access to one region: the body's kept order when the caller has one, else the
+/// region is listed only when an operation needs it.
 struct RegionDoc<'a> {
     doc: &'a AutoCommit,
     containers: tilo_doc::Containers,
     region: RegionKind,
-    /// The kept body order, in step with `doc`; used only for the body.
     body: Option<&'a BodyOrder>,
     listed: std::cell::OnceCell<Vec<String>>,
 }
@@ -237,7 +181,6 @@ impl<'a> RegionDoc<'a> {
         }
     }
 
-    /// The block at position `index` of the region.
     fn id_at(&self, index: usize) -> Option<&str> {
         match self.body {
             Some(body) => body.id_at(index),
@@ -245,7 +188,6 @@ impl<'a> RegionDoc<'a> {
         }
     }
 
-    /// Blocks in the region.
     fn count(&self) -> usize {
         match self.body {
             Some(body) => body.len(),
@@ -263,8 +205,6 @@ impl<'a> RegionDoc<'a> {
             .and_then(|last| self.id_at(last))
     }
 
-    /// Characters of a region block, `None` when it is not a block of this
-    /// region — the executor's own membership/length reading, one block only.
     fn block_len(&self, block: &str) -> Option<usize> {
         super::splice_target_len(self.doc, &self.containers, self.region, block)
     }
@@ -273,7 +213,6 @@ impl<'a> RegionDoc<'a> {
         self.block_len(block).unwrap_or(0)
     }
 
-    /// Text of a region block, reading only that block in the body.
     fn text(&self, block: &str) -> Option<String> {
         match self.region {
             RegionKind::Body => tilo_doc::model::block_text(self.doc, &self.containers, block),
@@ -310,14 +249,11 @@ impl<'a> RegionDoc<'a> {
     }
 }
 
-/// A settled view whose caret is a real block of its region.
 struct Resolved<'a> {
     rd: RegionDoc<'a>,
     view: ParticipantView,
     caret_len: usize,
-    /// Anchor set and different from the caret (the widget's `has_selection`).
     has_anchor: bool,
-    /// Ordered selection when both ends are blocks of the region.
     selection: Option<(ViewPoint, ViewPoint)>,
 }
 
@@ -325,7 +261,6 @@ fn resolve<'a>(view: &ParticipantView, doc: &'a AutoCommit) -> Result<Resolved<'
     resolve_in(view, doc, None)
 }
 
-/// [`resolve`] reading the body's order from `body`, the kept order of `doc`.
 fn resolve_in<'a>(
     view: &ParticipantView,
     doc: &'a AutoCommit,
@@ -352,7 +287,6 @@ fn resolve_in<'a>(
         .is_some_and(|anchor| *anchor != view.caret);
     let selection = match &view.anchor {
         Some(anchor) if has_anchor && anchor.block == view.caret.block => {
-            // One block: ordered by offset, no region scan.
             Some(if anchor.offset <= view.caret.offset {
                 (anchor.clone(), view.caret.clone())
             } else {
@@ -378,8 +312,6 @@ impl Resolved<'_> {
         self.rd.index(&self.view.caret.block).unwrap_or(0)
     }
 
-    /// Per-block `(block, start, end)` over the selection, empty ranges kept
-    /// (`WordProcessor::selection_blocks`).
     fn selection_blocks(&self) -> Vec<Range3> {
         let Some((start, end)) = &self.selection else {
             return Vec::new();
@@ -404,8 +336,6 @@ impl Resolved<'_> {
             .collect()
     }
 
-    /// The selection, or the whole caret block without one
-    /// (`WordProcessor::font_ranges`).
     fn font_ranges(&self) -> Vec<Range3> {
         if self.has_anchor {
             self.selection_blocks()
@@ -414,8 +344,6 @@ impl Resolved<'_> {
         }
     }
 
-    /// The selection's blocks, or the caret block
-    /// (`WordProcessor::selected_block_ids`).
     fn selected_block_ids(&self) -> Vec<String> {
         let selected = self.selection_blocks();
         if selected.is_empty() {
@@ -425,8 +353,6 @@ impl Resolved<'_> {
         }
     }
 
-    /// Characters a replacement of the selection removes, each paragraph
-    /// join counting as one.
     fn removed_chars(&self) -> usize {
         let blocks = self.selection_blocks();
         let joins = blocks.len().saturating_sub(1);
@@ -477,11 +403,6 @@ fn collapsed(view: &ParticipantView, caret: ViewPoint) -> ParticipantView {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Targets: what an operation resolves from the view before its arguments
-// ---------------------------------------------------------------------------
-
-/// Typing target: the selection it replaces, or the caret it inserts at.
 #[derive(Debug, Clone)]
 pub(crate) struct TypeTarget {
     region: RegionKind,
@@ -521,16 +442,12 @@ impl TypeTarget {
     }
 }
 
-/// Erase target: the selection, or a bounded window of blocks around the
-/// caret (enough for [`MAX_ERASE_COUNT`] characters in either direction).
+/// The selection, or a bounded window of blocks around the caret.
 #[derive(Debug, Clone)]
 pub(crate) struct EraseTarget {
     typing: TypeTarget,
-    /// The caret block's text, so one keystroke erases a whole grapheme
-    /// cluster.
     caret_text: String,
     caret_kind: String,
-    /// `(block, chars)` of the region's blocks around the caret.
     window: Vec<(String, usize)>,
     caret_at: usize,
     starts_region: bool,
@@ -538,11 +455,6 @@ pub(crate) struct EraseTarget {
 }
 
 impl EraseTarget {
-    /// `need`: the one erase about to be built (the keyboard path), or `None`
-    /// for a published operation that may be invoked with any arguments.
-    /// A keystroke inside the caret block reads only that block; a block
-    /// boundary, a larger count or a published operation reads the bounded
-    /// window of neighbours.
     fn new(r: &Resolved<'_>, need: Option<(DeleteDirection, usize)>) -> Self {
         let offset = r.view.caret.offset;
         let local = r.selection.is_some()
@@ -602,7 +514,6 @@ impl EraseTarget {
         self.extend_and_erase(direction, count)
     }
 
-    /// One Backspace/Delete exactly as the keyboard handles it.
     fn keystroke(&self, direction: DeleteDirection) -> EditOutcome {
         let view = &self.typing.view;
         let region = self.typing.region;
@@ -647,8 +558,6 @@ impl EraseTarget {
         (Vec::new(), collapsed(view, caret.clone()))
     }
 
-    /// The char range one Backspace (`backward`) or Delete removes inside the
-    /// caret block: the whole grapheme cluster, through the shared core.
     fn grapheme_at_caret(&self, backward: bool) -> (usize, usize) {
         let offset = self.typing.view.caret.offset;
         let text = &self.caret_text;
@@ -666,15 +575,11 @@ impl EraseTarget {
             Some(splice) if splice.removed > 0 => {
                 (splice.at, splice.at.saturating_add(splice.removed))
             }
-            // The block's text could not be read: one character, as before.
             _ if backward => (offset.saturating_sub(1), offset),
             _ => (offset, offset.saturating_add(1)),
         }
     }
 
-    /// Shift+Arrow `count` times, then Backspace: a paragraph boundary is one
-    /// character, the extent stops at the region's edge, and the extended
-    /// selection is erased as one `ReplaceSelection`.
     fn extend_and_erase(&self, direction: DeleteDirection, count: usize) -> EditResult {
         let view = &self.typing.view;
         let mut index = self.caret_at;
@@ -735,8 +640,6 @@ impl EraseTarget {
     }
 }
 
-/// Inline-mark target: the ranges each mark family covers and whether each
-/// toggle mark is already on over them.
 #[derive(Debug, Clone)]
 pub(crate) struct MarkTarget {
     region: RegionKind,
@@ -750,17 +653,14 @@ impl MarkTarget {
     fn new(r: &Resolved<'_>) -> Self {
         let selection_blocks = r.selection_blocks();
         let font_ranges = r.font_ranges();
-        // `ALL` is in `index()` order, so the mapped array is indexed by mark.
         let active = InlineMark::ALL.map(|mark| {
             if mark.sibling().is_none() {
-                // `plan_toggle_mark`: over the selection, region-aware.
                 let spans: Vec<_> = selection_blocks.iter().filter(|(_, s, e)| s < e).collect();
                 !spans.is_empty()
                     && spans
                         .iter()
                         .all(|(b, s, e)| r.has_mark_over_region(b, *s, *e, mark.name()))
             } else {
-                // `plan_exclusive_mark`: over the font ranges, body reader.
                 let spans: Vec<_> = font_ranges.iter().filter(|(_, s, e)| s < e).collect();
                 !spans.is_empty()
                     && spans.iter().all(|(b, s, e)| {
@@ -789,8 +689,6 @@ impl MarkTarget {
         self.turn(mark, !active)
     }
 
-    /// Turn `mark` on or off over the selection whatever it covers now, so
-    /// repeating it changes nothing.
     fn turn(&self, mark: InlineMark, on: bool) -> EditOutcome {
         let value = on.then_some(MarkVal::Bool(true));
         let (ranges, also_clear) = match mark.sibling() {
@@ -822,8 +720,6 @@ impl MarkTarget {
     }
 }
 
-/// Paragraph-style target: the selected blocks (or caret block), minus
-/// table cells.
 #[derive(Debug, Clone)]
 pub(crate) struct StyleTarget {
     region: RegionKind,
@@ -882,8 +778,6 @@ impl StyleTarget {
     }
 }
 
-/// Paste target: the range the fragment replaces (the selection, or the
-/// collapsed caret) and what the widget reads to adopt the first style.
 #[derive(Debug, Clone)]
 pub(crate) struct PasteTarget {
     region: RegionKind,
@@ -936,8 +830,8 @@ impl PasteTarget {
             );
             return (vec![action], collapsed(&self.view, caret));
         }
-        // The widget falls back to the start block at the last fragment's
-        // length when it cannot find the new blocks.
+        // The widget falls back to the start block and the fragment's length when it cannot
+        // find the new blocks.
         let mut next = collapsed(&self.view, ViewPoint::new(&self.start.block, final_offset));
         next.pending = Some(PendingCaret {
             after: self.start.block.clone(),
@@ -949,31 +843,16 @@ impl PasteTarget {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Primitives
-// ---------------------------------------------------------------------------
-
-/// Typing: replace the selection, or insert at the caret; the caret advances
-/// past the inserted text and the selection collapses.
+/// Typing: replace the selection or insert at the caret, and the caret moves past the text.
 pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(TypeTarget::new(&r).build(text))
 }
 
-/// Enter: split the caret block (`SplitBlock`), or turn an empty list item
-/// back into a paragraph. Replaces a non-empty selection first (two
-/// envelopes, like the keyboard). The caret lands in the new block once the
-/// split is applied ([`ParticipantView::settle`]).
 pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     new_paragraph_in(view, doc, None)
 }
 
-/// [`new_paragraph`] reading the body's order from `body`, the kept order of
-/// `doc`, so the paragraph that follows is found without listing the body.
-///
-/// # Errors
-///
-/// As [`new_paragraph`].
 pub fn new_paragraph_in(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -995,7 +874,7 @@ pub fn new_paragraph_in(
             r.rd.id_at(r.caret_index() + 1).map(str::to_owned),
         )
     };
-    // Like the widget, kind and emptiness are read before the replacement.
+    // As the widget does, kind and emptiness are read before the replacement.
     let block = r.rd.block(&caret.block);
     let kind = block
         .as_ref()
@@ -1035,11 +914,6 @@ pub fn new_paragraph_in(
     Ok((actions, next))
 }
 
-/// Backspace/Delete. With a selection, erase it (one `ReplaceSelection`).
-/// `count == 1` is exactly one keystroke, including turning a list item back
-/// into a paragraph at its start. A larger `count` (≤ [`MAX_ERASE_COUNT`])
-/// is Shift+Arrow `count` times then Backspace: one `ReplaceSelection` over
-/// that extent, a paragraph join counting as one character.
 pub fn delete(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1050,16 +924,13 @@ pub fn delete(
     EraseTarget::new(&r, Some((direction, count))).build(direction, count)
 }
 
-/// Toggle one inline mark on the selection (on unless it already covers every
-/// selected span). Super/subscript, like the toolbar, cover the whole caret
-/// block without a selection and clear their sibling when turned on.
+/// Toggle a mark on the selection; super and sub cover the whole caret block and clear
+/// their sibling when turned on.
 pub fn toggle_mark(view: &ParticipantView, doc: &AutoCommit, mark: InlineMark) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).toggle(mark))
 }
 
-/// Set a valued inline mark (font, size, colour, highlight) on the selection,
-/// or the whole caret block without one.
 pub fn set_mark(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1070,13 +941,11 @@ pub fn set_mark(
     Ok(MarkTarget::new(&r).set(name, Some(value)))
 }
 
-/// Remove one inline mark from the selection, or the whole caret block.
 pub fn clear_mark(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).set(name, None))
 }
 
-/// Set paragraph kind/level/ordered on the selected blocks, or the caret block.
 pub fn set_paragraph_style(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1086,21 +955,17 @@ pub fn set_paragraph_style(
     Ok(StyleTarget::new(&r).paragraph(style))
 }
 
-/// Apply a named document style to the selected blocks, or the caret block.
 pub fn apply_named_style(view: &ParticipantView, doc: &AutoCommit, style: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(StyleTarget::new(&r).named(style))
 }
 
-/// Paste text or Markdown over the selection or at the caret
-/// (`PasteFragment`); the caret lands after the pasted content.
 pub fn paste(view: &ParticipantView, doc: &AutoCommit, content: &PasteContent) -> EditResult {
     let blocks = clip_blocks(content)?;
     let r = resolve(view, doc)?;
     Ok(PasteTarget::new(&r).build(blocks))
 }
 
-/// Move (and collapse) the caret. View-only: returns no envelopes.
 pub fn move_caret(view: &ParticipantView, doc: &AutoCommit, to: &CaretTarget) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1129,7 +994,6 @@ fn selected(base: &ParticipantView, anchor: ViewPoint, caret: ViewPoint) -> Part
     next
 }
 
-/// Select an explicit range (anchor at `start`, caret at `end`). View-only.
 pub fn select_range(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1142,7 +1006,6 @@ pub fn select_range(
     Ok((Vec::new(), selected(&base, anchor, caret)))
 }
 
-/// Select one whole block. View-only.
 pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1151,7 +1014,6 @@ pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> Ed
     Ok((Vec::new(), selected(&base, anchor, caret)))
 }
 
-/// Select the whole region (Ctrl+A). View-only.
 pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
@@ -1162,10 +1024,7 @@ pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     Ok((Vec::new(), selected(&base, ViewPoint::new(first, 0), caret)))
 }
 
-/// Run Find for `query` (case-insensitive literal, over the body like the
-/// Find bar), filling the view's bounded hits (≤ 64) and selecting the first
-/// hit as the Find bar does. An empty query clears Find. View-only; the
-/// existing `search-hit#go-to` then selects another hit.
+/// Find over the body like the Find bar, filling the view's bounded hits; view-only.
 pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult {
     if query.len() > MAX_FIND_QUERY_BYTES {
         return Err(EditingError::Invalid(format!(
@@ -1192,8 +1051,6 @@ pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult
     Ok((Vec::new(), next))
 }
 
-/// The Find bar's default literal search (case-insensitive, not whole-word),
-/// stopping at the resource bound.
 fn literal_matches(blocks: &[tilo_doc::snapshot::BlockView], query: &str) -> Vec<SearchTarget> {
     let needle: Vec<char> = query.to_lowercase().chars().collect();
     let mut hits = Vec::new();
@@ -1223,9 +1080,7 @@ fn literal_matches(blocks: &[tilo_doc::snapshot::BlockView], query: &str) -> Vec
     hits
 }
 
-/// Plain text pastes as one paragraph per line (the widget's plain paste);
-/// Markdown is imported into a scratch document and copied as a rich
-/// fragment. Link marks keep only targets Writer's hyperlink rule accepts.
+/// Plain text pastes as one paragraph per line; Markdown is imported as a rich fragment.
 fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
     match content {
         PasteContent::Text(text) => {
@@ -1321,27 +1176,16 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
     Ok(blocks)
 }
 
-// ---------------------------------------------------------------------------
-// Edits the published edit effects take at a participant's caret
-// ---------------------------------------------------------------------------
-
-/// Refusal of an edit replacing more than [`LARGE_REMOVAL_CHARS`] through a
-/// published edit effect. The contract is the same for every participant,
-/// so a large replacement is refused rather than made confirmable; the
-/// keyboard path is not affected.
+/// The refusal an edit replacing more than [`LARGE_REMOVAL_CHARS`] through a published
+/// effect answers with; the keyboard path is unaffected.
 pub const LARGE_REFUSAL: &str =
     "large-removal: this replaces more than 2048 characters; select less or erase in steps";
 
-/// Whether replacing `view`'s selection removes more than
-/// [`LARGE_REMOVAL_CHARS`].
 pub fn large_selection(view: &ParticipantView, doc: &AutoCommit) -> bool {
     resolve(view, doc)
         .is_ok_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS)
 }
 
-/// Set formatting on the selection whatever it has now: a toggle mark
-/// (`strong`, `em`, …) `on` or off, or a valued mark (`font`, `size`,
-/// `color`, `highlight`) to `value`.
 pub fn set_format(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1366,8 +1210,6 @@ pub fn set_format(
     Ok(target.set(name, Some(value)))
 }
 
-/// Remove one inline format, valued or toggled, from the selection or the
-/// caret paragraph.
 pub fn clear_format(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
     if !VALUED_MARKS.contains(&name) && InlineMark::from_name(name).is_none() {
         return Err(EditingError::Invalid("unknown mark".into()));
@@ -1375,12 +1217,10 @@ pub fn clear_format(view: &ParticipantView, doc: &AutoCommit, name: &str) -> Edi
     clear_mark(view, doc, name)
 }
 
-/// The caret context of `view`, refusing a view without a caret in `doc`.
 fn context(view: &ParticipantView, doc: &AutoCommit) -> Result<WpResourceCtx, EditingError> {
     view.ctx(doc).ok_or(EditingError::NoCaret)
 }
 
-/// Align the caret paragraph `left`, `center`, `right` or `justify`.
 pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResult {
     if !matches!(align, "left" | "center" | "right" | "justify") {
         return Err(EditingError::Invalid(
@@ -1399,7 +1239,6 @@ pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResul
     ))
 }
 
-/// Insert an empty table of `rows` by `columns` after the caret paragraph.
 pub fn insert_table_here(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1423,7 +1262,6 @@ pub fn insert_table_here(
     ))
 }
 
-/// Start a new page at the caret.
 pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
     let ctx = context(view, doc)?;
     Ok((
@@ -1435,8 +1273,6 @@ pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult
     ))
 }
 
-/// Link the selected text to `target`: a web address, a mail address or a
-/// `#bookmark` in the document.
 pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> EditResult {
     let target = target.trim();
     if !valid_hyperlink_target(target) {
@@ -1458,8 +1294,6 @@ pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> 
     ))
 }
 
-/// Replace the selection with `text` (empty deletes it); the caret lands
-/// after the text.
 pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     if r.selection.is_none() {
@@ -1468,7 +1302,6 @@ pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -
     Ok(TypeTarget::new(&r).build(text))
 }
 
-/// The one-paragraph range a comment on the selection is about.
 pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, EditingError> {
     let ctx = context(view, doc)?;
     let selection = ctx.selection.ok_or(EditingError::NeedsSelection)?;
@@ -1487,8 +1320,6 @@ pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, E
     })
 }
 
-/// Place the image `hash` (or its `tilo.content:<hash>` address), kept in
-/// `content`, at the caret.
 pub fn place_image(
     view: &ParticipantView,
     doc: &AutoCommit,
@@ -1512,7 +1343,6 @@ pub fn place_image(
 
 const VALUED_MARKS: [&str; 4] = ["font", "size", "color", "highlight"];
 
-/// Parse a valued mark argument the way the toolbar produces it.
 fn mark_value(name: &str, value: &str) -> Result<MarkVal, &'static str> {
     let value = value.trim();
     match name {
@@ -1548,7 +1378,6 @@ mod tests {
     };
     use ui::tilo_resource::Effect as _;
 
-    /// The published ids of the edit and view effects.
     mod op {
         use crate::effects::WordProcessorEffect as E;
         pub const TYPE_TEXT: &str = E::TYPE_TEXT.id;
@@ -1567,12 +1396,10 @@ mod tests {
         pub const FIND: &str = E::FIND_TEXT.id;
     }
 
-    /// A body edit as the document's action on the wire.
     fn encode(action: &RichTextAction) -> EncodedAction {
         crate::model::encoded(action)
     }
 
-    /// The refusal an edit effect answers with.
     fn invalid(reason: impl Into<String>) -> EncodedAction {
         EncodedAction {
             type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
@@ -1580,7 +1407,6 @@ mod tests {
         }
     }
 
-    /// A bound widget whose body holds `paragraphs`; returns the body ids.
     fn writer(paragraphs: &[&str]) -> (ui::State, crate::widget::Editor, Vec<String>) {
         let mut state = crate::initialized_state();
         let mut wp = crate::widget::Editor::detached();
@@ -1622,7 +1448,6 @@ mod tests {
         }
     }
 
-    /// Put the model's caret/anchor where `view` says and return the view.
     fn place(wp: &mut crate::widget::Editor, view: &ParticipantView) {
         let model = wp.model_mut();
         model.clear_anchor();
@@ -1657,9 +1482,6 @@ mod tests {
             .collect()
     }
 
-    /// Everything published for `view`, folded into one resource for
-    /// lookup: the document's actions with the view's own operations and
-    /// rows beside them.
     fn root(view: &ParticipantView, doc: &AutoCommit) -> ResourceSpec {
         let mut published =
             published_for(&view.ctx(doc).expect("view has a caret"), doc).into_iter();
@@ -1683,9 +1505,6 @@ mod tests {
             .clone()
     }
 
-    /// What invoking the published effect `id` with `args` at `view` submits:
-    /// its one body edit, the effect itself for a view effect, or the
-    /// refusal.
     fn invoke(
         view: &ParticipantView,
         doc: &AutoCommit,
@@ -1712,13 +1531,6 @@ mod tests {
             Err(error) => invalid(error.to_string()),
         }
     }
-
-    // ---- the widget's current envelope builders, verbatim over the model ----
-    //
-    // These copy the widget's `*_via_action` / `dispatch_*` bodies (widget.rs,
-    // 2026-09-23) onto the public `WordProcessor` model, so the primitives are
-    // pinned to what the keyboard dispatches today even while the widget is
-    // being switched over to call them.
 
     fn body_block(doc: &AutoCommit, id: &str) -> Option<tilo_doc::snapshot::BlockView> {
         let c = crate::model::open(doc).unwrap();
@@ -1988,8 +1800,6 @@ mod tests {
         )]
     }
 
-    /// Views every primitive is compared on: collapsed carets at edges and
-    /// inside, forward and backward selections within and across blocks.
     fn views(ids: &[String]) -> Vec<ParticipantView> {
         vec![
             at(&ids[0], 0),
@@ -2007,7 +1817,6 @@ mod tests {
     #[test]
     fn typing_enter_and_erase_match_the_widget_envelopes_byte_for_byte() {
         let (mut state, mut wp, ids) = writer(&["alpha", "beta", "gamma"]);
-        // A list item, so Enter/Backspace's list handling is covered too.
         apply(
             &mut state.doc,
             &set_paragraph_style_action(
@@ -2069,8 +1878,7 @@ mod tests {
         for view in views(&ids) {
             place(&mut wp, &view);
             let m = wp.model();
-            // Selections that end at a block start carry an empty span the
-            // widget still sends (and apply refuses); the primitive drops it.
+            // The widget sends a selection ending at a block start; the primitive drops it.
             let clean = |actions: Vec<RichTextAction>| -> Vec<RichTextAction> {
                 actions
                     .into_iter()
@@ -2157,8 +1965,6 @@ mod tests {
         }
     }
 
-    // ---- published operations = primitives ---------------------------------
-
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -2167,8 +1973,6 @@ mod tests {
     fn published_operations_encode_exactly_the_primitive_for_the_same_view() {
         let (state, _, ids) = writer(&["alpha", "beta", "gamma"]);
         let doc = &state.doc;
-        // What the op must encode for a primitive result: the one envelope,
-        // or a refusal when the primitive is a no-op.
         let one = |result: EditResult| match result.unwrap().0.as_slice() {
             [action] => encode(action),
             [] => invalid("no-op"),
@@ -2265,7 +2069,6 @@ mod tests {
                 let paragraph = spec(&root(&view, doc), op::NEW_PARAGRAPH);
                 let collapsed = spec(&root(&at(&ids[0], 0), doc), op::NEW_PARAGRAPH);
                 assert_eq!(paragraph.contract, collapsed.contract);
-                // With a selection Enter refuses: nothing is encoded.
                 let refused = invoke(&view, doc, op::NEW_PARAGRAPH, serde_json::json!({}));
                 assert_eq!(
                     refused.type_id,
@@ -2288,8 +2091,6 @@ mod tests {
     fn root_operations_have_the_published_kinds_and_contracts() {
         let (state, _, ids) = writer(&["alpha"]);
         let root = root(&at(&ids[0], 2), &state.doc);
-        // Edits at the invoker's caret: views of that participant that
-        // submit a body edit as theirs, checked at the door like any edit.
         for id in [
             op::TYPE_TEXT,
             op::NEW_PARAGRAPH,
@@ -2322,7 +2123,6 @@ mod tests {
                 "{id}"
             );
         }
-        // `find` still just opens the bar.
         assert_eq!(spec(&root, "find").kind, OperationKind::View);
         assert!(spec(&root, "find").params().is_empty());
         let _ = ContextRequirement::Caret;
@@ -2334,7 +2134,6 @@ mod tests {
         let view = at(&ids[0], 5);
         let (actions, next) = new_paragraph(&view, &state.doc).unwrap();
         assert!(next.pending.is_some());
-        // Before the split is applied the caret stays put.
         assert_eq!(next.settle(&state.doc).caret, ViewPoint::new(&ids[0], 5));
         apply_all(&mut state.doc, &actions);
         let settled = next.settle(&state.doc);
@@ -2349,7 +2148,6 @@ mod tests {
     #[test]
     fn agent_style_streaming_through_published_operations_builds_one_paragraph() {
         let (mut state, _, ids) = writer(&["Intro", "Middle"]);
-        // A person's caret elsewhere must not matter: the agent has its own.
         let mut agent = at(&ids[0], 0);
         let step = |agent: &mut ParticipantView,
                     doc: &mut AutoCommit,
@@ -2357,7 +2155,6 @@ mod tests {
                     args: serde_json::Value| {
             let encoded = invoke(agent, doc, id, args.clone());
             if let Some(action) = crate::model::decoded(&encoded) {
-                // The view the invoker's host keeps: the primitive's result.
                 let (actions, next) = match id {
                     op::NEW_PARAGRAPH => new_paragraph(agent, doc).unwrap(),
                     op::TYPE_TEXT => type_text(agent, doc, args["text"].as_str().unwrap()).unwrap(),
@@ -2428,7 +2225,6 @@ mod tests {
     fn erase_extends_across_paragraphs_and_stays_bounded() {
         let (mut state, _, ids) = writer(&["abc", "", "def"]);
         let view = at(&ids[2], 1);
-        // "d", the two paragraph joins and "c" = 4 characters back.
         let (actions, next) = delete(&view, &state.doc, DeleteDirection::Backward, 4).unwrap();
         assert_eq!(
             actions,
@@ -2444,7 +2240,6 @@ mod tests {
         assert_eq!(next.caret, ViewPoint::new(&ids[0], 2));
         apply_all(&mut state.doc, &actions);
         assert_eq!(texts(&state.doc), ["abef"]);
-        // Past the region edge it stops; at the edge it is a no-op.
         let (actions, _) =
             delete(&at(&ids[0], 2), &state.doc, DeleteDirection::Backward, 200).unwrap();
         assert_eq!(
@@ -2511,7 +2306,6 @@ mod tests {
         ] {
             let calm = spec(&root(&small, &state.doc), id);
             let loud = spec(&root(&large, &state.doc), id);
-            // The schema must not depend on a view: same contract either way.
             assert_eq!(calm.contract, loud.contract, "{id}");
             assert!(
                 matches!(calm.contract.confirmation, ConfirmationPolicy::None),
@@ -2523,8 +2317,6 @@ mod tests {
             );
             assert!(refused(invoke(&large, &state.doc, id, args)), "{id}");
         }
-        // select-all + type-text "" on a large document is refused; the
-        // keyboard primitive itself still erases.
         let (_, all) = select_all(&at(&ids[0], 0), &state.doc).unwrap();
         assert!(refused(invoke(
             &all,
@@ -2602,7 +2394,6 @@ mod tests {
         ));
         let (_, cleared) = find(&found, doc, "").unwrap();
         assert!(cleared.find.hits.is_empty());
-        // Published: a view-operation payload that applies to the same view.
         for (id, args, expected) in [
             (
                 op::SELECT_ALL,
@@ -2784,8 +2575,6 @@ mod tests {
             vec![splice_text_action(RegionKind::Body, &ids[0], 3, 3, "!")]
         );
         assert_eq!(next.caret.offset, 4);
-        // Toggling a plain mark without a selection is a no-op, and the
-        // published op says why.
         assert!(
             toggle_mark(&at(&ids[0], 1), doc, InlineMark::Strong)
                 .unwrap()
@@ -2928,8 +2717,6 @@ mod tests {
         );
     }
 
-    /// Keystroke primitives inside one block must not scan the region: on a
-    /// long document they cost about what they cost on a short one.
     #[test]
     fn in_block_keystrokes_do_not_scan_the_whole_document() {
         let mut doc = AutoCommit::new();

@@ -91,11 +91,30 @@ impl Smoother {
     }
 
     /// The same place was said again at `now_ms`: the pointer rests, and
-    /// saying so is what keeps it drawn.
-    pub fn restated(&mut self, now_ms: f64) {
-        if !self.samples.is_empty() {
-            self.spoken = Some(now_ms);
+    /// saying so is what keeps it drawn. A pointer that was moving stops
+    /// where it was said, rather than where its last motion carried it on:
+    /// the rest is a point of its own. Whether that moved what is drawn.
+    pub fn restated(&mut self, now_ms: f64) -> bool {
+        let Some(newest) = self.samples.back().copied() else {
+            return false;
+        };
+        self.spoken = Some(now_ms);
+        let moving = self
+            .samples
+            .iter()
+            .rev()
+            .nth(1)
+            .is_some_and(|before| (before.x, before.y) != (newest.x, newest.y));
+        if moving && now_ms > newest.at_ms {
+            self.samples.push_back(Sample {
+                at_ms: now_ms,
+                ..newest
+            });
+            while self.samples.len() > SAMPLES {
+                self.samples.pop_front();
+            }
         }
+        moving
     }
 
     /// The pointer left: nothing of it is drawn.

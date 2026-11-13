@@ -180,7 +180,7 @@ mod tests {
         pub title: String,
     }
 
-    #[tilo_resource::resource(kind = "test.review-replay")]
+    #[tilo_resource::resource(kind = "test.review-replay", catalogue = "tests/locales")]
     impl ReplayBoard {}
 
     #[test]

@@ -40,12 +40,13 @@
 //! - [`DEVCERT_V5_PREIMAGE_TAG`] — `tilo-devcert-v5\0` (a person's stand-in
 //!   approver)
 //! - [`DEVCERT_V6_PREIMAGE_TAG`] — `tilo-devcert-v6\0` (certificates a
-//!   stand-in issued, binding its certificate)
+//!   stand-in or a grant issued, binding its certificate)
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
+//! - [`HOST_WITNESS_PREIMAGE_TAG`] — `tilo-host-witness-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -68,6 +69,13 @@
 //!   token and validates it, but does not send it.
 
 #![deny(rust_2018_idioms)]
+#![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        reason = "a page's key answers through a JavaScript promise, so the futures that await it stay on the page's one thread"
+    )
+)]
 pub mod approval;
 // A branched machine re-keys its identity files on the machine itself.
 #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -76,7 +84,6 @@ pub mod canonical;
 pub mod cert;
 pub mod certification;
 pub mod clock;
-pub mod cloud_enrollment;
 pub mod directory;
 pub mod endpoint_delegation;
 pub mod enrollment;
@@ -92,11 +99,14 @@ pub mod nofollow;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
+pub mod role;
 pub mod root_envelope;
 pub mod root_statement;
+pub mod sign;
 pub mod sign_in;
 #[cfg(unix)]
 pub mod update_lock;
+pub mod witness;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
@@ -106,15 +116,17 @@ pub use canonical::CanonicalError;
 pub use cert::{
     AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
     DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
-    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE,
-    UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name, prepare_stand_in_cert,
-    sign_device_cert, verify_device_cert, verify_device_cert_at, verify_stand_in_cert,
-    verify_stand_in_cert_at,
+    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, STAND_IN_LIFETIME_NS,
+    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, check_agent_grant, device_cert_signing_digest,
+    device_name, prepare_minted_grant, prepare_stand_in_cert, sign_device_cert,
+    sign_device_cert_async, take_signature_checks, verify_device_cert, verify_device_cert_at,
+    verify_remembered, verify_stand_in_cert, verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
     CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
-    issue_device_cert, issue_device_cert_as_stand_in, prepare_device_cert, verify_issued_cert,
+    issue_device_cert, issue_device_cert_as_stand_in, issue_device_cert_async, prepare_device_cert,
+    verify_issued_cert,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use clock::wait_for_wall_clock;
@@ -143,9 +155,9 @@ pub use image::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, install_device_cert,
-    joined_device_is_enrolled, joined_device_is_ready, load_or_create_device_key,
-    provision_joined_device,
+    DeviceKeyOutcome, IdentityPaths, PersistError, RevocationsError, adopt_device_key,
+    append_revocation, install_device_cert, joined_device_is_enrolled, joined_device_is_ready,
+    load_or_create_device_key, provision_joined_device, read_revocations, revocations_path,
 };
 pub use projection::{
     DisplayNameError, GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,
@@ -157,9 +169,13 @@ pub use projection::{
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
-    revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
+    revocation_signing_digest, sign_revocation_entry, sign_revocation_entry_async,
+    verify_revocation_entry,
 };
+pub use role::DeviceRole;
+pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
+pub use witness::{Answered, HOST_WITNESS_PREIMAGE_TAG, HostWitness, HostWitnessError, Parties};
 
 use serde::{Deserialize, Serialize};
 

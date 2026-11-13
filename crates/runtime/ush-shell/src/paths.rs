@@ -19,7 +19,6 @@ pub fn normalize(path: &Path) -> PathBuf {
                 let at_root = out.as_os_str() == "/";
                 let climbing =
                     out.as_os_str().is_empty() || out.file_name().is_none() || out.ends_with("..");
-                // `..` at the root stays at the root.
                 if !at_root {
                     if climbing {
                         out.push("..");

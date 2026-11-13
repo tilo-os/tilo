@@ -42,12 +42,13 @@ version they have seen. Showing a resource on screen does not set it; the person
 ## 3. Marks in place, with no app code
 
 The UI host already knows which resource each part of a view is bound to: a list's rows are
-`ui.ListItem(item:)` references to items, `ui.TextInput(bind: n.title)` binds a field, every
-window shows a resource. The host draws marks from `unseen(r)` at those points:
+`ui.ListItem(item:)` references to items and a tree's are `ui.TreeViewNode(item:)`,
+`ui.TextInput(bind: n.title)` binds a field, every window shows a resource. The host draws marks
+from `unseen(r)` at those points:
 
 | Where | Mark |
 |---|---|
-| a list or table row | new / changed, with who: the agent's face, "Agent · run 3" |
+| a list, table or tree row | new / changed, with who: the agent's face, "Agent · run 3" |
 | a removed item | a struck row in its old place, "removed by Agent", with Undo |
 | a bound field | the field tinted, the previous value on hover |
 | a window | its title carries how many items of what it shows are unseen, and who changed them |

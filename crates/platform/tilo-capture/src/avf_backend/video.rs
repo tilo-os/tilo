@@ -1,5 +1,5 @@
-//! Cameras and the screen: a video data output delivering BGRA pictures,
-//! turned into the tightly packed RGBA [`Frame`]s the API hands over.
+//! Cameras and the screen: a video data output delivering BGRA pictures, turned into
+//! the tightly packed RGBA [`Frame`]s the API hands over.
 
 use std::sync::Arc;
 
@@ -59,8 +59,8 @@ pub(crate) fn camera(request: &CameraRequest) -> Result<Box<dyn VideoSource>, Ca
     }))
 }
 
-/// The main display. macOS asks for the Screen Recording permission itself;
-/// until it is given the pictures hold only the desktop background.
+// The main display. macOS asks for the Screen Recording permission itself; until
+// it is given, the pictures hold only the desktop background.
 #[cfg(avf_screen)]
 pub(crate) fn screen(request: ScreenRequest) -> Result<Box<dyn VideoSource>, CaptureError> {
     use objc2::AllocAnyThread as _;
@@ -84,14 +84,11 @@ pub(crate) fn screen(request: ScreenRequest) -> Result<Box<dyn VideoSource>, Cap
     }))
 }
 
-/// A Core Foundation string key as the `NSString` it is toll-free bridged to.
 fn key(cf: &CFString) -> &NSString {
     // SAFETY: CFString and NSString are toll-free bridged.
     unsafe { &*std::ptr::from_ref(cf).cast::<NSString>() }
 }
 
-/// A data output delivering BGRA pictures, scaled to `size` where given,
-/// into a latest-frame slot, on its own queue named after `what`.
 fn output(
     size: Option<(u32, u32)>,
     what: &str,
@@ -134,7 +131,6 @@ fn output(
     (output, (delegate, queue), slot)
 }
 
-/// The BGRA picture in `sample`, as a frame.
 fn frame(sample: &CMSampleBuffer) -> Option<Frame> {
     // SAFETY: a sample buffer the output handed its delegate.
     let pixels = unsafe { sample.image_buffer() }?;
@@ -179,8 +175,8 @@ fn frame(sample: &CMSampleBuffer) -> Option<Frame> {
     })
 }
 
-/// Rows of `stride` bytes, each starting with `width` BGRA pixels, as
-/// tightly packed RGBA; `None` when a row is shorter than its pixels.
+/// Rows of `stride` bytes, each starting with `width` BGRA pixels, as tightly packed
+/// RGBA; `None` when a row is shorter than its pixels.
 fn rgba_from_bgra(bytes: &[u8], width: usize, stride: usize) -> Option<Vec<u8>> {
     let row = width.checked_mul(4)?;
     if stride < row || stride == 0 {

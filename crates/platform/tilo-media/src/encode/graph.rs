@@ -1,16 +1,14 @@
 //! Frames and samples pushed into an encode graph, and the file finished.
 //!
-//! The graph is a `gst-launch` description whose raw inputs are `appsrc`s:
-//! `tilo_src` takes RGBA frames, and `tilo_audio`, when the graph has one,
-//! takes interleaved S16LE samples timed with them. Its sink writes the
-//! file. Which encoders and muxer the description names is the caller's
-//! choice (see [`super::Selection`]); this only feeds it and drains it.
+//! The graph is a `gst-launch` description whose raw inputs are `appsrc`s: `tilo_src`
+//! takes RGBA frames and `tilo_audio`, when present, interleaved S16LE samples. Which
+//! encoders and muxer the description names is the caller's choice (see
+//! [`super::Selection`]).
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
-/// A running encode graph.
 pub struct Graph {
     pipeline: gst::Pipeline,
     video: gst_app::AppSrc,
@@ -33,8 +31,6 @@ pub fn frame_time(index: u64, fps: f64) -> gst::ClockTime {
 }
 
 impl Graph {
-    /// Build `desc` and start it. `with_audio` says the graph has a
-    /// `tilo_audio` input to feed.
     pub fn start(desc: &str, with_audio: bool, fps: f64) -> Result<Self, String> {
         gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
         let pipeline = gst::parse::launch(desc)
@@ -64,8 +60,6 @@ impl Graph {
         })
     }
 
-    /// Push frame `index` and the sound that plays during it (when the
-    /// graph has sound), both timed to the frame.
     pub fn push(&self, index: u64, rgba: &[u8], sound: Option<&[u8]>) -> Result<(), String> {
         let pts = frame_time(index, self.fps);
         let duration = frame_time(index.saturating_add(1), self.fps).saturating_sub(pts);

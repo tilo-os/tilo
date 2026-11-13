@@ -23,9 +23,7 @@ pub struct BootUnlock<'a> {
     pub device: &'a Path,
     pub volume: &'a str,
     pub uid: Option<u32>,
-    /// Where systemd-cryptsetup looks for `<volume>.key`.
     pub keys_dir: &'a Path,
-    /// The handoff key's description; `None` leaves no handoff.
     pub handoff: Option<&'a str>,
 }
 

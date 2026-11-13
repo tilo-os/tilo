@@ -23,8 +23,8 @@ fn describe(e: &fs_native::journal::JournalEntry) -> String {
     }
 }
 
-/// fanotify queues an event in the syscall that causes it, so once a change
-/// has returned, reading what is queued without waiting reads its events.
+/// fanotify queues an event in the syscall that causes it, so once a change has
+/// returned, reading what is queued without waiting reads its events.
 fn drain(j: &mut ChangeJournal) -> Vec<String> {
     j.pump(Some(Duration::ZERO)).unwrap();
     j.take().entries.iter().map(describe).collect()
@@ -46,7 +46,6 @@ fn assert_subsequence(got: &[String], want: &[&str]) {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
-    // Phase `journal_records_every_change_in_writer_order`.
     fn journal_records_every_change_in_writer_order() {
         let Some(s) = fanotify_scratch("journal_order") else {
             return;
@@ -100,7 +99,6 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
             ]
         );
     }
-    // Phase `late_path_resolution_is_absorbed_by_capture`.
     fn late_path_resolution_is_absorbed_by_capture() {
         let Some(s) = fanotify_scratch("journal_late") else {
             return;
@@ -124,7 +122,6 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
         assert_eq!(paths, ["z", "z/b", "z/b/f"]);
         cap.release().unwrap();
     }
-    // Phase `repeated_writes_to_an_open_file_are_journaled_once_per_batch`.
     fn repeated_writes_to_an_open_file_are_journaled_once_per_batch() {
         let Some(s) = fanotify_scratch("journal_ratelimit") else {
             return;
@@ -159,7 +156,6 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
         let got = drain(&mut j);
         assert_subsequence(&got, &["modify db", "closewrite db"]);
     }
-    // Phase `queue_overflow_forces_a_rescan_that_finds_every_file`.
     fn queue_overflow_forces_a_rescan_that_finds_every_file() {
         let Some(s) = fanotify_scratch("journal_overflow") else {
             return;
@@ -200,7 +196,6 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
         assert_eq!(paths, [PathBuf::from("d0/f0")]);
         cap.release().unwrap();
     }
-    // Phase `an_epoch_split_keeps_the_window_between_barriers_for_the_next_batch`.
     fn an_epoch_split_keeps_the_window_between_barriers_for_the_next_batch() {
         let Some(s) = fanotify_scratch("journal_barrier") else {
             return;
@@ -224,14 +219,9 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
         j.pump(Some(Duration::ZERO)).unwrap();
         assert_eq!(names(j.pending()), ["during", "after"]);
     }
-    // Phase `journal_records_every_change_in_writer_order` (defined above).
     journal_records_every_change_in_writer_order();
-    // Phase `late_path_resolution_is_absorbed_by_capture` (defined above).
     late_path_resolution_is_absorbed_by_capture();
-    // Phase `repeated_writes_to_an_open_file_are_journaled_once_per_batch` (defined above).
     repeated_writes_to_an_open_file_are_journaled_once_per_batch();
-    // Phase `queue_overflow_forces_a_rescan_that_finds_every_file` (defined above).
     queue_overflow_forces_a_rescan_that_finds_every_file();
-    // Phase `an_epoch_split_keeps_the_window_between_barriers_for_the_next_batch` (defined above).
     an_epoch_split_keeps_the_window_between_barriers_for_the_next_batch();
 }

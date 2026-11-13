@@ -29,7 +29,6 @@
 "feeds" = 30   # 25.4 MB
 "file-explorer" = 25   # 21.6 MB
 "firewall" = 22   # 19.0 MB
-"flatpak-share-demo" = 4   # 2.9 MB
 "fs" = 21   # 17.8 MB
 "git-client" = 24   # 20.1 MB
 "hex-editor" = 24   # 20.8 MB
@@ -56,7 +55,7 @@
 "tilo-install" = 13   # 10.7 MB
 "tilo-installer" = 22   # 18.7 MB
 "tilo-launcher" = 4   # 2.8 MB
-"tilo-loadclient" = 1   # 0.7 MB
+"tilo-loadclient" = 2   # 0.9 MB
 "tilo-app-package" = 14   # 12.1 MB
 "tilo-registry-server" = 4   # 2.8 MB
 "tilo-relay" = 16   # 13.8 MB
@@ -65,7 +64,6 @@
 "tilo-runtime-bundle" = 2   # 1.2 MB
 "tilo-unlock-helper" = 1   # 0.3 MB
 "tilo-ush" = 2   # 1.1 MB
-"tilo-web-search" = 22   # 19.5 MB
 "remote" = 27   # 22.8 MB
 "settings" = 23   # 19.9 MB
 "sheets" = 26   # 22.5 MB

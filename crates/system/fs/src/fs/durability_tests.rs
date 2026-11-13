@@ -5,59 +5,42 @@ use super::*;
 use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
 use fs_protocol::FileActor;
-use iroh::endpoint::{Endpoint, presets};
-use uuid::Uuid;
 
 struct Fixture {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     history: Arc<crate::history_fixture::History>,
-    publisher: Arc<crate::record_publisher::RecordPublisher>,
     actor: FileActor,
-    /// Last, so the stores above close before their files are deleted.
     dir: tempfile::TempDir,
 }
 
 impl Fixture {
     async fn new() -> Self {
         let dir = tilo_test_env::memory_tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = test_relay::direct_endpoint().await;
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let repository = Arc::new(
-            crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
-        );
         let person = SigningKey::from_bytes(&[0x41; 32]);
         let device = SigningKey::from_bytes(&[0x52; 32]);
         let actor = FileActor {
             person: Ed25519PublicKey(person.verifying_key().to_bytes()),
             device: Ed25519PublicKey(device.verifying_key().to_bytes()),
         };
-        let workspace_id = Uuid::from_u128(0xd0);
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(repository, workspace_id, actor, device)
-                .unwrap(),
-        );
         Self {
             namespace,
             hydrator,
             history,
-            publisher,
             actor,
             dir,
         }
     }
 
-    /// A signed mount over the fixture's durable state, as after a
-    /// (re)start. `staging` attaches the unsaved-write store.
     fn mount(&self, staging: bool) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(self.hydrator.clone()));
         let fs = QuickFS::new(self.namespace.clone(), self.hydrator.clone(), heuristics)
             .with_history(self.actor)
-            .unwrap()
-            .with_record_publisher(self.publisher.clone())
             .unwrap();
         if staging {
             fs.with_unsaved_store(crate::unsaved::UnsavedStore::open(self.staging_dir()).unwrap())
@@ -83,13 +66,12 @@ impl Fixture {
     }
 }
 
-/// What the FUSE `create` callback leaves behind: a committed empty file
-/// with an empty buffer and one writable handle.
 fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
     let ino = fs
         .create_empty_file(crate::namespace::ROOT_INO, name)
         .unwrap();
     fs.publish();
+    fs.record_version(ino, fs_protocol::FileProvenance::Create, None);
     fs.install_stage(ino, Vec::new());
     fs.buffer_states().insert(
         ino,
@@ -125,7 +107,6 @@ async fn committed_bytes(fs: &QuickFS, ino: u64) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes() {
-    // Phase `a_failed_commit_fails_close_and_never_discards_the_bytes`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
@@ -133,8 +114,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         let record_id = fs.ns().record_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, b"precious bytes").unwrap();
 
-        let repository = fs.record_publisher.as_ref().unwrap().repository();
-        repository.fail_writes(true);
+        *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
 
         assert_eq!(
             fs.flush_inode(ino),
@@ -155,9 +135,8 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         assert!(staged[0].entry.error.is_some());
         assert!(committed_bytes(&fs, ino).await.is_empty());
 
-        repository.fail_writes(false);
+        *fs.commit_fault.lock().unwrap() = None;
 
-        // Any later close retries; success settles the retained buffer.
         let reader = open_handle(&fs, ino, false);
         assert_eq!(fs.flush_inode(ino), Ok(()));
         assert_eq!(fs.release_handle(ino, reader), Ok(()));
@@ -166,7 +145,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         assert!(fixture.staged().is_empty());
         assert_eq!(fixture.versions(record_id), 2);
     }
-    // Phase `fsync_without_staging_commits_and_reports_failure`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(false);
@@ -185,43 +163,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn more_fsyncs_than_the_version_bound_lose_nothing() {
-    // Small: a few syncs past the bound prove what hundreds would.
-    const VERSION_BOUND: usize = 4;
-    let fixture = Fixture::new().await;
-    fixture
-        .publisher
-        .repository()
-        .set_max_record_versions(VERSION_BOUND);
-    let fs = fixture.mount(true);
-    let (ino, fh) = create_open(&fs, "app.sqlite");
-    let record_id = fs.ns().record_id_for(ino).unwrap();
-    let syncs = VERSION_BOUND * 3;
-    let mut expected = vec![0_u8; 4096];
-    fs.write_buffer(ino, 0, &expected).unwrap();
-    for i in 0..syncs {
-        let offset = (i % 512) * 8;
-        let word = (i as u64).to_le_bytes();
-        expected[offset..offset + 8].copy_from_slice(&word);
-        fs.write_buffer(ino, offset as u64, &word).unwrap();
-        assert_eq!(fs.fsync_inode(ino), Ok(()), "fsync {i}");
-    }
-    assert_eq!(
-        fixture.versions(record_id),
-        1,
-        "fsync makes bytes durable without minting a version per call"
-    );
-    assert_eq!(fixture.staged()[0].bytes, expected);
-    assert_eq!(fs.flush_inode(ino), Ok(()));
-    assert_eq!(fs.release_handle(ino, fh), Ok(()));
-    assert_eq!(fixture.versions(record_id), 2);
-    assert_eq!(committed_bytes(&fs, ino).await, expected);
-    assert!(fixture.staged().is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes() {
-    // Phase `bytes_a_record_cannot_take_are_kept_as_a_sibling_copy`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
@@ -243,7 +185,6 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
         assert!(!fs.buffers().contains_key(&ino));
         assert!(fixture.staged().is_empty());
     }
-    // Phase `fsynced_bytes_survive_a_crash_before_close`.
     {
         let fixture = Fixture::new().await;
         let (ino, moved_on) = {
@@ -255,9 +196,7 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
             fs.write_buffer(other, 0, b"synced before a later edit")
                 .unwrap();
             assert_eq!(fs.fsync_inode(other), Ok(()));
-            // Another version lands before the restart.
             fs.commit_content(other, b"later edit").unwrap();
-            // Dropped without close: the process died.
             (ino, other)
         };
         let fs = fixture.mount(true);
@@ -287,7 +226,6 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
     let bytes: Vec<u8> = (0..2_500_000_u32).map(|i| (i % 253) as u8).collect();
-    // Phase `fsync_stages_the_file_and_close_commits_it`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture
@@ -299,6 +237,7 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         fs.publish();
         let fh = open_handle(&fs, ino, true);
         let record_id = fs.ns().record_id_for(ino).unwrap();
+        fs.record_version(ino, fs_protocol::FileProvenance::Create, None);
         fs.write_buffer(ino, 0, &bytes).unwrap();
         assert!(fs.stage(ino).unwrap().lock().is_file_backed());
         assert_eq!(fs.fsync_inode(ino), Ok(()));
@@ -310,7 +249,6 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         assert_eq!(fixture.versions(record_id), 2);
         assert!(fixture.staged().is_empty());
     }
-    // Phase `bytes_a_record_cannot_take_are_copied_from_the_stage_file`.
     {
         let fixture = Fixture::new().await;
         let fs = fixture
@@ -342,15 +280,9 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
     }
 }
 
-/// A file created, written and synced inside the persister's settle time is
-/// back under its own name after a crash: `fsync` makes the namespace that
-/// places it durable, not only its bytes. A namespace that cannot be written
-/// fails the `fsync`, and the staged bytes stay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot() {
     let mut fixture = Fixture::new().await;
-    // What the disk holds: the namespace from before the file existed, until
-    // the hook writes a newer one.
     let on_disk = Arc::new(Mutex::new(fixture.namespace.lock().unwrap().save()));
     let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let record_id = {
@@ -384,7 +316,6 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
             Some(b"never synced".as_slice())
         );
         fs.ns().record_id_for(ino).unwrap()
-        // Dropped without close or a final save: the process died.
     };
 
     let bytes = on_disk.lock().unwrap().clone();

@@ -1,13 +1,10 @@
-//! Find in the page through the window bar's search: the browser is the
-//! [`Findable`] the bar drives while it shows a page. The page's engine
-//! finds, steps and reports how many matches there are and which one it
-//! shows ([`Findable::take_engine_results`]); the matches are the engine's
-//! to paint. On Settings, a page that failed to open and the engine's
-//! setup, the bar has no page to find in.
+//! Find in the page through the window bar's search: the browser is the [`Findable`] the
+//! bar drives while it shows a page. The engine finds, steps and reports how many matches
+//! there are and which one it shows; the matches are the engine's to paint. On Settings, a
+//! page that failed to open and the engine's setup, the bar has no page to find in.
 //!
-//! On the Library the bar's search narrows the section shown, as its own
-//! filter field does outside a Tilo session ([`Filterable`]); closing the
-//! search shows the whole section again.
+//! On the Library the bar's search narrows the section shown, as its own filter field does
+//! outside a Tilo session ([`Filterable`]).
 
 use ui::widget::capability::{Request, RequestMut};
 use ui::widget::{Filterable, FindMatch, FindOptions, Findable};
@@ -15,9 +12,8 @@ use ui::widget::{Filterable, FindMatch, FindOptions, Findable};
 use super::BrowserWidget;
 
 impl BrowserWidget {
-    /// Whether the window bar's search finds in the page: one is shown,
-    /// not the Library, Settings, a page that failed to open or an engine
-    /// that did not start.
+    /// Whether the window bar's search finds in the page: one is shown, not the Library,
+    /// Settings, a page that failed to open or an engine that did not start.
     fn offers_page_find(&self) -> bool {
         !self.show_library
             && !self.show_settings
@@ -25,7 +21,6 @@ impl BrowserWidget {
             && !self.engine_failed
     }
 
-    /// What the browser offers its host, as [`ui::widget::Widget::provide`].
     pub(super) fn provide_capabilities<'a>(&'a self, request: &mut Request<'a, '_>) {
         if request.wants::<dyn ui::widget::Continuable>() {
             request.provide::<dyn ui::widget::Continuable>(self);
@@ -42,7 +37,6 @@ impl BrowserWidget {
         }
     }
 
-    /// [`Self::provide_capabilities`], mutably.
     pub(super) fn provide_capabilities_mut<'a>(&'a mut self, request: &mut RequestMut<'a, '_>) {
         if request.wants::<dyn ui::widget::Continuable>() {
             request.provide::<dyn ui::widget::Continuable>(self);
@@ -67,9 +61,7 @@ impl Findable for BrowserWidget {
         Vec::new()
     }
 
-    fn reveal(&mut self, _index: usize) {
-        // The engine shows the match it finds or steps to.
-    }
+    fn reveal(&mut self, _index: usize) {}
 
     fn clear_find(&mut self) {
         self.daily.stop_search(&self.engine);
@@ -95,9 +87,6 @@ mod tests {
 
     use super::BrowserWidget;
 
-    /// The window bar's search finds in the page through its engine: the
-    /// engine's report is the bar's count, stepping asks the engine for the
-    /// next match, a finished load finds again, and closing stops finding.
     #[test]
     fn the_window_bars_search_finds_in_the_page_through_its_engine() {
         let engine = ui::webview::test_engine::TestEngine::new();

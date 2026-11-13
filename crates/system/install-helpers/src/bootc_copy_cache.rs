@@ -1,15 +1,10 @@
 //! `tilo-vm-bootc-copy-cache check|record`: the opt-in VM cache for the
 //! expensive bootc-to-Podman export.
 //!
-//! The installed image always takes the normal export path unless a
-//! root-owned runtime marker exists *and* systemd identifies a virtual
-//! machine. The receipt is only a retry acceleration for one booted image and
-//! one exact Podman image; it is not an alternative source of installation
-//! trust.
-//!
-//! `check` exits 0 when the receipt names exactly the booted image and the
-//! cached copy, 1 otherwise; `record` writes the receipt (exit 1 with a
-//! message when it cannot); anything else is a usage error (exit 2).
+//! The installed image always takes the normal export path unless a root-owned
+//! runtime marker exists and systemd identifies a virtual machine; the receipt
+//! is only a retry acceleration for one booted image and one exact Podman
+//! image, never a source of installation trust.
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
@@ -30,7 +25,6 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// The system the cache reads. The provided methods are the production
 /// behaviour; tests replace them.
 pub trait Host {
-    /// The runtime opt-in marker.
     fn marker(&self) -> PathBuf {
         PathBuf::from("/run/tilo-installer/vm-bootc-copy-cache.enabled")
     }
@@ -39,12 +33,10 @@ pub trait Host {
         PathBuf::from("/var/lib/tilo-installer/vm-copy-cache")
     }
 
-    /// The kernel command line.
     fn cmdline(&self) -> PathBuf {
         PathBuf::from("/proc/cmdline")
     }
 
-    /// The effective user.
     fn euid(&self) -> u32 {
         rustix::process::geteuid().as_raw()
     }
@@ -61,7 +53,6 @@ pub trait Host {
     }
 }
 
-/// The installer VM as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -105,8 +96,8 @@ fn non_empty_str(value: &Value) -> Option<&str> {
     value.as_str().filter(|text| !text.is_empty())
 }
 
-/// What the booted image is: its reference, manifest digest, composefs
-/// digest and ostree checksum.
+/// What the booted image is: its reference, manifest digest, composefs digest
+/// and ostree checksum.
 pub fn booted_identity(host: &dyn Host) -> Result<Value> {
     let status = json(&host.run(&["bootc", "status", "--json"])?)?;
     let booted = field(field(&status, "status")?, "booted")?;
@@ -140,7 +131,6 @@ pub fn booted_identity(host: &dyn Host) -> Result<Value> {
         is_hex(composefs, 128),
         "booted composefs identity is missing or ambiguous",
     )?;
-    // `(booted.get('ostree') or {}).get('checksum')`
     let ostree = match booted {
         Value::Object(map) => map.get("ostree").cloned().unwrap_or(Value::Null),
         _ => return Err(Error::new("booted status is not an object")),
@@ -172,8 +162,8 @@ pub fn cached_image_identity(host: &dyn Host) -> Result<Value> {
         ));
     };
     let image_id = field(detail, "Id")?;
-    // Podman returns a bare 64-hex config ID on some builds. It is still an
-    // immutable image reference; the raw manifest hash below binds the layers.
+    // Podman returns a bare 64-hex config ID on some builds; it is still an
+    // immutable image reference, and the raw manifest hash below binds the layers.
     let Some(image_id) = image_id.as_str() else {
         return Err(Error::new("expected string or bytes-like object"));
     };
@@ -181,8 +171,8 @@ pub fn cached_image_identity(host: &dyn Host) -> Result<Value> {
         is_hex(image_id.strip_prefix("sha256:").unwrap_or(image_id), 64),
         "cached image has no SHA-256 ID",
     )?;
-    // A config ID by itself does not commit to the image's layer list. The raw
-    // OCI manifest does, and is cheap to read without exporting layer bytes.
+    // A config ID by itself does not commit to the image's layer list; the raw OCI
+    // manifest does, and is cheap to read without exporting layer bytes.
     let containers_storage = format!("containers-storage:{IMAGE}");
     let raw = host.run(&["skopeo", "inspect", "--raw", &containers_storage])?;
     let manifest = json(&raw)?;
@@ -203,9 +193,6 @@ pub fn cached_image_identity(host: &dyn Host) -> Result<Value> {
 }
 
 /// The receipt for the image booted now and the copy cached now.
-///
-/// # Errors
-/// As [`booted_identity`] and [`cached_image_identity`].
 pub fn current_receipt(host: &dyn Host) -> Result<Value> {
     let mut receipt = Map::new();
     receipt.insert("version".into(), json!(1));
@@ -255,7 +242,6 @@ pub fn record(host: &dyn Host) -> Result<()> {
     Ok(())
 }
 
-/// The command line: `check` or `record`.
 pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     let command = match args {
         [command] => command.to_str(),

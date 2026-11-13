@@ -1,28 +1,20 @@
 //! fs-verity: the kernel's per-file Merkle tree.
 //!
-//! Once fs-verity is enabled on a file its contents can never change again
-//! (every write fails), every page read from disk is checked against the
-//! tree, and `FS_IOC_MEASURE_VERITY` returns the file's digest in a few
-//! microseconds without reading it. A launch that finds a per-user runtime
-//! file's measured digest equal to the publisher-signed one therefore knows
-//! the bytes are the signed bytes without hashing them.
+//! Once enabled on a file, its contents can never change, every page read is checked against the
+//! tree, and `FS_IOC_MEASURE_VERITY` returns its digest without reading it — so a launch that finds a
+//! per-user runtime file's measured digest equal to the publisher-signed one knows the bytes are the
+//! signed bytes.
 //!
-//! Tilo uses one set of parameters: SHA-256, 4 KiB blocks, no salt. The digest
-//! is defined by the kernel (`Documentation/filesystems/fsverity.rst`):
-//! SHA-256 of the 256-byte `fsverity_descriptor` whose root hash is the top of
-//! a Merkle tree over the zero-padded 4 KiB data blocks.
+//! Tilo uses SHA-256, 4 KiB blocks, no salt: the digest is SHA-256 of the 256-byte `fsverity_descriptor`
+//! whose root hash is the top of a Merkle tree over the zero-padded 4 KiB data blocks
+//! (`Documentation/filesystems/fsverity.rst`).
 
 use sha2::{Digest, Sha256};
 
-/// Merkle tree block size and data block size.
 pub const BLOCK_SIZE: usize = 4096;
-/// `log2(BLOCK_SIZE)`, as the descriptor records it.
 const LOG_BLOCK_SIZE: u8 = 12;
-/// Bytes of one SHA-256 hash.
 const HASH_SIZE: usize = 32;
-/// Hashes per tree block.
 const HASHES_PER_BLOCK: usize = BLOCK_SIZE / HASH_SIZE;
-/// `FS_VERITY_HASH_ALG_SHA256`.
 const HASH_ALG_SHA256: u8 = 1;
 /// Zero padding source: a partial block is hashed as if zero-filled.
 static ZEROS: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
@@ -38,7 +30,6 @@ pub struct VerityHasher {
 }
 
 impl VerityHasher {
-    /// An empty hasher.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -48,7 +39,6 @@ impl VerityHasher {
         }
     }
 
-    /// Feed the next bytes of the file.
     pub fn update(&mut self, mut data: &[u8]) {
         self.size = self.size.saturating_add(data.len() as u64);
         while !data.is_empty() {
@@ -65,7 +55,6 @@ impl VerityHasher {
         }
     }
 
-    /// The file's fs-verity digest.
     #[must_use]
     pub fn finalize(mut self) -> [u8; HASH_SIZE] {
         if !self.block.is_empty() {
@@ -156,9 +145,7 @@ mod sys {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
 
-    /// `_IOW('f', 133, struct fsverity_enable_arg)`.
     const FS_IOC_ENABLE_VERITY: u32 = 0x4080_6685;
-    /// `_IOWR('f', 134, struct fsverity_digest)`.
     const FS_IOC_MEASURE_VERITY: u32 = 0xC004_6686;
 
     /// An ioctl request code as the C library types it: glibc's `unsigned
@@ -174,7 +161,6 @@ mod sys {
         libc::Ioctl::from_ne_bytes(code.to_ne_bytes())
     }
 
-    /// `struct fsverity_enable_arg` (128 bytes).
     #[repr(C)]
     struct EnableArg {
         version: u32,
@@ -188,7 +174,6 @@ mod sys {
         reserved2: [u64; 11],
     }
 
-    /// `struct fsverity_digest` followed by room for the largest digest.
     #[repr(C)]
     struct MeasureArg {
         digest_algorithm: u16,
@@ -197,7 +182,6 @@ mod sys {
     }
 
     pub(super) fn enable(path: &std::path::Path) -> std::io::Result<()> {
-        // The kernel requires a read-only descriptor and no writer anywhere.
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -284,12 +268,6 @@ mod sys {
 mod tests {
     use super::*;
 
-    /// Digests of `0x5a` repeated `size` times. "hello world" is the vector
-    /// composefs-rs checks against the kernel's `FS_IOC_MEASURE_VERITY`, the
-    /// empty file is fsverity-utils' known digest, and the multi-level sizes
-    /// were cross-checked against a port of composefs-rs' kernel-verified
-    /// streaming implementation: one block, a partial second block, a full
-    /// first tree block, a second tree level, and a ragged second level.
     const VECTORS: &[(usize, &str)] = &[
         (
             0,

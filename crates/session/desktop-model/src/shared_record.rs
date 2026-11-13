@@ -46,6 +46,9 @@ const RECORD: &str = "record";
 const ARRANGEMENT: &str = "arrangement";
 const PLACE: &str = "place";
 const FLOAT: &str = "float";
+/// The agent run that opened a window ([`crate::ownership::OpenedBy`]). No
+/// writer deletes it: it goes with its window's entry.
+const OPENED_BY: &str = "opened_by";
 
 /// A document read now or as of some heads.
 struct At<'a, D: ReadDoc> {
@@ -174,6 +177,7 @@ fn sorted<T>(mut items: Vec<(f64, u64, T)>) -> Vec<T> {
 #[derive(Default)]
 struct Parts {
     authors: BTreeMap<u64, String>,
+    opened_by: BTreeMap<TabId, crate::ownership::OpenedBy>,
     records: Vec<(TabId, String)>,
     workspaces: Vec<Workspace>,
     strips: HashMap<Option<u64>, Vec<(f64, u64, Strip)>>,
@@ -271,7 +275,8 @@ impl Parts {
                 .json(&entry, PLACE)
                 .and_then(|value| serde_json::from_value::<CanvasPlace>(value).ok())
             {
-                parts.places.insert(id, place);
+                // A window's place is a window's size, whoever wrote a smaller one.
+                parts.places.insert(id, place.window());
             }
             if let Some(float) = at
                 .json(&entry, FLOAT)
@@ -295,6 +300,12 @@ impl Parts {
             }
             if let Some(record) = at.text(&entry, RECORD) {
                 parts.records.push((id, record));
+            }
+            if let Some(opened) = at
+                .json(&entry, OPENED_BY)
+                .and_then(|value| serde_json::from_value(value).ok())
+            {
+                parts.opened_by.insert(id, opened);
             }
             parts
                 .windows
@@ -411,6 +422,7 @@ impl Parts {
             },
             records: self.records,
             authors: self.authors,
+            opened_by: self.opened_by,
         })
     }
 }
@@ -419,6 +431,18 @@ impl Parts {
 /// when it holds no workspace there.
 #[must_use]
 pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    let mut desktop = read_as_kept(doc, heads)?;
+    // A person's own window is never the workspace's ([`crate::personal`]): one an older build
+    // placed here shows nobody, and the next write takes it out.
+    crate::personal::leave_out(&mut desktop);
+    Some(desktop)
+}
+
+/// The desk `doc` holds, every window as kept, a person's own windows included: for the copy of a
+/// desk no workspace shares, which is that person's alone. A workspace's desk is read with
+/// [`read`].
+#[must_use]
+pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
     let mut desktop = if crate::desktop_doc::holds(doc) {
         desk_of(doc, heads)?
     } else {
@@ -460,6 +484,7 @@ fn desk_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDeskt
         tree,
         records: crate::desktop_doc::records(&desk),
         authors: crate::desktop_doc::window_authors(&desk),
+        opened_by: crate::desktop_doc::opened_by(&desk),
     })
 }
 
@@ -621,17 +646,23 @@ pub fn write(
     doc: &mut AutoCommit,
     desktop: &SharedDesktop,
 ) -> Result<bool, automerge::AutomergeError> {
+    // A person's own windows stay on their desk ([`crate::personal`]), and one the record holds
+    // from an older build is taken out.
+    let mut shared = desktop.clone();
+    crate::personal::leave_out(&mut shared);
+    let desktop = &shared;
     // A record that became the desk's own document
     // ([`crate::desktop_doc`]) keeps the same desk, so a writer that knows
     // only this shape — a build from before the desk was one document —
     // writes into it rather than beside it.
     if crate::desktop_doc::holds(doc) {
-        return Ok(crate::desktop_doc::write_shared(
+        let wrote = crate::desktop_doc::write_shared(
             doc,
             &desktop.tree,
             &desktop.records,
             &desktop.authors,
-        ));
+        );
+        return Ok(crate::desktop_doc::note_opened_by(doc, &desktop.opened_by) || wrote);
     }
     let held = held(doc);
     let want = wanted(desktop, &held);
@@ -751,6 +782,13 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
                     if let Some(record) = records.get(&tab.id) {
                         fields.push((RECORD, Field::Text((*record).clone())));
                     }
+                    if let Some(opened) = desktop
+                        .opened_by
+                        .get(&tab.id)
+                        .and_then(|opened| serde_json::to_value(opened).ok())
+                    {
+                        fields.push((OPENED_BY, Field::Json(opened)));
+                    }
                     let parent = Some((GROUP, group.id));
                     want.windows.insert(
                         tab.id,
@@ -822,7 +860,12 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
         windows: level(
             WINDOWS,
             Some(GROUP),
-            &[(TAB, Json), (AUTHOR, Text), (RECORD, Text)],
+            &[
+                (TAB, Json),
+                (AUTHOR, Text),
+                (RECORD, Text),
+                (OPENED_BY, Json),
+            ],
         ),
     }
 }
@@ -854,7 +897,9 @@ fn reconcile(
     held: &BTreeMap<u64, HeldEntry>,
     want: &BTreeMap<u64, Entry>,
 ) -> Result<bool, automerge::AutomergeError> {
-    let mut changed = false;
+    // Whether anything was written: an entry that differs only in what
+    // its writer leaves as it is writes nothing.
+    let ops = doc.pending_ops();
     let containers = At {
         doc: &*doc,
         heads: None,
@@ -866,17 +911,13 @@ fn reconcile(
         for container in &containers {
             if doc.get(container, name.as_str())?.is_some() {
                 doc.delete(container, name.as_str())?;
-                changed = true;
             }
         }
     }
     let container = match containers.first() {
         Some(container) => container.clone(),
-        None if want.is_empty() => return Ok(changed),
-        None => {
-            changed = true;
-            doc.put_object(ROOT, key, ObjType::Map)?
-        }
+        None if want.is_empty() => return Ok(doc.pending_ops() > ops),
+        None => doc.put_object(ROOT, key, ObjType::Map)?,
     };
     for (id, entry) in want {
         let before = held.get(id).map(|existing| &existing.entry);
@@ -887,7 +928,6 @@ fn reconcile(
             Some(existing) => existing.obj.clone(),
             None => doc.put_object(&container, id.to_string(), ObjType::Map)?,
         };
-        changed = true;
         if let Some((field, parent)) = entry.parent
             && before.and_then(|b| b.parent) != Some((field, parent))
         {
@@ -907,12 +947,14 @@ fn reconcile(
             }
         }
         for (field, _) in before.map(|b| b.fields.as_slice()).unwrap_or_default() {
-            if !entry.fields.iter().any(|(f, _)| f == field) {
+            // Who opened a window goes with the window: a writer that does
+            // not say it knows nothing of it.
+            if *field != OPENED_BY && !entry.fields.iter().any(|(f, _)| f == field) {
                 doc.delete(&obj, *field)?;
             }
         }
     }
-    Ok(changed)
+    Ok(doc.pending_ops() > ops)
 }
 
 /// The message a change of the record is committed with: an edit of the

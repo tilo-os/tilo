@@ -59,7 +59,6 @@ tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 # The page pipeline every page viewer draws through: render queue, bitmap
 # cache, tiles.
 tilo-page-raster = { path = "../../crates/sdk/tilo-page-raster" }
-image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
 # Documents the user opens and saves.
 tilo-files = { path = "../../crates/platform/tilo-files" }
@@ -67,6 +66,8 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 # UI thread and return through `ui::portal`.
 
 [dev-dependencies]
+# Tests build their image fixtures.
+image = { workspace = true, features = ["png", "jpeg"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `pdf-viewer` claims `--features pdf-viewer/thin` in the
 # collection build, and the app then links the whole runtime statically.

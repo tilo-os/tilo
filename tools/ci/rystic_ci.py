@@ -42,8 +42,8 @@ TARGETS = {
         "tilo-fs",
         "rystic-tests",
         (
-            "production_service_and_files_engine_independent_import",
-            "production_volume_bothway_bytes_metadata_and_restart",
+            "gdrive_rystic_volume::production_service_and_files_engine_independent_import",
+            "gdrive_rystic_volume::production_volume_bothway_bytes_metadata_and_restart",
         ),
         (),
     ),
@@ -58,6 +58,11 @@ TARGETS = {
         ("id_addressed_replacement_preserves_identity_and_checks_revision",),
     ),
 }
+# The test target a suite is built from, where it is not its own binary: a crate's tests are
+# modules of one `tests/it.rs` binary, and a suite's tests are named by the module they are written
+# in, which is also what an inventory or a run selects.
+TARGET_BINARIES = {"gdrive-rystic-volume": ("it", "gdrive_rystic_volume::")}
+
 PROVIDERS = {
     "gdrive": {
         "product": "google-drive-twin",
@@ -205,7 +210,7 @@ def build(artifacts):
                 "--features",
                 feature,
                 "--test",
-                target,
+                TARGET_BINARIES.get(target, (target,))[0],
                 "--no-run",
                 "--message-format=json",
             ],
@@ -220,7 +225,8 @@ def build(artifacts):
                 continue
             if (
                 item.get("reason") == "compiler-artifact"
-                and item.get("target", {}).get("name") == target
+                and item.get("target", {}).get("name")
+                == TARGET_BINARIES.get(target, (target,))[0]
                 and item.get("profile", {}).get("test") is True
                 and item.get("executable")
             ):
@@ -396,7 +402,11 @@ def preflight(artifacts, providers, strict):
         binary = artifacts / target
         if digest(binary) != manifest["binaries"][target]["sha256"]:
             raise Failure("binary_checksum_mismatch")
-        output = checked([str(binary), "--list", "--format", "terse"], env=env)
+        module = TARGET_BINARIES.get(target, (target, ""))[1]
+        output = checked(
+            [str(binary), *([module] if module else []), "--list", "--format", "terse"],
+            env=env,
+        )
         if listed_tests(output) != set(supported + diagnostic):
             raise Failure("test_inventory_mismatch")
         plans[target] = supported + diagnostic if strict else supported

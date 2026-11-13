@@ -22,9 +22,6 @@ use crate::store::StoreBook;
 /// The name the daemon keeps the catalogue under.
 pub(crate) const CATALOGUE: &str = "gutenberg-catalogue";
 
-/// What the setting is called wherever it shows.
-pub(crate) const KEEP_CATALOGUES: &str = "Keep book catalogues on this device";
-
 /// The most the decompressed catalogue may weigh: it is about 25 MB.
 const MAX_CATALOGUE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -59,7 +56,7 @@ impl SettingsSchema for CatalogueCopies {
 }
 
 /// The section as a record the person edits by path.
-#[tilo_resource::resource(kind = "settings.books-catalogues", label = "Book catalogues")]
+#[tilo_resource::resource(kind = "settings.books-catalogues")]
 impl CatalogueCopies {}
 
 /// The catalogue's books, searchable by any words of their title and

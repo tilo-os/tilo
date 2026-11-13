@@ -3,7 +3,6 @@ use std::path::Path;
 
 use crate::i18n::{arg, t, t_args};
 
-/// Request resolution of one exact conflict member using `strategy`.
 pub fn resolve_conflict(
     path: &Path,
     conflict_id: uuid::Uuid,
@@ -47,10 +46,8 @@ pub fn resolve_conflict(
 mod tests {
     use super::*;
 
-    /// Restore and conflict requests are versioned, bounded and name the exact member for every strategy.
     #[test]
     fn history_requests_are_versioned_bounded_and_exact() {
-        // --- phase: restore_request_is_versioned_bounded_and_exact ---
         {
             use fs_protocol::files::*;
             use ui::history_mode::checked_files::FileHistoryTransport;
@@ -98,7 +95,6 @@ mod tests {
             assert_eq!(actual, request);
         }
 
-        // --- phase: conflict_request_names_the_exact_member_for_every_supported_strategy ---
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("record");

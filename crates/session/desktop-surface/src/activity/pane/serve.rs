@@ -24,6 +24,7 @@ pub(super) fn millis(at: SystemTime) -> i64 {
 
 pub(super) fn author(author: &ui::widget::history::HistoryAuthor) -> wire::Author {
     let (r, g, b) = author.rgb();
+    let attribution = author.attribution.as_ref();
     wire::Author {
         name: author.name.clone(),
         rgb: [r, g, b],
@@ -33,10 +34,10 @@ pub(super) fn author(author: &ui::widget::history::HistoryAuthor) -> wire::Autho
             ui::widget::history::AuthorRelation::Person => wire::Relation::Person,
             ui::widget::history::AuthorRelation::Software => wire::Relation::Software,
         },
-        on_behalf_of: author
-            .attribution
-            .as_ref()
-            .and_then(|attribution| attribution.on_behalf_of_name.clone()),
+        kind: attribution.map_or(tilo_actions::ActorKind::Person, |who| who.kind),
+        on_behalf_of: attribution.and_then(|who| who.on_behalf_of_name.clone()),
+        for_reader: author.for_reader,
+        task: author.task.clone(),
     }
 }
 

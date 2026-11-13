@@ -291,11 +291,16 @@ pub fn untitled(body: Body) -> SettingsSection {
 
 /// The list row of a setting labelled `label`: the label, `description`
 /// under it, `control` on the trailing edge (under the text when the row is
-/// too narrow for both).
+/// too narrow for both). The description explains the setting, so it is the
+/// row's description as well as its second line: a reader hears it after the
+/// name and its control's state, never as the row's value.
 fn setting_list_row(label: &str, description: Option<&str>, control: El) -> ListRow {
     let row = ListRow::new(format!("setting/{label}"), label).trailing(control);
     match description {
-        Some(description) => row.secondary(description).two_line_secondary(),
+        Some(description) => row
+            .secondary(description)
+            .two_line_secondary()
+            .description(description),
         None => row,
     }
 }

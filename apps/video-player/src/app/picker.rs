@@ -1,5 +1,3 @@
-//! The app's side of the file chooser: the request it remembers, the generation that tells an old answer from the current one, the first frame it waits for, and what a failure says.
-
 use super::{
     EffectAnswer, EffectCx, EffectReply, Effected, OPEN_FRAME_TIMEOUT, PendingMediaOpen,
     PendingPortalOpen, PickerChannel, PlayerResource, PlayerState, VideoEffect,
@@ -7,9 +5,8 @@ use super::{
 };
 
 impl PlayerState {
-    /// Kick off a file-picker open, answering `reply` once a picture of the
-    /// chosen video decodes. A second request is refused rather than
-    /// replacing the first, which would make its answer race.
+    /// Start a file-picker open, answering `reply` once a picture decodes. A second request
+    /// is refused rather than replacing the first, whose answer would then race.
     pub(super) fn trigger_open(&mut self, reply: Option<EffectReply>) -> Result<(), String> {
         if self.portal_open.is_some() {
             return Err("a video picker is already open".into());
@@ -35,8 +32,7 @@ impl PlayerState {
         Ok(())
     }
 
-    /// Drop a picker receiver that no longer represents the user's intent.
-    /// The picker may still answer, but nothing receives it.
+    /// Drop a picker receiver that no longer represents the person's intent.
     pub(super) fn cancel_pending_portal(&mut self, message: &str) {
         let Some(pending) = self.portal_open.take() else {
             return;
@@ -46,8 +42,8 @@ impl PlayerState {
         }
     }
 
-    /// Answer `reply` once the open video's first picture decodes, or with
-    /// why it did not.
+    /// Answer `reply` once the open video's first picture decodes, or with why it did
+    /// not.
     pub(super) fn await_open_frame(&mut self, reply: EffectReply) {
         if let Some(previous) = self.media_open.take() {
             previous
@@ -65,8 +61,8 @@ impl PlayerState {
         });
     }
 
-    /// Answer the pending open: a picture of its video decoded, another
-    /// video replaced it, or the decoder ran out of time.
+    /// Answer the pending open: a picture decoded, another video replaced it, or the
+    /// decoder ran out of time.
     pub(super) fn poll_open_frame(&mut self) {
         let Some(pending) = self.media_open.as_ref() else {
             return;
@@ -95,15 +91,14 @@ impl PlayerState {
         }
     }
 
-    /// Fail the pending open with the decoder's `message`.
     pub(super) fn fail_open(&mut self, message: String) {
         if let Some(pending) = self.media_open.take() {
             pending.reply.finish(Err(message));
         }
     }
 
-    /// Answer `effect`, invoked by a control, the palette, an agent or a
-    /// script. Opening answers once a picture decodes.
+    /// Answer an effect from a control, the palette, an agent or a script; an open answers
+    /// once a picture decodes.
     pub(crate) fn answer_effect(
         &mut self,
         effect: VideoEffect,
@@ -131,7 +126,7 @@ impl PlayerState {
         }
     }
 
-    /// Open the video `path` names on this device: a file, or a stream's URL.
+    /// Open the video `path` names: a file, or a stream's URL.
     pub(super) fn open_named(&mut self, path: &str) -> Result<(), String> {
         self.missing_codec = None;
         let source = source_for_argument(path);

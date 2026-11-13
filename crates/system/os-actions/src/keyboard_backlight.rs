@@ -1,22 +1,15 @@
-//! Keyboard backlight, written straight to the kernel's LED class.
-//!
-//! Every laptop keyboard light the kernel drives appears as
-//! `/sys/class/leds/<vendor>::kbd_backlight/`, with the same `brightness` /
-//! `max_brightness` pair the display backlight uses. The same reasoning as
-//! [`crate::display`] applies — no helper binary, no fork per keypress — and
-//! the same udev rule (`os/usr/lib/udev/rules.d/90-tilo-backlight.rules`)
-//! hands `brightness` to the `video` group.
-//!
-//! Keyboard lights have very few steps: most expose two or three levels, a
-//! few expose 0–255. [`KeyboardBacklight::step`] moves one hardware level on
-//! the coarse ones and a tenth of the range on the fine ones, so one press
-//! is always a visible change and never a jump from dim to blinding.
+//! Keyboard backlight, written straight to the kernel's LED class: every light appears
+//! as `/sys/class/leds/<vendor>::kbd_backlight/`, with the `brightness` /
+//! `max_brightness` pair the display backlight uses, and the same udev rule hands it to
+//! the `video` group. Most lights have two or three levels, a few 0–255, so
+//! [`KeyboardBacklight::step`] moves one hardware level on the coarse ones and a tenth
+//! of the range on the fine ones: a press is always visible and never a jump from dim
+//! to blinding.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The kernel's LED class. A parameter on the inner functions so the tests can point at a
-/// fixture tree.
+/// Passed to the inner functions so tests can point at a fixture tree.
 const LEDS: &str = "/sys/class/leds";
 
 /// The suffix the kernel's LED naming convention reserves for keyboard lights.
@@ -25,7 +18,6 @@ const KBD_SUFFIX: &str = "::kbd_backlight";
 /// Ranges at or below this many levels step one hardware level per press.
 const COARSE_LEVELS: u32 = 10;
 
-/// One reading of the keyboard light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyboardBacklight {
     pub level: u32,
@@ -33,7 +25,6 @@ pub struct KeyboardBacklight {
 }
 
 impl KeyboardBacklight {
-    /// The level as a `0.0..=1.0` fraction of the device's range.
     #[allow(
         clippy::cast_precision_loss,
         reason = "LED raw values are far below 2^24, so the f32 division loses no precision"
@@ -45,7 +36,6 @@ impl KeyboardBacklight {
         (self.level as f32 / self.max as f32).clamp(0.0, 1.0)
     }
 
-    /// The level one press of a brightness key moves to, saturating at both ends.
     pub fn step(self, up: bool) -> u32 {
         let delta = if self.max <= COARSE_LEVELS {
             1
@@ -59,23 +49,19 @@ impl KeyboardBacklight {
         }
     }
 
-    /// The level the on/off key moves to: off when lit, full when dark.
     pub fn toggled(self) -> u32 {
         if self.level > 0 { 0 } else { self.max }
     }
 }
 
-/// Read the keyboard light.
 pub fn get_keyboard_backlight() -> Result<KeyboardBacklight, String> {
     get_in(Path::new(LEDS))
 }
 
-/// Set the keyboard light to the raw hardware `level`, clamped to the device's range.
 pub fn set_keyboard_backlight(level: u32) -> Result<(), String> {
     set_in(Path::new(LEDS), level)
 }
 
-/// Whether this machine has a keyboard light at all.
 pub fn has_keyboard_backlight() -> bool {
     device(Path::new(LEDS)).is_some()
 }
@@ -101,8 +87,6 @@ fn set_in(root: &Path, level: u32) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// The first keyboard light by name, so the choice is stable rather than following readdir
-/// order on the rare machine with two (a docked keyboard beside the built-in one).
 fn device(root: &Path) -> Option<PathBuf> {
     let mut devices: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
@@ -128,7 +112,6 @@ fn read_u32(dir: &Path, attr: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
-    /// Build a fixture LED class tree: `(name, current, max)`.
     fn tree(devices: &[(&str, u32, u32)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         for (name, now, max) in devices {

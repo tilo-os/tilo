@@ -3,11 +3,6 @@
 //! the system volume (docs/security/sign-in.md §6.4). A compromise of the
 //! running system before anyone signs in can read that file and reset the
 //! counter after every batch of guesses; it cannot open these wrappings.
-//!
-//! The file tilo-rollback wrote is adopted, not deleted on sight: it goes only
-//! once both wrappings exist, so the counter can always be reset with
-//! whichever of the two keys is at hand. A TPM Windows manages never had that
-//! file and is left alone.
 
 use crate::recovery::RecoveryKey;
 use crate::userkey::{UserKey, hmac_sha256};
@@ -44,7 +39,6 @@ struct Stored {
     wrappings: Vec<Wrapping>,
 }
 
-/// A key that can open a wrapping.
 pub enum Opener<'a> {
     User { uid: u32, key: &'a UserKey },
     Recovery(&'a RecoveryKey),
@@ -121,14 +115,11 @@ pub struct LockoutStore {
     legacy: PathBuf,
 }
 
-/// What adopting did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Adopted {
-    /// There is no authorisation Tilo knows of.
     Nothing,
     /// Wrapped for this key; the file stays until the other key is there too.
     Wrapped,
-    /// Both wrappings exist and the file is gone.
     Complete,
 }
 
@@ -165,7 +156,6 @@ impl LockoutStore {
             .with_context(|| format!("writing {}", self.path.display()))
     }
 
-    /// The authorisation, opened with `opener`.
     pub fn open(&self, opener: &Opener<'_>) -> Result<Option<Zeroizing<Vec<u8>>>> {
         for wrapping in &self.load()?.wrappings {
             if let Some(auth) = opener.open(wrapping)? {

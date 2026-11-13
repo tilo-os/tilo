@@ -1,10 +1,12 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "scratchpad.note"
 label = "Note"
 version = 1
 fields = [
-  { path = "body", type = "String" },
+  { path = "body", type = "text" },
 ]
 

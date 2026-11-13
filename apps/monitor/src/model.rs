@@ -1,81 +1,63 @@
-//! Pure data model for the activity monitor.
-//!
-//! Nothing in here touches `sysinfo`, the CRDT, or the renderer — it is
-//! the shared vocabulary the live sampler ([`crate::sampler`]) writes into
-//! and the widgets ([`crate::app`]) read out of. Keeping it free of IO is
-//! what lets `--shots` seed a [`MonitorModel::sample`] snapshot offline that
-//! renders identically to a live frame.
+//! The monitor's data model: metrics with their rolling histories, the process
+//! rows, and the sample machine captures render. No IO.
 
 pub use ui::charts::RollingSeries;
 
-/// One process row in the table.
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
     pub pid: u32,
-    /// Kernel start-time tick for this particular PID lifetime. A PID alone is
-    /// reusable; signal operations carry this value and re-check it immediately
-    /// before dispatch so a stale action can never affect a replacement process.
+    /// The kernel start tick of this PID lifetime: a delayed signal re-checks it,
+    /// so it never reaches a process that took the PID.
     pub started_at: u64,
-    /// Parent process id, when known. `None` for the synthetic forest roots
-    /// (pid 0/1 or a process whose parent isn't in the sampled set). Drives
-    /// the parent→child tree in [`crate::tree`].
+    /// The parent's id, when known; `None` for a forest root.
     pub ppid: Option<u32>,
     pub name: String,
     pub user: String,
-    /// CPU usage as a share of the whole machine, in percent: a process
-    /// keeping one of eight cores busy reads 12.5. The processes' shares add
-    /// up to the machine's total load, so a summed subtree never reads more
-    /// than the whole machine.
+    /// CPU use as a share of the whole machine, in percent: one of eight cores busy
+    /// reads 12.5.
     pub cpu: f32,
-    /// Resident memory (RSS) in bytes — physical pages the process holds.
+    /// Resident memory in bytes.
     pub mem_bytes: u64,
-    /// Virtual memory size in bytes — the process's whole address space,
-    /// typically several times RSS. Surfaced in the detail pane.
+    /// Virtual memory in bytes, typically several times RSS.
     pub virt_bytes: u64,
     pub threads: usize,
     pub status: String,
-    /// Full command line (argv joined with spaces), or the bare name when the
-    /// kernel exposes no argv (kernel threads, zombies).
+    /// The command line, or the bare name when the kernel exposes no argv.
     pub cmd: String,
-    /// Wall-clock seconds the process has been running (from its start time).
     pub run_secs: u64,
-    /// Open file-descriptor count, when the platform exposes it (`/proc/<pid>/fd`
-    /// on Linux). `None` when unavailable rather than a fabricated zero.
+    /// Open files, when the platform exposes them; `None` rather than a fabricated
+    /// zero.
     pub open_files: Option<usize>,
-    /// Linux kernel worker thread (pid-2 descendant). Hidden unless the
-    /// "show kernel threads" preference is on.
+    /// A kernel worker thread, hidden unless the preference is on.
     pub kernel: bool,
-    /// The app the process belongs to (`so.tilo.notes`), when it belongs to
-    /// one: what "End app" ends.
+    /// The app the process belongs to; what "End app" ends.
     pub app: Option<String>,
 }
 
-/// Whole-system gauges + rolling histories. One instance per app.
+/// Whole-system gauges with their rolling histories.
 #[derive(Clone, Debug)]
 pub struct Metrics {
     pub cpu_brand: String,
     pub host: String,
     pub kernel: String,
-    /// Per-core instantaneous usage (0..=100).
+    /// Per-core use in percent.
     pub cores: Vec<f32>,
     pub mem_total: u64,
     pub mem_used: u64,
     pub swap_total: u64,
     pub swap_used: u64,
-    /// Current throughput, bytes/sec.
+    /// Throughput in bytes per second.
     pub net_rx: f32,
     pub net_tx: f32,
     pub disk_read: f32,
     pub disk_write: f32,
     pub uptime_secs: u64,
     pub load_avg: [f32; 3],
-    /// When this reading was taken. `None` before the first sample.
     pub sampled_at: Option<ui::time::SystemTime>,
-    /// The cadence the histories were collected at, in milliseconds; `0`
-    /// when the cadence is not known.
+    /// The cadence the histories were collected at, in milliseconds; `0` when it is
+    /// not known.
     pub sample_interval_ms: u32,
 
-    // Rolling histories (newest at the back).
     pub cpu_hist: RollingSeries,
     pub mem_hist: RollingSeries,
     pub net_rx_hist: RollingSeries,
@@ -85,9 +67,6 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Whether these are a reading of the machine at all: one with no core
-    /// and no memory is the empty value before (or without) a reading, and
-    /// showing it would present "unavailable" as a measured zero.
     /// The span the histories cover, in the person's words: `last 2 min`.
     pub fn history_period(&self) -> String {
         let secs = (HISTORY as u64).saturating_mul(u64::from(self.sample_interval_ms)) / 1000;
@@ -102,7 +81,6 @@ impl Metrics {
         !self.cores.is_empty() || self.mem_total > 0
     }
 
-    /// Mean of every core's current load (0..=100).
     pub fn cpu_overall(&self) -> f32 {
         if self.cores.is_empty() {
             0.0
@@ -128,24 +106,17 @@ impl Metrics {
     }
 }
 
-/// Availability of the operating-system process source. This deliberately
-/// distinguishes an empty but valid snapshot from a source that has not yet
-/// loaded or cannot be read, so the UI never mistakes a permission problem for
-/// an idle machine.
+/// Availability of the process source, which distinguishes an empty snapshot from a
+/// source not yet loaded or not readable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessDataStatus {
-    /// The first live snapshot is still being collected.
     Loading,
     Ready,
-    /// The operating system successfully returned a genuinely empty list.
     Empty,
-    /// The process source exists but this user is not allowed to inspect it.
     PermissionDenied,
-    /// The platform could not provide a process snapshot for another reason.
     Unavailable,
 }
 
-/// Top-level model: system metrics + process list + source availability.
 #[derive(Clone, Debug)]
 pub struct MonitorModel {
     pub metrics: Metrics,
@@ -153,13 +124,12 @@ pub struct MonitorModel {
     pub process_status: ProcessDataStatus,
 }
 
-/// History depth for every time-series. ~2 minutes at a 1s cadence.
+/// History depth for every time series: two minutes at a one-second cadence.
 pub const HISTORY: usize = 120;
 
 impl MonitorModel {
-    /// Build a representative, fully-populated snapshot with no IO. This
-    /// is what `--shots` renders, and what the live app starts from before
-    /// the first real `sysinfo` sample lands a second later.
+    /// A fully populated snapshot with no IO, which captures render and the live app
+    /// starts from.
     #[allow(
         clippy::similar_names,
         reason = "net_rx_hist/net_tx_hist are the standard receive/transmit pair; renaming either would read worse"
@@ -167,7 +137,6 @@ impl MonitorModel {
     pub fn sample() -> Self {
         let cores: Vec<f32> = SAMPLE_CORE_LOAD.to_vec();
 
-        // Synthesise wavy histories so the charts read as "alive".
         let cpu_hist = RollingSeries::from_samples(
             HISTORY,
             (0..HISTORY).map(|i| {
@@ -254,9 +223,6 @@ impl MonitorModel {
         }
     }
 
-    /// The sample machine a screenshot `scenario` shows: the sample, with no
-    /// processes for the empty, loading and refused process lists, and with
-    /// many cores for `resources-many`.
     pub fn scenario(scenario: Option<&str>) -> Self {
         let mut model = Self::sample();
         let status = match scenario {
@@ -264,8 +230,8 @@ impl MonitorModel {
             Some("process-loading") => ProcessDataStatus::Loading,
             Some("process-permission-error") => ProcessDataStatus::PermissionDenied,
             Some("resources-many") => {
-                // 24 cores so the grid wraps to several rows — the card must
-                // grow to hold them and the page must scroll on a short shot.
+                // 24 cores so the grid wraps and the page must scroll on a short
+                // shot.
                 model.metrics.cores = (0..24)
                     .map(|i| {
                         let t = i as f32;
@@ -281,9 +247,8 @@ impl MonitorModel {
         model
     }
 
-    /// Empty model used as the initial state for the live sampler before
-    /// the first refresh. Histories are pre-filled with zeros so the
-    /// charts don't visibly "grow in" from the left edge.
+    /// The live sampler's state before its first reading, histories pre-filled with
+    /// zeros so the charts do not grow in from the left.
     pub fn empty() -> Self {
         let z = || RollingSeries::from_samples(HISTORY, std::iter::repeat_n(0.0, HISTORY));
         let metrics = Metrics {
@@ -318,11 +283,10 @@ impl MonitorModel {
     }
 }
 
-/// The sample machine's per-core load, in percent.
 const SAMPLE_CORE_LOAD: [f32; 8] = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
 
-/// One sample-data process row, as `(name, parent, user, cpu, mem_MiB,
-/// threads, status, kernel)`; `cpu` is per core, as `top` reads it. `parent` is `""` for a forest root.
+/// A sample row as `(name, parent, user, cpu, mem_MiB, threads, status, kernel)`;
+/// `cpu` is per core, `parent` is `""` for a forest root.
 type SampleRow = (
     &'static str,
     &'static str,
@@ -334,15 +298,8 @@ type SampleRow = (
     bool,
 );
 
-/// Hand-tuned sample process table. Values are picked so the sort columns
-/// and the CPU/MEM ranking read realistically in the screenshot. The
-/// `parent` column names each row's parent process (by name) so the tree
-/// view ([`crate::tree`]) reads as a real session hierarchy: `systemd`
-/// roots the system services, `shell` roots the user session, and the heavy
-/// apps (`browser`, `code`) fan out into the children that account for most
-/// of "what they're doing" — exactly the subtree-sum story. Multi-instance
-/// names (e.g. two "Web Content") attach to the *first* matching parent,
-/// which is what a real renderer fan-out looks like.
+/// The sample process table: each row names its parent so the tree reads as a real
+/// session, and a name with several instances attaches to the first match.
 const SAMPLE_ROWS: &[SampleRow] = &[
     ("shell", "", "ada", 14.6, 412, 24, "Running", false),
     ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
@@ -537,7 +494,6 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     ("irq/142-nvme0", "", "root", 0.1, 0, 1, "Idle", true),
 ];
 
-/// Spread synthetic but stable PIDs across `rows`, one per row in order.
 fn sample_pids(rows: &[SampleRow]) -> Vec<u32> {
     let mut pid: u32 = 1;
     let mut pids = Vec::with_capacity(rows.len());
@@ -548,11 +504,7 @@ fn sample_pids(rows: &[SampleRow]) -> Vec<u32> {
     pids
 }
 
-/// Turn sample row `i` into a full [`ProcessInfo`]: resolve its parent's pid
-/// by name (the first matching row above it), and synthesise a believable
-/// command line, virtual size, run time and fd count from the row's stable
-/// inputs so the detail pane reads as "alive" in the hermetic `--shots`
-/// frame (which never samples).
+/// Turn sample row `i` into a [`ProcessInfo`] with believable details.
 #[allow(
     clippy::similar_names,
     reason = "pid/ppid are the standard process-table terms; renaming either would read worse"
@@ -572,14 +524,13 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
     } else {
         sample_cmdline(name, user)
     };
-    // Virtual size runs a few× RSS (shared libs + reserved heap/stack).
+    // Virtual size runs a few times RSS.
     let virt_bytes = if mem_bytes == 0 {
         0
     } else {
         mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
     };
     let pid = pids.get(i).copied().unwrap_or(0);
-    // Deterministic run time from the pid so rows differ but are stable.
     let run_secs = 37 + (u64::from(pid) * 7) % 90_000;
     let open_files = if kernel {
         None
@@ -588,9 +539,6 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
     };
     ProcessInfo {
         pid,
-        // Synthetic snapshots never reach the operating system, but retaining
-        // a deterministic generation lets the same action wire shape be used
-        // by screenshots, tests, and the live app.
         started_at: 10_000 + u64::from(pid) * 13,
         ppid,
         name: name.to_string(),
@@ -608,8 +556,8 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
     }
 }
 
-/// The app a sample process belongs to: the person's apps and the programs
-/// they started, never the system's services.
+/// The app a sample process belongs to: the person's apps, never the system's
+/// services.
 fn sample_app(name: &str) -> Option<&'static str> {
     Some(match name {
         "browser" | "Web Content" | "GPU Process" => "so.tilo.browser",
@@ -631,8 +579,6 @@ fn sample_processes() -> Vec<ProcessInfo> {
         .collect()
 }
 
-/// A believable argv for a sample process — a real-looking binary path plus a
-/// couple of flags, so the detail pane's command-line row isn't just the name.
 fn sample_cmdline(name: &str, user: &str) -> String {
     match name {
         "shell" => "/usr/bin/shell --session wayland --workspace 0".into(),
@@ -654,13 +600,11 @@ fn sample_cmdline(name: &str, user: &str) -> String {
     }
 }
 
-/// Human-readable throughput in the toolkit's rate style: `0 B/s`,
-/// `84 kB/s`, `2.4 MB/s` (decimal, like most network tools).
+/// Throughput in the toolkit's rate style: `0 B/s`, `84 kB/s`, `2.4 MB/s`.
 pub fn fmt_rate(bytes_per_sec: f32) -> String {
     ui::format::rate(f64::from(bytes_per_sec))
 }
 
-/// `5h 42m 17s` style duration.
 pub fn fmt_uptime(secs: u64) -> String {
     let d = secs / 86_400;
     let h = (secs % 86_400) / 3600;
@@ -678,8 +622,6 @@ pub fn fmt_uptime(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Model primitives: the sample model is fully populated, and the rate/uptime
-    /// formatters.
     #[test]
     fn model_sample_and_formatters() {
         {

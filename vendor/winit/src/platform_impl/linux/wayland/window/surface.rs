@@ -88,6 +88,14 @@ impl Surface {
         }
     }
 
+    /// The layer surface, for the requests only it has.
+    pub fn layer(&self) -> Option<&LayerSurface> {
+        match self {
+            Self::Layer(layer) => Some(layer),
+            Self::Toplevel(_) | Self::Lock(_) => None,
+        }
+    }
+
     /// The toplevel's `xdg_surface`, whose window geometry a layer surface
     /// does not have.
     pub fn xdg_surface(&self) -> Option<&XdgSurfaceProxy> {

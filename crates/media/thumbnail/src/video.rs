@@ -1,10 +1,6 @@
-//! Frames from a video (feature `video`).
-//!
-//! Reuses the shared `media` `GStreamer` engine — the exact decode path
-//! `apps/video-editor` plays through — rather than a second codec stack. A
-//! [`FrameSession`] owns one pipeline and answers any number of "the frame at
-//! time t" requests against it, which is what lets a worker keep a source open
-//! across a whole filmstrip instead of standing a pipeline up per cell.
+//! Frames from a video (feature `video`), on the shared `media` `GStreamer` engine
+//! rather than a second codec stack: a [`FrameSession`] keeps one pipeline open across a
+//! whole filmstrip instead of standing one up per cell.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,24 +10,16 @@ use media::MediaEngine;
 
 use crate::generate::{RgbaThumb, ThumbSize, rgba_to_thumb};
 
-/// How long to wait for a frame at the seeked position before giving up on it.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(6);
-/// How long to let a freshly-opened pipeline preroll before seeking it.
 const PREROLL_TIMEOUT: Duration = Duration::from_secs(5);
-/// How far past the requested time a frame may sit and still count as the
-/// answer to that seek — a little over one frame at any sane rate.
 const SEEK_SLOP_MS: u64 = 100;
 /// How far from the requested time a frame may sit and still be worth showing
 /// when the pipeline could not land on it (a keyframe-only source).
 const FALLBACK_SLOP_MS: u64 = 2_000;
 /// Poll interval while a pipeline works. The engine exposes no blocking wait.
 const POLL: Duration = Duration::from_millis(20);
-/// Seek this far in for a file's representative frame — most clips open on
-/// black or near-black.
 const REPRESENTATIVE_MS: u64 = 1_000;
 
-/// Extract a representative keyframe from `path` as an RGBA thumbnail that
-/// fits `size`. `None` if decoding is unavailable or no frame arrives.
 pub fn video_thumb(path: &Path, size: impl Into<ThumbSize>) -> Option<RgbaThumb> {
     let mut session = FrameSession::open(path)?;
     let at = match session.duration_ms() {
@@ -74,7 +62,6 @@ impl FrameSession {
         Some(session)
     }
 
-    /// The source this session decodes.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -83,13 +70,8 @@ impl FrameSession {
         self.engine.duration_ms()
     }
 
-    /// Let the pipeline finish coming up before anything is asked of it.
-    ///
-    /// A seek issued into a pipeline that has not prerolled is dropped — the
-    /// sink then still holds the preroll picture at position 0, so the first
-    /// frame asked for came back as the start of the clip whatever time it
-    /// wanted. The preroll timestamp is remembered so that picture can never be
-    /// mistaken for the answer to a later seek.
+    // Let the pipeline finish coming up before anything is asked of it: a seek into a
+    // pipeline that has not prerolled is dropped.
     fn await_preroll(&mut self) {
         let start = Instant::now();
         while start.elapsed() < PREROLL_TIMEOUT {

@@ -19,18 +19,27 @@ fn sidebar_toggle(app: &mut TestApp<SettingsShell>) -> ui::vello::kurbo::Rect {
         .expect("the mounted shared sidebar toggle is accessible")
 }
 
+/// Frames [`settle`] allows before it calls the window hung. The slide runs
+/// on the toolkit clock, so a loaded machine draws it in fewer frames, never
+/// more; what this bounds is a window that keeps asking for frames, which is
+/// what a hang looks like. Counting frames keeps that independent of how
+/// fast the machine paints them.
+const SETTLE_FRAMES: usize = 600;
+
 /// Run frames until the window's layout stops moving: a sidebar opening
 /// slides its rows in, so a row's bounds are only where a click lands once
 /// the slide is done.
 fn settle(app: &mut TestApp<SettingsShell>) {
-    let deadline = tilo_test_env::hang_deadline();
-    while app.harness().frame_schedule().needs_animation_frame {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the window kept animating"
-        );
+    for _ in 0..SETTLE_FRAMES {
+        if !app.harness().frame_schedule().needs_animation_frame {
+            return;
+        }
         app.harness().poll_frame().unwrap();
     }
+    assert!(
+        !app.harness().frame_schedule().needs_animation_frame,
+        "the window kept animating for {SETTLE_FRAMES} frames"
+    );
 }
 
 fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
@@ -45,11 +54,22 @@ fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Publication {
+    /// It changes what the resource holds or offers: the framework publishes
+    /// the resource again, so that work belongs to the measurement.
+    Changed,
+    /// It changes only how the frame is painted: the published tree is
+    /// reused, and the measurement covers the painting.
+    Unchanged,
+}
+
 fn measure(
     app: &mut TestApp<SettingsShell>,
     category: Category,
     operation: &str,
     sample: usize,
+    publication: Publication,
     act: impl FnOnce(&mut TestApp<SettingsShell>),
 ) {
     app.harness().clear_profile_samples();
@@ -71,11 +91,14 @@ fn measure(
         category.slug(),
         "the mounted canonical pane is the measured subject"
     );
-    assert!(
-        phases
-            .iter()
-            .any(|scope| scope.phase == "framework.publication")
-    );
+    if publication == Publication::Changed {
+        assert!(
+            phases
+                .iter()
+                .any(|scope| scope.phase == "framework.publication"),
+            "the interaction changes the resource, so the framework publishes it"
+        );
+    }
     {
         let layout = app.harness().last_relayout();
         if category == Category::Keyboard && operation == "pointer-hover" && sample >= 2 {
@@ -142,6 +165,7 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 category,
                 "pointer-pane-navigation",
                 sample,
+                Publication::Changed,
                 |app| {
                     app.harness().click_at(
                         f64::midpoint(bounds.x0, bounds.x1),
@@ -150,14 +174,30 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 },
             );
             let toggle = sidebar_toggle(&mut app);
-            measure(&mut app, category, "pointer-hover", sample, |app| {
-                app.harness().send(&cursor_moved(1190.0, 890.0));
-                app.harness()
-                    .send(&cursor_moved(toggle.center().x, toggle.center().y));
-            });
-            measure(&mut app, category, "sidebar-control-click", sample, |app| {
-                app.harness().click_at(toggle.center().x, toggle.center().y);
-            });
+            // Hovering the shared toggle repaints it and leaves the resource
+            // as it was, so the measured frames are the painting's.
+            measure(
+                &mut app,
+                category,
+                "pointer-hover",
+                sample,
+                Publication::Unchanged,
+                |app| {
+                    app.harness().send(&cursor_moved(1190.0, 890.0));
+                    app.harness()
+                        .send(&cursor_moved(toggle.center().x, toggle.center().y));
+                },
+            );
+            measure(
+                &mut app,
+                category,
+                "sidebar-control-click",
+                sample,
+                Publication::Changed,
+                |app| {
+                    app.harness().click_at(toggle.center().x, toggle.center().y);
+                },
+            );
             assert_eq!(
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 false
@@ -184,7 +224,6 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 true
             );
-            // The next pane's row is clicked where the opened sidebar shows it.
             settle(&mut app);
         }
     }

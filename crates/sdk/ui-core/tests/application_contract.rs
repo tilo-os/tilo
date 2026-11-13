@@ -484,7 +484,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         let record = original.record().clone();
         let saved = original.close().recovery.unwrap();
         let view_bytes = std::fs::read(host.view_path(11)).unwrap();
-        let path = app_state::DocStore::workspace_record_dir_at(
+        let path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -552,7 +552,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(!host.records.is_ready(&record.id));
         assert!(host.records.reserve_record(&record).is_ok());
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
-        let path = app_state::DocStore::workspace_record_dir_at(
+        let path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -647,7 +647,7 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
         assert_eq!(before, after);
         assert_eq!(initializations(), 1);
         assert_eq!(host.records.open_records().len(), 1);
-        let directory = app_state::DocStore::workspace_record_dir_at(
+        let directory = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -697,7 +697,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::workspace_record_dir_at(
+        let path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -739,7 +739,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             .unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let document_path = app_state::DocStore::workspace_record_dir_at(
+        let document_path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -867,7 +867,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             })
             .unwrap();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::workspace_record_dir_at(
+        let path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -1184,7 +1184,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             .unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::workspace_record_dir_at(
+        let path = app_state::DocStore::workspace_document_dir_at(
             &host.root(),
             APP,
             WORKSPACE,
@@ -1377,7 +1377,7 @@ mod save_status_fixture {
             self.tile.sync(&self.outer, &ROOT);
         }
         fn path(&self) -> std::path::PathBuf {
-            app_state::DocStore::workspace_record_dir_at(
+            app_state::DocStore::workspace_document_dir_at(
                 &self.host.root(),
                 APP,
                 WORKSPACE,

@@ -14,7 +14,6 @@ pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDi
     vault.put(&account.id, &secret);
     vault.try_save().unwrap();
     let mut pane = AccountsPane::in_root(account_root);
-    // Stage the same private baseline that the live discovery worker receives.
     pane.form_kind = Some(crate::accounts::AccountKind::CalDav);
     pane.form_account_id = Some(account.id.to_string());
     pane.calendar_source = Some(account.clone());
@@ -207,7 +206,6 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     assert!(!review.to_string().contains("private-app-password"));
     assert_eq!(review["calendars"][0]["selected"], true);
     assert_eq!(review["checking"], false);
-    // Explicitly deselect all through the published action before checking refusal.
     app.call_on(&choice, "select-calendar", serde_json::json!({}))
         .unwrap();
     assert!(

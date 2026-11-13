@@ -64,6 +64,176 @@ pub trait AppServingPlane: Send + Sync {
         let _ = (caller, message);
         true
     }
+
+    /// The content stores this plane keeps its workspaces' content in, when
+    /// it brings them: the host then keeps everything else it keeps for a
+    /// workspace there too, so a host has one store per workspace. `None`
+    /// leaves the host to open its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn content(&self) -> Option<std::sync::Arc<tilo_content::WorkspaceStores>> {
+        None
+    }
+
+    /// `caller`'s session became an agent's run
+    /// ([`Envelope::AgentRun`](tilo_relay_protocol::transport::Envelope::AgentRun))
+    /// in `workspace_id`, the workspace the session entered: a plane that
+    /// speaks for the runs it executes makes the run present there now, so an
+    /// agent that connected and has not acted yet is already seen, waiting.
+    /// Nothing by default.
+    fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+        let _ = (workspace_id, caller);
+    }
+
+    /// The workspace `workspace_id` was deleted: let go of whatever this
+    /// plane holds for it (its app workers, what it found of the
+    /// workspace). Nothing by default.
+    fn forget_workspace(&self, workspace_id: u64) {
+        let _ = workspace_id;
+    }
+
+    /// Where `message`, sent to this host by `caller`, goes instead of this
+    /// plane: to the device of `workspace_id` that holds what it addresses, or
+    /// to the caller as this plane's own answer. Some actions exist only on a
+    /// window, and the window need not be on this host (a Browser whose page
+    /// runs on a VM host). The host hands the frame to that device stamped
+    /// with `caller`, as it hands over every frame it routes, so the action
+    /// runs there as the caller's. `None` serves it here, as before.
+    fn route(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<Routing> {
+        let _ = (workspace_id, caller, message);
+        None
+    }
+
+    /// As [`Self::route`], with the certificate the relay's handshake
+    /// verified for `caller`'s device: what the plane may hold the caller to
+    /// beyond who it is — a key's own scope, say. A plane that needs only the
+    /// caller routes as before.
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<Routing> {
+        let _ = certificate;
+        self.route(workspace_id, caller, message)
+    }
+
+    /// What device `from` answered `message` in `workspace_id`, on its way
+    /// to the caller: the host only carries it, and a plane that handed the
+    /// frame over may want to know how it went. The answer the plane gives
+    /// here is what the caller receives in its place — a window that refuses
+    /// an action for want of the person's word leaves its caller waiting
+    /// instead of refused — and `None` carries the answer on as it is.
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<RemoteActionMessage> {
+        let _ = (workspace_id, from, message);
+        None
+    }
+
+    /// Whether this plane waits on answers to frames of `workspace_id`: the
+    /// host decodes what it forwards there for [`Self::relayed`], and reads
+    /// the rest untouched.
+    fn tracks(&self, workspace_id: u64) -> bool {
+        let _ = workspace_id;
+        false
+    }
+}
+
+/// Where a frame is served instead of on the host it was addressed to
+/// ([`AppServingPlane::route`]).
+pub enum Routing {
+    /// The device of the workspace holding the window the frame addresses.
+    Device([u8; 32]),
+    /// That device, handed `message` in place of the frame the caller sent:
+    /// what a plane that answers for the person hands over — the caller's own
+    /// action, carrying an answer the caller could not put there itself.
+    Replaced {
+        to: [u8; 32],
+        message: Box<RemoteActionMessage>,
+    },
+    /// This plane answers the frame itself — the caller's typed refusal, or
+    /// the answer to an invocation it holds — now or when it is ready.
+    Answer(Pending<RemoteActionMessage>),
+}
+
+/// The host's own delivery of a frame a plane hands it
+/// ([`HostedBrowsers`](crate::hosted_browser) and its likes): every frame the
+/// host routes reaches the device it names stamped with the caller who asked
+/// for it, and this is how a plane has one carried after it answered its
+/// caller itself.
+#[derive(Clone)]
+pub struct Hand {
+    workspaces: crate::peer::WorkspaceRegistry,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Hand {
+    /// A hand over `workspaces`, delivering on `runtime`.
+    #[must_use]
+    pub fn new(
+        workspaces: crate::peer::WorkspaceRegistry,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            workspaces,
+            runtime,
+        }
+    }
+
+    /// Hand `message` to the device `to` of `workspace_id`, as the caller
+    /// `from` (device and user key) asked it: the envelope the host routes,
+    /// stamped so the device runs the action as theirs. A device that is gone
+    /// takes nothing, which is logged: what waits on it is answered by its
+    /// own timeout.
+    pub fn hand(
+        &self,
+        workspace_id: u64,
+        from: ([u8; 32], [u8; 32]),
+        to: [u8; 32],
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) {
+        let workspaces = self.workspaces.clone();
+        self.runtime.spawn(async move {
+            let frame = match tilo_actions::remote::RemoteActionFrame::new(message).encode() {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::error!(%error, "a frame this host hands over does not encode");
+                    return;
+                }
+            };
+            let Some(workspace) = workspaces.lock().await.get(&workspace_id).cloned() else {
+                tracing::warn!(
+                    workspace_id,
+                    "a frame was handed to a workspace this host has gone"
+                );
+                return;
+            };
+            let stamped = crate::transport::Envelope::RemoteAction {
+                workspace_id,
+                version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: from.0,
+                from_user_public_key: from.1,
+                frame,
+            };
+            if !workspace.lock().await.route_directed(&to, stamped) {
+                tracing::warn!(
+                    workspace_id,
+                    device = %hex::encode(to),
+                    "a frame this host handed over found no device to take it"
+                );
+            }
+        });
+    }
 }
 
 /// An [`AppServingPlane`] backed by one [`ActionHost`] for every workspace.

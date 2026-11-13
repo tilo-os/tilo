@@ -1,32 +1,14 @@
-//! Which OS image the slots' generations run on, and which of their layers
-//! fit it.
-//!
-//! A layer is built against one image: its libraries, its `Cargo.lock`, the
-//! interface versions its other components speak. Once the machine boots
-//! another image (a bootc upgrade, switch or rollback), a layer from before
-//! may run an old program against new ones. The layers are the person's
-//! deployed work all the same: a boot never takes them off a slot and never
-//! deletes them (only an explicit `tilo-vm rollback` or `gc` deletes). Every
-//! boot records the booted image in `<root>/image.json`; when it differs
-//! from the one recorded at the boot before, each layer any slot's
-//! generations name is checked against the booted image:
-//! - built against its base (`Provenance::base_image_digest`): it merges;
-//! - otherwise its declared interface versions (`Provenance::interfaces`)
-//!   all match the image's `system-interfaces.toml`: it merges;
-//! - otherwise it is held: kept, named in `<root>/held-layers.json`, and
-//!   left out of everything merged until a swap brings it back
-//!   deliberately or the next image change fits it. The person is told
-//!   which layers are held and why (`Apply::publish_notice`, read by the
-//!   desktop).
-//!
-//! `<root>/image-change.json` records the change: the slots that stay on
-//! generations made for the previous image, and the held layers.
-//!
-//! An unknown previous image is never a change: a state root without
-//! `image.json` was written by a tilo-vmd that did not record images (on
-//! 2026-10-19 such a root counted as one, and the first boot of a recording
-//! tilo-vmd dropped every slot's layers and deleted 7.8 GB of them), so it
-//! only gets the booted image recorded.
+//! Which OS image the slots' generations run on, and which of their layers fit it.
+//! A layer is built against one image — its libraries, its `Cargo.lock`, the
+//! interface versions its components speak — so a boot onto another image may run
+//! an old program against new ones. The layers are the person's deployed work all
+//! the same: a boot never takes them off a slot and never deletes them. Every boot
+//! records the booted image in `<root>/image.json`; when it differs from the one
+//! recorded before, each layer a slot's generations name is checked: one built
+//! against that image's base merges, otherwise its declared interface versions must
+//! match the image's `system-interfaces.toml`, otherwise it is held — kept, named
+//! in `<root>/held-layers.json`, and left out of everything merged until a swap
+//! brings it back or the next image change fits it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -46,9 +28,8 @@ const CHANGE_FILE: &str = "image-change.json";
 const HELD_FILE: &str = "held-layers.json";
 /// The notice the desktop shows about held layers.
 pub const HELD_NOTICE: &str = "held-layers.json";
-/// Left by an older tilo-vmd for the layers it dropped, which it deleted
-/// later in the boot. Nothing deletes layers at boot any more; the marker
-/// is removed so no reader takes it for pending work.
+/// Left by an older `tilo-vmd` for the layers it dropped and deleted later in the boot. Nothing
+/// deletes layers at boot any more; the marker is removed so no reader takes it for pending work.
 const COLLECT_MARKER: &str = "collect-layers";
 
 pub use tilo_vm_protocol::booted_image;
@@ -67,10 +48,8 @@ pub struct BootedImage {
     pub digest: Option<String>,
     /// The image's `[interfaces]` ([`tilo_vm_protocol::SYSTEM_INTERFACES`]).
     pub interfaces: BTreeMap<String, u32>,
-    /// The image's own declaration, as recorded for the swap check
-    /// ([`crate::interfaces`]); `None` when what `/usr` shows is not the
-    /// image's alone (system extensions are merged over it), so it is not
-    /// recorded as the image's.
+    /// The image's own declaration, as recorded for the swap check ([`crate::interfaces`]); `None`
+    /// when what `/usr` shows is not the image's alone, since system extensions are merged over it.
     pub declaration: Option<Declaration>,
 }
 
@@ -89,8 +68,7 @@ impl BootedImage {
         }
     }
 
-    /// `None` when a layer with `provenance` merges on this image, else why
-    /// it is held.
+    /// `None` when a layer with `provenance` merges on this image, else why it is held.
     #[must_use]
     pub fn hold_reason(&self, provenance: Option<&Provenance>) -> Option<String> {
         let Some(provenance) = provenance else {
@@ -127,9 +105,8 @@ impl BootedImage {
     }
 }
 
-/// Whether system extensions are merged over `/usr` (a `sysext` overlay is
-/// mounted there), so a file under it may be a layer's, not the image's.
-/// The early-boot unit runs before `systemd-sysext`, and sees the image's.
+/// Whether system extensions are merged over `/usr`, so a file under it may be a layer's, not the
+/// image's. The early-boot unit runs before `systemd-sysext` and sees the image's.
 fn usr_is_merged() -> bool {
     std::fs::read_to_string("/proc/self/mountinfo").is_ok_and(|info| usr_merged_in(&info))
 }
@@ -213,8 +190,7 @@ fn write_held(root: &Path, held: &[HeldLayer]) -> Result<(), DaemonError> {
     }
 }
 
-/// The person brings `layer` back deliberately (a swap names it): it is
-/// no longer held.
+/// The person brings `layer` back deliberately, by naming it in a swap: it is no longer held.
 pub fn release(root: &Path, layer: &str) -> Result<(), DaemonError> {
     let mut held = held(root);
     let before = held.len();
@@ -225,8 +201,7 @@ pub fn release(root: &Path, layer: &str) -> Result<(), DaemonError> {
     write_held(root, &held)
 }
 
-/// The desktop's notice about held layers: what the person reads, `None`
-/// when nothing is held.
+/// The desktop's notice about held layers: what the person reads, `None` when nothing is held.
 #[must_use]
 pub fn held_notice(root: &Path) -> Option<String> {
     let held = held(root);
@@ -243,13 +218,12 @@ pub fn held_notice(root: &Path) -> Option<String> {
     serde_json::to_string_pretty(&notice).ok()
 }
 
-/// Record `booted` as the image the slots run on; see the module
-/// documentation. Returns the change when the boot before recorded another
-/// image, `None` when it recorded this one or none at all. No slot, no
-/// generation and no layer is changed or deleted either way; on a change
-/// the layers that do not fit `booted` are held.
+/// Record `booted` as the image the slots run on (see the module docs). Returns the change when the
+/// boot before recorded another image, `None` when it recorded this one or none at all; no slot,
+/// generation or layer is changed or deleted either way.
 ///
 /// # Errors
+///
 /// I/O failures; the image stays unrecorded, so the next boot tries again.
 pub fn reconcile(
     root: &Path,
@@ -259,8 +233,8 @@ pub fn reconcile(
 ) -> Result<Option<ImageChange>, DaemonError> {
     let recorded: Option<Recorded> = read_json(&root.join(IMAGE_FILE));
     if let Some(same) = recorded.as_ref().filter(|r| r.image == booted.id) {
-        // A boot before recorded this image without its declaration (an
-        // older tilo-vmd): record it now when it can be read as the image's.
+        // A boot before recorded this image without its declaration: record it now when it can be
+        // read as the image's.
         if same.interfaces.is_none() && booted.declaration.is_some() {
             write_json(
                 &root.join(IMAGE_FILE),
@@ -275,7 +249,7 @@ pub fn reconcile(
     }
     let at = now();
     let change = match recorded {
-        // Nothing says which image the slots were made on: not a change.
+        // Nothing says which image the slots were made on, so it is not a change.
         None => None,
         Some(previous) => {
             let mut kept = Vec::new();
@@ -342,8 +316,8 @@ pub fn reconcile(
     Ok(change)
 }
 
-/// The state root, created as tmpfiles would (0700) when this runs before
-/// `systemd-tmpfiles-setup` on a machine's first boot.
+/// The state root, created as tmpfiles would (0700) when this runs before `systemd-tmpfiles-setup`
+/// on a machine's first boot.
 pub fn ensure_root(root: &Path) -> Result<PathBuf, DaemonError> {
     use std::os::unix::fs::DirBuilderExt;
     if !root.is_dir() {
@@ -435,14 +409,10 @@ mod tests {
         (seen, layers.list().unwrap().len())
     }
 
-    /// The laptop on 2026-10-19: the `vm` slot ran a swapped tilo-vmd that
-    /// records images, swapped in while the machine ran one that did not,
-    /// so no image was recorded. Its first boot found no `image.json`,
-    /// counted that as an image change, put every slot (the device's
-    /// generation 106 among them) back on the image and deleted 7.8 GB of
-    /// layers: the person came up on the bare image. An unknown previous
-    /// image is no change: the image is recorded and nothing else moves,
-    /// nothing is held.
+    /// The laptop whose `vm` slot ran a swapped `tilo-vmd` that records images while the machine
+    /// ran one that did not: its first boot found no `image.json`, counted that as an image change,
+    /// put every slot back on the image and deleted 7.8 GB of layers. An unknown previous image is
+    /// no change: the image is recorded and nothing else moves.
     #[test]
     fn an_unknown_previous_image_is_no_change_and_drops_nothing() {
         let root = tempfile::tempdir().unwrap();
@@ -471,11 +441,9 @@ mod tests {
         assert!(!root.path().join(COLLECT_MARKER).exists());
     }
 
-    /// Booting another image keeps every slot on its generation and every
-    /// layer in the store. A layer built against the booted base merges, one
-    /// whose interface versions match the image merges, any other is held:
-    /// kept, left out of what merges, named with the reason, and announced.
-    /// The same image again changes nothing.
+    /// Booting another image keeps every slot on its generation and every layer in the store: a
+    /// layer built against the booted base merges, one whose interface versions match merges, any
+    /// other is held and announced.
     #[test]
     fn an_image_change_merges_what_fits_and_holds_the_rest_without_deleting() {
         let root = tempfile::tempdir().unwrap();

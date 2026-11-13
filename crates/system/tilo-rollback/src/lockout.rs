@@ -1,36 +1,23 @@
-//! TPM dictionary-attack lockout: reading it, tightening it, and giving the reset
-//! authorisation a real value.
+//! TPM dictionary-attack lockout: reading it, tightening it, and setting the reset authorisation.
 //!
-//! A four-digit PIN is only defensible because the TPM throttles guesses in hardware. Two
-//! things have to be true, neither true by default on a merely `tpm2_clear`ed machine:
+//! A four-digit PIN is only defensible because the TPM throttles guesses in hardware, and two
+//! things must hold, neither of them by default on a merely `tpm2_clear`ed machine:
 //!
-//! 1. **The reset authorisation must not be empty.** `TPM2_DictionaryAttackLockReset` zeroes
-//!    the failure counter and is authorised by `lockoutAuth`; left empty, an attacker resets
-//!    the counter after every batch of guesses and a four-digit PIN protects nothing — the
-//!    single most important line in this module.
-//! 2. **The parameters must be sane.** They're vendor-set and often generous (32 tries with a
-//!    10-minute decay is common), so they're read at enrollment and tightened where the
-//!    hardware allows, with what actually got applied reported rather than assumed.
+//! 1. **`lockoutAuth` must not be empty.** `TPM2_DictionaryAttackLockReset` zeroes the failure
+//!    counter and is authorised by it; left empty, an attacker resets the counter after every
+//!    batch of guesses.
+//! 2. **The parameters must be sane.** They are vendor-set and often generous, so they are read
+//!    at enrollment and tightened where the hardware allows, reporting what was actually applied.
 //!
-//! # The consequence that must be documented, not hidden
+//! `lockoutAuth` lives on the encrypted root, which creates one circular dependency: too many
+//! wrong PINs lock the TPM, the PIN cannot unseal, the root filesystem is unavailable and
+//! `lockoutAuth` cannot be read to reset the lockout. The way out is the recovery key, which does
+//! not involve the TPM, so enrollment must show it and never treat it as optional.
 //!
-//! `lockoutAuth`'s value is written to the **encrypted** root filesystem — right against the
-//! threat model (an attacker with a powered-off machine can't read it; one who can read it
-//! already has the disk open) — but it creates a circular dependency:
-//!
-//! > too many wrong PINs → TPM in lockout → PIN cannot unseal → root filesystem unavailable
-//! > → `lockoutAuth` unreadable → lockout cannot be reset
-//!
-//! The way out is the recovery key, which doesn't involve the TPM at all — the design working
-//! as intended (recovery key is the guarantee, TPM keyslot is the convenience) — so enrollment
-//! **must** show the recovery key and never treat it as optional; a user who discards it and
-//! forgets their PIN has lost the data.
-//!
-//! A second sharp edge: a failed `lockoutAuth` attempt disables `lockoutAuth` itself for
-//! `lockoutRecovery` seconds, so a 24-hour `lockoutRecovery` means one fat-fingered reset
-//! locks the owner out of the reset path for a day. Disk unlock is unaffected (governed by
-//! `maxTries`/`recoveryTime`); the trade is deliberate — a long `lockoutRecovery` is what
-//! stops brute-forcing `lockoutAuth` itself.
+//! A failed `lockoutAuth` attempt disables `lockoutAuth` for `lockoutRecovery` seconds, so a
+//! 24-hour value means one fat-fingered reset costs the owner the reset path for a day. Disk
+//! unlock is unaffected (`maxTries`/`recoveryTime`), and the trade is deliberate: it is what stops
+//! brute-forcing `lockoutAuth`.
 
 use crate::argv;
 use crate::exec::Runner;
@@ -39,6 +26,10 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// A secret handed to a tpm2 tool by path rather than on its command line.
+///
+/// `/proc/<pid>/cmdline` is world-readable and the image ships no `hidepid`, so a `str:`
+/// authorisation on argv is readable by every local process while the tool runs. The file is 0600
+/// in a root-only directory and removed when the guard drops.
 ///
 /// `/proc/<pid>/cmdline` is world-readable and the image deliberately ships
 /// no `hidepid`, so a `str:` authorisation on argv is readable by every local
@@ -68,7 +59,6 @@ impl Drop for AuthFile {
     }
 }
 
-/// What the hardware reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Params {
     /// Failures before the TPM refuses DA-protected authorisations.
@@ -77,18 +67,15 @@ pub struct Params {
     pub recovery_time: u32,
     /// Seconds `lockoutAuth` stays unusable after a failed attempt.
     pub lockout_recovery: u32,
-    /// Current failure count.
     pub counter: u32,
     /// Is `lockoutAuth` set to a non-empty value?
     pub lockout_auth_set: bool,
-    /// Is the TPM in lockout right now?
     pub in_lockout: bool,
 }
 
-/// What we ask for: 10 tries, then one every two hours — about where phones start making
-/// people wait. Sustained guessing is capped by the decay alone, at 12 attempts a day;
-/// `maxTries` only sizes the burst before it, so it is set for the owner's typos, not for the
-/// attacker.
+/// What we ask for: 10 tries, then one every two hours. Sustained guessing is capped by the decay
+/// alone, at 12 attempts a day; `maxTries` sizes only the burst before it, so it is set for the
+/// owner's typos rather than for the attacker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub max_tries: u32,
@@ -111,9 +98,7 @@ impl Default for Target {
 pub struct Assessment {
     pub params: Params,
     pub target: Target,
-    /// Problems that make a short PIN indefensible.
     pub critical: Vec<String>,
-    /// Things that are looser than we asked for but not fatal.
     pub warnings: Vec<String>,
 }
 
@@ -224,7 +209,7 @@ pub fn parse_properties(text: &str) -> Params {
 ///
 /// # Errors
 ///
-/// Returns an error if `tpm2_getcap` fails.
+/// `tpm2_getcap` fails.
 pub fn read(runner: &dyn Runner) -> Result<Params> {
     let out = runner.run("tpm2_getcap", &argv!["properties-variable"], None)?;
     if !out.ok() {
@@ -236,16 +221,16 @@ pub fn read(runner: &dyn Runner) -> Result<Params> {
     Ok(parse_properties(&out.stdout_utf8()))
 }
 
-/// Tighten the parameters. Needs `lockoutAuth` once it has been set; it is passed to the
-/// tool through a scratch file under `scratch` (a root-only directory), never on argv.
-/// Returns the parameters as they actually are afterwards, not necessarily what was asked
-/// for — `TPM2_DictionaryAttackParameters` may be more restrictive, and some firmware
+/// Tighten the parameters. Needs `lockoutAuth` once it has been set; it reaches the tool through a
+/// scratch file under `scratch` (a root-only directory), never on argv.
+///
+/// Returns the parameters as they actually are afterwards, which is not necessarily what was
+/// asked for: `TPM2_DictionaryAttackParameters` may be more restrictive, and some firmware
 /// silently clamps.
 ///
 /// # Errors
 ///
-/// Returns an error if the scratch file cannot be written, if `tpm2_dictionarylockout`
-/// fails, or if the subsequent [`read`] fails.
+/// The scratch file cannot be written, `tpm2_dictionarylockout` fails, or the [`read`] back fails.
 pub fn tighten(
     runner: &dyn Runner,
     target: Target,
@@ -286,7 +271,7 @@ pub fn tighten(
 ///
 /// # Errors
 ///
-/// Returns an error if the scratch file cannot be written or `tpm2_dictionarylockout` fails.
+/// The scratch file cannot be written, or `tpm2_dictionarylockout` fails.
 pub fn clear(runner: &dyn Runner, lockout_auth: &[u8], scratch: &Path) -> Result<()> {
     let auth_file = AuthFile::write(scratch, "lockout.clear", lockout_auth)?;
     let auth_spec = auth_file.spec();
@@ -306,17 +291,17 @@ pub fn clear(runner: &dyn Runner, lockout_auth: &[u8], scratch: &Path) -> Result
 
 /// Set `lockoutAuth`.
 ///
-/// SAFETY-CRITICAL: only call this when the value is already durably recorded somewhere the
-/// user can reach. Setting it and losing it means the only way out of a TPM lockout is a
-/// full `tpm2_clear` from firmware setup, destroying every sealed keyslot — recoverable with
-/// the recovery key, unrecoverable without it.
+/// SAFETY-CRITICAL: only call this once the value is durably recorded somewhere the user can
+/// reach. Losing it means the only way out of a TPM lockout is a full `tpm2_clear` from firmware
+/// setup, which destroys every sealed keyslot: recoverable with the recovery key, unrecoverable
+/// without it.
 ///
 /// Both values reach the tool through scratch files under `scratch`, never on argv.
 ///
 /// # Errors
 ///
-/// Returns an error if `new_auth` is longer than 48 bytes, if a scratch file cannot be
-/// written, or if `tpm2_changeauth` fails.
+/// `new_auth` is longer than 48 bytes, a scratch file cannot be written, or `tpm2_changeauth`
+/// fails.
 pub fn set_reset_auth(
     runner: &dyn Runner,
     new_auth: &[u8],
@@ -351,14 +336,12 @@ pub fn set_reset_auth(
     Ok(())
 }
 
-/// Length of a generated reset authorisation, in characters: 32 hex chars (128 bits of
-/// entropy), deliberately not more. `TPM2B_AUTH` is bounded by the TPM's largest digest, and
-/// implementations are stricter in practice (a 64-byte value is refused by `swtpm`, 48 is
-/// accepted) — 32 stays comfortably inside every TPM's limit, and for a value throttled by
-/// `lockoutRecovery` (hours per attempt), 128 bits is already absurd overkill.
+/// Length of a generated reset authorisation, in characters: 32 hex chars, 128 bits of entropy,
+/// deliberately not more. `TPM2B_AUTH` is bounded by the TPM's largest digest and implementations
+/// are stricter in practice (`swtpm` refuses 64 bytes and accepts 48); 128 bits is already absurd
+/// overkill for a value throttled by `lockoutRecovery`.
 pub const RESET_AUTH_CHARS: usize = 32;
 
-/// A random reset authorisation.
 pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let mut b = [0u8; RESET_AUTH_CHARS / 2];
     getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
@@ -370,10 +353,9 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// Records every invocation and answers it as a success whose stdout is
-    /// the swtpm property dump, so `tighten` can `read` back afterwards. A
-    /// `file:` argument naming a file that does not exist while the tool
-    /// runs is recorded too, since the tool would have read nothing.
+    /// Records every invocation and answers it as a success whose stdout is the swtpm property
+    /// dump, so `tighten` can `read` back afterwards. A `file:` argument naming a file that does
+    /// not exist while the tool runs is recorded too: the tool would have read nothing.
     struct Recorder {
         calls: Mutex<Vec<(String, Vec<String>)>>,
         missing_files: Mutex<Vec<String>>,

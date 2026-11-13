@@ -1,9 +1,7 @@
 //! WebSocket clients: tokio-websockets on the desktop, the page's
-//! `WebSocket` on the web.
-//!
-//! Pings and pongs are answered by the backend and never surface. A page
-//! cannot set request headers on the upgrade, so [`Options`] carries only
-//! what both targets can send.
+//! `WebSocket` on the web. Pings and pongs are answered by the backend and
+//! never surface. A page cannot set request headers on the upgrade, so
+//! [`Options`] carries only what both targets can send.
 
 use bytes::Bytes;
 
@@ -14,14 +12,12 @@ use crate::native::ws as backend;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::web::ws as backend;
 
-/// One WebSocket message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     Text(String),
     Binary(Bytes),
 }
 
-/// How to open a WebSocket.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct Options {
@@ -42,7 +38,6 @@ impl Options {
     }
 }
 
-/// An open WebSocket.
 pub struct WebSocket {
     inner: backend::Socket,
     protocol: Option<String>,
@@ -56,21 +51,10 @@ impl std::fmt::Debug for WebSocket {
     }
 }
 
-/// Open a WebSocket to a `ws:` or `wss:` URL.
-///
-/// # Errors
-///
-/// [`NetError::InvalidUrl`], [`NetError::Connect`] when the server was not
-/// reached or refused the upgrade.
 pub fn connect(url: &str) -> impl Future<Output = Result<WebSocket, NetError>> + Send + use<> {
     connect_with(url, Options::default())
 }
 
-/// Open a WebSocket with [`Options`].
-///
-/// # Errors
-///
-/// As [`connect`].
 pub fn connect_with(
     url: &str,
     options: Options,
@@ -93,17 +77,11 @@ pub fn connect_with(
 }
 
 impl WebSocket {
-    /// The subprotocol the server chose.
     #[must_use]
     pub fn protocol(&self) -> Option<&str> {
         self.protocol.as_deref()
     }
 
-    /// Send one message.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Closed`] once the socket has closed.
     pub fn send(
         &mut self,
         message: Message,
@@ -111,12 +89,10 @@ impl WebSocket {
         self.inner.send(message)
     }
 
-    /// The next message; `None` once the socket has closed cleanly.
     pub fn recv(&mut self) -> impl Future<Output = Option<Result<Message, NetError>>> + Send + '_ {
         self.inner.recv()
     }
 
-    /// Close the socket with a normal closure.
     pub async fn close(mut self) -> Result<(), NetError> {
         self.inner.close().await
     }

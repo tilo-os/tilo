@@ -1,19 +1,9 @@
 //! `vm branch`: new VMs that start as copies of a stopped one.
 //!
-//! The person sets one box up once (keys, tokens, logins) and branches any
-//! number of VMs off it. On libvirt and WHPX the source's disk is frozen as a
-//! read-only base in a `bases/` directory beside it, recorded in the
-//! registry; the source and every branch then get a copy-on-write qcow2 child
-//! of it, so nothing is copied and no VM sees another's writes. A base is
-//! deleted once no VM and no other base has it as its backing file
-//! ([`release_bases`]), so `vm rm` of the source or of any branch never
-//! breaks the others. On UTM each branch is a clone of the source, which UTM
-//! makes as an APFS clone of the VM bundle: copy-on-write as well, with no
-//! base to keep.
-//!
-//! Every branch gets its own name, UUID, MAC and SSH port. The UUID is the
-//! guest's SMBIOS system UUID (`/sys/class/dmi/id/product_uuid`): the guest
-//! sees that it changed and gives itself a new device identity on first boot.
+//! On libvirt and WHPX the source's disk is a read-only base with a
+//! copy-on-write qcow2 child per VM, so no VM sees another's writes; on UTM each
+//! branch is an APFS clone of the source's bundle. Every branch gets its own
+//! name, UUID, MAC and SSH port.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -21,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use super::branch_admit::{self, Guests};
 use super::{App, Outcome, remove_if_present};
 use crate::cli::BranchArgs;
 use crate::config::{Base, Registry, VmEntry};
@@ -32,7 +23,6 @@ use crate::{forwarded_port, remote, sshkey};
 /// after its guest shut down.
 const STOP_WAIT: Duration = Duration::from_secs(60);
 
-/// A source disk frozen by [`App::freeze`], and what undoes it.
 struct Frozen {
     id: String,
     base: String,
@@ -42,7 +32,6 @@ struct Frozen {
     permissions: std::fs::Permissions,
 }
 
-/// One new VM, made.
 struct Child {
     name: String,
     entry: VmEntry,
@@ -57,11 +46,29 @@ impl App {
         if args.stop {
             self.stop_for_branch(&mut runner, &args.source)?;
         }
-        self.branch_with(&mut runner, args)
+        let mut guests = branch_admit::LiveGuests {
+            app: self.sibling(),
+            started: Instant::now(),
+            woken: std::collections::BTreeSet::new(),
+        };
+        self.branch_with(&mut runner, &mut guests, args)
     }
 
-    /// `--stop`: shut the source down the way `vm stop` does, then wait
-    /// until its hypervisor reports it off.
+    fn sibling(&self) -> App {
+        App {
+            json: self.json,
+            target: None,
+            worktree: None,
+            registry_path: self.registry_path.clone(),
+            runner: SystemRunner {
+                cwd: self.runner.cwd.clone(),
+            },
+            receipt: crate::receipt::Receipt::new(&self.base_dir(), Vec::new()),
+            warnings: Vec::new(),
+            peer: None,
+        }
+    }
+
     fn stop_for_branch(&mut self, runner: &mut dyn Runner, source: &str) -> Result<(), CliError> {
         let vm = self.resolve_vm(Some(source))?;
         let adapter = Self::adapter(&vm)?;
@@ -79,12 +86,10 @@ impl App {
         Ok(())
     }
 
-    /// Branch `args.source` into `args.names` with `runner` running the
-    /// hypervisor's commands. Names already registered as branches of the
-    /// source are skipped, so a rerun after a failure makes only the rest.
     pub(super) fn branch_with(
         &self,
         runner: &mut dyn Runner,
+        guests: &mut dyn Guests,
         args: &BranchArgs,
     ) -> Result<Outcome, CliError> {
         let mut registry = self.registry()?;
@@ -101,6 +106,28 @@ impl App {
             })?;
         let adapter = self.branchable(src, &source)?;
         let (todo, skipped) = Self::new_names(&registry, src, &args.names)?;
+        let unadmitted: Vec<String> = skipped
+            .iter()
+            .filter(|name| {
+                registry
+                    .vms
+                    .get(*name)
+                    .is_some_and(|e| e.awaits_host.as_deref() == Some(src))
+            })
+            .cloned()
+            .collect();
+        let timeout = Duration::from_secs(args.admit_timeout);
+        if todo.is_empty() && !args.no_admit && !unadmitted.is_empty() {
+            let admitted = self.admit(runner, guests, (src, &rerun), &unadmitted, timeout)?;
+            return Ok(Outcome::new(
+                format!(
+                    "{} booted once beside {src} and taken into the workspaces {src} hosts; stopped again",
+                    admitted.join(", ")
+                ),
+                json!({ "source": src, "created": [], "skipped": skipped, "admitted": admitted }),
+            )
+            .next(&["tilo-vm vm list"]));
+        }
         if todo.is_empty() {
             return Ok(Outcome::new(
                 format!(
@@ -111,10 +138,83 @@ impl App {
             )
             .next(&["tilo-vm vm list"]));
         }
+        Self::ensure_stopped(runner, adapter.as_ref(), (src, &source), &rerun)?;
+        if !args.no_admit {
+            Self::admission_fits(guests, &registry, src, &rerun)?;
+        }
+        let root_key = sshkey::read_public(&sshkey::key_path(&self.registry_path, src))?;
+        let (frozen, source_uuid) = self.prepare(
+            runner,
+            &mut registry,
+            adapter.as_ref(),
+            (src, &rerun),
+            &todo,
+        )?;
+        let created = self.make_all(
+            runner,
+            &mut registry,
+            adapter.as_ref(),
+            (src, &rerun),
+            &todo,
+            (&root_key, source_uuid.as_deref()),
+            frozen.as_ref(),
+        )?;
+        let mut outcome = Self::branched(src, &registry, frozen.as_ref(), &created, &skipped);
+        if args.no_admit {
+            let _ = write!(
+                outcome.text,
+                "\n  not booted (--no-admit): each is taken into the workspaces {src} hosts at its first boot while {src} runs"
+            );
+            return Ok(outcome);
+        }
+        let mut names: Vec<String> = created.iter().map(|c| c.name.clone()).collect();
+        names.extend(unadmitted);
+        self.admit_made(runner, guests, (src, &rerun), &names, timeout, outcome)
+    }
+
+    fn admit_made(
+        &self,
+        runner: &mut dyn Runner,
+        guests: &mut dyn Guests,
+        (src, rerun): (&str, &str),
+        names: &[String],
+        timeout: Duration,
+        mut outcome: Outcome,
+    ) -> Result<Outcome, CliError> {
+        let admitted = self
+            .admit(runner, guests, (src, rerun), names, timeout)
+            .map_err(|error| match error {
+                CliError::Branch { what, fix } => CliError::Branch {
+                    what,
+                    fix: format!(
+                        "{} made and registered, not booted; {fix}",
+                        names.join(", ")
+                    ),
+                },
+                other => other,
+            })?;
+        let _ = write!(
+            outcome.text,
+            "\n  {} booted once beside {src}, re-keyed and taken into the workspaces {src} hosts, then stopped again",
+            admitted.join(", ")
+        );
+        if let Some(data) = outcome.data.as_object_mut() {
+            data.insert("admitted".into(), json!(admitted));
+        }
+        Ok(outcome)
+    }
+
+    /// Refuse a source that runs, or one whose hypervisor cannot say: a running VM writes its disk.
+    fn ensure_stopped(
+        runner: &mut dyn Runner,
+        adapter: &dyn Hypervisor,
+        (src, source): (&str, &VmEntry),
+        rerun: &str,
+    ) -> Result<(), CliError> {
         match adapter.stopped(
             &Vm {
                 name: src,
-                entry: &source,
+                entry: source,
             },
             runner,
         ) {
@@ -136,37 +236,42 @@ impl App {
                 ));
             }
         }
-        let root_key = sshkey::read_public(&sshkey::key_path(&self.registry_path, src))?;
-        let (frozen, source_uuid) = self.prepare(
-            runner,
-            &mut registry,
-            adapter.as_ref(),
-            (src, &rerun),
-            &todo,
-        )?;
+        Ok(())
+    }
+
+    fn make_all(
+        &self,
+        runner: &mut dyn Runner,
+        registry: &mut Registry,
+        adapter: &dyn Hypervisor,
+        (src, rerun): (&str, &str),
+        todo: &[String],
+        (root_key, source_uuid): (&str, Option<&str>),
+        frozen: Option<&Frozen>,
+    ) -> Result<Vec<Child>, CliError> {
         let mut created: Vec<Child> = Vec::new();
-        for name in &todo {
+        for name in todo {
             let made = self.branch_one(
                 runner,
-                &mut registry,
-                adapter.as_ref(),
+                registry,
+                adapter,
                 (src, name),
-                &root_key,
-                source_uuid.as_deref(),
+                root_key,
+                source_uuid,
             );
             match made {
                 Ok(child) => created.push(child),
                 Err(error) => {
                     let mut note = String::new();
-                    if let (true, Some(frozen)) = (created.is_empty(), &frozen) {
+                    if let (true, Some(frozen)) = (created.is_empty(), frozen) {
                         // Nothing was branched: give the source its disk back.
-                        if let Err(undo) = self.unfreeze(&mut registry, src, frozen) {
+                        if let Err(undo) = self.unfreeze(registry, src, frozen) {
                             note =
                                 format!(" ({src} keeps its new disk on the frozen base: {undo})");
                         }
                     }
                     let names: Vec<String> = created.iter().map(|c| c.name.clone()).collect();
-                    let mut error = failed(src, &format!("making {name}"), &error, &rerun, &names);
+                    let mut error = failed(src, &format!("making {name}"), &error, rerun, &names);
                     if let CliError::Branch { fix, .. } = &mut error {
                         fix.push_str(&note);
                     }
@@ -174,16 +279,9 @@ impl App {
                 }
             }
         }
-        Ok(Self::branched(
-            src,
-            &registry,
-            frozen.as_ref(),
-            &created,
-            &skipped,
-        ))
+        Ok(created)
     }
 
-    /// The source's adapter, when it can branch and tilo-vm made the VM.
     fn branchable(&self, src: &str, source: &VmEntry) -> Result<Box<dyn Hypervisor>, CliError> {
         let adapter = hypervisor::adapter(&source.hypervisor)?;
         let kind = adapter.branching();
@@ -203,9 +301,6 @@ impl App {
         Ok(adapter)
     }
 
-    /// What a source needs before its branches are made: on libvirt and
-    /// WHPX its disk frozen into a base (each branch's disk path free
-    /// first), on UTM the UUID a clone must not have.
     fn prepare(
         &self,
         runner: &mut dyn Runner,
@@ -266,7 +361,6 @@ impl App {
         Ok((frozen, source_uuid))
     }
 
-    /// The names to make and those that already are branches of `src`.
     fn new_names(
         registry: &Registry,
         src: &str,
@@ -307,9 +401,6 @@ impl App {
         Ok((todo, skipped))
     }
 
-    /// Freeze `src`'s disk as a read-only base and give `src` a fresh
-    /// child of it at the same path, so its hypervisor definition is
-    /// unchanged. On failure everything is put back.
     fn freeze(
         &self,
         runner: &mut dyn Runner,
@@ -378,7 +469,6 @@ impl App {
         }
     }
 
-    /// Undo [`Self::freeze`]: the base becomes `src`'s writable disk again.
     fn unfreeze(
         &self,
         registry: &mut Registry,
@@ -403,7 +493,6 @@ impl App {
         registry.save(&self.registry_path)
     }
 
-    /// Make and register one branch. On failure what it made is removed.
     fn branch_one(
         &self,
         runner: &mut dyn Runner,
@@ -433,6 +522,7 @@ impl App {
             uuid: source_uuid.is_none().then_some(uuid),
             nic_mac: Some(mac),
             branched_from: Some(src.to_owned()),
+            awaits_host: Some(src.to_owned()),
             template: source_uuid.map_or_else(|| source.template.clone(), |_| Some(src.to_owned())),
             hostname: None,
             mac: None,
@@ -456,7 +546,6 @@ impl App {
             remove_child(&entry, &key);
             return Err(error);
         }
-        // From here the hypervisor has the VM: undo with its destroy.
         let identity = adapter.assign_identity(&vm);
         let mut ran: Vec<String> = commands
             .iter()
@@ -659,8 +748,6 @@ fn copy_key(from: &Path, to: &Path) -> Result<(), CliError> {
     .map(|_| ())
 }
 
-/// Remove what a branch that failed left: its disk and the files beside
-/// it, and its key.
 fn remove_child(entry: &VmEntry, key: &Path) {
     let mut files: Vec<PathBuf> = entry
         .disk
@@ -676,8 +763,6 @@ fn remove_child(entry: &VmEntry, key: &Path) {
         PathBuf::from(remote::known_hosts_path(&key.display().to_string())),
     ]);
     for file in files {
-        // Cleanup after the failure being reported; a file that stays is
-        // named by vm create's DiskExists if it is in the way of a retry.
         let _ = remove_if_present(&file);
     }
 }
@@ -686,7 +771,6 @@ fn refuse(what: String, fix: String) -> CliError {
     CliError::Branch { what, fix }
 }
 
-/// `step` failed after `created` were made: what still holds, and the rerun.
 fn failed(src: &str, step: &str, error: &CliError, rerun: &str, created: &[String]) -> CliError {
     let state = if created.is_empty() {
         format!("nothing was changed: {src} is as it was")

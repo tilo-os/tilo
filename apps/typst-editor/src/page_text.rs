@@ -22,14 +22,9 @@ pub struct PageText {
 pub struct TextCell {
     pub x0: f64,
     pub x1: f64,
-    /// Top and bottom of the line box of the run it belongs to.
     pub top: f64,
     pub bottom: f64,
-    /// The visual line it sits on (its run's quantised top): copying across
-    /// lines inserts a newline between them.
     pub line: i64,
-    /// The source characters it renders, in [`PageText`]'s string (empty for
-    /// a ligature continuation, several for a combined glyph).
     text: Range<usize>,
 }
 
@@ -39,7 +34,6 @@ impl PageText {
         cells: Vec::new(),
     };
 
-    /// The text of the page laid out as `frame`.
     pub fn of_frame(frame: &Frame) -> Self {
         let mut text = Self::default();
         text.walk(frame, Affine::IDENTITY);
@@ -73,7 +67,6 @@ impl PageText {
         &self.cells
     }
 
-    /// The characters `cell` (one of this page's) renders.
     pub fn text_of(&self, cell: &TextCell) -> &str {
         self.text.get(cell.text.clone()).unwrap_or_default()
     }

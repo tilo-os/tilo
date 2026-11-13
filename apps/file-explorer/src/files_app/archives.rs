@@ -1,6 +1,5 @@
-//! Archives in the window: browsing one as a read-only folder, read off
-//! the window's thread; opening a file inside it; and Extract here,
-//! Extract to… and Compress, queued as background file operations.
+//! Archives in the window: browsing one as a read-only folder, extracting, and
+//! copying a member out to open it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,11 +13,6 @@ use crate::config;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Entry, sort_entries};
 
-/// Space kept clear at the bottom of the file viewport for the transient
-/// item/status pill. The pill includes its hover shadow, so this is larger
-/// than its measured text capsule: no file label or target may sit beneath it.
-/// A read-only copy of the file `member` of `archive`, made once per
-/// archive version in Files' cache, so opening it again reuses it.
 pub(super) fn archive_member_copy(archive: &Path, member: &Path) -> std::io::Result<PathBuf> {
     let copy = archive_member_path(archive, member)?;
     if copy.is_file() {
@@ -31,14 +25,12 @@ pub(super) fn archive_member_copy(archive: &Path, member: &Path) -> std::io::Res
     Ok(copy)
 }
 
-/// The copy of `member` opened before, while the archive is unchanged.
 pub(super) fn archive_member_cached(archive: &Path, member: &Path) -> Option<PathBuf> {
     archive_member_path(archive, member)
         .ok()
         .filter(|copy| copy.is_file())
 }
 
-/// Where Files keeps its copy of `member` of this version of `archive`.
 fn archive_member_path(archive: &Path, member: &Path) -> std::io::Result<PathBuf> {
     let modified = std::fs::metadata(archive)?
         .modified()
@@ -57,9 +49,6 @@ fn archive_member_path(archive: &Path, member: &Path) -> std::io::Result<PathBuf
     Ok(folder.join(name))
 }
 
-/// Reading files out of archives to open them, off the window's thread.
-/// A file read out of an archive: its path as shown, and its copy or why
-/// it could not be read.
 type MemberRead = (PathBuf, std::io::Result<PathBuf>);
 
 pub(super) struct ArchiveMembers {
@@ -75,7 +64,6 @@ impl ArchiveMembers {
         }
     }
 
-    /// Read `member` of `archive` into its copy on a thread.
     pub(super) fn start(&self, archive: PathBuf, member: PathBuf) {
         let done = Arc::clone(&self.done);
         let wake = Arc::clone(&self.wake);
@@ -92,8 +80,6 @@ impl ArchiveMembers {
         }
     }
 
-    /// The reads finished since last asked: the member's path as shown, and
-    /// its copy or why it could not be read.
     pub(super) fn take(&self) -> Vec<MemberRead> {
         std::mem::take(&mut *self.done.lock_recover())
     }
@@ -105,7 +91,6 @@ impl std::fmt::Debug for ArchiveMembers {
     }
 }
 
-/// An archive's entries as the rows of the folder they are in.
 pub(super) fn archive_rows(archive: &Path, rows: Vec<crate::archive::Entry>) -> Vec<Entry> {
     rows.into_iter()
         .map(|entry| {
@@ -142,7 +127,6 @@ pub(super) fn archive_rows(archive: &Path, rows: Vec<crate::archive::Entry>) -> 
 }
 
 impl FilesState {
-    /// The archives the selection holds.
     pub(super) fn selected_archives(&self) -> Vec<PathBuf> {
         self.selected_paths()
             .into_iter()
@@ -174,7 +158,6 @@ impl FilesState {
         true
     }
 
-    /// `FileCommand::ExtractTo`: ask for the folder, then extract there.
     pub(super) fn apply_extract_to(&mut self) -> bool {
         let archives = match crate::archive::location(&self.current_path) {
             Some((archive, _)) => vec![archive],
@@ -193,7 +176,6 @@ impl FilesState {
         true
     }
 
-    /// The folder picked for Extract to…, once the picker answered.
     pub(super) fn poll_extract_chooser(&mut self) -> bool {
         let Some(reply) =
             self.extract_chooser
@@ -222,8 +204,6 @@ impl FilesState {
         true
     }
 
-    /// Extract `archives` into `folder`, asking first when a name they
-    /// would most likely take there is in use.
     pub(super) fn extract_into(&mut self, archives: Vec<PathBuf>, folder: PathBuf) {
         let clashing: Vec<(PathBuf, String)> = archives
             .iter()
@@ -290,7 +270,6 @@ impl FilesState {
         true
     }
 
-    /// An extraction partway through, as its card shows it (headless shots).
     #[doc(hidden)]
     pub fn debug_show_extract_progress(&mut self) {
         let archive = self
@@ -298,8 +277,6 @@ impl FilesState {
             .iter()
             .find(|entry| crate::archive::is_supported(&entry.path))
             .map_or_else(|| self.current_path.clone(), |entry| entry.path.clone());
-        // Running as a real one would, so the window follows it as it
-        // follows any, until the window closes.
         let transfer = crate::file_ops::LocalTransfer {
             done: (1_610_612_736_u64).into(),
             total: (4_617_089_843_u64).into(),
@@ -313,8 +290,6 @@ impl FilesState {
         self.staged_transfer = Some(crate::file_ops::run_for_capture(transfer));
     }
 
-    /// Show the archive being browsed once its entries were read; whether
-    /// anything changed.
     pub(super) fn take_archive_listing(&mut self) -> bool {
         let Some((archive, read)) = self.archive_listing.take() else {
             return false;
@@ -351,8 +326,6 @@ impl FilesState {
         true
     }
 
-    /// Wait for the archive being browsed to be read, and show it: for a
-    /// test or a capture, which show one settled frame.
     pub(crate) fn wait_for_archive(&mut self) {
         let until = Instant::now() + Duration::from_secs(20);
         while self.is_loading && Instant::now() < until {
@@ -362,7 +335,6 @@ impl FilesState {
         }
     }
 
-    /// Wait for the files being read out of archives, and open them.
     #[cfg(test)]
     pub(crate) fn wait_for_archive_members(&mut self) {
         let until = Instant::now() + Duration::from_secs(20);
@@ -371,8 +343,6 @@ impl FilesState {
         }
     }
 
-    /// Open the files read out of archives since last asked; whether any
-    /// were.
     pub(super) fn open_read_members(&mut self) -> bool {
         let read = self.archive_members.take();
         if read.is_empty() {

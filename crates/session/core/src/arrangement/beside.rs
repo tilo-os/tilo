@@ -1,0 +1,159 @@
+//! Where a place stands when it names no point but something to stand beside: next to that
+//! thing's place, in the free space nearest it (`shell.md` §3, "a place next to where it came
+//! from"). An agent's `place` and `open` name the conversation of its turn, so what it shows stands
+//! beside the conversation that asked (§8.1); a place's `position` names the place it moves next to.
+
+use serde_json::Value as Json;
+
+use super::{
+    Arrangement, ArrangementAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, Door, Item, clamp_side, locate,
+};
+
+impl Arrangement {
+    /// The place `beside` names: a place of the arrangement by its own resource
+    /// (`shell:place:<key>`), or the place showing that record, or anything of its root. `None`
+    /// for empty text or a resource no place shows.
+    pub(super) fn anchor_of(&self, beside: &str) -> Option<u64> {
+        let beside = beside.trim();
+        if beside.is_empty() {
+            return None;
+        }
+        Item::Place
+            .key(beside)
+            // ignored-failure: a key that is not a number names no place, and the record's are next
+            .and_then(|key| key.parse().ok())
+            .filter(|place| self.handle.read(|tree| locate(tree, *place).is_some()))
+            .or_else(|| self.place_of(beside))
+            .or_else(|| self.place_of_root(beside))
+    }
+
+    /// The free canvas point next to the place `anchor`, in its workspace, for a window of the
+    /// size of the place `moving` (the default size for a new one): to its trailing side first,
+    /// then below (`free_place_next_to`). The place `moving` itself is no obstacle, so a place
+    /// moved beside another may stand where it partly stood. `None` when `anchor` stands on no
+    /// canvas.
+    pub(super) fn point_beside(&self, anchor: u64, moving: Option<u64>) -> Option<(i64, i64)> {
+        self.handle.read(|tree| {
+            let group_of = |place: u64| {
+                let (workspace, row, group, _) = locate(tree, place)?;
+                let id = tree
+                    .workspaces
+                    .get(workspace)?
+                    .strips
+                    .get(row)?
+                    .window_groups
+                    .get(group)?
+                    .id;
+                Some((workspace, id))
+            };
+            let (workspace, anchor) = group_of(anchor)?;
+            let held = tree.workspaces.get(workspace)?;
+            let subject = held.arrangement.place_of(anchor)?;
+            let moved = moving
+                .and_then(group_of)
+                .filter(|(of, _)| *of == workspace)
+                .map(|(_, group)| group);
+            let (width, height) = moved
+                .and_then(|group| held.arrangement.place_of(group))
+                .map_or(
+                    (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT)),
+                    |own| (own.width, own.height),
+                );
+            let free = held
+                .arrangement
+                .free_place_next_to(subject, width, height, moved);
+            Some((i64::from(free.x), i64::from(free.y)))
+        })
+    }
+}
+
+impl Door {
+    /// Stand what a `place` shows beside what it names, when it names no point, strip or float
+    /// but a resource to stand beside: the system's `open` beside it, which stands it in the free
+    /// space next to that resource's place, or brings forward the place already showing it.
+    /// Whether it did; `false` leaves the place to stand where it names.
+    pub(super) fn placed_beside(
+        &self,
+        asked: &str,
+        arguments: &serde_json::Map<String, Json>,
+        action: &ArrangementAction,
+    ) -> Result<bool, tilo_actions::DoorError> {
+        let (Some(beside), ArrangementAction::Place { resource, view, .. }) =
+            (place_beside(arguments), action)
+        else {
+            return Ok(false);
+        };
+        self.arrangement
+            .borrow_mut()
+            .open_place(asked, resource, view, beside)
+            .map_err(|why| tilo_actions::DoorError::Unavailable {
+                code: "nowhere_to_place".to_owned(),
+                reason: why,
+            })?;
+        Ok(true)
+    }
+
+    /// The point a `position` stands its place at: the `x` and `y` it names, or — naming neither —
+    /// the free space beside the place or resource its `beside` names. One that names neither a
+    /// point nor anything to stand beside is refused rather than sent to the canvas' origin.
+    pub(super) fn position_beside(
+        &self,
+        arguments: &serde_json::Map<String, Json>,
+        place: u64,
+        x: &mut i64,
+        y: &mut i64,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let named = |name: &str| arguments.get(name).is_some_and(|value| !value.is_null());
+        if named("x") && named("y") {
+            return Ok(());
+        }
+        let beside = arguments
+            .get("beside")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|beside| !beside.is_empty())
+            .ok_or_else(|| {
+                tilo_actions::DoorError::InvalidArguments(
+                    "a place stands at an x and a y, or beside something".to_owned(),
+                )
+            })?;
+        let arrangement = self.arrangement.borrow();
+        let anchor =
+            arrangement
+                .anchor_of(beside)
+                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                    code: "nowhere_to_place".to_owned(),
+                    reason: format!("nothing on the canvas shows {beside}"),
+                })?;
+        if anchor == place {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "a place cannot stand beside itself".to_owned(),
+            ));
+        }
+        let (at_x, at_y) = arrangement
+            .point_beside(anchor, Some(place))
+            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                code: "nowhere_to_place".to_owned(),
+                reason: format!("{beside} stands on no canvas"),
+            })?;
+        *x = at_x;
+        *y = at_y;
+        Ok(())
+    }
+}
+
+/// The resource a `place` names to stand beside, when it names no point, strip, float or row of
+/// its own: where it stands is then next to that resource's place.
+fn place_beside(arguments: &serde_json::Map<String, Json>) -> Option<&str> {
+    let pointed = ["x", "y", "strip", "float", "workspace", "row"]
+        .iter()
+        .any(|name| arguments.get(*name).is_some_and(|value| !value.is_null()));
+    if pointed {
+        return None;
+    }
+    arguments
+        .get("beside")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|beside| !beside.is_empty())
+}

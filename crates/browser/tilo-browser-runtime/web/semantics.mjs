@@ -3,6 +3,9 @@ const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','C
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
 const utf8=new TextEncoder();
 let bridgeSequence=0;
+// What a field asks a browser to fill in (`AccessState::autofill`), as
+// HTML's autocomplete tokens. A page offers passkeys on the username field.
+const AUTOFILL={Username:'username webauthn',Email:'email',CurrentPassword:'current-password',NewPassword:'new-password',OneTimeCode:'one-time-code',Name:'name',Tel:'tel'};
 const MIRROR_STYLE='position:absolute;box-sizing:border-box;margin:0;padding:0;border:0;pointer-events:none;';
 const graphemeIndex=(value,offset)=>[...segments.segment(value.slice(0,offset))].length;
 function graphemeIndexFromByteOffset(value,offset){
@@ -66,10 +69,31 @@ export function applySemanticsPatch(tree,sequence,patch){
   }
   return next;
 }
-// `host`, when the page shows the interface as HTML, holds each widget's
-// painted element (`dom-present.mjs`): a node whose widget was drawn
-// (`paint_key`) lives inside that element instead of in the mirror's own
-// layer, so the drawn and the accessible tree are one.
+// Keys kept for one widget before the ones it no longer names are dropped.
+const KEYS_PER_IDENTITY=4096;
+// Whether two values say the same, looking `depth` objects deep.
+function same(a,b,depth){
+  if(a===b)return true;
+  if(!depth||!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
+  const keys=Object.keys(a);
+  if(keys.length!==Object.keys(b).length)return false;
+  for(const key of keys)if(!same(a[key],b[key],depth-1))return false;
+  return true;
+}
+// Whether a node shows what `before` showed, wherever each is drawn and
+// whatever is inside it: every field but its bounds and children, and
+// whether it has children (a leaf shows its value as text).
+export function sameFace(before,node){
+  if(!before||Boolean(before.children?.length)!==Boolean(node.children?.length))return false;
+  const keys=Object.keys(node);
+  if(keys.length!==Object.keys(before).length)return false;
+  for(const key of keys)if(key!=='bounds'&&key!=='children'&&!same(before[key],node[key],4))return false;
+  return true;
+}
+// `host`, when the page shows the interface as HTML (view-present.mjs): the
+// mirror makes a single-line field an `<input>` the browser can fill in, and
+// leaves the focus where a native selection of the page's text put it
+// (`holdsSelection()`).
 export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
   const elements=new Map();
   const recoverySurfaces=new Set();
@@ -85,6 +109,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
   let pendingFocus;
   // CSS pixels per layout pixel of the frame the canvas shows, on each axis.
   let scale=[1,1];
+  // Every key the last update wrote, by identity and then by what names the
+  // node under it: the next update hands out the very same strings, which
+  // the maps below hash once, instead of writing and hashing each again.
+  let keys=new Map();
   function clearActiveDescendant(){
     if(!activeDescendantHost)return;
     if(previousActiveDescendant===null)activeDescendantHost.removeAttribute('aria-activedescendant');else activeDescendantHost.setAttribute('aria-activedescendant',previousActiveDescendant);
@@ -170,8 +198,28 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
     if(!act(element,'value',element.value)){restoreCanonical(element);return false;}
     element.tiloState.canonicalValue=element.value;
+    // A protected field's characters live only here: the app answers with
+    // how many of them it holds (`protectedValueCleared`).
+    element.tiloState.sentLength=element.value.length;
+    // The selection counted was counted in the value before this edit.
+    element.tiloState.selectionBytes=undefined;
     element.tiloState.lastSelection=null;
     dispatchSelection(element);return true;
+  }
+  // A protected (password or key) field: the app never sends the characters
+  // back, so the page's field keeps what the person typed. The count it
+  // reports tells when the app dropped them — it cleared the field, or
+  // replaced its text — and the page's field, which cannot show characters it
+  // does not have, is emptied with it. One snapshot can be taken before the
+  // last change reached the app, so only an answer two in a row agree on
+  // counts; while the person is composing, nothing does.
+  function protectedValueCleared(state,node){
+    const reported=node.value_length;
+    if(!Number.isSafeInteger(reported)||state.composing){state.pendingLength=undefined;return false;}
+    const sent=state.sentLength??0;
+    const cleared=reported<sent&&state.pendingLength===reported;
+    state.pendingLength=reported<sent?reported:undefined;
+    return cleared;
   }
   function retainedComposition(base,current,data){
     if(typeof data==='string'&&data.length)return data;
@@ -237,7 +285,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     recovery.text+=text;recovery.retained.value=recovery.text;syncRecovery(recovery);
   }
   function createElement(editable,key,role){
-    const element=document.createElement(editable?'textarea':role==='Button'?'button':'div');
+    // A page shown as HTML (`host`) makes a single-line field its own
+    // `<input>`, which the browser can fill in and offer passkeys on.
+    const element=document.createElement(editable?(host&&role==='TextInput'?'input':'textarea'):role==='Button'?'button':'div');
     element.id=`tilo-semantic-${bridgeId}-${++elementSequence}`;
     element.dataset.tiloSemantic=key;
     element.tiloEditable=editable;
@@ -245,7 +295,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // element geometry find it there; never painted and never hit by the
     // pointer, which belongs to the canvas underneath.
     element.style.cssText=MIRROR_STYLE;
-    element.tiloState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false};
+    element.tiloState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false,sentLength:0,pendingLength:undefined};
     element.addEventListener('focus',()=>{
       if(!element.tiloState.reconcilingFocus&&act(element,'focus')){inputScope?.capture();pendingFocus={key,remainingSnapshots:1};}
     });
@@ -269,7 +319,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         shortcuts?.keydown?.(element,event,state.composing,undefined,()=>inputScope&&!inputScope.capture()?.legacy?authorized(element):act(element,'focus'));
       });
       element.addEventListener('keyup',event=>{if(authorized(element))shortcuts?.keyup?.(element,event);});
-      element.addEventListener('blur',()=>{if(authorized(element))shortcuts?.blur?.(element);});
+      element.addEventListener('blur',()=>{if(!element.tiloState.reconcilingFocus&&authorized(element))shortcuts?.blur?.(element);});
       element.addEventListener('input',event=>{
         const state=element.tiloState;
         if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return;}
@@ -350,11 +400,26 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // A place is the chain of paths down to a node, as JSON: a path holds `/`
     // itself, so two chains joined into one string could say the same thing.
     const placeOf=(node,place)=>JSON.stringify([...place,node.path]);
+    // As JSON, written once per widget: every key under it starts with it.
     const identityOf=(node,place)=>{
       const semanticKey=node.semantics.semantic_key;
-      return semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]
+      return JSON.stringify(semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]
         :node.test_id&&testIds.get(node.test_id)===1?['test',node.test_id]
-        :pathOwners.get(node.path)===1?['path',node.path]:['place',placeOf(node,place)];
+        :pathOwners.get(node.path)===1?['path',node.path]:['place',placeOf(node,place)]);
+    };
+    // `JSON.stringify([identity,sub])` with the identity already written, the
+    // string the last update wrote where it wrote one.
+    const previousKeys=keys;keys=new Map();
+    const keyOf=(identity,sub)=>{
+      let subs=keys.get(identity);
+      if(!subs){
+        subs=previousKeys.get(identity);
+        if(!subs||subs.size>KEYS_PER_IDENTITY)subs=new Map();
+        keys.set(identity,subs);
+      }
+      let key=subs.get(sub);
+      if(key===undefined){key=`[${identity},${JSON.stringify(sub)}]`;subs.set(sub,key);}
+      return key;
     };
     // An element's key names one node or it names nothing: a widget's test ID
     // covers a row and the row's own contents, and one layer's key is drawn as
@@ -363,7 +428,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // other node's element standing above this one is no tree to append into.
     function countKeys(semantics,index,identity){
       if(semantics.state?.hidden)return;
-      const key=JSON.stringify([identity,semantics.semantic_key??semantics.action_target??index]);
+      const key=keyOf(identity,semantics.semantic_key??semantics.action_target??index);
       keyOwners.set(key,(keyOwners.get(key)??0)+1);
       (semantics.children??[]).forEach((child,i)=>countKeys(child,`${index}/${i}`,identity));
     }
@@ -381,7 +446,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       // technology, and neither is anything inside it.
       if(node.state?.hidden)return;
       const sub=node.semantic_key??node.action_target??index;
-      let key=JSON.stringify([identity,sub]);
+      let key=keyOf(identity,sub);
       if(keyOwners.get(key)>1)key=JSON.stringify([['inside',ancestry.at(-1)??null,index],sub]);
       live.add(key);
       let element=elements.get(key);
@@ -409,8 +474,11 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       element.tiloRect=bounds?[bounds.x0,bounds.y0,bounds.x1-bounds.x0,bounds.y1-bounds.y0]:enclosing??[0,0,0,0];
       place(element);
       // A node a patch left alone is the very object the element last
-      // showed (applySemanticsPatch keeps it), so it says nothing new.
-      const changed=element.tiloNode!==node;element.tiloNode=node;
+      // showed (applySemanticsPatch keeps it), so it says nothing new; one
+      // that only moved (a scroll moves every node on screen) says nothing
+      // new either, and writing its attributes again cost a scroll's mirror
+      // most of its time.
+      const changed=element.tiloNode!==node&&!sameFace(element.tiloNode,node);element.tiloNode=node;
       if(changed){
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
       if(role)element.setAttribute('role',role);else element.removeAttribute('role');
@@ -425,9 +493,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       }
       element.disabled=Boolean(node.state?.disabled);
       element.readOnly=Boolean(node.state?.read_only);
+      if(element.localName==='input'){
+        const type=node.state?.protected?'password':'text';
+        if(element.type!==type)element.type=type;
+        const autocomplete=AUTOFILL[node.state?.autofill]??'off';
+        if(element.getAttribute('autocomplete')!==autocomplete)element.setAttribute('autocomplete',autocomplete);
+      }
       if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
       }
-      const value=node.state?.protected?'':node.value??'';
+      // A secret is never in the tree; a page's own password field holds
+      // what the person typed, which the tree must not wipe.
+      const value=node.state?.protected?(element.localName==='input'?element.value:''):node.value??'';
       // A node a patch left alone over a field that still shows it (its
       // value, and the selection last set) needs nothing done: recounting
       // the selection and setting it again on every field each status
@@ -437,16 +513,42 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       // moved since it was set; reading another field's selection forced
       // a layout of the page for every field in the tree on each status.
       const shown=state=>!state.canonicalSelection||(element!==document.activeElement&&state.domSelection)||state.domSelection?.[0]===element.selectionStart&&state.domSelection?.[1]===element.selectionEnd;
-      if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
+      if(editable&&node.state?.protected){
+        // The field holds the person's own text; the page empties it when the
+        // app let the text go.
+        if(protectedValueCleared(element.tiloState,node)){
+          const state=element.tiloState;
+          if(state.canonicalSelection)state.domSelection=null;
+          element.value='';
+          state.canonicalValue='';state.sentLength=0;
+          state.canonicalSelection=null;state.selectionBytes=undefined;state.lastSelection=null;
+        }
+      }else if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
         // Already shown.
       }else if(editable){
         const state=element.tiloState;
+        // The tree's selection is in bytes of the value; the field's in its
+        // characters. The same bytes of the same value are the selection
+        // already counted: counting walks the whole text, and a scroll asks
+        // it of every field on screen.
+        const bytes=node.text_selection?[node.text_selection.anchor,node.text_selection.focus]:null;
+        const counted=state.canonicalValue===value&&(bytes===state.selectionBytes
+          ||(bytes&&state.selectionBytes&&bytes[0]===state.selectionBytes[0]&&bytes[1]===state.selectionBytes[1]));
+        const selection=counted?state.canonicalSelection:bytes&&[
+          graphemeIndexFromByteOffset(value,bytes[0]),
+          graphemeIndexFromByteOffset(value,bytes[1]),
+        ];
+        state.selectionBytes=bytes;
+        // A node that changed only where it is drawn (a scroll moves every
+        // field on screen) still shows its value and selection: reading the
+        // field's scroll to keep it, and setting them again, laid the page
+        // out once per field on every frame of a scroll.
+        const sameSelection=selection===state.canonicalSelection
+          ||(selection&&state.canonicalSelection&&selection[0]===state.canonicalSelection[0]&&selection[1]===state.canonicalSelection[1]);
+        const unchanged=!state.composing&&state.canonicalValue===value&&sameSelection&&element.value===value&&shown(state);
         state.canonicalValue=value;
-        state.canonicalSelection=node.text_selection?[
-          graphemeIndexFromByteOffset(value,node.text_selection.anchor),
-          graphemeIndexFromByteOffset(value,node.text_selection.focus),
-        ]:null;
-        if(!state.composing){
+        state.canonicalSelection=selection;
+        if(!state.composing&&!unchanged){
           const scroll=[element.scrollLeft,element.scrollTop];
           if(element.value!==value)element.value=value;
           if(state.canonicalSelection){
@@ -467,20 +569,13 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         // to two places (a shared node) says its path twice, and each place is
         // its own element, under its own ancestors.
         const identity=identityOf(node,place);
-        const home=host&&node.paint_key?host.home(node.paint_key):undefined;
-        const key=semantic(node.semantics,node.path,home??parent,node.path,identity,ancestry,node.path,node.rect);
-        const element=elements.get(key);
-        if(element&&element.tiloHome!==(home?node.paint_key:undefined)){
-          if(element.tiloHome)host.release(element.tiloHome);
-          element.tiloHome=home?node.paint_key:undefined;
-        }
-        if(element&&home)host.adopt(node.paint_key,element);
+        const key=semantic(node.semantics,node.path,parent,node.path,identity,ancestry,node.path,node.rect);
         ancestry=[...ancestry,key];
       }
       for(const child of node.children??[])walk(child,parent,ancestry,[...place,node.path]);
     }
     walk(snapshot.root,root);
-    for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;if(element.tiloHome)host?.release(element.tiloHome);element.remove();elements.delete(key);}
+    for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;element.remove();elements.delete(key);}
     for(const recovery of recoveries.values())syncRecovery(recovery);
     // Retained owners and their editable/synthetic children may both report
     // focus. An explicitly focused descendant is the more precise contract.
@@ -508,7 +603,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       }else if(pendingFocus.remainingSnapshots>0){pendingFocus.remainingSnapshots--;awaitingFocus=true;}
       else pendingFocus=undefined;
     }
-    for(const element of elements.values())element.dataset.tiloFocused=String(element===canonicalFocus);
+    for(const element of elements.values()){
+      const focused=String(element===canonicalFocus);
+      if(element.dataset.tiloFocused!==focused)element.dataset.tiloFocused=focused;
+    }
     // Focus stays on the control; the item the keyboard is on inside it is
     // its active descendant, announced without moving focus.
     const activeItem=canonicalFocus&&activeCandidates.find(candidate=>candidate.tiloAncestors.includes(canonicalFocus.tiloState.key));
@@ -520,7 +618,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
     if(canonicalFocus&&active!==canonicalFocus&&focusInMount&&!focusWasManaged&&!focusInRecovery){
       setActiveDescendant(active,activeItem??canonicalFocus);
-    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)){
+    // A person selecting the painted text natively keeps the page's focus
+    // where the selection put it: moving it would empty the selection.
+    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)&&!host?.holdsSelection?.()){
       clearActiveDescendant();
       canonicalFocus.tiloState.reconcilingFocus=true;
       try{canonicalFocus.focus({preventScroll:true});}finally{canonicalFocus.tiloState.reconcilingFocus=false;}

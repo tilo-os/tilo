@@ -94,6 +94,24 @@ globalThis.__tiloPage ||= (() => {
   }
   const scrollable = element => Math.max(element.scrollHeight - element.clientHeight, 0);
   const scrollRoot = () => document.scrollingElement || document.documentElement;
+  // Where the wheel turns when the caller named no box: over the page itself.
+  // Chromium turns a wheel over the closest box that scrolls under it, so the
+  // middle of the view is the page only where no box of the page's own lies
+  // there: a page asked for its end would otherwise have its list scrolled
+  // instead, by however much of the distance that list takes. The first point
+  // of the view that is the page's own wins, and the middle when the page
+  // covers all of it.
+  function pagePoint() {
+    const middle = {x: innerWidth / 2, y: innerHeight / 2};
+    for (const y of [0.5, 0.2, 0.8, 0.35, 0.65]) {
+      for (const x of [0.5, 0.1, 0.9, 0.25, 0.75]) {
+        const point = {x: innerWidth * x, y: innerHeight * y};
+        const hit = topmost(point.x, point.y);
+        if (hit && scrollBox(hit) === scrollRoot()) return point;
+      }
+    }
+    return middle;
+  }
   // How much further a box can go in the direction the wheel turns it.
   const room = box => Math.max(scrollable(box) - scrollYOffset(box), 0);
   // How far down a box is scrolled. The page's own box needs no special case:
@@ -141,9 +159,10 @@ globalThis.__tiloPage ||= (() => {
       // wheel turns toward it from where the box is scrolled to now.
       const delta = Math.round(visible.top - area.top - (area.height - visible.height) / 2);
       const from = scrollYOffset(box);
-      const left = delta > 0 ? Math.min(delta, room(box)) : Math.max(delta, -from);
-      scrolling = {box, x: point.x, y: point.y, rest: left, travelled: Math.sign(left), start: from, still: 0};
-      return {ok: true, x: point.x, y: point.y, left};
+      const rest = delta > 0 ? Math.min(delta, room(box)) : Math.max(delta, -from);
+      const first = turnOf(box, rest, from);
+      scrolling = {box, x: point.x, y: point.y, rest, travelled: Math.sign(rest), start: from, still: 0};
+      return {ok: true, x: point.x, y: point.y, left: first};
     }
     // The box the caller named, or the page itself; a point inside it that
     // the wheel can turn over is its visible centre.
@@ -153,7 +172,7 @@ globalThis.__tiloPage ||= (() => {
     // it: scrolling it makes it the document more records for good.
     const root = !box || box === document.scrollingElement || box === document.documentElement;
     const area = root ? {left: 0, top: 0, width: innerWidth, height: innerHeight} : box.getBoundingClientRect();
-    const point = element ? (clip(element.getBoundingClientRect()) || clip(area)) : {x: innerWidth / 2, y: innerHeight / 2};
+    const point = element ? (clip(element.getBoundingClientRect()) || clip(area)) : pagePoint();
     if (!point) throw failure('not_visible', `${command.element} has no box on the page`);
     const scroller = root ? scrollRoot() : box;
     const from = scrollYOffset(scroller);
@@ -175,15 +194,43 @@ globalThis.__tiloPage ||= (() => {
     // A box already at the end the wheel would take it to leaves the wheel
     // nothing to do, and the answer says so at once.
     if (left * travelled <= 0) { scrollMoved = 0; return {ok: true, x: point.x, y: point.y, left: 0}; }
+    // One turn asks the wheel for no more than it can move: Chromium scrolls a
+    // box by one visible page at most per wheel, whatever distance the wheel
+    // was asked for, and what a wheel is asked for past the box's end is not
+    // given back — it moves whichever box lies under the point instead, so the
+    // page's own end would leave a list the view happens to hold scrolled by
+    // the rest. What is left of the distance is kept whole, so a page that
+    // loads more as it moves is asked for the rest of it.
+    const turn = turnOf(scroller, left, from);
+    if (turn * travelled <= 0) { scrollMoved = 0; return {ok: true, x: point.x, y: point.y, left: 0}; }
     scrolling = {box: scroller, x: point.x, y: point.y, rest: left, travelled, start: from, still: 0};
-    return {ok: true, x: point.x, y: point.y, left};
+    return {ok: true, x: point.x, y: point.y, left: turn};
+  }
+  // The most one turn of the wheel may ask of `box`: what it still holds in the
+  // direction of `left` (negative is upward), and no more than one visible page
+  // of it, which is all a wheel moves it by.
+  function turnOf(box, left, from) {
+    if (left > 0) return Math.min(left, room(box), pageful(box));
+    return -Math.min(-left, Math.max(from, 0), pageful(box));
+  }
+  // The height of a box a wheel moves one page of: the page's own view, or the
+  // box's.
+  function pageful(box) {
+    const root = !box || box === document.scrollingElement || box === document.documentElement;
+    return Math.max(1, root ? innerHeight : box.clientHeight);
   }
   // What the box the wheel turns over has left of the distance after a turn:
   // a list that renders more as it scrolls says so here, and the wheel turns
   // again, as a hand's next turn would.
-  function scrollLeft() {
+  async function scrollLeft() {
     if (!scrolling) return {ok: true, x: innerWidth / 2, y: innerHeight / 2, left: 0};
-    const box = scrolling.box, now = scrollYOffset(box), moved = Math.abs(now - scrolling.start);
+    const box = scrolling.box;
+    // The box comes to rest before the turn is read: Chromium moves a wheel's
+    // scroll over a few frames, so a turn read while it still runs is read
+    // short, and the wheel would be asked for the rest of a distance it is
+    // still travelling.
+    await scrollRest(box, scrolling.start);
+    const now = scrollYOffset(box), moved = Math.abs(now - scrolling.start);
     scrollMoved = (scrollMoved || 0) + Math.round(now - scrolling.start);
     scrolling.rest -= scrolling.travelled > 0 ? Math.min(moved || now, scrolling.rest)
       : -Math.min(moved || -now, -scrolling.rest);
@@ -192,13 +239,26 @@ globalThis.__tiloPage ||= (() => {
     // a frame still settling, a box whose content arrives later — so it is
     // tried again, a few times, before the wheel says the page has stopped.
     // The turns the wheel is allowed are what ends a page that never moves.
-    if (!moved && ++scrolling.still <= MAX_SCROLL_STILL)
-      return {ok: true, x: scrolling.x, y: scrolling.y, left: scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
-        : -Math.max(-scrolling.rest - Math.max(now, 0), 0)};
-    const left = !moved ? 0 : scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
-      : -Math.max(-scrolling.rest - Math.max(now, 0), 0);
+    const left = !moved && ++scrolling.still > MAX_SCROLL_STILL ? 0 : turnOf(box, scrolling.rest, now);
     return {ok: true, x: scrolling.x, y: scrolling.y, left: Math.round(left)};
   }
+  // How long a turn's own scroll is waited for, and how many frames it holds
+  // still first; a turn that has not begun moving by its own bound went
+  // nowhere, and waiting longer would cost every turn that reached an end.
+  const SCROLL_REST_MS = 600, SCROLL_REST_STILL = 2, SCROLL_REST_FRAME = 16;
+  const SCROLL_START_MS = 120;
+  const scrollRest = (box, from) => new Promise(done => {
+    const started = performance.now();
+    let at = from, still = 0;
+    const tick = () => {
+      const now = scrollYOffset(box), elapsed = performance.now() - started;
+      still = now === at ? still + 1 : 0; at = now;
+      const begun = now !== from;
+      if ((begun && still >= SCROLL_REST_STILL) || elapsed >= (begun ? SCROLL_REST_MS : SCROLL_START_MS)) { done(); return; }
+      setTimeout(tick, SCROLL_REST_FRAME);
+    };
+    setTimeout(tick, SCROLL_REST_FRAME);
+  });
   // The class the page's own sheets never use: a resting pointer puts it on
   // the elements it is over, and a hover-only rule reads `:hover` as it.
   const MARKER = '__tilo-hover__';

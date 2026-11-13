@@ -21,16 +21,11 @@
 /// Progress`, so the queue can compare with `>=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Priority {
-    /// Progress chatter; only the most recent survives.
     Progress,
-    /// Ambient notification — yields to anything the user asked for.
     Notification,
-    /// Document or control text the user is reading.
     Text,
-    /// The default: something the app is saying to the user.
     #[default]
     Message,
-    /// Interrupts whatever is speaking.
     Important,
 }
 
@@ -52,12 +47,9 @@ impl Priority {
     }
 }
 
-/// A single thing to say, plus how it should be scheduled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Utterance {
-    /// The text to synthesize. Plain text; SSML is intentionally out of scope.
     pub text: String,
-    /// Scheduling priority.
     pub priority: Priority,
     /// If `true`, speaking this utterance stops whatever is currently being spoken (and clears
     /// lower-or-equal-priority pending work) — the responsive-focus-narration knob.
@@ -65,7 +57,6 @@ pub struct Utterance {
 }
 
 impl Utterance {
-    /// A normal-priority, interrupting utterance — the common case for focus narration.
     pub fn new(text: impl Into<String>) -> Self {
         Utterance {
             text: text.into(),
@@ -74,14 +65,12 @@ impl Utterance {
         }
     }
 
-    /// Builder: set the priority.
     #[must_use]
     pub fn with_priority(mut self, priority: Priority) -> Self {
         self.priority = priority;
         self
     }
 
-    /// Builder: set whether this utterance interrupts current speech.
     #[must_use]
     pub fn with_interrupt(mut self, interrupt: bool) -> Self {
         self.interrupt = interrupt;
@@ -100,7 +89,6 @@ pub trait Speaker: Send {
         self.speak_utterance(Utterance::new(text).with_interrupt(interrupt));
     }
 
-    /// Speak a fully-specified [`Utterance`] (priority + interrupt semantics).
     fn speak_utterance(&mut self, utterance: Utterance);
 
     /// Stop all speech immediately and discard anything pending — the "silence key" (Orca
@@ -116,10 +104,8 @@ pub trait Speaker: Send {
     /// a speech-dispatcher synthesis-voice name).
     fn set_voice(&mut self, voice: &str);
 
-    /// Whether the backend currently has speech in progress or queued.
     fn is_speaking(&self) -> bool;
 
-    /// Human-readable backend name, for diagnostics/logging.
     fn backend_name(&self) -> &'static str;
 }
 

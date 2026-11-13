@@ -12,7 +12,7 @@
 //! of an app the session marks ([`crate::Compositor::protect_app`]) while it
 //! shows a password field or asks for protection itself, and every layer of
 //! a hosted surface that says it shows a secret now
-//! ([`crate::host::SurfaceHost::withholds_captures`]) — the session's own
+//! ([`SurfaceHost::withholds_captures`](tilo_session_core::surface::SurfaceHost::withholds_captures)) — the session's own
 //! sheets and panels declare that the same way an app's window is withheld,
 //! so a capture never shows what the person typed into them.
 //!

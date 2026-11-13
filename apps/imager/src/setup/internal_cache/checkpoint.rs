@@ -9,21 +9,12 @@ use std::{
 pub(in crate::setup) const INTERVAL: u64 = 64 * 1024 * 1024;
 pub(in crate::setup) const MAX_RECORD: usize = 4096;
 pub(in crate::setup) const MAX_SCAN: usize = 16;
-/// Providers must refuse after this many exclusive-create collisions, retaining
-/// unknown entries. Journal and payload parents must be distinct pinned parents.
 pub(in crate::setup) const MAX_COLLISIONS: usize = 16;
-/// 2^32-1 transitions exceed the 16,384 intervals needed for a 1-TiB component,
-/// including three attempts. Arbitrarily repeated pauses eventually refuse.
 const MAX_GENERATION: u64 = u32::MAX as u64;
-/// Every working leaf a provider mints is this prefix and 32 lowercase hex
-/// digits.
 const WORKING_LEAF_PREFIX: &str = ".tilo-part-";
-/// A working leaf's exact length, which a checkpoint record stores in full.
 const WORKING_LEAF_LEN: usize = WORKING_LEAF_PREFIX.len() + 32;
 const RECORD_LEN: usize = layout::CHECKSUM + 32;
 
-/// Where each field of a checkpoint record starts, in the order `encode`
-/// writes them. Tests corrupt records field by field through these.
 pub(in crate::setup) mod layout {
     pub(in crate::setup) const KIND: usize = 8;
     pub(in crate::setup) const BINDING: usize = KIND + 1;
@@ -38,7 +29,6 @@ pub(in crate::setup) mod layout {
     pub(in crate::setup) const CHECKSUM: usize = DIGEST + 32;
 }
 
-/// The working leaf named by the 128 bits of `name`.
 pub(in crate::setup) fn working_leaf(name: u128) -> String {
     format!("{WORKING_LEAF_PREFIX}{name:032x}")
 }
@@ -64,18 +54,12 @@ pub(in crate::setup) fn validate_leaf(
     Ok(())
 }
 
-/// Native providers mint these only after validating their locked, private,
-/// pinned namespace and held ordinary file. Decoded record fields never mint it.
-/// IDs are canonical provider-specific digests of the full native identities;
-/// providers also retain and compare the original native identities themselves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::setup) struct Ownership {
     pub parent: [u8; 32],
     pub file: [u8; 32],
     pub leaf: String,
 }
-/// Only Session can issue this borrowed receipt after successful preparation.
-/// It is neither constructible nor recoverable from serialized record hints.
 pub(in crate::setup) struct PreparationComplete<'a> {
     record: &'a Record,
 }
@@ -106,7 +90,6 @@ impl PreparationComplete<'_> {
 /// must establish the payload name's parent durability before any publication.
 /// Journal names live in a separate private parent from payload/final names.
 pub(in crate::setup) trait Provider {
-    /// State-only and infallible: called before attempts and during failed Drop.
     fn revoke_preparation(&mut self) {}
     fn prepared(&mut self, _proof: PreparationComplete<'_>) -> Result<(), String> {
         Ok(())
@@ -118,9 +101,6 @@ pub(in crate::setup) trait Provider {
     fn retain(&mut self, keep: &[u64]) -> Result<(), String>;
     fn publish(&mut self, generation: u64, bytes: &[u8], keep: &[u64]) -> Result<(), String>;
 }
-/// Opt-in authority from a fully validated exclusive creation in this process.
-/// Implementations consume private freshness BEFORE checking the requested
-/// selection. Reopening, decoded records and caller assertions cannot mint it.
 pub(in crate::setup) trait FreshProvider: Provider {
     fn take_fresh(
         &mut self,
@@ -132,9 +112,6 @@ pub(in crate::setup) trait FreshProvider: Provider {
     fn initialization_failed(&mut self);
 }
 
-/// Settle an admitted fresh creation before cancellation can abandon its owner.
-/// No operation ID, cancellation reset, payload read, or preparation receipt.
-/// This is bounded metadata work, not a bounded-latency fsync guarantee.
 pub(in crate::setup) fn initialize_fresh<P: FreshProvider>(
     selected: &SelectedManifest,
     index: usize,
@@ -165,7 +142,6 @@ pub(in crate::setup) fn initialize_fresh<P: FreshProvider>(
     if result.is_err() {
         provider.initialization_failed();
     }
-    // The internal empty scan/publication grants no retirement or final rights.
     provider.revoke_preparation();
     result
 }
@@ -208,7 +184,6 @@ fn binding(selected: &SelectedManifest, index: usize) -> Result<([u8; 32], u64),
     h.update(c.byte_size.to_le_bytes());
     Ok((h.finalize().into(), c.byte_size))
 }
-/// Selection-checked metadata only; never an acquired namespace capability.
 pub(super) struct UntrustedRecordHint<'a> {
     pub(super) leaf: &'a str,
     pub(super) parent_digest: &'a [u8; 32],
@@ -490,24 +465,17 @@ impl<P: Provider> Session<P> {
         )?;
         stopped(cancel)?;
         self.provider.verify(file, &self.base.ownership)?;
-        // Normalize a surviving uncertain successor only after bytes and the
-        // entire bounded history validate. Never prune an unknown entry.
         if count > 2 {
             self.poisoned = true;
             self.provider.retain(&retained)?;
             self.poisoned = false;
         }
-        // An ordinary record permits trimming only its uncommitted tail. A reset
-        // record durably revokes all old prefix authority, before or after truncation.
         if file.metadata().map_err(io)?.len() != self.base.length {
             file.set_len(self.base.length).map_err(io)?;
             file.sync_all().map_err(io)?;
         }
         file.seek(SeekFrom::Start(self.base.length)).map_err(io)?;
         stopped(cancel)?;
-        // This receipt is the final fallible step, after all history/prefix,
-        // normalization, trimming, cursor and cancellation work. Native scanning
-        // alone never establishes successful preparation.
         self.poisoned = true;
         if let Err(error) = self
             .provider
@@ -565,7 +533,6 @@ impl<P: Provider> Session<P> {
             kind: candidate.kind,
             ..self.base.clone()
         };
-        // Keep the previous record until publication commits, even at reset.
         let keep = if self.base.generation == 0 {
             vec![generation]
         } else {
@@ -581,7 +548,6 @@ impl<P: Provider> Session<P> {
 impl<P: Provider> Drop for Session<P> {
     fn drop(&mut self) {
         if !self.recovered {
-            // Infallible state-only revocation; no cleanup or filesystem I/O.
             self.provider.revoke_preparation();
         }
     }
@@ -625,8 +591,6 @@ impl<P: Provider> Observer for Session<P> {
     }
 }
 
-/// Two independent hashers, fed independently from bytes; no serialized SHA
-/// state or streaming-to-readback clone is ever accepted.
 pub(in crate::setup) struct Hashes {
     stream: Sha256,
     readback: Sha256,
@@ -655,15 +619,11 @@ impl Hashes {
         let mut checkpoints = history.iter().peekable();
         let mut offset = 0;
         let mut valid = true;
-        // Check each retained current-epoch digest at its byte boundary during
-        // the same prefix pass. Older reset epochs intentionally have no authority.
         while checkpoints.peek().is_some_and(|p| p.0 == 0) {
             valid &= checkpoints.next().unwrap().1 == empty_digest();
         }
         read_range(file, 0, length, cancel, phase, |mut bytes| {
             while !bytes.is_empty() {
-                // A boundary already behind the cursor can never match; read on
-                // and let the final "no unconsumed checkpoint" check refuse it.
                 let take = checkpoints.peek().map_or(bytes.len(), |p| {
                     p.0.checked_sub(offset)
                         .map_or(bytes.len(), |gap| gap.min(bytes.len() as u64) as usize)
@@ -772,8 +732,6 @@ fn read_range(
     restore?;
     Ok(())
 }
-/// Holds the exclusive file reborrow from recovery through transport. Cannot be
-/// reconstructed from a record, moved to another file or reused for an operation.
 pub(in crate::setup) struct PreparedPrefix<'a> {
     pub(super) selected: &'a SelectedManifest,
     pub(super) index: usize,
@@ -785,7 +743,6 @@ pub(in crate::setup) struct PreparedPrefix<'a> {
     pub(super) final_candidate: bool,
 }
 
-/// Transport may consume this state, but cannot construct a PreparedPrefix.
 pub(in crate::setup) struct TransferParts<'a> {
     pub selected: &'a SelectedManifest,
     pub index: usize,

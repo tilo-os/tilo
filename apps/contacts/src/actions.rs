@@ -8,14 +8,12 @@ use ui::tilo_resource::{self, Effect, JsonSchema};
 
 use crate::model::{Address, Contact, ContactId, Labeled, group_names_equal, normalize_text};
 
-/// Potential duplicate review resources are intentionally capped.  The full
-/// detector stays linear in contacts and their fields, but discovery must not
-/// turn a large imported book into thousands of palette entries.
+/// Duplicate reviews are capped, so a large imported book cannot fill the
+/// palette with entries.
 pub const MAX_CONTEXT_DUPLICATE_RESOURCES: usize = 32;
 
-/// What Contacts does that is no edit of the address book: showing a
-/// group or the favorites, reviewing a likely duplicate, and
-/// moving cards in and out through the system file chooser.
+/// What Contacts does beside editing the book: showing a group or the
+/// favorites, reviewing a duplicate, and moving cards through the file chooser.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "contacts.effect")]
 pub enum ContactsEffect {
@@ -134,10 +132,8 @@ pub enum DuplicateReason {
     Name,
 }
 
-/// A bounded, deterministic potential duplicate.  The lower UUID is always
-/// the default survivor, which makes the review URL and resource identity
-/// stable across peers; the person may still choose every conflicting scalar
-/// from either side before confirming.
+/// A bounded, deterministic duplicate pair. The lower UUID is the default
+/// survivor, so the review's resource identity is stable across peers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateCandidate {
     pub survivor_id: ContactId,
@@ -145,9 +141,9 @@ pub struct DuplicateCandidate {
     pub reasons: Vec<DuplicateReason>,
 }
 
-/// Unicode/case-insensitive email key.  The mail local part can technically
-/// be case-sensitive; Contacts follows the ordinary address-book expectation
-/// here only to *suggest* review — it never merges without a confirmation.
+/// A case-insensitive email key. The local part can technically be
+/// case-sensitive; Contacts assumes otherwise only to suggest a review, and
+/// never merges without a confirmation.
 fn normalized_email(value: &str) -> String {
     normalize_text(value.trim())
 }
@@ -168,10 +164,8 @@ fn normalized_name(contact: &Contact) -> String {
         .join(" ")
 }
 
-/// Find likely duplicate pairs without allocating a full quadratic result for
-/// a huge imported book.  The visible resource page caps its children, while
-/// this pure helper returns at most `limit` deterministic pairs for callers
-/// that have already chosen a bounded presentation budget.
+/// Find likely duplicate pairs, at most `limit` of them: a huge imported book
+/// must not allocate a quadratic result.
 pub fn duplicate_candidates(contacts: &[Contact], limit: usize) -> Vec<DuplicateCandidate> {
     if limit == 0 {
         return Vec::new();
@@ -229,9 +223,8 @@ pub fn duplicate_candidates(contacts: &[Contact], limit: usize) -> Vec<Duplicate
         .collect()
 }
 
-/// Resolve one exact candidate without building a catalogue page.  Resource
-/// lookup uses this path so a stale/deep link costs only two contacts' fields,
-/// not an unbounded scan result allocation.
+/// Resolve one exact candidate without building a catalogue page, so a deep
+/// link costs only two contacts' fields.
 pub fn duplicate_candidate(survivor: &Contact, source: &Contact) -> Option<DuplicateCandidate> {
     if survivor.id >= source.id {
         return None;
@@ -319,11 +312,10 @@ fn merged_scalar<S: std::hash::BuildHasher>(
     }
 }
 
-/// Materialise the exact reviewed survivor contact.  Empty scalar values fill
-/// from the other record; a non-empty conflict stays with the survivor until
-/// the review selects `MergeField`.  Repeated rows are a lossless union —
-/// the source rows keep their ids, so they join the survivor's rows rather
-/// than replacing them.
+/// The reviewed survivor contact. An empty scalar fills from the other record;
+/// a conflict stays with the survivor until the review selects a `MergeField`.
+/// Repeated rows are a lossless union: source rows keep their ids and join the
+/// survivor's.
 pub fn reviewed_merge_contact<S: std::hash::BuildHasher>(
     survivor: &Contact,
     source: &Contact,
@@ -391,9 +383,8 @@ pub fn reviewed_merge_contact<S: std::hash::BuildHasher>(
     merged
 }
 
-/// Split a typed full name into first / rest-as-last, so a palette "New
-/// contact" / "Rename" that collects a single name string lands the same way
-/// the form's two fields would.
+/// Split a typed full name into first and rest-as-last, as the form's two fields
+/// would.
 pub(crate) fn split_name(name: &str) -> (String, String) {
     let name = name.trim();
     match name.split_once(char::is_whitespace) {
@@ -402,15 +393,12 @@ pub(crate) fn split_name(name: &str) -> (String, String) {
     }
 }
 
-/// The id of the pending review of one imported card whose UID collides with
-/// an existing contact.
 pub fn import_conflict_resource_id(token: &str) -> String {
     format!("contacts.import-conflict:{token}")
 }
 
-/// A pending import review, published while it waits for a decision. It is
-/// not document state: an untrusted card never enters the shared book before
-/// the person chooses to keep the existing contact or import it as new.
+/// A pending import review, published while it waits: an untrusted card never
+/// enters the shared book before the person chooses.
 pub(crate) fn import_conflict_row(token: &str, incoming_name: &str) -> ui::framework::LiveRow {
     ui::framework::LiveRow::new(
         import_conflict_resource_id(token),

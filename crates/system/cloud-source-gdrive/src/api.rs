@@ -1,8 +1,4 @@
 //! Drive API v3 wire types and their mapping onto cloud-source items.
-//!
-//! Drive encodes `int64` fields (`size`, `version`, quota numbers) as JSON
-//! strings; the deserialisers here accept either form so a proxy or a future
-//! API revision that sends numbers does not break parsing.
 
 use std::time::Duration;
 
@@ -20,10 +16,8 @@ const GOOGLE_APPS_PREFIX: &str = "application/vnd.google-apps.";
 /// `id`, `name`, `mimeType` and `kind` unless told otherwise.
 pub const FILE_FIELDS: &str = "id,name,mimeType,parents,size,modifiedTime,version,headRevisionId,md5Checksum,sha1Checksum,sha256Checksum,trashed,webViewLink,driveId";
 
-/// Fields a precondition check needs.
 pub const REVISION_FIELDS: &str = "id,mimeType,parents,version,headRevisionId,trashed";
 
-/// One Drive `files` resource, restricted to the fields in [`FILE_FIELDS`].
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct File {
@@ -50,7 +44,6 @@ impl File {
         self.mime_type == FOLDER_MIME
     }
 
-    /// Docs, Sheets, Slides, Forms, shortcuts…: no downloadable body.
     pub fn is_native(&self) -> bool {
         !self.is_folder() && self.mime_type.starts_with(GOOGLE_APPS_PREFIX)
     }
@@ -128,7 +121,6 @@ const ODS: &str = "application/x-vnd.oasis.opendocument.spreadsheet";
 const ODP: &str = "application/vnd.oasis.opendocument.presentation";
 const PDF: &str = "application/pdf";
 
-/// The link extension and export formats of a Google-native type.
 pub fn native_document(mime: &str, web_url: Option<String>) -> NativeDocument {
     let kind = mime.strip_prefix(GOOGLE_APPS_PREFIX).unwrap_or(mime);
     let (link_extension, exports): (&str, &[(&str, &str)]) = match kind {
@@ -181,7 +173,6 @@ pub struct ChangeList {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ChangeEntry {
-    /// `file` or `drive` (a shared drive's own metadata changed).
     pub change_type: Option<String>,
     pub removed: bool,
     pub file_id: Option<String>,
@@ -228,7 +219,6 @@ pub struct About {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct StorageQuota {
-    /// Absent for unlimited storage.
     #[serde(deserialize_with = "int64")]
     pub limit: Option<u64>,
     #[serde(deserialize_with = "int64")]
@@ -316,7 +306,6 @@ pub fn parse_committed(range: Option<&str>) -> Option<u64> {
     last.trim().parse::<u64>().ok()?.checked_add(1)
 }
 
-/// Quote `value` for a Drive search query string literal.
 pub fn quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len().saturating_add(2));
     out.push('\'');
@@ -330,7 +319,6 @@ pub fn quote(value: &str) -> String {
     out
 }
 
-/// Accepts an `int64` as Drive sends it (a string) or as a number.
 fn int64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -438,7 +426,6 @@ mod tests {
         }
     }
 
-    /// The `changes.list` example of the Drive v3 guide "Retrieve changes".
     #[test]
     fn change_pages_parse_removals_and_tokens() {
         let page: ChangeList = serde_json::from_str(

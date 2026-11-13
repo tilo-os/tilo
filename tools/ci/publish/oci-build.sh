@@ -35,7 +35,12 @@ timestamp=${SOURCE_DATE_EPOCH:-$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" log 
 [[ $timestamp =~ ^[0-9]+$ && $timestamp -gt 1 ]] || die "no commit time to date the image by: $timestamp"
 # buildah refuses --timestamp beside a SOURCE_DATE_EPOCH in its environment.
 unset SOURCE_DATE_EPOCH
-b build --layers=false --timestamp "$timestamp" --format oci -f "$containerfile" -t localhost/publish:build "$@" "$context"
+# No layer per instruction unless the check asks (TILO_OCI_LAYERS=1): nothing here caches a build
+# by buildah's layers, and a single layer keeps an image from being pulled in many requests. The
+# RPM snapshot asks, because its last instruction copies only the repository metadata, and every
+# consumer reads that small layer instead of the multi-GB package ones.
+layers=${TILO_OCI_LAYERS:-false}
+b build --layers="$layers" --timestamp "$timestamp" --format oci -f "$containerfile" -t localhost/publish:build "$@" "$context"
 rm -f "$out/image.oci.tar"
 b push --compression-format gzip --force-compression localhost/publish:build "oci-archive:$out/image.oci.tar"
 archive_digest "$out/image.oci.tar" > "$out/digest"

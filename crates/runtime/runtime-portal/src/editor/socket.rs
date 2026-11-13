@@ -19,7 +19,6 @@ impl AsFd for Socket {
     }
 }
 impl Socket {
-    /// Create private, close-on-exec endpoints without an ambient listener.
     pub fn pair() -> io::Result<(Self, Self)> {
         let mut fds = [-1; 2];
         // SAFETY: initialized outputs; a successful pair is owned exactly once.
@@ -40,7 +39,6 @@ impl Socket {
         Ok((Self::adopt(first)?, Self::adopt(second)?))
     }
 
-    /// Adopt a connected Unix seqpacket descriptor; close it on every error.
     pub fn adopt(fd: OwnedFd) -> io::Result<Self> {
         let mut kind = 0;
         let mut size =
@@ -116,7 +114,6 @@ impl Socket {
         Ok(received)
     }
 
-    /// Retire all copies of this endpoint when its session or worker ends.
     pub fn retire(&self) {
         let _ = self.0.shutdown(std::net::Shutdown::Both);
     }

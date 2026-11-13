@@ -1,29 +1,22 @@
 //! Where a person's command-line tools live.
 //!
-//! A desktop session often hands its apps a narrower PATH than the person's
-//! terminal has: per-user installers put tools in `~/.cargo/bin` (rustup) and
-//! `~/.local/bin` (pipx, npm's user prefix), and shell profiles add those and
-//! more to PATH only for login shells. A tool installed the usual way must
-//! still be found, so [`ToolDirs::current`] looks in all three: the process's
-//! own PATH, those folders, and the PATH the login shell sets up. The page has
-//! no programs to run: there, nothing is found.
+//! A desktop session often hands its apps a narrower PATH than the person's terminal: a
+//! tool installed the usual way must still be found, so [`ToolDirs::current`] looks in
+//! the process's own PATH, the per-user install folders, and the PATH the login shell
+//! sets up. The page has no programs to run.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The login shell's PATH, once read; `None` inside when it could not be.
 static LOGIN_PATH: OnceLock<Option<OsString>> = OnceLock::new();
 
-/// Folders to look for a tool in, in the order they are searched.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ToolDirs {
     dirs: Vec<PathBuf>,
 }
 
 impl ToolDirs {
-    /// The folders of `path` (a PATH value), then `home`'s per-user tool
-    /// folders, then those of `login_path`.
     #[must_use]
     pub fn of(path: Option<&OsStr>, home: Option<&Path>, login_path: Option<&OsStr>) -> Self {
         let mut dirs: Vec<PathBuf> = path
@@ -41,14 +34,11 @@ impl ToolDirs {
         Self { dirs }
     }
 
-    /// This process's folders, with the login shell's PATH once
-    /// [`read_login_path`] has read it.
     #[must_use]
     pub fn current() -> Self {
         backend::current()
     }
 
-    /// The first program named `name` in these folders.
     #[must_use]
     pub fn find(&self, name: &str) -> Option<PathBuf> {
         self.dirs
@@ -57,14 +47,19 @@ impl ToolDirs {
     }
 }
 
-/// Whether the login shell's PATH has been read, or found unreadable.
+#[must_use]
+pub fn runs(program: &str) -> bool {
+    if program.contains('/') {
+        return backend::program(Path::new(program)).is_some();
+    }
+    ToolDirs::current().find(program).is_some()
+}
+
 #[must_use]
 pub fn login_path_read() -> bool {
     LOGIN_PATH.get().is_some()
 }
 
-/// Read the login shell's PATH on a thread of its own, once per process: a
-/// shell profile can take a while, and no caller may wait for it.
 pub fn read_login_path() {
     if login_path_read() {
         return;
@@ -86,8 +81,7 @@ mod backend {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
-    /// A profile that waits on something must not hold a thread and a shell
-    /// forever.
+    // A profile that waits on something must not hold a thread and a shell forever.
     const PROFILE_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
     const PATH_LIMIT: usize = 64 * 1024;
 
@@ -98,10 +92,7 @@ mod backend {
     }
 
     pub(super) fn login_shell_path() -> Option<OsString> {
-        let shell = std::env::var_os("SHELL")
-            .filter(|shell| !shell.is_empty())
-            .or_else(passwd_shell)
-            .unwrap_or_else(|| "/bin/sh".into());
+        let shell = crate::login_shell::login_shell();
         let output = bounded_command::run_os(
             shell,
             &["-l", "-c", "printf %s \"$PATH\""],
@@ -112,21 +103,6 @@ mod backend {
         .ok()?;
         (output.status.success() && !output.stdout.is_empty())
             .then(|| OsString::from_vec(output.stdout))
-    }
-
-    /// The login shell the passwd database records for this user.
-    fn passwd_shell() -> Option<OsString> {
-        // SAFETY: `getpwuid` returns a pointer into libc's static buffer,
-        // valid until the next passwd call; both pointers are null-checked and
-        // the shell is copied out before anything else touches the buffer.
-        unsafe {
-            let entry = libc::getpwuid(crate::uid());
-            if entry.is_null() || (*entry).pw_shell.is_null() {
-                return None;
-            }
-            let shell = std::ffi::CStr::from_ptr((*entry).pw_shell).to_bytes();
-            (!shell.is_empty()).then(|| OsString::from_vec(shell.to_vec()))
-        }
     }
 
     pub(super) fn program(path: &Path) -> Option<PathBuf> {

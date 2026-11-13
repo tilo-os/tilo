@@ -158,7 +158,7 @@ class ChromeProcessCleanup(unittest.TestCase):
         return fields[19] == identity['birth'] and fields[0] != 'Z'
 
     @staticmethod
-    def stop_owned_fixture(root):
+    def stop_owned_fixture(root, homes=()):
         # Failed baseline cleanup can orphan this exact synthetic writer.
         # Bind its recorded start time and private executable before signalling.
         for name in ('writer-process.json', 'root-process.json'):
@@ -186,8 +186,9 @@ class ChromeProcessCleanup(unittest.TestCase):
         record = root / 'profile'
         if record.exists():
             profile = Path(record.read_text())
-            # chrome.mjs keeps throwaway profiles in memory when it can.
-            homes = {Path('/dev/shm'), Path(tempfile.gettempdir())}
+            # Where chrome.mjs may keep a throwaway profile, plus the runtime
+            # directory this run gave it.
+            homes = {Path('/dev/shm'), Path(tempfile.gettempdir()), *homes}
             if os.environ.get('XDG_RUNTIME_DIR'):
                 homes.add(Path(os.environ['XDG_RUNTIME_DIR']))
             if profile.parent not in homes or not profile.name.startswith('tilo-chrome-'):
@@ -324,7 +325,7 @@ class ChromeProcessCleanup(unittest.TestCase):
                 self.assertFalse(stale.exists(), 'a profile whose browser is gone must not stay')
                 self.assertTrue(live.exists(), 'a profile whose browser is running must stay')
             finally:
-                self.stop_owned_fixture(root)
+                self.stop_owned_fixture(root, homes=(home,))
                 shutil.rmtree(live, ignore_errors=True)
 
 

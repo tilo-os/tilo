@@ -1,7 +1,7 @@
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Change, Subject, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
@@ -12,7 +12,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Option<Result<bool, String>> {
         match command {
@@ -76,7 +76,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         change: &Change,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let person = |person: &str| -> Result<[u8; 32], String> {
@@ -157,16 +157,16 @@ impl StatePeer {
         share: &str,
         node: &TreePath,
         access: tilo_action_policy::share::ShareAccess,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let device = hex::encode(caller.device_public_key);
         let grants = crate::workspace::share::share_grants(
-            (self.core.workspace_doc.as_deref(), &member.policy),
+            &member.policy,
             (&member.person, &device, &authority, &cx),
             share,
             node,
@@ -188,12 +188,12 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         share: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let ended = crate::workspace::share::ended_by(
             &member.policy,
@@ -213,12 +213,12 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let change = match command {
             WorkspaceMembershipCommand::Grant { grant } => Change::Grant(grant.clone()),
@@ -272,7 +272,7 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         command.validate()?;
@@ -295,10 +295,10 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }
-        if key.verifying_key().to_bytes() != caller.device_public_key
+        if key.device_public_key() != caller.device_public_key
             && self
                 .peer
-                .certificate(&key.verifying_key().to_bytes(), now)
+                .certificate(&key.device_public_key(), now)
                 .map_err(|error| error.to_string())?
                 .user_public_key
                 != caller.user_public_key
@@ -346,7 +346,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.workspace()

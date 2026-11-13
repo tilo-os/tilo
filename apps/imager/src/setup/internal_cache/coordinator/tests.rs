@@ -10,7 +10,6 @@ fn manifest() -> Vec<u8> {
     internal_bundle::tests::bytes(&internal_bundle::tests::fixture())
 }
 
-/// Held roles, reauthentication and per-role resume.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -139,8 +138,6 @@ fn authenticated_roles_stay_held_and_resume_their_own_ranges() {
             first.start(server.release(&bytes)).unwrap();
             wait(&first, Phase::Paused);
             first.shutdown();
-            // Both zero-prefix ownerships existed before first payload transfer. Seed the
-            // second role via the existing real Session+prefix fixture on this thread.
             assert!(root.path().join("1/journal/record-1").exists());
             let release = InternalRelease::transport_fixture(
                 &bytes,
@@ -324,8 +321,6 @@ fn wait(worker: &Worker, phase: Phase) -> Status {
     }
 }
 
-/// Test-only ordinary files, existing FreshDisk/Session, real HTTP transport.
-/// NOT a native security/locking/no-replace publication/durability substitute.
 pub(in crate::setup::internal_cache::coordinator) mod fixture {
     use super::*;
     pub(in crate::setup::internal_cache::coordinator) struct CacheRoot {
@@ -442,7 +437,6 @@ pub(in crate::setup::internal_cache::coordinator) mod fixture {
                     check(cancel)?;
                     (provider, file)
                 };
-                // Provider owns all history interpretation; no fixture prefix adoption.
                 let own = (&mut provider).ownership();
                 (&mut provider).verify(&file, &own)?;
                 file.rewind().unwrap();
@@ -522,8 +516,6 @@ pub(in crate::setup::internal_cache::coordinator) mod fixture {
             let held = setup_event(self.index, "reader-held");
             let root = setup_event(self.index, "reader-root");
             let stopped = check(cancel);
-            // This is the same result composer called by both native readers;
-            // these injected guard results are not native guard execution.
             super::super::super::finish_held_read(result, restored, held, root, stopped)
         }
     }
@@ -787,7 +779,6 @@ fn creation_initialization_and_publication_failures_retain_exact_residue() {
     );
 }
 
-/// Stale commands, corruption, manifest changes, collisions and identifier exhaustion.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -925,7 +916,6 @@ fn stale_corrupt_or_colliding_state_cannot_become_ready() {
     });
 }
 
-/// Cancellation, discard and blocked-request interruption.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1210,8 +1200,6 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             let worker = fixture_worker(root.path(), server.transport(), move |_, cancel, _, _| {
                 e.store(true, Ordering::Release);
                 let limit = tilo_test_env::hang_deadline();
-                // The native consumer observes the SAME owned flag supplied
-                // to source refresh and staging, not a separately sampled bool.
                 while !cancel.signal().load(Ordering::Acquire) {
                     if ui::time::now() > limit {
                         return Err("consumer did not receive cancellation".into());
@@ -1377,8 +1365,6 @@ fn preparation_mutation_failure(cancel: bool) {
         );
         let selected = SelectedManifest::from_bytes(&release, bytes.clone()).unwrap();
         let root = tempfile::tempdir().unwrap();
-        // Real zero/prefix records. Lost acknowledgement leaves three valid
-        // survivors, then append a real uncommitted tail for preparation to trim.
         for i in 0..2 {
             let dir = root.path().join(i.to_string());
             fs::create_dir(&dir).unwrap();
@@ -1446,8 +1432,6 @@ fn preparation_mutation_failure(cancel: bool) {
         );
         assert_eq!(flags.cancel.load(Ordering::Acquire), cancel);
         worker.shutdown();
-        // Prove mutation happened before the refusal, and exact good survivors
-        // remain. No HTTP payload was requested after preparation failed.
         assert_eq!(
             fs::read(&leaf).unwrap(),
             vec![if index == 0 { b'E' } else { b'R' }; 1024]
@@ -1480,7 +1464,6 @@ fn preparation_mutation_failure(cancel: bool) {
     }
 }
 
-/// Preparation mutation and held reader failure facts.
 #[test]
 fn failure_facts_keep_errors_and_uncertainty_despite_cancellation() {
     isolated(
@@ -1579,8 +1562,6 @@ fn cancelled_reader_failure(verification: bool) {
         let token = worker.start(server.release(&bytes)).unwrap();
         wait(&worker, Phase::Ready);
         if verification {
-            // Preserve the inode and length, but corrupt bytes before fresh
-            // consumer verification. Cancellation comes only in later checks.
             let mut file = File::options()
                 .write(true)
                 .open(root.path().join("1/final"))
@@ -1600,8 +1581,6 @@ fn cancelled_reader_failure(verification: bool) {
             fs::read(root.path().join("1/final")).unwrap(),
             vec![if verification { b'X' } else { b'R' }; 8192]
         );
-        // Every postcheck runs on both held wrappers, including after a failed
-        // inner verification, restoration or identity/root boundary.
         assert_eq!(
             *checks.lock().unwrap(),
             vec![

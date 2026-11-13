@@ -1,13 +1,6 @@
-//! The keyboard the Keyboard page draws, watching the keys the person
-//! presses ([`KeyboardWatch`]), and what it and the page's add-source picker
-//! show, handed to the effects that answer an agent's keyboard inspection.
-//!
-//! A piece of Settings' own around its shell: the host hands the physical
-//! keys and the foreground events to the window's root, never to a widget
-//! deep in a page, so the drawn keyboard (`ui::KeyboardMap`) sees them only
-//! through whoever holds the page; and what the drawn keyboard shows is read
-//! by Settings' own effects ([`crate::settings_app::SettingsApp::keyboard_inspection`]),
-//! which the toolkit knows nothing of.
+//! The keyboard the Keyboard page draws, watching the keys the person presses.
+//! ([`KeyboardWatch`]), and what it and the page's add-source picker show,
+//! handed to the effects that answer an agent's keyboard inspection.
 
 use std::rc::Rc;
 
@@ -16,8 +9,6 @@ use ui::widget::{Element, Widget};
 use crate::categories::Category;
 use crate::settings_app::SettingsApp;
 
-/// The window's content, its drawn keyboard watching the keys. See the
-/// [module docs](self).
 pub(crate) struct KeyboardWatch {
     app: Rc<SettingsApp>,
     content: Element,
@@ -28,8 +19,6 @@ impl KeyboardWatch {
         Self { app, content }
     }
 
-    /// The keyboard drawn on the Keyboard page, read now; `None` while the
-    /// page draws none.
     fn keyboard_now(&self) -> Option<Result<serde_json::Value, String>> {
         fn mounted_map(widget: &dyn Widget) -> Option<&ui::KeyboardMap> {
             if let Some(map) = widget
@@ -46,9 +35,6 @@ impl KeyboardWatch {
         mounted_map(&*self.content).map(ui::KeyboardMap::inspection_snapshot)
     }
 
-    /// Hand the effects what the drawn keyboard and the add-source picker
-    /// show now: whatever moved them (a key held, a layout, a key inspected,
-    /// a filter typed) went through the window.
     fn share(&self) {
         self.app
             .keyboard_drawn(self.keyboard_now().and_then(Result::ok));

@@ -1,14 +1,7 @@
-//! The library: the queue, recent videos and shared playlists and
-//! bookmarks, in the window's sidebar.
-//!
-//! The library is the toolkit's leading drawer. Wide, it docks beside the
-//! picture at its own width and the picture is laid out beside it. Narrower,
-//! the library takes the window's content area as a screen of its own
-//! ([`PlayerState::library_takes_the_window`]), with "Back to video" leading its
-//! tabs, so the picture is one press away and the sidebar toggle or `Escape`
-//! puts it away again. The window bar's sidebar toggle and `Escape` show and
-//! hide it, so it has no close of its own. Its rows are list rows: choosing a
-//! row plays it, and the actions a row offers show on hover and focus.
+//! The library: the queue, recent videos and shared playlists and bookmarks, in the
+//! window's drawer. Wide it docks beside the picture; narrower it takes the content area
+//! as a screen of its own, with "Back to video" leading its tabs. The bar's sidebar toggle
+//! and Escape show and hide it.
 
 use super::{
     Affine, Button, ButtonFace, Icon, LibraryRowHit, LibraryTab, LocalMediaEntry, PlayerState,
@@ -22,24 +15,10 @@ use ui::widget::{
     SegmentedFace, ToggleGroup,
 };
 
-/// The remove action of a queued video.
-const REMOVE_FROM_QUEUE: RowAction<'static> = RowAction {
-    icon: Icon::X,
-    label: "Remove from queue",
-};
-/// The delete action of a shared playlist or bookmark.
-const DELETE_SHARED: RowAction<'static> = RowAction {
-    icon: Icon::Trash2,
-    label: "Delete",
-};
-/// The jump action of a bookmark on the video that is open.
-const JUMP_TO_BOOKMARK: RowAction<'static> = RowAction {
-    icon: Icon::Play,
-    label: "Jump to bookmark",
-};
-
 impl LibraryTab {
-    const LABELS: [&'static str; 3] = ["Queue", "Recent", "Shared"];
+    fn labels() -> [String; 3] {
+        ["video-queue", "video-recent", "video-shared"].map(crate::i18n::t)
+    }
 
     fn index(self) -> usize {
         match self {
@@ -50,23 +29,23 @@ impl LibraryTab {
     }
 }
 
-/// One row of a list in the sheet.
+fn action(icon: Icon, label: &str) -> (Icon, String) {
+    (icon, crate::i18n::t(label))
+}
+
 struct RowSpec<'a> {
     title: &'a str,
     meta: Option<&'a str>,
     selected: bool,
     focused: bool,
-    actions: Vec<RowAction<'static>>,
+    actions: Vec<(Icon, String)>,
 }
 
-/// Where a row and its actions landed.
 struct RowPlaced {
     row: Rect,
     actions: Vec<Rect>,
 }
 
-/// Paint `specs` as one list from `*y` down in `x0..x1`, clipped to `clip`,
-/// advancing `*y` past the last row.
 fn paint_rows(
     ctx: &mut PaintCtx<'_>,
     specs: &[RowSpec<'_>],
@@ -79,22 +58,27 @@ fn paint_rows(
     for (index, spec) in specs.iter().enumerate() {
         let height = ListRowFace::new(spec.title).height(ctx.text, ctx.theme);
         let row = Rect::new(x0, *y, x1, *y + height);
+        let actions: Vec<RowAction<'_>> = spec
+            .actions
+            .iter()
+            .map(|(icon, label)| RowAction { icon: *icon, label })
+            .collect();
         let probe = ListRowFace::new(spec.title)
-            .actions(&spec.actions)
+            .actions(&actions)
             .interaction(Interaction {
                 hovered: true,
                 ..Interaction::default()
             });
-        let actions = probe.action_rects(row, ctx.theme);
+        let rects = probe.action_rects(row, ctx.theme);
         let visible = row.y1 > clip.y0 && row.y0 < clip.y1;
         let hovered = visible && clip.contains(cursor) && row.contains(cursor);
         if visible {
             let hovered_action = hovered
-                .then(|| actions.iter().position(|rect| rect.contains(cursor)))
+                .then(|| rects.iter().position(|rect| rect.contains(cursor)))
                 .flatten();
             let mut face = ListRowFace::new(spec.title)
                 .selected(spec.selected)
-                .actions(&spec.actions)
+                .actions(&actions)
                 .hovered_action(hovered_action)
                 .interaction(Interaction {
                     hovered,
@@ -109,15 +93,18 @@ fn paint_rows(
             }
             face.paint(ctx, row);
         }
-        placed.push(RowPlaced { row, actions });
+        placed.push(RowPlaced {
+            row,
+            actions: rects,
+        });
         *y += height;
     }
     placed
 }
 
 impl PlayerState {
-    /// Follow `library_visible` with the sheet. The resource action is what
-    /// changes the flag; the drawer only animates it.
+    /// Follow `library_visible` with the drawer, which only animates the flag the
+    /// resource action changes.
     pub(super) fn sync_library_sheet(&mut self) {
         if self.library_visible != self.drawer.is_open() {
             if self.library_visible {
@@ -128,11 +115,9 @@ impl PlayerState {
         }
     }
 
-    /// Lay the library out for the window: docked beside the picture where
-    /// the picture keeps its minimum width, else taking the content area as
-    /// a screen of its own, else floating over the picture down to the
-    /// transport, which stays uncovered. A docked library that changed width
-    /// asks for the player to be laid out beside it again.
+    /// Lay the library out: docked beside the picture where the picture keeps its minimum
+    /// width, else a screen of its own, else floating down to the transport. A docked
+    /// library that changed width asks for the player to be laid out again.
     pub(super) fn resolve_library(&mut self) {
         let content = self.drawer.resolve(self.rect);
         if self.drawer.is_overlay()
@@ -158,11 +143,8 @@ impl PlayerState {
         }
     }
 
-    /// Too narrow to dock, the library takes the window's content area as a
-    /// screen of its own, as the window bar's sidebar toggle does in every
-    /// other app: the picture is reachable from it with "Back to video", and
-    /// the sidebar sets the library wide enough that it fits a list and a
-    /// library's rows.
+    /// Too narrow to dock, the library takes the content area as a screen of its own, as
+    /// the bar's sidebar toggle does in every other app.
     pub(super) fn library_takes_the_window(&self) -> bool {
         self.drawer.is_push()
     }
@@ -180,59 +162,21 @@ impl PlayerState {
         self.shared_bookmark_rect = Rect::ZERO;
     }
 
-    /// Paint the scrim and the sheet, and record every rect the pointer,
-    /// keyboard and assistive technology act on.
-    pub(super) fn paint_library_panel(
+    fn paint_library_tabs(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-    ) {
-        self.clear_library_rects();
-        let sheet = self.drawer.sidebar_rect();
-        if sheet.width() <= 0.0 || (!self.library_visible && self.drawer.reveal() <= 0.0) {
-            return;
-        }
-        let panel_theme = self.drawer.paint_panel(scene, transform, theme);
-        let theme = &panel_theme;
-        let spacing = &theme.tokens.spacing;
-        let (s1, s4) = (f64::from(spacing.s1), f64::from(spacing.s4));
-        let sibling = f64::from(spacing.rhythm.sibling);
-        let inner = Rect::new(sheet.x0 + s4, sheet.y0 + s4, sheet.x1 - s4, sheet.y1 - s4);
-        let cursor = self.last_cursor;
-
-        // Filling a narrow window's content area, the library leads with the
-        // way back to the picture, as a pushed screen does.
-        let mut inner = inner;
-        if self.library_takes_the_window() {
-            let control = ButtonFace::height(ControlSize::Regular, theme);
-            let width = ButtonFace::new(Rect::ZERO, "Back to video")
-                .icon(Icon::ChevronLeft)
-                .role(ButtonRole::Plain)
-                .intrinsic_width(text, theme);
-            self.library_back_rect =
-                Rect::new(inner.x0, inner.y0, inner.x0 + width, inner.y0 + control);
-            Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ButtonFace::new(self.library_back_rect, "Back to video")
-                    .icon(Icon::ChevronLeft)
-                    .role(ButtonRole::Plain)
-                    .hovered(self.library_back_rect.contains(cursor))
-                    .focused(self.library_focus_id.as_deref() == Some("library-back")),
-            );
-            inner.y0 = self.library_back_rect.y1 + sibling;
-        }
-
-        // The library's views: tabs, each as wide as its label.
+        inner: Rect,
+        cursor: Point,
+    ) -> f64 {
         let tab_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let tabs_y0 = inner.y0;
-        let segments = LibraryTab::LABELS.map(ui::widget::Segment::new);
+        let labels = LibraryTab::labels();
+        let tab_labels = labels.each_ref().map(String::as_str);
+        let segments = tab_labels.map(ui::widget::Segment::new);
         let packed = SegmentedFace::partition_segments(
-            Rect::new(inner.x0, tabs_y0, inner.x1, tabs_y0 + tab_h),
+            Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + tab_h),
             &segments,
             ui::widget::SegmentedStyle::Tabs,
             ControlSize::Regular,
@@ -256,18 +200,68 @@ impl PlayerState {
             transform,
             text,
             theme,
-            &SegmentedFace::new(&tab_rects, &LibraryTab::LABELS, self.library_tab.index())
+            &SegmentedFace::new(&tab_rects, &tab_labels, self.library_tab.index())
                 .style(ui::widget::SegmentedStyle::Tabs)
                 .hovered(hovered_tab)
                 .focused(tab_focus),
         );
+        tab_h
+    }
 
-        // Clear, on Recent with something to clear, at the trailing end of
-        // its own row under the tabs.
-        let mut list_top = tabs_y0 + tab_h + sibling;
+    pub(super) fn paint_library_panel(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.clear_library_rects();
+        let sheet = self.drawer.sidebar_rect();
+        if sheet.width() <= 0.0 || (!self.library_visible && self.drawer.reveal() <= 0.0) {
+            return;
+        }
+        let panel_theme = self.drawer.paint_panel(scene, transform, theme);
+        let theme = &panel_theme;
+        let spacing = &theme.tokens.spacing;
+        let (s1, s4) = (f64::from(spacing.s1), f64::from(spacing.s4));
+        let sibling = f64::from(spacing.rhythm.sibling);
+        let inner = Rect::new(sheet.x0 + s4, sheet.y0 + s4, sheet.x1 - s4, sheet.y1 - s4);
+        let cursor = self.last_cursor;
+
+        // Filling a narrow window, the library leads with the way back to the picture, as
+        // a pushed screen does.
+        let mut inner = inner;
+        if self.library_takes_the_window() {
+            let control = ButtonFace::height(ControlSize::Regular, theme);
+            let back = crate::i18n::t("video-back-to-video");
+            let width = ButtonFace::new(Rect::ZERO, &back)
+                .icon(Icon::ChevronLeft)
+                .role(ButtonRole::Plain)
+                .intrinsic_width(text, theme);
+            self.library_back_rect =
+                Rect::new(inner.x0, inner.y0, inner.x0 + width, inner.y0 + control);
+            Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ButtonFace::new(self.library_back_rect, &back)
+                    .icon(Icon::ChevronLeft)
+                    .role(ButtonRole::Plain)
+                    .hovered(self.library_back_rect.contains(cursor))
+                    .focused(self.library_focus_id.as_deref() == Some("library-back")),
+            );
+            inner.y0 = self.library_back_rect.y1 + sibling;
+        }
+
+        let tab_h = self.paint_library_tabs(scene, transform, text, theme, inner, cursor);
+
+        // Clear, on Recent with something to clear, at the trailing end of its own row.
+        let mut list_top = inner.y0 + tab_h + sibling;
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
             let control = ButtonFace::height(ControlSize::Regular, theme);
-            let width = ButtonFace::new(Rect::ZERO, "Clear")
+            let clear = crate::i18n::t("video-library-clear");
+            let width = ButtonFace::new(Rect::ZERO, &clear)
                 .role(ButtonRole::Plain)
                 .intrinsic_width(text, theme);
             self.library_clear_rect =
@@ -277,7 +271,7 @@ impl PlayerState {
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(self.library_clear_rect, "Clear")
+                &ButtonFace::new(self.library_clear_rect, &clear)
                     .role(ButtonRole::Plain)
                     .hovered(self.library_clear_rect.contains(cursor))
                     .focused(self.library_focus_id.as_deref() == Some("library-clear")),
@@ -299,7 +293,6 @@ impl PlayerState {
         }
     }
 
-    /// The queue or the recent list.
     fn paint_local_library(
         &mut self,
         scene: &mut Scene,
@@ -316,13 +309,14 @@ impl PlayerState {
         let cursor = self.last_cursor;
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         if entries.is_empty() {
+            let empty = if tab == LibraryTab::Queue {
+                crate::i18n::t("video-queue-empty")
+            } else {
+                crate::i18n::t("video-recent-empty")
+            };
             let content = EmptyStateContent {
                 icon: Some(Icon::ListVideo),
-                ..EmptyStateContent::new(if tab == LibraryTab::Queue {
-                    "Your queue is empty"
-                } else {
-                    "No recent videos"
-                })
+                ..EmptyStateContent::new(&empty)
             };
             let _ = EmptyState::paint(&mut ctx, list, &content, cursor);
             return;
@@ -343,7 +337,7 @@ impl PlayerState {
                     focused: focus == Some(entry.id.as_str())
                         || focus == Some(remove_focus.as_str()),
                     actions: if tab == LibraryTab::Queue {
-                        vec![REMOVE_FROM_QUEUE]
+                        vec![action(Icon::X, "video-remove-from-queue")]
                     } else {
                         Vec::new()
                     },
@@ -371,8 +365,6 @@ impl PlayerState {
         }
     }
 
-    /// The shared tab: the two actions that add to the shared library, then
-    /// its playlists and bookmarks.
     #[allow(
         clippy::too_many_lines,
         reason = "one tab: its two actions, its two lists and the hit rects they publish"
@@ -403,12 +395,12 @@ impl PlayerState {
         for (rect, label, focus) in [
             (
                 self.shared_watch_later_rect,
-                "Watch later",
+                crate::i18n::t("video-watch-later"),
                 "shared-watch-later",
             ),
             (
                 self.shared_bookmark_rect,
-                "Bookmark time",
+                crate::i18n::t("video-bookmark-time"),
                 "shared-bookmark",
             ),
         ] {
@@ -417,7 +409,7 @@ impl PlayerState {
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(rect, label)
+                &ButtonFace::new(rect, &label)
                     .disabled(!has_media)
                     .hovered(rect.contains(cursor))
                     .focused(self.library_focus_id.as_deref() == Some(focus)),
@@ -432,12 +424,12 @@ impl PlayerState {
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         let library = &self.shared_library;
         if library.playlists.is_empty() && library.annotations.is_empty() {
+            let title = crate::i18n::t("video-shared-empty");
+            let detail = crate::i18n::t("video-shared-empty-detail");
             let content = EmptyStateContent {
                 icon: Some(Icon::ListVideo),
-                message: Some(
-                    "Everyone in this workspace sees the playlists and bookmarks added here.",
-                ),
-                ..EmptyStateContent::new("No shared playlists or bookmarks yet")
+                message: Some(&detail),
+                ..EmptyStateContent::new(&title)
             };
             let _ = EmptyState::paint(&mut ctx, region, &content, cursor);
             return;
@@ -460,7 +452,7 @@ impl PlayerState {
                 meta: None,
                 selected: false,
                 focused: focus == Some(format!("shared-delete-{id}").as_str()),
-                actions: vec![DELETE_SHARED],
+                actions: vec![action(Icon::Trash2, "video-delete")],
             })
             .collect();
         let jumpable: Vec<bool> = annotations
@@ -485,9 +477,12 @@ impl PlayerState {
                 focused: focus == Some(format!("shared-jump-{id}").as_str())
                     || focus == Some(format!("shared-delete-{id}").as_str()),
                 actions: if *jumpable {
-                    vec![JUMP_TO_BOOKMARK, DELETE_SHARED]
+                    vec![
+                        action(Icon::Play, "video-jump-to-bookmark"),
+                        action(Icon::Trash2, "video-delete"),
+                    ]
                 } else {
-                    vec![DELETE_SHARED]
+                    vec![action(Icon::Trash2, "video-delete")]
                 },
             })
             .collect();
@@ -507,7 +502,7 @@ impl PlayerState {
             *y += line + s2;
         };
         if !playlists.is_empty() {
-            heading(&mut ctx, "Playlists", &mut y);
+            heading(&mut ctx, &crate::i18n::t("video-playlists"), &mut y);
             let placed = paint_rows(
                 &mut ctx,
                 &playlist_specs,
@@ -529,7 +524,7 @@ impl PlayerState {
             y += s4;
         }
         if !annotations.is_empty() {
-            heading(&mut ctx, "Bookmarks", &mut y);
+            heading(&mut ctx, &crate::i18n::t("video-bookmarks"), &mut y);
             let placed = paint_rows(
                 &mut ctx,
                 &annotation_specs,
@@ -587,7 +582,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
     use ui::a11y::{AccessNode, AccessState, Role};
     let mut nodes = vec![
         AccessNode::new(Role::Button)
-            .with_name("Add current video to Watch later")
+            .with_name(crate::i18n::t("video-add-to-watch-later"))
             .with_action_target("video-player.shared.watch-later")
             .with_bounds(app.shared_watch_later_rect)
             .with_state(AccessState {
@@ -597,7 +592,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
                 ..Default::default()
             }),
         AccessNode::new(Role::Button)
-            .with_name("Bookmark current timestamp")
+            .with_name(crate::i18n::t("video-bookmark-timestamp"))
             .with_action_target("video-player.shared.bookmark")
             .with_bounds(app.shared_bookmark_rect)
             .with_state(AccessState {
@@ -614,11 +609,11 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
                 let is_jump = focus.starts_with("shared-jump-");
                 AccessNode::new(Role::Button)
                     .with_name(if is_jump {
-                        "Jump to timestamp annotation"
+                        crate::i18n::t("video-jump-to-note")
                     } else if target.contains(".annotation.") {
-                        "Delete timestamp annotation"
+                        crate::i18n::t("video-delete-note")
                     } else {
-                        "Delete shared playlist"
+                        crate::i18n::t("video-delete-shared-playlist")
                     })
                     .with_action_target(target)
                     .with_bounds(rect)
@@ -644,10 +639,16 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
                 .iter()
                 .chain(app.recent.iter())
                 .find(|entry| entry.id == *id)
-                .map_or("Local video", |entry| entry.title.as_str());
+                .map_or_else(
+                    || crate::i18n::t("video-local-video"),
+                    |entry| entry.title.clone(),
+                );
             AccessNode::new(Role::Button)
-                .with_name(format!("Play {title}"))
-                .with_description("Opens this device-local video")
+                .with_name(crate::i18n::t_args(
+                    "video-play",
+                    &[("title", ui::i18n::ArgValue::Text(title))],
+                ))
+                .with_description(crate::i18n::t("video-local-only-detail"))
                 .with_action_target(format!("video-player.library.play.{id}"))
                 .with_bounds(row.play)
                 .with_state(AccessState {
@@ -660,8 +661,8 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
     if app.library_tab == LibraryTab::Recent && !app.recent.is_empty() {
         nodes.push(
             AccessNode::new(Role::Button)
-                .with_name("Clear recent videos")
-                .with_description("Removes recent-history entries from this device")
+                .with_name(crate::i18n::t("video-clear-recent"))
+                .with_description(crate::i18n::t("video-clear-recent-detail"))
                 .with_action_target("video-player.library.clear")
                 .with_bounds(app.library_clear_rect)
                 .with_state(AccessState {
@@ -674,8 +675,8 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
     nodes.extend(app.library_row_hits.iter().filter_map(|row| {
         row.remove.map(|remove| {
             AccessNode::new(Role::Button)
-                .with_name("Remove from queue")
-                .with_description("Removes this item from the session-only queue")
+                .with_name(crate::i18n::t("video-remove-from-queue"))
+                .with_description(crate::i18n::t("video-remove-from-queue-detail"))
                 .with_action_target(format!("video-player.library.remove.{}", row.id))
                 .with_bounds(remove)
                 .with_state(AccessState {

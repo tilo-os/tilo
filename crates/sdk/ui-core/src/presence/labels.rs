@@ -19,6 +19,21 @@
 use std::collections::{BTreeMap, HashMap};
 use tilo_sort::CompactSort as _;
 
+/// What a person who gave no name is called, on every surface that names them: never their key.
+#[must_use]
+pub fn guest_label() -> String {
+    "Guest".to_owned()
+}
+
+/// `name` where it is a name to show: not blank, and not the hex of a key, which is how a
+/// person is known before they named themselves and is never read as their name.
+#[must_use]
+pub fn shown_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    let key = name.len() >= 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+    (!name.is_empty() && !key).then_some(name)
+}
+
 /// The numbers a workspace's participants are told apart by, resolved once from
 /// its roster and read for each label shown. Cheap to rebuild whenever the
 /// roster changes.

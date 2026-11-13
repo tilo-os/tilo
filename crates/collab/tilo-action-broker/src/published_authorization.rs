@@ -158,13 +158,12 @@ mod tests {
                 .unwrap()
                 .with_contract(contract.clone());
                 let answer = window.invocation_answer(WRITER, &resource, &spec, None, None);
-                let direct = window.standing().bounds.is_empty();
-                let windowed = match ui::permissions::admit_in_window(answer, &spec, direct, false)
-                {
-                    Ok(()) => Answered::Runs,
-                    Err(DoorError::ConfirmationRequired) => Answered::AsksFirst,
-                    Err(_) => Answered::Refused,
-                };
+                let windowed =
+                    match ui::permissions::admit_in_window(answer, &spec, window.asker(), false) {
+                        Ok(()) => Answered::Runs,
+                        Err(DoorError::ConfirmationRequired) => Answered::AsksFirst,
+                        Err(_) => Answered::Refused,
+                    };
                 assert_eq!(windowed, broker, "{role:?} {id}");
             }
         }

@@ -1,9 +1,5 @@
-//! What folder imports offer the palette, agents and scripts: their effects
-//! and the live rows of the imports on this computer.
-//!
-//! Imports copy private folders on this device. They are effects of the
-//! imager resource, never document actions, and their published rows and
-//! receipts stay path-free.
+//! What folder imports offer the palette, agents and scripts, and the row they
+//! publish.
 
 use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
 use ui::framework::{EffectStatus, LiveRow};
@@ -11,19 +7,14 @@ use ui::tilo_resource::{self, ActionRef, Effect};
 
 use super::strings;
 
-/// The live row of the folder imports, beneath the imager resource.
 pub const IMPORT_ROW_ID: &str = "imager.import";
 
 /// Folder imports' effects. Each answers with the imports' path-free status
-/// ([`ImportProjection`]) as it stands afterwards; a job answers when its
-/// work settled.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "imager.import")]
 pub enum ImportEffect {
-    /// Read current import status.
-    ///
-    /// For the person at this computer it includes the chosen folders.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-read-status")]
     ReadStatus,
     /// Open Accounts to explicitly connect providers after trusted identity setup.
     #[effect(view, returns, kind = "read")]
@@ -31,77 +22,77 @@ pub enum ImportEffect {
     /// Open Store to choose apps; installation remains a separate action.
     #[effect(view, returns, kind = "read")]
     OpenStore,
-    /// Choose source folder.
     #[effect(attended, returns, kind = "read")]
+    #[effect(label = "imager-import-action-choose-source")]
     ChooseSource,
-    /// Choose destination folder.
     #[effect(attended, returns, kind = "read")]
+    #[effect(label = "imager-import-action-choose-destination")]
     ChooseDestination,
-    /// Clear folder selection.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-clear-selection")]
     ClearSelection,
-    /// Prepare copy review.
     #[effect(job)]
+    #[effect(label = "imager-import-action-prepare-review")]
     PrepareReview,
-    /// Check identity setup.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-check-identity")]
     CheckIdentity,
-    /// Copy reviewed folders.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-start-reviewed-folders")]
     StartReviewedFolders,
-    /// Decide later for all folders.
     #[effect(returns)]
+    #[effect(label = "imager-import-action-later-all")]
     LaterAll,
-    /// Start copy.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-start")]
     StartCopy {
         #[param("Id of the reviewed copy")]
         operation_id: String,
     },
-    /// Continue copy.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-retry")]
     RetryCopy {
         #[param("Id of the copy to continue")]
         operation_id: String,
     },
-    /// Request to stop copy.
     #[effect(returns)]
+    #[effect(label = "installer-recovery-cancel")]
     CancelCopy {
         #[param("Id of the running copy")]
         operation_id: String,
     },
-    /// Show or hide copy details.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-toggle-details")]
     ToggleDetails {
         #[param("Id of the copy")]
         operation_id: String,
     },
-    /// Load next issue page.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-next-issues")]
     NextIssues {
         #[param("Id of the copy")]
         operation_id: String,
     },
-    /// Return to first issue page.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-first-issues")]
     FirstIssues {
         #[param("Id of the copy")]
         operation_id: String,
     },
-    /// Review destination.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-review-destination")]
     ReviewFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
-    /// Choose another destination.
     #[effect(attended, job, cancellable)]
+    #[effect(label = "imager-import-action-choose-folder-destination")]
     ChooseFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
-    /// Choose how one saved folder comes over: copied once, or decided later.
     #[effect(returns)]
+    #[effect(label = "imager-import-action-folder-mode")]
     SetFolderMode {
         #[param("Id of the saved folder choice")]
         folder_id: String,
@@ -111,7 +102,6 @@ pub enum ImportEffect {
 }
 
 impl ImportEffect {
-    /// Whether the effect answers once its background work settled.
     pub(super) const fn background(&self) -> bool {
         matches!(
             self,
@@ -244,7 +234,6 @@ impl ImportProjection {
     }
 }
 
-/// Each effect's label, as a message key.
 const LABELS: &[(&str, &str)] = &[
     ("read-status", "imager-import-action-read-status"),
     ("open-accounts", "imager-journey-accounts"),
@@ -279,12 +268,9 @@ const LABELS: &[(&str, &str)] = &[
     ("set-folder-mode", "imager-import-action-folder-mode"),
 ];
 
-/// The folder modes [`ImportEffect::SetFolderMode`] takes, as callers
-/// spell them.
 pub const FOLDER_COPY: &str = "copy";
 pub const FOLDER_LATER: &str = "later";
 
-/// The label of the effect `id` in the person's language.
 fn label(id: &str) -> String {
     LABELS
         .iter()
@@ -292,8 +278,6 @@ fn label(id: &str) -> String {
         .map_or_else(|| id.to_owned(), |(_, key)| strings::t(key))
 }
 
-/// An effect that cannot run now: `code` names why for programs, `reason`
-/// (a message key) for people.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Blocked {
     pub id: &'static str,
@@ -301,7 +285,6 @@ pub struct Blocked {
     pub reason: &'static str,
 }
 
-/// The import effects that cannot run in `state`, with why.
 #[must_use]
 pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
     let continuation = state.continuation.as_ref();
@@ -372,8 +355,6 @@ pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
     .collect()
 }
 
-/// The import effects as callers see them now: in the person's language,
-/// with what cannot run.
 #[must_use]
 pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
     let effect = |id| ActionRef::<ImportEffect, ()>::new(id, &[], ImportEffect::kind());
@@ -386,7 +367,6 @@ pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
         .collect()
 }
 
-/// `effect` bound to its row, offered when `available`.
 fn offer(effect: &ImportEffect, available: bool, code: &str, reason: &str) -> ActionSpec {
     let mut spec = effect.bound();
     spec.type_mut().label = label(effect.id());
@@ -529,8 +509,6 @@ fn folder_row(folder: &FolderProjection) -> LiveRow {
     })
 }
 
-/// The imports on this computer as one live row beneath the imager
-/// resource: the saved folder choices, then each copy.
 #[must_use]
 pub fn row(state: &ImportProjection) -> LiveRow {
     let mut row = LiveRow::new(
@@ -640,29 +618,8 @@ mod tests {
     }
 
     #[test]
-    fn import_action_presentation_uses_the_active_host_locale_catalog() {
-        ui::I18nManager::install(
-            "en-US",
-            "fr",
-            &[
-                ("en-US", "test-fallback = fallback"),
-                (
-                    "fr",
-                    r"
-imager-import-resource-root = FR imports
-imager-import-badge-root = FR badge
-imager-import-detail-root = FR phase { $phase } { $operations } { $error }
-imager-import-action-read-status = FR lire
-imager-import-action-first-issues = FR première page
-imager-import-action-choose-source = FR source
-imager-import-action-choose-destination = FR destination
-imager-import-action-clear-selection = FR clear
-imager-import-action-prepare-review = FR review
-",
-                ),
-            ],
-        )
-        .unwrap();
+    fn import_action_presentation_reads_the_crates_catalog() {
+        assert_eq!(ui::I18nManager::current_locale(), "en-US");
         let projection = ImportProjection {
             phase: ImportStatusPhase::Ready,
             status_is_error: false,
@@ -698,7 +655,8 @@ imager-import-action-prepare-review = FR review
 
         let published = row(&projection).into_resource();
 
-        assert_eq!(published.label, "FR imports");
+        assert_eq!(published.label, strings::t("imager-import-resource-root"));
+        assert_ne!(published.label, "imager-import-resource-root");
         assert_eq!(
             published.children[0]
                 .actions
@@ -706,17 +664,23 @@ imager-import-action-prepare-review = FR review
                 .find(|action| action.id == "first-issues")
                 .unwrap()
                 .label,
-            "FR première page"
+            strings::t("imager-import-action-first-issues")
         );
         let statuses = statuses(&projection);
         assert!(statuses.contains(&EffectStatus::labelled(
             ImportEffect::READ_STATUS,
-            "FR lire"
+            strings::t("imager-import-action-read-status")
         )));
         assert!(statuses.contains(&EffectStatus::labelled(
             ImportEffect::CHOOSE_SOURCE,
-            "FR source"
+            strings::t("imager-import-action-choose-source")
         )));
-        assert_eq!(ui::I18nManager::current_locale(), "fr");
+        assert!(
+            crate::resource::CATALOG
+                .every_value("imager-import-resource-root")
+                .len()
+                > 1,
+            "the row's name is written in more than the source language"
+        );
     }
 }

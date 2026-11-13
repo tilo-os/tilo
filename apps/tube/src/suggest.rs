@@ -1,10 +1,5 @@
-//! `YouTube`'s answers for what the platform search is being asked, while
-//! the person types: the few top videos for the query, under the row that
-//! searches `YouTube` for it.
-//!
-//! Bounded by construction: one request in flight per window, asked only
-//! once the typing has paused for [`DEBOUNCE`], and always for the latest
-//! query, so a burst of keystrokes costs one request, not one per letter.
+//! `YouTube`'s answers for what the platform search is being asked, while the person types: the few
+//! top videos for the query, under the row that searches `YouTube` for it.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,25 +13,19 @@ pub const DEBOUNCE: Duration = Duration::from_millis(275);
 /// How many videos an answer offers.
 pub const SUGGESTED_VIDEOS: usize = 5;
 
-/// What `YouTube` answered for the platform search, as the window holds it.
 #[derive(Clone, Debug, Default)]
 pub struct Suggested {
-    /// The query `videos` answer.
     pub query: String,
     pub videos: Vec<Video>,
-    /// The latest query is asked and not yet answered.
     pub awaiting: bool,
 }
 
 impl Suggested {
-    /// Whether `query`'s answer is in.
     #[must_use]
     pub fn answered(&self, query: &str) -> bool {
         !self.query.is_empty() && self.query == query
     }
 
-    /// The videos answered for `query`; none when what is held answers
-    /// another query.
     #[must_use]
     pub fn videos_for(&self, query: &str) -> &[Video] {
         if self.answered(query) {
@@ -47,16 +36,12 @@ impl Suggested {
     }
 }
 
-/// The query waiting to be asked, shared by the window and the one task
-/// asking. Cheap to clone.
 #[derive(Clone, Default)]
 pub struct Suggesting(Arc<Mutex<Wanted>>);
 
 #[derive(Default)]
 struct Wanted {
-    /// The latest query not yet asked.
     query: Option<String>,
-    /// Whether a task is asking (or waiting out the pause to ask).
     asking: bool,
 }
 
@@ -65,22 +50,16 @@ impl Suggesting {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Ask for `query`'s videos, replacing any query not yet asked. True
-    /// when no task is asking, so the caller starts one ([`ask_youtube`]).
     pub fn want(&self, query: &str) -> bool {
         let mut wanted = self.wanted();
         wanted.query = Some(query.to_owned());
         !std::mem::replace(&mut wanted.asking, true)
     }
 
-    /// Stop asking: no task could start.
     pub fn give_up(&self) {
         *self.wanted() = Wanted::default();
     }
 
-    /// The query to ask now: the latest, once nothing newer arrived during
-    /// a [`DEBOUNCE`] pause. `None` (and the task ends) when nothing is
-    /// wanted.
     async fn next(&self) -> Option<String> {
         loop {
             let seen = {
@@ -100,9 +79,6 @@ impl Suggesting {
     }
 }
 
-/// Ask `fetch` for the videos of each query `suggesting` wants, one at a
-/// time, posting each answer (empty when the source failed, so the search
-/// stops waiting) through `post`.
 pub async fn ask_youtube<F, A>(suggesting: Suggesting, fetch: F, post: impl Fn(Update))
 where
     F: Fn(String) -> A,
@@ -142,7 +118,6 @@ mod tests {
                 async move {
                     asked.lock().unwrap().push(query.clone());
                     if query == "cat" {
-                        // Typed on while the first answer is on its way.
                         assert!(!typing.want("cats"), "one request in flight");
                     }
                     (0..8).map(|at| video(&format!("{query}{at}"))).collect()

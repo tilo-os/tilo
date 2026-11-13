@@ -24,7 +24,7 @@ use ui::widget::{
 };
 
 use crate::effects::ConsoleEffect;
-use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf, who};
+use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
 
 /// What Agents reads: every run in every workspace.
 pub(crate) fn query() -> wire::RunsQuery {
@@ -148,14 +148,14 @@ impl Seen {
     }
 }
 
-/// The place's content and its header's commands: every run, or the run
-/// chosen, whose way back is the shell's.
-pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, Vec<Element>) {
+/// The place's content: every run, or the run chosen, whose way back is the
+/// shell's.
+pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     let runs = &reads.runs;
     let door_state = reads.door.answer().state();
     let chosen = nav.run.get();
     let nav = nav.clone();
-    let content = Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
+    Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
         let (nav, runs, chosen) = (nav.clone(), runs.clone(), chosen.clone());
         cx.switch(&door_state, move |cx, door| {
             let seen = Seen {
@@ -171,8 +171,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, 
                 (None, None) => list(cx, &nav, &seen),
             }
         })
-    })) as Element;
-    (content, Vec::new())
+    })) as Element
 }
 
 /// The door as far as it answered: nothing connected until it does, and
@@ -206,7 +205,7 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
         .runs
         .runs
         .iter()
-        .filter(|run| filter.shows(run))
+        .filter(|run| crate::record::shows(&filter, run))
         .collect();
     if shown.is_empty() {
         let state = if seen.runs.pending {
@@ -254,14 +253,9 @@ pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bo
         run.now
             .as_ref()
             .filter(|_| working)
-            .map_or_else(|| who(&run.agent), now_line),
+            .map_or_else(|| started_by(&run.agent), now_line),
     )
-    .secondary(run.workspace.clone().unwrap_or_else(|| {
-        trf(
-            "console-run-actions",
-            &[("count", run.actions.len().into())],
-        )
-    }))
+    .secondary(run.workspace.clone().unwrap_or_else(|| run_size(run)))
     .meta(ago(run.last_ms))
     .selected(selected);
     if working {
@@ -269,6 +263,43 @@ pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bo
     }
     let (chosen, id) = (nav.clone(), run.id.clone());
     Box::new(row.on_view(move || chosen.open_run(&id)))
+}
+
+/// Who started a run, as its row says it: "Started by you" for the reader's own, the starter's
+/// name for someone else's. The row already shows the agent's face and what it was asked, so
+/// naming the agent again ("Claude Code for you") said nothing new.
+fn started_by(agent: &wire::Author) -> String {
+    starter(agent).unwrap_or_else(|| agent.name.clone())
+}
+
+/// The line naming who started a run, when the agent worked for someone.
+fn starter(agent: &wire::Author) -> Option<String> {
+    if agent.for_reader {
+        return Some(tr("console-run-started-by-you"));
+    }
+    agent
+        .on_behalf_of
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| {
+            trf(
+                "console-run-started-by",
+                &[("name", name.to_owned().into())],
+            )
+        })
+}
+
+/// How much a run did, as its row says it: the changes it made, as its finished notice counts
+/// them ("4 changes" for four paragraphs written in one note), else the commands and pages it
+/// went through.
+fn run_size(run: &wire::AgentRun) -> String {
+    match run.changes() {
+        0 => trf(
+            "console-run-actions",
+            &[("count", run.actions.len().into())],
+        ),
+        changes => trf("console-run-changes", &[("count", changes.into())]),
+    }
 }
 
 /// What a working run is doing now, as its row says it: "Running `cargo test`…", "Editing
@@ -412,7 +443,10 @@ pub(crate) fn inspect(
     run: &wire::AgentRun,
 ) -> Element {
     let doors = Doors::of(cx);
-    let mut facts = vec![Fact::with_icon(Icon::Bot, who(&run.agent))];
+    let mut facts = vec![Fact::with_icon(Icon::Bot, run.agent.name.clone())];
+    if let Some(starter) = starter(&run.agent) {
+        facts.push(Fact::with_icon(Icon::User, starter));
+    }
     facts.extend(
         run.workspace
             .clone()
@@ -909,4 +943,28 @@ fn well(lines: Vec<Element>) -> Element {
         Column::push,
     );
     Box::new(Surface::new(SurfaceLevel::Raised, Box::new(column)).padded(Rhythm::Tight))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_by(for_reader: bool, on_behalf_of: Option<&str>) -> wire::Author {
+        wire::Author {
+            name: "Claude Code".to_owned(),
+            relation: wire::Relation::Software,
+            kind: ui::tilo_actions::ActorKind::Agent,
+            for_reader,
+            on_behalf_of: on_behalf_of.map(str::to_owned),
+            ..wire::Author::default()
+        }
+    }
+
+    /// A run's row names who started it, not the agent its face already shows.
+    #[test]
+    fn a_run_row_says_who_started_it() {
+        assert_eq!(started_by(&run_by(true, Some("Ada"))), "Started by you");
+        assert_eq!(started_by(&run_by(false, Some("Ada"))), "Started by Ada");
+        assert_eq!(started_by(&run_by(false, None)), "Claude Code");
+    }
 }

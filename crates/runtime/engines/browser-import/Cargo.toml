@@ -48,7 +48,7 @@ runtime-dylib = { path = "../../runtime-dylib", optional = true }
 browser-continuity = { workspace = true, features = ["native"], optional = true }
 # The SQLite browser-continuity reads profiles with; only the self-check names
 # it, to write the database it reads back.
-rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"], optional = true }
 tempfile = { workspace = true, optional = true }
 # The website-session codecs, whose account custody the accounts engine
 # below provides.

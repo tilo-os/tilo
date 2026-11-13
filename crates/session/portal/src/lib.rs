@@ -750,11 +750,12 @@ impl Service for Portal {
     fn resources(&self) -> Vec<ResourceSpec> {
         let controls = self.controls();
         vec![
-            ResourceSpec::new(PORTAL_RESOURCE, "portal", "Portal").with_children(
-                self.parts(&controls)
-                    .into_iter()
-                    .flat_map(Published::resources),
-            ),
+            ResourceSpec::new(PORTAL_RESOURCE, "portal", crate::i18n::t("portal-resource"))
+                .with_children(
+                    self.parts(&controls)
+                        .into_iter()
+                        .flat_map(Published::resources),
+                ),
         ]
     }
 

@@ -1,7 +1,7 @@
 //! Shared retained widgets and the framework's consented file chooser.
 
 use ui::framework::{Effected, LaunchInput, ResourceApp, ViewCx};
-use ui::i18n::{EmbeddedCatalog, I18nManager};
+use ui::i18n::EmbeddedCatalog;
 use ui::portal::{FileFilter, PickRequest};
 use ui::tilo_resource::{self, Effect, Invoke};
 use ui::tokens::TextRole;
@@ -13,10 +13,10 @@ use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport,
 use crate::resource::{Project as ChipProject, ProjectState, import};
 use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::view::CATALOG.t(key)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -243,6 +243,7 @@ impl ResourceApp for ChipDesignShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Chip Design";
+    const TITLE_KEY: &'static str = "chip-design-app-title";
     // Content collection currently stages non-media transfers with a .bin name.
     // Both routes validate the complete bounded report before any action is sent.
     const OPENS: &'static [&'static str] = &["application/json", "application/octet-stream"];
@@ -668,7 +669,7 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
             if let Some(synthesis) = &variant.synthesis {
                 for memory in &synthesis.memories {
                     sections.push((
-                        I18nManager::format(
+                        crate::view::CATALOG.t_args(
                             "chip-study-memory-of",
                             &[
                                 ("memory", memory.name.clone().into()),
@@ -824,7 +825,7 @@ fn study_memory_properties(
     vec![
         property(
             "chip-study-memory-name",
-            &I18nManager::format(
+            &crate::view::CATALOG.t_args(
                 "chip-study-memory-of",
                 &[
                     ("memory", memory.name.clone().into()),
@@ -1005,5 +1006,27 @@ mod agent_disclosure_tests {
         {
             panic!("{failures}");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(catalogue.t("chip-value-yes"), "Ja");
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("chip-value-yes"), "Yes");
     }
 }

@@ -46,7 +46,7 @@ pub struct Timeline {
     pub stack: Ordered<Clip>,
 }
 
-#[resource(kind = "test.timeline", label = "Timeline")]
+#[resource(kind = "test.timeline", catalogue = "tests/locales")]
 impl Timeline {
     /// Add a clip with an id of its own.
     #[action]
@@ -185,7 +185,10 @@ fn ids_made_inside_a_verb_replay_identically_and_surfaces_bind_verbs() {
 
     let here = Timeline::ADD_CLIP
         .bind(timeline::AddClip::paths().start, 7.5)
-        .declaration("add-clip-here", "Add a clip here")
+        .declaration(
+            "add-clip-here",
+            tilo_resource::word!("test-timeline-add-clip-here", catalogue = "tests/locales"),
+        )
         .unwrap();
     assert_eq!(
         here.params

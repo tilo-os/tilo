@@ -118,12 +118,11 @@ impl Source {
         if !self.time.is_finite() {
             return Err("surface shader time is not a number".to_owned());
         }
-        check(&self.wgsl)?;
-        // Checked against the grammar is not yet drawable: what the
-        // interpreter cannot run is refused here, at load, rather than
-        // drawn as a fallback on every part.
-        crate::part_paint::shader::probe(&self.wgsl)
-            .map_err(|reason| format!("surface shader cannot be drawn: {reason}"))
+        // Its program is checked once the code is in; the theme is read
+        // again then (`part_paint::SURFACE_SHADER`).
+        crate::part_paint::SURFACE_SHADER
+            .get()
+            .map_or(Ok(()), |code| (code.admit)(&self.wgsl))
     }
 }
 

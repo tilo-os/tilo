@@ -21,9 +21,11 @@ pub fn held_wall_clock() -> SharedWall {
     let wall = SharedWall::default();
     wall.follow();
     wall.pin(
-        tilo_clock::UNIX_EPOCH
-            .checked_add(tilo_clock::Duration::from_millis(millis.unsigned_abs()))
-            .unwrap_or(tilo_clock::UNIX_EPOCH),
+        tilo_clock::time::UNIX_EPOCH
+            .checked_add(tilo_clock::time::Duration::from_millis(
+                millis.unsigned_abs(),
+            ))
+            .unwrap_or(tilo_clock::time::UNIX_EPOCH),
     );
     wall
 }

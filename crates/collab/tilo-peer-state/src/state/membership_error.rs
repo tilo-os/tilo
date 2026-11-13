@@ -48,7 +48,7 @@ pub enum MembershipError {
     UnreadableAccess,
     /// The governance document's row for the device does not decode.
     #[error("the governed identity row does not decode")]
-    MalformedIdentity(#[source] std::sync::Arc<serde_json::Error>),
+    MalformedIdentity(#[source] std::sync::Arc<crate::state::RowError>),
 }
 impl From<backend::CertificateLookupError> for MembershipError {
     fn from(error: backend::CertificateLookupError) -> Self {

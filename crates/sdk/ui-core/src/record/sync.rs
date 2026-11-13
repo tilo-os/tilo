@@ -156,6 +156,17 @@ impl RecordSync {
         (!own.is_empty()).then_some(DocumentMutation::Incremental(own))
     }
 
+    /// Keep `mutation`, the last this replica took to send
+    /// ([`Self::take_set_aside`], or the record whole the first time), to go
+    /// out again: its caller could not send it. The record whole is sent
+    /// whole again, as if never sent.
+    pub fn put_back(&mut self, mutation: DocumentMutation) {
+        match mutation {
+            DocumentMutation::Snapshot(_) => *self = Self::new(),
+            DocumentMutation::Incremental(bytes) => self.unsent.insert(0, bytes),
+        }
+    }
+
     /// Whether `bytes` build only on changes `doc` holds: an incremental run
     /// that builds on nothing here belongs to another record, or arrived
     /// ahead of what it builds on.
@@ -274,6 +285,49 @@ mod tests {
         assert!(matches!(own.mutation, DocumentMutation::Incremental(_)));
         sync.advance(own.heads);
         assert!(sync.take_own(&store, &want.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn what_a_caller_could_not_send_is_put_back_to_go_again_first() {
+        let (store, want) = opened("ours");
+        let mut sync = RecordSync::new();
+        let first = sync
+            .take_outbound(&store, &want.id)
+            .unwrap()
+            .expect("a snapshot");
+        sync.advance(first.heads);
+        sync.put_back(first.mutation);
+        assert!(!sync.snapshotted(), "the record whole goes whole again");
+        let again = sync
+            .take_outbound(&store, &want.id)
+            .unwrap()
+            .expect("the snapshot again");
+        assert!(matches!(again.mutation, DocumentMutation::Snapshot(_)));
+        sync.advance(again.heads);
+
+        let mine = |text: &str| {
+            store.with(&want.id, |doc| {
+                put_text(doc, text);
+                doc.commit();
+            });
+        };
+        mine("mine");
+        sync.set_aside(&store, &want.id).unwrap();
+        let Some(DocumentMutation::Incremental(earlier)) = sync.take_set_aside() else {
+            panic!("the change was set aside");
+        };
+        mine("later");
+        sync.set_aside(&store, &want.id).unwrap();
+        sync.put_back(DocumentMutation::Incremental(earlier.clone()));
+        let Some(DocumentMutation::Incremental(all)) = sync.take_set_aside() else {
+            panic!("both changes go");
+        };
+        assert!(all.len() > earlier.len());
+        assert_eq!(
+            &all[..earlier.len()],
+            &earlier[..],
+            "what was put back goes first"
+        );
     }
 
     #[test]

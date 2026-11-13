@@ -502,7 +502,8 @@ impl Walk<'_> {
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
-                | StepKind::Task { .. } => {}
+                | StepKind::Task { .. }
+                | StepKind::Read { .. } => {}
             }
         }
         self.namings = outer;
@@ -592,6 +593,7 @@ fn refer_name_step(shared: &Shared<'_>, step: &Step) -> Option<String> {
             Some(title(shared, step).trim_end_matches(':').to_owned())
         }
         StepKind::If { .. } => None,
+        StepKind::Read { .. } => Some(title(shared, step)),
         StepKind::ForEach { item, .. } | StepKind::SetVar { name: item, .. } => Some(item.clone()),
         StepKind::Ask { param } => Some(param.name.to_string()),
         StepKind::Ai { .. } => Some("its answer".to_owned()),
@@ -656,6 +658,14 @@ fn title(shared: &Shared<'_>, step: &Step) -> String {
         // of the line — with a colon, a comma, `on` — still reads back.
         StepKind::Ai { prompt, .. } => format!("ask AI {}", quoted(prompt)),
         StepKind::Task { instruction, .. } => format!("tell SaaSy {}", quoted(instruction)),
+        StepKind::Read {
+            app,
+            record,
+            joined,
+        } => {
+            let parts = if *joined { " with its parts" } else { "" };
+            format!("read record {} of {}{parts}", quoted(record), quoted(app))
+        }
     }
 }
 
@@ -733,7 +743,9 @@ fn step_line(
                 Vec::new(),
             );
         }
-        StepKind::If { .. } | StepKind::Ask { .. } => return (phrase, Vec::new()),
+        StepKind::If { .. } | StepKind::Ask { .. } | StepKind::Read { .. } => {
+            return (phrase, Vec::new());
+        }
         StepKind::Invoke { .. } | StepKind::Ai { .. } | StepKind::Task { .. } => {}
     }
     let mut notes = Vec::new();
@@ -787,7 +799,8 @@ fn step_line(
         StepKind::If { .. }
         | StepKind::ForEach { .. }
         | StepKind::SetVar { .. }
-        | StepKind::Ask { .. } => {}
+        | StepKind::Ask { .. }
+        | StepKind::Read { .. } => {}
         StepKind::Ai { input, .. } => {
             if let Some(input) = input {
                 notes.push(format!("of {}", value_text(input, namings)));
@@ -1301,7 +1314,7 @@ impl Targets {
                     None => Binding::step(phrase, ""),
                 }
             }
-            StepKind::Invoke { .. } => Binding::step(phrase, ""),
+            StepKind::Invoke { .. } | StepKind::Read { .. } => Binding::step(phrase, ""),
         };
         let mut name = phrase.to_owned();
         let mut number = 1usize;
@@ -1935,6 +1948,9 @@ impl Reader<'_> {
                 output: None,
                 input,
             }
+        } else if phrase.starts_with("read record ") {
+            read_record(body.strip_prefix("read record ").unwrap_or_default())
+                .map_err(|message| TextParseError::at(number, message))?
         } else if phrase.starts_with("tell SaaSy ") {
             let told = body.strip_prefix("tell SaaSy ").unwrap_or_default();
             let (instruction, after) =
@@ -1950,6 +1966,26 @@ impl Reader<'_> {
         };
         Ok(Some(Step::new(String::new(), kind)))
     }
+}
+
+/// A record read as its line writes it after `read record`: `"record" of
+/// "app"`, then `with its parts` for a chain read joined.
+fn read_record(read: &str) -> Result<StepKind, String> {
+    let (record, after) = text_at(read)?;
+    let after = after.trim_start().strip_prefix("of ").ok_or_else(|| {
+        "say whose record it is, as `read record \"\" of \"so.tilo.chat\"`".to_owned()
+    })?;
+    let (app, after) = text_at(after.trim_start())?;
+    let joined = match after.trim() {
+        "" => false,
+        "with its parts" => true,
+        other => return Err(format!("`{other}` follows the record")),
+    };
+    Ok(StepKind::Read {
+        app,
+        record,
+        joined,
+    })
 }
 
 /// The step an action's phrase heads, read from the catalogue row.
@@ -2250,7 +2286,7 @@ pub(crate) fn collect_references(steps: &[Step], names: &mut BTreeSet<String>) {
             }
             StepKind::SetVar { value, .. } => args.push(value.clone()),
             StepKind::Ai { input, .. } => args.extend(input.iter().cloned()),
-            StepKind::Ask { .. } | StepKind::Task { .. } => {}
+            StepKind::Ask { .. } | StepKind::Task { .. } | StepKind::Read { .. } => {}
         }
         for arg in args {
             binding_names(&arg, names);

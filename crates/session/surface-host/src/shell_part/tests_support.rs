@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
 use super::*;
-use tilo_compositor::KeyModifiers;
+use tilo_session_core::surface::KeyModifiers;
 
 /// The readings the session publishes every turn, empty for each resource no service of this
 /// device serves: a view reads an absent sound, battery or connection as none.
@@ -116,7 +116,7 @@ fn part_at(
         i32::try_from(width).unwrap(),
         i32::try_from(height).unwrap(),
     );
-    part.outputs_changed(&[tilo_compositor::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, w, h),
         scale: 1.0,
     }]);

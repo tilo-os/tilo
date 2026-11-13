@@ -3,6 +3,7 @@ use crate::component::{Fired, Intent};
 
 fn person(id: &str, name: &str) -> Person {
     Person {
+        hue: crate::tokens::PresenceHue::of_identity(id),
         identity: id.into(),
         name: name.into(),
     }

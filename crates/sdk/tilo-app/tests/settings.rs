@@ -15,7 +15,7 @@ pub struct Log {
     pub title: String,
 }
 
-#[resource(kind = "test.log", label = "Log")]
+#[resource(kind = "test.log", catalogue = "tests/locales")]
 impl Log {
     /// Retitle the log.
     #[action]

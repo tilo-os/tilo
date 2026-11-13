@@ -3,6 +3,8 @@
 //! each row offers.
 
 use super::super::CacheState;
+use crate::i18n::CATALOG;
+use ui::i18n::ArgValue;
 
 pub(super) fn accessible_track(
     lib: &crate::model::Library,
@@ -25,10 +27,16 @@ pub(super) fn accessible_track(
         .with_position(position, total)
         .with_children(vec![
             AccessNode::new(Role::Button)
-                .with_name(format!("Play {}", track.title))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-play",
+                    &[("track", ArgValue::Text(track.title.clone()))],
+                ))
                 .with_action_target(format!("music.play-track.{}", track.id)),
             AccessNode::new(Role::ToggleButton)
-                .with_name(format!("Like {}", track.title))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-like",
+                    &[("track", ArgValue::Text(track.title.clone()))],
+                ))
                 .with_state(AccessState::new().checked(liked))
                 .with_action_target(format!("music.toggle-like.{}", track.id)),
         ]);
@@ -86,7 +94,10 @@ pub(super) fn accessible_download(
         children.insert(
             0,
             AccessNode::new(Role::Button)
-                .with_name(format!("Play {}", track.title))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-play",
+                    &[("track", ArgValue::Text(track.title.clone()))],
+                ))
                 .with_action_target(format!("music.play-track.{}", track.id)),
         );
     }
@@ -116,6 +127,22 @@ pub(super) fn accessible_album(
         .with_action_target(format!("music.open-album.{}", album.id))
 }
 
+/// An artist's row reads the genre and how many people listen each month.
+fn artist_description(artist: &crate::model::Artist) -> String {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a listener count only selects a plural form; exactness past 2^52 is irrelevant"
+    )]
+    let listeners = artist.monthly_listeners as f64;
+    CATALOG.t_args(
+        "music-a11y-artist",
+        &[
+            ("genre", ArgValue::Text(artist.genre.clone())),
+            ("listeners", ArgValue::Number(listeners)),
+        ],
+    )
+}
+
 pub(super) fn accessible_artist(
     artist: &crate::model::Artist,
     position: usize,
@@ -124,10 +151,7 @@ pub(super) fn accessible_artist(
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
         .with_hashed_key(format!("artist:{}", artist.id))
         .with_name(&artist.name)
-        .with_description(format!(
-            "{}; {} monthly listeners",
-            artist.genre, artist.monthly_listeners
-        ))
+        .with_description(artist_description(artist))
         .with_position(position, total)
         .with_action_target(format!("music.open-artist.{}", artist.id))
 }
@@ -146,10 +170,16 @@ pub(super) fn accessible_playlist(
         .with_action_target(format!("music.open-playlist.{}", playlist.id))
         .with_children(vec![
             ui::a11y::AccessNode::new(ui::a11y::Role::Button)
-                .with_name(format!("Rename {}", playlist.name))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-rename-playlist",
+                    &[("playlist", ArgValue::Text(playlist.name.clone()))],
+                ))
                 .with_action_target(format!("music.rename-playlist.{resource}")),
             ui::a11y::AccessNode::new(ui::a11y::Role::Button)
-                .with_name(format!("Delete {}", playlist.name))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-delete-playlist",
+                    &[("playlist", ArgValue::Text(playlist.name.clone()))],
+                ))
                 .with_action_target(format!("music.delete-playlist.{resource}")),
         ])
 }
@@ -166,20 +196,32 @@ pub(super) fn accessible_playlist_track(
     let mut node = accessible_track(lib, track, position, total);
     let mut actions = vec![
         AccessNode::new(Role::Button)
-            .with_name(format!("Remove {} from {}", track.title, playlist.name))
+            .with_name(CATALOG.t_args(
+                "music-a11y-remove-from-playlist",
+                &[
+                    ("track", ArgValue::Text(track.title.clone())),
+                    ("playlist", ArgValue::Text(playlist.name.clone())),
+                ],
+            ))
             .with_action_target(format!("music.remove-playlist-track.{resource}")),
     ];
     if position > 1 {
         actions.push(
             AccessNode::new(Role::Button)
-                .with_name(format!("Move {} up", track.title))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-move-up",
+                    &[("track", ArgValue::Text(track.title.clone()))],
+                ))
                 .with_action_target(format!("music.move-up-playlist-track.{resource}")),
         );
     }
     if position < total {
         actions.push(
             AccessNode::new(Role::Button)
-                .with_name(format!("Move {} down", track.title))
+                .with_name(CATALOG.t_args(
+                    "music-a11y-move-down",
+                    &[("track", ArgValue::Text(track.title.clone()))],
+                ))
                 .with_action_target(format!("music.move-down-playlist-track.{resource}")),
         );
     }

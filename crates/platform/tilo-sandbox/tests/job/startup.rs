@@ -1,10 +1,8 @@
-//! The startup-time benchmark: the median spawn-to-exec of `/bin/true` must
-//! stay under 100 ms. The design measures about 3 ms; this guards the order
-//! of magnitude, not the exact number. It is a measurement of the machine it
-//! runs on, so it runs only when asked for (`--ignored --nocapture`).
-//!
-//! A worker's heap can be tens of GiB, so a second test starts jobs from a
-//! process holding a large one: the job's init must hold none of it.
+//! The startup-time benchmark: the median spawn-to-exec of `/bin/true` must stay under 100 ms. The
+//! design measures about 3 ms; this guards the order of magnitude, not the exact number. It is a
+//! measurement of the machine it runs on, so it runs only when asked for (`--ignored --nocapture`).
+//! A worker's heap can be tens of GiB, so a second test starts jobs from a process holding a large
+//! one: the job's init must hold none of it.
 
 use std::time::{Duration, Instant};
 
@@ -40,8 +38,8 @@ fn startup_stays_under_100ms() {
     );
 }
 
-/// Memory in 4 KiB pages, as a long-running worker's heap mostly is, written
-/// so every page is resident.
+/// Memory in 4 KiB pages, as a long-running worker's heap mostly is, written so every page is
+/// resident.
 struct Heap {
     at: *mut u8,
     len: usize,

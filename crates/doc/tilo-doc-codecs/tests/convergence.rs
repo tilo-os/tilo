@@ -19,13 +19,9 @@ enum Op {
     InsertPara(u8),
     Type(u8, String),
     Bold(u8),
-    /// `fontSize` over a sub-range chosen by `(block, frac)`.
     FontSize(u8, u8, u8),
-    /// `fontFamily` (cycles serif/sans/mono) over the block.
     Font(u8, u8),
-    /// `link` mark carrying an href over a sub-range.
     Link(u8, u8, String),
-    /// `color` mark carrying a hex colour over the block.
     Color(u8, u8),
 }
 
@@ -43,7 +39,6 @@ fn ops_strategy() -> impl Strategy<Value = Vec<Op>> {
     proptest::collection::vec(op, 0..40)
 }
 
-/// A sub-range `[start, end)` of a `len`-char block from two byte knobs.
 fn subrange(len: usize, a: u8, b: u8) -> (usize, usize) {
     if len == 0 {
         return (0, 0);
@@ -163,7 +158,6 @@ proptest! {
     #[test]
     fn forked_replicas_converge(a_ops in ops_strategy(), b_ops in ops_strategy()) {
         let mut a = Document::new();
-        // shared base so both replicas have a common ancestor
         let base = a.insert_block(None, "paragraph");
         a.splice_text(&base, 0, 0, "base");
         let mut b = a.fork();
@@ -177,7 +171,6 @@ proptest! {
         a.merge(&mut b); // settle (merge is monotonic; second pass is a no-op if converged)
 
         prop_assert_eq!(a.materialize(), b.materialize());
-        // Stronger: the codec output is byte-identical across the two replicas.
         prop_assert_eq!(content_xml(&a), content_xml(&b));
     }
 }

@@ -5,16 +5,15 @@ use std::process::Command;
 
 use legacy_agent_protocol::GuestShare;
 
-/// What to do to get from `current` to `desired`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MountPlan {
     pub unmount: Vec<GuestShare>,
     pub mount: Vec<GuestShare>,
 }
 
-/// Unmount everything no longer wanted (deepest path first), then mount
-/// what is new (shallowest first, so a share inside another lands on top).
-/// A share whose tag, path or mode changed is unmounted and mounted again.
+/// Unmount what is no longer wanted, deepest first, then mount what is new,
+/// shallowest first so a share inside another goes on top. A share whose tag,
+/// path or mode changed is mounted again.
 #[must_use]
 pub fn plan(current: &[GuestShare], desired: &[GuestShare]) -> MountPlan {
     let mut unmount: Vec<GuestShare> = current
@@ -36,7 +35,6 @@ fn depth(path: &str) -> usize {
     Path::new(path).components().count()
 }
 
-/// `mount -t virtiofs [-o ro] <tag> <path>`.
 #[must_use]
 pub fn mount_argv(share: &GuestShare) -> Vec<String> {
     let mut argv = vec!["mount".to_string(), "-t".into(), "virtiofs".into()];
@@ -47,7 +45,6 @@ pub fn mount_argv(share: &GuestShare) -> Vec<String> {
     argv
 }
 
-/// Apply `plan`, returning the shares mounted afterwards and the failures.
 pub fn apply(current: &[GuestShare], plan: &MountPlan) -> (Vec<GuestShare>, Vec<String>) {
     let mut mounted: Vec<GuestShare> = current.to_vec();
     let mut failures = Vec::new();

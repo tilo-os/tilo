@@ -1,4 +1,4 @@
-//! Ordinary governance JSON compatibility fixtures. These are not allocation
+//! Governance resource fixtures: device rows as stored, grants as JSON. These are not allocation
 //! qualification or authority admission; later guarded tests reuse their data.
 
 use super::*;
@@ -24,7 +24,7 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
         panic!("actual seeded identity is not bytes")
     };
-    let mut identity: GovernedIdentity = serde_json::from_slice(bytes).unwrap();
+    let mut identity = GovernedIdentity::decode(bytes).unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
     identity.device_cert.device_label = "Desk 🦀\n\"Workspace\"\\".into();
     identity.device_cert.expires_at_ns = Some(u64::MAX);
@@ -68,29 +68,11 @@ fn verify_identity(identity: &GovernedIdentity, now: SystemTime) {
 fn json_resource_fixture_signed_nested_identity_roundtrip_preserves_canonical_bytes() {
     let (identity, now) = identity_fixture();
     verify_identity(&identity, now);
-    let wire = serde_json::to_vec(&identity).unwrap();
-    let decoded: GovernedIdentity = serde_json::from_slice(&wire).unwrap();
-    assert_eq!(
-        postcard::to_allocvec(&decoded).unwrap(),
-        postcard::to_allocvec(&identity).unwrap()
-    );
-    verify_identity(&decoded, now);
-}
-
-#[test]
-fn json_resource_fixture_escaped_keys_and_surrogate_values_preserve_signed_identity() {
-    let (identity, now) = identity_fixture();
-    let ordinary = serde_json::to_string(&identity).unwrap();
-    let escaped = ordinary
-        .replace("\"device_cert\"", "\"device_\\u0063ert\"")
-        .replace("\"device_label\"", "\"device_\\u006cabel\"")
-        .replace('🦀', "\\uD83E\\uDD80");
-    assert_ne!(escaped, ordinary);
-    let decoded: GovernedIdentity = serde_json::from_str(&escaped).unwrap();
-    assert_eq!(
-        postcard::to_allocvec(&decoded).unwrap(),
-        postcard::to_allocvec(&identity).unwrap()
-    );
+    let wire = identity.encode().unwrap();
+    let decoded = GovernedIdentity::decode(&wire).unwrap();
+    assert_eq!(decoded.encode().unwrap(), wire);
+    assert_eq!(decoded.device_cert, identity.device_cert);
+    assert_eq!(decoded.revocations, identity.revocations);
     verify_identity(&decoded, now);
 }
 
@@ -104,20 +86,4 @@ fn json_resource_fixture_grant_control_utf8_and_maximum_u64_roundtrip() {
     let decoded: tilo_action_policy::Grant = serde_json::from_str(&escaped).unwrap();
     assert_eq!(decoded, capability);
     assert_eq!(serde_json::to_string(&decoded).unwrap(), wire);
-}
-
-#[test]
-fn json_resource_fixture_ignored_extension_keeps_ordinary_numeric_behavior() {
-    let (identity, now) = identity_fixture();
-    let mut wire = serde_json::to_string(&identity).unwrap();
-    assert_eq!(wire.pop(), Some('}'));
-    wire.push_str(
-        ",\"future\":{\"small_decimal\":0.1000000000000000001,\"nested\":[true,null,1e-64]}}",
-    );
-    let decoded: GovernedIdentity = serde_json::from_str(&wire).unwrap();
-    assert_eq!(
-        postcard::to_allocvec(&decoded).unwrap(),
-        postcard::to_allocvec(&identity).unwrap()
-    );
-    verify_identity(&decoded, now);
 }

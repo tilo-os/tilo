@@ -1,14 +1,8 @@
 //! Whether Windows flagged a volume for a disk check: the `VOLUME_IS_DIRTY`
 //! bit of `$Volume`'s volume-information attribute.
-//!
-//! The other unclean states (hibernation, Fast Startup, an unfinished
-//! journal) are what `ntfs-3g.probe` reports; it ignores this bit, so the
-//! service reads it here. The bytes come from the drive being checked, so this
-//! runs only in the confined preflight process, and every offset is checked.
 
 use std::io;
 
-/// `$Volume` is record 3 of the MFT.
 const VOLUME_RECORD: u64 = 3;
 /// NTFS protects each 512-byte stride of a record with an update sequence.
 const FIXUP_STRIDE: usize = 512;
@@ -17,7 +11,6 @@ const ATTR_END: u32 = 0xFFFF_FFFF;
 const VOLUME_IS_DIRTY: u16 = 0x0001;
 const MAX_RECORD_SIZE: u64 = 64 * 1024;
 
-/// Why a volume could not be read far enough to decide.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Malformed(pub &'static str);
 
@@ -55,7 +48,6 @@ pub fn volume_record_location(boot: &[u8]) -> Result<(u64, usize), Malformed> {
         return Err(Malformed("sector size"));
     }
     let raw_spc = *boot.get(0x0D).ok_or(Malformed("boot sector"))?;
-    // Values above 0x80 encode 2^(256 - value) sectors per cluster.
     let sectors_per_cluster = if raw_spc > 0x80 {
         1_u64
             .checked_shl(256_u32.saturating_sub(u32::from(raw_spc)))
@@ -91,7 +83,6 @@ pub fn volume_record_location(boot: &[u8]) -> Result<(u64, usize), Malformed> {
     Ok((offset, size))
 }
 
-/// Undo the update sequence on a record read from disk.
 fn apply_fixups(record: &mut [u8]) -> Result<(), Malformed> {
     if record.get(0..4) != Some(b"FILE".as_slice()) {
         return Err(Malformed("not an MFT record"));
@@ -206,7 +197,6 @@ pub(crate) mod image {
         rec[0x14..0x16].copy_from_slice(&0x38_u16.to_le_bytes()); // first attribute
         rec[0x16..0x18].copy_from_slice(&1_u16.to_le_bytes()); // in use
         rec[0x18..0x1C].copy_from_slice(&0x100_u32.to_le_bytes()); // bytes in use
-        // $VOLUME_NAME (0x60), empty resident value, to be skipped.
         let name = 0x38;
         rec[name..name + 4].copy_from_slice(&0x60_u32.to_le_bytes());
         rec[name + 4..name + 8].copy_from_slice(&0x18_u32.to_le_bytes());
@@ -222,7 +212,6 @@ pub(crate) mod image {
         rec[info + 0x18 + 0x0A..info + 0x18 + 0x0C].copy_from_slice(&flags.to_le_bytes());
         let end = info + 0x28;
         rec[end..end + 4].copy_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
-        // Apply the update sequence the way Windows writes it.
         let usn = 0x0007_u16.to_le_bytes();
         rec[0x30..0x32].copy_from_slice(&usn);
         for stride in 1..=2 {

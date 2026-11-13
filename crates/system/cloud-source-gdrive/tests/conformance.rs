@@ -1,13 +1,6 @@
-//! The cloud-source conformance suite for Google Drive:
-//!
-//! - in-process fakes (always): a folder in My Drive, the whole of a fresh
-//!   My Drive (the `root` alias), and a folder in a shared drive;
-//! - a live account when `TILO_LIVE_GDRIVE_TOKEN` (an `OAuth` refresh token)
-//!   and `TILO_LIVE_GDRIVE_CLIENT_ID` (plus `TILO_LIVE_GDRIVE_CLIENT_SECRET`
-//!   for client types that have one) are set; skipped otherwise. Each run
-//!   works in its own `conformance-<uuid>` folder, deleted afterwards.
-//!
-//! There is no container layer: Drive has no self-hostable server.
+//! The cloud-source conformance suite for Google Drive: in-process fakes always (a folder,
+//! the whole of My Drive, a folder in a shared drive), and a live account when its
+//! `TILO_LIVE_GDRIVE_*` variables are set, each run in its own folder.
 
 #![allow(
     clippy::unwrap_used,
@@ -37,13 +30,10 @@ fn fixed(token: &str) -> Arc<StaticCredential> {
     Arc::new(StaticCredential(bearer(token)))
 }
 
-/// Where in the fake Drive a run is rooted.
 #[derive(Clone, Copy)]
 enum Scope {
     Folder,
-    /// The whole (empty) My Drive.
     MyDrive,
-    /// A fresh folder in a shared drive.
     SharedDrive,
 }
 
@@ -137,7 +127,6 @@ cloud_source::conformance_suite!(fake_folder, FakeFixture::start(Scope::Folder))
 cloud_source::conformance_suite!(fake_my_drive, FakeFixture::start(Scope::MyDrive));
 cloud_source::conformance_suite!(fake_shared_drive, FakeFixture::start(Scope::SharedDrive));
 
-/// Exchanges a refresh token for access tokens, the way Settings does.
 struct RefreshingCredential {
     http: reqwest::blocking::Client,
     refresh_token: String,

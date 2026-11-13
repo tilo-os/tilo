@@ -1,17 +1,5 @@
-//! Archives as Files shows and changes them.
-//!
-//! The formats, the reading and the safety rules are `tilo_archive`'s (zip,
-//! 7z, and tar with gzip, xz, zstd or bzip2). Here they meet Files:
-//! - an archive is browsed as a read-only folder. Its path is the folder,
-//!   and what is inside has ordinary-looking paths below it ([`location`]),
-//!   so Back, Up, the path bar and activation need no second navigation
-//!   model. An archive's entries are read once, off the window's thread, and
-//!   kept while it is browsed ([`cached`], [`index`]);
-//! - extraction writes into a hidden folder beside the destination, and only
-//!   a complete extraction is renamed into place ([`extract`]), so a failed
-//!   or cancelled one leaves nothing behind;
-//! - a new archive is written to a hidden file and renamed into place
-//!   without replacing anything ([`create`]).
+//! Archives as Files browses them: reading an archive's entries off the window's
+//! thread, extracting one into place, and packing a new one.
 
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -23,15 +11,10 @@ use ui::lock::MutexRecover as _;
 
 pub use tilo_archive::{Entry, Kind, Observer, Packing};
 
-/// Whether `path` names an archive Files can open.
 pub fn is_supported(path: &Path) -> bool {
     tilo_archive::Format::of_path(path).is_some()
 }
 
-/// Resolve a Files navigation path to an archive and an in-archive prefix.
-/// The archive itself is the root; descendants use ordinary-looking paths so
-/// Back, Forward, Up, breadcrumbs, keyboard navigation and touch activation do
-/// not need a second navigation model.
 pub fn location(path: &Path) -> Option<(PathBuf, PathBuf)> {
     for candidate in path.ancestors() {
         if is_supported(candidate) && candidate.is_file() {
@@ -42,7 +25,6 @@ pub fn location(path: &Path) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-/// What identifies one version of an archive file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Stamp {
     len: u64,
@@ -57,7 +39,6 @@ fn stamp(archive: &Path) -> io::Result<Stamp> {
     })
 }
 
-/// The entries of the archive last browsed, while the file is unchanged.
 struct Index {
     archive: PathBuf,
     stamp: Stamp,
@@ -66,8 +47,6 @@ struct Index {
 
 static INDEX: Mutex<Option<Index>> = Mutex::new(None);
 
-/// The entries of `archive` when they were read already and the file has
-/// not changed since.
 pub fn cached(archive: &Path) -> Option<Arc<Vec<Entry>>> {
     let now = stamp(archive).ok()?;
     let index = INDEX.lock_recover();
@@ -77,9 +56,6 @@ pub fn cached(archive: &Path) -> Option<Arc<Vec<Entry>>> {
         .map(|index| Arc::clone(&index.entries))
 }
 
-/// Read the entries of `archive` and keep them for browsing it. Decodes the
-/// whole archive when it is a compressed tar: call it off the window's
-/// thread.
 pub fn index(archive: &Path, observer: &dyn Observer) -> io::Result<Arc<Vec<Entry>>> {
     if let Some(entries) = cached(archive) {
         return Ok(entries);
@@ -94,10 +70,6 @@ pub fn index(archive: &Path, observer: &dyn Observer) -> io::Result<Arc<Vec<Entr
     Ok(entries)
 }
 
-/// Reading one archive's entries off the window's thread, for browsing it.
-///
-/// One archive is read at a time: starting another, or [`Listing::stop`],
-/// stops the read under way at its next chunk.
 pub struct Listing {
     wake: Arc<dyn Fn() + Send + Sync>,
     job: Option<ListingJob>,
@@ -121,7 +93,6 @@ impl std::fmt::Debug for Listing {
     }
 }
 
-/// Counts what a listing read and stops it when asked.
 struct ListingObserver {
     stop: Arc<std::sync::atomic::AtomicBool>,
     read: Arc<std::sync::atomic::AtomicU64>,
@@ -139,8 +110,6 @@ impl Observer for ListingObserver {
 }
 
 impl Listing {
-    /// A listing whose finished reads call `wake` (the window's wake
-    /// handle) from the reading thread.
     pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             wake: Arc::new(wake),
@@ -148,7 +117,6 @@ impl Listing {
         }
     }
 
-    /// Read `archive`'s entries on a thread, unless that read is under way.
     pub fn start(&mut self, archive: &Path) {
         if self.job.as_ref().is_some_and(|job| job.archive == archive) {
             return;
@@ -183,7 +151,6 @@ impl Listing {
         self.job = Some(job);
     }
 
-    /// Stop the read under way, if any.
     pub fn stop(&mut self) {
         if let Some(job) = self.job.take() {
             job.stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -194,7 +161,6 @@ impl Listing {
         self.job.as_ref().is_some_and(|job| job.archive == archive)
     }
 
-    /// How much of the archive was read, of its size.
     pub fn progress(&self) -> Option<(u64, u64)> {
         self.job.as_ref().map(|job| {
             (
@@ -204,8 +170,6 @@ impl Listing {
         })
     }
 
-    /// The finished read: the archive and its entries or why they could not
-    /// be read.
     pub fn take(&mut self) -> Option<(PathBuf, EntriesRead)> {
         let read = self.job.as_ref()?.done.lock_recover().take()?;
         let job = self.job.take()?;
@@ -213,8 +177,6 @@ impl Listing {
     }
 }
 
-/// The direct children of `prefix` among an archive's `entries`, as a
-/// folder shows them.
 pub fn children_of(entries: &[Entry], prefix: &Path) -> io::Result<Vec<Entry>> {
     let prefix = if prefix.as_os_str().is_empty() {
         PathBuf::new()
@@ -224,40 +186,22 @@ pub fn children_of(entries: &[Entry], prefix: &Path) -> io::Result<Vec<Entry>> {
     Ok(tilo_archive::children(entries, &prefix))
 }
 
-/// The direct children of `prefix` in `archive`, read on this thread.
-///
-/// # Errors
-///
-/// As [`index`] and [`children_of`].
 #[cfg(test)]
 pub fn list_directory(archive: &Path, prefix: &Path) -> io::Result<Vec<Entry>> {
     children_of(&index(archive, &())?, prefix)
 }
 
-/// Whether `member` of `archive` is a folder, named or implied.
-///
-/// # Errors
-///
-/// As [`index`].
 #[cfg(test)]
 pub fn is_directory(archive: &Path, member: &Path) -> io::Result<bool> {
     let entries = index(archive, &())?;
     Ok(tilo_archive::has_directory(&entries, member))
 }
 
-/// Every entry of `archive`, read on this thread.
-///
-/// # Errors
-///
-/// As [`index`].
 #[cfg(test)]
 pub fn list(archive: &Path) -> io::Result<Vec<Entry>> {
     Ok(index(archive, &())?.as_ref().clone())
 }
 
-/// Write the single file `member` of `archive` to `output` (a new file),
-/// read-only: a member is opened by reading a copy of it, never by editing
-/// inside the archive.
 pub fn extract_member(archive: &Path, member: &Path, output: &Path) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -273,9 +217,6 @@ pub fn extract_member(archive: &Path, member: &Path, output: &Path) -> io::Resul
     fs::set_permissions(output, permissions)
 }
 
-/// The name a folder extracted from `archive` gets when the archive does
-/// not hold exactly one folder at its top: the archive's name without its
-/// extension.
 pub fn stem(archive: &Path) -> String {
     let name = archive
         .file_name()
@@ -289,10 +230,6 @@ pub fn stem(archive: &Path) -> String {
     }
 }
 
-/// The name an extraction of `archive` will most likely take, for asking
-/// about a clash before it starts: the one folder a zip or 7z holds at its
-/// top, or the folder a tar's first entry is in; otherwise [`stem`]. Reads
-/// a zip's or 7z's directory or a tar's first entry only.
 pub fn likely_name(archive: &Path) -> String {
     let mut top: Option<(PathBuf, bool)> = None;
     let mut single = true;
@@ -321,17 +258,12 @@ pub fn likely_name(archive: &Path) -> String {
     }
 }
 
-/// A folder holding an extraction until it is complete; removed with
-/// everything in it unless kept.
 pub struct Staging {
     path: PathBuf,
     kept: bool,
 }
 
 impl Staging {
-    /// What the extraction came to: the one folder the archive holds at its
-    /// top, else the staging folder itself (to be named after the archive).
-    /// `true` with the path when it is the archive's own folder.
     pub fn result(&self) -> io::Result<(PathBuf, bool)> {
         let mut children = fs::read_dir(&self.path)?;
         if let (Some(only), None) = (children.next().transpose()?, children.next())
@@ -342,12 +274,9 @@ impl Staging {
         Ok((self.path.clone(), false))
     }
 
-    /// Keep the staging folder: its contents were moved into place.
     pub fn keep(mut self) {
         self.kept = true;
         if self.path.exists() {
-            // Only an emptied staging folder is left after moving its one
-            // folder out.
             let _ = fs::remove_dir(&self.path);
         }
     }
@@ -361,13 +290,6 @@ impl Drop for Staging {
     }
 }
 
-/// Extract `archive` into a new hidden folder in `parent`; the caller moves
-/// the result into place ([`Staging::result`]). Dropping the staging
-/// removes it, so a failed or cancelled extraction leaves nothing.
-///
-/// # Errors
-///
-/// As [`tilo_archive::extract_into`], or the staging folder cannot be made.
 pub fn extract(archive: &Path, parent: &Path, observer: &dyn Observer) -> io::Result<Staging> {
     let staging = Staging {
         path: parent.join(format!(".tilo-extract-{}", uuid::Uuid::new_v4())),
@@ -378,7 +300,6 @@ pub fn extract(archive: &Path, parent: &Path, observer: &dyn Observer) -> io::Re
     Ok(staging)
 }
 
-/// A new archive being written, removed unless it was renamed into place.
 struct PartialArchive<'a> {
     path: &'a Path,
     committed: bool,
@@ -392,13 +313,6 @@ impl Drop for PartialArchive<'_> {
     }
 }
 
-/// Pack `paths` into the new archive `output`, never replacing a file of
-/// that name.
-///
-/// # Errors
-///
-/// An input cannot be read, the output exists or cannot be written, or the
-/// observer cancelled ([`tilo_archive::is_cancelled`]).
 pub fn create(
     paths: &[PathBuf],
     output: &Path,
@@ -427,18 +341,11 @@ pub fn create(
     Ok(())
 }
 
-/// Create a ZIP archive atomically from the selected files and directories.
-///
-/// # Errors
-///
-/// As [`create`].
 #[cfg(test)]
 pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
     create(paths, output, Packing::Zip, &())
 }
 
-/// The packing a new archive called `name` takes: tar with zstd for a name
-/// ending in `.tar.zst`, else zip.
 pub fn packing_of(name: &str) -> Packing {
     if name.to_ascii_lowercase().ends_with(".tar.zst") {
         Packing::TarZst
@@ -488,8 +395,6 @@ mod tests {
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
     }
 
-    /// Archive paths resolve root and nested locations, listings synthesise
-    /// parents, and the browsed index follows a changed file.
     #[test]
     fn archive_paths_listings_and_index() {
         let temp = tempfile::tempdir().unwrap();
@@ -525,14 +430,11 @@ mod tests {
         assert!(is_directory(&archive, Path::new("Photos")).unwrap());
         assert!(!is_directory(&archive, Path::new("root.txt")).unwrap());
 
-        // Replaced by another archive of the same name: read again.
         fs::remove_file(&archive).unwrap();
         create_zip(&[source.join("root.txt")], &archive).unwrap();
         assert_eq!(list_directory(&archive, Path::new("")).unwrap().len(), 1);
     }
 
-    /// Extraction names: an archive with one folder at its top extracts as
-    /// that folder; anything else gets the archive's name.
     #[test]
     fn an_extraction_takes_the_archives_own_folder_or_its_name() {
         let temp = tempfile::tempdir().unwrap();

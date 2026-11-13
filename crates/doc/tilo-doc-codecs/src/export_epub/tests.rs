@@ -87,7 +87,6 @@ fn part_str(parts: &[(String, Vec<u8>)], name: &str) -> String {
     .expect("utf-8 part")
 }
 
-/// The compression method of a named entry (to assert mimetype is Stored).
 fn method_of(bytes: &[u8], name: &str) -> CompressionMethod {
     let mut ar = ZipArchive::new(Cursor::new(bytes)).unwrap();
     for i in 0..ar.len() {
@@ -101,7 +100,6 @@ fn method_of(bytes: &[u8], name: &str) -> CompressionMethod {
 
 #[test]
 fn epub_package_scaffolding_is_valid_even_when_empty() {
-    // Phase `first_entry_is_mimetype_stored_with_exact_payload`.
     {
         let mut snap = empty_snapshot();
         snap.properties.insert("title".into(), "Hello".into());
@@ -127,7 +125,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
             "mimetype must be stored uncompressed"
         );
     }
-    // Phase `contains_container_pointing_at_opf`.
     {
         let mut snap = empty_snapshot();
         snap.properties.insert("title".into(), "Doc".into());
@@ -149,7 +146,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
             "OPF part exists"
         );
     }
-    // Phase `opf_carries_the_document_title_and_author`.
     {
         let mut snap = empty_snapshot();
         snap.properties
@@ -169,7 +165,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
             opf.contains("<dc:creator>Ada Lovelace</dc:creator>"),
             "OPF carries the author as dc:creator: {opf}"
         );
-        // EPUB 3 requires a dcterms:modified meta and a unique identifier.
         assert!(opf.contains("dcterms:modified"), "OPF has dcterms:modified");
         assert!(
             opf.contains("unique-identifier=\"book-id\""),
@@ -180,7 +175,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
             "OPF manifest marks the nav item"
         );
     }
-    // Phase `empty_document_still_produces_a_valid_epub`.
     {
         let snap = empty_snapshot();
         let epub = render_epub(&snap, &tilo_content::NoContent).expect("render empty");
@@ -190,7 +184,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
         assert!(part(&parts, "META-INF/container.xml").is_some());
         assert!(part(&parts, "OEBPS/content.opf").is_some());
         assert!(part(&parts, "OEBPS/nav.xhtml").is_some());
-        // At least one chapter so the spine is non-empty.
         assert!(part(&parts, "OEBPS/chapter-1.xhtml").is_some());
         // Untitled fallback title.
         let opf = part_str(&parts, "OEBPS/content.opf");
@@ -209,7 +202,6 @@ fn epub_package_scaffolding_is_valid_even_when_empty() {
 
 #[test]
 fn epub_nav_mirrors_the_heading_tree() {
-    // Phase `nav_has_a_toc_entry_per_heading`.
     {
         let mut snap = empty_snapshot();
         snap.properties.insert("title".into(), "Manual".into());
@@ -231,7 +223,6 @@ fn epub_nav_mirrors_the_heading_tree() {
             "nav declares the toc type"
         );
 
-        // One TOC link per heading (4 headings here).
         let links = nav.matches("<a href=").count();
         assert_eq!(links, 4, "one TOC entry per heading\n{nav}");
 
@@ -249,10 +240,7 @@ fn epub_nav_mirrors_the_heading_tree() {
         // The nested nav must be well-formed XML (balanced <ol>/<li>).
         assert_well_formed_xml(&nav);
     }
-    // Phase `deeply_nested_headings_yield_well_formed_nested_nav`.
     {
-        // H1 → H2 → H3, plus a level-skip (H1 directly to H3) to exercise the tree
-        // builder's "deeper heading nests under the nearest shallower one" rule.
         let mut snap = empty_snapshot();
         snap.properties.insert("title".into(), "Deep".into());
         snap.blocks = vec![
@@ -267,7 +255,6 @@ fn epub_nav_mirrors_the_heading_tree() {
         let parts = unzip(&epub);
         let nav = part_str(&parts, "OEBPS/nav.xhtml");
 
-        // One link per heading.
         assert_eq!(
             nav.matches("<a href=").count(),
             5,
@@ -298,7 +285,6 @@ fn epub_nav_mirrors_the_heading_tree() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
-    // Phase `image_block_adds_an_image_manifest_item_and_packaged_resource`.
     {
         let mut snap = empty_snapshot();
         snap.properties
@@ -341,7 +327,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
             "OPF manifest references the packaged image href"
         );
 
-        // The chapter XHTML points its <img src> at the packaged file (not a data: URI).
         let chapter = part_str(&parts, "OEBPS/chapter-1.xhtml");
         assert!(
             chapter.contains("src=\"images/img-1.png\""),
@@ -352,7 +337,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
             "no inline data: URI remains in the chapter"
         );
     }
-    // Phase `chapters_are_well_formed_xml_with_self_closing_void_elements`.
     {
         let mut snap = empty_snapshot();
         snap.properties.insert("title".into(), "WF".into());
@@ -389,7 +373,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
         assert_well_formed_xml(&part_str(&parts, "OEBPS/content.opf"));
         assert_well_formed_xml(&part_str(&parts, "META-INF/container.xml"));
     }
-    // Phase `body_splits_into_one_chapter_per_h1`.
     {
         let mut snap = empty_snapshot();
         snap.properties.insert("title".into(), "Multi".into());
@@ -422,7 +405,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
             .expect("spine has chapter-2");
         assert!(i1 < i2, "spine order is chapter-1 then chapter-2");
     }
-    // Phase `text_specials_are_xml_escaped_not_injected`.
     {
         let mut snap = empty_snapshot();
         snap.properties
@@ -448,10 +430,6 @@ fn epub_chapters_are_split_well_formed_escaped_and_carry_images() {
     }
 }
 
-/// A small XML well-formedness check: tags balance, prolog present, no raw `<`
-/// or `&` that isn't part of a tag/entity. Not a full parser, but catches the
-/// failure modes this crate could realistically introduce (unclosed void
-/// elements, unescaped specials, mismatched tags).
 fn assert_well_formed_xml(xml: &str) {
     let bytes = xml.as_bytes();
     let mut stack: Vec<String> = Vec::new();
@@ -466,7 +444,6 @@ fn assert_well_formed_xml(xml: &str) {
                 let tag = &xml[i.saturating_add(1)..end]; // inside the angle brackets
 
                 if tag.starts_with('?') || tag.starts_with('!') {
-                    // XML prolog / declaration / comment — skip.
                     i = end.saturating_add(1);
                     continue;
                 }
@@ -481,7 +458,6 @@ fn assert_well_formed_xml(xml: &str) {
                         "mismatched close </{name}> (open was <{open}>)\n{xml}"
                     );
                 } else if tag.ends_with('/') {
-                    // Self-closing — no stack change.
                 } else {
                     stack.push(tag_name(tag).clone());
                 }
@@ -506,7 +482,6 @@ fn assert_well_formed_xml(xml: &str) {
     assert!(stack.is_empty(), "unclosed tags {stack:?}\n{xml}");
 }
 
-/// Extract the element name from a tag's inner text (`p class="x"` → `p`).
 fn tag_name(inner: &str) -> String {
     inner
         .trim_start_matches('/')

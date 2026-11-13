@@ -325,7 +325,7 @@ fn reviewed_retry_and_canonical_receipt_survive_both_process_restarts() {
             enrollment().destination,
             Outbox::open(
                 store.clone(),
-                StorageKey::package("so.tilo.feedback-test-outbox"),
+                StorageKey::app("so.tilo.feedback-test-outbox"),
             )
             .unwrap(),
             Box::new(host),
@@ -654,7 +654,7 @@ fn a_picture_report_ends_sent_once_the_owner_keeps_its_picture() {
     let host = Host::open(store.clone(), setup).unwrap();
     let mut outbox = Outbox::open(
         store.clone(),
-        StorageKey::package("so.tilo.feedback-test-outbox"),
+        StorageKey::app("so.tilo.feedback-test-outbox"),
     )
     .unwrap();
     outbox.queue(report.clone()).unwrap();

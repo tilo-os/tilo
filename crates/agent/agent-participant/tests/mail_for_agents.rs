@@ -13,11 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-// Records are held in confined app workers (this binary, started again);
-// their changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};
 use tilo_actions::OperationKind;

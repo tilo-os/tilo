@@ -138,6 +138,15 @@ pub enum PeerPresencePayload {
     Person {
         name: String,
     },
+    /// When the person last changed the profile their workspaces keep for them (their name and
+    /// picture), Unix milliseconds, as this device knows it: a reader fetches the profile again when
+    /// it moves. Desktop presence: shells show the picture, apps never receive it.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only the stamp, and go on showing the picture they have.
+    Profile {
+        changed_ms: u64,
+    },
 }
 
 #[cfg(test)]
@@ -187,6 +196,9 @@ mod tests {
             },
             PeerPresencePayload::Composing { composing: true },
             PeerPresencePayload::Composing { composing: false },
+            PeerPresencePayload::Profile {
+                changed_ms: 1_700_000_000_000,
+            },
             PeerPresencePayload::Shell(Box::new(crate::presence::ShellPresence {
                 seq: 7,
                 sent_at_ms: 1_700_000_000_000,

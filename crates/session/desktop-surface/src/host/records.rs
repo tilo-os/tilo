@@ -155,6 +155,7 @@ mod tests {
                 .iter()
                 .map(|(id, _, _)| (*id, "ada".to_owned()))
                 .collect(),
+            opened_by: std::collections::BTreeMap::new(),
         }
     }
 

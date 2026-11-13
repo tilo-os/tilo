@@ -1,11 +1,10 @@
-//! Host directories mounted over vsock, for VMs without virtio-fs.
+//! Host directories mounted over vsock, for guests without virtio-fs: each
+//! share is a FUSE filesystem at the host's path whose every operation is one
+//! request on the share's own connection ([`legacy_agent_protocol::files`]).
 //!
-//! Each share is a FUSE filesystem at the host's path whose every operation
-//! is one request on the share's own vsock connection to the host
-//! ([`legacy_agent_protocol::files`]). The host owns the files and decides
-//! what is allowed; this side translates, and shows every file as the guest
-//! user's. Nothing is cached beyond what the kernel keeps for an open file:
-//! the host's own writes between two commands are seen by the next one.
+//! The host owns the files and decides what is allowed; this side translates,
+//! shows every file as the guest user's, and caches nothing beyond what the
+//! kernel keeps for an open file.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -28,14 +27,11 @@ use tilo_lock::MutexRecover as _;
 
 const TTL: Duration = Duration::ZERO;
 
-/// One share's connection to the host.
 pub struct Remote<S> {
     stream: Mutex<S>,
 }
 
 impl<S: Read + Write> Remote<S> {
-    /// Say which share this connection serves; the host answers whether it
-    /// serves it.
     pub fn open(mut stream: S, path: &str) -> io::Result<Self> {
         send(
             &mut stream,
@@ -55,8 +51,6 @@ impl<S: Read + Write> Remote<S> {
         }
     }
 
-    /// One request and its answer. A lost connection is `EIO` to the
-    /// program, as a disk that went away would be.
     pub fn ask(&self, request: &FsRequest) -> Result<FsReply, Errno> {
         let mut stream = self.stream.lock_recover();
         send(&mut *stream, request).map_err(|_| Errno::EIO)?;
@@ -68,7 +62,6 @@ impl<S: Read + Write> Remote<S> {
     }
 }
 
-/// A share as FUSE sees it.
 pub struct RemoteFs<S> {
     remote: Remote<S>,
     uid: u32,
@@ -486,7 +479,6 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
     }
 }
 
-/// The shares mounted over vsock, by path.
 #[derive(Default)]
 pub struct Mounts {
     mounted: BTreeMap<String, (FileShare, fuser::BackgroundSession)>,
@@ -556,7 +548,6 @@ where
     if share.read_only {
         config.mount_options.push(fuser::MountOption::RO);
     }
-    // The agent mounts as root; the guest user's programs use the files.
     config.acl = fuser::SessionACL::All;
     fuser::spawn_mount(RemoteFs::new(remote, uid, gid), path, &config)
 }

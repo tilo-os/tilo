@@ -44,24 +44,19 @@ const KEEP_AS_TYPED_COUNT: f64 = 1.0e5;
 /// count, so it is only replaced by a neighbour thousands of times more
 /// frequent, which leaves genuine rare words ("foe", "jot") alone.
 const KNOWN_WORD_MARGIN: f64 = 2_000.0;
-/// Minimum share of the total evidence the best candidate needs.
 const MIN_CONFIDENCE: f64 = 0.6;
-/// Words shorter than this are left alone.
 const MIN_WORD_CHARS: usize = 2;
 /// Words longer than this are left alone (and never indexed).
 const MAX_WORD_CHARS: usize = 32;
 /// Bound on remembered kept-as-typed words.
 pub(crate) const MAX_KEPT_WORDS: usize = 1_024;
 
-/// Which letter keys touch each other on screen.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyAdjacency {
     pairs: HashSet<(char, char)>,
 }
 
 impl KeyAdjacency {
-    /// Derive adjacency from letter keys and their rectangles: two keys are
-    /// neighbours when their rectangles touch, including diagonally.
     pub fn from_keys(keys: &[(char, Rect)]) -> Self {
         let mut pairs = HashSet::new();
         for (i, &(a, ra)) in keys.iter().enumerate() {
@@ -77,7 +72,6 @@ impl KeyAdjacency {
         Self { pairs }
     }
 
-    /// Adjacency of a layout's letter keys as laid out by [`key_rects`].
     pub fn from_layout(layout: &KeyboardLayout) -> Self {
         let area = Rect::new(0.0, 0.0, 1000.0, 320.0);
         let keys: Vec<(char, Rect)> = key_rects(layout, area, ShiftState::Off)
@@ -95,7 +89,6 @@ impl KeyAdjacency {
     }
 }
 
-/// Weighted optimal-string-alignment distance from `typed` to `candidate`.
 pub fn edit_cost(typed: &str, candidate: &str, adjacency: &KeyAdjacency) -> f64 {
     let a: Vec<char> = typed.chars().collect();
     let b: Vec<char> = candidate.chars().collect();
@@ -146,7 +139,6 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-/// `word` plus every string obtained by deleting one of its characters.
 fn single_deletes(word: &str) -> Vec<String> {
     let mut out = vec![word.to_string()];
     for (i, _) in word.char_indices() {
@@ -162,12 +154,9 @@ fn single_deletes(word: &str) -> Vec<String> {
     out
 }
 
-/// Corrects non-words at word boundaries.
 #[derive(Clone, Debug)]
 pub struct Autocorrector {
-    /// Lexicon words with their estimated corpus counts.
     words: Vec<(String, f64)>,
-    /// `(hash(delete), index into words)`, sorted by hash.
     deletes: Vec<(u64, u32)>,
     known: HashMap<String, u32>,
     adjacency: KeyAdjacency,
@@ -175,7 +164,6 @@ pub struct Autocorrector {
 }
 
 impl Autocorrector {
-    /// Index `dict` for correction with the given key adjacency.
     pub fn new(dict: &Dictionary, adjacency: KeyAdjacency) -> Self {
         let mut words = Vec::with_capacity(dict.len());
         let mut deletes = Vec::new();
@@ -203,7 +191,6 @@ impl Autocorrector {
         }
     }
 
-    /// Replace the key adjacency (the active layout changed).
     pub fn set_adjacency(&mut self, adjacency: KeyAdjacency) {
         self.adjacency = adjacency;
     }
@@ -216,23 +203,18 @@ impl Autocorrector {
         }
     }
 
-    /// Whether `word` was kept as typed.
     pub fn is_kept(&self, word: &str) -> bool {
         self.kept.contains(&word.to_lowercase())
     }
 
-    /// Take `kept` as the words kept as typed.
     pub fn adopt_kept<'a>(&mut self, kept: impl IntoIterator<Item = &'a String>) {
         self.kept = kept.into_iter().take(MAX_KEPT_WORDS).cloned().collect();
     }
 
-    /// Forget every kept-as-typed word.
     pub fn clear_kept(&mut self) {
         self.kept.clear();
     }
 
-    /// The correction for `typed`, if it is a non-word with one convincing
-    /// candidate. Returns the replacement with `typed`'s capitalisation.
     pub fn correct(&self, typed: &str) -> Option<String> {
         let n = typed.chars().count();
         if !(MIN_WORD_CHARS..=MAX_WORD_CHARS).contains(&n)
@@ -240,7 +222,6 @@ impl Autocorrector {
         {
             return None;
         }
-        // All-capitals words are usually acronyms; leave them alone.
         if typed.chars().all(char::is_uppercase) {
             return None;
         }
@@ -298,7 +279,6 @@ impl Autocorrector {
     }
 }
 
-/// `word` with `typed`'s leading capital, if it had one.
 fn match_case(typed: &str, word: &str) -> String {
     if typed.chars().next().is_some_and(char::is_uppercase) {
         let mut chars = word.chars();
@@ -370,7 +350,6 @@ mod tests {
         let ac = english();
         assert_eq!(ac.correct("the"), None);
         assert_eq!(ac.correct("keyboard"), None);
-        // Rare but real words next to far more common ones.
         assert_eq!(ac.correct("foe"), None);
         assert_eq!(ac.correct("fir"), None);
         assert_eq!(ac.correct("jot"), None);

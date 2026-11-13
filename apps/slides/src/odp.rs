@@ -109,8 +109,6 @@ fn content_xml(
 ) -> String {
     let sx = PAGE_W_CM / SLIDE_W;
     let sy = PAGE_H_CM / SLIDE_H;
-    // The deck's colours as Slides draws them, in its own look: the file
-    // shows the deck as every collaborator sees it.
     let palette = Palette::resolve(deck.palette, deck.look);
     let mut styles = AutoStyles::default();
     let mut body = String::new();
@@ -157,7 +155,6 @@ fn content_xml(
     s.push_str(
         r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:qslides="urn:tilo:slides:1.0" office:version="1.3">"#,
     );
-    // The pages', shapes' and runs' colours, then the lists' markers.
     s.push_str("<office:automatic-styles>");
     s.push_str(&styles.xml);
     s.push_str(concat!(
@@ -169,8 +166,6 @@ fn content_xml(
     s
 }
 
-/// The automatic styles a document's pages, shapes and runs name, one per
-/// distinct look.
 #[derive(Default)]
 struct AutoStyles {
     xml: String,
@@ -178,7 +173,6 @@ struct AutoStyles {
 }
 
 impl AutoStyles {
-    /// The name of the `family` style holding `properties`, written once.
     fn name(&mut self, family: &str, properties: &str) -> String {
         let key = format!("{family}\u{0}{properties}");
         if let Some(name) = self.names.get(&key) {
@@ -195,7 +189,6 @@ impl AutoStyles {
         name
     }
 
-    /// A text run's style: its ink, weight and slant.
     fn run(&mut self, ink: Color, bold: bool, italic: bool) -> String {
         let mut properties = String::from("<style:text-properties");
         push_attr(&mut properties, "fo:color", &ui::color::to_hex(ink));
@@ -209,7 +202,6 @@ impl AutoStyles {
         self.name("text", &properties)
     }
 
-    /// A drawing object's style: its fill and outline, as Slides draws them.
     fn graphic(&mut self, fill: Option<Color>, stroke: Option<(Color, f64)>) -> String {
         let mut properties = String::from("<style:graphic-properties");
         match fill {
@@ -245,17 +237,12 @@ impl AutoStyles {
     }
 }
 
-/// What an element's colours resolve against: the deck's palette on its
-/// slide's background, and the slide (a text box's ink follows what it
-/// stands on).
 #[derive(Clone, Copy)]
 struct Look<'a> {
     palette: &'a Palette,
     slide: &'a Slide,
 }
 
-/// The `qslides:*` attributes that carry the exact model fields on every draw
-/// object — the source of truth the importer reads back.
 fn push_model_attrs(s: &mut String, el: &Element, exported_src: Option<&str>) {
     push_attr(s, "qslides:id", &el.id);
     push_attr(s, "qslides:kind", el.kind.as_str());
@@ -342,7 +329,6 @@ fn push_element(
                         s.push_str("<text:list-item>");
                     }
                     s.push_str("<text:p>");
-                    // Every run in the ink Slides draws the box's words in.
                     let ink = crate::render::text_ink(palette, look.slide, el);
                     for (text, bold, italic) in crate::model::runs_of(&block) {
                         let text = quick_xml::escape::partial_escape(text);
@@ -390,7 +376,6 @@ fn push_element(
             s.push_str("\" svg:y2=\"");
             s.push_str(&cm(el.y + el.h, sy));
             s.push('"');
-            // As the canvas strokes a line: its outline, else its fill.
             let color = palette
                 .resolve_role(&el.stroke)
                 .or_else(|| palette.resolve_role(&el.fill))
@@ -465,9 +450,6 @@ struct BundledPicture {
     bytes: Vec<u8>,
 }
 
-/// Collect verified content-addressed pictures exactly once. Missing blobs are
-/// intentionally omitted from interchange rather than dereferencing a path
-/// supplied by another collaborator.
 fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> {
     let mut pictures = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -528,7 +510,6 @@ pub fn read_odp(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     Ok(deck)
 }
 
-/// An imported office package (`.odp`/`.pptx`), read under [`ARCHIVE_LIMITS`].
 pub(crate) type Package<'a> = BoundedArchive<Cursor<&'a [u8]>>;
 
 /// Opens an untrusted presentation package and refuses it before any XML
@@ -614,9 +595,6 @@ pub(crate) fn cache_imported_picture(content: &ContentStore, bytes: &[u8]) -> Op
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-/// A draw object whose `qslides:kind` attribute is present carries the whole
-/// model element in its attributes; text bodies additionally come from nested
-/// `text:p` runs.
 fn parse_content(xml: &str) -> Option<Deck> {
     let mut reader = Reader::from_str(xml);
 
@@ -625,29 +603,20 @@ fn parse_content(xml: &str) -> Option<Deck> {
     let mut look = DeckLook::default();
     let mut slides: Vec<Slide> = Vec::new();
 
-    // In-progress text-frame accumulation (a `<draw:frame>` container whose
-    // lines arrive as nested `text:p` runs before the frame closes).
     let mut cur_text_el: Option<Element> = None;
     let mut cur_lines: Vec<String> = Vec::new();
     let mut in_text_p = false;
     let mut p_buf = String::new();
-    // The frame's paragraphs as written, with their bold and italic runs:
-    // automatic text styles by name, and the spans open around the text.
     let mut cur_blocks: Vec<BlockContent> = Vec::new();
     let mut p_block = BlockContent::paragraph("", "");
     let mut text_styles: HashMap<String, (bool, bool)> = HashMap::new();
     let mut style_name: Option<String> = None;
     let mut spans: Vec<(bool, bool)> = Vec::new();
-    // The lists open around the paragraph being read, numbered or not, and
-    // the list styles that number.
     let mut lists: Vec<bool> = Vec::new();
     let mut list_style: Option<String> = None;
     let mut numbered_styles: std::collections::HashSet<String> = ["qsN".to_owned()].into();
 
     loop {
-        // A `Start` opens a container (text frames); an `Empty` is a self-closed
-        // shape. Both may carry the model attributes — the `is_container` flag
-        // is what routes a text frame into line accumulation vs. immediate push.
         let (e, is_container) = match reader.read_event() {
             Err(_) => return None,
             Ok(Event::Eof) => break,

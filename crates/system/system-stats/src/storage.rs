@@ -9,21 +9,15 @@
 //! properties of `org.freedesktop.UDisks2.NVMe.Controller` and
 //! `org.freedesktop.UDisks2.Drive.Ata`, and the `NVMe` health log through
 //! `SmartGetAttributes`), which polkit lets any local user read.
-//!
-//! Nothing here changes a device. Mounting, formatting and powering off stay
-//! `UDisks2` calls behind polkit.
 
 #[cfg(target_os = "linux")]
 use crate::protocol::StorageDevice;
 use crate::protocol::{DriveHealth, Refusal, Storage};
 
-/// Where the session's storage answers come from.
 pub trait StorageSource: Send + Sync {
-    /// Describe the machine's storage now.
     fn read(&self) -> Result<Storage, Refusal>;
 }
 
-/// The columns [`from_block_devices`] reads, for `lsblk --output`.
 pub const LSBLK_COLUMNS: &str = concat!(
     "NAME,KNAME,MODEL,SERIAL,SIZE,TYPE,ROTA,TRAN,RM,RO,FSTYPE,FSVER,",
     "LABEL,MOUNTPOINT,FSUSED,UUID,PARTTYPE,PARTTYPENAME"
@@ -138,7 +132,6 @@ impl StorageSource for MachineStorage {
     }
 }
 
-/// Drive health from `UDisks2`, read-only.
 #[cfg(all(target_os = "linux", feature = "udisks"))]
 pub mod udisks {
     use std::collections::HashMap;
@@ -153,16 +146,13 @@ pub mod udisks {
     const NVME: &str = "org.freedesktop.UDisks2.NVMe.Controller";
     const ATA: &str = "org.freedesktop.UDisks2.Drive.Ata";
 
-    /// One interface's properties, or a method's `a{sv}` answer.
     pub type Props = HashMap<String, OwnedValue>;
 
-    /// A system-bus connection that reads drive health.
     pub struct Health {
         connection: Connection,
     }
 
     impl Health {
-        /// Connect to the system bus; `None` when there is none.
         #[must_use]
         pub fn system() -> Option<Self> {
             match Connection::system() {
@@ -205,7 +195,6 @@ pub mod udisks {
             (!props.is_empty()).then_some(props)
         }
 
-        /// The `NVMe` health log, as `UDisks2` last read it from the drive.
         fn nvme_log(&self, drive: &str) -> Option<Props> {
             let options: HashMap<&str, Value<'_>> = HashMap::new();
             let reply = self
@@ -222,7 +211,6 @@ pub mod udisks {
         }
     }
 
-    /// A value with any variant wrapping taken off.
     fn plain<'v>(value: &'v Value<'v>) -> &'v Value<'v> {
         match value {
             Value::Value(inner) => plain(inner),
@@ -238,7 +226,6 @@ pub mod udisks {
         T::try_from(plain(value)).ok()
     }
 
-    /// A temperature in kelvin as whole degrees Celsius; zero means unknown.
     fn celsius(kelvin: f64) -> Option<i32> {
         (kelvin > 0.0).then(|| {
             #[allow(
@@ -295,12 +282,10 @@ pub mod udisks {
         }
     }
 
-    /// `org.freedesktop.UDisks2.Drive.Ata`'s properties.
     #[must_use]
     pub fn ata(props: &Props) -> DriveHealth {
         let supported = get::<bool>(props, "SmartSupported").unwrap_or(false);
         let updated = when(get::<u64>(props, "SmartUpdated"));
-        // UDisks2 reports -1 for a count it does not know.
         let count = |key: &str| get::<i64>(props, key).and_then(|n| u64::try_from(n).ok());
         DriveHealth {
             supported,
@@ -384,7 +369,6 @@ pub mod udisks {
             assert_eq!(health.percent_used, None, "no log, no wear reading");
         }
 
-        /// An ATA drive's verdict, temperature and counts; -1 is unknown.
         #[test]
         fn an_ata_drives_health_reads_from_its_properties() {
             let health = ata(&props(vec![
@@ -405,7 +389,6 @@ pub mod udisks {
     }
 }
 
-/// A fixed answer, for tests and captures.
 pub struct FixedStorage(pub Storage);
 
 impl StorageSource for FixedStorage {

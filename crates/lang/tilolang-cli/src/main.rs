@@ -50,12 +50,13 @@ usage:
       a native app (its committed surface.toml) and a tilolang package alike
   tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
       tilolang typed against a running session through its agent door: the nested session
-      started last by default (SESSION: its --ready file, runtime directory or control socket,
-      where the REPL is admitted as the person's agent, its answers theirs), another session's
-      door, or the person's own session (--real), where the person admits it. Each entry is a
-      program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
-      what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump WxH [--shots DIR [--theme NAME]...]] [--locale TAG]
+      started last by default (SESSION: its --ready file, runtime directory or control socket),
+      another session's door, or the person's own session (--real). The person admits it there:
+      on the sheet the door puts up, or ahead of time when they start the session
+      (`tilo-session --admit-repl PATH`). Each entry is a program for the door's `tilo` tool, run
+      as the REPL's task: lets are kept, refs (n3) name what answers showed, a bulk change
+      previews until `confirm`, `undo` takes a step back.
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
@@ -65,8 +66,10 @@ usage:
       semantics of every widget) to stderr, and --shots writes the window at that size (display
       and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. --theme takes
       them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
-      dark each. --root lays out the layer a package with more than one root names (the shell's
-      `Desk`, its desk with the bar and the dock), instead of the package's first root.
+      dark each. --bar-at-rest takes them as a maximized window stands at rest, its bar hidden
+      until the person reaches for the top edge, instead of under the bar. --root lays out the
+      layer a package with more than one root names (the shell's `Desk`, its desk with the bar
+      and the dock), instead of the package's first root.
       --state stages a view state at a value the app's own code names (`place=Task.today`, a
       filter; `side=Side.right`, a case of its enum) before any window opens: the place a
       window stands on when nobody has picked one, as a scenario that laid it out would.
@@ -212,6 +215,7 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
                 "--json" => json = true,
                 "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
+                "--bar-at-rest" => options.bar_at_rest = true,
                 "--theme" => options.themes.push(value(&mut iter, arg)?),
                 "--root" => options.root = Some(value(&mut iter, arg)?),
                 "--state" => options.states.push(value(&mut iter, arg)?),

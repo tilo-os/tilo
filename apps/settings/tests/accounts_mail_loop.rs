@@ -1,12 +1,4 @@
 //! End-to-end proof of the Accounts → Mail loop.
-//!
-//! Adding an email account in the Settings "External Accounts" pane must
-//! persist to the shared account store + secret vault, in the shape the mail
-//! account loader reads at startup. This test drives the real Settings `sync`
-//! path (open form → fill fields → Save) — the same code the live UI runs —
-//! then reads the result straight back from the shared `accounts` crate on
-//! disk: the typed account record, its flattened connection config, and the
-//! sealed password. No mocks: the two apps meet at that store.
 
 use settings::accounts::AccountKind;
 use settings::accounts::AccountRoot;
@@ -31,17 +23,14 @@ fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     let root_dir = tempfile::tempdir().unwrap();
     let tilo_root = root_dir.path().join("tilo");
 
-    // A fresh install: no accounts yet.
     assert!(
         accounts::AccountStore::load_in(&tilo_root).is_empty(),
         "precondition: the shared store starts empty"
     );
 
-    // Drive the real Settings pane exactly as the UI would.
     let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root))
         .with_account_tester(std::sync::Arc::new(AcceptAccount));
 
-    // 1) Click "Add" → the inline email form opens.
     pane.command(AccountViewCommand::Add(AccountKind::Mail));
     assert!(pane.form_open(), "Add opens the inline form");
 
@@ -49,8 +38,6 @@ fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     pane.set_form_fields_for_test("Ada Personal", "ada@gmail.com", "", "");
     pane.set_form_password_for_test("s3cret-app-password");
 
-    // 3) Click "Save" → the pane builds the account, autofills the servers,
-    //    persists it to the shared store, and seals the password in the vault.
     pane.submit_form_for_test();
     assert!(
         pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),

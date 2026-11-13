@@ -129,6 +129,7 @@ impl ResourceApp for App {
     type Resource = Workbench;
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
+    const TITLE_KEY: &'static str = "shortcuts-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

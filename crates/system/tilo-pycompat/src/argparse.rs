@@ -1,19 +1,17 @@
-//! Command lines as `argparse` read them: long options in any order, as
-//! `--opt VALUE` or `--opt=VALUE` or a unique prefix of either, `--` ending the
-//! options, `-h`/`--help`, positionals in order (optionally limited to a set of
-//! choices), and usage errors (exit status 2) worded as `argparse` worded them.
+//! Command lines as `argparse` read them: long options in any order as
+//! `--opt VALUE`, `--opt=VALUE` or a unique prefix of either, `--` ending the
+//! options, `-h`/`--help`, positionals in order with optional choices, and usage
+//! errors (exit status 2) worded as `argparse` worded them.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
-/// One argument, in the order the script declared it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arg {
-    /// `--flag VALUE`; `required` or optional (absent means its default).
+    /// `--flag VALUE`; absent, the caller uses the default.
     Option { flag: &'static str, required: bool },
     /// A positional, named in usage errors.
     Positional(&'static str),
-    /// A positional that must be one of `choices`.
     Choice {
         name: &'static str,
         choices: &'static [&'static str],
@@ -29,7 +27,6 @@ impl Arg {
     }
 }
 
-/// A helper's command line.
 #[derive(Debug, Clone, Copy)]
 pub struct Command {
     /// The name in usage errors and failure messages.
@@ -38,11 +35,9 @@ pub struct Command {
     pub usage: &'static str,
     /// What `--help` prints after the usage.
     pub help: &'static str,
-    /// The arguments, in declaration order.
     pub args: &'static [Arg],
 }
 
-/// The parsed arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Values {
     names: Vec<&'static str>,
@@ -50,7 +45,6 @@ pub struct Values {
 }
 
 impl Values {
-    /// The value of option `flag` or positional `name`, if given.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&OsStr> {
         let at = self.names.iter().position(|n| *n == name)?;
@@ -68,7 +62,6 @@ impl Values {
     }
 }
 
-/// What the command line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Parsed {
     Run(Values),
@@ -128,15 +121,12 @@ fn long_option(command: &Command, word: &str) -> Result<Option<&'static str>, St
     }
 }
 
-/// One word's effect on the parse.
 enum Step {
-    /// Print the help.
     Help,
     /// The word was read; `true` when it also took the next word as a value.
     Read(bool),
 }
 
-/// The parse so far.
 struct State<'a> {
     command: &'a Command,
     names: Vec<&'static str>,
@@ -285,7 +275,7 @@ impl<'a> State<'a> {
     }
 }
 
-/// Reads `args` (without the program name).
+/// Reads `args`, without the program name.
 ///
 /// # Errors
 /// The usage and the error, as `argparse` wrote them, for exit status 2.

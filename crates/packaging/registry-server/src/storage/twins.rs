@@ -1,18 +1,13 @@
-//! Compressed twins of the objects this registry serves by content.
-//!
-//! Beside every payload object `payload-blobs/<blake3>` (a whole blob or a
-//! chunk) sits `payload-blobs/<blake3>.zst`, and beside every imported
-//! `artifacts/<blake3>.tapp` sits `artifacts/<blake3>.tapp.zst`: the same
-//! bytes compressed once, when the object is stored, so clients download a
-//! third of them (`tilo_app_package::compressed`). A twin is written only
-//! from bytes already checked against their name, and checked again the
-//! first time each stored twin file is served (see `checked`): it must
-//! decompress, within the length of the object it stands for, to bytes that
-//! hash to that name.
-//!
-//! A twin is an optimisation, never the only copy. A missing one is served as
-//! 404 and the client takes the raw object; `compress-payloads` writes the
-//! twins of objects stored before twins existed.
+//! Compressed twins of the objects this registry serves by content. Beside every payload object
+//! `payload-blobs/<blake3>` (a whole blob or a chunk) sits `payload-blobs/<blake3>.zst`, and beside
+//! every imported `artifacts/<blake3>.tapp` sits `artifacts/<blake3>.tapp.zst`: the same bytes
+//! compressed once, when the object is stored, so clients download a third of them
+//! (`tilo_app_package::compressed`). A twin is written only from bytes already checked against
+//! their name, and checked again the first time each stored twin file is served (see `checked`): it
+//! must decompress, within the length of the object it stands for, to bytes that hash to that name.
+//! A twin is an optimisation, never the only copy. A missing one is served as 404 and the client
+//! takes the raw object; `compress-payloads` writes the twins of objects stored before twins
+//! existed.
 
 use std::path::{Path, PathBuf};
 
@@ -27,9 +22,7 @@ use super::{Storage, StorageError, atomic_write, is_hex_digest, list_digests};
 pub struct TwinReport {
     pub written: usize,
     pub present: usize,
-    /// Bytes of the objects twinned by this run.
     pub raw_bytes: u64,
-    /// Bytes of the twins this run wrote.
     pub twin_bytes: u64,
 }
 
@@ -44,8 +37,8 @@ impl Storage {
             .map(|path| path.with_extension(format!("tapp{SUFFIX}")))
     }
 
-    /// Write the twin of the stored payload object `hash` from its verified
-    /// `bytes`, unless it has one. Returns the twin's length when written.
+    /// Write the twin of the stored payload object `hash` from its verified `bytes`, unless it has
+    /// one. Returns the twin's length when written.
     pub(super) fn write_payload_twin(
         &self,
         hash: &BlobHash,
@@ -54,8 +47,8 @@ impl Storage {
         write_twin(&self.payload_twin_path(hash), bytes)
     }
 
-    /// Write the twin of the stored payload object `hash` from the object
-    /// on disk, checked against its name first, unless it has one.
+    /// Write the twin of the stored payload object `hash` from the object on disk, checked against
+    /// its name first, unless it has one.
     pub fn ensure_payload_twin(&self, hash: &BlobHash) -> Result<Option<u64>, StorageError> {
         if self.payload_twin_path(hash).exists() {
             return Ok(None);
@@ -66,12 +59,8 @@ impl Storage {
         self.write_payload_twin(hash, &bytes)
     }
 
-    /// The twin of the payload object `blake3_hex`, checked to decompress to
-    /// that object, or `None` when either is missing.
-    ///
-    /// # Errors
-    /// Returns an error when a stored twin cannot be read or does not stand
-    /// for its object.
+    /// The twin of the payload object `blake3_hex`, checked to decompress to that object, or `None`
+    /// when either is missing.
     pub fn load_payload_twin(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         if !is_hex_digest(blake3_hex) {
             return Ok(None);
@@ -87,8 +76,8 @@ impl Storage {
         )
     }
 
-    /// Write the twin of the imported artifact `blake3_hex` from its verified
-    /// `bytes`, unless it has one.
+    /// Write the twin of the imported artifact `blake3_hex` from its verified `bytes`, unless it
+    /// has one.
     pub(super) fn write_artifact_twin(
         &self,
         blake3_hex: &str,
@@ -100,12 +89,8 @@ impl Storage {
         write_twin(&path, bytes)
     }
 
-    /// The twin of the imported artifact `blake3_hex`, checked to decompress
-    /// to that artifact, or `None` when either is missing.
-    ///
-    /// # Errors
-    /// Returns an error when a stored twin cannot be read or does not stand
-    /// for its artifact.
+    /// The twin of the imported artifact `blake3_hex`, checked to decompress to that artifact, or
+    /// `None` when either is missing.
     pub fn load_artifact_twin(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let (Some(twin), Some(raw), Some(hash)) = (
             self.artifact_twin_path(blake3_hex),
@@ -117,10 +102,9 @@ impl Storage {
         load_twin(&self.checked, &twin, &raw, &hash)
     }
 
-    /// Write the missing twin of every stored payload object and imported
-    /// artifact: the one-time backfill for objects stored before twins
-    /// existed. Each object is checked against its name before it is
-    /// compressed. Safe to rerun and to run beside `serve`.
+    /// Write the missing twin of every stored payload object and imported artifact: the one-time
+    /// backfill for objects stored before twins existed. Each object is checked against its name
+    /// before it is compressed. Safe to rerun and to run beside `serve`.
     pub fn compress_stored_objects(&self) -> Result<TwinReport, StorageError> {
         let mut report = TwinReport::default();
         let mut count = |raw: u64, written: Option<u64>| match written {
@@ -177,9 +161,8 @@ pub(super) fn write_twin(path: &Path, bytes: &[u8]) -> Result<Option<u64>, Stora
     Ok(Some(twin.len() as u64))
 }
 
-/// Read the twin at `twin` and check, the first time this file is served,
-/// that it decompresses within the length of the object at `raw` to bytes
-/// hashing to `hash`.
+/// Read the twin at `twin` and check, the first time this file is served, that it decompresses
+/// within the length of the object at `raw` to bytes hashing to `hash`.
 fn load_twin(
     checked: &CheckedFiles,
     twin: &Path,

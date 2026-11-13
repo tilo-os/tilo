@@ -1,8 +1,7 @@
-//! `.xlsx` (OOXML `SpreadsheetML`) codec. Parses the OPC package's workbook +
-//! worksheet parts into the CRDT [`Workbook`] model — sheets, cells, cell types,
-//! and **formulas** (preserved, never flattened to their cached result) — and
-//! serializes a complete valid package back. Untrusted bytes enter only through
-//! the bounded/hardened `ZipPackage` reader (zip-bomb + XXE defence).
+//! The `.xlsx` (OOXML `SpreadsheetML`) codec: the package's workbook and worksheet parts read
+//! into the [`Workbook`] model (sheets, cells, cell types, formulas preserved, never flattened to
+//! their cached result), and a complete package written back. Untrusted bytes enter only through
+//! the bounded, hardened `ZipPackage` reader.
 
 use crate::format::CodecError;
 use crate::sheet_common::{
@@ -12,12 +11,10 @@ use crate::xml_escape::escape_attr_quotes;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 use tilo_doc::sheet::a1::{parse_ref, shift_formula};
 use tilo_doc::sheet::snapshot::CellType;
 use tilo_doc::sheet::{CellInput, Workbook, WorkbookSnapshot};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 const NS_MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const NS_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -78,7 +75,6 @@ impl XlsxCodec {
                 crate::office_props::ooxml::core_prop_for_element,
             );
         }
-        // Preserve styles + theme so cell `s=` refs resolve and unmodeled parts survive; regenerated structural parts are not.
         for (name, bytes) in &pkg.parts {
             if is_preserved_part(name) {
                 parsed.preserved.insert(name.clone(), bytes.clone());
@@ -110,10 +106,6 @@ fn serialize(
     let mut pkg = crate::package::ZipPackage { parts: Vec::new() };
 
     let styles_xml = preserved("xl/styles.xml");
-    // Styles routinely refer to `theme/theme1.xml` (notably for font and
-    // fill colours). Keeping the theme part *and its OPC relationship*
-    // avoids turning a styled workbook into Office's default palette on a
-    // content edit.
     let theme_xml = preserved("xl/theme/theme1.xml");
     let has_theme = theme_xml.is_some();
 
@@ -133,7 +125,6 @@ fn serialize(
             worksheet_xml(sheet).into_bytes(),
         );
     }
-    // styles.xml: re-emit the preserved original, else a minimal default.
     pkg.set(
         "xl/styles.xml",
         styles_xml.unwrap_or_else(|| minimal_styles_xml().into_bytes()),
@@ -173,7 +164,6 @@ fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String, bool)>, Code
     Ok(out)
 }
 
-/// `rId → target path` from xl/_rels/workbook.xml.rels.
 fn parse_workbook_rels(xml: &[u8]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Ok(s) = std::str::from_utf8(xml) else {
@@ -205,7 +195,6 @@ fn normalize_xl_target(target: &str) -> String {
     }
 }
 
-/// The shared-string table: each `<si>` → its concatenated `<t>` text.
 fn parse_shared_strings(xml: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(s) = std::str::from_utf8(xml) else {
@@ -282,7 +271,6 @@ fn parse_worksheet(xml: &[u8], sst: &[String]) -> Result<Vec<(String, CellInput)
             .read_event()
             .map_err(|e| CodecError::Parse(format!("worksheet xml: {e}")))?
         {
-            // A self-closing `<c .../>` — an empty (possibly styled) cell.
             Event::Empty(e) if local_name(&e) == b"c" => {
                 push_cell(
                     &mut cells,
@@ -306,7 +294,6 @@ fn parse_worksheet(xml: &[u8], sst: &[String]) -> Result<Vec<(String, CellInput)
                 in_is_t = false;
                 shared_index = None;
             }
-            // `<f t="shared" si="0"/>` — a cell inside a shared formula's range.
             Event::Empty(e) if local_name(&e) == b"f" => {
                 has_formula = shared_formula_index(&e)
                     .and_then(|si| expand_shared(&shared, &si, cur_ref.as_deref()))
@@ -377,7 +364,6 @@ fn parse_worksheet(xml: &[u8], sst: &[String]) -> Result<Vec<(String, CellInput)
     Ok(cells)
 }
 
-/// The `si` of a `<f t="shared">`, or `None` for an ordinary formula.
 fn shared_formula_index(e: &quick_xml::events::BytesStart) -> Option<String> {
     (attr_local(e, b"t").as_deref() == Some("shared"))
         .then(|| attr_local(e, b"si"))
@@ -421,7 +407,6 @@ fn push_cell(
             let idx: usize = value.trim().parse().unwrap_or(usize::MAX);
             (CellType::Text, sst.get(idx).cloned().unwrap_or_default())
         }
-        // "d" is an ISO date string, preserved as text like "str"/"inlineStr".
         "str" | "inlineStr" | "d" => (CellType::Text, value.to_string()),
         "b" => (
             CellType::Bool,
@@ -815,8 +800,6 @@ fn cell_xml(cell: &tilo_doc::sheet::CellView) -> String {
         .unwrap_or_default();
     let has_formula = cell.formula.is_some();
 
-    // Value serialization + the `t` attribute per cell type: a formula's string result
-    // uses `t="str"` (a cached formula string), a literal string uses `t="inlineStr"`.
     let (t_attr, body): (&str, String) = match cell.cell_type {
         CellType::Number => (
             "",
@@ -858,7 +841,6 @@ fn core_props_xml(props: &BTreeMap<String, String>) -> String {
     )
 }
 
-/// Whether a part should be preserved verbatim; the regenerated structural parts (workbook, worksheets, rels, content-types, sharedStrings, docProps) are not.
 fn is_preserved_part(name: &str) -> bool {
     let structural = name == "[Content_Types].xml"
         || name == "_rels/.rels"

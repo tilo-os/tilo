@@ -26,6 +26,10 @@ libc.workspace = true
 tilo-rt = { workspace = true, optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["tokio"] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# A page checks a model service's URL with the browser's own parser.
+web-sys = { version = "=0.3.85", features = ["Url"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 workspace-hack = { version = "0.1" }

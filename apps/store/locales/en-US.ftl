@@ -71,7 +71,7 @@ store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
 
 store-package-local-trust = Verified by an existing trusted attestor
-store-installed-unanswered = Verified when installed. { $repositories } hasn't answered, so this app's description and updates appear here once it does.
+store-installed-unanswered = Verified when installed. { $repositories } hasn't answered yet, so its description and updates are missing.
 store-installed-unlisted = Verified when installed. No enabled repository lists this app, so it gets no updates here.
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
@@ -113,7 +113,7 @@ store-bot-kind = Bot
 store-bot-what-it-does = What it does
 store-bot-appearance = May post under other names and avatars. Always tagged as a bot.
 store-bot-add-to-workspace = Add to this workspace…
-store-bot-add-elsewhere = A workspace adds a bot with its Add a bot action
+store-bot-add-elsewhere = Add a bot from inside the workspace
 store-bot-trigger-connector = When its connector reports an event
 store-bot-trigger-record-changed = When a record changes
 store-bot-trigger-schedule = On a schedule
@@ -189,10 +189,10 @@ store-progress-installing = Installing { $name }…
 # Said while a package operation runs: the Store offers no Stop, because the
 # package manager finishes it from another process. So the page says what
 # stopping would mean and what the person can do instead.
-store-progress-continues = The package manager finishes this in its own process, so it cannot be stopped here. Leave it running, or close this window: it ends either way.
+store-progress-continues = This can't be stopped here. Leave it running, or close this window: it finishes either way.
 # The same, in the job's row, for a person looking at the Jobs surface rather
 # than the page that started the operation.
-store-job-continues = The package manager runs this; it cannot be stopped here, and it ends even if you close the window.
+store-job-continues = This can't be stopped here. It finishes even if you close the window.
 store-progress-updating = Updating { $name }…
 store-progress-removing = Removing { $name }…
 store-progress-keeping = Keeping { $name } on this device…
@@ -356,3 +356,44 @@ store-remotes-configured = Configured repositories
 
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installed, { $size } in all
+store-window-name = App Store
+
+store-app-tilo = Tilo app
+store-app-flatpak = Flatpak app
+store-app-flatpak-from = Flatpak app from { $source }
+store-app-flatpak-from-version = Flatpak app from { $source }, version { $version }
+
+## Actions
+
+store-catalog = App Store
+store-catalog-record-moderation-case = Record moderation case
+store-effect-inspect-catalogue = Inspect catalogue
+store-effect-refresh = Refresh catalogue
+store-effect-update-all = Update all apps
+store-effect-set-search = Search apps
+store-effect-show-view = Show a Store view
+store-effect-show-more = Show more apps
+store-effect-unblock-app = Unblock app
+store-effect-browse-remote = Browse a Flatpak repository
+store-effect-set-category = Show category
+store-effect-clear-filters = Clear the search
+store-effect-show-details = Show app details
+store-effect-show-runtime-details = Review an app's runtime
+store-effect-install-runtime = Install the signed runtime
+store-effect-set-technical-details = Toggle technical details
+store-effect-import-package = Review a local package
+store-effect-open-reference = Open a Flatpak reference
+store-effect-show-catalogue = Back to apps
+store-effect-show-remotes = Show Flatpak remotes
+store-effect-show-trust = Show trust and moderation
+store-effect-open-link = Open a web page
+store-effect-pin = Keep on device
+store-effect-add-bot = Add a directory bot
+store-effect-refresh-remotes = Refresh remotes
+store-effect-add-remote = Add Flatpak remote
+store-effect-remove-remote = Remove remote
+store-effect-prepare-moderation = Prepare a report
+store-effect-submit-report = Submit signed report
+
+## What the app is called in a window and in the launcher
+store-app-title = App Store

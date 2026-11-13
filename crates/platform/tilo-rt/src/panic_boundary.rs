@@ -39,8 +39,6 @@ pub fn abort_outside_boundaries() {
     });
 }
 
-/// [`abort_outside_boundaries`] in an optimised build that unwinds; nothing
-/// in a debug or test build, which unwinds everywhere.
 pub(crate) fn abort_outside_boundaries_in_release() {
     if cfg!(all(panic = "unwind", not(debug_assertions))) {
         abort_outside_boundaries();
@@ -117,7 +115,6 @@ mod tests {
 
     const FIXTURE: &str = "TILO_RT_PANIC_BOUNDARY_FIXTURE";
 
-    /// The scenario this test binary runs when it is the fixture child.
     #[test]
     fn panic_boundary_fixture() {
         let Ok(scenario) = std::env::var(FIXTURE) else {

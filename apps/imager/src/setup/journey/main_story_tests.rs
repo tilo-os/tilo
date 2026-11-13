@@ -1,4 +1,5 @@
 //! One guided story through real actions; only host discovery is an isolated fixture.
+
 use super::*;
 use crate::resource::ImagerShell;
 use std::{path::Path, sync::Arc};
@@ -98,8 +99,6 @@ fn profile(
         "main-story-profile-initials",
         &["installer.name", "installer.avatar", "installer.next"],
     );
-    // This selected-picture fixture is a solid orange PNG. A photo replaces
-    // initials, so capture its branch separately from the default avatar.
     app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
         source_file: AbsolutePath::new(picture).unwrap(),
     })
@@ -449,8 +448,6 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
         selection: None,
     })
     .unwrap();
-    // This story declines saved credentials while retaining shared files.
-    // A subsequent generic bulk import must not override that exclusion.
     assert!(
         app.effect(&InstallerPreviewEffect::AccountStep {
             step: "import-saved".into(),
@@ -566,8 +563,6 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
     std::fs::create_dir_all(home.join(".var/app/story.app")).unwrap();
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(home.join("Documents/notes.txt"), b"same original files").unwrap();
-    // A large real sparse document proves the allocation excludes shared files
-    // without consuming that much physical storage in this fixture.
     std::fs::File::create(home.join("Documents/archive.img"))
         .unwrap()
         .set_len(64u64 << 30)
@@ -711,8 +706,6 @@ fn prepare_native_portable_story_source(
     .unwrap();
     let rclone = config.join("rclone/rclone.conf");
     if let Some(endpoint) = endpoint {
-        // Match the real DAV fixture's credential format through canonical
-        // discovery/capture, rather than manufacturing account grant metadata.
         let user = cloud_source_dav::fake::USER;
         let obscured = "AAECAwQFBgcICQoLDA0OD2LwFVdisTSqpU56FmE";
         std::fs::write(&rclone, format!("[Team files]\ntype=webdav\nurl={endpoint}\nuser={user}\npass={obscured}\n[Personal files]\ntype=webdav\nurl={endpoint}\nuser={user}\npass={obscured}\n")).unwrap();

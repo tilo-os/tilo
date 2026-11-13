@@ -13,8 +13,8 @@ enum ImportPurpose {
     PreparedHandoff,
 }
 
-/// A private destination configuration root, separate from shared UI state.
-/// It may be staged for migration or be the target user's installed home.
+/// A private destination configuration root: a staged migration copy or the target user's
+/// installed home.
 #[derive(Clone)]
 pub struct Connector {
     pub(super) root: PathBuf,
@@ -38,7 +38,6 @@ impl Connector {
         }
     }
 
-    /// Injection uses the production custodian's provider overrides in tests.
     pub fn with_custodian(root: PathBuf, custodian: Custodian) -> Self {
         Self {
             root,
@@ -54,9 +53,8 @@ impl Connector {
         self.custodian.is_configured(cloud.oauth_use())
     }
 
-    /// Only call after explicit connection consent. The caller opens this
-    /// authorization's URL through the shared host URI opener; no app is
-    /// launched by the backend. Keep the handle out of CRDT/actions/status.
+    /// Only after explicit connection consent. The caller opens the URL through the shared host URI
+    /// opener; no app is launched here. Keep the handle out of CRDT, actions and status.
     pub fn begin_oauth(
         &self,
         cloud: OAuthCloud,
@@ -67,8 +65,8 @@ impl Connector {
             .map_err(custody_error)
     }
 
-    /// Run on a worker after the person approves the browser sign-in.
-    /// PKCE, state validation and grant custody are the existing platform's.
+    /// Runs on a worker after the person approves the browser sign-in; PKCE, state validation and
+    /// grant custody are the platform's existing ones.
     pub fn finish_oauth(
         &self,
         cloud: OAuthCloud,
@@ -110,8 +108,7 @@ impl Connector {
         self.persist(account, account_custody::oauth_secret(&tokens))
     }
 
-    /// Spotify's read-only library connection, using the exact grant slot
-    /// consumed by Tilo Music. Streaming/playback remains a separate consent.
+    /// Uses the exact grant slot Tilo Music consumes; streaming stays a separate consent.
     pub fn begin_spotify(&self) -> Result<Authorization, ConnectionError> {
         use account_custody::{Capability, OAuthIssuer, OAuthUse};
         self.custodian
@@ -138,7 +135,7 @@ impl Connector {
         self.persist_verified_spotify(id, tokens, false)
     }
 
-    /// Separate playback consent for the exact slot consumed by native Music.
+    /// Separate playback consent for the same slot.
     pub fn begin_spotify_streaming(&self) -> Result<Authorization, ConnectionError> {
         use account_custody::{Capability, OAuthIssuer, OAuthUse};
         self.custodian
@@ -174,13 +171,11 @@ impl Connector {
         self.persist_verified_spotify(id, tokens, true)
     }
 
-    /// Existing Apple sign-in adapter; password/challenge/code stay private
-    /// on the worker and never enter the install profile.
+    /// Password, challenge and code stay private on the worker and never enter the install profile.
     pub fn icloud_available(&self) -> bool {
         self.custodian.icloud().is_available()
     }
 
-    /// End only a newly granted session that could not enter canonical custody.
     pub fn icloud_sign_out(&self, session: &account_custody::icloud::ICloudSessionState) {
         self.custodian.icloud().sign_out(session);
     }
@@ -226,9 +221,8 @@ impl Connector {
         self.persist(account, account_custody::icloud_secret(apple_id, &session))
     }
 
-    /// Complete the existing Nextcloud Login Flow v2 (begin/wait are exposed
-    /// by account_custody::nextcloud). The user's ordinary password never
-    /// enters the installer; this is the device's revocable app password.
+    /// The person's ordinary password never enters the installer; this is the device's revocable app
+    /// password.
     pub fn finish_nextcloud(
         &self,
         label: &str,
@@ -245,8 +239,7 @@ impl Connector {
         )
     }
 
-    /// Retain an explicitly supplied existing Nextcloud app password. This is
-    /// not a grant minted by this installer, so cancellation must not revoke it.
+    /// Not a grant this installer minted, so cancellation must not revoke it.
     pub fn connect_nextcloud_app_password(
         &self,
         label: &str,
@@ -263,8 +256,7 @@ impl Connector {
         )
     }
 
-    /// An explicitly supplied WebDAV app password, sealed in the vault.
-    /// Passwords are supplied only through a private local buffer.
+    /// Supplied only through a private local buffer.
     pub fn connect_webdav(
         &self,
         label: &str,
@@ -321,22 +313,21 @@ impl Connector {
             let copied = account_custody::copied_secret(&account, &secret);
             self.persist_import(account, copied)
         } else {
-            // Preserve offline copied grants. Only explicit new connections
-            // promise this endpoint is ready before publishing target custody.
+            // Preserve offline copied grants: only an explicit new connection promises this endpoint
+            // is ready before target custody is published.
             let _ = load_store(&self.root)?;
             super::dav_readiness::verify(&account, username, &password)?;
             self.persist(account, Secret::password(password.to_string()))
         }
     }
 
-    /// Remove a cancelled prepared connection from its private stage. Revoking
-    /// a supported provider grant is best effort through existing custody.
+    /// Revoking a grant is best effort through existing custody.
     pub fn disconnect(&self, id: &AccountId) -> Result<(), ConnectionError> {
         self.remove_prepared(id, true)
     }
 
-    /// Forget a copied credential in private staging without revoking its
-    /// original provider grant, which may still be used on the source device.
+    /// Forgetting a copied credential does not revoke the original provider grant, which the source
+    /// device may still use.
     pub fn forget_prepared(&self, id: &AccountId) -> Result<(), ConnectionError> {
         self.remove_prepared(id, false)
     }
@@ -352,8 +343,8 @@ impl Connector {
         if revoke && let (Some(account), Some(secret)) = (&account, &secret) {
             self.custodian.revoke(account, &secret.0);
         }
-        // A retry can observe the vault save from an earlier attempt whose
-        // metadata save failed. Finish removing the metadata in that case.
+        // A retry can see the vault save of an earlier attempt whose metadata save failed; finish
+        // removing it.
         vault.remove(id);
         vault
             .try_save()
@@ -364,11 +355,9 @@ impl Connector {
             .map_err(|_| ConnectionError::StorageUnavailable)
     }
 
-    /// Reseal one already configured Tilo account with the destination vault's
-    /// key. Source vaults with explicit-root custody are supported. A live
-    /// Secret Service/DPAPI-only source must be exported by its owner session,
-    /// not copied as a key file. Missing/unavailable credentials fail closed.
-    /// Collaborative accounts contributed by other people are never adopted.
+    /// Reseals one configured account with the destination vault's key. A live Secret Service or
+    /// DPAPI source must be exported by its owner session, not copied as a key file. Collaborative
+    /// accounts from other people are never adopted.
     pub fn import_tilo(&self, source: &Path, id: &AccountId) -> Result<AccountId, ConnectionError> {
         self.import_tilo_inner(source, id, None, ImportPurpose::CopySource)
     }
@@ -386,9 +375,8 @@ impl Connector {
         )
     }
 
-    /// Transfer already prepared private custody without changing its lifecycle.
-    /// Only the owned installer stage uses this; importing an original source uses
-    /// `import_tilo` and receives durable non-revoking copied provenance.
+    /// Only the owned installer stage uses this; importing a source uses `import_tilo`, which keeps
+    /// durable non-revoking provenance.
     pub fn handoff_prepared(
         &self,
         source: &Path,
@@ -460,10 +448,8 @@ impl Connector {
         self.persist_import(account, expected)
     }
 
-    /// Import one reviewed rclone WebDAV/Nextcloud account. Re-read the exact
-    /// consented source and match its section, endpoint and login before
-    /// extracting its reusable grant. Supported OAuth grants retain their original
-    /// client registration. No source file is changed.
+    /// Re-reads the consented source and matches its section, endpoint and login before extracting
+    /// the grant; supported OAuth grants keep their original client registration.
     pub fn import_rclone(
         &self,
         roots: &super::SourceRoots,
@@ -519,10 +505,8 @@ impl Connector {
             }
         }
         let password = reveal_rclone(encoded.ok_or(ConnectionError::CredentialUnavailable)?)?;
-        // Rclone's WebDAV URL is the precise remote files root (including
-        // Nextcloud's /remote.php/dav/files/<id> or a chosen subfolder). Preserve
-        // it as generic DAV; treating it as a Nextcloud server base would append
-        // a second DAV path and can also confuse login name with DAV user id.
+        // Rclone's WebDAV URL is the precise files root (including Nextcloud's
+        // /remote.php/dav/files/<id> or a chosen subfolder), so keep it as generic DAV.
         let type_id = accounts::cloud_types::WEBDAV;
         self.password_account(
             type_id,
@@ -563,9 +547,8 @@ pub(super) fn custody_error(error: CustodyError) -> ConnectionError {
     }
 }
 
-// Rclone's public obscure format: random 16-byte IV, AES-256 CTR, raw URL
-// base64. This is obfuscation, not secure custody; reseal immediately.
-// https://github.com/rclone/rclone/blob/master/fs/config/obscure/obscure.go
+// Rclone's obscure format: random 16-byte IV, AES-256 CTR, raw base64. Obfuscation, not custody;
+// reseal immediately.
 fn reveal_rclone(encoded: &str) -> Result<Zeroizing<String>, ConnectionError> {
     if encoded.len() > 16 * 1024 {
         return Err(ConnectionError::CredentialUnavailable);

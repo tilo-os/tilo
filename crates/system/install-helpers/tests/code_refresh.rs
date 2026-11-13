@@ -1,6 +1,6 @@
-//! The development VM's installer code refresh: the protocol against the
-//! Python host that bundles packets, and the daemon's transaction on fixture
-//! roots with every privileged command observed rather than run.
+//! The development VM's installer code refresh: the protocol against the Python
+//! host that bundles packets, and the daemon's transaction on fixture roots with
+//! every privileged command observed rather than run.
 #![cfg(target_os = "linux")]
 #![allow(
     clippy::unwrap_used,
@@ -50,8 +50,8 @@ fn framed(raw: &[u8]) -> Vec<u8> {
     data
 }
 
-/// A port: reads come from a script, writes land where the test can see
-/// them after the daemon has closed it.
+/// A port: reads come from a script, writes land where the test can see them
+/// after the daemon has closed it.
 struct Duplex {
     reader: Cursor<Vec<u8>>,
     written: Rc<RefCell<Vec<u8>>>,
@@ -380,8 +380,7 @@ fn binding_preserves_destination_mode_and_label_and_records_applied_state() {
             ],
         ]
     );
-    // The receipt the backend and the install proof read, as json.dumps
-    // wrote it.
+    // The receipt the backend and the install proof read, as json.dumps wrote it.
     assert_eq!(
         fs::read_to_string(fixture.marker()).unwrap(),
         format!(
@@ -644,10 +643,8 @@ fn bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos() {
 #[test]
 fn the_bootstrap_handshake_is_the_seed_receipt_not_an_environment_variable() {
     // `exchange` picks the bootstrap transport when the guest reports the seed
-    // handed over. That decision must come from the receipt the seed writes
-    // into its root-owned runtime directory, never from an environment
-    // variable: a variable is inherited by every child and can be set by
-    // whoever starts the unit.
+    // handed over. That decision must come from the receipt the seed writes into
+    // its root-owned runtime directory, never from an environment variable.
     struct Seed(PathBuf);
     impl Guest for Seed {
         fn base(&self) -> PathBuf {
@@ -667,9 +664,9 @@ fn the_bootstrap_handshake_is_the_seed_receipt_not_an_environment_variable() {
         guest.bootstrap_handshake(),
         "the seed's receipt must select the bootstrap transport"
     );
-    // And nothing in the crate may fall back to a `TILO_*` seam in its place:
-    // a variable would make the bootstrap transport reachable from outside the
-    // seed that owns the receipt.
+    // Nothing in the crate may fall back to a `TILO_*` seam in its place: a
+    // variable would make the bootstrap transport reachable from outside the seed
+    // that owns the receipt.
     for entry in walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
         let text = fs::read_to_string(&entry).unwrap();
         assert!(

@@ -7,8 +7,6 @@
 //! carries the endpoints, scopes, provider-specific authorization parameters
 //! and how (or whether) a grant can be revoked.
 //!
-//! # Pieces
-//!
 //! - [`Provider`] and [`ClientId`]: descriptors as data. A client id is read
 //!   from the environment first and then from the value baked in at build
 //!   time; a missing id is [`ClientId::resolve`] returning `None`, which
@@ -25,9 +23,6 @@
 //! - `client` (feature `client`): [`client::OAuthClient`] for the code
 //!   exchange, refresh and revocation, and [`client::Authorization`] tying
 //!   the whole browser round trip together.
-//!
-//! Nothing here stores tokens. Callers own custody (the account vault) and
-//! decide which party ever sees which token.
 
 use std::fmt;
 
@@ -47,7 +42,6 @@ pub mod fake;
 mod flow_tests;
 pub mod loopback;
 
-/// How a provider lets an app give up a grant when the account is removed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Revocation {
     /// The provider has no per-app revocation endpoint (Microsoft identity
@@ -60,31 +54,26 @@ pub enum Revocation {
     BearerPost { endpoint: String },
 }
 
-/// One `OAuth` provider as data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provider {
     /// Stable identifier (`google`, `microsoft`, `dropbox`).
     pub id: String,
-    /// Human name shown in the sign-in UI.
     pub label: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub revocation: Revocation,
-    /// Scopes requested, joined with spaces on the wire.
     pub scopes: Vec<String>,
     /// Provider-specific authorization parameters, e.g. Google's
     /// `access_type=offline` + `prompt=consent` or Dropbox's
     /// `token_access_type=offline`, which make the provider issue a refresh
     /// token.
     pub authorization_params: Vec<(String, String)>,
-    /// How an access token is renewed from the grant.
     pub refresh: Refresh,
     /// RFC 8628 device authorization endpoint, for an issuer whose client
     /// signs in with a device code rather than a browser redirect.
     pub device_authorization_endpoint: Option<String>,
 }
 
-/// How a grant's access token is renewed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Refresh {
     /// RFC 6749 §6: the refresh token at the token endpoint.
@@ -97,13 +86,11 @@ pub enum Refresh {
 }
 
 impl Provider {
-    /// The space-separated scope string.
     pub fn scope(&self) -> String {
         self.scopes.join(" ")
     }
 }
 
-/// Which loopback ports the redirect listener may take.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RedirectPorts {
     /// Any free port. For providers that match a loopback redirect without
@@ -122,7 +109,6 @@ pub enum RedirectPorts {
 /// matches these.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Redirect {
-    /// `127.0.0.1`, or `localhost` for an issuer registered with that.
     pub host: String,
     /// The path, `/oauth` unless the issuer registered another.
     pub path: String,
@@ -137,7 +123,6 @@ impl Default for Redirect {
     }
 }
 
-/// What a provider's developer console issued for this app.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Registration {
     pub client_id: String,
@@ -147,7 +132,6 @@ pub struct Registration {
     /// not a credential; PKCE protects the code.
     pub client_secret: Option<String>,
     pub redirect_ports: RedirectPorts,
-    /// The loopback redirect's host and path.
     pub redirect: Redirect,
     /// When no registered port is free, let the person paste the code the
     /// provider displays instead (providers whose `redirect_uri` is
@@ -156,7 +140,6 @@ pub struct Registration {
 }
 
 impl Registration {
-    /// A public client on any loopback port, without a secret.
     pub fn public(client_id: impl Into<String>) -> Self {
         Self {
             client_id: client_id.into(),
@@ -164,7 +147,6 @@ impl Registration {
         }
     }
 
-    /// The client secret, when one is set and not blank.
     pub fn secret(&self) -> Option<&str> {
         self.client_secret
             .as_deref()
@@ -201,7 +183,6 @@ impl fmt::Debug for Registration {
 /// `key` at runtime, else the value of the same variable at build time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClientId {
-    /// The configuration key, e.g. `TILO_OAUTH_GOOGLE_CLIENT_ID`.
     pub key: &'static str,
     /// The value captured by `option_env!(key)` in the crate that owns the
     /// descriptor.
@@ -255,7 +236,6 @@ impl Pkce {
         Ok(Self::from_verifier(&random_token()?))
     }
 
-    /// The S256 challenge for a known verifier.
     pub fn from_verifier(verifier: &str) -> Self {
         Self {
             verifier: verifier.to_string(),
@@ -264,7 +244,6 @@ impl Pkce {
     }
 }
 
-/// `BASE64URL(SHA256(verifier))`, the S256 transform.
 pub fn s256_challenge(verifier: &str) -> String {
     base64url_nopad(&Sha256::digest(verifier.as_bytes()))
 }
@@ -286,16 +265,13 @@ pub fn base64url_nopad(input: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
 }
 
-/// The authorization request the browser is sent to.
 #[derive(Clone, Debug)]
 pub struct AuthorizationRequest<'a> {
     pub provider: &'a Provider,
     pub client_id: &'a str,
-    /// Empty for a sign-in whose code the provider displays for pasting.
     pub redirect_uri: &'a str,
     pub code_challenge: &'a str,
     pub state: &'a str,
-    /// Pre-fills the account on the provider's page when known.
     pub login_hint: Option<&'a str>,
 }
 
@@ -341,7 +317,6 @@ impl AuthorizationRequest<'_> {
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenSet {
     pub access_token: String,
-    /// Provider-confirmed scopes; absent in older grants or omitted responses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(default)]
@@ -366,7 +341,6 @@ impl fmt::Debug for TokenSet {
 }
 
 impl TokenSet {
-    /// Stamp `obtained_at` with the current wall clock.
     #[must_use]
     pub fn stamp_now(mut self) -> Self {
         self.obtained_at = tilo_clock::unix_now();
@@ -398,35 +372,24 @@ impl TokenSet {
 /// response bodies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OAuthError {
-    /// The OS CSPRNG could not produce a verifier or state.
     Randomness,
-    /// The loopback redirect listener could not be bound.
     Loopback(String),
-    /// Every registered redirect port is taken by another program.
     RedirectPortsBusy,
-    /// The sign-in needs the code the provider displayed, pasted in.
     NeedsPastedCode,
-    /// The system browser could not be opened.
     Browser(String),
-    /// The redirect carried a `state` other than the one we sent (CSRF).
     StateMismatch,
     /// The person or the provider declined (`error=access_denied`, …).
     Denied(String),
-    /// Nobody completed the sign-in before the deadline.
     TimedOut,
-    /// The flow was cancelled from the UI.
     Cancelled,
     /// The grant (authorization code or refresh token) is invalid, expired
     /// or revoked: the account must be signed in again.
     InvalidGrant,
-    /// The token endpoint could not be reached.
     Network(String),
-    /// The token endpoint answered something other than a token.
     Protocol(String),
 }
 
 impl OAuthError {
-    /// Whether the account needs an interactive sign-in to recover.
     pub fn needs_authentication(&self) -> bool {
         matches!(self, Self::InvalidGrant)
     }
@@ -499,7 +462,6 @@ pub fn parse_token_response(body: &str) -> Result<TokenSet, OAuthError> {
         expires_in: value
             .get("expires_in")
             .and_then(|lifetime| {
-                // Some providers send the lifetime as a string.
                 lifetime
                     .as_u64()
                     .or_else(|| lifetime.as_str().and_then(|text| text.parse().ok()))

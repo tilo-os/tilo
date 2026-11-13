@@ -48,14 +48,14 @@ power-restart = Neu starten
 ## Was dieser Computer vom eigenen Update nicht lesen konnte und deshalb nicht
 ## ausgeführt hat. Der nächste Blick liest es erneut.
 update-state-unreadable-title = Der Update-Stand ließ sich nicht lesen
-update-state-unreadable-body = Dieser Computer konnte nicht lesen, wie weit das letzte Update gekommen ist, und hat daher nichts unternommen. Er schaut von selbst wieder nach; unter Einstellungen, Updates steht, was er weiß.
+update-state-unreadable-body = Dieser Computer konnte nicht lesen, wie weit das letzte Update gekommen ist, und hat daher nichts unternommen. Er versucht es von selbst erneut; unter Einstellungen, Updates steht, was er weiß.
 
 ## Eine Version, die dieser Computer versucht hat, startete innerhalb ihrer
 ## Versuche nicht, und der Bootloader ging auf die Version zurück, die zuvor
 ## lief: einmal gesagt, mit dem Ort, an dem die fehlgeschlagenen Versuche
 ## hinterlassen haben, was sie fanden.
 system-update-went-back-title = Zurück auf die vorherige Version
-system-update-went-back-body = { $what } startete nach { $tries } Versuchen nicht, deshalb ist dieser Computer auf { $running } zurückgegangen. Was die fehlgeschlagenen Versuche hinterlassen haben: { $summary }, und tilo status.
+system-update-went-back-body = { $what } startete nach { $tries } Versuchen nicht, deshalb ist dieser Computer auf { $running } zurückgegangen. Was die fehlgeschlagenen Versuche hinterlassen haben: { $summary }.
 system-update-went-back-unnamed = Die neue Version
 system-update-went-back-several-tries = mehreren
 system-update-went-back-runs-before = die vorherige Version
@@ -70,6 +70,7 @@ workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die diese
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
 ## leer, damit nichts darüber geschrieben wird.
 desk-not-opened-app-name = Desktop
+desk-not-opened-nothing-written = Er ist unverändert. Diese Sitzung beginnt mit einem leeren Schreibtisch und speichert nicht darüber.
 desk-not-opened-newer-title = Dein Schreibtisch wurde nicht geöffnet
 desk-not-opened-newer-detail = { $path } wurde von einer neueren Tilo-Version gespeichert (Layout { $found }; diese Version versteht { $understood }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
 desk-not-opened-unreadable-title = Dein Schreibtisch konnte nicht gelesen werden
@@ -78,25 +79,22 @@ desk-not-opened-unreadable-detail = { $path } ist vorhanden, konnte aber nicht g
 ## Der Schreibtisch, den Tilo vor dieser Version führte, der nicht übernommen
 ## wurde: er liegt unverändert auf der Platte, und diese Sitzung behält ihren
 ## eigenen.
-desk-not-opened-old-newer-title = Dein alter Schreibtisch wurde nicht übernommen
-desk-not-opened-old-newer-detail = { $path } ist der Schreibtisch, den Tilo vor dieser Version führte, gespeichert von einer neueren (Layout { $found }; diese Version versteht { $understood }). Er wurde nicht verändert und liegt weiterhin auf diesem Rechner: diese Sitzung startet mit einem leeren Schreibtisch.
-desk-not-opened-old-unreadable-title = Dein alter Schreibtisch konnte nicht gelesen werden
-desk-not-opened-old-unreadable-detail = { $path } ist der Schreibtisch, den Tilo vor dieser Version führte, und er konnte nicht gelesen werden ({ $error }). Er wurde nicht verändert und liegt weiterhin auf diesem Rechner: diese Sitzung startet mit einem leeren Schreibtisch.
 
 ## Ein Fenster, das dieses Gerät offen ließ und dessen App nicht zurückkam.
 desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
-desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }
+desk-window-would-not-start = { $app } konnte nicht gestartet werden
 desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
+desk-window-waits-for-host = { $app } wartet darauf, dass { $host } dieses Gerät aufnimmt
 
 ## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
 ## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
 ## sagt, warum das Fenster nicht hier ist, statt dass der Platz verschwindet.
-desk-place-not-read = Sein gespeichertes Fenster ließ sich nicht lesen, deshalb ist es nicht hier. Schließe diesen Tab, wenn du damit fertig bist; bei der nächsten Anmeldung öffnet sich die App wieder.
-
 ## Die „Immer erlauben“-Antworten, die dieser Rechner für die Agenten an seiner
 ## Tür aufbewahrt hat und nicht lesen konnte: jeder Agent, dessen Antwort es
 ## war, wird erneut gefragt.
 agent-bindings-app-name = Agenten
+send-to-agent-unnamed = Agent
+send-to-resource = Senden an
 agent-bindings-lost-title = { $agent } wird erneut gefragt
 agent-bindings-lost-body = Dieser Rechner konnte nicht lesen, dass du { $agent } hier arbeiten lässt, deshalb fragt er dich erneut, wenn sich { $agent } das nächste Mal verbindet. Sonst wurde nichts entfernt.
 agent-bindings-unreadable-title = Deine Antworten zu Agenten ließen sich nicht lesen
@@ -141,14 +139,14 @@ version-mismatch-unknown-needs-update-body = Aktualisiere Tilo dort, dann arbeit
 # hat, ist nicht geschehen, und die Zeile ist fort: die Mitteilung sagt, was
 # gefragt war und warum es nicht geschah.
 action-failed-app = Tilo
-action-failed-title = { $what } konnte nicht ausgeführt werden
+action-failed-title = { $what } hat nicht funktioniert
 action-failed-body = { $reason }
-action-failed-that-row = Diese Suchzeile
-action-failed-that-notification = Was diese Mitteilung öffnet
-action-failed-that-app = Diese App
-action-failed-no-workspace = Diese Sitzung hat keinen Workspace geöffnet
-action-failed-that-settings = Einstellungen
-action-failed-that-change = Diese Änderung
+action-failed-that-row = Das Öffnen dieses Suchergebnisses
+action-failed-that-notification = Das Ausführen dieser Mitteilung
+action-failed-that-app = Das Öffnen dieser App
+action-failed-no-workspace = Es ist kein Arbeitsbereich offen.
+action-failed-that-settings = Das Öffnen der Einstellungen
+action-failed-that-change = Das Öffnen dieser Änderung
 action-failed-that-agent = Den Zugriff dieses Agenten zurückzunehmen
 downloaded-apps-app-name = Heruntergeladene Apps
 downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
@@ -179,15 +177,15 @@ session-magnifier-zoom-in = Stärker vergrößern
 session-magnifier-zoom-out = Weniger vergrößern
 session-displays = Bildschirme
 wireless-unavailable = Kabellose Bildschirme sind gerade nicht verfügbar
-wireless-unavailable-detail = Versuchen Sie es gleich noch einmal.
+wireless-unavailable-detail = Versuch es gleich noch einmal.
 wireless-search-failed = Die Suche nach kabellosen Bildschirmen ist fehlgeschlagen
-wireless-search-failed-detail = Prüfen Sie, ob WLAN an ist, und versuchen Sie es dann erneut.
+wireless-search-failed-detail = Prüfe, ob WLAN an ist, und versuch es dann erneut.
 wireless-connect-failed = Die Verbindung ist fehlgeschlagen
-wireless-connect-failed-detail = Prüfen Sie, ob der Bildschirm an und in der Nähe ist, und versuchen Sie es dann erneut.
+wireless-connect-failed-detail = Prüfe, ob der Bildschirm an und in der Nähe ist, und versuch es dann erneut.
 wireless-lost = Die Verbindung zum Bildschirm ist abgebrochen
-wireless-lost-detail = Verbinden Sie erneut, wenn er wieder da ist.
+wireless-lost-detail = Verbinde dich erneut, wenn er wieder da ist.
 wireless-stop-failed = Das Teilen ließ sich nicht beenden
-wireless-stop-failed-detail = Versuchen Sie es erneut.
+wireless-stop-failed-detail = Versuch es erneut.
 session-displays-next = Nächste Bildschirmanordnung
 session-displays-set = Bildschirme anordnen
 session-displays-open-sheet = Wählen, wo der Schreibtisch erscheint
@@ -195,24 +193,25 @@ session-displays-close-sheet = Das Bildschirmfenster schließen
 session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
+session-quick-settings = Schnelleinstellungen
 session-devices = Geräte
-session-devices-press = Eines der Geräte der Person drücken
+session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth
 session-bluetooth-moved = { $accessory } ist umgezogen
 session-bluetooth-moved-body = Es funktioniert jetzt auf { $device }.
 session-bluetooth-moving = { $accessory } wird verschoben
 session-bluetooth-moving-body = Es wird danach auf { $device } funktionieren.
-session-bluetooth-no-identity = Diese Sitzung ist keines der Geräte der Person.
+session-bluetooth-no-identity = Dieser Rechner ist keines deiner Geräte.
 session-bluetooth-not-connected = Es ist hier nicht verbunden.
 session-bluetooth-not-connected-there = Es konnte auf { $device } nicht verbinden.
-session-bluetooth-not-paired-there = { $device } hat seine Kopplung nicht.
+session-bluetooth-not-paired-there = { $device } hat es nicht gekoppelt.
 session-bluetooth-not-released = Dieses Gerät konnte es nicht loslassen.
 session-bluetooth-cancelled = { $device } hat den Umzug aufgegeben.
 session-bluetooth-stayed = { $accessory } bleibt hier
 session-bluetooth-taken = { $accessory } ist jetzt hier
 session-bluetooth-taken-body = { $device } hat es verschoben.
 session-bluetooth-target-away = Das andere Gerät ist nicht online.
-session-bluetooth-target-unknown = Das andere Gerät gehört nicht zu den Geräten der Person.
+session-bluetooth-target-unknown = Das andere Gerät ist keines deiner Geräte.
 session-bluetooth-timed-out = Der Umzug hat zu lange gedauert.
 session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
@@ -221,11 +220,14 @@ session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
 session-notifications-open = Die Benachrichtigung öffnen
-session-notifications-hand-to-agent = Die Benachrichtigung an einen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
 notification-from-device-only = Von { $device }
+## A notification a program sent from a terminal, with no app this device
+## knows behind it: the person reads where it came from, never a bare
+## command name.
+notification-sender-terminal = Terminal
 ## The person asked to report a problem and this computer has nowhere to
 ## send one: the report box says so where they asked, rather than opening
 ## on an address that would never carry it.
@@ -253,7 +255,7 @@ app-list-gone-title = App nicht gefunden
 app-list-gone-body = Sie ist nicht mehr unter deinen Apps.
 
 lock-screen-failed-title = Sperrbildschirm startete nicht
-lock-screen-failed-body = Tilo zeichnet die Sperre selbst: dasselbe Passwort entsperrt diesen Rechner.
+lock-screen-failed-body = Dasselbe Passwort entsperrt diesen Rechner.
 app-list-uninstalled = { $name } deinstalliert
 app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
 app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.
@@ -275,6 +277,7 @@ device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet 
 ## welchem Fenster er steht.
 people-pointer-where = { $who } ist in { $where }
 
+
 ## Was die Statusanzeige über die Maschine in einer Zeile sagt, für einen
 ## Reader, der sie hört statt ihre Symbole zu sehen.
 status-battery = Akku { $percent } %
@@ -292,9 +295,9 @@ status-wired-named = Kabelgebunden: { $name }
 ## und der Bildschirm sagt, bis wann die Uhr laufen muss, bevor der
 ## Schreibtisch von selbst aufgeht.
 identity-clock-wait-title = Warten auf die Uhr
-identity-clock-wait-body = Ihre Tilo-Identität ist sicher. Der Schreibtisch öffnet, sobald Datum und Uhrzeit dieses Computers stimmen.
-identity-clock-wait-not-yet-valid = Ihre Tilo-Identität ist sicher. Ihr Zertifikat beginnt am { $valid }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald die Uhr diesen Zeitpunkt erreicht oder Sie Datum und Uhrzeit einstellen.
-identity-clock-wait-expired = Ihre Tilo-Identität ist sicher. Ihr Zertifikat galt bis { $until }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald Datum und Uhrzeit richtig eingestellt sind.
+identity-clock-wait-body = Deine Tilo-Identität ist sicher. Der Schreibtisch öffnet, sobald Datum und Uhrzeit dieses Computers stimmen.
+identity-clock-wait-not-yet-valid = Deine Tilo-Identität ist sicher. Dein Zertifikat beginnt am { $valid }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald die Uhr diesen Zeitpunkt erreicht oder du Datum und Uhrzeit einstellst.
+identity-clock-wait-expired = Deine Tilo-Identität ist sicher. Dein Zertifikat galt bis { $until }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald Datum und Uhrzeit richtig eingestellt sind.
 
 ## wie die Einblendung die Tastatur nennt, deren Beleuchtung sie gerade ändert.
 osd-keyboard-name = Tastatur
@@ -306,10 +309,10 @@ paste-nothing-to-paste = Jeder Name war schon belegt, oder die Dateien liegen be
 paste-not-a-folder = { $path } ist kein Ordner.
 paste-stopped = { $reason }
 paste-failed-title = Einige Dateien wurden nicht eingefügt
-paste-failed-body = { $failed } von { $total } sind nicht angekommen. { $name }: { $reason }
+paste-failed-body = { $failed } von { $total } wurden nicht eingefügt. { $name }: { $reason }
 paste-undone-title = Das letzte Einfügen wurde nicht fertig
-paste-undone-body = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest liegt wieder, wo er war.
-paste-undone-trouble = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest konnte noch nicht zurückgelegt werden: { $reason }
+paste-undone-body = { $landed } von { $total } waren schon eingefügt. Die bleiben; der Rest liegt wieder, wo er war.
+paste-undone-trouble = { $landed } von { $total } waren schon eingefügt. Die bleiben; der Rest konnte noch nicht zurückgelegt werden: { $reason }
 
 ## Was die eigenen Zeilen des Schreibtischs sagen: die Frage auf dem Avatar der
 ## Person, der Tray-Eintrag einer laufenden Anwendung und wie die Personenliste heißt.
@@ -319,18 +322,8 @@ session-desk-open = Öffnen
 session-desk-stop-agent = Stoppen
 session-people = Personen
 
-## Wie die privaten Unterhaltungen einer Person heißen und was sie anbieten.
-session-messages = Private Nachrichten
-session-messages-send = Private Nachricht senden
-
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm
-
-## Was die Programme eines Agenten sind, wie sie die Aktionspforte anbietet:
-## ein Aufgaben-Agent schreibt jeweils ein Programm als Schritt seines Laufs.
-task-programs-resource = Aufgabenprogramme
-task-programs-run = Ein Programm ausführen
-task-programs-run-detail = Führt ein tilolang-Programm als Schritt des Laufs der Aufgabe aus, als der Agent, der an der Aufgabe arbeitet, und antwortet, was es gelesen oder geändert hat.
 
 ## Was die eigenen Geräte der Person antworteten, als eines von ihnen nach
 ## einem Neustart entsperrt werden wollte, wie es ihre Aktivität auflistet.
@@ -344,8 +337,8 @@ unlock-history-unknown-device = ein Gerät, das dieser Rechner nicht benennen ka
 ## den das Fenster zeigt, nicht mitkommen konnte.
 window-move-app-name = Arbeitsbereiche
 window-move-ask-title = { $app } nach { $workspace } verschieben?
-window-move-ask-what = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und öffnet den Eintrag, den dieser Arbeitsbereich führt.
-window-move-ask-carries = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und nimmt mit, was das Fenster zeigt, samt Änderungen. Was zurückbleibt, sagt, wohin es ging.
+window-move-ask-what = Die App startet dort neu, mit den Berechtigungen, die dieser Arbeitsbereich ihr gibt, und öffnet, was sie hier gezeigt hat.
+window-move-ask-carries = Die App startet dort neu, mit den Berechtigungen, die dieser Arbeitsbereich ihr gibt, und nimmt mit, was das Fenster zeigt, samt Änderungen. Was zurückbleibt, sagt, wohin es ging.
 window-move-ask-they-see = Alle in { $workspace } sehen das Fenster und was es öffnet.
 window-move-ask-you-leave = In { $workspace } läuft sie dann nicht mehr, und was dieser Arbeitsbereich führt, bleibt dort.
 window-move-ask-carry = Verschieben
@@ -365,6 +358,8 @@ window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Ver
 profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern
 profile-action-pair-device = Ein weiteres Gerät koppeln
+profile-action-connect-agent = Agent oder Rechner verbinden
+profile-action-devices-access = Geräte und Zugriff
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 
 ## A capture, while the capture studio's bar is down: the card the floating
@@ -396,16 +391,88 @@ capture-target-region = Ein Bereich des Schreibtischs
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistent
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistent
 
 desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
-desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten und der Stil wird wieder angezeigt, sobald er repariert ist. ({ $reason })
+desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten.
 
 ## A step an agent takes inside a conversation, asking the person before it
 ## runs. The sheet shows the step's draft; confirming allows this one step.
 turn-question-title = Den Agenten { $action } lassen
 turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
 turn-question-detail-here = { $action }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
+
+## Someone mentioned the person in a record of the workspace.
+mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
+mention-notice-channel = { $name } hat dich in { $channel } erwähnt
+mention-notice = { $name } hat dich erwähnt
+mention-notice-someone = Jemand
+mention-notice-open = Öffnen
+
+## What a call says it wants a device for, when the call asks the person
+## to allow its camera, microphone or screen.
+call-microphone-reason = um im Anruf gehört zu werden
+call-camera-reason = um im Anruf gesehen zu werden
+call-screen-reason = um diesen Bildschirm im Anruf zu teilen
+
+## What the window names
+session-resource-keyboard = Bildschirmtastatur
+session-resource-diagnostics = Sitzungsdiagnose
+session-resource-window-menu = Fenstermenü
+session-resource-surfaces = Oberflächen
+session-resource-keyboard-focus = Tastaturfokus
+
+## Actions
+
+so-tilo-session-desk-switch-workspace = Zum Arbeitsbereich wechseln
+so-tilo-session-desk-invitations = Einladungen auflisten
+so-tilo-session-desk-issue-invitation = Einladungslink erstellen
+so-tilo-session-desk-show-invite = Personen einladen
+so-tilo-session-desk-show-connect = Agent oder Computer verbinden
+so-tilo-session-desk-notify = Benachrichtigung senden
+so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
+so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
+so-tilo-session-desk-close-surface = Bereich schließen
+so-tilo-session-desk-clear-notices = Mitteilungen löschen
+so-tilo-session-desk-dismiss-notice = Mitteilung verwerfen
+so-tilo-session-desk-act-on-notice = Auf Mitteilung antworten
+so-tilo-session-desk-walk-switcher = Fenster wechseln
+so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
+so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln
+
+## Actions
+
+so-tilo-session-clipboard-clear = Den Verlauf leeren
+so-tilo-session-clipboard-copy = Text kopieren
+so-tilo-session-clipboard-paste = Eine Kopie einfügen
+so-tilo-session-clipboard-paste-files = Dateien einfügen
+so-tilo-session-clipboard-pin = Die Kopie anheften
+so-tilo-session-clipboard-remove = Eine Kopie aus dem Verlauf entfernen
+so-tilo-session-devices-hand-off = Zubehör weitergeben
+so-tilo-session-devices-press = Eines der Geräte drücken
+so-tilo-session-displays-brightness-down = Dunkler
+so-tilo-session-displays-brightness-up = Heller
+so-tilo-session-displays-close-sheet = Die Anzeigeeinstellungen schließen
+so-tilo-session-displays-next-mode = Nächste Anordnung
+so-tilo-session-displays-open-sheet = Die Anzeigeeinstellungen öffnen
+so-tilo-session-displays-set-brightness = Die Helligkeit setzen
+so-tilo-session-displays-set-display-brightness = Die Helligkeit einer Anzeige setzen
+so-tilo-session-displays-set-mode = Diese Anordnung verwenden
+so-tilo-session-keyboard-set-visible = Die Bildschirmtastatur zeigen
+so-tilo-session-keyboard-type = Text tippen
+so-tilo-session-notifications-act = Eine Aktion wählen
+so-tilo-session-notifications-clear = Alle löschen
+so-tilo-session-notifications-dismiss = Verwerfen
+so-tilo-session-notifications-open = Öffnen
+so-tilo-session-notifications-set-quiet = Meldungen zurückhalten
+so-tilo-session-notifications-undo-clear = Die gelöschten Benachrichtigungen zurückholen
+so-tilo-session-quick-settings-hide-control = Ein Element entfernen
+so-tilo-session-quick-settings-move-control = Ein Element verschieben
+so-tilo-session-quick-settings-reset-controls = Das Panel zurücksetzen
+so-tilo-session-quick-settings-show-control = Ein Element hinzufügen
+so-tilo-session-send-to-send = Senden an
+so-tilo-desktop-overlays-close = Eine Oberfläche schließen
+so-tilo-desktop-overlays-open = Eine Oberfläche öffnen
+so-tilo-desktop-window-menu-choose = Eine Zeile wählen
+so-tilo-desktop-window-menu-close = Das Fenstermenü schließen
+so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen

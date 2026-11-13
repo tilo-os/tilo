@@ -1,0 +1,25 @@
+[package]
+name = "tilo-sdk-python-native"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The Python SDK's native part: Tilo's API in process as a key the program holds, reaching a Tilo host directly as a device of the person (`tilo._native`)."
+license = "MIT OR Apache-2.0"
+
+[lib]
+# The module maturin puts in the wheel as `tilo._native`.
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# One extension for every CPython from the SDK's oldest (3.11) on.
+pyo3 = { version = "0.30", features = ["abi3-py311", "extension-module"] }
+pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
+serde_json.workspace = true
+tilo-api = { path = "../../../crates/hosting/tilo-api" }
+# Its workers, which start as the `tilo-automerge-worker` program shipped beside this library.
+tilo-automerge-isolate = { path = "../../../crates/doc/tilo-automerge-isolate" }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -53,6 +53,26 @@ fn the_view_takes_in_its_work_and_says_what_it_owes_the_window() {
 }
 
 #[test]
+fn a_proof_of_what_the_sync_owes_leaves_the_views_take_in_out() {
+    let synced = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&synced);
+    let mut view = kept(Upkeep::new().syncing(move || counted.set(counted.get() + 1)));
+    let doc = AutoCommit::new();
+    ui_core::component_inputs::proving(|| view.sync(&doc, &ROOT));
+    assert_eq!(
+        synced.get(),
+        0,
+        "a proof runs the tree's sync, not the work the frame takes in beside it"
+    );
+    view.sync(&doc, &ROOT);
+    assert_eq!(
+        synced.get(),
+        1,
+        "the next pass takes the work in as it runs"
+    );
+}
+
+#[test]
 fn the_view_shares_collaboration_only_when_it_asks_to() {
     let taken = Rc::new(Cell::new(0));
     let took = Rc::clone(&taken);

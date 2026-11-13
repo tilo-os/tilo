@@ -350,16 +350,19 @@ no run and no transcript; it places the channel like any resource.
 
 - **Asking from the canvas.** The canvas entry reads "Find something, or ask". Enter calls
   `session.place_found(text, x, y)`. When the text is a question (`answers::question::asks`)
-  or nothing matches it, the session asks instead of failing: it posts `text` as the person
-  into their ask conversation in the workspace (a Chat channel the agent is a member of,
-  made with Chat's own actions on the first ask, and the workspace's kept agent kept with
-  `WorkspaceAgents` when it has none), then places that channel at (x, y), or brings its
-  place forward when it already has one. Nothing here is new machinery: Chat's actions post
-  and create, and the arrangement's `place_at` places.
-- **The view.** The channel is placed with Chat's default channel view, a `#[view]` over
-  Chat's channel type (one-app-model.md §2), drawn by the host from described components:
-  messages, the composer, and each attachment drawn with its type's row view. The same view
-  is what Chat's own window shows; the canvas gets no second chat.
+  or nothing matches it, the session asks instead of failing: it sends `text` as the person
+  to the agent they keep in the workspace (a new one, kept with `WorkspaceAgents`, when they
+  keep none) through `session:send-to#send`, the one send a send-to box, an agent and a
+  script run. It lands in their direct conversation with the agent, and Chat opens that
+  conversation on the desk, started without a window first when it was not running.
+- **Asking from search.** The palette offers the same send for what was typed: one row, "Send to
+  {agent}: …", standing after everything the query names. Choosing it runs
+  `session:send-to#send` with the agent the person keeps in the workspace the search was opened
+  in (a new one when they keep none), so the request lands in their conversation with it exactly
+  as the canvas's text does. It is a row every query is offered, so text that names nothing is a
+  request the person can hand over rather than a dead end.
+- **The view.** The conversation is Chat's own: the window Chat opens shows it with Chat's
+  views, so the canvas gets no second chat.
 - **Any action.** The agent's tools are the broker's catalogue. The session publishes its
   own actions there too (the arrangement's `place`, `place_at`, `open`; windows; notices),
   so an agent answering a person's turn can arrange the screen exactly as the REPL can. Each
@@ -367,17 +370,9 @@ no run and no transcript; it places the channel like any resource.
   person who asked, and undone like any change.
 - **What the agent shows.** What the agent wants to show is a resource it attaches to its
   reply (a message carries attachments). Pressing an attachment places it beside the
-  conversation (§3); dragging it onto the canvas places it where it was let go, and dragging
-  it onto a composer attaches it to that draft. What opens unasked follows §5's "What opens"
-  setting: by default what the turn created, and a view it answered with (`plan.view`),
-  placed beside the conversation with `place_near`.
-- **Dropping on the composer.** A resource dragged from anywhere the person sees one — a
-  place's frame or handle on the canvas, a search hit, a row of another view, a message's
-  attachment — and let go over the composer attaches it to the draft, which shows it as a
-  chip; Send posts it with the words. The agent's turn then carries the attachment as a
-  resource reference beside the person's message (`ui.DragSource`, `ui.DropTarget`), so what
-  the person handed the agent is one thing whichever app raised it, never a second copy in
-  the chat's record.
+  conversation (§3), and dragging it onto the canvas places it where it was let go. What opens
+  unasked follows §5's "What opens" setting: by default what the turn created, and a view it
+  answered with (`plan.view`), placed beside the conversation with `place_near`.
 - **The REPL.** `tilolang repl` reaches the person's door and calls the same actions by the
   same names the agent's `invoke` does, so the person types what the agent would. Its
   results are references that place the same way.

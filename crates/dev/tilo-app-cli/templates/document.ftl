@@ -12,3 +12,10 @@ generated-set-content = Replaced the title and body
 generated-clear = Cleared the document
 generated-document-title = Edited the title
 generated-document-body = Edited the body
+
+## Actions: what the record and each of its actions are called, looked up as
+## <kind>-<action>, the kind with its dots as dashes.
+
+generated-document = Document
+generated-document-set-content = Replace the title and body
+generated-document-clear = Erase the document

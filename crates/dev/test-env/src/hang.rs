@@ -1,22 +1,20 @@
 //! Waiting in tests without racing the runner.
 //!
-//! A test that waits for a worker, daemon, socket or event should finish as
-//! soon as the thing it waits for happens, and fail only when it never does.
-//! A short fixed deadline instead turns a busy CI runner into a failure. Every
-//! helper here waits against one workspace-wide [`hang_bound`], polls or
-//! blocks until its condition holds, and panics with a message naming what it
-//! was waiting for once the bound runs out.
+//! A test that waits for a worker, daemon, socket or event should finish as soon as the thing it
+//! waits for happens, and fail only when it never does. A short fixed deadline instead turns a busy
+//! CI runner into a failure. Every helper here waits against one workspace-wide [`hang_bound`],
+//! polls or blocks until its condition holds, and panics with a message naming what it was waiting
+//! for once the bound runs out.
 //!
-//! Timing the product itself implements or promises (a timeout under test, a
-//! latency budget) is not a hang and does not belong here.
+//! Timing the product itself implements or promises (a timeout under test, a latency budget) is not
+//! a hang and does not belong here.
 //!
-//! - [`wait_until`] polls a condition; [`wait_for`] polls until a probe yields
-//!   a value.
+//! - [`wait_until`] polls a condition; [`wait_for`] polls until a probe yields   a value.
 //! - [`recv`] receives from a [`std::sync::mpsc::Receiver`].
 //! - [`within`] awaits a future on any executor.
 //! - [`exited`] blocks until a process has ended.
-//! - [`hang_bound`] and [`hang_deadline`] serve waits the helpers do not fit,
-//!   such as a socket's read timeout.
+//! - [`hang_bound`] and [`hang_deadline`] serve waits the helpers do not fit,   such as a socket's
+//!   read timeout.
 
 #![allow(
     clippy::panic,
@@ -37,13 +35,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
 
-/// Overrides [`hang_bound`] with a whole number of seconds, for example to
-/// wait longer under a debugger or to fail faster while bisecting a hang.
+/// Overrides [`hang_bound`] with a whole number of seconds, for example to wait longer under a
+/// debugger or to fail faster while bisecting a hang.
 pub const HANG_BOUND_ENV: &str = "TILO_TEST_HANG_BOUND_SECS";
 
-/// The bound when [`HANG_BOUND_ENV`] is unset. Nextest reports a test as
-/// slow after a minute and kills it after four, so a hang still fails with
-/// the helper's message rather than the runner's.
+/// The bound when [`HANG_BOUND_ENV`] is unset. Nextest reports a test as slow after a minute and
+/// kills it after four, so a hang still fails with the helper's message rather than the runner's.
 pub const DEFAULT_HANG_BOUND: Duration = Duration::from_secs(120);
 
 const POLL_MIN: Duration = Duration::from_millis(1);
@@ -60,7 +57,6 @@ pub fn hang_bound() -> Duration {
     })
 }
 
-/// The instant [`hang_bound`] from now.
 pub fn hang_deadline() -> Instant {
     Instant::now()
         .checked_add(hang_bound())
@@ -99,7 +95,6 @@ pub fn wait_for<T>(what: impl Display, mut probe: impl FnMut() -> Option<T>) -> 
     }
 }
 
-/// Receive the next message from `receiver`.
 #[track_caller]
 pub fn recv<T>(what: impl Display, receiver: &Receiver<T>) -> T {
     match receiver.recv_timeout(hang_bound()) {
@@ -111,17 +106,16 @@ pub fn recv<T>(what: impl Display, receiver: &Receiver<T>) -> T {
     }
 }
 
-/// Block until the process `pid` has ended, through a pidfd: no polling,
-/// and the wait returns the moment it exits. A process that is already gone
-/// has ended.
+/// Block until the process `pid` has ended, through a pidfd: no polling, and the wait returns the
+/// moment it exits. A process that is already gone has ended.
 #[cfg(target_os = "linux")]
 #[track_caller]
 pub fn exited(what: impl Display, pid: u32) {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 
     let pid = libc::pid_t::try_from(pid).expect("a pid fits a pid_t");
-    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor
-    // this process owns, or -1.
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor this process owns, or
+    // -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     let Ok(fd) = i32::try_from(fd) else {
         panic!("pidfd_open returned {fd}");
@@ -135,8 +129,7 @@ pub fn exited(what: impl Display, pid: u32) {
         );
         return;
     }
-    // SAFETY: the kernel just returned this descriptor, and nothing else
-    // owns it.
+    // SAFETY: the kernel just returned this descriptor, and nothing else owns it.
     let pidfd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut poll = libc::pollfd {
         fd: pidfd.as_raw_fd(),
@@ -157,8 +150,8 @@ pub fn exited(what: impl Display, pid: u32) {
 
 /// Await `future` to completion on whatever executor polls it.
 ///
-/// The bound starts at the first poll and is kept by a wall-clock timer
-/// thread, so it holds under a paused or mocked runtime clock too.
+/// The bound starts at the first poll and is kept by a wall-clock timer thread, so it holds under a
+/// paused or mocked runtime clock too.
 #[track_caller]
 pub fn within<F: IntoFuture>(what: impl Display, future: F) -> Within<F::IntoFuture> {
     Within {
@@ -169,7 +162,6 @@ pub fn within<F: IntoFuture>(what: impl Display, future: F) -> Within<F::IntoFut
     }
 }
 
-/// The future [`within`] returns.
 #[must_use = "futures do nothing unless awaited"]
 pub struct Within<F> {
     future: Pin<Box<F>>,
@@ -220,7 +212,6 @@ impl Alarm {
         alarm
     }
 
-    /// Whether the alarm has rung; if not, `waker` is woken when it does.
     fn rung(&self, waker: &Waker) -> bool {
         let mut slot = self.waker.lock_recover();
         match slot.as_mut() {
@@ -336,8 +327,8 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Each helper returns as soon as its condition holds, and fails naming
-    /// what it waited for when the other side is gone.
+    /// Each helper returns as soon as its condition holds, and fails naming what it waited for when
+    /// the other side is gone.
     #[test]
     fn helpers_return_on_the_event_and_name_what_they_waited_for() {
         let mut polls = 0;
@@ -374,8 +365,8 @@ mod tests {
         rx.recv().unwrap();
     }
 
-    /// An alarm rings its waker once its instant passes, and an alarm whose
-    /// wait finished first is forgotten without ringing.
+    /// An alarm rings its waker once its instant passes, and an alarm whose wait finished first is
+    /// forgotten without ringing.
     #[test]
     fn alarms_ring_at_their_instant_and_dropped_ones_are_forgotten() {
         let flag = Arc::new(Flag(AtomicBool::new(false)));

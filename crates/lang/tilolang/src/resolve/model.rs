@@ -130,6 +130,9 @@ pub struct ParamInfo {
     /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
     /// place the item stands in, as a row of a list gives the row above it.
     pub place: bool,
+    /// What the parameter is called where a person gives it, when its name in words does not
+    /// say what it holds (`saved: Bool (label: "On the Watch later list")`).
+    pub label: Option<String>,
     /// Whether the text of an entry fills it: an action's one `Text` parameter is what the
     /// words left after the other parameters take theirs title the item with
     /// (`crate::entry`).
@@ -209,6 +212,9 @@ pub struct Callable {
     pub present: Presentation,
     /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
     pub scenario: bool,
+    /// A view the package does not offer: an action's presentation view, a loop's row view. Only
+    /// a `template view` of the same package may call it (its body carries the package's mark).
+    pub private: bool,
 }
 
 /// What a button or a menu shows for an action, from its declaration.
@@ -294,6 +300,13 @@ impl Callable {
     /// A callable source never names: a scenario's action or an action's presentation view.
     pub fn hidden(&self) -> bool {
         self.scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
+    }
+
+    /// Whether `caller` may call this callable by the name it is written: a private view only
+    /// from its own package's `template view` (the caller's `from_template_of` names the
+    /// package), and nothing else refused here.
+    pub fn callable_by(&self, from_template_of: Option<&str>) -> bool {
+        !self.private || from_template_of == Some(self.app.as_str())
     }
 
     pub fn signature(&self, own_app: &str) -> String {

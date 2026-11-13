@@ -1,7 +1,3 @@
-//! Driving the word processor the way a person and its host do: launched on
-//! a file, edited through the actions its controls and the palette submit,
-//! saved with its own Save As.
-
 use std::path::Path;
 
 use ui::framework::testing::TestApp;
@@ -16,19 +12,16 @@ pub fn open() -> App {
     App::new().unwrap()
 }
 
-/// The app launched on `path`, as `word-processor PATH` opens it.
 pub fn launched(path: &Path) -> App {
     ui::i18n::I18nManager::init("en-US");
     App::launched(&[path.to_str().unwrap()]).unwrap()
 }
 
-/// Submit `action` through the app's door, as a control or the palette does.
 pub fn apply(app: &mut App, action: &RichTextAction) {
     app.invoke(Invoke::edit(&word_processor::model::edit(action)).unwrap())
         .unwrap();
 }
 
-/// The document as it is now.
 pub fn snapshot(app: &App) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
         let containers = word_processor::model::open(doc).unwrap();
@@ -36,7 +29,6 @@ pub fn snapshot(app: &App) -> tilo_doc::DocSnapshot {
     })
 }
 
-/// Every paragraph's text, in order.
 pub fn texts(app: &App) -> Vec<String> {
     snapshot(app)
         .blocks
@@ -45,13 +37,10 @@ pub fn texts(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// The id of the last paragraph.
 pub fn last_block(app: &App) -> String {
     snapshot(app).blocks.last().unwrap().id.clone()
 }
 
-/// Save the document to `path` with the app's Save As, in the format the
-/// path names.
 pub fn save_as(app: &mut App, path: &Path) {
     let mut arguments = serde_json::Map::new();
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());

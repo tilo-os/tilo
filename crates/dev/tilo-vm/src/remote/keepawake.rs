@@ -57,8 +57,6 @@ pub(super) fn hello(
             .map_err(CliError::io("start the sleep-lease handshake"))?;
         let response = receive.recv_timeout(timeout);
         if response.is_err() {
-            // This CLI owns the transport process. Closing it releases the
-            // blocked read before the scoped worker is joined.
             let _ = child.kill();
             let _ = child.wait();
         }

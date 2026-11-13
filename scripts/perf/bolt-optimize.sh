@@ -4,7 +4,7 @@
 # the PGO'd binaries so BOLT and PGO share the same profile signal.
 #
 # Usage:   scripts/perf/bolt-optimize.sh
-# Emits:   target/bolted/{shell,terminal,file-explorer,tilo-install}
+# Emits:   target/bolted/{tilo-session,terminal,file-explorer,tilo-install}
 #
 # Requires: llvm-bolt (Fedora: llvm-bolt package, RPMFusion or ships
 # with the current llvm meta package on Fedora 44+).
@@ -31,7 +31,7 @@ if [ ! -f "$PROFDATA" ]; then
     echo "no $PROFDATA — run pgo-instrument + pgo-merge + pgo-rebuild first" >&2
     exit 1
 fi
-if [ ! -f "$PGO_BUILD/shell" ]; then
+if [ ! -f "$PGO_BUILD/tilo-session" ]; then
     echo "no PGO'd binaries at $PGO_BUILD — run pgo-rebuild.sh first" >&2
     exit 1
 fi
@@ -48,7 +48,7 @@ mkdir -p "$OUT"
 # `perf record` has landed a session.fdata for each binary at
 # $ROOT/target/pgo-profraw/<binary>.fdata. The pgo-instrument
 # helper is set up to capture those alongside the .profraw files.
-for bin in shell terminal file-explorer tilo-install; do
+for bin in tilo-session terminal file-explorer tilo-install; do
     FDATA="$ROOT/target/pgo-profraw/${bin}.fdata"
     IN="$PGO_BUILD/$bin"
     OUT_BIN="$OUT/$bin"

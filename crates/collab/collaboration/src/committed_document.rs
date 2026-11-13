@@ -47,6 +47,11 @@ struct Progress {
 enum Gate {
     Joining,
     Legacy,
+    /// The route of a chain's head (`RecordId::chain_head`), which names whichever
+    /// part of the chain is the newest and holds nothing of its own: it was asked
+    /// for, and no document is ever read or staged here. The part arrives on its
+    /// own route.
+    ChainHead,
     Required(Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>),
     /// The route's join or its first read failed: no read will be staged
     /// for it. The next read of the route joins it again.
@@ -125,7 +130,7 @@ impl Reads {
     }
     /// A wait for the next [`Self::progressed`] or refresh request. Enable it
     /// before checking the state it guards, so a change in between is kept.
-    fn reader_wake(&self) -> tokio::sync::futures::Notified<'_> {
+    pub(super) fn reader_wake(&self) -> tokio::sync::futures::Notified<'_> {
         self.5.reader.notified()
     }
     /// Whether the owner asked for a fresh read, without consuming the ask.
@@ -175,6 +180,7 @@ impl Reads {
                 generation,
             });
         }
+        self.progressed();
     }
     pub(super) fn document_owner_routes(&self, original: &str) -> Vec<String> {
         self.4
@@ -214,33 +220,16 @@ impl Reads {
     pub fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
     }
+    /// Open a route [`Self::close_for_test`] closed, as its applied read does:
+    /// whatever waits for it hears it.
+    #[cfg(test)]
+    pub(crate) fn open_for_test(&self, ready: &AtomicBool) {
+        ready.store(true, Ordering::Release);
+        self.progressed();
+    }
     #[cfg(test)]
     pub(crate) fn legacy_for_test(&self, key: &str) {
         self.legacy(key).unwrap();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub(crate) fn stage_for_test(&self, key: &str, read: CommittedDocument) {
-        let ready = self.pending(key).unwrap();
-        self.stage(key, &ready, read).unwrap();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    #[allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a fixture for the toolkit's tests"
-    )]
-    pub(crate) fn refresh_for_test(&self, key: &str, read: CommittedDocument) {
-        let applied = self.1.lock().unwrap().get(key).unwrap().merged.clone();
-        assert!(applied.load(Ordering::Acquire));
-        self.clear_stage(key, &applied);
-        self.stage_for_test(key, read);
     }
     pub(super) fn publishable(&self, key: &str) -> bool {
         if self.closed() {
@@ -251,7 +240,7 @@ impl Reads {
             .get(key)
             .cloned()
             .is_some_and(|gate| match gate {
-                Gate::Joining | Gate::Failed(_) => false,
+                Gate::Joining | Gate::Failed(_) | Gate::ChainHead => false,
                 Gate::Legacy => true,
                 Gate::Required(ready, _) => ready.load(Ordering::Acquire),
             })
@@ -281,6 +270,12 @@ impl Reads {
         };
         let instance = instance.load(Ordering::Acquire);
         (instance != 0).then_some(instance)
+    }
+
+    /// Whether the route of `key` has not resolved how it opens yet: no
+    /// gate, or its join still on its way.
+    pub(super) fn resolving(&self, key: &str) -> bool {
+        !self.closed() && matches!(self.0.lock_recover().get(key), None | Some(Gate::Joining))
     }
 
     pub(super) fn joining(&self, key: &str) -> bool {
@@ -315,6 +310,9 @@ impl Reads {
         let rows = self.0.lock_recover();
         match rows.get(key) {
             Some(Gate::Failed(error)) => Some(error.clone()),
+            Some(Gate::ChainHead) => {
+                Some("a chain's head names its newest part and holds no document".into())
+            }
             None => Some("committed document route capacity".into()),
             Some(_) => None,
         }
@@ -428,6 +426,19 @@ impl Reads {
         self.progressed();
         Ok(())
     }
+    /// The route of `key` is a chain's head, asked for and answered: it names the
+    /// chain's newest part and holds nothing of its own, so no document is read or
+    /// staged for it.
+    fn chain_head(&self, key: &str) -> Result<(), String> {
+        let mut rows = self.0.lock_recover();
+        if self.closed() {
+            return Err("committed document reader closed".into());
+        }
+        rows.insert(key.into(), Gate::ChainHead);
+        drop(rows);
+        self.progressed();
+        Ok(())
+    }
     fn pending(&self, key: &str) -> Result<Arc<AtomicBool>, String> {
         let mut rows = self.0.lock_recover();
         if self.closed() {
@@ -446,6 +457,10 @@ impl Reads {
             _ => Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         rows.insert(key.into(), Gate::Required(ready.clone(), instance));
+        drop(rows);
+        // Whatever waits on the generation this one replaces hears that the
+        // read it waited for is no longer this route's.
+        self.progressed();
         Ok(ready)
     }
 }
@@ -459,9 +474,6 @@ pub struct CommittedDocument {
     /// so its confirming read follows the merge at once.
     merge_wake: Arc<tokio::sync::Notify>,
     valid: Arc<AtomicBool>,
-    creation: Option<runtime_collab::committed_document::CreationReceipt>,
-    revision: [u8; 32],
-    initialized: Arc<AtomicBool>,
     /// Set when these are only the changes since the revision with these
     /// heads: they apply only to an owner document holding every one.
     base: Option<Arc<[automerge::ChangeHash]>>,
@@ -477,39 +489,6 @@ impl std::fmt::Debug for CommittedDocument {
     }
 }
 impl CommittedDocument {
-    pub fn creation_workspace(
-        &self,
-    ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
-        self.is_current().then_some(())?;
-        if self.initialized.load(Ordering::Acquire) {
-            return None;
-        }
-        self.creation.as_ref().map(|receipt| &receipt.workspace)
-    }
-    pub(crate) fn initialization_request(
-        &self,
-        kind: &str,
-        document: Vec<u8>,
-    ) -> Result<Request, String> {
-        if self.creation_workspace().is_none() {
-            return Err("original application creation receipt unavailable".into());
-        }
-        let receipt = self
-            .creation
-            .as_ref()
-            .ok_or("creation receipt unavailable")?;
-        let request = Request::Initialize {
-            token: receipt.token,
-            revision: self.revision,
-            kind: kind.into(),
-            document,
-        };
-        request.encode().map_err(str::to_owned)?;
-        Ok(request)
-    }
-    pub(crate) fn initialized(&self) {
-        self.initialized.store(true, Ordering::Release);
-    }
     pub fn with_mutation<T>(
         &self,
         apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -539,13 +518,25 @@ impl CommittedDocument {
             .as_ref()
             .is_none_or(|base| document.get_missing_deps(base).is_empty())
     }
-    /// The owner cannot apply these changes: the reader drops them and reads
-    /// the document whole. Never for a whole document.
+    /// The owner cannot read this capture: the reader stops waiting on it.
+    /// The changes since a revision are dropped and the document is read
+    /// whole instead; a whole document leaves nothing further to read, so the
+    /// reader says so once and goes on from that revision, the owner keeping
+    /// its own document.
     pub fn refuse(&self) {
-        if self.base.is_some() {
-            self.refused.store(true, Ordering::Release);
-            self.merge_wake.notify_one();
-        }
+        self.refused.store(true, Ordering::Release);
+        // A permit is kept when the reader is not waiting yet, so a refusal
+        // between its check and its wait is never missed.
+        self.merge_wake.notify_one();
+    }
+    /// Whether this is the whole document, rather than the changes since a
+    /// revision: the only read an owner that cannot apply it has left.
+    pub fn is_whole(&self) -> bool {
+        self.base.is_none()
+    }
+    /// Whether the owner refused this capture ([`Self::refuse`]).
+    pub fn was_refused(&self) -> bool {
+        self.refused.load(Ordering::Acquire)
     }
     pub fn is_current(&self) -> bool {
         self.valid.load(Ordering::Acquire)
@@ -555,6 +546,43 @@ impl CommittedDocument {
         // A permit is kept when the reader is not waiting yet, so a merge
         // between its check and its wait is never missed.
         self.merge_wake.notify_one();
+    }
+    /// Take this capture into `document`, the owner's copy of the route's
+    /// record, through `merge`, the owner's own receive path, which merges
+    /// it with whatever the owner made meanwhile: acknowledged once merged
+    /// ([`Self::applied`]), so the reader confirms it and the route opens
+    /// again. Changes the owner holds no base of, or cannot read, are
+    /// refused ([`Self::refuse`]) and said why: the reader reads the
+    /// document whole instead. A whole document it cannot read is refused
+    /// the same way, and the reader says so once and moves on: the owner
+    /// keeps its own document and the route goes on publishing it. `None`
+    /// when nothing was merged.
+    pub fn take_into<D: automerge::ReadDoc, T, E: std::fmt::Display>(
+        &self,
+        document: &mut D,
+        merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
+    ) -> Option<T> {
+        if !self.is_current() {
+            return None;
+        }
+        if !self.applies_to(document) {
+            tracing::warn!("committed changes refused: the owner holds none of their base");
+            self.refuse();
+            return None;
+        }
+        match self.with_mutation(|mutation| merge(document, mutation)) {
+            Ok(Ok(merged)) => {
+                self.applied();
+                Some(merged)
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, whole = self.is_whole(), "committed history refused: the owner cannot read it");
+                self.refuse();
+                None
+            }
+            // ignored-failure: the route's read was replaced; its reader no longer waits on this one
+            Err(_) => None,
+        }
     }
     /// A current capture of `bytes`: the changes since `base`, or the whole
     /// document when `base` is `None`.
@@ -576,9 +604,6 @@ impl CommittedDocument {
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
-            creation: None,
-            revision: [0; 32],
-            initialized: Arc::new(AtomicBool::new(false)),
             base: base.map(Into::into),
             refused: Arc::new(AtomicBool::new(false)),
         }
@@ -745,6 +770,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_owner_s_merge_ends_the_reader_s_wait_at_once() {
         let budget = ByteBudget::new();
+        let reads = Reads::default();
         let read = one_chunk_capture(&budget).await;
         let started = tokio::time::Instant::now();
         let owner = {
@@ -754,36 +780,47 @@ mod tests {
                 read.applied();
             })
         };
-        until_merged(&read, || true).await;
+        until_merged(&read, &reads, || true).await;
         owner.await.unwrap();
-        // The clock is paused: a wait that slept until its re-check would
-        // have advanced it by a whole interval.
-        assert!(started.elapsed() < MERGE_RECHECK);
+        // The clock is paused: a wait that slept on a clock instead of on
+        // the owner's answer would have advanced it.
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
     #[tokio::test(start_paused = true)]
     async fn a_merge_before_the_reader_waits_is_not_missed() {
         let budget = ByteBudget::new();
+        let reads = Reads::default();
         let read = one_chunk_capture(&budget).await;
         read.applied();
         let started = tokio::time::Instant::now();
-        until_merged(&read, || true).await;
-        assert!(started.elapsed() < MERGE_RECHECK);
+        until_merged(&read, &reads, || true).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
+    /// A capture the app never takes is waited for, not asked about: the
+    /// reader sleeps until something here changes, and hears a route
+    /// replaced under it without any clock.
     #[tokio::test(start_paused = true)]
-    async fn an_unmerged_capture_keeps_the_reader_waiting_until_its_route_goes() {
+    async fn an_unmerged_capture_waits_for_its_route_to_go_without_a_clock() {
         let budget = ByteBudget::new();
+        let reads = Reads::default();
         let read = one_chunk_capture(&budget).await;
-        let checks = std::cell::Cell::new(0);
+        let ready = reads.pending("route").unwrap();
         let started = tokio::time::Instant::now();
-        until_merged(&read, || {
-            checks.set(checks.get() + 1);
-            checks.get() < 3
-        })
-        .await;
+        let route_goes = {
+            let reads = reads.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                // A new generation: the capture is no longer this route's.
+                reads.pending("route").unwrap();
+            })
+        };
+        until_merged(&read, &reads, || reads.current("route", &ready)).await;
+        route_goes.await.unwrap();
         assert!(!read.merged.load(Ordering::Acquire));
-        // Two re-checks passed while the route stayed live.
-        assert!(started.elapsed() >= MERGE_RECHECK * 2);
-        assert_eq!(checks.get(), 3);
+        assert!(!reads.current("route", &ready));
+        // The pause makes a timer wait show as elapsed time; this wait had
+        // none to spend.
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
     #[test]
     fn staging_a_capture_ends_the_owner_s_bounded_wait() {
@@ -1161,21 +1198,7 @@ mod tests {
     fn committed_document_replacing_route_discards_staged_capture() {
         let reads = Reads::default();
         let ready = reads.pending("route").unwrap();
-        let budget = ByteBudget::new();
-        let read = CommittedDocument {
-            data: Arc::new(Captured {
-                bytes: std::sync::Mutex::new(vec![1]),
-                _reservation: budget.reserve(1, 1).unwrap(),
-            }),
-            merged: Arc::new(AtomicBool::new(false)),
-            merge_wake: Arc::new(tokio::sync::Notify::new()),
-            valid: Arc::new(AtomicBool::new(true)),
-            creation: None,
-            revision: [0; 32],
-            initialized: Arc::new(AtomicBool::new(false)),
-            base: None,
-            refused: Arc::new(AtomicBool::new(false)),
-        };
+        let read = CommittedDocument::for_test(vec![1], None);
         reads.stage("route", &ready, read.clone()).unwrap();
         assert!(reads.unapplied("route").is_some());
         read.applied();
@@ -1343,7 +1366,7 @@ async fn read_capture(
     })
     .await
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(super) async fn read_capture_using(
     first: Reply,
     budget: &ByteBudget,
@@ -1370,10 +1393,6 @@ async fn capture_using(
     wait: CaptureWait,
     mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
-    let (first, creation) = match first {
-        Reply::Created { receipt, chunk } => (chunk.into_reply(), Some(receipt)),
-        reply => (reply, None),
-    };
     // Reserve before the full-document destination allocation. Every clone of
     // the event retains this one shared reservation until the last owner drops.
     let (first_id, first_token, total) = match &first {
@@ -1472,9 +1491,6 @@ async fn capture_using(
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
-            creation,
-            revision: assembly.revision,
-            initialized: Arc::new(AtomicBool::new(false)),
             base: assembly
                 .base
                 .map(|base| base.into_iter().map(automerge::ChangeHash).collect()),
@@ -1483,6 +1499,59 @@ async fn capture_using(
         assembly.revision,
     ))
 }
+/// Ask the workspace, through the broker, for a chain's head (`RecordId::chain_head`): a name for
+/// whichever part of the chain is the newest, which holds nothing of its own and so is neither read
+/// nor followed here. The host sends that part on the part's own route, and the app holds it from
+/// there. Answered with nothing, the chain has no part at all, which the app is told
+/// ([`CollabEvent::RecordUnavailable`]) so that it starts the first.
+pub(super) async fn ask_chain_head(
+    channel: &runtime_collab::ChannelHandle,
+    spec: &RouteSpec,
+    inbound: &InboundBridge,
+) -> Result<(), String> {
+    inbound
+        .state
+        .document_reads
+        .chain_head(&spec.channel_id())?;
+    loop {
+        match channel
+            .committed_document(&Request::Open {
+                known_revision: None,
+            })
+            .await
+        {
+            // The broker's byte budget is held by other reads: asking again shortly asks
+            // for no bytes.
+            Ok(Reply::Busy) => tokio::time::sleep(READ_RECHECK).await,
+            // The workspace has no part of this chain, or nothing here holds a document of
+            // the head at all: the chain starts its first part.
+            Ok(Reply::Absent | Reply::Legacy) => {
+                if !inbound
+                    .send_durable(CollabEvent::RecordUnavailable {
+                        route: spec.clone(),
+                    })
+                    .await
+                {
+                    return Err("committed read event queue closed".into());
+                }
+                return Ok(());
+            }
+            // The newest part, or the host's word about it, is on its way: the part arrives
+            // on its own route, and the chain follows it from there.
+            Ok(_) => return Ok(()),
+            Err(error) => return Err(format!("{}: {error}", crate::ROUTE_JOIN_FAILED)),
+        }
+    }
+}
+/// The route of `key` is served by the app's own channel: it is open for
+/// documents now, and the owner hears so, as it does a committed read's
+/// readiness ([`set_read_ready`]).
+fn open_on_own_channel(inbound: &InboundBridge, key: &str) -> Result<(), String> {
+    inbound.state.document_reads.legacy(key)?;
+    inbound.state.notify_events();
+    Ok(())
+}
+
 // A parked owner must observe both publication readiness and its withdrawal.
 fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
     if inbound.state.document_reads.set_ready(ready, value) {
@@ -1541,46 +1610,39 @@ impl NativeReadJoin {
     }
 }
 
-/// How often a reader waiting for the owner's merge re-checks that its route
-/// is still healthy and current. The merge itself wakes it at once.
-const MERGE_RECHECK: Duration = Duration::from_millis(100);
-
-/// The shortest gap between two Opens of one route, however often its
-/// document changes, and so how often a reader re-Opens while its broker's
-/// `Await` keeps failing.
+/// The shortest gap between two Opens of one route that something on this
+/// side asked for (the owner wanting a fresh read, a route replaced), however
+/// often that happens. A change the broker hands over is read at once.
 const READ_RECHECK: Duration = Duration::from_millis(200);
 
 /// What ended a reader's wait for its committed read to change.
-#[derive(Debug, PartialEq, Eq)]
 enum Woke {
-    /// The broker says an Open would now answer differently: a new
-    /// revision, a refusal, the record becoming readable.
-    Stale,
-    /// Something on this side changed: the route closed or was replaced,
-    /// or the owner asked for a fresh read.
+    /// The broker's answer: what an Open of the route answers now that it
+    /// differs from what the reader holds (a capture of the change, the
+    /// record becoming readable).
+    Read(Reply),
+    /// Something on this side changed (the route closed or was replaced,
+    /// or the owner asked for a fresh read), or the wait failed: the next
+    /// Open decides, and meets any refusal itself.
     Local,
-    /// The wait failed or was answered with something other than `Stale`:
-    /// the next Open decides.
-    Refused,
 }
 
 /// Wait, without traffic and without a timer, until an Open of this route
 /// would answer differently from the `known` revision the reader holds
-/// (`None` after `Unavailable`), or until something on this side changes.
-/// The answer is never a read: the caller Opens, under its delivery turn,
-/// and only that Open publishes readiness or hands out bytes.
+/// (`None` after `Unavailable`), and take that answer; or until something on
+/// this side changes. The caller handles the answer under its delivery turn,
+/// as it does an Open's: only then is readiness published or a capture read.
 ///
 /// No clock ends the wait. An owner that stops answering matters only to a
-/// reader that asks it something, and every ask has its deadline: the Open
-/// that follows any wake (a change, the owner asking for a fresh read, a
-/// route replaced) gives up after two seconds and renews the read as it
-/// always did. A read nobody asks about arms no timer, so an idle app's
-/// shovel sleeps; a hang meanwhile is met by the next ask.
+/// reader that asks it something, and every ask has its deadline. A read
+/// nobody asks about arms no timer, so an idle app's shovel sleeps. A wait
+/// the broker refuses (one that predates it) leaves the next Open to decide,
+/// as a wake from this side does.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
-async fn until_stale(
+async fn until_changed(
     channel: &runtime_collab::ChannelHandle,
     known: Option<[u8; 32]>,
     inbound: &InboundBridge,
@@ -1601,22 +1663,35 @@ async fn until_stale(
     };
     tokio::select! {
         () = &mut local => Woke::Local,
-        reply = channel.committed_document(&request) => {
-            match reply {
-                Ok(Reply::Stale) => Woke::Stale,
-                _ => Woke::Refused,
-            }
-        }
+        reply = channel.committed_document(&request) => match reply {
+            Ok(reply) => Woke::Read(reply),
+            // ignored-failure: a refused wait (a broker that predates it) leaves the next Open to decide, and that Open meets any refusal itself
+            Err(_) => Woke::Local,
+        },
     }
 }
 
 /// Wait until the owner merged `read` ([`CommittedDocument::applied`]) or
-/// refused its changes ([`CommittedDocument::refuse`]), or `live` says the
-/// route is gone. The owner's component factory waits for
+/// refused its changes ([`CommittedDocument::refuse`]), or something here
+/// changed instead: `live` says the route is gone, or `reads` says the read
+/// is no longer this reader's. The owner's component factory waits for
 /// the confirming read that follows, so the merge ends this wait at once.
-async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
-    while !read.merged.load(Ordering::Acquire) && !read.refused.load(Ordering::Acquire) && live() {
-        let _ = tokio::time::timeout(MERGE_RECHECK, read.merge_wake.notified()).await;
+///
+/// Both are waits on a source, never a timer: an app that takes its time
+/// over a capture costs the shovel no wake at all while it does.
+async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -> bool) {
+    loop {
+        // Enabled before the checks, so a change here in between is kept.
+        let local = reads.reader_wake();
+        tokio::pin!(local);
+        local.as_mut().enable();
+        if read.merged.load(Ordering::Acquire) || read.refused.load(Ordering::Acquire) || !live() {
+            return;
+        }
+        tokio::select! {
+            () = read.merge_wake.notified() => {}
+            () = &mut local => {}
+        }
     }
 }
 
@@ -1644,7 +1719,7 @@ pub(super) async fn install(
 ) -> Result<bool, String> {
     let key = spec.channel_id();
     if !opens_committed_document(join.participant_kind.as_str()) {
-        inbound.state.document_reads.legacy(&key)?;
+        open_on_own_channel(inbound, &key)?;
         return Ok(false);
     }
     let first = channel
@@ -1654,10 +1729,13 @@ pub(super) async fn install(
         .await
         .map_err(|e| e.to_string())?;
     if first == Reply::Legacy {
-        inbound.state.document_reads.legacy(&key)?;
+        open_on_own_channel(inbound, &key)?;
         return Ok(false);
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
+    // Resolved: the route opens once its history is read and merged. An
+    // owner holding changes for it stops treating it as joining.
+    inbound.state.notify_events();
     // What the first read waits for before it Opens again, when it could
     // not be read yet: its turn in the broker's queue, or workspace here.
     let mut waiting = None;
@@ -1665,16 +1743,14 @@ pub(super) async fn install(
     // unavailable, said once each time it becomes so.
     let mut absent = false;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => {
-            match read_capture(channel, first, CaptureWait::Join).await {
-                Ok((read, revision)) => (Some(read), Some(revision)),
-                Err(CaptureFailure::Capacity(bytes)) => {
-                    waiting = Some(Waiting::Capacity(bytes));
-                    (None, None)
-                }
-                Err(error) => return Err(error.to_string()),
+        Reply::Chunk { .. } => match read_capture(channel, first, CaptureWait::Join).await {
+            Ok((read, revision)) => (Some(read), Some(revision)),
+            Err(CaptureFailure::Capacity(bytes)) => {
+                waiting = Some(Waiting::Capacity(bytes));
+                (None, None)
             }
-        }
+            Err(error) => return Err(error.to_string()),
+        },
         Reply::Unavailable => (None, None),
         Reply::Busy => {
             waiting = Some(Waiting::Turn);
@@ -1706,13 +1782,20 @@ pub(super) async fn install(
         let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
-        let mut last_open;
+        let mut last_open = crate::time::now();
         // Whether the broker may hold this channel's place in its byte
         // budget's queue: after `Busy`, or an Open whose answer never came.
         let mut queued = matches!(waiting, Some(Waiting::Turn));
+        // The broker's answer to the last wait, which stands for the next
+        // Open: the change it handed over.
+        let mut answered = None;
         match waiting {
             Some(Waiting::Turn) => {
-                until_stale(&channel, None, &inbound, &key, &ready).await;
+                if let Woke::Read(reply) =
+                    until_changed(&channel, None, &inbound, &key, &ready).await
+                {
+                    answered = Some(reply);
+                }
             }
             Some(Waiting::Capacity(bytes)) => {
                 capture_budget().until_capacity(bytes, CAPTURE_LIMIT).await
@@ -1754,7 +1837,7 @@ pub(super) async fn install(
                 {
                     break;
                 }
-                until_merged(&staged, || {
+                until_merged(&staged, &inbound.state.document_reads, || {
                     inbound.state.is_healthy() && inbound.state.document_reads.current(&key, &ready)
                 })
                 .await;
@@ -1769,27 +1852,48 @@ pub(super) async fn install(
                     .clear_stage(&key, &staged.merged);
                 if staged.refused.load(Ordering::Acquire) && !staged.merged.load(Ordering::Acquire)
                 {
-                    // The owner lacks the changes' base (or a new owner
-                    // needs the whole document): read it whole.
-                    revision = None;
+                    if staged.is_whole() {
+                        // The owner cannot read what the workspace holds of
+                        // this record. Handing the same bytes over again
+                        // cannot end differently, so the reader keeps the
+                        // revision it read and goes on from there: the route
+                        // publishes what the owner does hold again, later
+                        // changes still reach it, and the capture is said to
+                        // be unreadable here: once, for this one.
+                        tracing::warn!(
+                            route = %key,
+                            "committed history could not be read; the owner keeps its own record"
+                        );
+                        set_read_ready(&inbound, &ready, true);
+                    } else {
+                        // The owner lacks the changes' base (or a new owner
+                        // needs the whole document): read it whole.
+                        revision = None;
+                    }
                 }
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
             if refresh {
                 set_read_ready(&inbound, &ready, false);
             }
-            last_open = crate::time::now();
             let known = if refresh { None } else { revision };
-            // A reader holding a revision asks for only the changes since.
-            let request = known.map_or(
-                Request::Open {
-                    known_revision: None,
-                },
-                |known_revision| Request::OpenChanges { known_revision },
-            );
-            let result =
+            // What the wait was answered with is this Open's answer, unless
+            // the owner wants the whole document: then the broker drops the
+            // capture this reader never reads.
+            let result = if let Some(reply) = answered.take().filter(|_| !refresh) {
+                Ok(Ok(reply))
+            } else {
+                last_open = crate::time::now();
+                // A reader holding a revision asks for only the changes since.
+                let request = known.map_or(
+                    Request::Open {
+                        known_revision: None,
+                    },
+                    |known_revision| Request::OpenChanges { known_revision },
+                );
                 tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
-                    .await;
+                    .await
+            };
             queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
@@ -1943,13 +2047,16 @@ pub(super) async fn install(
                 }
             }
             drop(turn);
-            // Nothing to do until the read changes: wait for the broker to
-            // say so instead of asking five times a second. However the wait
-            // ends, the next Open decides, no sooner than READ_RECHECK after
-            // the last.
-            until_stale(&channel, revision, &inbound, &key, &ready).await;
-            let since = crate::time::now().saturating_duration_since(last_open);
-            tokio::time::sleep(READ_RECHECK.saturating_sub(since)).await;
+            // Nothing to do until the read changes: the broker hands the
+            // change over with its answer. A wake from this side Opens
+            // again, no sooner than READ_RECHECK after the last Open.
+            match until_changed(&channel, revision, &inbound, &key, &ready).await {
+                Woke::Read(reply) => answered = Some(reply),
+                Woke::Local => {
+                    let since = crate::time::now().saturating_duration_since(last_open);
+                    tokio::time::sleep(READ_RECHECK.saturating_sub(since)).await;
+                }
+            }
         }
         set_read_ready(&inbound, &ready, false);
         if inbound.state.document_reads.current(&key, &ready) {
@@ -1991,10 +2098,10 @@ fn reply_kind(reply: &Reply) -> &'static str {
         Reply::Unchanged { .. } => "unchanged from another revision",
         Reply::Chunk { .. } => "chunk",
         Reply::Cancelled => "cancelled",
-        Reply::Created { .. } => "created",
-        Reply::Initialized { .. } => "initialized",
+        Reply::RetiredCreated => "created",
+        Reply::RetiredInitialized => "initialized",
         Reply::PrivateWindowBinding { .. } => "private window binding",
-        Reply::Stale => "stale",
+        Reply::RetiredStale => "retired stale",
         Reply::Changes { .. } => "changes",
         Reply::ConnectionSnapshot(_) => "connection snapshot",
         Reply::Busy => "busy",

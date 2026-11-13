@@ -19,7 +19,6 @@ std::thread_local! {
 
 fn add(bytes: usize) {
     let delta = isize::try_from(bytes).unwrap_or(isize::MAX);
-    // A thread being torn down has no counter left; nothing is measured there.
     let _ = LIVE.try_with(|l| l.set(l.get().wrapping_add(delta)));
 }
 

@@ -18,7 +18,7 @@ ignored = ["tilo-search", "getrandom03"]
 disk = ["tantivy/mmap"]
 # The engine (tantivy) is not linked into `SearchIndex`: the program
 # fetches its code when something first searches and hands it over
-# (`defer_engine`, `install_engine`). The browser desktop uses this to keep
+# (`ENGINE`). The browser desktop uses this to keep
 # tantivy out of its start module.
 lazy-engine = []
 

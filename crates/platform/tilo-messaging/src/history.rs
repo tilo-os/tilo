@@ -1,5 +1,5 @@
-//! Read-only private history capability lent by an authenticated host.
-//! Selecting metadata cannot manufacture this capability or credential access.
+//! Read-only private history capability lent by an authenticated host; selecting
+//! metadata cannot manufacture it or credential access.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -49,22 +49,18 @@ impl std::fmt::Debug for Message {
 }
 
 /// Where an older page of history begins: the marker of the oldest message the
-/// app already holds, in the host's own encoding (`None` asks for the newest
-/// page). Opaque to the app: it is minted here from a message the host handed
-/// out, and only the host reads it back.
+/// app holds, in the host's own encoding (`None` asks for the newest page).
+/// Opaque to the app.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct HistoryCursor(String);
 
 impl HistoryCursor {
-    /// The page before `message`: what one page hands on to ask for the page
-    /// beneath it, the newest page being read without a cursor.
     #[must_use]
     pub fn before(message: &Message) -> Self {
         Self(message.id.clone())
     }
 
-    /// The marker as the host wrote it.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -88,8 +84,6 @@ impl std::fmt::Debug for HistoryCursor {
 pub struct HistoryPage {
     pub route: Route,
     pub messages: Vec<Message>,
-    /// There is a page before this one: [`HistoryCursor::before`] its oldest
-    /// message and read it.
     pub more: bool,
 }
 
@@ -106,33 +100,25 @@ pub enum HistoryError {
     Revoked,
     InvalidRoute,
     InvalidPage,
-    /// The cursor names nothing this host handed out.
     InvalidCursor,
 }
 
 pub type HistoryFuture =
     Pin<Box<dyn Future<Output = Result<HistoryPage, HistoryError>> + Send + 'static>>;
 
-/// The host binds this object to the admitted principal and credential grant.
-/// Every read must revalidate the grant, Contacts association and current
-/// provider identity revision, enforce a deadline, and return only this route.
-/// Apps must not receive account stores, vault keys or raw adapter connections.
+/// The host binds this object to the admitted principal and credential grant, and
+/// revalidates the grant, Contacts association and provider identity on every
+/// read. Apps never receive account stores, vault keys or adapter connections.
 pub trait HistoryHost: Send + Sync {
-    /// Private data changed; the observer receives no message or routing data.
-    /// The returned guard unregisters when the mounted view closes.
     fn observe(
         &self,
         _changed: Arc<dyn Fn() + Send + Sync>,
     ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         None
     }
-    /// The page of `route` before `cursor` (the newest page without one), at
-    /// most `limit` messages: newest page first, and the page a person reads
-    /// next is the one before the oldest message it carried.
     fn read(&self, route: Route, cursor: Option<HistoryCursor>, limit: usize) -> HistoryFuture;
 }
 
-/// Read-only service supplied through the existing host loan mechanism.
 #[derive(Clone)]
 pub struct HistoryClient {
     host: Arc<dyn HistoryHost>,
@@ -140,8 +126,6 @@ pub struct HistoryClient {
 }
 
 impl HistoryClient {
-    /// The mounting host supplies an already authorized, principal-bound service.
-    /// This constructor neither opens a socket nor authorizes an account.
     pub fn new(principal: impl Into<String>, host: Arc<dyn HistoryHost>) -> Self {
         Self {
             host,
@@ -160,9 +144,6 @@ impl HistoryClient {
     ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         self.host.observe(changed)
     }
-    /// Read a bounded page and refuse another identity/account/route, a cursor
-    /// this host did not mint, or malformed data before any private content
-    /// becomes visible in the consumer.
     pub async fn read(
         &self,
         route: Route,
@@ -328,7 +309,6 @@ mod tests {
             read_before(page.clone(), Some(cursor)),
             Poll::Ready(Ok(page.clone()))
         );
-        // A cursor no host minted cannot carry a page's worth of text.
         for refused in [
             String::new(),
             " ".to_owned(),

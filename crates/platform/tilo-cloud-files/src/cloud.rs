@@ -1,5 +1,5 @@
-//! Credential-free browsing and streamed reads for independent cloud imports.
-//! These requests are available only on the cloud Files socket.
+//! Credential-free browsing and streamed reads for independent cloud imports,
+//! available only on the cloud Files socket.
 
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +8,6 @@ pub const IMPORT_CHUNK_LIMIT: u32 = 256 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportRequest {
-    /// Browse the root when `folder` is absent. IDs are opaque provider IDs.
     Browse {
         folder: Option<String>,
         offset: u32,
@@ -26,7 +25,6 @@ pub enum ImportRequest {
         offset: u64,
         length: u32,
     },
-    /// Idempotently cancel and release a prepared read.
     CloseRead {
         session: String,
     },
@@ -48,7 +46,6 @@ pub struct ImportEntry {
     pub kind: ImportKind,
     pub revision: Option<String>,
     pub size: Option<u64>,
-    /// Native converted views do not support safe round-trip content edits.
     pub content_writable: bool,
 }
 
@@ -99,52 +96,44 @@ pub enum ImportReply {
     Error(ImportError),
 }
 
-/// An operation on one file of a mounted account. `path` is relative to
-/// the account's folder, `/`-separated.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileRequest {
-    /// The file's provider revisions, newest first as the provider lists
-    /// them.
-    Revisions { path: String },
-    /// Make `revision` the file's current version. Replaces the current
-    /// remote content.
-    RestoreRevision { path: String, revision: String },
-    /// A link the provider shares the file through. Creating one may make
-    /// the file reachable by anyone holding the link.
-    ShareLink { path: String },
+    Revisions {
+        path: String,
+    },
+    RestoreRevision {
+        path: String,
+        revision: String,
+    },
+    ShareLink {
+        path: String,
+    },
     /// Cached source metadata only; never fetches file content or exports.
-    Describe { path: String },
+    Describe {
+        path: String,
+    },
 }
 
-/// One revision of a file, as the provider describes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileRevision {
-    /// The provider's opaque revision id, as [`FileRequest::RestoreRevision`]
-    /// takes it.
     pub revision: String,
     pub modified_unix: Option<i64>,
     pub size: Option<u64>,
     pub author: Option<String>,
 }
 
-/// Cached metadata about a mounted item. Carries no credential or content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDescription {
-    /// The provider's original MIME type, not the exported representation's.
     pub source_mime: Option<String>,
-    /// The mounted file represents a supported native-document export.
     pub converted: bool,
-    /// The mount permits replacing the item's content (not rename/delete).
     pub content_writable: bool,
 }
 
-/// The answer to a [`FileRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileReply {
     Revisions(Vec<FileRevision>),
     Restored,
     Link(String),
-    /// Internal mount acknowledgement; no file content is returned.
     ImportFrozen,
     Description(FileDescription),
 }

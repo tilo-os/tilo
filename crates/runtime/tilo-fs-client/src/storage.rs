@@ -202,10 +202,10 @@ pub enum StorageRequest {
         workspace: String,
         keep: bool,
     },
-    /// Switch this same managed daemon connection into private enrollment.
-    /// The switch itself supplies no certified role, verifier or source access.
-    BindExternalSource,
-    BindExternalReadSource,
+    /// Retired with the external source lane. Kept at its place so a request from another build is
+    /// refused as unknown rather than read as another ask.
+    RetiredBindExternalSource,
+    RetiredBindExternalReadSource,
 }
 
 /// An answer on the storage socket; new variants go last, as in
@@ -221,12 +221,9 @@ pub enum StorageResponse {
     Kept {
         keep: bool,
     },
-    /// Transport switch only. Mutual kernel role and current certification
-    /// checks on the same stream still precede every enrollment.
-    ExternalSourceBinding,
-    ExternalReadSourceBinding {
-        schema: u32,
-    },
+    /// Retired with the external source lane; nothing asks for them now.
+    RetiredExternalSourceBinding,
+    RetiredExternalReadSourceBinding,
 }
 
 #[cfg(unix)]
@@ -336,16 +333,6 @@ impl StorageClient {
         }
     }
 
-    /// Request the existing lane's closed enrollment switch and consume its
-    /// exact stream. Callers must authenticate the actual installed daemon and
-    /// current person/device before trusting any subsequent enrollment reply.
-    pub fn bind_external_source(mut self) -> std::io::Result<UnixStream> {
-        match self.request(&StorageRequest::BindExternalSource)? {
-            StorageResponse::ExternalSourceBinding => Ok(self.stream),
-            other => Err(unexpected(other)),
-        }
-    }
-
     fn request(&mut self, request: &StorageRequest) -> std::io::Result<StorageResponse> {
         STORAGE_FRAMING.write_value(&mut self.stream, request)?;
         Ok(STORAGE_FRAMING
@@ -446,47 +433,6 @@ mod tests {
         assert_eq!(applied, CachePolicy::default());
     }
 
-    #[test]
-    fn enrollment_switch_appends_wire_tags_and_preserves_exact_stream() {
-        let (client_end, mut daemon) = UnixStream::pair().unwrap();
-        daemon
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .unwrap();
-        let worker = std::thread::spawn(move || {
-            let mut request = [0u8; 5];
-            daemon.read_exact(&mut request).unwrap();
-            assert_eq!(request, [1, 0, 0, 0, 7]);
-            daemon.write_all(&[1, 0, 0, 0, 7]).unwrap();
-            // Bytes following the switch belong to the caller's role protocol.
-            daemon.write_all(b"role").unwrap();
-        });
-        let mut enrolled_stream = StorageClient { stream: client_end }
-            .bind_external_source()
-            .unwrap();
-        let mut next = [0u8; 4];
-        enrolled_stream.read_exact(&mut next).unwrap();
-        assert_eq!(&next, b"role");
-        worker.join().unwrap();
-    }
-    #[test]
-    fn ordinary_storage_operations_refuse_enrollment_switch_response() {
-        for snapshot in [true, false] {
-            let (client_end, mut daemon) = UnixStream::pair().unwrap();
-            let worker = std::thread::spawn(move || {
-                let _: StorageRequest = STORAGE_FRAMING.read_value(&mut daemon).unwrap().unwrap();
-                STORAGE_FRAMING
-                    .write_value(&mut daemon, &StorageResponse::ExternalSourceBinding)
-                    .unwrap();
-            });
-            let mut client = StorageClient { stream: client_end };
-            if snapshot {
-                assert!(client.snapshot().is_err());
-            } else {
-                assert!(client.evict(Vec::new()).is_err());
-            }
-            worker.join().unwrap();
-        }
-    }
     #[test]
     fn storage_wire_bytes_and_protocol_carry_revalidation_identity() {
         // phase: storage_wire_bytes_are_pinned

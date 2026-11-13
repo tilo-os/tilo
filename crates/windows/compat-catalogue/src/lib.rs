@@ -1,46 +1,36 @@
-//! Policy data for launching Windows applications on Tilo.
+//! Policy data for launching Windows applications on Tilo: a launch plan for
+//! the existing security and launcher services, not a launcher, a prefix or a
+//! permission system of its own. A [`SecurityProfileRef`] names a profile of
+//! that service; it is no second capability language.
 //!
-//! This crate deliberately does not launch a process, create a prefix, or
-//! implement permissions.  It produces a fully specified launch plan for the
-//! existing Tilo security/launcher services.  In particular, a
-//! [`SecurityProfileRef`] is only a reference to that service's profile; it is
-//! not a second capability or sandbox language.
-//!
-//! Resolution is intentionally conservative:
-//!
-//! * exact catalogue identity wins over weaker metadata matches;
-//! * an unknown application gets an isolated Wine plan;
-//! * Proton is selectable only from a catalogue recipe; and
-//! * a VM can only be selected by an explicit caller request.
+//! Resolution is conservative: an exact catalogue identity wins over weaker
+//! metadata matches, an unknown application gets an isolated Wine plan, Proton
+//! needs a catalogue recipe, and the VM only by explicit request.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Current on-disk catalogue schema.
 pub const CATALOGUE_SCHEMA_VERSION: u16 = 1;
-/// Current per-record schema.
 pub const RECORD_VERSION: u32 = 1;
 /// There is exactly one managed Windows guest per Tilo installation.
 pub const WINDOWS_VM_RUNTIME_ID: &str = "windows-vm";
 
-/// Stable reference into Tilo's existing security policy registry.
-///
-/// The catalogue stores this name so UI and launcher can show the effective
-/// policy. It never interprets the name or grants access itself.
+/// A name in Tilo's security policy registry, stored so UI and launcher can
+/// show the policy. It grants nothing.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecurityProfileRef(String);
 
 impl SecurityProfileRef {
-    /// Construct a profile reference. Empty and path-like values are rejected
-    /// because they would make policy ownership ambiguous.
+    /// Empty and path-like values are rejected: they would make policy
+    /// ownership ambiguous.
     ///
     /// # Errors
     ///
-    /// Returns [`CatalogueError::InvalidSecurityProfile`] for an empty,
-    /// oversized, path-like, or whitespace-containing key.
+    /// [`CatalogueError::InvalidSecurityProfile`] for an empty, oversized,
+    /// path-like or whitespace-containing key.
     pub fn new(value: impl Into<String>) -> Result<Self, CatalogueError> {
         let value = value.into();
         if value.is_empty()
@@ -55,17 +45,14 @@ impl SecurityProfileRef {
         Ok(Self(value))
     }
 
-    /// Return the registry key used by Tilo's security broker.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-/// The compatibility execution layer.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Layer {
-    /// A normal Wine prefix, managed as an isolated Tilo capsule.
     Wine,
     /// Proton through UMU/Steam Runtime. Never inferred for arbitrary apps.
     Proton,
@@ -73,7 +60,6 @@ pub enum Layer {
     Vm,
 }
 
-/// CPU architecture used by a Wine/Proton capsule.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Architecture {
@@ -82,22 +68,17 @@ pub enum Architecture {
     Win64,
 }
 
-/// Exact runner selected for a launch.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Runner {
-    /// Human and log-facing runner family (for example `wine` or `umu-proton`).
     pub family: String,
-    /// Immutable runtime identifier, such as `wine-11.0` or `proton-ge-10-20`.
     pub version: String,
 }
 
 impl Runner {
-    /// Create a validated runner reference.
-    ///
     /// # Errors
     ///
-    /// Returns [`CatalogueError::InvalidValue`] when either token is empty,
-    /// too long, or contains a control character.
+    /// [`CatalogueError::InvalidValue`] when either token is empty, too long
+    /// or holds a control character.
     pub fn new(
         family: impl Into<String>,
         version: impl Into<String>,
@@ -122,13 +103,11 @@ impl Runner {
     }
 }
 
-/// Settings passed to the capsule or UMU adapter.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RunnerSettings {
     /// 32-bit or 64-bit Windows userspace.
     #[serde(default)]
     pub architecture: Architecture,
-    /// Windows compatibility version exposed by the runner.
     #[serde(default = "default_windows_version")]
     pub windows_version: String,
     /// Runner-specific environment overrides. The launcher validates which
@@ -155,10 +134,9 @@ impl Default for RunnerSettings {
     }
 }
 
-/// A reference to the Tilo-owned capsule or the single managed VM.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Runtime {
-    /// Stable local ID, not a filesystem path.
+    /// A local id, not a path.
     pub id: String,
     pub layer: Layer,
 }
@@ -172,16 +150,13 @@ impl Runtime {
     }
 }
 
-/// Metadata used to identify an installed application.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApplicationQuery {
-    /// Tilo package/store identity, when known.
     #[serde(default)]
     pub package_id: Option<String>,
     /// Windows `AppUserModelId` or other stable application ID.
     #[serde(default)]
     pub app_id: Option<String>,
-    /// Steam/UMU numeric game ID.
     #[serde(default)]
     pub game_id: Option<String>,
     /// Store namespace from UMU (for example `egs` or `gog`).
@@ -190,7 +165,6 @@ pub struct ApplicationQuery {
     /// Store product code (`CODENAME`) within [`Self::store`].
     #[serde(default)]
     pub store_product: Option<String>,
-    /// Executable filename or relative path.
     #[serde(default)]
     pub executable: Option<String>,
     /// SHA-256 of the executable bytes, when the launcher has verified them.
@@ -230,9 +204,9 @@ impl ApplicationQuery {
     }
 }
 
-/// A catalogue identity matcher. Fields are `ANDed`, and a record may contain
-/// several matchers (OR). Keeping this explicit makes precedence inspectable
-/// in the UI and avoids fuzzy matching surprises.
+/// A catalogue identity matcher: fields are `ANDed` and a record's several
+/// matchers are `ORed`, so precedence stays visible and nothing matches by
+/// fuzzy similarity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MatchKey {
     #[serde(default)]
@@ -241,7 +215,6 @@ pub struct MatchKey {
     pub app_id: Option<String>,
     #[serde(default)]
     pub game_id: Option<String>,
-    /// Store namespace from a compatibility source.
     #[serde(default)]
     pub store: Option<String>,
     /// Store product code within [`Self::store`].
@@ -249,10 +222,8 @@ pub struct MatchKey {
     pub store_product: Option<String>,
     #[serde(default)]
     pub executable: Option<String>,
-    /// Exact executable digest. This outranks every textual identity key.
     #[serde(default)]
     pub executable_sha256: Option<String>,
-    /// Exact installer payload digest.
     #[serde(default)]
     pub installer_sha256: Option<String>,
     #[serde(default)]
@@ -262,7 +233,6 @@ pub struct MatchKey {
 }
 
 impl MatchKey {
-    /// Match the key after applying Tilo's case/whitespace/path normalization.
     pub fn matches(&self, query: &ApplicationQuery) -> bool {
         let key = self.normalized();
         key.has_identity() && key.matches(&query.normalized())
@@ -284,14 +254,12 @@ impl MatchKey {
     }
 }
 
-/// A catalog record's launch recipe.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
     pub layer: Layer,
     pub runner: Runner,
     #[serde(default)]
     pub settings: RunnerSettings,
-    /// Existing Tilo security profile; no permissions are defined here.
     pub security_profile: SecurityProfileRef,
     /// Proton requires a recipe so arbitrary apps cannot drift into Proton.
     #[serde(default)]
@@ -333,22 +301,17 @@ impl Recipe {
     }
 }
 
-/// Origin of a record. This is ordering metadata, not a permission grant.
+/// Where a record came from: ordering metadata, not a permission.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
-    /// Shipped by Tilo and reviewed as part of the OS image.
     #[default]
     BuiltIn,
-    /// Supplied by a runner/vendor integration.
     Vendor,
-    /// Imported from a community compatibility source.
     Community,
-    /// Explicitly authored by the user.
     User,
 }
 
-/// Bottles' compatibility grade, retained as explainable catalogue metadata.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompatibilityGrade {
@@ -362,7 +325,6 @@ pub enum CompatibilityGrade {
 }
 
 impl CompatibilityGrade {
-    /// Parse the grade labels used by Bottles recipes.
     #[must_use]
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -375,7 +337,6 @@ impl CompatibilityGrade {
         }
     }
 
-    /// A short human explanation suitable for the route inspector.
     #[must_use]
     pub const fn explanation(self) -> &'static str {
         match self {
@@ -400,20 +361,17 @@ impl Provenance {
     }
 }
 
-/// One versioned catalogue entry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
     #[serde(default = "default_record_version")]
     pub version: u32,
-    /// Origin metadata used as a deterministic tie-breaker.
     #[serde(default)]
     pub provenance: Provenance,
-    /// Set only by the trusted catalogue loader after signature verification;
-    /// this crate does not verify signatures or create a security boundary.
+    /// Set only by the trusted catalogue loader, after it verified the
+    /// signature; this crate verifies none.
     #[serde(default)]
     pub signed: bool,
-    /// Optional compatibility grade from a Bottles recipe.
     #[serde(default)]
     pub compatibility_grade: Option<CompatibilityGrade>,
     #[serde(default)]
@@ -421,7 +379,6 @@ pub struct Record {
     pub recipe: Recipe,
 }
 
-/// Versioned persisted catalogue.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Catalogue {
     pub schema_version: u16,
@@ -430,8 +387,8 @@ pub struct Catalogue {
 }
 
 impl Catalogue {
-    /// Validate all data before it can influence launching. Unknown schema,
-    /// duplicate IDs, malformed keys and malformed recipes fail closed.
+    /// Unknown schema, duplicate ids, malformed keys and malformed recipes
+    /// fail.
     pub fn validate(&self) -> Result<(), CatalogueError> {
         if self.schema_version != CATALOGUE_SCHEMA_VERSION {
             return Err(CatalogueError::UnsupportedSchema(self.schema_version));
@@ -459,12 +416,10 @@ impl Catalogue {
         Ok(())
     }
 
-    /// Parse and validate a JSON catalogue before returning it.
-    ///
     /// # Errors
     ///
-    /// Returns [`CatalogueError::InvalidJson`] for malformed JSON, or a
-    /// validation error when parsed data is unsupported or unsafe.
+    /// [`CatalogueError::InvalidJson`] for malformed JSON, or a validation
+    /// error when the parsed data is unsupported.
     pub fn from_json(input: &str) -> Result<Self, CatalogueError> {
         let catalogue: Self = serde_json::from_str(input)
             .map_err(|source| CatalogueError::InvalidJson(source.to_string()))?;
@@ -472,29 +427,26 @@ impl Catalogue {
         Ok(catalogue)
     }
 
-    /// Resolve Wine/Proton routes. VM records are ignored unless the caller
-    /// explicitly opts into VM fallback using [`Resolver::resolve`].
+    /// Resolve Wine and Proton routes; VM records wait for an explicit
+    /// [`Resolver::resolve`] fallback.
     pub fn resolver(&self) -> Result<Resolver<'_>, CatalogueError> {
         self.validate()?;
         Ok(Resolver { catalogue: self })
     }
 }
 
-/// Whether the caller explicitly authorizes using the one Windows VM.
+/// Whether the caller explicitly allows the one Windows VM.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VmFallback {
     /// Never select the VM, including when a VM recipe matches.
     Disabled,
-    /// The user explicitly requested VM fallback for this launch.
     Explicit,
 }
 
-/// Deterministic resolver over a validated catalogue.
 pub struct Resolver<'a> {
     catalogue: &'a Catalogue,
 }
 
-/// Result of selecting an application route.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchPlan {
     pub record_id: Option<String>,
@@ -536,7 +488,7 @@ impl MatchKind {
 }
 
 impl Resolver<'_> {
-    /// Resolve a query. VM selection requires [`VmFallback::Explicit`].
+    /// A query's record; selecting the VM needs [`VmFallback::Explicit`].
     pub fn resolve(&self, query: &ApplicationQuery, vm_fallback: VmFallback) -> LaunchPlan {
         let query = query.normalized();
         let mut best: Option<(&Record, MatchKind, usize)> = None;
@@ -575,9 +527,8 @@ impl Resolver<'_> {
     }
 }
 
-/// A row from UMU's upstream compatibility CSV. The parser intentionally
-/// keeps only the stable identity columns; all other columns are preserved by
-/// neither the resolver nor the launcher until they have an explicit schema.
+/// A row from UMU's upstream compatibility CSV: only the stable identity
+/// columns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UmuCsvRow {
     pub title: String,
@@ -587,7 +538,6 @@ pub struct UmuCsvRow {
 }
 
 impl UmuCsvRow {
-    /// Convert the UMU identity into a catalogue query.
     #[must_use]
     pub fn query(&self) -> ApplicationQuery {
         ApplicationQuery {
@@ -601,12 +551,12 @@ impl UmuCsvRow {
     }
 }
 
-/// Parse UMU's pinned CSV format (including quoted RFC-4180 fields).
+/// UMU's pinned CSV format, quoted RFC-4180 fields included.
 ///
 /// # Errors
 ///
-/// Returns [`CatalogueError::InvalidUmuCsv`] for malformed CSV, missing
-/// required headers, duplicate headers, oversized input, or incomplete rows.
+/// [`CatalogueError::InvalidUmuCsv`] for malformed CSV, missing or duplicate
+/// required headers, an oversized input, or an incomplete row.
 pub fn parse_umu_csv(input: &str) -> Result<Vec<UmuCsvRow>, CatalogueError> {
     const MAX_BYTES: usize = 8 * 1024 * 1024;
     const MAX_ROWS: usize = 100_000;
@@ -670,9 +620,9 @@ pub fn parse_umu_csv(input: &str) -> Result<Vec<UmuCsvRow>, CatalogueError> {
     Ok(result)
 }
 
-/// Turn UMU rows into Proton records using the Tilo runner/security references
-/// supplied by the caller. The records are marked vendor provenance and remain
-/// unsigned until a trusted catalogue loader authenticates the source.
+/// Proton records from UMU rows: caller-supplied runner and security
+/// references, vendor provenance, unsigned until a trusted loader
+/// authenticates the source.
 pub fn proton_records_from_umu_csv(
     input: &str,
     runner: &Runner,
@@ -722,8 +672,6 @@ pub fn proton_records_from_umu_csv(
     Ok(records)
 }
 
-/// Safe metadata extracted from one Bottles recipe program. Installer steps,
-/// URLs, paths and commands are intentionally absent from this type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BottlesProgram {
     pub name: String,
@@ -737,7 +685,6 @@ pub struct BottlesProgram {
 }
 
 impl BottlesProgram {
-    /// Explain the imported grade and runner settings for the route inspector.
     #[must_use]
     pub fn explanation(&self) -> String {
         let mut explanation = self.grade.explanation().to_owned();
@@ -757,16 +704,14 @@ impl BottlesProgram {
     }
 }
 
-/// Parse the bounded, metadata-only subset of a Bottles recipe/index entry.
-///
-/// This is a bounded YAML reader for the stable public fields used
-/// by Bottles recipes. It does not attempt to interpret YAML tags, anchors, or
-/// installer instructions; unknown fields are ignored.
+/// The bounded, metadata-only subset of a Bottles recipe or index entry: the
+/// stable public fields. YAML tags, anchors and installer instructions are not
+/// interpreted, and unknown fields are ignored.
 ///
 /// # Errors
 ///
-/// Returns [`CatalogueError::InvalidBottlesRecipe`] for oversized, malformed,
-/// or metadata-free input.
+/// [`CatalogueError::InvalidBottlesRecipe`] for oversized, malformed or
+/// metadata-free input.
 #[allow(
     clippy::too_many_lines,
     reason = "the bounded parser keeps its accepted field grammar together"
@@ -904,9 +849,8 @@ pub fn parse_bottles_recipe(input: &str) -> Result<Vec<BottlesProgram>, Catalogu
     Ok(programs)
 }
 
-/// Convert safe Bottles metadata into Wine records. Imported records are
-/// community provenance and unsigned until a trusted catalogue loader verifies
-/// the source.
+/// Wine records from Bottles metadata: community provenance, unsigned until a
+/// trusted loader verifies the source.
 pub fn wine_records_from_bottles_recipe(
     input: &str,
     runner: &Runner,
@@ -1463,8 +1407,8 @@ fn default_windows_version() -> String {
     String::from("win10")
 }
 
-/// Errors are intentionally descriptive but do not expose host paths or
-/// privileged operations; callers can show them directly in catalogue UI.
+/// Descriptive, but they name no host path or privileged operation: a
+/// catalogue UI can show them as they are.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum CatalogueError {
     #[error("unsupported catalogue schema {0}; refusing to load it")]

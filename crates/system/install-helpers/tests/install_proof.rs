@@ -1,6 +1,4 @@
-//! File-backed checks of the guest's installed-image proof (ported from
-//! `os/tests/test_vm_install_image_proof.py`, which keeps testing the Python
-//! seed the installer-code bootstrap puts on old media).
+//! File-backed checks of the guest's installed-image proof.
 
 #![allow(
     clippy::unwrap_used,

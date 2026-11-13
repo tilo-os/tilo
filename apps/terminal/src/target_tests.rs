@@ -38,8 +38,6 @@ fn unopened_terminal_never_accepts_reviewed_input_into_sink() {
 #[test]
 fn inspect_session_reports_production_open_failed_and_no_runtime_without_output() {
     use crate::resource::TerminalEffect;
-    // Keep the controlled transport open until this test releases it. An
-    // empty reader would race its real EOF against the inspection assertion.
     struct Reader(std::sync::mpsc::Receiver<()>);
     impl std::io::Read for Reader {
         fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
@@ -104,7 +102,6 @@ fn inspect_session_reports_production_open_failed_and_no_runtime_without_output(
     }
 }
 
-/// A tab whose opens are recorded and answered by `answer`.
 fn tab(
     recent: RecentTarget,
     mut answer: impl FnMut(&SessionTarget) -> Result<(), OpenError> + 'static,
@@ -121,9 +118,6 @@ fn tab(
 
 type App = ui::framework::testing::TestApp<crate::TerminalShell>;
 
-/// Give the terminal `app` hosts on its session record a session source
-/// whose opens are recorded and answered by `answer`, and run the sync that
-/// opens its session.
 fn host_tab(
     app: &mut App,
     recent: RecentTarget,
@@ -141,12 +135,10 @@ fn host_tab(
     opened
 }
 
-/// Where the session record says the session runs.
 fn recorded(app: &App) -> Option<SessionTarget> {
     app.state().session_target()
 }
 
-/// Drive the hosted terminal.
 fn on_tab<T>(app: &mut App, visit: impl FnOnce(&mut TerminalWidget) -> T) -> T {
     let out = app
         .with_surface(|view: &mut crate::TerminalView| visit(view))
@@ -179,7 +171,6 @@ fn a_new_tab_opens_the_most_recent_environment_and_records_it() {
         "the target is part of the synced session record"
     );
 
-    // Another sync does not open another session.
     on_tab(&mut app, |_| ());
     assert_eq!(opened.borrow().len(), 1);
 }
@@ -194,7 +185,6 @@ fn reopening_a_session_goes_back_to_its_recorded_target_and_survives_a_new_proce
     .unwrap();
     assert_eq!(recorded(&app), Some(SessionTarget::Host));
 
-    // The next login opens the same record.
     let mut app = app.reopen().unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
     assert_eq!(
@@ -285,8 +275,6 @@ fn agents_and_collaborators_never_open_the_device_shell() {
     assert!(err.contains("agents"), "{err}");
     assert_eq!(recorded(&app), before, "a refused target is not recorded");
 
-    // Through the published operation, as an agent or a collaborator in a
-    // shared workspace would reach it.
     let operate = |app: &mut App, actor: &str, target: &str| {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ui::tilo_actions::ActionInvoker::actor(actor),
@@ -308,7 +296,6 @@ fn agents_and_collaborators_never_open_the_device_shell() {
         "nothing was ever opened on the host"
     );
 
-    // An agent may move the session to another environment.
     operate(&mut app, "agent:helper", "environment:work").unwrap();
     assert_eq!(recorded(&app), Some(SessionTarget::environment("work")));
     assert_eq!(
@@ -343,8 +330,6 @@ fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
     let manage = crate::i18n::t("terminal-target-manage");
     assert_eq!(labels[0], "Default");
     assert_eq!(labels[1], "Work");
-    // The environments, the device's own shell, then Manage: there is one
-    // shell, so no shell to choose.
     assert_eq!(
         widget.target_menu_checked(),
         Some(vec![false, true, false, false]),
@@ -433,8 +418,6 @@ fn targets_are_spelled_out_for_agents() {
         crate::parse_target_argument("host"),
         Some(SessionTarget::Host)
     );
-    // A full Linux session is no longer a target: bash is a program in the
-    // environment's guest.
     for bad in [
         "",
         "environment:../etc",
@@ -507,7 +490,6 @@ fn without_a_runtime_the_tab_says_why_and_offers_the_device_shell() {
         "nothing moves to the device's shell unasked"
     );
 
-    // Enter takes the offer through the real hosted event and settlement path.
     app.harness().key("Enter");
     app.settle();
     assert_eq!(
@@ -548,8 +530,6 @@ fn an_agent_is_told_why_and_never_offered_the_device_shell() {
     );
 }
 
-/// Give the hosted terminal a session source that records every carried
-/// session it is asked to re-attach to and answers with `answer`.
 fn attach_with(
     app: &mut App,
     attaches: &Rc<RefCell<Vec<Option<String>>>>,
@@ -586,12 +566,10 @@ fn a_carried_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() 
     .unwrap();
     assert_eq!(app.state().relay(), Some(session));
 
-    // Reopened, it re-attaches.
     let mut app = app.reopen().unwrap();
     attach_with(&mut app, &attaches, carried);
     assert_eq!(attaches.borrow().last(), Some(&Some(session.to_owned())));
 
-    // A session the other side no longer has is replaced by a new one.
     let gone = "ffffffffffffffffffffffffffffffff";
     app.invoke(crate::resource::Terminal::RECORD_RELAY_SESSION.with(Some(gone.to_owned())))
         .unwrap();
@@ -624,7 +602,6 @@ fn every_environment_target_runs_where_it_is_asked_for() {
         "an environment runs where it is asked for: {labels:?}"
     );
 
-    // An agent names the environment, without a place.
     let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
         "agent:helper",
     ));
@@ -773,9 +750,6 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
     );
 }
 
-/// A refused device shell is not the tab's record: restored at the next
-/// login, the tab opens where a new one would and asks nothing. A Terminal
-/// left on the refused shell put the same prompt up at every login.
 #[test]
 fn a_refused_device_shell_is_not_where_the_next_session_opens() {
     let refuse_host = |target: &SessionTarget| {
@@ -1008,9 +982,6 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
     })
 }
 
-/// An interactive bash without user startup files. Resolved through `PATH`:
-/// bash lives at `/usr/bin/bash` on merged-`/usr` Linux but only at
-/// `/bin/bash` on macOS.
 fn interactive_bash() -> portable_pty::CommandBuilder {
     let mut command = portable_pty::CommandBuilder::new("bash");
     command.args(["--noprofile", "--norc", "-i"]);
@@ -1066,7 +1037,6 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
 }
 
-/// A tab whose sessions run an interactive bash on a real PTY.
 fn bash_sessions() -> Sessions {
     Sessions::scripted(RecentTarget::none(), |_, _, _| {
         crate::inner::TerminalBackend::with_command(interactive_bash())
@@ -1074,7 +1044,6 @@ fn bash_sessions() -> Sessions {
     })
 }
 
-/// Settle `app` until `done`, within the hang bound.
 fn settle_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> bool) {
     tilo_test_env::wait_until(what, || {
         app.settle();
@@ -1084,7 +1053,6 @@ fn settle_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> boo
 
 #[test]
 fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
-    // A tab the shell shows in its own process, through the window it lent.
     let window = ui::hosted_window::HostedWindow::new();
     let mut app = App::new().unwrap();
     let lent = window.clone();
@@ -1118,7 +1086,6 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
         );
     });
 
-    // A window in a process of its own closes its tab through the desktop.
     let _ = ui::shell_tabs::take_requests();
     let mut app = App::new().unwrap();
     app.with_surface(|terminal: &mut crate::TerminalView| {
@@ -1135,9 +1102,6 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
     });
 }
 
-/// A terminal that is not the app of a window (the code editor's panel)
-/// keeps its ended session; Restart shell opens a new one on the target the
-/// ended one ran on, in place.
 #[test]
 fn an_embedded_terminal_restarts_its_ended_shell_on_the_same_target() {
     let opens: Opened = Rc::default();
@@ -1225,7 +1189,6 @@ fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
         .unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
 
-    // The window's title in its bar is where the shell runs.
     let (_, toolbar) = window.toolbar_since(None).expect("the slots are declared");
     let location = toolbar
         .and_then(|toolbar| toolbar.location)
@@ -1252,7 +1215,6 @@ fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
         "the picker marks the current target"
     );
 
-    // The content holds only the terminal: no chip, no header above the grid.
     on_tab(&mut app, |widget| {
         assert!(
             widget.content_top_inset().abs() < f64::EPSILON,
@@ -1270,7 +1232,6 @@ fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
         );
     });
 
-    // Choosing the device's shell in the bar's picker moves the session there.
     let choice = location
         .choices
         .iter()
@@ -1344,8 +1305,6 @@ fn a_shell_that_could_not_start_says_so_in_the_window_with_a_retry() {
     assert_eq!(opened[0], opened[1], "the retry opens the same target");
 }
 
-/// A remote shell's session the supervisor handed over, as the supervisor
-/// holds it: the far end of its terminal output, and of its lease.
 #[cfg(unix)]
 type Handed = Rc<
     RefCell<
@@ -1356,8 +1315,6 @@ type Handed = Rc<
     >,
 >;
 
-/// End the newest handed-over session the way the supervisor does: say how
-/// it ended on its lease, then close it and the terminal.
 #[cfg(unix)]
 fn end_remote(handed: &Handed, report: &str) {
     use std::io::Write;
@@ -1370,9 +1327,6 @@ fn end_remote(handed: &Handed, report: &str) {
     drop(output);
 }
 
-// An ending connection to a remote shell is not the shell exiting: the
-// window says it is reconnecting, reconnects (automatically, and on Try
-// again), and only the remote shell's exit closes it.
 #[cfg(unix)]
 #[test]
 fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_window() {
@@ -1408,7 +1362,6 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
         OpenState::Open
     );
 
-    // The connection to the session is lost, and it stays out of reach.
     reachable.set(false);
     end_remote(
         &handed,
@@ -1449,8 +1402,6 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
         )));
     };
 
-    // Try again while it is out of reach: still reconnecting, to the
-    // same session.
     let before = attaches.borrow().len();
     activate(&mut app, &retry);
     assert_eq!(
@@ -1462,7 +1413,6 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     assert!(!window.take_close());
     assert_eq!(app.state().relay(), Some(session), "the session is kept");
 
-    // It is back: Try again re-attaches.
     reachable.set(true);
     activate(&mut app, &retry);
     assert_eq!(
@@ -1472,7 +1422,6 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     assert!(on_tab(&mut app, |tab| tab.reconnecting().is_none()));
     assert_eq!(attaches.borrow().last(), Some(&Some(session.to_owned())));
 
-    // The remote shell exits: its window closes.
     end_remote(&handed, "{\"ended\":\"exited\"}\n");
     settle_until(
         &mut app,
@@ -1507,9 +1456,6 @@ fn a_supervisors_report_names_how_a_remote_session_ended() {
     );
 }
 
-// An environment that could not be set up is not a shell that exited: the
-// window stays, says so plainly with Try again, and the supervisor's reason
-// is never shown, in the terminal or on the tab.
 #[cfg(unix)]
 #[test]
 fn an_environment_that_could_not_be_set_up_keeps_its_window_and_says_so() {
@@ -1560,7 +1506,6 @@ fn an_environment_that_could_not_be_set_up_keeps_its_window_and_says_so() {
         );
     });
 
-    // Try again opens the session anew.
     let before = attaches.borrow().len();
     assert!(on_tab(&mut app, TerminalWidget::retry_session));
     assert_eq!(attaches.borrow().len(), before + 1);
@@ -1570,9 +1515,6 @@ fn an_environment_that_could_not_be_set_up_keeps_its_window_and_says_so() {
     );
 }
 
-/// A fake shell runtime on `runtime`'s session socket that answers the
-/// environments panel's directory requests from `environments`, a record
-/// key and name each, making the one a create names.
 #[cfg(unix)]
 fn directory_runtime(
     runtime: &std::path::Path,
@@ -1614,10 +1556,6 @@ fn directory_runtime(
     })
 }
 
-// The environments panel offers its form only where the shell runtime
-// answers: while it does not, the panel says so with Try again and nothing
-// can be made; once it answers, Try again lists its environments and the
-// name field makes a new one there.
 #[cfg(unix)]
 #[test]
 fn the_environments_panel_makes_environments_only_where_the_runtime_answers() {
@@ -1667,12 +1605,6 @@ fn the_environments_panel_makes_environments_only_where_the_runtime_answers() {
     );
 }
 
-// Every directory request names the workspace the Terminal is in, which
-// its environments belong to: the panel's listing and the environment it
-// makes, and the window bar's listing off the UI thread, from the workspace
-// the desktop put the window in, read at each request; in a process of its
-// own, the workspace it was launched in. A Terminal that does not know its
-// workspace names none.
 #[cfg(unix)]
 #[test]
 fn directory_requests_name_the_terminals_workspace() {
@@ -1701,13 +1633,11 @@ fn directory_requests_name_the_terminals_workspace() {
         sessions.poll_environment_refresh()
     });
 
-    // The window left its workspace: no workspace is named.
     window.set_workspace(None);
     widget.open_environments_panel();
     window.set_workspace(Some(String::new()));
     widget.open_environments_panel();
 
-    // In a process of its own, the workspace the launcher started it in.
     env.set("TILO_WORKSPACE_ID", "launched-workspace");
     TerminalWidget::spawn_hosted_deferred().open_environments_panel();
 

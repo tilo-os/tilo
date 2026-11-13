@@ -26,8 +26,7 @@ use tilo_automerge::ApplyIncoming;
     dead_code,
     reason = "this file replays histories against upstream; it forges no changes"
 )]
-mod upstream;
-use upstream::{Replica, Rng, agrees_with_upstream};
+use crate::upstream::{Replica, Rng, agrees_with_upstream};
 
 fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: usize) {
     let at = rng.below(doc.length(text) as u64 + 1) as usize;
@@ -60,7 +59,6 @@ fn scattered(changes: usize, letters: usize, rng: &mut Rng) -> (AutoCommit, ObjI
     (ada, busy, fresh)
 }
 
-/// Letters the larger probe change types, each at its own random place.
 const PLACES: u32 = 16;
 
 fn median(mut samples: Vec<u64>) -> u64 {
@@ -124,8 +122,6 @@ fn scattered_histories_match_upstream() {
         let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
         let (mut base, busy, fresh) = scattered(2_000, 4, &mut rng);
         let base_bytes = base.save();
-        // Three collaborators type at once at random places, now and then
-        // merging what the others typed.
         let mut actors: Vec<AutoCommit> = (1..=3u8)
             .map(|i| base.fork().with_actor(ActorId::from(vec![i; 16])))
             .collect();

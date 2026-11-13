@@ -162,7 +162,7 @@ pub enum Answer {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Dictation {}
 
-#[resource(kind = "dictation.session", label = "Dictation")]
+#[resource(kind = "dictation.session")]
 impl Dictation {}
 
 /// What the card shows: the prompt, as the session last said it stands.

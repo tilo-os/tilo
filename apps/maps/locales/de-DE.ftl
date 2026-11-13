@@ -81,7 +81,7 @@ maps-offline-done-failed = { $total } Kacheln geladen, { $failed } fehlgeschlage
 maps-offline-done = { $total } Kacheln geladen
 maps-offline-estimate = Etwa { $size } zum Herunterladen
 maps-offline-stored = { $size } auf diesem Gerät
-maps-offline-refused = Angesehene Orte bleiben auf diesem Gerät, damit sie offline weiter angezeigt werden.
+maps-offline-refused = Diese Kartenquelle erlaubt kein Speichern von Gebieten im Voraus. Geöffnete Orte bleiben auf diesem Gerät.
 
 ## Die Oberfläche der Karte
 
@@ -102,7 +102,7 @@ maps-hide-places = Orte ausblenden
 maps-show-places = Orte einblenden
 maps-directions = Route
 maps-transit = Öffentliche Verkehrsmittel
-maps-save-or-unsave = Ort speichern oder nicht mehr speichern
+maps-save-or-unsave = Ort speichern
 maps-save = Speichern
 maps-saved = Gespeichert
 maps-clear-route-button = Route entfernen
@@ -132,7 +132,7 @@ maps-website = Website
 maps-close = Schließen
 maps-done = Fertig
 maps-place-unavailable = Der Kartenort ist nicht mehr verfügbar
-maps-poi-unavailable = Der Ort in der Nähe ist nicht mehr in diesem Ausschnitt
+maps-poi-unavailable = Dieser Ort ist nicht mehr zu sehen
 maps-panel-empty = Suche einen Ort oder eine Adresse, um ihn hier zu sehen.
 maps-panel-places = Orte
 maps-results = Ergebnisse
@@ -140,16 +140,15 @@ maps-nearby = In der Nähe
 maps-saved-places = Gespeicherte Orte
 maps-recent-searches = Letzte Suchen
 maps-clear = Leeren
-maps-location-service-offline = Der Standortdienst ist in dieser Sitzung nicht verfügbar
+maps-location-service-offline = Der Standort ist gerade nicht verfügbar
 maps-location-request-in-progress = Eine Standortanfrage läuft bereits
 maps-hide-traffic = Verkehr ausblenden
 maps-loading-places = Orte werden geladen…
 maps-nearby-count = { $count } Orte in der Nähe
-maps-location-disconnected = Der Standortdienst wurde getrennt, bevor er eine Position geliefert hat
+maps-location-disconnected = Die Standortbestimmung brach ab. Versuche es erneut.
 maps-current-location = Aktueller Standort
 maps-located = Standort gefunden
 maps-map-centre = Kartenmitte
-maps-leave-now = Jetzt losfahren
 maps-routing = Route wird berechnet…
 maps-finding-departures = Abfahrten werden gesucht…
 maps-arrive-at = Ankunft um { $time }
@@ -256,3 +255,30 @@ maps-what-nearby = Das Laden naher Orte
 maps-route-estimate = { $reason } Die Offline-Schätzung wird angezeigt.
 
 maps-addresses-places = Adressen und Orte
+
+## Actions
+
+maps-offline-areas = Offline-Bereiche
+maps-offline-areas-record = Heruntergeladenen Bereich erfassen
+maps-offline-areas-forget = Gelöschten Bereich vergessen
+maps-offline-areas-clear = Gelöschte Offline-Karten erfassen
+maps-effect-search = Orte suchen
+maps-effect-locate = Meinen Standort verwenden
+maps-effect-toggle-traffic = Verkehr anzeigen
+maps-effect-open-place = Ort öffnen
+maps-effect-directions = Route berechnen
+maps-effect-open-poi = Interessanten Ort öffnen
+maps-effect-poi-directions = Route zum interessanten Ort berechnen
+maps-effect-delete-offline-area = Offline-Bereich löschen
+maps-effect-clear-offline-areas = Offline-Bereiche leeren
+maps-workspace = Karten
+maps-workspace-accept-places = Orte übernehmen
+maps-workspace-commit-search = Orte suchen
+maps-workspace-clear-recents = Letzte Suchen löschen
+maps-workspace-accept-route = Route übernehmen
+maps-workspace-clear-route = Route verwerfen
+maps-workspace-accept-transit = Verbindungen übernehmen
+maps-workspace-clear-transit = Verbindungen verwerfen
+
+## What the app is called in a window and in the launcher
+maps-app-title = Karten

@@ -2,7 +2,6 @@
 //! door the run goes through.
 
 use ui::framework::testing::HostedApp;
-use ui::headless::InspectionNode;
 use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
 
 pub(crate) const RUN: &str = "issue-7@8000000000000001";
@@ -29,20 +28,12 @@ pub(crate) fn settle(app: &mut HostedApp) {
     }
 }
 
-pub(crate) fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
-    out.push(node);
-    for child in &node.children {
-        walk(child, out);
-    }
-}
-
 /// The window's change marks: the control in its header naming who changed what it shows ("Helper
 /// (agent) changed 2 notes"), with the rect it takes. A window's mark is a button led by the
 /// faces of everyone who changed what it shows, its label saying what they changed and how many.
 pub(crate) fn marks(app: &mut HostedApp) -> Vec<(String, [f64; 4])> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "Button" || node.widget == "Chip")
         .filter_map(|node| {
@@ -59,8 +50,7 @@ pub(crate) fn marks(app: &mut HostedApp) -> Vec<(String, [f64; 4])> {
 /// to assistive technology names who changed it).
 pub(crate) fn rows(app: &mut HostedApp) -> Vec<(String, [f64; 4], bool)> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
         .filter_map(|node| {
@@ -91,8 +81,7 @@ pub(crate) fn choose(app: &mut HostedApp, label: &str) {
         node.children.iter().find_map(|child| place(child, label))
     }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let bounds = all
         .iter()
         .filter_map(|node| node.semantics.as_ref())
@@ -134,8 +123,7 @@ pub(crate) fn reference(app_id: &str, app: &mut HostedApp, label: &str) -> serde
 /// The rows standing in for removed items: their titles.
 pub(crate) fn removed_rows(app: &mut HostedApp) -> Vec<String> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
         .filter_map(|node| {
@@ -248,8 +236,7 @@ pub(crate) fn published_with(app: &mut HostedApp, under: &str, label: &str) -> S
 /// The rect of the `widget` whose name begins with `name`.
 pub(crate) fn named(app: &mut HostedApp, widget: &str, name: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     let names: Vec<String> = all
         .iter()
         .filter_map(|node| {
@@ -275,8 +262,7 @@ pub(crate) fn named(app: &mut HostedApp, widget: &str, name: &str) -> [f64; 4] {
 /// The rect of the text field holding `text`.
 pub(crate) fn text_field(app: &mut HostedApp, text: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
     all.into_iter()
         .find(|node| {
             node.widget == "TextInput"

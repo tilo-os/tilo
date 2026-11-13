@@ -220,6 +220,11 @@ pub struct PermissionContext {
     /// The `Once` grants admissions here spent, never relied on again even
     /// before the host's revocation reaches this context.
     spent: std::collections::BTreeSet<policy::GrantId>,
+    /// Whether the host running this context's actions reaches the person
+    /// to ask them, when someone acts for them here: the host running a
+    /// hosted workspace's records puts an ask to the person on their own
+    /// devices ([`Self::reaching_person`]).
+    reaches_person: bool,
 }
 
 /// Inert directory cache identity. It cannot make a permission decision.
@@ -240,7 +245,7 @@ impl PermissionContext {
     /// reached as `actor`.
     pub fn new(actor: Actor, sandbox: Vec<CapOverride>, standing: Standing) -> Self {
         Self {
-            user: UserId(standing.person.clone()),
+            user: UserId(standing.person_id().unwrap_or_default().to_owned()),
             actor,
             sandbox,
             standing: Arc::new(standing),
@@ -249,7 +254,25 @@ impl PermissionContext {
             action_authority: None,
             once_spender: None,
             spent: std::collections::BTreeSet::new(),
+            reaches_person: false,
         }
+    }
+
+    /// The same context, run by a host that puts an ask to the person on
+    /// their own devices when someone acts for them: such an invocation asks
+    /// first ([`tilo_actions::DoorError::ConfirmationRequired`]) where it
+    /// would otherwise be refused, as the desktop's broker asks.
+    #[must_use]
+    pub fn reaching_person(mut self) -> Self {
+        self.reaches_person = true;
+        self
+    }
+
+    /// Who an invocation admitted here asks ([`tilo_action_policy::Standing::asker`]):
+    /// the person, who answers themselves, or whom the host reaches; and
+    /// whether someone acts for them.
+    pub fn asker(&self) -> policy::Asker {
+        self.standing.asker(self.reaches_person)
     }
 
     /// The **unrestricted local user**: the owner of [`LOCAL_WORKSPACE`] holding
@@ -314,7 +337,7 @@ impl PermissionContext {
     #[must_use]
     pub fn from_standing(workspace: &str, standing: Standing) -> Self {
         Self::new(
-            Actor::person(standing.person.clone()).in_workspace(workspace),
+            Actor::person(standing.person_id().unwrap_or_default()).in_workspace(workspace),
             Vec::new(),
             standing,
         )
@@ -369,7 +392,10 @@ impl PermissionContext {
             .iter()
             .map(|node| local_grant(subject.clone(), node, kinds, None))
             .collect();
-        Self::member(LOCAL_USER, Role::Owner).acting_as(subject, grants)
+        Self::member(LOCAL_USER, Role::Owner).acting_as(
+            policy::Actor::Member(policy::MemberId::agent(agent)),
+            grants,
+        )
     }
 
     /// This person, as their workspace told them it permits `kinds` at
@@ -389,15 +415,17 @@ impl PermissionContext {
 
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
-        Arc::make_mut(&mut self.standing).policy.grants.push(grant);
+        Arc::make_mut(&mut Arc::make_mut(&mut self.standing).policy)
+            .grants
+            .push(grant);
         self
     }
 
     /// The same person acting through a delegation of `subject` carrying
     /// `grants`.
     #[must_use]
-    pub fn acting_as(mut self, subject: policy::Subject, grants: Vec<policy::Grant>) -> Self {
-        self.standing = Arc::new(Arc::unwrap_or_clone(self.standing).bounded_by(subject, grants));
+    pub fn acting_as(mut self, subject: policy::Actor, grants: Vec<policy::Grant>) -> Self {
+        self.standing = Arc::new(Arc::unwrap_or_clone(self.standing).acting_as(subject, grants));
         self
     }
 
@@ -476,9 +504,9 @@ impl PermissionContext {
     /// samplers, sandbox and spent grants carry over.
     #[must_use]
     pub fn with_participation(&self, writable: bool) -> Option<Self> {
-        let person = &self.standing.person;
-        let current = self.standing.policy.members.get(person).copied()?;
-        if !self.standing.bounds.is_empty()
+        let person = self.standing.person_id().unwrap_or_default().to_owned();
+        let current = self.standing.policy.members.get(&person).copied()?;
+        if self.standing.acting.delegated()
             || !matches!(current, Role::Viewer | Role::Editor)
             || self.standing.policy.members.len() != 1
         {
@@ -486,7 +514,9 @@ impl PermissionContext {
         }
         let role = if writable { Role::Editor } else { Role::Viewer };
         let mut standing = (*self.standing).clone();
-        standing.policy.members.insert(person.clone(), role);
+        Arc::make_mut(&mut standing.policy)
+            .members
+            .insert(person.clone(), role);
         let mut next = self.clone();
         next.standing = Arc::new(standing);
         Some(next)
@@ -496,7 +526,7 @@ impl PermissionContext {
     /// learned of a change.
     #[must_use]
     pub fn with_standing(mut self, standing: Standing) -> Self {
-        self.user = UserId(standing.person.clone());
+        self.user = UserId(standing.person_id().unwrap_or_default().to_owned());
         self.standing = Arc::new(standing);
         self
     }
@@ -523,13 +553,7 @@ impl PermissionContext {
                 .min()
         };
         let standing_ends = |standing: &Standing| {
-            after(
-                &mut standing
-                    .policy
-                    .grants
-                    .iter()
-                    .chain(standing.bounds.iter().flat_map(|bound| &bound.grants)),
-            )
+            after(&mut standing.policy.grants.iter().chain(standing.granted.iter()))
         };
         let authority = self
             .action_authority
@@ -575,7 +599,7 @@ impl PermissionContext {
             .policy
             .grants
             .iter()
-            .chain(self.standing.bounds.iter().flat_map(|bound| &bound.grants))
+            .chain(self.standing.granted.iter())
             .map(|grant| grant.is_live(&cx))
             .chain(self.sandbox.iter().map(|cap| cap.expiry.is_live_at(now)))
             .collect();
@@ -618,7 +642,9 @@ impl PermissionContext {
 
     /// The role the person holds in the workspace, if any.
     pub fn role(&self) -> Option<Role> {
-        self.standing.policy.active_role(&self.standing.person)
+        self.standing
+            .policy
+            .active_role(self.standing.person_id().unwrap_or_default())
     }
 
     /// The standing actions are decided against.
@@ -688,16 +714,14 @@ impl PermissionContext {
             .policy
             .grants
             .iter()
-            .chain(held.bounds.iter().flat_map(|bound| &bound.grants))
+            .chain(held.granted.iter())
             .all(keep);
         if all_kept {
             return std::borrow::Cow::Borrowed(held);
         }
         let mut standing = held.clone();
-        standing.policy.grants.retain(keep);
-        for bound in &mut standing.bounds {
-            bound.grants.retain(keep);
-        }
+        Arc::make_mut(&mut standing.policy).grants.retain(keep);
+        standing.granted.retain(keep);
         std::borrow::Cow::Owned(standing)
     }
 
@@ -1224,7 +1248,9 @@ impl LivePermissions {
     pub fn workspace_has_others(&self) -> bool {
         let context = self.0.borrow();
         let standing = context.standing();
-        standing.policy.has_others(&standing.person)
+        standing
+            .policy
+            .has_others(standing.person_id().unwrap_or_default())
     }
 
     /// The permissions in force now.
@@ -1245,11 +1271,10 @@ mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
 
-/// The shared admission ([`tilo_action_policy::admit`]) as a window takes
-/// it for its own person, the decision a broker takes for a caller: an ask
-/// is theirs to confirm in the window when they act themselves (`direct`),
-/// and nobody else's here. `confirmed` is their confirmation, or the broker
-/// having admitted it.
+/// The shared admission ([`tilo_action_policy::admit`]) as a window's door
+/// takes it, the decision a broker takes for a caller: `asker` is who the
+/// invocation asks ([`PermissionContext::asker`]), and `confirmed` is their
+/// confirmation, or the broker having admitted it.
 ///
 /// # Errors
 /// Refused, or [`tilo_actions::DoorError::ConfirmationRequired`] until
@@ -1257,7 +1282,7 @@ use action_authority::ActionAuthoritySampler;
 pub fn admit_in_window(
     answer: tilo_action_policy::Answer,
     action: &tilo_actions::ActionSpec,
-    direct: bool,
+    asker: tilo_action_policy::Asker,
     confirmed: bool,
 ) -> Result<(), tilo_actions::DoorError> {
     let admitted = tilo_action_policy::admit(
@@ -1266,12 +1291,7 @@ pub fn admit_in_window(
             attended: action.contract.is_attended(),
             record: None,
         },
-        tilo_action_policy::Asker {
-            reachable: direct,
-            // A window has no session delegate: an agent acting in it holds a
-            // bounded standing (`direct` false), so its asks already refuse.
-            delegated: false,
-        },
+        asker,
     );
     match admitted {
         Err(_) => Err(crate::bound_dispatch::denied(action)),
@@ -1330,12 +1350,12 @@ mod tests {
         {
             let agent = |grants: Vec<policy::Grant>| {
                 let owner = PermissionContext::member("owner", Role::Owner);
-                owner.clone().with_standing(
-                    owner
-                        .standing()
-                        .clone()
-                        .bounded_by(policy::Subject::agent("scribe"), grants),
-                )
+                owner
+                    .clone()
+                    .with_standing(owner.standing().clone().acting_as(
+                        policy::Actor::Member(policy::MemberId::agent("scribe")),
+                        grants,
+                    ))
             };
             let workspace = TreePath::workspace(LOCAL_WORKSPACE);
             let open = |page: &str, action: &str| {
@@ -1415,8 +1435,8 @@ mod tests {
         let context = |kinds| {
             owner
                 .clone()
-                .with_standing(owner.standing().clone().bounded_by(
-                    policy::Subject::agent("scribe"),
+                .with_standing(owner.standing().clone().acting_as(
+                    policy::Actor::Member(policy::MemberId::agent("scribe")),
                     vec![grant(policy::Subject::agent("scribe"), node.clone(), kinds)],
                 ))
         };
@@ -1452,14 +1472,16 @@ mod tests {
         {
             let mut ctx = PermissionContext::member("u_editor", Role::Editor);
             let mut standing = ctx.standing().clone();
-            standing.policy.grants.push(policy::Grant::new(
-                "terminal-read-only",
-                policy::Subject::Role(Role::Editor),
-                TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
-                policy::KindSet::UNDOABLE,
-                Answer::Deny,
-                policy::Subject::person("owner"),
-            ));
+            Arc::make_mut(&mut standing.policy)
+                .grants
+                .push(policy::Grant::new(
+                    "terminal-read-only",
+                    policy::Subject::Role(Role::Editor),
+                    TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
+                    policy::KindSet::UNDOABLE,
+                    Answer::Deny,
+                    policy::Subject::person("owner"),
+                ));
             ctx = ctx.with_standing(standing);
             assert!(!ctx.check(&PermissionScope::app_kind(
                 AppKind::Terminal,
@@ -1473,12 +1495,12 @@ mod tests {
         // phase: a_delegation_without_grants_is_denied_everything
         {
             let owner = PermissionContext::member("owner", Role::Owner);
-            let app = owner.clone().with_standing(
-                owner
-                    .standing()
-                    .clone()
-                    .bounded_by(policy::Subject::app("dev.example.thing"), Vec::new()),
-            );
+            let app = owner
+                .clone()
+                .with_standing(owner.standing().clone().acting_as(
+                    policy::Actor::Member(policy::MemberId::agent("thing")),
+                    Vec::new(),
+                ));
             assert!(!app.check(&PermissionScope::workspace(ActionKind::Read)));
             assert!(!app.check(&PermissionScope::app_kind(
                 AppKind::FileExplorer,

@@ -19,13 +19,15 @@ use tilo_actions::door::ActionDescriptor;
 use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::catalog::{ActionCatalog, ResourceTarget};
-use crate::grant::{EDIT_PARAM, FIELD_EDIT, edit_reach, grant_answer, step_node, step_node_at};
+use crate::grant::{
+    EDIT_PARAM, FIELD_EDIT, READ_STEP, edit_reach, grant_answer, step_node, step_node_at,
+};
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, is_identifier};
 use crate::types::{Ty, assignable, literal_fits, pointer_tokens, schema_at};
 use crate::{AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of};
-use tilo_action_policy::{Answer, Rule};
+use tilo_action_policy::{ActionKind, Answer, Rule};
 
 /// One reason a shortcut cannot be saved as written.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -367,6 +369,27 @@ impl Checker<'_> {
                 scope.vars.insert(name.clone(), ty);
                 None
             }
+            StepKind::Read {
+                app,
+                record,
+                joined,
+            } => {
+                if let Some(named) = crate::shortcut::read_record_binding(record) {
+                    self.value(&named, scope, path);
+                }
+                self.read(path, app, record, *joined);
+                // The door's answer: every reader reads a record so.
+                let answer = serde_json::json!({"type": "object", "properties": {
+                    "revision": {"type": "string"},
+                    "records": {"type": "array", "items": {"type": "object", "properties": {
+                        "record": {"type": "string"},
+                        "value": {},
+                        "absent": {"type": "boolean"},
+                        "arriving": {"type": "boolean"},
+                    }}},
+                }});
+                Some((Ty::Object(Some(answer.clone())), Some(answer)))
+            }
             StepKind::Ask { param } => {
                 for reason in param.validate_declaration() {
                     self.fail(
@@ -490,6 +513,34 @@ impl Checker<'_> {
         match errors.first() {
             Some(error) => Err(format!("the declared output cannot be checked: {error}")),
             None => Ok(()),
+        }
+    }
+
+    /// A record read: of a named app, and inside the shortcut's grant.
+    fn read(&mut self, path: &StepPath, app: &str, record: &str, joined: bool) {
+        if app.trim().is_empty() {
+            self.fail(
+                path,
+                CheckErrorKind::InvalidName {
+                    what: "app",
+                    value: app.to_owned(),
+                },
+            );
+            return;
+        }
+        let outside = crate::grant::read_nodes(None, app, record, joined)
+            .iter()
+            .any(|node| {
+                grant_answer(&self.shortcut.grant, node, ActionKind::Read).answer == Answer::Deny
+            });
+        if outside {
+            self.fail(
+                path,
+                CheckErrorKind::OutsideGrant {
+                    app_id: app.to_owned(),
+                    action: READ_STEP.to_owned(),
+                },
+            );
         }
     }
 
@@ -876,7 +927,8 @@ fn shortcut_calls(steps: &[Step], path: &StepPath, out: &mut Vec<(StepPath, Stri
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
-            | StepKind::Task { .. } => {}
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
         }
     }
 }

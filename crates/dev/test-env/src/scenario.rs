@@ -1,13 +1,11 @@
-//! One test, many cases: [`crate::scenario!`] and the `#[scenario]`
-//! attribute that declares them, the runtime each phase reports to, and the
-//! panic hook that names the case a failure came from.
+//! One test, many cases: [`crate::scenario!`] and the `#[scenario]` attribute that declares them,
+//! the runtime each phase reports to, and the panic hook that names the case a failure came from.
 //!
-//! A crate of a few thousand tests was a few thousand test functions, each
-//! with its own `#[test]` scaffolding, and a run spent much of its wall time
-//! starting and finishing them. Folding a group of related tests into one
-//! scenario keeps every case, every fixture and every assertion, and runs them
-//! in one pass: a phase that needs a fresh fixture builds it inside its own
-//! scope, exactly as the separate test did.
+//! A crate of a few thousand tests was a few thousand test functions, each with its own `#[test]`
+//! scaffolding, and a run spent much of its wall time starting and finishing them. Folding a group
+//! of related tests into one scenario keeps every case, every fixture and every assertion, and runs
+//! them in one pass: a phase that needs a fresh fixture builds it inside its own scope, exactly as
+//! the separate test did.
 //!
 //! ```ignore
 //! scenario! {
@@ -29,10 +27,9 @@
 //! }
 //! ```
 //!
-//! A phase keeps its own scope, so two phases may both bind `app` — as two
-//! tests did. When a case fails, the panic message names its phase and the
-//! line inside the phase that raised it, and the rest of the scenario's cases
-//! still run, so one pass reports all of them.
+//! A phase keeps its own scope, so two phases may both bind `app` — as two tests did. When a case
+//! fails, the panic message names its phase and the line inside the phase that raised it, and the
+//! rest of the scenario's cases still run, so one pass reports all of them.
 
 use std::any::Any;
 use std::borrow::Cow;
@@ -43,14 +40,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// One case: a labelled phase with its own scope.
 ///
-/// The case runs while the scenario does, so it may borrow the test's own
-/// values, as the body of a test may.
+/// The case runs while the scenario does, so it may borrow the test's own values, as the body of a
+/// test may.
 pub struct Phase<'a> {
-    /// What the case is called in a report.
     pub name: &'static str,
     /// `file:line`, where the case starts.
     pub location: &'static str,
-    /// The case itself.
     pub run: Box<dyn FnOnce() + 'a>,
 }
 
@@ -64,7 +59,6 @@ impl fmt::Debug for Phase<'_> {
 }
 
 impl<'a> Phase<'a> {
-    /// The case `name`, starting at `location`.
     #[must_use]
     pub fn new(name: &'static str, location: &'static str, run: impl FnOnce() + 'a) -> Self {
         Self {
@@ -75,8 +69,7 @@ impl<'a> Phase<'a> {
     }
 }
 
-/// What a scenario run did: its cases in order, each with the panic it raised,
-/// if any.
+/// What a scenario run did: its cases in order, each with the panic it raised, if any.
 #[derive(Debug)]
 pub struct Report {
     cases: Vec<Case>,
@@ -97,19 +90,18 @@ impl Report {
             .map(|case| (case.name, case.location, case.failure.as_deref()))
     }
 
-    /// How many cases ran.
     #[must_use]
     pub fn total(&self) -> usize {
         self.cases.len()
     }
 
-    /// Fail the calling test unless every case passed, naming each case that
-    /// did not, where it starts and the line inside it that raised.
+    /// Fail the calling test unless every case passed, naming each case that did not, where it
+    /// starts and the line inside it that raised.
     ///
     /// # Panics
     ///
-    /// Panics when a case failed. A scenario that ran no case also fails: a
-    /// test that observes nothing has proved nothing.
+    /// Panics when a case failed. A scenario that ran no case also fails: a test that observes
+    /// nothing has proved nothing.
     pub fn assert_green(&self) {
         assert!(
             !self.cases.is_empty(),
@@ -155,9 +147,9 @@ type Hook = Box<dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send>;
 /// The hook a panic no case owns is reported through, while a scenario runs.
 static PREVIOUS: Mutex<Option<Hook>> = Mutex::new(None);
 
-/// How many scenarios are running in this process: the hook is installed for
-/// the first and taken off by the last, so two tests running scenarios in
-/// parallel share one hook rather than replacing each other's.
+/// How many scenarios are running in this process: the hook is installed for the first and taken
+/// off by the last, so two tests running scenarios in parallel share one hook rather than replacing
+/// each other's.
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 fn hook(info: &panic::PanicHookInfo<'_>) {
@@ -192,12 +184,10 @@ fn message_of(payload: &dyn Any) -> Cow<'_, str> {
     }
 }
 
-/// Run every `phase` of a scenario, catching each one's panic, and report them
-/// together.
+/// Run every `phase` of a scenario, catching each one's panic, and report them together.
 ///
-/// The panic hook names the case a panic came from — including one printed
-/// from a thread the case spawned and joined — and is put back before the
-/// calling test reports.
+/// The panic hook names the case a panic came from — including one printed from a thread the case
+/// spawned and joined — and is put back before the calling test reports.
 pub fn run(phases: Vec<Phase<'_>>) -> Report {
     if RUNNING.fetch_add(1, Ordering::SeqCst) == 0 {
         let previous = panic::take_hook();

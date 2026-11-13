@@ -15,8 +15,6 @@ use tilo_doc::model::{DocMut, DocRef, Region, materialize_region};
 use tilo_doc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use tilo_doc::snapshot::BlockView;
 
-/// The relationship ids qdoc's own header/footer are referenced under; the parts they point at
-/// are named per export (see `section::plan`).
 pub(super) const HEADER_REL_ID: &str = "rIdQdocHdr";
 pub(super) const FOOTER_REL_ID: &str = "rIdQdocFtr";
 
@@ -41,7 +39,6 @@ pub(super) fn resolve_default_parts(
     (resolve(hdr_rid), resolve(ftr_rid))
 }
 
-/// The header/footer references of one `w:sectPr`: the `default` one and the first one.
 #[derive(Default)]
 struct SectionRefs {
     default: Option<String>,
@@ -63,7 +60,6 @@ impl SectionRefs {
     }
 }
 
-/// The default (or first) header/footer relationship ids of the last `w:sectPr` that has any.
 fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>) {
     let Ok(s) = std::str::from_utf8(document_xml) else {
         return (None, None);
@@ -106,7 +102,6 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
     (found_hdr, found_ftr)
 }
 
-/// `(Id, Target)` pairs from a `word/_rels/document.xml.rels`.
 fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
     let Ok(s) = std::str::from_utf8(rels_xml) else {
         return Vec::new();
@@ -129,7 +124,6 @@ fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
     out
 }
 
-/// A rels `Target` (relative to `word/`) → package part name; absolute targets are de-slashed.
 pub(super) fn normalize_target(target: &str) -> String {
     let t = target.trim_start_matches('/');
     if t.starts_with("word/") {
@@ -143,8 +137,6 @@ fn attr_r_id(e: &quick_xml::events::BytesStart) -> Option<String> {
     attr_val(e, b"r:id")
 }
 
-/// Splice the page-number placeholder char at `cur`'s current position and record its start
-/// for the deferred field-mark pass.
 fn splice_page_placeholder(
     region: Region,
     doc: &mut DocMut,
@@ -175,7 +167,6 @@ fn emit_page_field(
     }
 }
 
-/// Open a fresh `paragraph` block in `region` and make it current.
 fn open_region_block(
     region: Region,
     doc: &mut DocMut,
@@ -189,7 +180,6 @@ fn open_region_block(
     *cur_len = 0;
 }
 
-/// Splice a single char (`w:tab`/`w:br`/`w:cr`) at `cur`'s current position, if any.
 fn splice_one_char(
     region: Region,
     doc: &mut DocMut,
@@ -209,17 +199,12 @@ fn splice_one_char(
 /// result runs.
 #[derive(Default)]
 struct ComplexField {
-    /// The instruction collected so far is PAGE.
     pending: bool,
-    /// Between fldChar begin/separate and end.
     in_progress: bool,
-    /// Skip the field's result-run text.
     skip_text: bool,
 }
 
 impl ComplexField {
-    /// Advance for one `w:fldChar` element; `true` when a PAGE field's placeholder should be
-    /// spliced now.
     fn advance(&mut self, e: &quick_xml::events::BytesStart) -> bool {
         match attr_val(e, b"w:fldCharType").as_deref() {
             Some("begin") => {
@@ -272,12 +257,10 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let mut in_t = false;
     let mut in_instr = false; // inside a complex-field <w:instrText>
     let mut field = ComplexField::default();
-    // Depth inside a non-self-closing `w:fldSimple`; its cached result-run text is skipped.
     let mut fldsimple_depth = 0usize;
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
     while let Ok(ev) = reader.read_event() {
-        // Some writers spell an empty `w:fldChar` as a start/end pair.
         if let Event::Start(e) | Event::Empty(e) = &ev
             && e.name().as_ref() == b"w:fldChar"
         {
@@ -358,7 +341,6 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     }
 }
 
-/// Whether a field instruction string is a PAGE field (`" PAGE "`, `"PAGE \* …"`).
 fn is_page_instr(instr: &str) -> bool {
     instr
         .split_whitespace()
@@ -366,7 +348,6 @@ fn is_page_instr(instr: &str) -> bool {
         .is_some_and(|w| w.eq_ignore_ascii_case("PAGE"))
 }
 
-/// Whether character `i` of `b` is a page-number field placeholder.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
         m.name == MARK_FIELD
@@ -376,14 +357,11 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     })
 }
 
-/// Render a region block as `<w:p>`, emitting a `w:fldSimple w:instr=" PAGE "` for a
-/// page-number field.
 fn render_block(b: &BlockView) -> String {
     let chars: Vec<char> = b.text.chars().collect();
     side_part::render_paragraph(b, |i| {
         (chars.get(i) == Some(&FIELD_PLACEHOLDER)).then(|| {
             if page_number_field_at(b, i) {
-                // Self-closing so import sees no cached result-run text (recomputed by the renderer).
                 r#"<w:fldSimple w:instr=" PAGE "/>"#
             } else {
                 ""
@@ -392,7 +370,6 @@ fn render_block(b: &BlockView) -> String {
     })
 }
 
-/// The full header/footer part bytes for a region's blocks, or `None` when empty.
 fn region_part_xml(blocks: &[BlockView], root: &str) -> Option<Vec<u8>> {
     if blocks.is_empty() {
         return None;
@@ -408,13 +385,11 @@ fn region_part_xml(blocks: &[BlockView], root: &str) -> Option<Vec<u8>> {
     Some(xml.into_bytes())
 }
 
-/// The exported header/footer parts, plus whether each exists. Empty regions are omitted.
 pub(super) struct ExportedParts {
     pub header: Option<Vec<u8>>,
     pub footer: Option<Vec<u8>>,
 }
 
-/// qdoc's header/footer parts, less the regions whose original part is kept (`keep`).
 pub(super) fn export_parts(doc: &DocRef, keep: KeptRegions) -> ExportedParts {
     let part = |region: Region, kept: bool, tag: &str| {
         if kept {
@@ -428,7 +403,6 @@ pub(super) fn export_parts(doc: &DocRef, keep: KeptRegions) -> ExportedParts {
     }
 }
 
-/// Which of the imported default header/footer parts are written back as they are.
 #[derive(Clone, Copy, Default)]
 pub(super) struct KeptRegions {
     pub header: bool,

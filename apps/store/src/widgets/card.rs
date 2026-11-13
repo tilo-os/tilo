@@ -15,7 +15,9 @@
 //! the catalogue offers for the app. Everything is stock `ui::widget`
 //! composition, so the theme owns every colour, radius and size.
 
+use crate::resource::CATALOG;
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::tilo_actions::ActionBinding;
 use ui::widget::{Avatar, AvatarSize, Button, Column, Container, ControlSize, Row, Text, Widget};
 
@@ -37,15 +39,11 @@ pub struct CardAction<'a> {
     pub in_progress: bool,
 }
 
-/// What pressing the card does: open the app's details. `key` names the card
-/// for keyboard traversal and tests.
 pub struct CardDetails<'a> {
     pub key: &'a str,
     pub binding: Option<ActionBinding<()>>,
 }
 
-/// The app's icon: its published artwork while it loads or when it is
-/// missing, the toolkit's generated tile.
 pub fn app_icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarSize) -> Avatar {
     let avatar = Avatar::person(&item.name, &item.id).neutral().size(size);
     match (images, item.icon_url.as_deref()) {
@@ -54,7 +52,6 @@ pub fn app_icon(item: &StoreItem, images: Option<&ui::ImageStore>, size: AvatarS
     }
 }
 
-/// Build a single card widget.
 pub fn store_card(
     item: &StoreItem,
     primary: CardAction<'_>,
@@ -135,24 +132,33 @@ pub fn store_card(
 /// developer when no build of it fits this system.
 pub fn provenance(item: &StoreItem) -> String {
     if let Some(bot) = &item.bot {
-        return format!("{}, version {}", ui::i18n!("store-bot-label"), bot.version);
+        return format!("{}, version {}", CATALOG.t("store-bot-label"), bot.version);
     }
     let kind = match &item.source {
-        StoreSource::Tilo { .. } => "Tilo app",
-        StoreSource::Flathub => "Flatpak app",
+        StoreSource::Tilo { .. } => CATALOG.t("store-app-tilo"),
+        StoreSource::Flathub => CATALOG.t("store-app-flatpak"),
         StoreSource::FlatpakRemote { title, .. } => {
             return match item.latest_version() {
-                "" => format!("Flatpak app from {title}"),
-                version => format!("Flatpak app from {title}, version {version}"),
+                "" => CATALOG.t_args(
+                    "store-app-flatpak-from",
+                    &[("source", ArgValue::Text(title.clone()))],
+                ),
+                version => CATALOG.t_args(
+                    "store-app-flatpak-from-version",
+                    &[
+                        ("source", ArgValue::Text(title.clone())),
+                        ("version", ArgValue::Text(version.to_owned())),
+                    ],
+                ),
             };
         }
     };
     if item.awaiting_developer {
-        return ui::i18n!("store-waiting-for-developer");
+        return CATALOG.t("store-waiting-for-developer");
     }
     let version = visible_version(item);
     if version.is_empty() {
-        kind.to_string()
+        kind
     } else {
         format!("{kind}, version {version}")
     }
@@ -172,8 +178,6 @@ pub fn visible_version(item: &StoreItem) -> &str {
     version
 }
 
-/// Turn registry category identifiers into human-facing labels without
-/// changing the stable value used by filtering and search.
 pub fn category_label(value: &str) -> String {
     match value {
         "AudioVideo" => "Audio & video".into(),

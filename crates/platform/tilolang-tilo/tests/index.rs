@@ -2,17 +2,21 @@
 //! what deriving it from the record anew holds, whatever replicas wrote and in which order; an
 //! index stamped with older heads catches up; a corrupt one is built anew and never read.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
+use tilo_actions::{ActionContext, ActionInvoker};
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_runtime::Principal;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
+use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 use tilolang_tilo::host::{Host, Opening};
+use tilolang_tilo::index::{Contents, Index, Opened};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
@@ -20,6 +24,11 @@ use crate::fixtures::{APP as APP_COUNTER, COUNTER, Replica, TODO, field_id, type
 
 const APP: &str = "so.tilo.todo";
 const KIND: &str = "tl.so.tilo.todo.TodoList";
+
+/// What the list's item says, and the chunk above the record it starts: the record's own run is
+/// full, so the item of [`run_chunk`] goes there.
+const ITEM: &str = "in a run";
+const FIRST_ABOVE: ChunkNo = 1;
 
 /// A small deterministic generator: the same sequence every run.
 struct Rng(u64);
@@ -200,6 +209,41 @@ fn kept(replica: &Replica) -> tilolang_tilo::index::Contents {
     replica.host.store().index_contents(APP).unwrap()
 }
 
+/// The rows two indexes hold differently, as `which key => value`: what a person reads when
+/// the index one replica keeps is not what deriving its record anew holds.
+fn differing(kept: &Contents, anew: &Contents) -> Vec<String> {
+    fn rows<K: std::fmt::Debug + Ord, V: std::fmt::Debug>(
+        held: &BTreeMap<K, V>,
+    ) -> BTreeSet<String> {
+        held.iter()
+            .map(|(key, value)| format!("{key:?} => {value:?}"))
+            .collect()
+    }
+    let mut out = Vec::new();
+    let parts = [
+        ("docs", rows(&kept.docs), rows(&anew.docs)),
+        ("fields", rows(&kept.fields), rows(&anew.fields)),
+        ("lists", rows(&kept.lists), rows(&anew.lists)),
+        ("counts", rows(&kept.counts), rows(&anew.counts)),
+        ("newest", rows(&kept.newest), rows(&anew.newest)),
+    ];
+    for (name, held, fresh) in parts {
+        for row in held.difference(&fresh) {
+            out.push(format!("{name} kept: {row}"));
+        }
+        for row in fresh.difference(&held) {
+            out.push(format!("{name} anew: {row}"));
+        }
+    }
+    out
+}
+
+/// The index `replica` keeps holds what deriving its record anew holds, as `what` names them.
+fn assert_same(replica: &Replica, lock: &str, what: &str) {
+    let (held, fresh) = (kept(replica), anew(replica, lock));
+    assert!(held == fresh, "{what}: {:#?}", differing(&held, &fresh));
+}
+
 /// Ada's workspace with a list, and the package's ids lock.
 fn workspace() -> (Replica, String, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
@@ -210,14 +254,14 @@ fn workspace() -> (Replica, String, String) {
 }
 
 /// What a person sees of the list: the rows of its `items`, and the items the record holds.
-fn listed(replica: &Replica, root: &str) -> Vec<String> {
-    let meta = &replica.host.packages()[0].meta;
+fn listed(host: &Host, root: &str) -> Vec<String> {
+    let meta = &host.packages()[0].meta;
     let list = ResourceRef::root(root, type_id(meta, "TodoList"));
     let spec = tilolang_runtime::store::FieldSpec {
         id: field_id(meta, "TodoList", "items"),
         kind: tilolang_runtime::meta::FieldKind::Collection,
     };
-    tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+    tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
         .unwrap()
         .ids()
 }
@@ -265,7 +309,11 @@ fn an_item_each_replica_added_before_they_met_is_the_lists_on_both() {
             1,
             "{name}: one map of items"
         );
-        assert_eq!(listed(replica, &root), items(replica, &root), "{name}");
+        assert_eq!(
+            listed(&replica.host, &root),
+            items(replica, &root),
+            "{name}"
+        );
         assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
     }
 }
@@ -305,7 +353,7 @@ fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
                 "{write_by}: {name} reads both maps' items"
             );
             assert_eq!(
-                listed(replica, &root),
+                listed(&replica.host, &root),
                 items(replica, &root),
                 "{write_by}: {name}: the rows are the items"
             );
@@ -333,7 +381,7 @@ fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
                 "{write_by}: {name}: every item is the list's"
             );
             assert_eq!(
-                listed(replica, &root),
+                listed(&replica.host, &root),
                 items(replica, &root),
                 "{write_by}: {name}"
             );
@@ -363,22 +411,236 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
                 ada.sync_with(&mut grace);
             }
             if step % 10 == 9 {
-                assert_eq!(
-                    kept(&ada),
-                    anew(&ada, &lock),
-                    "ada, seed {seed} step {step}"
-                );
-                assert_eq!(
-                    kept(&grace),
-                    anew(&grace, &lock),
-                    "grace, seed {seed} step {step}"
-                );
+                assert_same(&ada, &lock, &format!("ada, seed {seed} step {step}"));
+                assert_same(&grace, &lock, &format!("grace, seed {seed} step {step}"));
             }
         }
         ada.sync_with(&mut grace);
         assert_eq!(kept(&ada), kept(&grace), "seed {seed}: the replicas agree");
-        assert_eq!(kept(&ada), anew(&ada, &lock), "seed {seed}");
+        assert_same(&ada, &lock, &format!("seed {seed}"));
     }
+}
+
+/// Remove the item `id` of the list `root` from its items, as the list's Delete does.
+#[cfg(feature = "record")]
+fn remove(replica: &mut Replica, root: &str, id: &str) {
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: KIND.to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Place {
+            id: root.to_owned(),
+            item: id.to_owned(),
+            at: tilolang_runtime::place::Placement::Removed.encode(),
+            nested: Vec::new(),
+            ty: String::new(),
+            holders: vec![root.to_owned()],
+        }],
+    });
+}
+
+/// Put the item `id` back into the items of the list `root`, at the order key `key`.
+#[cfg(feature = "record")]
+fn place_back(replica: &mut Replica, root: &str, id: &str, key: &str) {
+    let meta = replica.host.packages()[0].meta.clone();
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: KIND.to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Place {
+            id: root.to_owned(),
+            item: id.to_owned(),
+            at: tilolang_runtime::place::Placement::At {
+                place: tilolang_runtime::place::Place {
+                    parent: None,
+                    field: field_id(&meta, "TodoList", "items"),
+                    key: key.to_owned(),
+                },
+                was: None,
+            }
+            .encode(),
+            nested: Vec::new(),
+            ty: String::new(),
+            holders: vec![root.to_owned()],
+        }],
+    });
+}
+
+/// The person of `replica` takes their last step back, or makes it again, as their window's
+/// Undo and Redo do.
+#[cfg(feature = "record")]
+fn step(replica: &mut Replica, again: bool) {
+    use collaboration::history_source::verbs::HistoryEdit;
+    replica.history(&if again {
+        HistoryEdit::Redo { steps: None }
+    } else {
+        HistoryEdit::Undo {
+            steps: None,
+            run: None,
+            by: None,
+            to: None,
+            step: None,
+        }
+    });
+}
+
+/// An item added, one removed, the removal undone and made again, one put back where it left
+/// from, and a peer's change meanwhile: the index kept change by change holds what deriving the
+/// record anew holds after every one of them, on both replicas.
+#[cfg(feature = "record")]
+#[test]
+fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds_through_undos() {
+    for seed in [7_u64, 1234, 98_765, 654_321] {
+        let mut rng = Rng(seed);
+        let (mut ada, root, lock) = workspace();
+        let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+        // Every item the list ever held. The ones it does not hold now are the ones to put back.
+        let mut known: Vec<String> = Vec::new();
+        // The steps ada made, and the ones of those her undos took back: a redo brings back an
+        // undo only while no newer step of hers follows it.
+        let (mut made, mut undone) = (0usize, 0usize);
+        let opening = plan(&ada, "add", json!({ "text": "first" }), &root);
+        ada.apply(&opening);
+        for step_no in 0..20 {
+            let held = items(&ada, &root);
+            for id in &held {
+                if !known.contains(id) {
+                    known.push(id.clone());
+                }
+            }
+            // The items the record holds out of the list: ones removed, never ones whose making
+            // a step took back, which the record has no map of.
+            let gone: Vec<&String> = known
+                .iter()
+                .filter(|id| !held.contains(id) && ada.host.store().record(id).is_ok())
+                .collect();
+            let mut undoable = false;
+            match rng.below(6) {
+                0 | 1 => {
+                    let action = plan(
+                        &ada,
+                        "add",
+                        json!({ "text": format!("task {step_no}") }),
+                        &root,
+                    );
+                    ada.apply(&action);
+                    undoable = true;
+                }
+                2 => {
+                    if let Some(id) = held.get(rng.below(held.len())) {
+                        remove(&mut ada, &root, id);
+                        undoable = true;
+                    }
+                }
+                3 => {
+                    if undone < made {
+                        step(&mut ada, false);
+                        undone = undone.saturating_add(1);
+                    }
+                }
+                4 => {
+                    if undone > 0 {
+                        step(&mut ada, true);
+                        undone = undone.saturating_sub(1);
+                    }
+                }
+                _ => {
+                    if let Some(id) = gone.get(rng.below(gone.len())) {
+                        let id = (*id).clone();
+                        place_back(&mut ada, &root, &id, &format!("{step_no:010}"));
+                        undoable = true;
+                    }
+                }
+            }
+            if undoable {
+                made = made.saturating_sub(undone).saturating_add(1);
+                undone = 0;
+            }
+            // The peer edits the list meanwhile, and now and then they meet.
+            if rng.below(3) == 0 {
+                let action = plan(
+                    &grace,
+                    "add",
+                    json!({ "text": format!("grace {step_no}") }),
+                    &root,
+                );
+                grace.apply(&action);
+            }
+            if rng.below(2) == 0 {
+                ada.sync_with(&mut grace);
+            }
+            assert_same(&ada, &lock, &format!("ada, seed {seed} step {step_no}"));
+            assert_same(&grace, &lock, &format!("grace, seed {seed} step {step_no}"));
+        }
+        ada.sync_with(&mut grace);
+        assert_eq!(kept(&ada), kept(&grace), "seed {seed}: the replicas agree");
+    }
+}
+
+/// Undoing a removal puts the item back into the index change by change, and making the
+/// removal again (a redo) takes it out again, its row of what left kept: the index is built
+/// anew neither way, and it holds what deriving the record anew holds.
+#[cfg(feature = "record")]
+#[test]
+fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
+    let (mut ada, root, lock) = workspace();
+    let mut ids = Vec::new();
+    for step_no in 0..3 {
+        let action = plan(
+            &ada,
+            "add",
+            json!({ "text": format!("task {step_no}") }),
+            &root,
+        );
+        ada.apply(&action);
+        ids = items(&ada, &root);
+    }
+    let second = ids.get(1).cloned().expect("a second item");
+    remove(&mut ada, &root, &second);
+    assert_eq!(items(&ada, &root).len(), 2, "the removal takes it out");
+
+    let before = ada.host.store().stats();
+    step(&mut ada, false);
+    let after = ada.host.store().stats();
+    assert_eq!(
+        items(&ada, &root).len(),
+        3,
+        "the undo puts the item back into the record"
+    );
+    assert_eq!(after.builds, before.builds, "the index is not built anew");
+    assert_eq!(
+        after.incremental_syncs,
+        before.incremental_syncs + 1,
+        "the index takes the undo in"
+    );
+    assert_eq!(
+        listed(&ada.host, &root),
+        items(&ada, &root),
+        "the rows are the items"
+    );
+    assert_same(&ada, &lock, "after the undo");
+
+    step(&mut ada, true);
+    assert_eq!(
+        items(&ada, &root).len(),
+        2,
+        "the redo takes the item out again"
+    );
+    assert_eq!(
+        ada.host.store().stats().builds,
+        before.builds,
+        "the redo builds no index anew"
+    );
+    assert_eq!(
+        listed(&ada.host, &root),
+        items(&ada, &root),
+        "the rows are the items again"
+    );
+    assert_same(&ada, &lock, "after the redo");
 }
 
 #[test]
@@ -444,6 +706,45 @@ fn what_the_store_writes_reads_back_before_the_record_holds_it() {
     assert_eq!(listed(&ada).first(), Some(&moved));
     assert_eq!(listed(&ada), items(&ada, &root));
     assert_eq!(kept(&ada), anew(&ada, &lock));
+}
+
+/// An index file is open once in a process (redb holds it): a second store opening it shares the
+/// one open and reads what it reflects (nothing yet, while the first builds it) rather than
+/// emptying it, and an index of another schema does not empty it either. Closed by every store,
+/// the file opens again as it was kept.
+#[test]
+fn an_index_file_is_shared_by_the_stores_that_open_it() {
+    let dir = TempDir::new("shared");
+    let path = tilolang_tilo::index::file_of(dir.path(), APP);
+    let Opened::Empty(first) = Index::open(&path, APP, "schema").unwrap() else {
+        panic!("a file made anew is empty");
+    };
+    let heads: tilolang_tilo::chunk::Stamps = std::iter::once((0, Vec::new())).collect();
+    first.write(|writer| writer.set_heads(&heads)).unwrap();
+    let Opened::Ready(second, reflected) = Index::open(&path, APP, "schema").unwrap() else {
+        panic!("a second store does not read what the first built");
+    };
+    assert_eq!(
+        reflected, heads,
+        "the second store reads what the first committed"
+    );
+    assert!(first.shared() && second.shared(), "both hold the one index");
+    assert!(
+        Arc::ptr_eq(&*first, &*second),
+        "the second store opened the file again"
+    );
+    assert!(
+        Index::open(&path, APP, "another schema").is_err(),
+        "an index of another schema emptied the one stores read"
+    );
+    drop((first, second));
+    assert!(
+        matches!(
+            Index::open(&path, APP, "schema").unwrap(),
+            Opened::Ready(..)
+        ),
+        "closed, the file opens as it was kept"
+    );
 }
 
 /// A directory of the test's own, removed when dropped.
@@ -528,6 +829,183 @@ fn an_index_stamped_with_older_heads_catches_up_with_the_record() {
     let stats = third.store().stats();
     assert_eq!((stats.builds, stats.catch_ups), (0, 0));
     assert_eq!(third.store().read_stats().doc.entries, 0);
+}
+
+/// A write made while the index catches up off the frame reads back at once: the window reads
+/// the rows the index held while the rest is derived, and the store's own writes over them, so a
+/// record just made is never missing from what the window reads.
+#[test]
+fn what_the_store_writes_while_its_index_catches_up_reads_back_at_once() {
+    let (mut ada, root, lock) = workspace();
+    let dir = TempDir::new("catching-up");
+    drop(kept_in(dir.path(), &ada.doc, &lock));
+    // The workspace moves on while no window keeps the index.
+    for step in 0..3 {
+        let action = plan(
+            &ada,
+            "add",
+            json!({ "text": format!("task {step}") }),
+            &root,
+        );
+        ada.apply(&action);
+    }
+    let host = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            chunks: None,
+            index_dir: Some(dir.path().to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    // A window with frames: what the record gained is derived off the frame.
+    host.set_index_waker(Arc::new(|| {}));
+    host.load_builtin(TODO, &lock).unwrap();
+    assert!(!host.index_ready(), "the index catches up off the frame");
+    let meta = host.packages()[0].meta.clone();
+    let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
+    let spec = tilolang_runtime::store::FieldSpec {
+        id: field_id(&meta, "TodoList", "items"),
+        kind: tilolang_runtime::meta::FieldKind::Collection,
+    };
+    let listed = || {
+        tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+            .unwrap()
+            .ids()
+    };
+    let before = listed();
+    let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    host.runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (
+                add.id.as_str(),
+                vec![Value::resource(&list), Value::text("written meanwhile")],
+            ),
+        )
+        .unwrap();
+    let written: Vec<String> = listed()
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(
+        written.len(),
+        1,
+        "the item just written is listed while the index catches up"
+    );
+    host.wait_index();
+    assert!(host.index_ready());
+    let after = listed();
+    assert!(after.contains(&written[0]), "and once the index caught up");
+    assert_eq!(after.len(), 4, "beside the three the record gained");
+}
+
+/// A write the record takes while the index still catches up off the frame reads back all along:
+/// the index does not hold it until its next step is taken in, and the overlay keeps it until
+/// then — once, never beside the row the index brings, and never after.
+#[test]
+fn a_write_the_record_takes_while_its_index_catches_up_never_goes_missing() {
+    const WRITES: usize = 40;
+    let (mut ada, root, lock) = workspace();
+    let dir = TempDir::new("accepted-catching-up");
+    drop(kept_in(dir.path(), &ada.doc, &lock));
+    for step in 0..3 {
+        let action = plan(
+            &ada,
+            "add",
+            json!({ "text": format!("task {step}") }),
+            &root,
+        );
+        ada.apply(&action);
+    }
+    let host = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            chunks: None,
+            index_dir: Some(dir.path().to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.set_index_waker(Arc::new(|| {}));
+    host.load_builtin(TODO, &lock).unwrap();
+    assert!(!host.index_ready(), "the index catches up off the frame");
+    let meta = host.packages()[0].meta.clone();
+    let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
+    let spec = tilolang_runtime::store::FieldSpec {
+        id: field_id(&meta, "TodoList", "items"),
+        kind: tilolang_runtime::meta::FieldKind::Collection,
+    };
+    let listed = || {
+        tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+            .unwrap()
+            .ids()
+    };
+    let before = listed();
+    let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    // Write after write, each taken by the record while the index's step is still being
+    // derived: no frame has taken that step in, so the index holds none of them.
+    let mut written: Vec<String> = Vec::new();
+    for step in 0..WRITES {
+        host.runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    add.id.as_str(),
+                    vec![
+                        Value::resource(&list),
+                        Value::text(format!("accepted meanwhile {step}")),
+                    ],
+                ),
+            )
+            .unwrap();
+        let new: Vec<String> = listed()
+            .into_iter()
+            .filter(|id| !before.contains(id) && !written.contains(id))
+            .collect();
+        assert_eq!(new.len(), 1, "the item just written is listed");
+        written.extend(new);
+        for committed in host.take_committed() {
+            ada.apply(&committed.action);
+        }
+        assert!(host.sync_from(&ada.doc));
+        assert!(!host.index_ready(), "the index still catches up");
+        let now = listed();
+        for id in &written {
+            assert_eq!(
+                now.iter().filter(|listed| *listed == id).count(),
+                1,
+                "each write the record took is listed once while the index catches up"
+            );
+        }
+    }
+    assert!(
+        !host.store().overlay_empty(),
+        "the overlay keeps them meanwhile"
+    );
+    host.wait_index();
+    assert!(host.index_ready());
+    let after = listed();
+    for id in &written {
+        assert_eq!(
+            after.iter().filter(|listed| *listed == id).count(),
+            1,
+            "and once the index caught up"
+        );
+    }
+    assert_eq!(
+        after.len(),
+        3 + WRITES,
+        "beside the three the record gained"
+    );
+    assert!(
+        host.store().overlay_empty(),
+        "the index holds them, and the overlay no more"
+    );
 }
 
 /// Every text `node` and the nodes inside it show.
@@ -628,6 +1106,187 @@ fn a_window_opens_over_the_index_an_earlier_window_kept() {
         anew(&ada, &lock)
     );
     let _ = root;
+}
+
+/// Apply `action` to `doc` as the workspace commits one: the change names the action it
+/// recorded, so a replica that receives it reads which action it was.
+fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
+    let encoded = action.encode().expect("the action encodes");
+    let context = ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("workspace"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_app(&action.app, "tilolang")
+    .with_invoker(ActionInvoker::actor("ada"));
+    // The document's own actor writes it: a fork of it is a replica of its own, and two
+    // replicas' changes never share a sequence number.
+    tilo_actions::apply_local_with_context(doc, action, encoded, None, context)
+        .expect("the action applies");
+}
+
+/// What a replica that was sent the record alone has of Ada's workspace: the record, and the run
+/// chunk the record's manifest names as a document of its own. The record's own run is full, so
+/// the list's item starts the chunk above it, as the items of a long list do. Its list, the item
+/// the chunk holds, and the lock the package's ids are read with.
+fn run_chunk() -> (Chunks, String, String, String) {
+    let (mut ada, root, lock) = workspace();
+    let meta = ada.host.packages()[0].meta.clone();
+    let items = field_id(&meta, "TodoList", "items");
+    chunk::run(
+        &mut ada.doc,
+        &root,
+        &items,
+        chunk::FIRST,
+        "a0",
+        chunk::ITEMS,
+    )
+    .unwrap();
+    ada.doc.commit();
+    ada.host.sync_from(&ada.doc);
+    let action = plan(&ada, "add", json!({ "text": ITEM }), &root);
+    let item = action
+        .edits
+        .iter()
+        .find_map(|edit| match edit.bare() {
+            DynEdit::Insert { item, .. } => Some(item.clone()),
+            _ => None,
+        })
+        .expect("the action inserts the item");
+    // The manifest the action writes is the record's, and the item is the chunk's: each change
+    // is written where the action addressed it.
+    let mut record = ada.doc.clone();
+    let mut run = AutoCommit::new();
+    for edit in &action.edits {
+        let one = DynAction {
+            edits: vec![edit.clone()],
+            ..action.clone()
+        };
+        match edit.chunk() {
+            // The run's manifest is the record's, wherever the action addressed it.
+            Some(chunk::FIRST) | None => apply_recorded(&mut record, &one),
+            Some(number) => {
+                assert_eq!(
+                    number, FIRST_ABOVE,
+                    "the item starts the chunk above the record"
+                );
+                apply_recorded(&mut run, &one);
+            }
+        }
+    }
+    record.commit();
+    run.commit();
+    let mut chunks = Chunks::of(record);
+    chunks.insert(FIRST_ABOVE, run);
+    (chunks, root, item, lock)
+}
+
+#[test]
+fn a_window_over_the_record_alone_is_whole_when_the_run_chunk_holds_no_rows_it_reads() {
+    // A window of another app in the workspace: the run chunk above the record holds the list's
+    // items, and nothing of what this window reads. Its index holds every row of its own, so it
+    // counts them whole rather than waiting for a chunk it never needs.
+    let (chunks, _root, _item, _lock) = run_chunk();
+    let counter = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]).1[0]
+        .ids
+        .clone();
+    let dir = TempDir::new("other-apps-run");
+    let open = || {
+        Host::open(
+            Opening {
+                record: chunks.first(),
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap()
+    };
+    let host = open();
+    host.load_builtin(COUNTER, &counter).unwrap();
+    host.wait_index();
+    assert!(host.index_ready(), "the counter's index is built");
+    assert_eq!(
+        host.store()
+            .held_chunks()
+            .into_iter()
+            .map(|(number, _, _)| number)
+            .collect::<Vec<ChunkNo>>(),
+        [chunk::FIRST],
+        "the window reads the record's own chunk"
+    );
+    assert!(
+        host.store().index_whole(),
+        "no app the window reads has a row in the run chunk: every count it answers is whole"
+    );
+    host.persist_index();
+    drop(host);
+
+    // Opened again over the record and the index it kept: the index is read, and covers what its
+    // window reads without a stamp of another app's chunk.
+    let again = open();
+    again.load_builtin(COUNTER, &counter).unwrap();
+    assert!(
+        again.index_ready(),
+        "the second window reads the kept index"
+    );
+    assert_eq!(again.store().stats().builds, 0, "nothing is built anew");
+    assert!(
+        again.store().index_whole(),
+        "the kept index covers every row the window reads"
+    );
+}
+
+#[test]
+fn a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows() {
+    // The same record, the app whose rows the run chunk holds: the index does not cover it until
+    // the chunk is read, and says so. A store that can read the chunk reads it, and the item it
+    // holds is in the list.
+    let (chunks, root, item, lock) = run_chunk();
+    let behind = Host::open(
+        Opening {
+            record: chunks.first(),
+            chunks: None,
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    behind.load_builtin(TODO, &lock).unwrap();
+    behind.wait_index();
+    assert!(behind.index_ready(), "the index is built");
+    assert!(
+        !behind.store().index_whole(),
+        "the run chunk holds a row of the list, and the window has not read it"
+    );
+    drop(behind);
+
+    let host = Host::open(
+        Opening {
+            record: chunks.first(),
+            chunks: Some(&chunks),
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.load_builtin(TODO, &lock).unwrap();
+    host.wait_index();
+    assert!(
+        host.store().index_whole(),
+        "the chunk the run names is read: every row of the list is the index's"
+    );
+    assert_eq!(
+        listed(&host, &root),
+        [item],
+        "the item the run chunk holds is in the list"
+    );
 }
 
 #[test]

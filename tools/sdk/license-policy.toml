@@ -1,8 +1,11 @@
-# Approved dependency expressions for app distributions, not the OS/host graph.
-# Preserve each dependency's notices and obligations; this is not relicensing.
-# Exact expressions avoid treating an arbitrary substring as a license grant.
+# Approved dependency expressions for what people build on: an app distribution,
+# and the client side that reaches a workspace from outside Tilo (LICENSING.md).
+# Not the OS/host graph. Preserve each dependency's notices and obligations;
+# this is not relicensing. Exact expressions avoid treating an arbitrary
+# substring as a license grant.
 allowed_expressions = [
     "(Apache-2.0 OR MIT) AND BSD-3-Clause",
+    "(MIT OR Apache-2.0) AND Apache-2.0",
     "(MIT OR Apache-2.0) AND ISC",
     "(MIT OR Apache-2.0) AND Unicode-3.0",
     "0BSD OR MIT OR Apache-2.0",
@@ -24,6 +27,7 @@ allowed_expressions = [
     "BSD-3-Clause",
     "BSD-3-Clause AND MIT",
     "BSD-3-Clause OR Apache-2.0",
+    "BSD-3-Clause OR MIT OR Apache-2.0",
     "BSD-3-Clause/MIT",
     "BSL-1.0",
     "CC0-1.0",
@@ -39,9 +43,67 @@ allowed_expressions = [
     "MIT/BSD-3-Clause",
     "MPL-2.0",
     "Unicode-3.0",
+    "Unlicense",
     "Unlicense OR MIT",
     "Unlicense/MIT",
     "Zlib",
     "Zlib OR Apache-2.0 OR MIT",
     "zlib-acknowledgement OR MIT",
+]
+
+# The entry points a program reaches a person's workspaces by: over iroh as one
+# of the person's devices, asking the workspace's host for its records and its
+# actions. The check measures the client graph from these.
+client_roots = [
+    "neighbour-wire",          # what peers say to each other: sync, actions, content
+    "tilo-actions",            # resources, the actions on them, the ActionHost vocabulary
+    "tilo-identity-client",    # the identity broker client: a device's keys
+    "tilo-relay-session",      # the authenticated session: co-edit, anti-entropy, join
+    "tilo-user-identity",      # who a device belongs to: certificates and revocations
+    "tilo-workspace-join",     # signed invitations and join proofs
+]
+
+# Every Tilo crate those entry points reach, as one list. The client side is MIT
+# end to end (LICENSING.md), so a crate joining this list is a licensing
+# decision, not a build fix: one only a desktop, a relay or a workspace's own
+# host needs (the desk, the live plane, the channels, the runtime that serves a
+# workspace) stays AGPL. The check fails when the graph reaches a crate that is
+# not here, and when one here is no longer reached.
+client_side = [
+    "collab-types",            # a document's signed envelopes, and resource paths
+    "neighbour-wire",
+    "runtime-portal",
+    "rustls-native-certs",     # the system trust store, forked under crates/system
+    "tilo-action-policy",      # the policy an answer to a message is held to
+    "tilo-actions",
+    "tilo-advisory-lock",
+    "tilo-automerge",          # the CRDT the workspace's documents are
+    "tilo-clock",
+    "tilo-content",
+    "tilo-content-types",
+    "tilo-delivery-protocol",  # where a workspace's host is reached
+    "tilo-face",
+    "tilo-files",
+    "tilo-formats",            # dates and clocks as the person set them
+    "tilo-identity-client",
+    "tilo-lock",
+    "tilo-net",
+    "tilo-paths",
+    "tilo-platform-caps",
+    "tilo-reference",          # the links an invitation is written as
+    "tilo-relay-client",       # device certification and the device-signer seam
+    "tilo-relay-protocol",     # the relay's handshake and wire messages
+    "tilo-relay-session",
+    "tilo-resource",           # a resource's fields, as an app publishes them
+    "tilo-resource-macros",
+    "tilo-rt",
+    "tilo-seal",
+    "tilo-secrets",            # where a device keeps its keys
+    "tilo-selector",
+    "tilo-sort",
+    "tilo-user-identity",
+    "tilo-wake",
+    "tilo-workspace-join",
+    "wire-frame",
+    "workspace-hack",
 ]

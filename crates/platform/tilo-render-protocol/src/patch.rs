@@ -47,12 +47,13 @@ pub mod validate;
 /// The version both ends name. A newer end must still read this one's messages.
 pub const VERSION: u16 = 1;
 
-/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList`, whose rows the
-/// app sends apart from the tree ([`ToUi::Rows`]) as the list shows them. A `list` in a view's
-/// content is drawn whole (a card's is its preview), so its rows travel in the tree.
+/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList` or a
+/// `ui.TreeView`, whose rows the app sends apart from the tree ([`ToUi::Rows`]) as the list
+/// shows them. A `list` in a view's content is drawn whole (a card's is its preview), so its
+/// rows travel in the tree.
 #[must_use]
 pub fn is_virtual_list(kind: &str) -> bool {
-    kind == "ui.VirtualList"
+    matches!(kind, "ui.VirtualList" | "ui.TreeView")
 }
 
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a
@@ -180,12 +181,27 @@ pub enum Value {
     Action(Offered),
     /// A picture: where its bytes are read from, and what it says to assistive technology.
     Picture(Picture),
+    /// A record a view names: what refers to it, and how it reads for the person now.
+    Link {
+        reference: String,
+        title: String,
+    },
 }
 
 /// An action a node offers ([`Value::Action`]), as the toolkit holds one.
 pub use tilo_ui_graph::component::Offered;
 /// A picture a node shows ([`Value::Picture`]): its address, and its accessible name.
 pub use tilo_ui_graph::component::Picture;
+
+/// The description of the component a node of `kind` is of (`ui.BlockEditor`): what its props
+/// are, which is the one list of them a host reads a node's values by.
+#[must_use]
+pub fn description(kind: &str) -> Option<&'static tilo_ui_graph::component::Description> {
+    tilo_ui_graph::component::catalogue().get(kind.strip_prefix("ui.")?)
+}
+
+/// The type a described component's prop takes, as the catalogue declares it.
+pub use tilo_ui_graph::component::Type as PropType;
 
 impl Value {
     #[must_use]
@@ -204,6 +220,11 @@ impl Value {
 pub struct Binding {
     /// The resource and field it edits; `None` for the view's own state.
     pub field: Option<(String, String)>,
+    /// The kind of record that field is of (`so.tilo.lang.notes.Note`), when it edits one: what
+    /// names the place a control edits however the window composes around it, where the record
+    /// it edits names one document. Every field is written, `None` included: the batch is postcard,
+    /// which cannot skip one.
+    pub kind: Option<String>,
     /// What it is called, for assistive technology.
     pub name: String,
 }
@@ -226,8 +247,23 @@ impl Binding {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     pub toggles: Option<(String, String)>,
-    /// The resource (by id) and the action the event runs, when it runs an action on one.
-    pub invokes: Option<(String, String)>,
+    /// What the event runs, when it runs an action on a resource.
+    pub invokes: Option<Invocation>,
+}
+
+/// An action one event runs: the resource, the action as the app publishes it there (what binds
+/// the control to it), and the id the app declares that action under. The id is what the control
+/// says it does: nothing the window composes around it, no rename of the declaration and no
+/// language changes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invocation {
+    /// The resource the action runs on, by the id the app publishes it under.
+    pub resource: String,
+    /// The action as the app publishes it there (`new_note`).
+    pub action: String,
+    /// The id the app declares that action under (`qymo5lg2`), where the app declares it: an
+    /// action the window runs itself has no declaration, and its published name is all of it.
+    pub declared: String,
 }
 
 /// One change of a lane's tree, against the tree the ones before it left. Paths are keys from
@@ -392,9 +428,10 @@ pub enum RowChange {
         from: u32,
         to: u32,
     },
-    /// A rendered row shows something else now.
+    /// A rendered row shows something else now: boxed, as one row is far larger than the index
+    /// changes beside it.
     Changed {
-        row: Node,
+        row: Box<Node>,
     },
     /// The list was replaced as a whole: its rows are read anew.
     Reset,
@@ -500,11 +537,35 @@ pub struct Form {
 /// carries, one array per message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ActionCatalogue {
-    /// Every action the app offers the window, in the order it offers them.
-    All(Vec<u8>),
-    /// The actions of the resources whose labels moved: they replace those resources' actions
-    /// in the window, at the cost of what changed rather than of the whole surface.
-    Relabeled(Vec<u8>),
+    /// Every action the app offers the window, in the order it offers them. Carried as bytes,
+    /// not a byte at a time: a catalogue is large, and goes out with every change of it.
+    All(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// The actions of the resources whose labels moved, from an app of an earlier build: they
+    /// replace those resources' actions in the window.
+    Relabeled(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// What changed of the catalogue, at the cost of what changed rather than of the whole
+    /// surface: every action of each resource that joined or changed (`actions`), which
+    /// replace what the window holds of those resources, and every resource the app offers
+    /// actions on, in the order it offers them (`resources`): the window drops the actions of
+    /// any other, and holds the rest in that order.
+    Changed {
+        #[serde(with = "serde_bytes")]
+        actions: Vec<u8>,
+        resources: Vec<String>,
+    },
+}
+
+impl ActionCatalogue {
+    /// The bytes it carries.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::All(actions) | Self::Relabeled(actions) => actions.len(),
+            Self::Changed { actions, resources } => resources
+                .iter()
+                .fold(actions.len(), |n, r| n.saturating_add(r.len())),
+        }
+    }
 }
 
 /// What an app sends its window.
@@ -523,8 +584,13 @@ pub enum ToUi {
     },
     /// The detail lane closed.
     Close,
-    /// The detail lane, already open, comes to the front.
-    Front(Front),
+    /// A lane's page comes to the front of a narrow window. When the window draws the item its
+    /// own view shows in place (a tree beside what it shows), `shows` is that item and the press
+    /// that showed it: what the person types after that press belongs to it.
+    Front {
+        front: Front,
+        shows: Option<(u64, ResourceRef)>,
+    },
     /// The runtime's patches to a lane's tree.
     Patch { lane: Lane, patches: Vec<Patch> },
     /// What the bound control `key` shows now. `acked` is the last of its splices the app took:
@@ -575,6 +641,9 @@ pub enum ToUi {
     /// The actions the app offers the person at this window, as their command palette lists
     /// them: the app's published actions, with the keys, icons and labels it gives them.
     Actions(ActionCatalogue),
+    /// The language the window reads in now (`de-DE`): the person chose another in Settings while
+    /// it is open. Its own chrome relabels in it, as the app's words the app sends do.
+    Speak(String),
 }
 
 /// What the person did, as the window tells its app.
@@ -643,12 +712,14 @@ pub enum ToApp {
     },
     /// Back from the detail lane.
     Back,
-    /// The virtual list `list` shows the rows `start..end` now.
+    /// The virtual list `list` shows the rows `start..end` now, and the row `open` — its key —
+    /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document).
     Rows {
         lane: Lane,
         list: String,
         start: u32,
         end: u32,
+        open: Option<String>,
     },
     Answer(Answer),
     /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what
@@ -758,6 +829,17 @@ mod tests {
         node
     }
 
+    /// A catalogue's bytes travel as a length and the bytes, as a list of bytes did: a window
+    /// and an app of different builds read each other's catalogues.
+    #[test]
+    fn a_catalogue_travels_as_its_length_and_bytes() {
+        let sent =
+            postcard::to_allocvec(&ActionCatalogue::Relabeled(vec![7, 8, 9])).expect("encodes");
+        assert_eq!(sent, [1, 3, 7, 8, 9]);
+        let read: ActionCatalogue = postcard::from_bytes(&sent).expect("decodes");
+        assert_eq!(read, ActionCatalogue::Relabeled(vec![7, 8, 9]));
+    }
+
     #[test]
     fn patches_apply_by_key_and_refuse_a_node_the_tree_lacks() {
         let mut root = Node::empty("stack", "s");
@@ -861,10 +943,12 @@ mod tests {
                             icon: None,
                             detail: None,
                         },
+                        preview: None,
                     },
                     rich::Embed {
                         reference: "u-ada".to_owned(),
                         view: rich::InlineView::Unreadable,
+                        preview: None,
                     },
                 ],
             ),

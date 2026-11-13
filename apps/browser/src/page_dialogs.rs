@@ -1,12 +1,10 @@
-//! A page's own questions: `alert`, `confirm`, `prompt`, and "leave this
-//! page?" from a `beforeunload` handler.
+//! A page's own questions: `alert`, `confirm`, `prompt`, and "leave this page?" from a
+//! `beforeunload` handler.
 //!
-//! The page waits on its question until it is answered. Each is the
-//! toolkit's shared dialog over the page's window, named by the site that
-//! asks, so a person can tell the page's words from the browser's; and the
-//! window's [`ROW`] offers the same answers, so a screen reader, a script
-//! and an agent answer the one question the page waits on the way a person
-//! does.
+//! The page waits on its question until it is answered. It is the toolkit's shared
+//! dialog, named by the site that asks, so a person can tell the page's words from the
+//! browser's, and the window's [`ROW`] offers the same answers to a screen reader, a
+//! script and an agent.
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
@@ -22,11 +20,9 @@ use ui::widget::{ModalDialog, PromptBody, Text, Widget};
 use crate::CATALOG;
 use crate::effects::BrowserEffect;
 
-/// The window's row for the question the page waits on, and the dialog's
-/// test id.
+/// The window's row for the question the page waits on, and the dialog's test id.
 pub const ROW: &str = "browser.page-dialog";
 
-/// What the person pressed in the dialog, not yet sent to the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pressed {
     Accept,
@@ -40,27 +36,23 @@ enum Sheet {
 
 struct Open {
     dialog: PageDialog,
-    /// Who asks, or what: the dialog's title.
     title: String,
-    /// The answers' names: accepting, and declining when it can be.
     accept: String,
     decline: Option<String>,
     sheet: Sheet,
     pressed: Rc<Cell<Option<Pressed>>>,
 }
 
-/// The question the page waits on, if any.
 #[derive(Default)]
 pub struct PageDialogs {
-    /// The page engine asked for its questions; another engine (a restarted
-    /// one) is asked again, and the question of the old one goes.
+    /// The page engine asked for its questions; another engine is asked again, and the old
+    /// one's question goes.
     asked: Option<Weak<dyn WebViewEngine>>,
     open: Option<Open>,
 }
 
 impl PageDialogs {
-    /// Ask `page` for its questions, once per engine. Returns whether what
-    /// is shown changed.
+    /// Ask `page` for its questions, once per engine. Whether what is shown changed.
     pub fn sync(&mut self, page: &SharedEngine) -> bool {
         let asked = self
             .asked
@@ -75,12 +67,11 @@ impl PageDialogs {
         self.open.take().is_some()
     }
 
-    /// Follow what the engine said of the page's questions. Returns whether
-    /// what is shown changed.
+    /// Follow what the engine said of the page's questions. Whether what is shown changed.
     pub fn apply(&mut self, event: &WebViewEvent) -> bool {
         match event {
-            // The engine asks one question of a page at a time: a new one
-            // means the last is no longer waited on.
+            // The engine asks one question of a page at a time: a new one means the last
+            // is no longer waited on.
             WebViewEvent::PageDialog(dialog) => {
                 self.open = Some(Open::new(dialog.clone()));
                 true
@@ -92,13 +83,12 @@ impl PageDialogs {
         }
     }
 
-    /// The question the page waits on.
     pub fn current(&self) -> Option<&PageDialog> {
         self.open.as_ref().map(|open| &open.dialog)
     }
 
-    /// Send the answer the person gave in the dialog, if they gave one.
-    /// Returns whether what is shown changed.
+    /// Send the answer the person gave in the dialog, if they gave one. Whether what is
+    /// shown changed.
     pub fn poll(&mut self, page: &SharedEngine) -> bool {
         let Some(open) = &self.open else {
             return false;
@@ -111,9 +101,8 @@ impl PageDialogs {
             .is_ok()
     }
 
-    /// Answer the question `id`: OK (or Leave, or Reload) when `accept`, else
-    /// Cancel. A prompt accepted without `text` answers what its field
-    /// holds.
+    /// Answer the question `id`: OK (Leave, Reload) when `accept`, else Cancel. A prompt
+    /// accepted without `text` answers what its field holds.
     pub fn answer(
         &mut self,
         page: &SharedEngine,
@@ -143,7 +132,6 @@ impl PageDialogs {
         Ok(())
     }
 
-    /// The dialog over the page while it asks.
     pub fn widget(&self) -> Option<&dyn Widget> {
         self.open.as_ref().map(|open| match &open.sheet {
             Sheet::Message(sheet) => &**sheet as &dyn Widget,
@@ -158,9 +146,8 @@ impl PageDialogs {
         })
     }
 
-    /// The question as the window's row: who asks, what (the page's own
-    /// words), and its answers, each bound to this question so an answer
-    /// meant for it never reaches the next.
+    /// The question as the window's row: who asks, the page's own words, and its answers,
+    /// each bound to this question so an answer meant for it never reaches the next.
     pub fn resource(&self) -> Option<ResourceSpec> {
         use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
@@ -173,8 +160,8 @@ impl PageDialogs {
             },
         );
         let prompt = dialog.kind == PageDialogKind::Prompt;
-        // A prompt's answer is asked; absent, it is what the field holds,
-        // which starts as the page's suggestion.
+        // A prompt's answer is asked; absent, it is what the field holds, which starts as
+        // the page's suggestion.
         let mut accept = BrowserEffect::AcceptPageDialog {
             dialog: dialog.id,
             text: None,
@@ -231,8 +218,7 @@ impl Open {
             let pressed = pressed.clone();
             move || pressed.set(Some(answer))
         };
-        // Escape and a click beside the sheet decline; an alert has only its
-        // one answer.
+        // Escape and a click beside the sheet decline; an alert has only its one answer.
         let dismissed = if decline.is_some() {
             Pressed::Decline
         } else {
@@ -283,7 +269,6 @@ impl Open {
         }
     }
 
-    /// What the dialog says beneath its title.
     fn body(&self) -> String {
         match self.dialog.kind {
             PageDialogKind::Leave { .. } => CATALOG.t("browser-page-dialog-unsaved"),
@@ -301,8 +286,8 @@ fn site(origin: &str) -> Option<String> {
     (!site.is_empty()).then(|| site.to_owned())
 }
 
-/// `text` as a row's preview: within its bound, cut where a character
-/// starts, without the characters a preview may not hold.
+/// `text` as a row's preview: within its bound, cut where a character starts, without the
+/// characters a preview may not hold.
 fn preview(text: &str) -> String {
     let mut preview: String = text
         .chars()
@@ -376,13 +361,11 @@ mod tests {
             "answered once"
         );
 
-        // The engine stops waiting on a question by itself: it goes.
         dialogs.apply(&asks(PageDialogKind::Alert, 4));
         assert!(!dialogs.apply(&WebViewEvent::PageDialogClosed { id: 3 }));
         assert!(dialogs.apply(&WebViewEvent::PageDialogClosed { id: 4 }));
         assert!(dialogs.current().is_none());
 
-        // A restarted engine is asked again; the old one's question goes.
         dialogs.apply(&asks(PageDialogKind::Alert, 5));
         let restarted = TestEngine::new();
         let page: SharedEngine = restarted.clone();

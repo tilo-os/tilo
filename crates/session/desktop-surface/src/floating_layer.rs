@@ -627,6 +627,7 @@ mod tests {
             bar: Rect::new(0.0, 0.0, 1280.0, 32.0),
             banners: None,
             readout: None,
+            caret: None,
         }
     }
 

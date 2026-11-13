@@ -1,5 +1,5 @@
-//! Custody-backed calendar access. Refresh and discovery are blocking; run them
-//! off the async/UI thread. Credentials and unrestricted clients never leave here.
+//! Custody-backed calendar access. Refresh and discovery are blocking; run them off the
+//! async and UI threads. Credentials and unrestricted clients never leave here.
 
 use account_custody::{Custodian, OAuthIssuer, OAuthUse};
 use accounts::{AccountId, AccountStore, SecretVault, cloud_types};
@@ -20,7 +20,6 @@ pub fn calendar_password(secret: &accounts::Secret) -> String {
     account_custody::password_credential(secret).to_string()
 }
 
-/// A reusable service holding the signed-in user's credential custodian.
 #[derive(Clone)]
 pub struct Service {
     custodian: Custodian,
@@ -29,12 +28,10 @@ pub struct Service {
 }
 
 impl Service {
-    /// Use the signed-in user's stores.
     pub fn live() -> Self {
         Self::new(Custodian::live())
     }
 
-    /// Use an explicit custodian, including isolated integration-fixture stores.
     pub fn new(custodian: Custodian) -> Self {
         Self {
             custodian,
@@ -43,8 +40,8 @@ impl Service {
         }
     }
 
-    /// Trust exactly one loopback origin as a Google fixture. This is explicit
-    /// per service and does not permit a second loopback server or arbitrary URL.
+    /// Trust exactly one loopback origin as a Google fixture. This is explicit per
+    /// service and does not permit a second loopback server or arbitrary URL.
     #[cfg(feature = "test-support")]
     pub fn for_test_origin(custodian: Custodian, origin: &str) -> Result<Self, String> {
         let url = Url::parse(origin).map_err(|_| "invalid fixture origin")?;
@@ -65,8 +62,8 @@ impl Service {
         })
     }
 
-    /// Discover collections with a canonical Google or Nextcloud credential.
-    /// Google requires the calendar grant, not a mail/files grant.
+    /// Discover collections with a canonical Google or Nextcloud credential. Google
+    /// requires the calendar grant, not a mail or files grant.
     pub fn discover(
         &self,
         id: &AccountId,
@@ -100,9 +97,9 @@ impl Service {
         })
     }
 
-    /// Build an opaque origin-bound async client. An account ID selects Google
-    /// custody; without one, use the supplied Basic password. Checks precede any
-    /// refresh or credential use. Refresh is blocking.
+    /// Build an opaque origin-bound async client. An account ID selects Google custody;
+    /// without one, the supplied Basic password is used. Checks precede any refresh or
+    /// credential use. Refresh is blocking.
     pub fn authorised(
         &self,
         id: Option<&str>,
@@ -230,8 +227,8 @@ impl Binding {
     }
 }
 
-/// An opaque DAV capability bound to its configured origin. Every operation
-/// validates its own target, and automatic redirects are disabled.
+/// An opaque DAV capability bound to its configured origin. Every operation validates
+/// its own target, and automatic redirects are disabled.
 pub struct AuthorisedClient {
     client: net::DavClient,
     binding: Binding,
@@ -242,7 +239,6 @@ pub struct AuthorisedClient {
 // carry the request, the transport and the parsing it awaits, which this
 // library holds once in the accounts engine.
 impl AuthorisedClient {
-    /// `REPORT` with an XML body.
     pub fn report<'a>(
         &'a self,
         url: &'a str,
@@ -258,7 +254,6 @@ impl AuthorisedClient {
         })
     }
 
-    /// `PROPFIND` for properties at depth.
     pub fn propfind<'a>(
         &'a self,
         url: &'a str,
@@ -274,7 +269,6 @@ impl AuthorisedClient {
         })
     }
 
-    /// Conditional `PUT`.
     pub fn put<'a>(
         &'a self,
         url: &'a str,
@@ -291,7 +285,6 @@ impl AuthorisedClient {
         })
     }
 
-    /// Conditional `DELETE`.
     pub fn delete<'a>(
         &'a self,
         url: &'a str,

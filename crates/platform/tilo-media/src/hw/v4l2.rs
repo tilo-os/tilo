@@ -1,39 +1,26 @@
 //! What the kernel's V4L2 memory-to-memory codecs can actually do.
 //!
-//! `GStreamer`'s V4L2 elements advertise unbounded sizes in their pad
-//! templates: `v4l2slh264dec` says it takes any H.264 up to 2³¹ pixels wide,
-//! while the Hantro G1 behind it on an RK3566 stops at 1920×1088 and refuses
-//! the stream only once caps arrive. The kernel knows the real limits, so this
-//! module asks it directly — `VIDIOC_QUERYCAP`, `VIDIOC_ENUM_FMT` and
-//! `VIDIOC_ENUM_FRAMESIZES` on every `/dev/video*` memory-to-memory node — and
-//! the answers explain a software fallback ("this chip decodes H.264 only up to
-//! 1920×1088") instead of leaving it a mystery.
+//! `GStreamer`'s V4L2 elements advertise unbounded sizes in their pad templates
+//! (`v4l2slh264dec` claims any H.264 up to 2³¹ pixels wide) and refuse a stream only
+//! once caps arrive, while the Hantro G1 behind it stops at 1920×1088. The kernel
+//! knows the real limits, so this asks it directly through `VIDIOC_QUERYCAP`,
+//! `VIDIOC_ENUM_FMT` and `VIDIOC_ENUM_FRAMESIZES`, which turns a software fallback
+//! into a stated reason.
 //!
-//! The probe only opens and queries nodes; it never allocates buffers or
-//! starts streaming, so it is safe to run next to a live decoder.
+//! The probe only opens and queries nodes; it never allocates buffers or starts
+//! streaming, so it is safe next to a live decoder.
 
-/// What a memory-to-memory node does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum V4l2Role {
-    /// Compressed in, raw pictures out. `stateless` when the driver takes
-    /// parsed slices plus per-frame controls (Hantro, rkvdec, Cedrus) rather
-    /// than a raw bitstream (Venus, Amphion, the Raspberry Pi's HEVC block).
     Decoder { stateless: bool },
-    /// Raw pictures in, compressed out.
     Encoder,
-    /// Raw in, raw out: a scaler / colour converter such as Rockchip's RGA.
     Converter,
 }
 
-/// One compressed format a node takes or produces, with the largest picture
-/// the kernel will configure for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodedFormat {
-    /// The V4L2 pixel format, e.g. `S264`.
     pub fourcc: u32,
-    /// The `GStreamer` media type this bitstream is, e.g. `video/x-h264`.
     pub media_type: &'static str,
-    /// Largest coded size, when the driver reports one.
     pub max_size: Option<(u32, u32)>,
 }
 
@@ -42,24 +29,17 @@ pub struct CodedFormat {
 pub struct V4l2Device {
     pub path: String,
     pub driver: String,
-    /// The driver's card name — on Rockchip the compatible string, e.g.
-    /// `rockchip,rk3568-vpu-dec`.
     pub card: String,
     pub role: V4l2Role,
-    /// Compressed formats: the input of a decoder, the output of an encoder.
     pub coded: Vec<CodedFormat>,
-    /// Raw picture formats on the other side, as V4L2 fourccs.
     pub raw: Vec<u32>,
 }
 
 impl V4l2Device {
-    /// The coded format for `media_type`, if this node handles it.
     pub fn coded_format(&self, media_type: &str) -> Option<&CodedFormat> {
         self.coded.iter().find(|c| c.media_type == media_type)
     }
 
-    /// One line for logs: `rockchip,rk3568-vpu-dec (hantro-vpu, stateless
-    /// decoder): H.264 ≤1920x1088, VP8 ≤3840x2160`.
     pub fn describe(&self) -> String {
         let role = match self.role {
             V4l2Role::Decoder { stateless: true } => "stateless decoder",
@@ -88,7 +68,6 @@ impl V4l2Device {
     }
 }
 
-/// A human codec name for a media type.
 pub fn codec_label(media_type: &str) -> &'static str {
     match media_type {
         MEDIA_H264 => "H.264",
@@ -147,7 +126,6 @@ pub fn coded_media_type(fourcc: u32) -> Option<(&'static str, bool)> {
 /// `dav1ddec`, `vah265enc`).
 pub fn element_media_type(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_lowercase();
-    // `dav1ddec` and `rav1enc` carry the token inside a longer word.
     if n.contains("av1") {
         Some(MEDIA_AV1)
     } else if n.contains("h264") {
@@ -167,9 +145,6 @@ pub fn element_media_type(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The largest size a `VIDIOC_ENUM_FRAMESIZES` walk reported. Discrete
-/// entries contribute their own size; a stepwise or continuous range its
-/// maximum.
 pub fn max_frame_size(entries: &[FrameSizeEntry]) -> Option<(u32, u32)> {
     entries
         .iter()
@@ -183,16 +158,12 @@ pub fn max_frame_size(entries: &[FrameSizeEntry]) -> Option<(u32, u32)> {
         .max_by_key(|&(w, h)| u64::from(w).saturating_mul(u64::from(h)))
 }
 
-/// One `VIDIOC_ENUM_FRAMESIZES` answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameSizeEntry {
     Discrete { width: u32, height: u32 },
     Range { max_width: u32, max_height: u32 },
 }
 
-/// Classify a node from the formats on its two queues. `output_*` is the
-/// queue the application writes (`V4L2_BUF_TYPE_VIDEO_OUTPUT*`), `capture_*`
-/// the one it reads.
 pub fn classify_node(output: &[(u32, bool)], capture: &[(u32, bool)]) -> Option<V4l2Role> {
     let coded_in = output.iter().any(|&(_, compressed)| compressed);
     let coded_out = capture.iter().any(|&(_, compressed)| compressed);
@@ -231,7 +202,6 @@ pub fn fits(limit: (u32, u32), width: u32, height: u32) -> bool {
     (width <= max_w && height <= max_h) || (width <= max_h && height <= max_w)
 }
 
-/// Every memory-to-memory node on this machine, probed once per process.
 pub fn devices() -> &'static [V4l2Device] {
     static DEVICES: std::sync::OnceLock<Vec<V4l2Device>> = std::sync::OnceLock::new();
     DEVICES.get_or_init(probe_all)
@@ -312,14 +282,11 @@ mod sys {
         index: u32,
         pixel_format: u32,
         kind: u32,
-        // Discrete: width, height. Stepwise / continuous: min_w, max_w,
-        // step_w, min_h, max_h, step_h.
         size: [u32; 6],
         reserved: [u32; 2],
     }
 
     const fn ioc(dir: u32, nr: u32, size: usize) -> libc::c_ulong {
-        // `size` is a struct size well under the 14-bit field.
         #[allow(clippy::cast_possible_truncation, reason = "ioctl structs are tiny")]
         let size = size as u32;
         ((dir << 30) | (size << 16) | ((b'V' as u32) << 8) | nr) as libc::c_ulong
@@ -333,18 +300,13 @@ mod sys {
         String::from_utf8_lossy(bytes.get(..end).unwrap_or_default()).into_owned()
     }
 
-    /// `ioctl` on a struct the kernel reads and writes in place.
     fn query<T>(fd: &OwnedFd, request: libc::c_ulong, arg: &mut T) -> bool {
-        // SAFETY: `arg` is a live, exclusively borrowed `#[repr(C)]` struct
-        // whose size is encoded in `request`, which is exactly what the
-        // kernel reads and writes.
         unsafe { libc::ioctl(fd.as_raw_fd(), request as _, std::ptr::from_mut(arg)) == 0 }
     }
 
     fn formats(fd: &OwnedFd, kind: u32) -> Vec<(u32, bool)> {
         let mut out = Vec::new();
         for index in 0..64 {
-            // SAFETY: an all-zero `FmtDesc` is a valid value of a plain-old-data struct.
             let mut desc: FmtDesc = unsafe { std::mem::zeroed() };
             desc.index = index;
             desc.kind = kind;
@@ -359,7 +321,6 @@ mod sys {
     fn frame_sizes(fd: &OwnedFd, fourcc: u32) -> Vec<FrameSizeEntry> {
         let mut out = Vec::new();
         for index in 0..64 {
-            // SAFETY: an all-zero `FrmSizeEnum` is a valid value of a plain-old-data struct.
             let mut e: FrmSizeEnum = unsafe { std::mem::zeroed() };
             e.index = index;
             e.pixel_format = fourcc;
@@ -373,7 +334,6 @@ mod sys {
                     height: b,
                 });
             } else {
-                // A range is reported once, at index 0.
                 out.push(FrameSizeEntry::Range {
                     max_width: b,
                     max_height: max_h,
@@ -393,7 +353,6 @@ mod sys {
             .open(path)
             .ok()?;
         let fd = OwnedFd::from(file);
-        // SAFETY: an all-zero `Capability` is a valid value of a plain-old-data struct.
         let mut cap: Capability = unsafe { std::mem::zeroed() };
         if !query(&fd, VIDIOC_QUERYCAP, &mut cap) {
             return None;
@@ -455,7 +414,6 @@ mod tests {
     const JPEG: u32 = v4l2_fourcc(b'J', b'P', b'E', b'G');
     const H264: u32 = v4l2_fourcc(b'H', b'2', b'6', b'4');
 
-    /// The nodes an Orange Pi 3B (RK3566, mainline 7.2) exposes, as probed.
     fn rk3566() -> Vec<V4l2Device> {
         vec![
             V4l2Device {
@@ -516,12 +474,10 @@ mod tests {
             classify_node(&[(H264, true)], &[(NV12, false)]),
             Some(V4l2Role::Decoder { stateless: false })
         );
-        // VEPU: NV12 in, JPEG out.
         assert_eq!(
             classify_node(&[(NM12, false)], &[(JPEG, true)]),
             Some(V4l2Role::Encoder)
         );
-        // RGA: raw on both sides.
         assert_eq!(
             classify_node(&[(NV12, false)], &[(NV12, false)]),
             Some(V4l2Role::Converter)

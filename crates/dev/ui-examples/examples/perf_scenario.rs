@@ -6,30 +6,11 @@
 
 //! Headless performance-scenario runner — the CLI face of
 //! [`tilo_ui::profiling`].
-//!
-//! Drives a `ui` app through a scripted interaction with **no GPU and no
-//! window**, timing each of the five frame passes (`sync`, `build_layout`,
-//! `apply_layout`, `draw`, `handle_event`) and printing frame-time statistics
-//! (mean / p50 / p95 / max per pass, plus how many frames blew the 60 fps
-//! budget). These are headless CPU diagnostics, not displayed frame rates.
-//!
-//! Two targets are run to show the harness works against different app shapes:
-//!
-//!   * `list-scroll`   — a tall scrollable list, scrolled N verified moving steps. The
-//!     canonical scroll scenario: it surfaces per-frame
-//!     layout + draw cost.
-//!   * `gallery-steady`— the reference component gallery (`common/gallery_scene`),
-//!     re-rendered N frames with no input: the steady-state
-//!     redraw cost of a dense screen.
-//!
 //! Run:
 //! ```text
 //! cargo run -p ui-examples --release --example ui-perf -- perf_scenario
 //! cargo run -p ui-examples --release --example ui-perf -- perf_scenario --count 240 --json
 //! ```
-//!
-//! Any app author gets the same measurement over their own root with one call:
-//! `tilo_ui::profiling::run_scenario_on(state, app_root(), &scenario)`.
 
 use std::cell::Cell;
 use std::rc::Rc;

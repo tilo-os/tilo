@@ -43,6 +43,7 @@ use std::collections::HashMap;
 use std::os::unix::net::UnixListener;
 use taffy::AvailableSpace;
 use ui::a11y::Politeness;
+use ui::widget::DrawChild;
 use ui::widget::find_test_id;
 
 /// The shipped Tilo session plus a second, separately installed one, so
@@ -412,7 +413,7 @@ fn geometry(w: &dyn Widget, out: &mut Vec<Rect>) {
 fn paint(app: &mut GreeterApp, theme: &Theme, text: &mut TextRenderer) {
     let mut scene = Scene::new();
     text.set_text_scale(theme.text_scale);
-    app.draw(
+    app.draw_child(
         &mut scene,
         Affine::IDENTITY,
         text,
@@ -424,7 +425,7 @@ fn paint(app: &mut GreeterApp, theme: &Theme, text: &mut TextRenderer) {
 fn scene_bytes(app: &mut GreeterApp) -> (Vec<u32>, Vec<u32>) {
     let mut scene = Scene::new();
     let mut text = TextRenderer::new();
-    app.draw(
+    app.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut text,

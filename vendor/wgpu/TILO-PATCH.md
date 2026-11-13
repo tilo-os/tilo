@@ -21,6 +21,14 @@ before the poll returns. So in `src/backend/wgpu_core.rs`:
 Every other fatal site is unchanged. Remove this patch once upstream reports a
 lost device from `poll` (`PollError` has no variant for it in 29.0).
 
+On the web, `src/backend/webgpu.rs`'s `WebBuffer::get_mapped_range` unwrapped
+the browser's `getMappedRange`, which Chromium refuses for a buffer whose device
+was lost (`OperationError: getMappedRange failed`): a page that lost its GPU
+under load panicked while it drew again on a new device. A refused range now
+yields an `ArrayBuffer` of the mapping's size, which writes go into and
+nothing reads, as nothing reads a lost device's buffers. Remove it once
+upstream handles a refused range.
+
 Workspace CI compiles `vendor/wgpu` with `-D warnings` for
 `wasm32-unknown-unknown`. Upstream 29.0.3 leaves the HAL documentation
 macros, two `Deref` imports and `BufferMappedRangeInterface::len` unused on

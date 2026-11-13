@@ -1,14 +1,10 @@
-//! Reviewed payload blobs kept as chunks.
-//!
-//! A payload blob larger than one object is never reassembled here: its
-//! verified chunks sit in `payload-blobs/` beside whole blobs, each under its
-//! own BLAKE3, and `payload-blobs/<blob>.chunks` lists them. The list is
-//! written only after every chunk and the joined blob verified, so it never
-//! names bytes this registry did not check. While a chunked blob is being
-//! fetched, `payload-blobs/<blob>.chunks-pending` keeps its chunks reachable
-//! for pruning. Downloads stream into `.incoming-*` files in the same
-//! directory and are renamed into place once verified, so nothing large is
-//! held in memory or staged on other disks.
+//! Reviewed payload blobs kept as chunks. A payload blob larger than one object is never
+//! reassembled here: its verified chunks sit in `payload-blobs/` beside whole blobs, each under its
+//! own BLAKE3, and `payload-blobs/<blob>.chunks` lists them. The list is written only after every
+//! chunk and the joined blob verified, so it never names bytes this registry did not check. While a
+//! chunked blob is being fetched, `payload-blobs/<blob>.chunks-pending` keeps its chunks reachable
+//! for pruning. Downloads stream into `.incoming-*` files in the same directory and are renamed
+//! into place once verified, so nothing large is held in memory or staged on other disks.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -30,8 +26,8 @@ pub(super) const INCOMING_PREFIX: &str = ".incoming-";
 
 static INCOMING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// A payload object being downloaded into the registry's blob directory.
-/// Dropped without [`Self::commit`], it removes itself.
+/// A payload object being downloaded into the registry's blob directory. Dropped without
+/// [`Self::commit`], it removes itself.
 pub struct IncomingObject {
     file: Option<File>,
     path: PathBuf,
@@ -52,12 +48,9 @@ impl Write for IncomingObject {
 }
 
 impl IncomingObject {
-    /// Durably publish the verified bytes as the object named `hash`, and
-    /// write its compressed twin (see `twins`).
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be synced or renamed, or its twin
-    /// cannot be written.
+    /// Durably publish the verified bytes as the object named `hash`, and write its compressed twin
+    /// (see `twins`). # Errors Returns an error if the file cannot be synced or renamed, or its
+    /// twin cannot be written.
     pub fn commit(mut self, hash: &BlobHash) -> Result<(), StorageError> {
         let file = self
             .file
@@ -104,7 +97,6 @@ impl Storage {
             .join(format!("{}{PENDING_CHUNKS_SUFFIX}", hash.to_hex()))
     }
 
-    /// Start downloading a payload object; see [`IncomingObject`].
     pub fn incoming_payload_object(&self) -> Result<IncomingObject, StorageError> {
         let dir = self.payload_dir();
         let sequence = INCOMING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -126,20 +118,19 @@ impl Storage {
         })
     }
 
-    /// The stored object (whole blob or chunk) named `hash`, opened for
-    /// reading, or `None`.
+    /// The stored object (whole blob or chunk) named `hash`, opened for reading, or `None`.
     pub fn open_payload_object(&self, hash: &BlobHash) -> Result<Option<File>, StorageError> {
         open_if_exists(&self.payload_dir().join(hash.to_hex()))
     }
 
-    /// Record the chunk list of a blob about to be fetched, so pruning keeps
-    /// its chunks while they arrive. Nothing serves this list.
+    /// Record the chunk list of a blob about to be fetched, so pruning keeps its chunks while they
+    /// arrive. Nothing serves this list.
     pub fn begin_chunked_payload(&self, list: &ChunkList) -> Result<(), StorageError> {
         atomic_write(&self.pending_chunk_list_path(&list.blob), &list.encode())
     }
 
-    /// Publish the chunk list of a blob whose every chunk is stored and whose
-    /// joined bytes verified.
+    /// Publish the chunk list of a blob whose every chunk is stored and whose joined bytes
+    /// verified.
     pub fn finish_chunked_payload(&self, list: &ChunkList) -> Result<(), StorageError> {
         for chunk in list.distinct_chunks() {
             if self.open_payload_object(&chunk)?.is_none() {
@@ -154,12 +145,8 @@ impl Storage {
         Ok(())
     }
 
-    /// The verified chunk list of the chunked blob `blake3_hex`, or `None`
-    /// when this registry keeps no such list.
-    ///
-    /// # Errors
-    /// Returns an error when the stored list cannot be read or does not
-    /// describe its blob.
+    /// The verified chunk list of the chunked blob `blake3_hex`, or `None` when this registry keeps
+    /// no such list.
     pub fn load_chunk_list(&self, blake3_hex: &str) -> Result<Option<ChunkList>, StorageError> {
         let Some(hash) = parse_hash(blake3_hex) else {
             return Ok(None);
@@ -174,12 +161,9 @@ impl Storage {
         read_list(file, hash).map(Some)
     }
 
-    /// The length of the stored payload blob `hash`: a whole blob's size, or
-    /// a chunked blob's listed length when every chunk is present. `None`
-    /// when this registry does not hold it completely.
-    ///
-    /// # Errors
-    /// Returns an error when stored state cannot be read.
+    /// The length of the stored payload blob `hash`: a whole blob's size, or a chunked blob's
+    /// listed length when every chunk is present. `None` when this registry does not hold it
+    /// completely.
     pub fn payload_blob_len(&self, hash: &BlobHash) -> Result<Option<u64>, StorageError> {
         if let Some(file) = self.open_payload_object(hash)? {
             let len = file
@@ -199,8 +183,8 @@ impl Storage {
         Ok(Some(list.len))
     }
 
-    /// The stored payload blob `hash` as a stream: whole, or its chunks
-    /// joined and each checked as it is read.
+    /// The stored payload blob `hash` as a stream: whole, or its chunks joined and each checked as
+    /// it is read.
     pub(super) fn open_payload_stream(
         &self,
         hash: &BlobHash,
@@ -225,8 +209,8 @@ impl Storage {
         Ok(Some((len, Box::new(reader))))
     }
 
-    /// Chunks named by every verified chunk list of `blobs`, and by every
-    /// chunk list still being fetched.
+    /// Chunks named by every verified chunk list of `blobs`, and by every chunk list still being
+    /// fetched.
     pub(super) fn live_chunks(
         &self,
         blobs: &std::collections::BTreeSet<String>,

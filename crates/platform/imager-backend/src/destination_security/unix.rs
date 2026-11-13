@@ -21,7 +21,6 @@ fn trusted_owner(uid: u32, current: u32) -> bool {
     uid == current || uid == 0
 }
 
-/// Type, owner and permission bits of one directory on the destination path.
 #[derive(Clone, Copy, Debug)]
 struct Observed {
     is_dir: bool,
@@ -40,10 +39,8 @@ impl Observed {
     }
 }
 
-/// # Errors
-/// Refuses unsupported filesystem semantics, non-directory or untrusted ancestry,
-/// unsafe writable ancestors, and non-private ownership or permissions when requested.
-/// Propagates filesystem metadata and, on macOS, ACL inspection errors.
+/// Refuses unsupported filesystem semantics, non-directory or untrusted ancestry, unsafe writable
+/// ancestors, and non-private ownership or permissions when requested.
 pub fn check_directory(file: &File, child: Option<&Metadata>, private: bool) -> io::Result<()> {
     #[cfg(any(test, feature = "test-support"))]
     if test_environment::is_above_fixtures(file)? {
@@ -61,9 +58,8 @@ pub fn check_directory(file: &File, child: Option<&Metadata>, private: bool) -> 
     Ok(())
 }
 
-/// The ownership decision for one ancestor as seen by account `current`.
-/// `child_uid` owns the next directory down the path; `None` means that
-/// directory is about to be created by `current`.
+/// The ownership decision for one ancestor as seen by account `current`. `child_uid` owns the next
+/// directory down the path; `None` means `current` is about to create it.
 fn check_ownership(
     observed: Observed,
     child_uid: Option<u32>,
@@ -81,9 +77,8 @@ fn check_ownership(
                 "destination ancestor is writable by another account without sticky protection",
             ));
         }
-        // Sticky directories protect only the entry owner (and directory owner
-        // / root). Checking the parent bit alone does not protect a foreign
-        // child. None means the future child will be created by this account.
+        // Sticky directories protect only the entry owner and the directory owner, so the parent bit
+        // alone does not protect a foreign child. `None` means this account creates the future child.
         if let Some(child_uid) = child_uid
             && !trusted_owner(child_uid, current)
         {
@@ -95,9 +90,7 @@ fn check_ownership(
     Ok(())
 }
 
-/// # Errors
-/// Refuses an object not owned exclusively by the current account, including
-/// group or other access; propagates metadata and macOS ACL inspection errors.
+/// Refuses an object not owned exclusively by the current account, including group or other access.
 pub fn check_private_file(file: &File) -> io::Result<()> {
     let current = effective_uid();
     check_private_ownership(Observed::of(file)?, current)?;
@@ -106,15 +99,11 @@ pub fn check_private_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Test fixtures live in fresh directories below the platform temporary
-/// directory. That directory and its ancestors belong to the machine running
-/// the tests, not to any fixture: a rootless development container shows the
-/// host's `/tmp` under the overflow uid and mounts its own root with FUSE,
-/// both of which the checks rightly refuse, so tests there would only ever
-/// observe that refusal. Those machine directories are recognised by identity
-/// and skipped; every directory a fixture creates is still checked in full,
-/// also in the helper processes some tests spawn. The ownership decision
-/// itself is covered with injected uids by the unit tests below.
+/// Fixtures live in fresh directories below the machine's temporary directory or the checkout, whose
+/// ancestors belong to the machine rather than to any fixture: a rootless container shows the host's
+/// `/tmp` under the overflow uid and mounts the checkout on FUSE, both of which the checks rightly
+/// refuse. Those directories are recognised by identity and skipped; every directory a fixture
+/// creates is still checked in full, also in the helper processes some tests spawn.
 #[cfg(any(test, feature = "test-support"))]
 mod test_environment {
     use std::collections::HashSet;
@@ -129,14 +118,22 @@ mod test_environment {
             return Ok(above);
         }
         let above = {
-            let temp = std::env::temp_dir();
-            let temp = temp.canonicalize().unwrap_or(temp);
-            temp.ancestors()
-                .map(|ancestor| {
-                    let metadata = std::fs::metadata(ancestor)?;
-                    Ok((metadata.dev(), metadata.ino()))
-                })
-                .collect::<io::Result<HashSet<_>>>()?
+            let mut roots = vec![std::env::temp_dir()];
+            #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+            roots.push(crate::test_support::fixture_root());
+            let mut above = HashSet::new();
+            for root in roots {
+                // Canonical, so the mount the checkout really lives on is recognised however the path
+                // is spelled.
+                let root = root.canonicalize().unwrap_or(root);
+                for ancestor in root.ancestors() {
+                    let Ok(metadata) = std::fs::metadata(ancestor) else {
+                        continue;
+                    };
+                    above.insert((metadata.dev(), metadata.ino()));
+                }
+            }
+            above
         };
         Ok(ABOVE.get_or_init(|| above))
     }
@@ -170,13 +167,12 @@ fn check_filesystem(file: &File) -> io::Result<()> {
         if unsafe { libc::fstatfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: fstatfs succeeded and initialized the entire output.
         let status = unsafe { status.assume_init() };
         #[cfg(target_os = "linux")]
         {
-            // These local filesystems enforce Unix ownership and POSIX ACL
-            // masks. Inherited default ACLs are restricted by 0700/0600 at
-            // every creation. Do not infer this for FUSE, CIFS, NFS or FAT.
+            // These local filesystems enforce Unix ownership and POSIX ACL masks, and inherited
+            // default ACLs are restricted by 0700/0600 at every creation. Do not infer this for FUSE,
+            // CIFS, NFS or FAT.
             if !matches!(
                 u64::try_from(status.f_type)
                     .map_err(|_| refusal("unknown destination filesystem type"))?,
@@ -217,8 +213,7 @@ mod tests {
 
     const ME: u32 = 1000;
     const OTHER: u32 = 1001;
-    // The overflow uid: how a rootless container shows directories owned by
-    // the host's root, such as a bind-mounted /tmp.
+    // The overflow uid: how a rootless container shows directories owned by the host's root.
     const OVERFLOW: u32 = 65_534;
 
     fn dir(uid: u32, mode: u32) -> Observed {
@@ -235,7 +230,6 @@ mod tests {
         assert!(error.to_string().contains(message), "{error}");
     }
 
-    /// Ancestor ownership, type and sticky-bit rules.
     #[test]
     fn ancestor_trust_requires_trusted_owner_directory_and_sticky_protection() {
         {
@@ -251,7 +245,6 @@ mod tests {
                     "untrusted owner",
                 );
             }
-            // Root does not trust an ordinary account's directory either.
             refused(
                 check_ownership(dir(ME, 0o700), None, false, 0),
                 "untrusted owner",
@@ -298,7 +291,6 @@ mod tests {
             check_ownership(dir(ME, 0o750), None, true, ME),
             "not private",
         );
-        // A root-owned directory is trusted as an ancestor, never as private.
         refused(
             check_ownership(dir(0, 0o700), None, true, ME),
             "not private",

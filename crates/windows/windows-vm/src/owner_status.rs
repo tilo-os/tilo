@@ -77,8 +77,6 @@ fn os_error(error: &io::Error, path: &Path) -> Failure {
     }
 }
 
-/// Open `path` without following a final link and parse it as JSON, refusing
-/// a file swapped between the inspection and the open.
 fn read_json(path: &Path, inspected: &Metadata, changed: &str) -> Result<Value, Failure> {
     let mut file: File = OpenOptions::new()
         .read(true)
@@ -95,7 +93,6 @@ fn read_json(path: &Path, inspected: &Metadata, changed: &str) -> Result<Value, 
     serde_json::from_slice(&bytes).map_err(|error| Failure::Invalid(error.to_string()))
 }
 
-/// A unit-variant name, or the single key of a tagged variant.
 fn variant<'a>(value: &'a Value, allowed: &[&str], invalid: &str) -> Result<&'a str, Failure> {
     let name = match value {
         Value::String(name) => name.as_str(),

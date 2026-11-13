@@ -1,46 +1,9 @@
-//! Weather — Tilo native app (CRDT-native, built on the `ui` toolkit).
-//!
-//! A clean weather client: current conditions, a 24h temperature chart,
-//! and a 7-day forecast for multiple saved locations, powered by the
-//! keyless [Open-Meteo](https://open-meteo.com) API.
-//!
-//! ## Architecture
-//! - [`model`] — pure data (locations, snapshots, units), no IO.
-//! - [`wxcode`] — WMO weather-code → condition/icon family mapping.
-//! - [`units`] — °C/°F, km/h/mph and mm/in conversions.
-//! - [`region`] — read-only consumer of the shared Settings store, from which
-//!   the display units are derived (Settings owns the toggle, not this app).
-//! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
-//! - [`net`] — the live background fetches (`tilo_net` on the app runtime).
-//! - [`resource`] — the [`Weather`] resource and the [`WeatherShell`] app.
-//! - [`sample`] — bundled, fully-populated offline data.
-//! - [`icon`] / [`chart`] — content drawing (weather glyphs, the hourly
-//!   strip), every value read from the theme.
-//! - [`interaction`] — direct-manipulation state for the saved-place list:
-//!   drag-to-reorder and swipe-to-delete, with swipe⇔menu action parity.
-//! - [`core`] — the shared model + the two content panels (city-list overview
-//!   and forecast detail) rendered into the shell's rects.
-//! - [`panes`] — the thin overview/detail widgets the [`ui::widget::NavShell`]
-//!   hosts.
-//! - [`app`] — the root [`WeatherApp`] widget composing the window shell.
-//!
-//! ## Captures vs. live
-//! A screenshot cannot await a network fetch, so a capture stages the bundled
-//! [`sample`] places through the resource's actions and shows their bundled
-//! forecasts, offline and deterministic.
-//!
-//! A live window shows the person's saved places and fetches their real
-//! Open-Meteo observations; a blank record stays empty. History shows
-//! recorded saved places; provider observations and device units are not
-//! recorded versions.
+//! Weather: current conditions, a 24-hour strip and a 7-day forecast for the
+//! saved places, from the keyless [Open-Meteo](https://open-meteo.com) API.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// An app runs as a sandboxed process, so a wrapped integer here costs one app,
+// not the session. The lints that crash (indexing, string slices, unwrap, panic)
+// stay denied: `shell`, `ui` and `crates/` keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -83,7 +46,6 @@ pub mod wxcode;
 pub use app::WeatherApp;
 pub use resource::{Weather, WeatherShell};
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(WeatherShell)
 }

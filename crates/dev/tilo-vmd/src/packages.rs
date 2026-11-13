@@ -1,11 +1,8 @@
-//! `tilo-vmd install-packages`: third-party packages for verification,
-//! installed with the one package manager line the VM's image supports.
-//!
-//! On a bootc image (the dev image, ostree- or composefs-backed) `dnf install --transient` puts them in
-//! a transient overlay on `/usr` that the next reboot discards, so nothing
-//! outlives the test and no image ever carries them. Sessions freeze their
-//! `/usr` when they start, so a slot sees the packages after its session
-//! restarts (`tilo-vm slot apps install` does that).
+//! `tilo-vmd install-packages`: third-party packages for verification, installed
+//! with the one package manager line the VM's image supports. On a bootc image `dnf
+//! install --transient` puts them in a transient overlay on `/usr` that the next
+//! reboot discards, so nothing outlives the test; sessions freeze their `/usr` when
+//! they start, so a slot sees them after its session restarts.
 
 use std::path::Path;
 
@@ -23,8 +20,8 @@ pub fn install_argv(
     if let Some(bad) = packages.iter().find(|p| !valid_package_name(p)) {
         return Err(format!("'{bad}' is not a package name"));
     }
-    // A composefs-backed bootc system has no `/run/ostree-booted`; its deployments live
-    // under `/sysroot/composefs`.
+    // A composefs-backed bootc system has no `/run/ostree-booted`; its deployments live under
+    // `/sysroot/composefs`.
     let bootc = exists(Path::new("/run/ostree-booted")) || exists(Path::new("/sysroot/composefs"));
     let mut argv: Vec<String> = if exists(Path::new("/usr/bin/dnf")) {
         let mut argv = vec!["dnf", "install", "--assumeyes"];

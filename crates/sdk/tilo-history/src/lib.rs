@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use fluent::{FluentBundle, FluentResource};
 use tilo_actions::{
-    ActionContext, ActionKey, ActorKind, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp,
-    HistoryStep, Scalar, VerbCall,
+    ActionContext, ActionKey, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep,
+    Scalar, VerbCall,
 };
 use unic_langid::LanguageIdentifier;
 
@@ -121,11 +121,7 @@ impl Messages for Catalogue {
 }
 
 fn langid(locale: &str) -> LanguageIdentifier {
-    locale
-        .replace('_', "-")
-        .split('.')
-        .next()
-        .unwrap_or(SOURCE_LOCALE)
+    tilo_paths::locale_tag(locale)
         .parse()
         .or_else(|_| SOURCE_LOCALE.parse())
         .unwrap_or_default()
@@ -142,21 +138,15 @@ pub fn window_language(preference: Option<&str>, shipped: &[&str]) -> String {
     if shipped.is_empty() {
         return preference.map_or_else(|| SOURCE_LOCALE.to_owned(), |p| langid(p).to_string());
     }
-    if let Some(preference) = preference {
-        let wanted = langid(preference);
-        if let Some(tag) = shipped.iter().find(|tag| langid(tag) == wanted) {
-            return (*tag).to_owned();
-        }
-        if let Some(tag) = shipped
-            .iter()
-            .find(|tag| langid(tag).language == wanted.language)
-        {
-            return (*tag).to_owned();
-        }
+    if let Some(preference) = preference
+        && let Some(position) = tilo_paths::matching(preference, shipped.iter().copied())
+        && let Some(tag) = shipped.get(position)
+    {
+        return (*tag).to_owned();
     }
     shipped
         .iter()
-        .find(|tag| langid(tag).language == langid(SOURCE_LOCALE).language)
+        .find(|tag| tilo_paths::language_of(tag) == tilo_paths::language_of(SOURCE_LOCALE))
         .or_else(|| shipped.first())
         .map_or_else(|| SOURCE_LOCALE.to_owned(), |tag| (*tag).to_owned())
 }
@@ -168,15 +158,8 @@ thread_local! {
 /// The framework's messages in `locale`, or in the closest locale it has:
 /// the same language, else the source locale.
 fn framework(locale: &str) -> Rc<Catalogue> {
-    let wanted = langid(locale);
-    let chosen = FRAMEWORK
-        .iter()
-        .find(|(candidate, _)| langid(candidate) == wanted)
-        .or_else(|| {
-            FRAMEWORK
-                .iter()
-                .find(|(candidate, _)| langid(candidate).language == wanted.language)
-        })
+    let chosen = tilo_paths::matching(locale, FRAMEWORK.iter().map(|(tag, _)| *tag))
+        .and_then(|position| FRAMEWORK.get(position))
         .unwrap_or(&SOURCE);
     FRAMEWORK_CATALOGUES.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -196,7 +179,6 @@ fn framework(locale: &str) -> Rc<Catalogue> {
 #[derive(Clone, Copy, Debug)]
 pub struct Who<'a> {
     pub actor: &'a str,
-    pub kind: ActorKind,
     /// The display name of the person the actor acted for.
     pub for_person: Option<&'a str>,
     /// Whether the person the actor acted for is the reader.
@@ -370,11 +352,13 @@ impl<'a> Reader<'a> {
     }
 
     /// Who did it, as one line and as presence names them: "You",
-    /// "Ada via task 'Prepare Q3 financials'", "Morning · Shortcut".
+    /// "Ada via task 'Prepare Q3 financials'", "Claude for Ada".
     ///
     /// Anyone but the reader acted as a task, so the task names them: the
-    /// person under whose authority it was done, or the Shortcut that ran.
-    /// Without a named task, the actor as it is recorded.
+    /// person under whose authority it was done. Without a named task, the
+    /// actor as it is recorded, and whom it acted for: "for you" when that
+    /// person is the reader. What the actor is — an agent, a Shortcut, an
+    /// app, a bot — is the face beside the line, never words in it.
     pub fn actor(&self, who: &Who<'_>) -> String {
         let mut args = FluentArgs::new();
         args.set("actor", who.actor.to_owned());
@@ -398,13 +382,6 @@ impl<'a> Reader<'a> {
             args.set("task", task.label.to_owned());
             return self.framework_message("history-actor-via-task", &args);
         }
-        let named = match who.kind {
-            ActorKind::Agent => self.framework_message("history-actor-agent", &args),
-            ActorKind::Shortcut => self.framework_message("history-actor-shortcut", &args),
-            ActorKind::App => self.framework_message("history-actor-app", &args),
-            ActorKind::Bot => self.framework_message("history-actor-bot", &args),
-            ActorKind::Person => who.actor.to_owned(),
-        };
         let person = if who.for_reader {
             Some(self.framework_message("history-actor-for-you", &FluentArgs::new()))
         } else {
@@ -413,11 +390,11 @@ impl<'a> Reader<'a> {
         match person {
             Some(person) => {
                 let mut args = FluentArgs::new();
-                args.set("actor", named);
+                args.set("actor", who.actor.to_owned());
                 args.set("for", person);
                 self.framework_message("history-actor-for", &args)
             }
-            None => named,
+            None => who.actor.to_owned(),
         }
     }
 

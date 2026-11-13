@@ -1,33 +1,29 @@
 //! Dropbox accounts as a [`cloud_source::CloudSource`], on API v2.
 //!
 //! - **Identity.** Items are Dropbox ids (`id:…`); the mounted root is
-//!   [`DropboxSource::root`] (`""`), which is the configured
-//!   [`DropboxConfig::root`] path. Dropbox addresses by case-insensitive
-//!   path (`path_lower` for lookups, `name`/`path_display` for display) and
-//!   reports no parent ids, so the source keeps a path↔id map to name
-//!   parents and to attribute `deleted` entries, which carry only a path.
+//!   [`DropboxSource::root`] (`""`), which is the configured [`DropboxConfig::root`]
+//!   path. Dropbox addresses by case-insensitive path (`path_lower` for lookups,
+//!   `name`/`path_display` for display) and reports no parent ids, so the source keeps
+//!   a path↔id map to name parents and to attribute `deleted` entries.
 //! - **Change feed.** `files/list_folder` (recursive) starts an enumeration,
-//!   `list_folder/continue` pages through changes; an expired cursor
-//!   (`reset`) restarts the enumeration as a reset page.
-//!   `list_folder/longpoll` is [`CloudSource::wait`], and a `backoff` it asks
-//!   for is honoured: the next wait returns [`Wait::Backoff`] without a
-//!   request until it has passed.
-//! - **Integrity.** Every file carries its `content_hash` (4 MiB block
-//!   SHA-256); whole downloads are verified against it and uploads send it,
-//!   so Dropbox rejects bytes damaged in transit, and are checked against
-//!   what Dropbox committed.
-//! - **Writes.** Replacing with a known revision uses `WriteMode::update`,
-//!   so a stale write is a conflict, never an overwrite; creates use `add`
-//!   with `strict_conflict`. Files larger than one chunk go through upload
-//!   sessions (`start`/`append_v2`/`finish`) that survive a restart.
-//!   Moves and deletes check the revision first (`delete_v2` also sends it
-//!   as `parent_rev`).
-//! - **Team spaces.** [`DropboxSource::team_root`] finds a team member's
-//!   root namespace; set it as [`DropboxConfig::path_root`] and every call
-//!   carries `Dropbox-API-Path-Root`.
+//!   `list_folder/continue` pages through changes; an expired cursor (`reset`)
+//!   restarts it. `list_folder/longpoll` is [`CloudSource::wait`], and a `backoff` it
+//!   asks for is honoured: the next wait returns [`Wait::Backoff`] without a request
+//!   until it has passed.
+//! - **Integrity.** Every file carries its `content_hash` (4 MiB block SHA-256); whole
+//!   downloads are verified against it and uploads send it, and the committed hash is
+//!   compared with what was sent.
+//! - **Writes.** Replacing with a known revision uses `WriteMode::update`, so a stale
+//!   write is a conflict, never an overwrite; creates use `add` with
+//!   `strict_conflict`. Files larger than one chunk go through upload sessions
+//!   (`start`/`append_v2`/`finish`) that survive a restart. Moves and deletes check the
+//!   revision first (`delete_v2` also sends it as `parent_rev`).
+//! - **Team spaces.** [`DropboxSource::team_root`] finds a team member's root
+//!   namespace; set it as [`DropboxConfig::path_root`] and every call carries
+//!   `Dropbox-API-Path-Root`.
 //!
-//! Errors never carry tokens, URLs or response bodies. A 401 is reported
-//! to the [`CredentialSource`] so Settings refreshes the token.
+//! Errors never carry tokens, URLs or response bodies. A 401 is reported to the
+//! [`CredentialSource`] so Settings refreshes the token.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -59,34 +55,27 @@ use api::{Api, Failure};
 use metadata::{Entry, Kind, Paths, is_within, parent_path};
 use tilo_lock::MutexRecover as _;
 
-/// Default bytes per upload-session chunk: a multiple of the 4 MiB hash
-/// block, so a resumed session can keep verifying the whole file.
+/// Default bytes per upload-session chunk: a multiple of the 4 MiB hash block, so a
+/// resumed session can keep verifying the whole file.
 pub const DEFAULT_UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
-/// Largest body Dropbox accepts in one upload request.
 pub const MAX_UPLOAD_REQUEST: u64 = 150 * 1024 * 1024;
-/// Long-poll timeouts Dropbox accepts, in seconds.
 const LONGPOLL_SECONDS: std::ops::RangeInclusive<u64> = 30..=480;
 
-/// Where and how to reach one account. Contains no secret.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DropboxConfig {
-    /// The mounted folder: `""` for the whole account, else `/Some/Folder`.
     pub root: String,
     #[serde(default)]
     pub endpoints: Endpoints,
-    /// The namespace calls are rooted in (`Dropbox-API-Path-Root`), for a
-    /// team member's team space; see [`DropboxSource::team_root`].
+    /// The namespace calls are rooted in (`Dropbox-API-Path-Root`), for a team member's
+    /// team space; see [`DropboxSource::team_root`].
     #[serde(default)]
     pub path_root: Option<String>,
-    /// Bytes per upload-session chunk; smaller files go in one request.
     pub upload_chunk: u64,
-    /// `limit` for `list_folder` pages (Dropbox's default when `None`).
     #[serde(default)]
     pub page_limit: Option<u32>,
 }
 
 impl DropboxConfig {
-    /// The whole account (`root = ""`) or a folder in it.
     pub fn new(root: &str) -> Self {
         Self {
             root: normalize_root(root),
@@ -107,8 +96,8 @@ fn normalize_root(root: &str) -> String {
     }
 }
 
-/// A mounted Dropbox account. Cloning shares the connection pool, the
-/// credential source and the path map.
+/// A mounted Dropbox account. Cloning shares the connection pool, the credential
+/// source and the path map.
 #[derive(Clone)]
 pub struct DropboxSource {
     config: DropboxConfig,
@@ -118,13 +107,12 @@ pub struct DropboxSource {
     backoff_until: Arc<Mutex<Option<Instant>>>,
 }
 
-/// A Dropbox id (`id:…`); anything else cannot name an item.
 fn is_dropbox_id(id: &ItemId) -> bool {
     id.as_str().len() > 3 && id.as_str().starts_with("id:")
 }
 
-/// A Dropbox `rev`: at least nine lowercase hex digits. A revision that
-/// cannot exist is never current.
+/// A Dropbox `rev`: at least nine lowercase hex digits. A revision that cannot exist
+/// is never current.
 fn is_rev(revision: &Revision) -> bool {
     let rev = revision.as_str();
     rev.len() >= 9
@@ -141,8 +129,6 @@ fn check_name(name: &str) -> Result<()> {
 }
 
 impl DropboxSource {
-    /// A source for `config` authenticating with `credentials` (a Bearer
-    /// token). No request is made until the first call.
     pub fn new(config: DropboxConfig, credentials: Arc<dyn CredentialSource>) -> Result<Self> {
         let mut config = config;
         config.root = normalize_root(&config.root);
@@ -165,8 +151,8 @@ impl DropboxSource {
     }
 
     /// The root namespace of a team member whose account has a team space
-    /// (`root_namespace_id` differs from `home_namespace_id`); `None` for
-    /// individual accounts. Store it as [`DropboxConfig::path_root`].
+    /// (`root_namespace_id` differs from `home_namespace_id`); `None` for individual
+    /// accounts. Store it as [`DropboxConfig::path_root`].
     pub fn team_root(&self) -> Result<Option<String>> {
         let account = self
             .api
@@ -214,7 +200,6 @@ impl DropboxSource {
         arg
     }
 
-    /// `files/get_metadata` of an id or path.
     fn metadata(&self, path: &str) -> Result<Entry> {
         let value = self
             .api
@@ -223,7 +208,6 @@ impl DropboxSource {
         Entry::parse(&value).ok_or(Error::InvalidResponse("metadata"))
     }
 
-    /// Metadata of an item under the root.
     fn entry(&self, id: &ItemId) -> Result<Entry> {
         let path = self.api_path(id)?;
         let entry = self.metadata(&path)?;
@@ -236,7 +220,6 @@ impl DropboxSource {
         }
     }
 
-    /// The lowercased path of a folder, for naming children.
     fn folder_path(&self, id: &ItemId) -> Result<String> {
         if id.as_str().is_empty() {
             return Ok(self.config.root.clone());
@@ -272,7 +255,6 @@ impl DropboxSource {
             .ok_or(Error::InvalidResponse("id"))
     }
 
-    /// An item from an entry; `parent` when the caller knows it.
     fn item(&self, entry: &Entry, parent: Option<&ItemId>) -> Result<Item> {
         let id = entry.id.clone().ok_or(Error::InvalidResponse("id"))?;
         let lower = entry
@@ -325,8 +307,8 @@ impl DropboxSource {
             .map_err(Failure::into_error)
     }
 
-    /// Turn a `list_folder` result into a page; `None` when a deletion
-    /// cannot be attributed to an id, so the enumeration must restart.
+    /// Turn a `list_folder` result into a page; `None` when a deletion cannot be
+    /// attributed to an id, so the enumeration must restart.
     fn page(&self, value: &Value, reset: bool) -> Result<Option<ChangePage>> {
         let cursor = value
             .get("cursor")
@@ -372,8 +354,8 @@ impl DropboxSource {
         }))
     }
 
-    /// The id of a deleted file this source never saw (its revision history
-    /// survives the deletion). `None` for anything else, e.g. a folder.
+    /// The id of a deleted file this source never saw (its revision history survives
+    /// the deletion). `None` for anything else, e.g. a folder.
     fn deleted_file_id(&self, path_lower: &str) -> Result<Option<ItemId>> {
         let arg = json!({"path": path_lower, "mode": "path", "limit": 1});
         match self.api.rpc("files/list_revisions", &arg) {
@@ -482,7 +464,6 @@ impl DropboxSource {
         })
     }
 
-    /// Fail with a conflict unless `id` is at `expect`.
     fn check_revision(&self, id: &ItemId, expect: &Revision) -> Result<Entry> {
         if !is_rev(expect) {
             return Err(Error::Conflict { current: None });

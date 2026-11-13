@@ -1,14 +1,4 @@
 //! Following the files a pane shows, instead of reading them on a timer.
-//!
-//! The compositor and the relay keep what several panes show in small files
-//! (the display and input snapshots, the relay's heartbeat). A pane that read
-//! them every second woke the idle window every second to find nothing new.
-//! [`Watched`] puts a change-only watch on their directories
-//! ([`tilo_files::native::watch_changes`]): a change flags itself and wakes
-//! the window, and nothing else does.
-//!
-//! A pane follows only while it is shown: the guard its view part holds
-//! owns the watches, and the last part dropping it stops them.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,7 +6,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// What a change calls, on the watch's thread.
 pub type OnChange = Arc<dyn Fn() + Send + Sync>;
 
 /// Change-only watches over a set of files.
@@ -41,16 +30,12 @@ impl Watched {
         Self::start(files, changed, &on_change)
     }
 
-    /// Watch `files`, calling `on_change` on a watch's thread for every
-    /// change; [`Self::take`] answers `false`.
     pub fn calling(files: &[PathBuf], on_change: &OnChange) -> Self {
         Self::start(files, Arc::new(AtomicBool::new(false)), on_change)
     }
 
-    /// One watch per directory, every file of it named.
     fn start(files: &[PathBuf], changed: Arc<AtomicBool>, on_change: &OnChange) -> Self {
         let mut directories: Vec<(&Path, Vec<OsString>)> = Vec::new();
-        // Files nobody could locate cannot be followed.
         let mut complete = !files.is_empty();
         for file in files {
             let (Some(directory), Some(name)) = (file.parent(), file.file_name()) else {
@@ -95,7 +80,6 @@ impl Watched {
         }
     }
 
-    /// Whether a watched file changed since the last call.
     pub fn take(&self) -> bool {
         self.changed.swap(false, Ordering::AcqRel)
     }
@@ -106,8 +90,6 @@ impl Watched {
         self.complete
     }
 
-    /// Watches nothing and reports complete: a test flags it by hand
-    /// ([`Self::touch`]).
     #[cfg(test)]
     pub fn by_hand() -> Self {
         Self {
@@ -117,20 +99,14 @@ impl Watched {
         }
     }
 
-    /// Flag a change, as a watched file's would.
     #[cfg(test)]
     pub fn touch(&self) {
         self.changed.store(true, Ordering::Release);
     }
 }
 
-/// A device service followed by its own signals (`NetworkManager`,
-/// `BlueZ`): a count each change it reports moves, and what keeps the
-/// follow running. A pane's view part holds it while shown; its area reads
-/// the device again when [`Self::changes`] moves.
 pub struct Counted {
     changes: Arc<std::sync::atomic::AtomicU64>,
-    /// What keeps the follow running; `None` when nothing is followed.
     follow: Option<Box<dyn std::any::Any>>,
 }
 
@@ -193,7 +169,6 @@ mod tests {
         (on_change, changes)
     }
 
-    /// The watch threads `start` spawns, once each has named itself.
     #[cfg(target_os = "linux")]
     fn watch_threads<T>(count: usize, start: impl FnOnce() -> T) -> (T, Vec<String>) {
         let tasks = || -> std::collections::BTreeSet<String> {

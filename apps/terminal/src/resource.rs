@@ -1,14 +1,5 @@
-//! Terminal as a record: where a session runs, the relay session it
-//! re-attaches to and the pane collaborators' presence is scoped to.
-//!
-//! What the process prints (its screen, scrollback and title) is live
-//! output of a process on one device, like the pixels of a legacy window,
-//! and stays out of the document: recording it cost one Automerge
-//! operation per character and one version per output batch, kept forever
-//! (20,000 lines of a build log: 3.1 million operations and 403 versions,
-//! 27 times the emulator's own work). Another device reaches a running
-//! session by re-attaching to it on its relay; agents read the screen
-//! through the view that runs it ([`TerminalEffect::ReadScreen`]).
+//! Terminal as a record: where a session runs, the relay session it re-attaches to and the pane
+//! presence is scoped to. What the process prints stays on the device that runs it.
 
 use automerge::ObjId;
 use ui::framework::{
@@ -29,9 +20,8 @@ use crate::target::SessionTarget;
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-/// A terminal session, as its record holds it. Only the terminal running
-/// the session records these, as facts about the world outside the
-/// document that no undo takes back.
+/// A terminal session, as its record holds it. Only the terminal running the session records these:
+/// facts about the world outside the document that no undo takes back.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Terminal {
     /// Where the session runs
@@ -51,6 +41,17 @@ pub struct Terminal {
     /// process that takes the session.
     #[model(readonly)]
     pub pane: Option<Atom>,
+    /// Device
+    ///
+    /// The device of the window the session is set up in: the one that
+    /// recorded where it runs, or whose process last took it.
+    #[model(readonly)]
+    pub device: Option<Atom>,
+    /// Holder
+    ///
+    /// Who that window is: the participant who set the session up there.
+    #[model(readonly)]
+    pub holder: Option<Atom>,
     /// Runs
     ///
     /// The commands the session ran, one item each, written when it ends.
@@ -65,7 +66,6 @@ pub struct Terminal {
     pub requests: Outbox<RunRequest, RunAnswer>,
 }
 
-/// What a part of a run's output is.
 #[derive(
     Model,
     Clone,
@@ -99,8 +99,8 @@ pub enum ItemKind {
     Change,
 }
 
-/// One thing a parser found in a run's output: a diagnostic, a location, a
-/// link, a test, a changed file.
+/// One thing a parser found in a run's output: a diagnostic, a location, a link, a test, a changed
+/// file.
 #[derive(
     Model, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
@@ -175,9 +175,7 @@ pub struct RunRequest {
 pub struct RunAnswer {
     pub run: Option<Id>,
     pub exit: Option<i32>,
-    /// Why the run's host refused it, typed, with the steps that would let
-    /// it through: an agent tells the person what to do, and runs it again
-    /// once they did.
+    /// Why the run's host refused it, with the steps that would let it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<ui::tilo_actions::remote::host_account::Refusal>,
 }
@@ -190,22 +188,18 @@ pub struct Finished {
     pub started_ms: i64,
     pub ended_ms: i64,
     pub exit: i32,
-    /// The content hash of the raw output (lower-case hex), when it printed
-    /// anything.
+    /// The raw output, kept in the window's content store; the reference is what the record names it by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    pub output_len: u64,
+    pub output: Option<Bytes>,
     pub truncated: bool,
     pub tool: String,
-    /// Whether what it changed can be undone later: read from the command
-    /// when it ended ([`crate::undoability`]).
+    /// Whether what it changed can be undone later, read from the command when it ended
+    /// ([`crate::undoability`]).
     pub undoable: bool,
     pub items: Vec<RunItem>,
-    /// The request it carried out, if `run` asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Id>,
-    /// The id the run takes: the request's when one asked for it, so its
-    /// answer names the run.
+    /// The id the run takes: the request's, when `run` asked for it, so the answer names it.
     pub run: Id,
 }
 
@@ -213,14 +207,12 @@ pub struct Finished {
 pub const MAX_COMMAND_BYTES: usize = 4 * 1024;
 
 impl Terminal {
-    /// Where the session runs, once a session recorded it.
     pub fn session_target(&self) -> Option<SessionTarget> {
         self.target
             .as_ref()
             .and_then(|target| SessionTarget::decode(&target.0))
     }
 
-    /// The relay session to re-attach to.
     pub fn relay(&self) -> Option<&str> {
         self.relay_session
             .as_ref()
@@ -232,17 +224,33 @@ impl Terminal {
         self.pane.as_ref().map_or("", |pane| pane.0.as_str())
     }
 
-    /// The session stored under `obj` of another record's document: a
-    /// terminal nested in an editor's panel.
+    /// Whether the session belongs to a window other than one `me` opens on `device`: a window opened on
+    /// it joins the session instead of starting a shell, and one `me` reopens there takes it back.
+    pub fn runs_elsewhere(&self, device: &str, me: &str) -> bool {
+        let is =
+            |field: &Option<Atom>, value: &str| field.as_ref().is_some_and(|atom| atom.0 == value);
+        (self.pane.is_some() || self.target.is_some())
+            && !(is(&self.device, device) && is(&self.holder, me))
+    }
+
+    fn set_up_on(&mut self, cx: &ActionCx, device: Option<String>) {
+        self.device = device.filter(|device| !device.is_empty()).map(Atom);
+        self.holder = cx
+            .author()
+            .filter(|author| !author.is_empty())
+            .map(|author| Atom(author.to_owned()));
+    }
+
+    /// The session stored under `obj` of another record's document: a terminal nested in an editor's
+    /// panel.
     ///
     /// # Errors
-    /// Returns [`ModelError`] when the object does not hold a session.
+    /// [`ModelError`] when the object does not hold a session.
     pub fn read_under(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
         <Self as Fields>::read_fields(doc, obj)
     }
 
-    /// Apply one of the session's actions to a session stored under `obj`
-    /// of another record's document.
+    /// Apply one of the session's actions to a session stored under `obj` of another record's document.
     ///
     /// # Errors
     /// The action's refusal; nothing is written then.
@@ -265,17 +273,23 @@ impl Terminal {
     }
 }
 
+impl Terminal {
+    /// What the record holds, as JSON: an app with no window open reads a record through this.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "terminal.session",
-    label = "Terminal",
     params = session,
-    effects = TerminalEffect
+    effects = TerminalEffect,
+    read_content = Terminal::read_document
 )]
 impl Terminal {
-    /// Run a command line in the session.
-    ///
-    /// Types it into the session's shell, on the device that runs the
-    /// session, and answers with the run once it ends.
     #[action]
     pub fn run(
         &mut self,
@@ -286,7 +300,6 @@ impl Terminal {
         self.queue(cx, requests, &command)
     }
 
-    /// Run a run's command line again.
     #[action(keywords = "run again, repeat command", item = runs)]
     pub fn rerun(
         &mut self,
@@ -320,20 +333,18 @@ impl Terminal {
         self.queue(cx, requests, &command)
     }
 
-    /// Record a run that ended.
+    #[action(keywords = "stop, cancel, interrupt, ctrl c")]
+    pub fn stop(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
     #[action(external)]
     pub fn record_run(
         &mut self,
         cx: &mut ActionCx,
         #[param("The run, as the session marked it", flatten)] run: Finished,
     ) -> Result<(), Refusal> {
-        let output = match &run.output {
-            Some(hash) => Bytes::Blob {
-                hash: content_hash(hash).ok_or("the output is not a content hash")?,
-                len: run.output_len,
-            },
-            None => Bytes::Empty,
-        };
+        let output = run.output.unwrap_or_default();
         let asked = run
             .request
             .as_ref()
@@ -370,20 +381,22 @@ impl Terminal {
         Ok(())
     }
 
-    /// Record where the session runs.
+    /// Record where the session runs and the window it is set up in: on `device`, the action's author's.
     #[action(external)]
     pub fn record_target(
         &mut self,
+        cx: &mut ActionCx,
         #[param("An encoded session target")] target: String,
+        #[param("The device of the window that sets the session up")] device: Option<String>,
     ) -> Result<(), Refusal> {
         if SessionTarget::decode(&target).is_none() {
             return Err(Refusal::new("session target is invalid"));
         }
         self.target = Some(Atom(target));
+        self.set_up_on(cx, device);
         Ok(())
     }
 
-    /// Record the relay session this session re-attaches to, or forget it.
     #[action(external)]
     pub fn record_relay_session(
         &mut self,
@@ -401,19 +414,23 @@ impl Terminal {
         Ok(())
     }
 
-    /// Scope presence to a new process's pane.
     #[action(external)]
-    pub fn claim_pane(&mut self, #[param("The pane's id")] pane: String) -> Result<(), Refusal> {
+    pub fn claim_pane(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The pane's id")] pane: String,
+        #[param("The device the process runs on")] device: Option<String>,
+    ) -> Result<(), Refusal> {
         if uuid::Uuid::parse_str(&pane).is_err() {
             return Err(Refusal::new("pane id is invalid"));
         }
         self.pane = Some(Atom(pane));
+        self.set_up_on(cx, device);
         Ok(())
     }
 }
 
 impl Terminal {
-    /// Queue `command` for the process that runs the session.
     fn queue(
         &self,
         cx: &mut ActionCx,
@@ -434,7 +451,7 @@ impl Terminal {
         let request = RunRequest {
             command: Atom(command.to_owned()),
             requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
-            for_person: cx.for_person().map(Atom),
+            for_person: cx.acting().and_then(|acting| acting.person),
             pane,
             agent: cx.actor_kind() == Some(ui::tilo_actions::ActorKind::Agent),
         };
@@ -443,21 +460,8 @@ impl Terminal {
     }
 }
 
-/// The 32 bytes a lower-case hex content hash names.
-fn content_hash(hex: &str) -> Option<[u8; 32]> {
-    if !tilo_content::valid_hash(hex) {
-        return None;
-    }
-    let mut out = [0_u8; 32];
-    for (byte, pair) in out.iter_mut().zip(hex.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(out)
-}
-
-/// Keep explicit reads bounded even when retained output contains very long
-/// rows. The suffix ends at a Unicode scalar boundary; no terminal content is
-/// logged or copied until the caller asks for it.
+/// Keep explicit reads bounded even when retained output has very long rows; the suffix ends on a
+/// Unicode boundary and nothing is logged before the caller asks for it.
 pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
     const LIMIT: usize = 64 * 1024;
     let mut reversed = String::new();
@@ -649,9 +653,9 @@ impl ResourceApp for TerminalShell {
     type Resource = Terminal;
     const ID: &'static str = "so.tilo.terminal";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
-    // Each window is a session of its own, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Terminal";
+    const TITLE_KEY: &'static str = "terminal-app-title";
     const ICON: Option<&'static str> = Some("terminal");
 
     fn label(_state: &Terminal) -> String {
@@ -675,14 +679,8 @@ impl ResourceApp for TerminalShell {
         reason = "a framework surface without an emulator cannot present a terminal"
     )]
     fn view(cx: &mut ViewCx<Terminal>) -> Element {
-        // A window someone may type in runs its session; a past version, a
-        // screenshot, a participant who may only view, and this crate's own
-        // tests present a terminal with no process behind it.
-        // Mounted in the shell, sessions open through the supervisor
-        // service permission or connection the shell lent; in its own process, locally.
         let lent = cx.take_lent::<crate::HostedProcessServices>();
         let deferred = cx.take_lent::<crate::HostedSessionSource>().is_some();
-        // The window the shell shows a tab of it in, in the shell's process.
         let hosted_window = cx.take_lent::<ui::hosted_window::HostedWindow>();
         let widget = if cx.read_only() {
             TerminalWidget::spawn_headless()
@@ -708,9 +706,6 @@ impl ResourceApp for TerminalShell {
             Some(content) => widget.with_content(content),
             None => widget,
         };
-        // A live terminal is the app of its window: the window's title says
-        // where its shell runs, and the window closes when the shell exits.
-        // A past version shows a terminal, not a window of one.
         if cx.mode().is_live() {
             widget.show_in_window(hosted_window);
         }
@@ -731,7 +726,6 @@ impl ResourceApp for TerminalShell {
                 Ok(Effected::Pending)
             },
         );
-        // A run is shown by the session that ran it: its view is this one.
         let live = cx.live().clone();
         cx.on_open_item(move |run| {
             if live.get().runs.contains(run) {
@@ -778,6 +772,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if let (Some(device), Some(me)) = (cx.device(), cx.me()) {
+            self.runs_on(device, me);
+        }
+        self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
             && let (Some(history), Some(record)) = (
                 cx.person::<crate::history::CommandHistory>(),
@@ -870,6 +868,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if let (Some(device), Some(me)) = (cx.device(), cx.me()) {
+            self.runs_on(device, me);
+        }
+        self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
             && let (Some(history), Some(record)) = (
                 cx.person::<crate::history::CommandHistory>(),

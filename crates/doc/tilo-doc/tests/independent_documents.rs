@@ -1,17 +1,11 @@
-//! Two people opening "the same" document must end up editing the same
-//! document.
-//!
-//! Every other convergence test in this crate starts from `fork()` — one
-//! document, copied — and that is the easy half. The hard half is two replicas
-//! that each *created* a document, which is what happens whenever two apps
-//! import the same file: each writes the schema under its own actor, so
+//! Two people opening "the same" document must end up editing the same document.
+//! Every other convergence test starts from `fork()` — one document, copied. The
+//! hard half is two replicas that each created a document, as happens whenever two
+//! apps import the same file: each writes the schema under its own actor, so
 //! `root.blocks` is created twice by ops that never saw each other. Automerge
-//! resolves that map-key conflict by keeping one op and shadowing the other, and
-//! the shadowed side's whole block tree goes with it — silently, with the winner
-//! decided by an actor-id comparison rather than by anything the two people did.
-//!
-//! These fail against a schema whose containers are minted per replica, and pass
-//! once the schema comes from one genesis every replica already agrees on.
+//! resolves that conflict by keeping one op and shadowing the other, and the
+//! shadowed side's whole block tree goes with it, the winner decided by an actor-id
+//! comparison.
 
 use tilo_doc::Document;
 
@@ -37,12 +31,9 @@ fn texts(d: &Document) -> Vec<String> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn independently_created_documents_merge_without_displacing_either_side() {
-    // Phase `independently_created_documents_keep_both_sides_blocks`.
-    // Merging two independently-created documents keeps **both** sides' content.
-    //
-    // Run repeatedly, because the outcome used to be decided by a comparison
-    // between two random actor ids — a single run that happened to keep our side
-    // would read as a pass. Losing even once is the bug.
+    // Merging two independently created documents keeps both sides' content, run repeatedly because
+    // the outcome is decided by a comparison between random actor ids and a single lucky run would
+    // read as a pass.
     {
         const ROUNDS: usize = 64;
         let mut lost = 0usize;
@@ -70,9 +61,8 @@ fn independently_created_documents_merge_without_displacing_either_side() {
              side's blocks entirely — whichever replica lost the root-key conflict"
         );
     }
-    // Phase `an_image_survives_a_merge_with_a_document_that_has_none`.
-    // The same defect from the direction that made it visible: only one side has
-    // the image, so when that side loses there is no image block left to draw.
+    // The same defect from the direction that made it visible: only one side has the image, so when
+    // that side loses there is no image block left to draw.
     {
         const ROUNDS: usize = 64;
         let mut lost = 0usize;
@@ -115,9 +105,8 @@ fn independently_created_documents_merge_without_displacing_either_side() {
              bytes — the image cannot render because it is not in the merged document"
         );
     }
-    // Phase `a_third_participant_does_not_displace_the_first_two`.
-    // A third participant, and a peer that joins after there is already content:
-    // order of arrival must not decide whose paragraph survives.
+    // A third participant, and a peer that joins after there is already content: order of arrival
+    // must not decide whose paragraph survives.
     {
         const ROUNDS: usize = 32;
         let mut lost = 0usize;
@@ -150,12 +139,9 @@ fn independently_created_documents_merge_without_displacing_either_side() {
             "{lost}/{ROUNDS} three-way merges dropped at least one participant's content"
         );
     }
-    // Phase `adopting_the_schema_keeps_ops_already_pending`.
-    // Adopting the genesis must not cost the caller an edit.
-    //
-    // `init` is reached from `sync`, where the host may already have ops pending in
-    // the open transaction — a record stamping its identity, a widget mid-edit.
-    // Applying a change into the document from underneath those has to keep them.
+    // Adopting the genesis must not cost the caller an edit: `init` is reached from `sync`, where
+    // the host may already have ops pending in the open transaction, and applying a change into the
+    // document from underneath those has to keep them.
     {
         use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 

@@ -20,10 +20,10 @@ pub(super) enum TimelineEmptyAction {
 }
 
 impl TimelineEmptyAction {
-    pub(super) fn label(self) -> &'static str {
+    pub(super) fn label_message(self) -> &'static str {
         match self {
-            Self::Import => "Import media",
-            Self::ShowMedia => "Show media",
+            Self::Import => "video-editor-timeline-import",
+            Self::ShowMedia => "video-editor-timeline-show-media",
         }
     }
 }
@@ -32,29 +32,45 @@ impl TimelineEmptyAction {
 pub(super) struct TimelineEmpty {
     /// Where the state is centred: the tracks' content area.
     pub(super) area: Rect,
-    pub(super) message: &'static str,
+    /// The catalogue message asking for the step that fills the timeline.
+    pub(super) message_message: &'static str,
     pub(super) action: Option<TimelineEmptyAction>,
 }
 
-impl TimelineEmpty {
-    pub(super) const TITLE: &'static str = "Nothing on the timeline";
+/// Resolved from the catalogue for one frame: the state borrows them as it paints and as it
+/// names its node.
+pub(super) struct TimelineEmptyWords {
+    title: String,
+    message: String,
+    action: Option<String>,
+}
 
-    pub(super) fn content(&self) -> ui::widget::EmptyStateContent<'static> {
+impl TimelineEmpty {
+    pub(super) const TITLE_MESSAGE: &'static str = "video-editor-timeline-empty-title";
+
+    pub(super) fn words(&self) -> TimelineEmptyWords {
+        TimelineEmptyWords {
+            title: crate::resource::CATALOG.t(Self::TITLE_MESSAGE),
+            message: crate::resource::CATALOG.t(self.message_message),
+            action: self
+                .action
+                .map(|action| crate::resource::CATALOG.t(action.label_message())),
+        }
+    }
+
+    pub(super) fn content(words: &TimelineEmptyWords) -> ui::widget::EmptyStateContent<'_> {
         ui::widget::EmptyStateContent {
             icon: Some(Icon::Layers),
-            message: Some(self.message),
-            action_label: self.action.map(TimelineEmptyAction::label),
-            ..ui::widget::EmptyStateContent::new(Self::TITLE)
+            message: Some(&words.message),
+            action_label: words.action.as_deref(),
+            ..ui::widget::EmptyStateContent::new(&words.title)
         }
     }
 }
 
 impl VideoEditorApp {
-    /// Where playheads and the ruler's grid lines end: at the last track
-    /// while there are clips to cross, clear of the add-track row under it
-    /// (and at the timeline's bottom when the tracks run past it); on an
-    /// empty timeline, at the ruler, clear of the add-track row and the
-    /// empty state under it.
+    /// At the last track while there are clips to cross, clear of the add-track row under
+    /// it; on an empty timeline, at the ruler.
     pub(super) fn playhead_bottom(&self, r: &Regions) -> f64 {
         if self.project.clips.is_empty() {
             return r.ruler.y1;
@@ -65,8 +81,6 @@ impl VideoEditorApp {
             .clamp(r.ruler.y1, r.timeline.y1)
     }
 
-    /// The tracks' content on an empty timeline: the lanes beside the
-    /// header column, under the add-track row.
     pub(super) fn timeline_content_area(&self, r: &Regions) -> Rect {
         let top = self
             .add_track_buttons(r)
@@ -77,15 +91,11 @@ impl VideoEditorApp {
         Rect::new(r.lanes.x0, top, r.lanes.x1, r.timeline.y1)
     }
 
-    /// Whether the person has the Media pane shown (or showing), at any
-    /// width: one button per job, so while it is, its own Import and its
-    /// list answer the empty timeline's words.
+    /// One button per job, so while the Media pane is shown its own Import answers.
     pub(super) fn media_pane_shown(&self) -> bool {
         self.bin_flap.is_open(self.bin_layout())
     }
 
-    /// The empty timeline, while no clip is on it. It carries a button
-    /// only while the Media pane, which does the job, is hidden.
     pub(super) fn timeline_empty(&self, r: &Regions) -> Option<TimelineEmpty> {
         if !self.project.clips.is_empty() {
             return None;
@@ -95,13 +105,13 @@ impl VideoEditorApp {
         Some(if self.project.media.is_empty() {
             TimelineEmpty {
                 area,
-                message: "Import media, then drag it here.",
+                message_message: "video-editor-timeline-import-media",
                 action: hidden.then_some(TimelineEmptyAction::Import),
             }
         } else {
             TimelineEmpty {
                 area,
-                message: "Drag a clip from the media bin onto a track.",
+                message_message: "video-editor-timeline-drag-clip",
                 action: hidden.then_some(TimelineEmptyAction::ShowMedia),
             }
         })
@@ -114,14 +124,18 @@ impl VideoEditorApp {
     ) -> Option<(Rect, TimelineEmptyAction)> {
         let empty = self.timeline_empty(r)?;
         let action = empty.action?;
+        let words = empty.words();
         let rect = self.with_dialog_layout(|_, tr, theme| {
-            ui::widget::EmptyState::action_rect_in(tr, theme, empty.area, &empty.content())
+            ui::widget::EmptyState::action_rect_in(
+                tr,
+                theme,
+                empty.area,
+                &TimelineEmpty::content(&words),
+            )
         })?;
         Some((rect, action))
     }
 
-    /// Run the empty timeline's action: the same Import the Media pane's
-    /// button runs, or the Media pane shown.
     pub(super) fn run_timeline_empty_action(&mut self, action: TimelineEmptyAction) {
         match action {
             TimelineEmptyAction::Import => self.trigger_import(),
@@ -133,19 +147,18 @@ impl VideoEditorApp {
         }
     }
 
-    /// The empty timeline in the semantic tree: its words, and its action
-    /// as a button where it is drawn.
     pub(super) fn a11y_timeline_empty(&self, r: &Regions) -> Option<AccessNode> {
         let empty = self.timeline_empty(r)?;
+        let words = empty.words();
         let mut node = AccessNode::new(Role::Group)
-            .with_name(TimelineEmpty::TITLE)
-            .with_description(empty.message)
+            .with_name(&words.title)
+            .with_description(&words.message)
             .with_bounds(empty.area)
             .with_key(ui::a11y::hash_key(&TIMELINE_EMPTY_KEY));
         if let Some((rect, action)) = self.timeline_empty_action_rect(r) {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
-                    .with_name(action.label())
+                    .with_name(crate::resource::CATALOG.t(action.label_message()))
                     .with_bounds(rect)
                     .with_key(ui::a11y::hash_key(&TIMELINE_EMPTY_ACTION_KEY))
                     .with_state(AccessState::new().focusable(true)),
@@ -154,8 +167,6 @@ impl VideoEditorApp {
         Some(node)
     }
 
-    /// An assistive technology's action on the empty timeline (`rest`, the
-    /// path under its node).
     pub(super) fn a11y_timeline_empty_action(
         &mut self,
         action: &ui::a11y::Action,

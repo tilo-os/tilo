@@ -89,6 +89,35 @@ thread_local! {
     /// record is published from the latest.
     static LIVE: RefCell<Vec<Published>> = const { RefCell::new(Vec::new()) };
     static NEXT_HOLD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// What the window last published on the door, and how many times it has: the actions its
+    /// controls are bound to.
+    static SHOWN: RefCell<(u64, Vec<ui::tilo_actions::ResourceSpec>)> =
+        const { RefCell::new((0, Vec::new())) };
+}
+
+/// Whether `a` and `b` publish the same actions on the same resources: what a control is bound
+/// to is the same.
+fn same_actions(
+    a: &[ui::tilo_actions::ResourceSpec],
+    b: &[ui::tilo_actions::ResourceSpec],
+) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.id == b.id
+                && a.actions.len() == b.actions.len()
+                && a.actions.iter().zip(&b.actions).all(|(a, b)| a.id == b.id)
+                && same_actions(&a.children, &b.children)
+        })
+}
+
+/// What the window published on the door since it last published `seen` times, with how many
+/// times it has now; `None` when nothing was published since.
+#[must_use]
+pub fn published_since(seen: u64) -> Option<(u64, Vec<ui::tilo_actions::ResourceSpec>)> {
+    SHOWN.with(|shown| {
+        let shown = shown.borrow();
+        (shown.0 != seen).then(|| (shown.0, shown.1.clone()))
+    })
 }
 
 /// The live window's hold on publication: while it lives, the workspace's records are published
@@ -253,7 +282,15 @@ impl Resource for Workspace {
     }
 
     fn children(_state: &WorkspaceState) -> Vec<ui::tilo_actions::ResourceSpec> {
-        published()
+        let resources = published();
+        SHOWN.with(|shown| {
+            let mut shown = shown.borrow_mut();
+            if !same_actions(&shown.1, &resources) {
+                shown.0 = shown.0.wrapping_add(1);
+                shown.1.clone_from(&resources);
+            }
+        });
+        resources
     }
 
     /// What the workspace's records hold is read as data, as every app's documents are: an agent

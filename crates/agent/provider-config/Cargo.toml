@@ -21,6 +21,8 @@ url.workspace = true
 base64.workspace = true
 # The settings section as a model, so an app edits it by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+# One rule for which language a code or locale names, shared with the packs.
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 [features]
 model = ["dep:tilo-resource"]

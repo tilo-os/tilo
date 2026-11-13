@@ -1,8 +1,7 @@
-//! Public files this device keeps one copy of for every app and workspace
-//! (a book catalogue), through the app's capability. The daemon decides
-//! which files exist and where they come from; an app keeps one by name,
-//! reads it, and releases it. A released copy stays on the device until
-//! the device needs its room.
+//! Public files this device keeps one copy of for every app and workspace (a book
+//! catalogue), through the app's capability. The daemon decides which files exist and
+//! where they come from; an app keeps one by name, reads it and releases it. A released
+//! copy stays on the device until the device needs its room.
 
 use std::io;
 
@@ -10,7 +9,6 @@ use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
 
 use crate::PublicState;
 
-/// One public file, by the name the daemon knows it under.
 #[derive(Clone)]
 pub struct PublicCopy {
     client: BlobClient,
@@ -44,9 +42,8 @@ impl PublicCopy {
             .map_err(|error| io_error(&error))
     }
 
-    /// The current copy's hash, when it is wholly here: what tells a reader
-    /// that keeps something built from the copy whether it changed, without
-    /// reading it.
+    /// The current copy's hash, when it is wholly here: what tells a reader that keeps
+    /// something built from the copy whether it changed, without reading it.
     ///
     /// # Errors
     ///

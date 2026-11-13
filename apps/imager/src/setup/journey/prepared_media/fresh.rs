@@ -1,4 +1,5 @@
 //! One immutable transfer generation: selected browser bytes and parent seal agree.
+
 use super::*;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
@@ -6,9 +7,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 
 impl PreparedMedia {
-    /// Refresh browser contents under the same grants before any transfer begins.
-    /// Only a complete authenticated new generation is returned; failures leave
-    /// the original browser/parent package untouched. Retries use this generation.
     pub(crate) fn refreshed_for_transfer(
         self: &Arc<Self>,
         cancel: &AtomicBool,
@@ -39,9 +37,6 @@ impl PreparedMedia {
         Ok(prepared)
     }
 
-    /// Private capture for an original-source preparation transaction. This does
-    /// not publish a generation or perform ordinary WholeHome refresh. The
-    /// caller must validate its exact offline scope before publishing anything.
     pub(super) fn refresh_browser_uncached(
         &self,
         password: &[u8],
@@ -278,7 +273,6 @@ mod tests {
             super::super::offline::original_budget_for_capacity(&original, capacity).unwrap(),
             8 * 1024 * 1024
         );
-        // Ordinary transfers reserve no amended setup and keep one Home copy.
         let ordinary_home = 8 * 1024 * 1024;
         assert_eq!(
             original.capacity_with_home(ordinary_home).unwrap(),

@@ -12,11 +12,6 @@ pub(crate) enum Error {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rule {
-    GrantsAmbiguous,
-    GrantsInvalid,
-    GrantAmbiguous,
-    GrantMissing,
-    GrantInvalid,
     Nonpersistent,
     OwnerAmbiguous,
     OwnerInvalid,
@@ -30,11 +25,6 @@ impl Error {
             Self::Legacy(e) => e.to_string(),
             Self::Encoding(e) => e.to_string(),
             Self::Rule(rule) => match rule {
-                Rule::GrantsAmbiguous => "ambiguous private policy grants",
-                Rule::GrantsInvalid => "invalid private policy grants",
-                Rule::GrantAmbiguous => "ambiguous private policy grant",
-                Rule::GrantMissing => "missing private policy grant",
-                Rule::GrantInvalid => "invalid private policy grant",
                 Rule::Nonpersistent => "nonpersistent governed private policy grant",
                 Rule::OwnerAmbiguous => "ambiguous canonical workspace/owner",
                 Rule::OwnerInvalid => "invalid canonical owner",
@@ -59,10 +49,10 @@ pub(crate) struct LegacyBasis {
 }
 use super::media::fingerprint::FingerprintRead;
 use super::read::{self, Capacity, ReadError, WorkspaceValue};
-use automerge::{ObjType, ReadDoc};
+use automerge::ReadDoc;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::BTreeMap;
-use tilo_action_policy::{Grant, Lifetime};
+use tilo_action_policy::Lifetime;
 
 fn resource(_: Capacity) -> Error {
     Error::Capacity
@@ -101,77 +91,24 @@ impl PrivateRead for LegacyRead<'_, AutoCommit> {
         Ok(count)
     }
 }
-trait Decode {
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
-}
-struct LegacyDecode;
-impl Decode for LegacyDecode {
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
-        serde_json::from_slice(bytes).map_err(|_| rule(Rule::GrantInvalid))
-    }
-}
-fn grants<R: PrivateRead, D: Decode>(
-    read: &R,
-    decode: &D,
+/// The ascending capability expiries of the grants `policy` holds, in
+/// seconds; a grant the workspace keeps must outlast the session it was
+/// given in.
+fn grants(
+    policy: &tilo_action_policy::WorkspacePolicy,
     work: &mut Collections,
 ) -> Result<Vec<u64>, Error> {
-    let mut object = None;
-    let count = read.all(&read.root(), "grants", |value| {
-        if let WorkspaceValue::Object {
-            kind: ObjType::Map,
-            object: found,
-        } = value
-        {
-            object = Some(found);
-        }
-        Ok(())
-    })?;
-    if count > 1 {
-        return Err(rule(Rule::GrantsAmbiguous));
-    }
     let mut expiries = Vec::new();
-    if count == 1 {
-        let object = object.ok_or_else(|| rule(Rule::GrantsInvalid))?;
-        read.visit_keys(&object, |key| {
-            // Count and scalar shape precede JSON/persistence, even when the
-            // first conflicting value happens to contain malformed bytes.
-            let mut bytes_shape = false;
-            let count = read.all(&object, key, |value| {
-                bytes_shape = matches!(value, WorkspaceValue::Bytes(_));
-                Ok(())
-            })?;
-            if count != 1 {
-                return Err(rule(Rule::GrantAmbiguous));
-            }
-            if !bytes_shape {
-                return Err(rule(Rule::GrantInvalid));
-            }
-            let mut seen = false;
-            read.all(&object, key, |value| {
-                let WorkspaceValue::Bytes(bytes) = value else {
-                    return Err(rule(Rule::GrantInvalid));
-                };
-                seen = true;
-                let grant = decode.grant(bytes)?;
-                match grant.lifetime {
-                    Lifetime::Once | Lifetime::Session(_) => {
-                        return Err(rule(Rule::Nonpersistent));
-                    }
-                    // Expiries are compared in seconds, rounded up so a grant is
-                    // never reported gone before it is.
-                    Lifetime::Until(at) => work
-                        .push(&mut expiries, at.div_ceil(1000))
-                        .map_err(resource)?,
-                    Lifetime::UntilRevoked => {}
-                }
-                Ok(())
-            })?;
-            if !seen {
-                return Err(rule(Rule::GrantMissing));
-            }
-            Ok(())
-        })
-        .map_err(read_error)?;
+    for grant in &policy.grants {
+        match grant.lifetime {
+            Lifetime::Once | Lifetime::Session(_) => return Err(rule(Rule::Nonpersistent)),
+            // Expiries are compared in seconds, rounded up so a grant is never
+            // reported gone before it is.
+            Lifetime::Until(at) => work
+                .push(&mut expiries, at.div_ceil(1000))
+                .map_err(resource)?,
+            Lifetime::UntilRevoked => {}
+        }
     }
     expiries.sort_unstable();
     expiries.dedup();
@@ -231,6 +168,7 @@ where
 }
 fn revision<'a, R, I, J>(
     read: &R,
+    ops: &BTreeMap<String, Vec<u8>>,
     meta: Metadata<'a, I, J>,
     work: &mut Collections,
 ) -> Result<String, Error>
@@ -240,29 +178,11 @@ where
     J: Iterator<Item = &'a RevocationEntry>,
 {
     let owner = canonical_owner(read, meta.workspace, meta.owner)?;
-    let mut grants = BTreeMap::new();
-    let mut members = BTreeMap::new();
     let mut peers = BTreeMap::new();
     let mut identities = BTreeMap::new();
     read::visit_governance_entries(read, |entry| {
         match entry {
-            read::GovernanceEntry::Owner(_)
-            | read::GovernanceEntry::Sandbox { .. }
-            | read::GovernanceEntry::MemberJoined { .. } => (),
-            read::GovernanceEntry::Grant { key, bytes } => {
-                work.tree_entry::<String, Vec<u8>>().map_err(resource)?;
-                grants.insert(
-                    work.text(key).map_err(resource)?,
-                    work.bytes(bytes).map_err(resource)?,
-                );
-            }
-            read::GovernanceEntry::Member { key, bytes } => {
-                work.tree_entry::<String, Vec<u8>>().map_err(resource)?;
-                members.insert(
-                    work.text(key).map_err(resource)?,
-                    work.bytes(bytes).map_err(resource)?,
-                );
-            }
+            read::GovernanceEntry::Owner(_) | read::GovernanceEntry::Sandbox { .. } => (),
             read::GovernanceEntry::Peer { key, name } => {
                 work.tree_entry::<String, String>().map_err(resource)?;
                 peers.insert(
@@ -302,8 +222,7 @@ where
             meta.workspace,
             meta.owner,
             owner.as_str(),
-            members,
-            grants,
+            ops,
             peers,
             identities,
             (u8::from(count != 0), media),
@@ -332,7 +251,12 @@ where
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    revision(read, meta, &mut Collections::unqualified())
+    revision(
+        read,
+        &crate::members::replay::raw(read.0),
+        meta,
+        &mut Collections::unqualified(),
+    )
 }
 pub(crate) fn legacy<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,
@@ -343,8 +267,8 @@ where
     J: Iterator<Item = &'a RevocationEntry>,
 {
     let mut work = Collections::unqualified();
-    let expiries = grants(read, &LegacyDecode, &mut work)?;
-    let revision = revision(read, meta, &mut work)?;
+    let expiries = grants(&crate::members::replay(read.0, meta.workspace), &mut work)?;
+    let revision = revision(read, &crate::members::replay::raw(read.0), meta, &mut work)?;
     Ok(LegacyBasis { revision, expiries })
 }
 #[cfg(test)]

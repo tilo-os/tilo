@@ -1,6 +1,3 @@
-//! The workbook through the door the host uses: its verbs and field edits,
-//! the invariants, merging, search and history.
-
 use super::*;
 use crate::workbook::{FIRST_SHEET_ID, Sheet};
 use ui::framework::testing::TestApp;
@@ -49,7 +46,6 @@ fn edit(book: &mut Replica<Workbook>, edit: &Edit<Workbook>) {
     book.apply(Invoke::edit(edit).unwrap()).unwrap();
 }
 
-/// A new workbook is one empty first sheet; nothing is fabricated.
 #[test]
 fn a_new_workbook_opens_one_blank_sheet() {
     let app = TestApp::<SheetsShell>::new().unwrap();
@@ -64,7 +60,6 @@ fn a_new_workbook_opens_one_blank_sheet() {
     assert_eq!(state.sheets.ids().next().unwrap().as_str(), FIRST_SHEET_ID);
 }
 
-/// Screenshots show the sample workbook, staged through its actions.
 #[test]
 fn a_capture_stages_the_sample_workbook() {
     let plain = TestApp::<SheetsShell>::capture(None).unwrap();
@@ -93,8 +88,7 @@ fn a_capture_stages_the_sample_workbook() {
     );
 }
 
-/// A comment is signed by whoever invokes it, never by a name its
-/// arguments carry; an agent comments in one call.
+/// A comment is signed by whoever invokes it, never by a name its arguments carry.
 #[test]
 fn a_comment_is_signed_by_its_invoker() {
     let mut app = TestApp::<SheetsShell>::new().unwrap();
@@ -129,9 +123,6 @@ fn a_comment_is_signed_by_its_invoker() {
     );
 }
 
-/// The fill-series scenario extends its seeds through the real fill
-/// handle, and the paste scenario adjusts the copied formula: both are
-/// edits the capture's document holds.
 #[test]
 fn document_scenarios_edit_through_the_dispatcher() {
     let raw = |app: &TestApp<SheetsShell>, a1: &str| {
@@ -149,12 +140,9 @@ fn document_scenarios_edit_through_the_dispatcher() {
 
     let _clipboard = crate::app::tests::CLIP_LOCK.lock_recover();
     let paste = TestApp::<SheetsShell>::capture(Some("pasteformula")).unwrap();
-    // E2's `=SUM(B2:D2)` pasted one row down reads its own row.
     assert_eq!(raw(&paste, "E3").as_deref(), Some("=SUM(B3:D3)"));
 }
 
-/// A reader kept up to date by what each change touched arrives where a
-/// fresh read does, without reading the workbook whole.
 #[test]
 fn a_change_refreshes_only_what_it_touched() {
     let mut book = sample();
@@ -179,8 +167,6 @@ fn a_change_refreshes_only_what_it_touched() {
     assert_eq!(total.display, "$3,700.00", "the edit is recalculated");
 }
 
-/// Search finds sheets and cells by what they hold and what they show,
-/// and a hit opens the cell it is anchored at.
 #[test]
 fn search_hits_open_cells_the_workbook_resolves() {
     let state = sample().state().unwrap();
@@ -202,8 +188,6 @@ fn search_hits_open_cells_the_workbook_resolves() {
     assert!(entries.iter().any(|entry| entry.title == "Sales"));
 }
 
-/// Deleting a formula range's first or last row/column shrinks it; only
-/// deleting all of it yields `#REF!`.
 #[test]
 fn deleting_a_range_edge_row_or_column_shrinks_the_formula_range() {
     let mut book = Replica::<Workbook>::new();
@@ -244,8 +228,6 @@ fn deleting_a_range_edge_row_or_column_shrinks_the_formula_range() {
     assert_eq!(raw(&book, &sheet, "C1"), "=SUM(#REF!)");
 }
 
-/// Inserting rows moves cells and the formulas pointing at them; charts
-/// and comments stay on their cells; a stable sheet id survives a reorder.
 #[test]
 fn rows_move_cells_formulas_and_anchors_and_targets_stay_put() {
     let mut book = sample();
@@ -274,8 +256,6 @@ fn rows_move_cells_formulas_and_anchors_and_targets_stay_put() {
         "the chart moved down"
     );
 
-    // Another person moved Budget after Sales: a write naming Budget's id
-    // still lands on Budget.
     edit(&mut book, &Workbook::paths().sheets.move_to(&budget, 1));
     write(&mut book, &budget, &[("H8", "on the intended sheet")]);
     assert_eq!(raw(&book, &budget, "H8"), "on the intended sheet");
@@ -283,8 +263,6 @@ fn rows_move_cells_formulas_and_anchors_and_targets_stay_put() {
     assert_eq!(raw(&book, &sales, "H8"), "");
 }
 
-/// Renaming a sheet carries the formulas that read it, on every sheet, to
-/// its new name; text and other sheets' references stay as written.
 #[test]
 fn a_renamed_sheet_keeps_the_formulas_that_read_it() {
     let mut book = sample();
@@ -312,8 +290,6 @@ fn a_renamed_sheet_keeps_the_formulas_that_read_it() {
     );
 }
 
-/// A workbook keeps one sheet; a duplicate is named after its original and
-/// lands beside it.
 #[test]
 fn sheets_are_added_duplicated_and_the_last_is_kept() {
     let mut book = sample();
@@ -350,8 +326,6 @@ fn sheets_are_added_duplicated_and_the_last_is_kept() {
     assert_eq!(names(&book), ["Sales", "Sheet2"]);
 }
 
-/// A batch with one bad cell writes nothing; bad names and colours are
-/// refused at their paths.
 #[test]
 fn hostile_batches_are_refused_whole() {
     let mut book = sample();
@@ -385,8 +359,6 @@ fn hostile_batches_are_refused_whole() {
     assert_eq!(book.heads(), heads, "nothing was written");
 }
 
-/// Two people editing different cells of one sheet, and reaching past it
-/// at once, converge on one workbook with one row where both reached.
 #[test]
 fn two_replicas_converge() {
     let mut ours = sample();
@@ -411,8 +383,6 @@ fn two_replicas_converge() {
     );
 }
 
-/// Two people writing the first cells of the same row at once both keep
-/// their cell.
 #[test]
 fn first_writes_into_one_row_both_survive() {
     let mut ours = sample();
@@ -458,7 +428,6 @@ fn selection_edits_are_declarations_beside_the_published_workbook() {
     );
 }
 
-/// What a person or an agent changed reads as the app's sentences.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -517,8 +486,6 @@ fn history_entries_render_as_the_apps_sentences() {
     );
 }
 
-/// A caller with no screen reads what the cells show: the sheets, a sheet
-/// row by row with the formulas behind computed cells, and a range of it.
 #[test]
 fn the_workbook_reads_as_rows_of_what_its_cells_show() {
     let mut book = Replica::<Workbook>::new();

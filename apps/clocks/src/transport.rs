@@ -5,12 +5,10 @@
 use serde::{Deserialize, Serialize};
 use ui::live_activity::{Announcement, Control, ControlKind, Kind, Published, Summary, Tone};
 
-/// How soon a timer has to be due for its card to take the pill from the
-/// others: the same minute its pill reading is the most urgent one.
+/// How soon a timer is due for its card to take the pill: the minute its pill
+/// reading is the most urgent one.
 const DUE_SOON_SECS: i64 = 60;
 
-/// The floating clock as Clocks reads it, before it is published as the
-/// shell's summary.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -27,9 +25,8 @@ pub struct ShellSnapshot {
     #[serde(default)]
     pub paused: bool,
     pub overlay: bool,
-    /// Stable identity for the latest due event: a due event is announced
-    /// exactly once even if the shell takes it in after the timer has
-    /// already left the active set.
+    /// Stable identity for the latest due event: announced once, even if the shell
+    /// takes it after the timer left the active set.
     #[serde(default)]
     pub notification_id: Option<String>,
     #[serde(default)]
@@ -38,7 +35,6 @@ pub struct ShellSnapshot {
     pub notification_body: String,
 }
 
-/// A control pressed on the shell's floating clock.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct ShellCommand {
     pub command: String,
@@ -47,8 +43,6 @@ pub struct ShellCommand {
     pub activity_id: Option<String>,
 }
 
-/// What Clocks shows now, as the shell's summary: the timer or stopwatch
-/// running, its controls, and the due timer it wants announced.
 #[must_use]
 pub fn published(snapshot: &ShellSnapshot) -> Published {
     let announce = snapshot.notification_id.clone().map(|id| Announcement {
@@ -65,8 +59,6 @@ pub fn published(snapshot: &ShellSnapshot) -> Published {
     published
 }
 
-/// The activity Clocks shows: a timer's countdown or a stopwatch's run, with
-/// pausing, a minute more (a lap) and its end.
 fn summary(snapshot: &ShellSnapshot) -> Summary {
     let countdown =
         (!snapshot.stopwatch).then(|| i64::try_from(snapshot.remaining_secs).unwrap_or(i64::MAX));
@@ -117,8 +109,6 @@ fn summary(snapshot: &ShellSnapshot) -> Summary {
     summary
 }
 
-/// Show what Clocks shows now as its live activity, or end it when there is
-/// nothing running and nothing to announce.
 pub fn publish(snapshot: &ShellSnapshot) {
     let shown = (snapshot.active || snapshot.notification_id.is_some())
         .then(|| serde_json::to_value(published(snapshot)).ok())
@@ -126,7 +116,6 @@ pub fn publish(snapshot: &ShellSnapshot) {
     ui::collaboration::channel_live_activity::show(shown);
 }
 
-/// The controls pressed on the floating clock since the last call.
 #[must_use]
 pub fn take_commands() -> Vec<ShellCommand> {
     ui::collaboration::channel_live_activity::take_controls()

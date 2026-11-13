@@ -4,11 +4,10 @@
 //! worked out on a background one ([`Prepared::finish`]).
 //!
 //! The subject is found by the on-device segmentation model the person set
-//! up (through the model gateway; nothing leaves the device). Its edge, or
-//! any selection's, is then fitted to the picture's own edges
-//! (`tilo_subject::refine_edge`), which keeps fur and hair soft. What is
-//! found is plain data: the area as path data, and the soft edge as a
-//! picture kept by its content, so every replica applies the same.
+//! up (nothing leaves the device). Its edge, or any selection's, is then
+//! fitted to the picture's own edges (`tilo_subject::refine_edge`), which
+//! keeps fur and hair soft. What is found is plain data, so every replica
+//! applies the same.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo's float geometry and pixel sizes bounded by the render's"
@@ -25,15 +24,11 @@ use crate::render::{Options, Renderer};
 use crate::resource::FindArea;
 use crate::selection::UseSelection;
 
-/// The closest a refined edge is looked at, in pixels per unit.
 use crate::content_geometry::MOST_PIXELS_PER_UNIT;
-/// The most a caller may ask an edge be fitted over, in units.
 use crate::content_geometry::MOST_REFINE;
 /// How far a subject's edge is fitted to the picture when the caller names
 /// no reach, in pixels of the picture it is found in.
 pub use crate::content_geometry::REFINE_PIXELS;
-/// The longest side of the picture a subject is found and refined in, in
-/// pixels.
 use crate::content_geometry::SIDE;
 
 /// What the model said about a subject it found, for the answer the
@@ -50,8 +45,8 @@ pub struct Found {
 pub const SET_UP: &str = "settings://models/u2net-subject";
 
 /// What the artwork shows, ready for the model and the edge filter: the
-/// part drawn on the window's thread; [`Prepared::finish`] does the slow
-/// part anywhere, so a person's window keeps drawing meanwhile.
+/// part drawn on the window's thread, the slow part done anywhere by
+/// [`Prepared::finish`].
 pub struct Prepared {
     content: tilo_content::ContentStore,
     rgba: Vec<u8>,
@@ -59,18 +54,14 @@ pub struct Prepared {
     height: u32,
     view: ui::vello::kurbo::Rect,
     to_cells: Affine,
-    /// The point `at` names, in the render's pixels.
     at: Option<(usize, usize)>,
-    /// Where `at` was, in units, for a refusal.
     at_units: Option<[f64; 2]>,
     subject: bool,
-    /// The selection to refine when there is no subject to find, as cells.
     current: Option<Vec<bool>>,
     reach: f64,
     bounds: ui::vello::kurbo::Rect,
 }
 
-/// Draw what `select` needs to find its area.
 pub fn prepare(
     select: &FindArea,
     renderer: &mut Renderer,
@@ -316,12 +307,10 @@ fn matte_picture(matte: &tilo_subject::Matte) -> Result<Vec<u8>, String> {
         .collect();
     let width = u32::try_from(matte.width).map_err(|_| "the matte is too wide")?;
     let height = u32::try_from(matte.height).map_err(|_| "the matte is too tall")?;
-    let image = image::RgbaImage::from_raw(width, height, rgba).ok_or("the matte is malformed")?;
-    ui::png::encode_rgba8(width, height, image.as_raw())
+    ui::png::encode_rgba8(width, height, &rgba)
         .map_err(|error| format!("the matte could not be kept: {error}"))
 }
 
-/// The first characters of a revision, enough to tell it.
 fn short(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
 }
@@ -331,6 +320,12 @@ fn short(revision: &str) -> &str {
 /// of its edge first, so the cut-out keeps no halo of it. The cleaned
 /// pictures are kept as content and named in the action, so every replica
 /// gives the marks the same pixels; undo brings the originals back.
+///
+/// This resolves the pictures the action names, so it runs before the action
+/// is submitted and cannot wait for a decoder: it decodes at once here, as
+/// [`crate::picture::decode`] does off the frame. Only refining an edge makes
+/// a matte, and refining needs threads, so a browser page has none to clean
+/// with.
 pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     if !matches!(using.what.as_str(), "mask" | "clear") || using.defringe == Some(false) {
         return Ok(());
@@ -370,23 +365,21 @@ pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     Ok(())
 }
 
-/// A matte picture's coverage.
 fn matte_alpha(
     content: &tilo_content::ContentStore,
     matte: &Matte,
 ) -> Result<tilo_subject::Matte, String> {
     let bytes = crate::picture::bytes_of(content, &matte.src)
         .ok_or("the selection's refined edge is not on this device; refine it again")?;
-    let image = image::load_from_memory(&bytes)
-        .map_err(|error| format!("the refined edge cannot be read: {error}"))?
-        .to_rgba8();
-    let (width, height) = (image.width() as usize, image.height() as usize);
+    let image = ui::image_codec::decode_now(&bytes, None)
+        .map_err(|error| format!("the refined edge cannot be read: {error}"))?;
+    let (width, height) = (image.width as usize, image.height as usize);
     tilo_subject::Matte::new(
         width,
         height,
         image
             .pixels()
-            .map(|pixel| f32::from(pixel.0[3]) / 255.0)
+            .map(|[_, _, _, a]| f32::from(a) / 255.0)
             .collect(),
     )
     .ok_or_else(|| "the refined edge is empty".to_owned())
@@ -416,15 +409,14 @@ fn clean_picture(
     let Some(bytes) = crate::picture::bytes_of(content, src) else {
         return Ok(None);
     };
-    let image = image::load_from_memory(&bytes)
-        .map_err(|error| format!("{:?}'s picture cannot be read: {error}", mark.id))?
-        .to_rgba8();
-    let (width, height) = (image.width() as usize, image.height() as usize);
+    let image = ui::image_codec::decode_now(&bytes, None)
+        .map_err(|error| format!("{:?}'s picture cannot be read: {error}", mark.id))?;
+    let (width, height) = (image.width as usize, image.height as usize);
     let [x, y, w, h] = matte.rect;
     let to_matte = Affine::scale_non_uniform(alpha.width as f64 / w, alpha.height as f64 / h)
         * Affine::translate((-x, -y))
         * mark.affine()
-        * placement.picture_to_local((image.width(), image.height()));
+        * placement.picture_to_local((image.width, image.height));
     // Each picture pixel's coverage, read from the matte where it lands.
     let mut coverage = vec![0.0_f32; width * height];
     let mut partial = (usize::MAX, usize::MAX, 0, 0);
@@ -462,7 +454,7 @@ fn clean_picture(
     let mut crop_alpha = Vec::with_capacity(cw * ch);
     for row in y0..y1 {
         let start = (row * width + x0) * 4;
-        crop.extend_from_slice(&image.as_raw()[start..start + cw * 4]);
+        crop.extend_from_slice(&image.rgba[start..start + cw * 4]);
         crop_alpha.extend_from_slice(&coverage[row * width + x0..row * width + x1]);
     }
     let crop_alpha = tilo_subject::Matte::new(cw, ch, crop_alpha).ok_or("the edge is empty")?;
@@ -475,12 +467,12 @@ fn clean_picture(
         &crop_alpha,
     )
     .map_err(|error| error.to_string())?;
-    let mut out = image.into_raw();
+    let mut out = image.rgba;
     for (index, row) in (y0..y1).enumerate() {
         let start = (row * width + x0) * 4;
         out[start..start + cw * 4].copy_from_slice(&clean[index * cw * 4..(index + 1) * cw * 4]);
     }
-    let picture = image::RgbaImage::from_raw(width as u32, height as u32, out)
+    let picture = ui::image_codec::DecodedImage::from_rgba(width as u32, height as u32, out)
         .ok_or("the cleaned picture is malformed")?;
     store_picture(content, &encode_like(&picture, &bytes)?).map(Some)
 }
@@ -496,12 +488,12 @@ fn store_picture(content: &tilo_content::ContentStore, bytes: &[u8]) -> Result<S
 /// stays one (at a quality that adds no visible loss), so the cleaned copy
 /// costs about what the original did to keep and sync, rather than a PNG
 /// several times its size; anything else is kept losslessly as PNG.
-fn encode_like(picture: &image::RgbaImage, source: &[u8]) -> Result<Vec<u8>, String> {
-    let (width, height) = picture.dimensions();
-    let kept = if image::guess_format(source).ok() == Some(image::ImageFormat::Jpeg) {
-        ui::jpeg::encode_rgba8_opaque(width, height, picture.as_raw(), CLEANED_JPEG_QUALITY)
+fn encode_like(picture: &ui::image_codec::DecodedImage, source: &[u8]) -> Result<Vec<u8>, String> {
+    let (width, height) = (picture.width, picture.height);
+    let kept = if ui::image_codec::sniff(source) == Some(ui::image_codec::Format::Jpeg) {
+        ui::jpeg::encode_rgba8_opaque(width, height, &picture.rgba, CLEANED_JPEG_QUALITY)
     } else {
-        ui::png::encode_rgba8(width, height, picture.as_raw())
+        ui::png::encode_rgba8(width, height, &picture.rgba)
     };
     kept.map_err(|error| format!("the cleaned picture could not be kept: {error}"))
 }
@@ -509,7 +501,6 @@ fn encode_like(picture: &image::RgbaImage, source: &[u8]) -> Result<Vec<u8>, Str
 /// The quality a cleaned JPEG photograph is kept at.
 const CLEANED_JPEG_QUALITY: u8 = 95;
 
-/// `matte` at a point between pixel centres, interpolated; 0 outside.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

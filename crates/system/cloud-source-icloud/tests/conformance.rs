@@ -1,17 +1,6 @@
-//! The cloud-source conformance suite for iCloud Drive:
-//!
-//! - against the in-process fake (always), with a trusted session it issues
-//!   (custody's tests run the sign-in itself against the same fake);
-//! - against a live account when `TILO_LIVE_ICLOUD_SESSION` holds a
-//!   serialized [`StoredSession`] (JSON or base64 JSON, including its trust
-//!   token), each run in its own `conformance-<uuid>` folder. Skipped when
-//!   the variable is absent.
-//!
-//! A live session Apple no longer accepts is not a provider failure (custody
-//! renews sessions; this suite only consumes one): the suite's checks skip, and
-//! `live::session_is_current` fails with [`REAUTH_NEEDED`] in its message,
-//! so a scheduled job tells "re-auth needed" apart from breakage (any other
-//! failure).
+//! The cloud-source conformance suite for iCloud Drive: the in-process fake with a
+//! trusted session it issues, and a live account when `TILO_LIVE_ICLOUD_SESSION` holds a
+//! serialized [`StoredSession`], each run in its own folder.
 
 #![allow(
     clippy::unwrap_used,
@@ -92,7 +81,6 @@ impl Fixture for FakeFixture {
             Fault::TruncatedBody => FakeFault::TruncatedBody,
             Fault::ClosedEarly => FakeFault::ClosedEarly,
             Fault::ExpiredCredential => FakeFault::ExpiredSession,
-            // No change feed, no cursors.
             Fault::CursorReset => return false,
         };
         self.server.inject(fault);
@@ -102,7 +90,6 @@ impl Fixture for FakeFixture {
 
 cloud_source::conformance_suite!(fake, FakeFixture::start());
 
-/// The live session from the environment, checked with Apple.
 enum Live {
     Absent,
     Expired,
@@ -252,7 +239,6 @@ mod live {
     }
 }
 
-/// iCloud specifics on the fake, beyond the shared suite.
 mod fake_specifics {
     use cloud_source_icloud::fake::Options;
 

@@ -117,7 +117,18 @@ class ImageBuilderInputsTests(unittest.TestCase):
 
     def test_a_workspace_member_root_must_be_copied(self) -> None:
         found = self.findings(NARROW.replace("COPY crates /build/crates\n", ""))
-        self.assertTrue(any("does not copy crates to /build/crates" in f for f in found), found)
+        self.assertTrue(any("does not copy crates/a to /build/crates/a" in f for f in found), found)
+
+    def test_a_member_beside_other_sources_is_copied_alone(self) -> None:
+        self.write("Cargo.toml", '[workspace]\nmembers = ["crates/a", "sdk/py/native"]\n')
+        self.write("sdk/py/native/Cargo.toml", '[package]\nname = "native"\n')
+        self.write("sdk/py/package.py", "")
+        found = self.findings(NARROW)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("does not copy sdk/py/native to /build/sdk/py/native", found[0])
+        self.assertEqual(self.findings(NARROW.replace(
+            "COPY crates /build/crates\n",
+            "COPY crates /build/crates\nCOPY sdk/py/native /build/sdk/py/native\n")), [])
 
     def test_a_copy_to_another_path_does_not_count(self) -> None:
         found = self.findings(NARROW.replace("/build/os/data.txt", "/build/data.txt"))

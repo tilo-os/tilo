@@ -10,8 +10,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use futures_util::FutureExt as _;

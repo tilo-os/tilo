@@ -1,14 +1,5 @@
 //! A fake authorization server and browser for end-to-end tests (feature
 //! `fake`).
-//!
-//! [`FakeAuthorizationServer`] implements the three endpoints a real
-//! provider has, over [`test_http::Responder::handle`]: `GET /authorize`
-//! remembers the PKCE challenge, redirect URI and client of a new code and
-//! redirects the browser back with it; `POST /token` redeems a code only for
-//! the verifier whose S256 matches that challenge, and refreshes only
-//! refresh tokens it issued and has not revoked; `POST /revoke` revokes.
-//! [`browse`] plays the system browser: it follows the redirects from the
-//! authorization URL to the loopback listener.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -29,14 +20,11 @@ use tilo_lock::MutexRecover as _;
 #[derive(Default)]
 struct State {
     next: u64,
-    /// code → (challenge, `redirect_uri`, `client_id`)
     codes: BTreeMap<String, (String, String, String)>,
     refresh_tokens: BTreeSet<String>,
     revoked: Vec<String>,
     token_lifetime: u64,
-    /// When set, the redirect carries this `state` instead of the real one.
     forged: Option<String>,
-    /// Every verifier the token endpoint was offered.
     verifiers: Vec<String>,
     refreshes: usize,
     /// When set, every access token issued is this one (so a provider fake
@@ -81,7 +69,6 @@ impl Drop for TokenExchangeGate {
     }
 }
 
-/// See the module docs.
 pub struct FakeAuthorizationServer {
     responder: Responder,
     state: Arc<Mutex<State>>,
@@ -123,7 +110,6 @@ impl FakeAuthorizationServer {
         TokenExchangeGate(gate)
     }
 
-    /// A provider descriptor pointing at this server.
     pub fn provider(&self) -> Provider {
         let base = self.responder.url();
         Provider {
@@ -145,7 +131,6 @@ impl FakeAuthorizationServer {
         self.responder.url()
     }
 
-    /// Lifetime of access tokens issued from now on.
     pub fn set_token_lifetime(&self, seconds: u64) {
         self.state.lock_recover().token_lifetime = seconds;
     }
@@ -170,7 +155,6 @@ impl FakeAuthorizationServer {
             .insert(token.to_string());
     }
 
-    /// Make the redirect carry `state` instead of the request's own.
     pub fn forge_state(&self, state: &str) {
         self.state.lock_recover().forged = Some(state.to_string());
     }
@@ -185,22 +169,18 @@ impl FakeAuthorizationServer {
         state.revoked.extend(tokens);
     }
 
-    /// Tokens revoked through `POST /revoke` or [`Self::revoke_all_refresh_tokens`].
     pub fn revoked(&self) -> Vec<String> {
         self.state.lock_recover().revoked.clone()
     }
 
-    /// Verifiers offered to the token endpoint.
     pub fn verifiers(&self) -> Vec<String> {
         self.state.lock_recover().verifiers.clone()
     }
 
-    /// Successful refresh grants served.
     pub fn refreshes(&self) -> usize {
         self.state.lock_recover().refreshes
     }
 
-    /// Every request received so far.
     pub fn requests(&self) -> Vec<Request> {
         self.responder.drain_requests()
     }

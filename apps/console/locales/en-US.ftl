@@ -5,9 +5,6 @@ console-place-workspaces = Workspaces
 console-place-connect = Connect
 console-place-usage = Usage
 
-console-you = You
-console-agent-for = { $agent } for { $person }
-
 console-filter-agent = Agent
 console-filter-workspace = Workspace
 console-every-agent = Every agent
@@ -25,6 +22,12 @@ console-run-actions = { $count ->
     [one] 1 action
    *[other] { $count } actions
 }
+console-run-changes = { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
+console-run-started-by-you = Started by you
+console-run-started-by = Started by { $name }
 
 console-run = Agent run
 console-run-copy-link = Copy link
@@ -60,7 +63,7 @@ console-workspace-made-by-you = Made by you
 console-workspace-made-by = Made by { $agent }
 console-workspace-open = Open in Tilo
 
-console-connect-lead = Run one of these where your agent runs. It asks you to sign in once, then works in your workspaces as itself: everything it does shows under Agents, and you can stop or undo it.
+console-connect-lead = Run one of these commands where your agent runs. It asks you to sign in once, then works in your workspaces as itself. Everything it does shows under Agents, where you can stop or undo it.
 console-connect-heading = Connect an agent
 console-client-claude-code = Claude Code
 console-client-codex = Codex
@@ -68,9 +71,9 @@ console-client-other = Any MCP client
 console-client-every-run = Every { $client } run
 console-grants-heading = Connected agents
 console-grants-empty = No agent connected yet
-console-grants-empty-message = Run one of the lines above where your agent runs, then let it in.
 console-reach-account = Every workspace, and may make new ones
 console-reach-workspace = Only { $workspace }
+console-grant-browser-pages = Browser pages
 console-grant-running = { $count ->
     [one] Working now
    *[other] { $count } runs working now
@@ -86,3 +89,6 @@ console-agent-runs = Runs
 console-agent-access = Access
 console-agent-no-runs = No runs yet
 console-agent-last-worked = Last worked { $when }
+
+## What the app is called in a window and in the launcher
+console-app-title = Console

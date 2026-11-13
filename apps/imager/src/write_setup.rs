@@ -1,9 +1,4 @@
-//! On-write setup collected on the Confirm step.
-//!
-//! Installable media embeds a secret-free media profile on Customize. Separately,
-//! this machine can join the target to Wi-Fi and certify a new device for the
-//! person already here. The passphrase stays host-local; the collaborative
-//! profile only records the network name, device label, and whether to enroll.
+//! The setup collected on the Confirm step and written with the image.
 
 use ui::framework::Actions;
 use ui::local_state::LocalState;
@@ -13,10 +8,8 @@ use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 use crate::model::InstallProfile;
 use crate::resource::{Imager, ImagerEffect};
 
-/// What enrolling does, under its switch.
-const ENROLL_NOTE: &str = "Certifies the new device. The root secret stays on this computer.";
+const ENROLL_NOTE: &str = "imager-write-setup-enroll-note";
 
-/// One text field of the network and identity section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SetupField {
     WifiSsid,
@@ -26,13 +19,17 @@ pub enum SetupField {
 }
 
 impl SetupField {
-    fn label(self) -> &'static str {
+    fn message(self) -> &'static str {
         match self {
-            Self::WifiSsid => "Wi-Fi network",
-            Self::WifiPsk => "Wi-Fi password",
-            Self::SshKey => "Owner SSH public key",
-            Self::DeviceLabel => "Device name",
+            Self::WifiSsid => "imager-write-setup-wifi-ssid",
+            Self::WifiPsk => "imager-write-setup-wifi-psk",
+            Self::SshKey => "imager-write-setup-ssh-key",
+            Self::DeviceLabel => "imager-write-setup-device-label",
         }
+    }
+
+    fn label(self) -> String {
+        crate::resource::CATALOG.t(self.message())
     }
 
     fn id(self) -> &'static str {
@@ -44,10 +41,6 @@ impl SetupField {
         }
     }
 
-    /// What a committed value of the field does: a profile edit for the
-    /// network name and device label, and for the passphrase, which never
-    /// enters the document, an effect on this machine. The key is the
-    /// wizard's until it is whole ([`form`]).
     fn binding(self, actions: &Actions<Imager>) -> Option<ActionBinding<String>> {
         let profile = Imager::paths().profile;
         match self {
@@ -71,8 +64,6 @@ fn text_field(
     ssh_public_key: &LocalState<String>,
 ) -> Field {
     let mut input = if field == SetupField::SshKey {
-        // A key is checked once it is whole, when the write starts: each
-        // keystroke of one is no key yet, so it is kept as typed.
         TextInput::from_state(ssh_public_key)
     } else {
         TextInput::local().with_initial_value(value)
@@ -88,9 +79,6 @@ fn text_field(
     Field::new(field.label(), input)
 }
 
-/// The network and identity section for `profile`, with the host-local
-/// passphrase `wifi_psk`; its controls are unbound before the framework
-/// attaches.
 pub(crate) fn form(
     profile: &InstallProfile,
     wifi_psk: &str,
@@ -105,7 +93,7 @@ pub(crate) fn form(
         enroll = enroll.on_action(binding);
     }
     Form::new().section(
-        FormSection::new("Network and identity")
+        FormSection::new(crate::resource::CATALOG.t("imager-profile-section-network-identity"))
             .field(text_field(
                 SetupField::WifiSsid,
                 &profile.wifi_ssid,
@@ -134,7 +122,13 @@ pub(crate) fn form(
                 actions,
                 ssh_public_key,
             ))
-            .field(Field::new("Enroll as a new device", enroll).with_help(ENROLL_NOTE)),
+            .field(
+                Field::new(
+                    crate::resource::CATALOG.t("imager-write-setup-enroll"),
+                    enroll,
+                )
+                .with_help(crate::resource::CATALOG.t(ENROLL_NOTE)),
+            ),
     )
 }
 

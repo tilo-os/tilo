@@ -1,4 +1,5 @@
-//! Async identity-broker client for host-owned app transports.
+//! The identity broker's client, over a host-owned transport the app reaches
+//! asynchronously.
 
 #![allow(
     clippy::future_not_send,
@@ -21,13 +22,10 @@ impl<T: AsyncRead + AsyncWrite> BrokerAsyncIo for T {}
 
 type BrokerStream = Pin<Box<dyn BrokerAsyncIo>>;
 
-/// Public identity metadata plus a serialized async signing connection.
-///
-/// The host supplies an already authenticated and route-bound transport. This
-/// client owns no private key and never falls back to local identity state.
-/// Every request/response exchange has one absolute deadline covering the
-/// complete write, flush, frame read, and decode. A transport or protocol
-/// failure drops the stream so a late reply can never satisfy another request.
+/// Public identity metadata and one serialized signing connection over a
+/// host-supplied, already authenticated stream. It owns no private key and
+/// never falls back to local identity state: a transport or protocol failure
+/// drops the stream, so no late reply answers a later request.
 pub struct AsyncBrokerSigningIdentity {
     metadata: BrokerMetadata,
     stream: Option<BrokerStream>,
@@ -42,11 +40,10 @@ impl std::fmt::Debug for AsyncBrokerSigningIdentity {
 }
 
 impl AsyncBrokerSigningIdentity {
-    /// Request metadata over a caller-owned connected async transport.
-    ///
-    /// `exchange_timeout` applies independently to metadata and each later
-    /// signing request. The caller remains responsible for authenticating the
-    /// endpoint and binding it to the app and workspace before construction.
+    /// Request metadata over a caller-owned, connected transport; the caller
+    /// authenticates the endpoint and binds it to the app and workspace first.
+    /// `exchange_timeout` applies to the metadata exchange and to each signing
+    /// request.
     pub async fn from_connected_io<S>(
         stream: S,
         exchange_timeout: Duration,
@@ -63,21 +60,14 @@ impl AsyncBrokerSigningIdentity {
         })
     }
 
-    /// The public metadata the host reported when this connection opened.
     pub fn metadata(&self) -> &BrokerMetadata {
         &self.metadata
     }
 
-    /// Whether another request can safely use the framed stream.
-    ///
-    /// Complete broker refusals retain alignment and return `true`. Transport,
-    /// framing, timeout, and protocol failures drop the stream and return
-    /// `false`, allowing the owning session to fail closed immediately.
     pub fn is_usable(&self) -> bool {
         self.stream.is_some()
     }
 
-    /// Ask the host for a certified collaboration-join proof.
     pub async fn sign_collaboration_join(
         &mut self,
         workspace_id: &str,
@@ -88,7 +78,6 @@ impl AsyncBrokerSigningIdentity {
         .await
     }
 
-    /// Ask the host to sign one typed collaboration operation.
     pub async fn sign_collaboration_op(
         &mut self,
         workspace_id: &str,
@@ -105,7 +94,6 @@ impl AsyncBrokerSigningIdentity {
         .await
     }
 
-    /// Ask the host for the content keys of one document route.
     pub async fn channel_keys(
         &mut self,
         workspace_id: &str,
@@ -129,8 +117,8 @@ impl AsyncBrokerSigningIdentity {
         self.unless_invalid(signature_reply(response))
     }
 
-    /// Exchange one request; a transport, framing or timeout failure drops
-    /// the stream so a late reply can never satisfy another request.
+    /// Exchange one request; a transport, framing or timeout failure drops the
+    /// stream so a late reply can never answer another.
     async fn exchange(&mut self, request: &wire::Request) -> Result<wire::Response, NotAvailable> {
         let mut stream = self.stream.take().ok_or_else(poisoned)?;
         let response = exchange(&mut stream, request, self.exchange_timeout).await?;
@@ -152,15 +140,13 @@ impl AsyncBrokerSigningIdentity {
     }
 }
 
-/// Write `request` and read its response within one absolute deadline
-/// covering the write, flush, frame read and decode.
 async fn exchange(
     stream: &mut BrokerStream,
     request: &wire::Request,
     timeout: Duration,
 ) -> Result<wire::Response, NotAvailable> {
-    // A timeout too large to represent as an instant is a deadline that
-    // never elapses, not a reason to panic.
+    // A timeout too large for an instant is a deadline that never elapses, not a
+    // panic.
     let deadline = tokio::time::Instant::now().checked_add(timeout);
     let exchange = async {
         write_frame(stream, request).await?;

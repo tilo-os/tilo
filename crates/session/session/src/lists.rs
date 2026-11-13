@@ -7,12 +7,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_action_broker::services::LaunchableApplication;
+use tilo_broker_core::services::LaunchableApplication;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_desktop_search::providers::host_apps::HostApps;
-use tilo_desktop_search::providers::settings::Settings;
 use tilo_files::native::Watched;
 
 use runtime_portal::tools::{
@@ -24,6 +23,9 @@ use runtime_portal::tools::{
 pub struct AppLists {
     /// The Tilo apps installed here.
     pub applications: Vec<AppEntry>,
+    /// What each of them is called, in every language its package names it in: the names a
+    /// window names another app's changes by, sent with the workspace's people's names.
+    pub named: Vec<collab_types::history::NamedApp>,
     /// The machine's own apps.
     pub host_apps: Vec<HostAppEntry>,
     /// The apps a person can get here: neither installed nor blocked.
@@ -36,7 +38,10 @@ pub struct AppLists {
     pub candidates: Vec<desktop_policy::AppCandidate>,
     /// What each installed app declared it may do on the action door under its own identity, by
     /// package id: the ceiling the broker admits an app's query and invoke against, never a grant.
-    pub declared: BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess>,
+    pub declared: BTreeMap<String, tilo_broker_core::access::AppActionAccess>,
+    /// The resource kinds each installed app declares its records hold, by package id: what it
+    /// may reach in its own node.
+    pub resource_kinds: BTreeMap<String, Vec<String>>,
     /// The apps a service can ask this session to open, as the action door lists them: each app's
     /// name, the actions its signed manifest offers while it is not running, and the capabilities a
     /// grant is decided on. What decides the reach the device's settings app has of the settings
@@ -52,6 +57,10 @@ impl AppLists {
     /// Read this device's lists: the installed Tilo apps, the machine's desktop entries, and the
     /// catalogue (the registries' listing as last accepted and Flathub's cached metadata) less what
     /// is here or blocked. Reads the disk only, never the network.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one read of every list the search and the action door share"
+    )]
     #[must_use]
     pub fn read() -> Self {
         let installed = app_catalogue::apps::read_from_env().unwrap_or_else(|error| {
@@ -78,7 +87,9 @@ impl AppLists {
             .iter()
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
             .collect();
+        let named = named(&installed);
         let declared = declared(&installed);
+        let resource_kinds = resource_kinds(&installed);
         // The machine's entries through the memoised scan, which this read starts on the lists'
         // worker: a later ask for an entry's icon or name (`crate::app_icons::entry_icon`) finds it
         // read, or meets the read already under way rather than starting one.
@@ -90,10 +101,8 @@ impl AppLists {
         // The entries Tilo keeps for the person's downloaded programs are search's own source
         // (`providers::downloaded`): it lists them with what the registry knows of them (their
         // kind, and a file that went away), which a host app row says nothing of.
-        let host_apps = scan
-            .entries
-            .iter()
-            .filter(|entry| machine_entry(entry, &tilo_apps))
+        let host_apps = machine_apps(&scan.entries, &tilo_apps)
+            .into_iter()
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -159,14 +168,23 @@ impl AppLists {
         let tools = listed_apps(&installed, &scan.entries, &icons);
         Self {
             applications,
+            named,
             host_apps,
             catalogue,
             icons,
             candidates,
             declared,
+            resource_kinds,
             launchable,
             tools,
         }
+    }
+
+    /// Whether the Tilo app `app` is installed here: what the desk offers a card for, and what
+    /// search lists under the app's own name.
+    #[must_use]
+    pub fn has_app(&self, app: &str) -> bool {
+        self.applications.iter().any(|listed| listed.id == app)
     }
 
     /// The directories [`Self::read`] reads, whose entries change with what it would find.
@@ -352,18 +370,68 @@ fn machine_entry(
         && !tilo_apps.contains(&entry.id)
 }
 
+/// The machine's apps, one row each. Entries that share an icon and whose names are another's
+/// with words after it are that app's variants — `Foot Client` and `Foot Server` beside `Foot` —
+/// and are listed once, as the app.
+fn machine_apps<'a>(
+    entries: &'a [desktop_entry::DesktopEntry],
+    tilo_apps: &app_catalogue::Installed,
+) -> Vec<&'a desktop_entry::DesktopEntry> {
+    let entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| machine_entry(entry, tilo_apps))
+        .collect();
+    let variant_of = |entry: &desktop_entry::DesktopEntry, app: &desktop_entry::DesktopEntry| {
+        entry.icon.is_some()
+            && entry.icon == app.icon
+            && entry
+                .name
+                .to_lowercase()
+                .strip_prefix(&app.name.to_lowercase())
+                .is_some_and(|rest| rest.starts_with(' '))
+    };
+    entries
+        .iter()
+        .copied()
+        .filter(|entry| !entries.iter().any(|app| variant_of(entry, app)))
+        .collect()
+}
+
+/// What each installed app is called, in every language its package names it in: the names a
+/// window names another app's changes by.
+fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::history::NamedApp> {
+    installed
+        .iter()
+        .map(|app| collab_types::history::NamedApp {
+            id: app.package_id.clone(),
+            name: app.display_name.clone(),
+            names: app.localized_names.clone(),
+        })
+        .collect()
+}
+
 /// Each app's declared reach of the action door, from its signed manifest: the ceiling the broker
 /// admits its calls against.
+/// The resource kinds each installed app declares, by package id.
+fn resource_kinds(
+    installed: &[app_catalogue::apps::InstalledApp],
+) -> BTreeMap<String, Vec<String>> {
+    installed
+        .iter()
+        .map(|app| (app.package_id.clone(), app.declared_resource_kinds()))
+        .collect()
+}
+
 fn declared(
     installed: &[app_catalogue::apps::InstalledApp],
-) -> BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess> {
+) -> BTreeMap<String, tilo_broker_core::access::AppActionAccess> {
     installed
         .iter()
         .map(|app| {
             let declared = app.declared_actions();
             (
                 app.package_id.clone(),
-                tilo_action_broker::app_actions::AppActionAccess {
+                tilo_broker_core::access::AppActionAccess {
                     query: declared.query,
                     invoke: declared.invoke,
                 },
@@ -457,6 +525,14 @@ impl Lists {
             watched.refresh();
         }
     }
+
+    /// Run `listener` once each time the lists are read again: an app installed or removed here
+    /// changes them, and what every window calls it. Lists that never change tell nobody.
+    pub fn on_change(&self, listener: impl Fn() + Send + Sync + 'static) {
+        if let Held::Followed(watched) = &self.0 {
+            watched.on_change(listener);
+        }
+    }
 }
 
 impl crate::platform::apps::Apps for Lists {
@@ -476,6 +552,10 @@ impl crate::platform::apps::Apps for Lists {
     fn host_apps(&self) -> Vec<HostAppEntry> {
         self.latest().host_apps.clone()
     }
+
+    fn installed(&self, id: &str) -> bool {
+        app_catalogue::apps::read_one_from_env(id).is_ok_and(|installed| installed.is_some())
+    }
 }
 
 /// One reading of this device's lists, as search builds its sources from: the sources it keeps
@@ -494,35 +574,18 @@ impl crate::platform::apps::Reading for Listed {
     fn host_apps(
         &self,
         preferences: &tilo_desktop_search::SearchPreferences,
-    ) -> tilo_desktop_search::Held {
-        tilo_desktop_search::Held::new(HostApps::new(self.lists.host_apps.clone(), preferences))
+    ) -> Option<tilo_desktop_search::Held> {
+        Some(tilo_desktop_search::Held::new(HostApps::new(
+            self.lists.host_apps.clone(),
+            preferences,
+        )))
     }
 
-    fn catalogue(&self, workspace: &str) -> tilo_desktop_search::Held {
-        tilo_desktop_search::Held::new(StoreCatalogue::new(self.lists.catalogue.clone(), workspace))
-    }
-}
-
-/// The settings this desktop offers search: the pages of the person's own settings.
-pub(crate) struct DesktopSettings;
-
-impl crate::platform::apps::Settings for DesktopSettings {
-    fn source(
-        &self,
-        workspace: &str,
-        published: &[tilo_actions::ActionDescriptor],
-    ) -> tilo_desktop_search::Held {
-        // Settings the settings service changes in place are found as its actions.
-        let in_place: std::collections::HashSet<String> = published
-            .iter()
-            .filter_map(|action| {
-                tilo_settings_service::setting_of(action.address.resource.as_str())
-                    .map(str::to_owned)
-            })
-            .collect();
-        tilo_desktop_search::Held::new(Settings::changing_in_place(workspace, &|id| {
-            in_place.contains(id)
-        }))
+    fn catalogue(&self, workspace: &str) -> Option<tilo_desktop_search::Held> {
+        Some(tilo_desktop_search::Held::new(StoreCatalogue::new(
+            self.lists.catalogue.clone(),
+            workspace,
+        )))
     }
 }
 
@@ -548,6 +611,46 @@ mod tests {
         assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
         // Any other app's entry is one of the machine's.
         assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
+    }
+
+    #[test]
+    fn an_apps_variants_are_listed_once_as_the_app() {
+        let parse = |id: &str, name: &str, icon: &str| {
+            desktop_entry::entry::parse(
+                &format!(
+                    "[Desktop Entry]\nType=Application\nName={name}\nIcon={icon}\nExec={id}\n"
+                ),
+                id,
+                std::path::Path::new("/usr/share/applications/x.desktop"),
+                &[],
+            )
+            .expect("a desktop entry")
+        };
+        let entries = [
+            parse("foot", "Foot", "foot"),
+            parse("footclient", "Foot Client", "foot"),
+            parse("foot-server", "Foot Server", "foot"),
+            parse(
+                "libreoffice-startcenter",
+                "LibreOffice",
+                "libreoffice-startcenter",
+            ),
+            parse(
+                "libreoffice-writer",
+                "LibreOffice Writer",
+                "libreoffice-writer",
+            ),
+            parse("footnotes", "Footnotes", "foot"),
+        ];
+        let listed: Vec<_> = machine_apps(&entries, &app_catalogue::Installed::from_ids([""; 0]))
+            .into_iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            listed,
+            ["Foot", "LibreOffice", "LibreOffice Writer", "Footnotes"],
+            "a variant shares the app's icon and extends its name; other apps stay"
+        );
     }
 
     /// The machine's own apps are named in the person's language, not in the machine's: on a German

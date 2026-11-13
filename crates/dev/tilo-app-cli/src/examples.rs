@@ -9,14 +9,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-/// One example app.
 #[derive(Debug)]
 pub struct Example {
     /// The name `--from-example` takes, and the directory under `examples/apps/`.
     pub name: &'static str,
-    /// The one idea the example teaches.
     pub concept: &'static str,
-    /// What the app does, in a sentence.
     pub summary: &'static str,
     /// Whether the example uses only what `tilo-app build --platform web`
     /// supports. An example that runs work on a `std::thread` is native-only;
@@ -49,7 +46,6 @@ macro_rules! example_files_with_common {
     };
 }
 
-/// Every example, simplest first.
 pub const ALL: &[Example] = &[
     Example {
         name: "counter",
@@ -138,19 +134,16 @@ impl Example {
         ALL.iter().find(|example| example.name == name)
     }
 
-    /// The package name the example has in the Tilo workspace.
     #[must_use]
     pub fn package_name(&self) -> String {
         format!("example-{}", self.name)
     }
 
-    /// The crate name the example's tests import.
     #[must_use]
     pub fn crate_name(&self) -> String {
         format!("example_{}", self.name.replace('-', "_"))
     }
 
-    /// The example's directory, relative to the checkout root.
     #[must_use]
     pub fn path(&self) -> String {
         format!("examples/apps/{}", self.name)
@@ -167,7 +160,6 @@ impl Example {
     }
 }
 
-/// An unknown example name, with the names there are.
 pub fn find(name: &str) -> Result<&'static Example> {
     Example::named(name).with_context(|| {
         let names = ALL
@@ -257,38 +249,6 @@ pub(crate) fn overlay(
             Some((_, rendered)) => *rendered = source,
             None => rendered.push((path, source)),
         }
-    }
-    refresh_locale_keys(rendered, example)?;
-    Ok(())
-}
-
-/// Rewrite the copied app's `src/locales.rs` so its label keys name the
-/// messages of its own `locales/en-US.ftl`, which is the app's after the
-/// example's files replaced the template's.
-fn refresh_locale_keys(rendered: &mut Vec<(PathBuf, String)>, example: &Example) -> Result<()> {
-    let source = rendered
-        .iter()
-        .find(|(path, _)| path == std::path::Path::new("locales/en-US.ftl"))
-        .map(|(_, source)| source.clone());
-    let Some(source) = source else {
-        return Ok(());
-    };
-    let contract = crate::parse_fluent_catalog(&source)
-        .with_context(|| format!("the {} example's locales/en-US.ftl", example.name))?;
-    let locales = rendered
-        .iter()
-        .find(|(path, _)| path == std::path::Path::new("src/locales.rs"))
-        .and_then(|(_, registry)| crate::parse_locale_registry(registry).ok());
-    let Some(locales) = locales else {
-        return Ok(());
-    };
-    let registry =
-        crate::locale_registry_with_keys(&locales, &crate::catalog_message_ids(&contract));
-    let path = PathBuf::from("src/locales.rs");
-    let registry = crate::rustfmt_source(&registry, &path)?;
-    match rendered.iter_mut().find(|(rendered, _)| *rendered == path) {
-        Some((_, rendered)) => *rendered = registry,
-        None => rendered.push((path, registry)),
     }
     Ok(())
 }

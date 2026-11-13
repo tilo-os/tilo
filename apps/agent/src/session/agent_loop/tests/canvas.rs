@@ -253,9 +253,10 @@ fn ran(world: &World, action: &str) -> Vec<serde_json::Map<String, Value>> {
 /// session publishes its canvas beside them.
 fn canvas_fixture(title: &str, turns: Vec<Vec<TurnEvent>>) -> Fixture {
     let mut f = fixture(title, canvas_world(), turns);
-    let mut published = f.session.broker_surfaces.clone();
+    let mut published = canvas_world().surfaces();
     published.extend(surfaces());
-    f.session.set_broker_surfaces(published);
+    f.session
+        .apply_broker_catalogue(&ui::collaboration::CatalogueChange::snapshot(&published));
     f
 }
 

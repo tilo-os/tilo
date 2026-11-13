@@ -10,6 +10,7 @@
 //! a button bound to it ran, through the window's dispatcher; a view, the
 //! published view action, through the window's controls.
 
+use crate::resource::CATALOG;
 use ui::tilo_actions::ControlInvocation;
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -20,16 +21,13 @@ use crate::bindings;
 use crate::resource::StoreEffect;
 use ui::widget::Widget as _;
 
-/// A view's slot id: `view:` and its name in [`VIEWS`].
 const VIEW_PREFIX: &str = "view:";
 
 impl StoreState {
-    /// Whether the window shows the catalogue (no page or list over it).
     pub(super) fn shows_catalogue(&self) -> bool {
         !self.safety_open && !self.remotes_open && self.focused_detail.is_none()
     }
 
-    /// The window bar's slots, the shell's own (`base`) first.
     pub(super) fn window_toolbar(&self, mut base: WindowToolbar) -> WindowToolbar {
         let entry = |effect: StoreEffect, icon: &str, name: String| {
             self.bar.as_ref().map(|bar| ToolbarAction {
@@ -48,7 +46,7 @@ impl StoreState {
                 entry(
                     StoreEffect::RefreshRemotes,
                     "refresh",
-                    ui::i18n!("store-remote-refresh"),
+                    CATALOG.t("store-remote-refresh"),
                 ),
             );
         }
@@ -57,9 +55,12 @@ impl StoreState {
         }
         let updates = self.update_ids().len();
         let updates_label = if updates == 0 {
-            ui::i18n!("store-view-updates")
+            CATALOG.t("store-view-updates")
         } else {
-            ui::i18n!("store-view-updates-count", "count" => ui::format::count(updates as u64))
+            CATALOG.t_args(
+                "store-view-updates-count",
+                &[("count", ui::format::count(updates as u64).into())],
+            )
         };
         let chosen = match &self.view {
             View::Home | View::Category(_) | View::Repository(_) => "home",
@@ -68,13 +69,13 @@ impl StoreState {
             View::Bots => "bots",
         };
         let labels = [
-            ui::i18n!("store-view-home"),
+            CATALOG.t("store-view-home"),
             updates_label,
-            ui::i18n!("store-view-installed"),
-            ui::i18n!("store-view-bots"),
+            CATALOG.t("store-view-installed"),
+            CATALOG.t("store-view-bots"),
         ];
         base.views = Some(ToolbarViews {
-            name: ui::i18n!("store-views-label"),
+            name: CATALOG.t("store-views-label"),
             choices: VIEWS
                 .iter()
                 .zip(labels)
@@ -95,17 +96,17 @@ impl StoreState {
                     reported_size: None,
                 },
                 "box",
-                ui::i18n!("store-package-review"),
+                CATALOG.t("store-package-review"),
             ),
             entry(
                 StoreEffect::ShowRemotes,
                 "cloud",
-                ui::i18n!("store-remotes-title"),
+                CATALOG.t("store-remotes-title"),
             ),
             entry(
                 StoreEffect::ShowTrust,
                 "shield",
-                ui::i18n!("store-trust-title"),
+                CATALOG.t("store-trust-title"),
             ),
         ];
         let actions = occasional.into_iter().flatten().map(ToolbarAction::in_menu);
@@ -113,7 +114,6 @@ impl StoreState {
         base
     }
 
-    /// The invocation of the view action the view slot `id` stands for.
     fn view_invocation(id: &str) -> Option<ControlInvocation> {
         let view = id.strip_prefix(VIEW_PREFIX)?;
         let index = VIEWS.iter().position(|name| *name == view)?;

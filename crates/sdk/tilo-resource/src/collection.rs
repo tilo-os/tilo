@@ -1434,13 +1434,22 @@ impl<T: 'static> ItemList for Collection<T> {
     }
 }
 
-/// The label an item is offered under: its `#[model(label)]`, else its
-/// first text, else its id.
+/// The label an item is offered under: its `#[model(label)]` (the word for an item nobody named
+/// when that is blank), else its first text, else its id.
 pub(crate) fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
     if let Some(label) = (item.ops.label)(item, value)
         && !label.is_empty()
     {
         return label;
+    }
+    // A record that names itself by a field of its own is named by that field alone: one nobody
+    // named reads as the person's word for an item that has no name, never by its other text, so
+    // what a list shows and what assistive tools announce are the same name.
+    let names_itself = item.record().is_some_and(|record| {
+        record.label.is_some() || record.label_with.is_some() || !record.label_parts.is_empty()
+    });
+    if names_itself {
+        return crate::word!("record-unnamed-item").read();
     }
     let mut text = Vec::new();
     (item.ops.collect_text)(item, value, &mut text);

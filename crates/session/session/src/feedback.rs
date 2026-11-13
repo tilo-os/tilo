@@ -10,7 +10,7 @@
 //! report is the person's own signed write where Tilo's feedback is read.
 //!
 //! This computer is told where that is beside its community site
-//! ([`crate::directory`]), and a computer told nothing offers no report: a
+//! ([`crate::platform::directory`]), and a computer told nothing offers no report: a
 //! report with nowhere to go is not a report.
 
 use serde::Deserialize;
@@ -37,7 +37,7 @@ impl Destination {
     /// The destination this computer is configured with, if any.
     #[must_use]
     pub(crate) fn configured() -> Option<Self> {
-        crate::directory::feedback()
+        crate::platform::directory::feedback()
     }
 
     /// The chip a report's box opens with: where the report goes, named so the person reads it

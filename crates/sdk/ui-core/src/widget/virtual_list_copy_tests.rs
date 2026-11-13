@@ -20,6 +20,8 @@
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
 use crate::offscreen::OffscreenRenderer;
+use std::cell::RefCell;
+use std::rc::Rc;
 use vello::kurbo::RoundedRect;
 use winit::event::MouseScrollDelta;
 
@@ -256,4 +258,158 @@ fn scrolling_a_virtual_list_copies_the_rows_and_matches_a_full_render() {
 fn a_step_of_part_of_a_device_pixel_repaints_the_list_and_matches() {
     let runs = scroll(&Theme::dark(), 1.0, &[(40.5, 8)]);
     assert_eq!(runs[0].copied_frames, 0, "{runs:?}");
+}
+
+/// Two rows due today, the second on its way: it names its group once it arrives.
+struct Arriving {
+    groups: Rc<RefCell<Vec<Option<RowGroup>>>>,
+    changes: Rc<RefCell<Vec<ListModelChange<u64>>>>,
+}
+
+impl ListModel for Arriving {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        self.groups.borrow().len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        (index < self.len()).then_some(index as u64)
+    }
+
+    fn index_of(&self, key: &u64) -> Option<usize> {
+        let index = usize::try_from(*key).ok()?;
+        (index < self.len()).then_some(index)
+    }
+
+    fn group_at(&self, index: usize) -> Option<RowGroup> {
+        self.groups.borrow().get(index).cloned().flatten()
+    }
+
+    fn discloses(&self) -> bool {
+        true
+    }
+
+    fn poll_changes(&mut self) -> Vec<ListModelChange<u64>> {
+        std::mem::take(&mut *self.changes.borrow_mut())
+    }
+
+    fn needs_poll(&self) -> bool {
+        !self.changes.borrow().is_empty()
+    }
+}
+
+/// A row that arrives under a window titled for its one group takes the heading over the rows
+/// away, and the row it headed moves up into the band's room; one that arrives under a group of
+/// its own takes a row from the count of the heading it stood under: presented over the last
+/// frame, what the window shows equals a full render, with no heading or count left behind.
+#[test]
+fn a_heading_that_changes_as_a_row_arrives_leaves_nothing_behind() {
+    arrives_and_matches("Today", None);
+    arrives_and_matches("Overdue", None);
+    arrives_and_matches("Today", Some(1));
+}
+
+/// Two rows, the first under `first`, the second on its way and arriving under "Today", in a
+/// window titled "Today" counting two — or counting `counted` until the row arrives, and two
+/// once it has: each frame presented over the last equals a full render.
+fn arrives_and_matches(first: &str, counted: Option<usize>) {
+    let theme = Theme::light();
+    let window = Window { scale: 1.0 };
+    let size = window.inner_size();
+    let today = || Some(RowGroup::heading("Today".to_owned()));
+    let groups = Rc::new(RefCell::new(vec![
+        Some(RowGroup::heading(first.to_owned())),
+        None,
+    ]));
+    let changes = Rc::new(RefCell::new(Vec::new()));
+    let model = Arriving {
+        groups: Rc::clone(&groups),
+        changes: Rc::clone(&changes),
+    };
+    let list = VirtualList::new(model, ROW, |_, _, key| {
+        Box::new(Message {
+            label: format!("Task {key}"),
+            rect: Rect::ZERO,
+            drawn: false,
+        })
+    })
+    .in_view("Today", Some(counted.unwrap_or(2)))
+    .with_viewport_height(480.0);
+    let mut app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(list));
+    app.set_theme(theme.clone());
+    let background = theme.tokens.colors.surfaces.content;
+    let mut damage = SurfaceDamage::copying();
+    let mut scene = Scene::new();
+    for _ in 0..6 {
+        scene.reset();
+        app.surface_frame_with_damage(&window, &mut scene, &mut damage);
+    }
+    let _ = damage.take_copying();
+    let mut presented = OffscreenRenderer::try_new(size.width, size.height)
+        .expect("the frames are checked on the GPU the toolkit renders with");
+    let mut full = OffscreenRenderer::new(size.width, size.height);
+    let _ = presented.render(&scene, background);
+    // The row on its way arrives under the heading the title says.
+    groups.borrow_mut()[1] = today();
+    changes
+        .borrow_mut()
+        .push(ListModelChange::RowsChanged { keys: vec![1] });
+    for frame in 0..8 {
+        // The title's count catches up a few frames later, as the window's header says it.
+        if frame == 4 && counted.is_some() {
+            app.root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<VirtualList<Arriving>>())
+                .expect("the list")
+                .set_view_title(Some("Today".to_owned()), Some(2));
+        }
+        scene.reset();
+        app.surface_frame_with_damage(&window, &mut scene, &mut damage);
+        match damage.take_copying() {
+            Some((copies, rects)) => {
+                let _ = presented
+                    .render_copies_and_damage_gpu_wait(&scene, background, &copies, &rects);
+            }
+            None => {
+                let _ = presented.render(&scene, background);
+            }
+        }
+        let expected = full.render(&scene, background);
+        let actual = presented.readback_current();
+        let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected);
+        assert_eq!(
+            differing, 0,
+            "frame {frame} after the row arrived under {first} ({counted:?}) presented {differing} pixels a \
+             full render does not have"
+        );
+    }
+    let list = app
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<VirtualList<Arriving>>())
+        .expect("the list");
+    let headings: Vec<&str> = list
+        .groups
+        .bands
+        .iter()
+        .map(|band| band.heading.as_str())
+        .collect();
+    let first_row = list.row_box(0).expect("the first row is placed");
+    if first == "Today" {
+        assert!(
+            headings.is_empty(),
+            "the title says the rows' one group: no heading stands over them ({headings:?})"
+        );
+        assert!(
+            (first_row.height() - f64::from(ROW)).abs() < 0.5,
+            "the first row takes its own height, the band's room gone: {first_row:?}"
+        );
+    } else {
+        assert_eq!(
+            headings,
+            ["Overdue", "Today"],
+            "two groups keep their headings"
+        );
+    }
 }

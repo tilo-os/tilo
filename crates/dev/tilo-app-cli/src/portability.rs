@@ -28,10 +28,8 @@ use syn::punctuated::Punctuated;
 use syn::visit_mut::VisitMut;
 use tilo_app_package::{Package, Platform};
 
-/// The lint's name, as printed in diagnostics.
 pub const LINT: &str = "portability";
 
-/// The rules, shared with the repository's policy gate.
 const RULES_TABLE: &str = include_str!("../../../../tools/policy/app_portability_rules.toml");
 
 #[derive(Debug, Deserialize)]
@@ -55,7 +53,6 @@ struct TargetCfg {
     allowed: Vec<String>,
 }
 
-/// Which packages the gate counts beyond the apps.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Scope {
@@ -107,7 +104,6 @@ impl Strict {
     }
 }
 
-/// One rule of the table. Each rule uses the keys that describe it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub(crate) struct RuleSpec {
@@ -139,7 +135,6 @@ pub(crate) struct RuleSpec {
     replacements: BTreeMap<String, String>,
 }
 
-/// Which apps a rule applies to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum Applies {
@@ -151,11 +146,9 @@ enum Applies {
     Web,
 }
 
-/// How the lint treats a finding in an app that runs everywhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Severity {
-    /// Fails the lint.
     #[default]
     Error,
     /// Reported only, until the replacement exists for every app.
@@ -176,7 +169,6 @@ impl RuleSpec {
     }
 }
 
-/// The parsed rules table.
 pub(crate) fn rules() -> Result<&'static RulesTable> {
     static RULES: OnceLock<Result<RulesTable, String>> = OnceLock::new();
     RULES
@@ -220,17 +212,11 @@ pub enum FindingKind {
     NativeCrate,
     /// An `extern { ... }` block.
     Ffi,
-    /// A platform path or environment variable.
     PlatformPath,
-    /// A subprocess naming an OS tool.
     OsTool,
-    /// A platform or SDK-internal crate in the manifest's dependencies.
     NativeDependency,
-    /// A Tilo crate outside the app SDK and the platform crates.
     InternalDependency,
-    /// An SDK feature that names one backend.
     NativeSdkFeature,
-    /// An OS thread.
     Thread,
     Clock,
     /// The `std` filesystem or sockets.
@@ -267,22 +253,17 @@ impl FindingKind {
     }
 }
 
-/// One platform-specific site in an app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortabilityFinding {
-    /// Path relative to the app directory.
     pub path: PathBuf,
-    /// One-based line.
     pub line: usize,
     pub kind: FindingKind,
     pub severity: Severity,
     /// What was found, for example "`std::os::unix::fs`".
     pub what: String,
-    /// How to fix it.
     pub help: String,
 }
 
-/// The result of linting one app.
 #[derive(Debug)]
 pub struct PortabilityReport {
     pub app_dir: PathBuf,
@@ -295,7 +276,6 @@ pub struct PortabilityReport {
     /// Sites of the web rules (threads, the std clock, std files and sockets),
     /// whether or not the app declares the web: each makes it native-only.
     pub web: Vec<PortabilityFinding>,
-    /// Number of Rust source files inspected.
     pub files: usize,
 }
 
@@ -469,7 +449,6 @@ fn source_line(path: &Path, line: usize) -> Option<String> {
     Some(source.chars().take(120).collect())
 }
 
-/// Lint one app directory.
 pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     let table = rules()?;
     let manifest = app_manifest(app_dir)?;
@@ -522,6 +501,25 @@ fn package_findings(
                 }),
         );
     }
+    // A web-only rule counts only the code a web build compiles: code under a
+    // feature named after another platform (`#[cfg(feature = "tilo-os")]`) is
+    // that platform's alone.
+    let mut on_web = BTreeSet::new();
+    for (file, tokens) in modules_without(&cargo.roots(dir), NOT_WEB_FEATURES)? {
+        let relative = file.strip_prefix(dir).unwrap_or(&file).to_path_buf();
+        let mut hits = Vec::new();
+        scanner.scan(tokens, &mut hits);
+        on_web.extend(
+            hits.into_iter()
+                .map(|(line, kind, _)| (relative.clone(), line, kind.rule())),
+        );
+    }
+    findings.retain(|finding| {
+        table
+            .rule(finding.kind.rule())
+            .is_none_or(|rule| rule.applies != Applies::Web)
+            || on_web.contains(&(finding.path.clone(), finding.line, finding.kind.rule()))
+    });
     findings.sort_by(|a, b| {
         (&a.path, a.line, a.kind.rule(), a.kind).cmp(&(&b.path, b.line, b.kind.rule(), b.kind))
     });
@@ -611,10 +609,8 @@ pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStrea
 /// the SDK's portable crates still hold.
 const BASELINE: &str = "tools/policy/app_portability_baseline.toml";
 
-/// The baseline's sections, in its order.
 const SECTIONS: [&str; 2] = ["apps", "sdk"];
 
-/// Sites per section, package and rule.
 type Counts = BTreeMap<String, BTreeMap<String, BTreeMap<String, usize>>>;
 
 fn counted(counts: &mut Counts, section: &str, package: &str, rule: &str) {
@@ -747,7 +743,6 @@ fn compare(current: &Counts, baseline: &Counts) -> (Vec<String>, Vec<String>) {
     (regressions, stale)
 }
 
-/// One site the gate counts, with the package and section it is in.
 #[derive(Clone, Debug)]
 pub struct PackageFinding {
     /// `apps` or `sdk`.
@@ -780,13 +775,11 @@ impl PortabilityGate {
         !self.strict && regressions.is_empty() && stale.is_empty()
     }
 
-    /// The apps' reports, in name order.
     #[must_use]
     pub fn apps(&self) -> &[PortabilityReport] {
         &self.apps
     }
 
-    /// The baseline for the tree that produced this gate.
     #[must_use]
     pub fn baseline_table(&self) -> String {
         render_baseline(&self.counts)
@@ -808,7 +801,6 @@ impl PortabilityGate {
         failures
     }
 
-    /// The sites behind the counts, of every package or of the named ones.
     #[must_use]
     pub fn render_sites(&self, packages: &[String]) -> String {
         let mut text = String::new();
@@ -1058,11 +1050,8 @@ fn workspace_dir(start: &Path) -> Result<(PathBuf, toml::Table)> {
     )
 }
 
-/// What the app's Cargo manifest says about platform code.
 struct CargoFacts {
-    /// Findings from the manifest itself.
     findings: Vec<PortabilityFinding>,
-    /// Rust identifiers of native crates the shipped code can name.
     native_idents: BTreeSet<String>,
     lib_path: Option<PathBuf>,
     bin_paths: Vec<PathBuf>,
@@ -1144,7 +1133,6 @@ impl CargoFacts {
         }
     }
 
-    /// Dependency findings; returns the aliases of the app SDK dependency.
     fn dependencies(
         &mut self,
         app_dir: &Path,
@@ -1227,7 +1215,6 @@ impl CargoFacts {
         sdk_aliases
     }
 
-    /// App features that select SDK backends or are backend selections.
     fn features(
         &mut self,
         manifest: &toml::Table,
@@ -1267,7 +1254,6 @@ impl CargoFacts {
         }
     }
 
-    /// Crate roots of the shipped targets.
     fn roots(&self, app_dir: &Path) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         roots.push(
@@ -1458,9 +1444,19 @@ pub(crate) fn manifest_key_line(text: &str, table: &str, key: &str) -> usize {
     1
 }
 
+/// Features that name a platform other than the web: the code they gate is
+/// compiled for that platform alone, never for the web.
+const NOT_WEB_FEATURES: &[&str] = &["tilo-os", "linux", "macos"];
+
 /// Every file of the module trees rooted at `roots` with its test-only items
 /// removed, skipping modules that only exist under `cfg(test)`.
 pub(crate) fn shipped_modules(roots: &[PathBuf]) -> Result<Vec<(PathBuf, TokenStream)>> {
+    modules_without(roots, &[])
+}
+
+/// [`shipped_modules`], also without the items that only exist when one of
+/// `absent` (features a build leaves off) is on.
+fn modules_without(roots: &[PathBuf], absent: &[&str]) -> Result<Vec<(PathBuf, TokenStream)>> {
     let mut seen = BTreeSet::new();
     let mut modules = Vec::new();
     let mut queue: VecDeque<(PathBuf, bool)> =
@@ -1475,10 +1471,10 @@ pub(crate) fn shipped_modules(roots: &[PathBuf]) -> Result<Vec<(PathBuf, TokenSt
             syn::parse_file(&source).with_context(|| format!("parse {}", file.display()))?;
         // A file whose own `#![cfg(test)]` only holds in a test build is test
         // code, however it was declared.
-        if test_only(&syntax.attrs) {
+        if test_only(&syntax.attrs, absent) {
             continue;
         }
-        TestPruner.visit_file_mut(&mut syntax);
+        Pruner { absent }.visit_file_mut(&mut syntax);
         let parent = file.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
         let mod_rs = is_root || file.file_name().is_some_and(|name| name == "mod.rs");
         let children = if mod_rs {
@@ -1553,10 +1549,15 @@ fn collect_modules(
     }
 }
 
-/// Removes items, statements, fields and arms that only exist in test builds.
-struct TestPruner;
+/// Removes items, statements, fields and arms that only exist in test builds,
+/// or only with one of `absent` (features the build leaves off) on.
+struct Pruner<'a> {
+    absent: &'a [&'a str],
+}
 
-fn test_only(attrs: &[syn::Attribute]) -> bool {
+/// Whether `attrs` keep their item out of a build that is no test and has
+/// none of `absent` on.
+fn test_only(attrs: &[syn::Attribute], absent: &[&str]) -> bool {
     attrs.iter().any(|attr| {
         let path = attr.path();
         if path
@@ -1570,12 +1571,13 @@ fn test_only(attrs: &[syn::Attribute]) -> bool {
             return false;
         }
         attr.parse_args::<syn::Meta>()
-            .is_ok_and(|predicate| requires_test(&predicate))
+            .is_ok_and(|predicate| requires_test(&predicate, absent))
     })
 }
 
-/// Whether a `cfg` predicate can only hold in a test build.
-fn requires_test(predicate: &syn::Meta) -> bool {
+/// Whether a `cfg` predicate can only hold in a test build, or with one of
+/// `absent` on.
+fn requires_test(predicate: &syn::Meta, absent: &[&str]) -> bool {
     match predicate {
         syn::Meta::Path(path) => path.is_ident("test"),
         syn::Meta::List(list) => {
@@ -1585,62 +1587,74 @@ fn requires_test(predicate: &syn::Meta) -> bool {
                 return false;
             };
             if list.path.is_ident("all") {
-                nested.iter().any(requires_test)
+                nested.iter().any(|nested| requires_test(nested, absent))
             } else if list.path.is_ident("any") {
-                !nested.is_empty() && nested.iter().all(requires_test)
+                !nested.is_empty() && nested.iter().all(|nested| requires_test(nested, absent))
             } else {
                 false
             }
         }
-        syn::Meta::NameValue(_) => false,
+        syn::Meta::NameValue(value) => {
+            value.path.is_ident("feature")
+                && matches!(&value.value, syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(name),
+                    ..
+                }) if absent.contains(&name.value().as_str()))
+        }
     }
 }
 
-impl VisitMut for TestPruner {
+impl VisitMut for Pruner<'_> {
     fn visit_file_mut(&mut self, file: &mut syn::File) {
-        file.items.retain(|item| !item_test_only(item));
+        file.items.retain(|item| !item_test_only(item, self.absent));
         syn::visit_mut::visit_file_mut(self, file);
     }
 
     fn visit_item_mod_mut(&mut self, module: &mut syn::ItemMod) {
         if let Some((_, items)) = &mut module.content {
-            items.retain(|item| !item_test_only(item));
+            items.retain(|item| !item_test_only(item, self.absent));
         }
         syn::visit_mut::visit_item_mod_mut(self, module);
     }
 
     fn visit_item_impl_mut(&mut self, item: &mut syn::ItemImpl) {
         item.items.retain(|item| {
-            !test_only(match item {
-                syn::ImplItem::Const(item) => &item.attrs,
-                syn::ImplItem::Fn(item) => &item.attrs,
-                syn::ImplItem::Type(item) => &item.attrs,
-                syn::ImplItem::Macro(item) => &item.attrs,
-                _ => &[],
-            })
+            !test_only(
+                match item {
+                    syn::ImplItem::Const(item) => &item.attrs,
+                    syn::ImplItem::Fn(item) => &item.attrs,
+                    syn::ImplItem::Type(item) => &item.attrs,
+                    syn::ImplItem::Macro(item) => &item.attrs,
+                    _ => &[],
+                },
+                self.absent,
+            )
         });
         syn::visit_mut::visit_item_impl_mut(self, item);
     }
 
     fn visit_item_trait_mut(&mut self, item: &mut syn::ItemTrait) {
         item.items.retain(|item| {
-            !test_only(match item {
-                syn::TraitItem::Const(item) => &item.attrs,
-                syn::TraitItem::Fn(item) => &item.attrs,
-                syn::TraitItem::Type(item) => &item.attrs,
-                syn::TraitItem::Macro(item) => &item.attrs,
-                _ => &[],
-            })
+            !test_only(
+                match item {
+                    syn::TraitItem::Const(item) => &item.attrs,
+                    syn::TraitItem::Fn(item) => &item.attrs,
+                    syn::TraitItem::Type(item) => &item.attrs,
+                    syn::TraitItem::Macro(item) => &item.attrs,
+                    _ => &[],
+                },
+                self.absent,
+            )
         });
         syn::visit_mut::visit_item_trait_mut(self, item);
     }
 
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
         block.stmts.retain(|stmt| match stmt {
-            syn::Stmt::Item(item) => !item_test_only(item),
-            syn::Stmt::Local(local) => !test_only(&local.attrs),
-            syn::Stmt::Macro(mac) => !test_only(&mac.attrs),
-            syn::Stmt::Expr(expr, _) => !test_only(expr_attrs(expr)),
+            syn::Stmt::Item(item) => !item_test_only(item, self.absent),
+            syn::Stmt::Local(local) => !test_only(&local.attrs, self.absent),
+            syn::Stmt::Macro(mac) => !test_only(&mac.attrs, self.absent),
+            syn::Stmt::Expr(expr, _) => !test_only(expr_attrs(expr), self.absent),
         });
         syn::visit_mut::visit_block_mut(self, block);
     }
@@ -1648,7 +1662,7 @@ impl VisitMut for TestPruner {
     fn visit_fields_named_mut(&mut self, fields: &mut syn::FieldsNamed) {
         fields.named = std::mem::take(&mut fields.named)
             .into_pairs()
-            .filter(|pair| !test_only(&pair.value().attrs))
+            .filter(|pair| !test_only(&pair.value().attrs, self.absent))
             .collect();
         syn::visit_mut::visit_fields_named_mut(self, fields);
     }
@@ -1656,7 +1670,7 @@ impl VisitMut for TestPruner {
     fn visit_expr_struct_mut(&mut self, expr: &mut syn::ExprStruct) {
         expr.fields = std::mem::take(&mut expr.fields)
             .into_pairs()
-            .filter(|pair| !test_only(&pair.value().attrs))
+            .filter(|pair| !test_only(&pair.value().attrs, self.absent))
             .collect();
         syn::visit_mut::visit_expr_struct_mut(self, expr);
     }
@@ -1664,18 +1678,17 @@ impl VisitMut for TestPruner {
     fn visit_item_enum_mut(&mut self, item: &mut syn::ItemEnum) {
         item.variants = std::mem::take(&mut item.variants)
             .into_pairs()
-            .filter(|pair| !test_only(&pair.value().attrs))
+            .filter(|pair| !test_only(&pair.value().attrs, self.absent))
             .collect();
         syn::visit_mut::visit_item_enum_mut(self, item);
     }
 
     fn visit_expr_match_mut(&mut self, expr: &mut syn::ExprMatch) {
-        expr.arms.retain(|arm| !test_only(&arm.attrs));
+        expr.arms.retain(|arm| !test_only(&arm.attrs, self.absent));
         syn::visit_mut::visit_expr_match_mut(self, expr);
     }
 }
 
-/// The outer attributes of an expression used as a statement.
 fn expr_attrs(expr: &syn::Expr) -> &[syn::Attribute] {
     match expr {
         syn::Expr::Assign(expr) => &expr.attrs,
@@ -1693,7 +1706,7 @@ fn expr_attrs(expr: &syn::Expr) -> &[syn::Attribute] {
     }
 }
 
-fn item_test_only(item: &syn::Item) -> bool {
+fn item_test_only(item: &syn::Item, absent: &[&str]) -> bool {
     let attrs: &[syn::Attribute] = match item {
         syn::Item::Const(item) => &item.attrs,
         syn::Item::Enum(item) => &item.attrs,
@@ -1712,7 +1725,7 @@ fn item_test_only(item: &syn::Item) -> bool {
         syn::Item::Use(item) => &item.attrs,
         _ => &[],
     };
-    test_only(attrs)
+    test_only(attrs, absent)
 }
 
 pub(crate) fn is_path_sep(tokens: &[TokenTree], index: usize) -> bool {
@@ -1852,7 +1865,6 @@ pub(crate) fn is_doc_attribute(tokens: &[TokenTree], index: usize) -> bool {
 
 type Hit = (usize, FindingKind, String);
 
-/// The source-level rules of the table, ready to match tokens.
 struct Scanner<'a> {
     table: &'a RulesTable,
     native: &'a BTreeSet<String>,

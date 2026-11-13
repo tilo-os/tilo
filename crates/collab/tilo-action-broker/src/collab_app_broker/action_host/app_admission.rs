@@ -52,6 +52,17 @@ pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) 
         && (action == session_actions::ISSUE_INVITATION || action == session_actions::SHOW_INVITE)
 }
 
+/// Whether `request` asks the session's desk to show how an agent or a computer connects as the
+/// person (`show-connect`): the setup their own card opens, shown to them on their own screen. An
+/// app listing what acts as the person offers adding to it this way; it grants nothing, and the
+/// person still signs anything in themselves.
+pub(super) fn connect_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
+    use tilo_actions::remote::session_actions;
+    request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+        && request.target.address.resource == session_actions::DESK_RESOURCE
+        && request.target.address.action == session_actions::SHOW_CONNECT
+}
+
 #[cfg(test)]
 mod own_view_lookup_tests {
     use super::own_view_lookup;
@@ -231,6 +242,10 @@ mod invitation_request_tests {
             super::invitation_request(&desk(session_actions::SHOW_INVITE)),
             "the sheet an app shares through is the person's own invite sheet"
         );
+        assert!(
+            super::connect_request(&desk(session_actions::SHOW_CONNECT)),
+            "an app offers the person's own connect setup"
+        );
         for other in [
             "invitations",
             "cancel-invitation",
@@ -239,7 +254,7 @@ mod invitation_request_tests {
             "stop-agent",
         ] {
             assert!(
-                !super::invitation_request(&desk(other)),
+                !super::invitation_request(&desk(other)) && !super::connect_request(&desk(other)),
                 "the desk's `{other}` is the person's own"
             );
         }

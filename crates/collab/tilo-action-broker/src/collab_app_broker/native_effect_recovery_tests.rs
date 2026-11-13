@@ -11,7 +11,6 @@ use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommi
 
 struct NativeEffects {
     owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
-    key: SigningKey,
     held: Arc<tokio::sync::Semaphore>,
     submitted: Arc<tokio::sync::Notify>,
 }
@@ -27,7 +26,6 @@ impl OwnerCommitService for NativeEffects {
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
-        let key = self.key.clone();
         let held = self.held.clone();
         let submitted = self.submitted.clone();
         Box::pin(async move {
@@ -36,7 +34,7 @@ impl OwnerCommitService for NativeEffects {
                 .acquire()
                 .await
                 .map_err(|_| "native owner test retired")?;
-            let receipt = owner.commit_effect_receipt(&request, &key, SystemTime::now());
+            let receipt = owner.commit_effect_receipt(&request, SystemTime::now());
             drop(permit);
             receipt
         })
@@ -100,7 +98,6 @@ fn fixture() -> Fixture {
         None,
         Arc::new(NativeEffects {
             owner: owner.clone(),
-            key: key.clone(),
             held: held.clone(),
             submitted: submitted.clone(),
         }),

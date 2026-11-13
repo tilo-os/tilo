@@ -32,7 +32,7 @@ export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
  * so a test that opens the site in a fresh profile gets the desktop it drives,
  * as a returning person does. A test of the first screen opts out
  * (`tab({firstRun: true})`). */
-export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-first-run', '1'); } catch {}";
+export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}";
 
 /** Compressed copies by path, kept until the file they were made from changes:
  * a bundle's start module is tens of megabytes and a page load asks for it
@@ -201,7 +201,10 @@ function sweepProfiles() {
   }
 }
 
-/** A headless browser on a fresh profile. */
+/** A headless browser on a fresh profile. `TILO_CHROME_ARGS` adds flags of the machine's own,
+ * space separated: headless Chrome draws WebGPU with SwiftShader unless told to use the GPU, so a
+ * run that wants the machine's GPU (a recording) passes `--enable-gpu --use-angle=vulkan
+ * --enable-features=Vulkan --ignore-gpu-blocklist` there. */
 export async function launch({args = []} = {}) {
   sweepProfiles();
   const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
@@ -223,7 +226,15 @@ export async function launch({args = []} = {}) {
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
+    // No crash reporter. In a job container its handler cannot trace the
+    // browser's processes ("no ptrace"), and a renderer that asked it for a
+    // report then died: about one reload in four in the agent-setup check
+    // crashed its tab, none in eight runs without it. A renderer that does
+    // crash still prints its signal and stack on stderr without it.
+    '--disable-crash-reporter',
+    '--disable-breakpad',
     ...args,
+    ...(process.env.TILO_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean),
     'about:blank',
   ];
   // The existing subreaper owns even detached utility processes. Chromium's
@@ -247,7 +258,7 @@ export async function launch({args = []} = {}) {
   const endpoint = await new Promise((resolve, reject) => {
     let buffered = '';
     child.stderr.on('data', chunk => {
-      said = (said + chunk).slice(-4000);
+      said = (said + chunk).slice(-64000);
       if (buffered === null) return;
       buffered += chunk;
       const match = buffered.match(/DevTools listening on (ws:\/\/\S+)/);
@@ -287,11 +298,18 @@ export async function launch({args = []} = {}) {
   });
   ws.addEventListener('close', () => stop(new Error('the browser\'s connection closed')));
   ws.addEventListener('error', () => stop(new Error('the browser\'s connection failed')));
+  // What the browser said that explains a process that died: a page whose
+  // renderer was killed says so here, and a test that would otherwise wait out
+  // its own step hears it at once.
+  const died = () => said.split('\n')
+    .filter(line => /crash|kill|OOM|out of memory|SIGSEGV|SIGILL|SIGKILL|SIGABRT|FATAL/i.test(line))
+    .slice(-6).map(line => line.trim()).join(' | ');
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const n = ++id;
     const timer = setTimeout(() => {
       pending.delete(n);
-      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s`));
+      const why = died();
+      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s${why ? ` (what it said: ${why})` : ''}`));
     }, ANSWER_TIMEOUT_MS);
     timer.unref?.();
     pending.set(n, {resolve: message => { clearTimeout(timer); resolve(message); },
@@ -307,11 +325,26 @@ export async function launch({args = []} = {}) {
       {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
     const log = [];
+    // A renderer that died answers nothing: every command on it would wait
+    // out the whole answer timeout, so the tab says it died once, here, where
+    // a flow's failure dump shows it, and refuses further commands at once.
+    let dead = null;
     const listener = message => {
       if (message.sessionId !== sessionId) return;
+      if (message.method === 'Inspector.targetCrashed') {
+        dead = 'the renderer process died';
+        log.push(`CRASH ${dead} (the browser: ${died() || 'said nothing'})`);
+        return;
+      }
       if (message.method === 'Runtime.exceptionThrown') {
         const details = message.params.exceptionDetails;
-        log.push(`EXC ${(details.exception?.description ?? details.text).slice(0, 600)}`);
+        // The whole stack: a Wasm trap's first frames are the panic or
+        // allocation machinery, and the frame that caused it comes later.
+        // A thrown value that is not an Error has no description: show the
+        // value, and where it was thrown.
+        const thrown = details.exception?.description ?? `${details.text} ${JSON.stringify(details.exception?.value ?? details.exception?.className ?? null)}`;
+        const at = details.stackTrace?.callFrames?.slice(0, 4).map(f => `${f.functionName}@${f.url.split('/').pop()}:${f.lineNumber}`).join(' < ') ?? `${details.url ?? ''}:${details.lineNumber}`;
+        log.push(`EXC ${thrown.slice(0, 8000)} at ${at}`);
       }
       if (message.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(message.params.type)) {
         log.push(`${message.params.type.toUpperCase()} ${message.params.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 2000)}`);
@@ -320,8 +353,11 @@ export async function launch({args = []} = {}) {
     listeners.add(listener);
     await send('Runtime.enable', {}, sessionId);
     await send('Page.enable', {}, sessionId);
+    // The domain that reports a renderer's death (`Inspector.targetCrashed`).
+    await send('Inspector.enable', {}, sessionId).catch(() => {});
     if (!firstRun) await send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN}, sessionId);
     const evaluate = async (expression, {timeout = 120000} = {}) => {
+      if (dead) throw new Error(`${expression}: ${dead}`);
       const reply = await send('Runtime.evaluate', {
         expression, awaitPromise: true, returnByValue: true, timeout,
       }, sessionId);
@@ -341,17 +377,28 @@ export async function launch({args = []} = {}) {
         await sleep(interval);
       }
     };
+    // One capture at a time: Chromium answers two overlapping
+    // `Page.captureScreenshot`s (a recording's frame and a shot) with frames
+    // of each other's size, so a shot came back as the page tiled 2x2.
+    let capturing = Promise.resolve();
+    const capture = params => {
+      const taking = capturing.then(() => send('Page.captureScreenshot', params, sessionId));
+      capturing = taking.catch(() => undefined);
+      return taking;
+    };
     return {
       targetId,
       sessionId,
       log,
-      send: (method, params) => send(method, params, sessionId),
+      /** Why the tab's renderer is gone, or `null` while it answers. */
+      crash: () => dead,
+      send: (method, params) => method === 'Page.captureScreenshot' ? capture(params) : send(method, params, sessionId),
       evaluate,
       waitFor,
       navigate: url => send('Page.navigate', {url}, sessionId),
       reload: () => send('Page.reload', {ignoreCache: true}, sessionId),
       screenshot: async () => {
-        const shot = await send('Page.captureScreenshot', {format: 'png'}, sessionId);
+        const shot = await capture({format: 'png'});
         return shot.result?.data ? Buffer.from(shot.result.data, 'base64') : null;
       },
       close: async () => {
@@ -365,6 +412,11 @@ export async function launch({args = []} = {}) {
     tab,
     /** Recent browser-process diagnostics, including GPU-process failures. */
     diagnostics: () => shutdownLines(),
+    /** The end of what the browser said, without its routine noise: with
+     * `--enable-logging=stderr` Chromium's own log, which tells why a process died. */
+    crashLines: () => said.split('\n')
+      .filter(line => line.trim() && !/registration_request|DEPRECATED_ENDPOINT|adjust OOM score/.test(line))
+      .slice(-80).join('\n'),
     /** A fresh browser context: storage, cookies and Web Locks of its own, as
      * another person's browser profile would have. Resolves to its id. */
     context: async () => (await send('Target.createBrowserContext', {disposeOnDetach: true})).result.browserContextId,

@@ -217,10 +217,15 @@ fn what_a_person_saw_is_theirs_on_their_own_entries_and_not_another_persons() {
         "none of it is Bo's own state"
     );
 
-    // Bo's window shows Bo's state, never Ada's mark.
+    // Bo's window reads the record's marks, as a conversation shows who has read to a line, and
+    // none of what Ada saw is his: what a person has seen stays their own.
     let other = Workspace::personal("tasks", &bo(), theirs.clone());
     let host = other.window.current_host().expect("the host started");
-    assert_eq!(host.runtime().seen(&ada(), &resource), None);
+    assert_eq!(
+        host.runtime().seen(&bo(), &resource),
+        None,
+        "Bo has seen nothing"
+    );
 
     // Bo cannot keep a mark as Ada's.
     let refusal = theirs

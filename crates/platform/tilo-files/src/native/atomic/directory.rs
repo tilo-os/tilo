@@ -6,86 +6,54 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-/// An admitted directory held by native handle for relative storage operations.
-///
-/// This preserves the admitted parent when its ambient path is renamed or
-/// replaced. Publication still requires a framework-owned private namespace or
-/// equivalent caller-held exclusion: a held parent alone cannot prevent a
-/// hostile peer from mutating child names inside that directory.
+/// An admitted directory held by native handle for relative storage operations, which stays the
+/// admitted parent when its ambient path is renamed or replaced. Publication still needs a
+/// framework-owned private namespace or equivalent caller-held exclusion: a held parent alone cannot
+/// stop a hostile peer from mutating child names.
 pub struct StorageDirectory {
     pub(crate) inner: native::Directory,
 }
 
 impl StorageDirectory {
-    /// Consume an already-authorized directory handle.
     pub fn from_file(file: File) -> io::Result<Self> {
         native::Directory::from_file(file).map(|inner| Self { inner })
     }
 
-    /// Admit a trusted-host directory path and retain its opened handle.
     pub fn open(path: &Path) -> io::Result<Self> {
         native::Directory::open(path).map(|inner| Self { inner })
     }
 
-    /// Validate current privacy through the retained directory handle, without
-    /// reopening a path or changing permissions. `Inherit` adds no restriction.
-    ///
-    /// `OwnerOnly` requires the effective native principal and a supported native
-    /// permission model. Linux admits ext2/3/4, Btrfs, XFS, tmpfs and `OverlayFS`;
-    /// other profiles return `Unsupported`. This is permission admission, not
-    /// durability certification. The host/backing namespace must be trusted.
-    /// The cooperative owner must maintain permissions and child-name exclusion
-    /// throughout use; this does not defeat a hostile same-principal process,
-    /// privileged access, later ACL changes, or otherwise-authorized aliases.
+    /// Through the retained handle, without reopening a path or changing permissions.
     pub fn validate_privacy(&self, privacy: Privacy) -> io::Result<()> {
         self.inner.validate_privacy(privacy)
     }
 
-    /// Validate effective-owner control of this held directory's namespace.
-    /// Unlike `OwnerOnly`, group/other read and search are permitted. This
-    /// changes no permissions and grants no lasting lease against mutation.
-    /// Uses the same supported Unix profiles and conservative macOS ACL policy
-    /// as private creation; private child admission remains independent.
+    /// Unlike `OwnerOnly`, group and other read and search are permitted. This changes no permissions
+    /// and grants no lasting lease against mutation, and private child admission remains independent.
     #[cfg(unix)]
     pub fn validate_namespace_control(&self) -> io::Result<()> {
         self.inner.validate_namespace_control()
     }
 
-    /// Root-only read observation of another exact owner's held directory.
-    /// This grants no publication authority and changes no ownership or policy.
-    /// `OwnerOnly` requires private DAC/ACL mode; `Inherit` requires owner control.
-    /// The caller must obtain the owner and handle on an authenticated channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns `PermissionDenied` when the caller is not root, the held directory
-    /// has a different owner, or its permissions violate the requested privacy.
-    /// Returns `Unsupported` for an unsupported permission profile, or the native
-    /// error when the held directory cannot be inspected.
+    /// Another exact owner's held directory, read-only, root only. This grants no publication authority
+    /// and changes no ownership or policy: `OwnerOnly` requires private DAC and ACL mode, `Inherit`
+    /// requires owner control. The caller must obtain the owner and handle on an authenticated channel,
+    /// else it gets `PermissionDenied` or `Unsupported`.
     #[cfg(target_os = "linux")]
     pub fn validate_observed_owner(&self, owner: u32, privacy: Privacy) -> io::Result<()> {
         self.inner.validate_observed_owner(owner, privacy)
     }
 
-    /// Query the identity of the retained directory handle.
     pub fn identity(&self) -> io::Result<FileIdentity> {
         self.inner.identity().map(|inner| FileIdentity { inner })
     }
 
-    /// Open one child component without following a symbolic link and validate
-    /// the requested privacy semantics.
+    /// Without following a symbolic link, validating the requested privacy semantics.
     pub fn open_read(&self, name: &OsStr, privacy: Privacy) -> io::Result<File> {
         self.inner.open_read(name, privacy)
     }
 
-    /// Acquire a lease on a single regular, no-follow sentinel without truncation.
-    /// This supplies coordination only, not a namespace durability acknowledgement.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::native::atomic::lease::AcquireError::Busy`] for a conflicting lease and
-    /// [`crate::native::atomic::lease::AcquireError::Io`] when the sentinel cannot be opened or
-    /// locked.
+    /// Coordination only, not a namespace durability acknowledgement.
     #[cfg(unix)]
     pub fn try_acquire_lease(
         &self,
@@ -100,18 +68,12 @@ impl StorageDirectory {
         crate::native::atomic::lease::FileLease::try_acquire(file, mode)
     }
 
-    /// Open an existing regular file for append through this held parent.
     #[cfg(unix)]
     pub fn open_append_existing(&self, name: &OsStr, privacy: Privacy) -> io::Result<File> {
         self.inner.open_writable(name, privacy, false, true)
     }
 
-    /// Commit the exact existing file and its existing name, without publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`crate::native::atomic::ExistingCommitError`] retaining commit authority when
-    /// the binding changed or a durability barrier failed.
+    /// Commits the exact existing file and its existing name, without publication.
     #[cfg(unix)]
     pub fn commit_existing(
         &self,
@@ -122,7 +84,6 @@ impl StorageDirectory {
         crate::native::atomic::existing::commit(self, name, expected, privacy)
     }
 
-    /// Durably publish bytes under one child component.
     pub fn publish(
         &self,
         name: &OsStr,
@@ -133,10 +94,7 @@ impl StorageDirectory {
         self.publish_with_mode(name, bytes, mode, privacy, None)
     }
 
-    /// Durably publish bytes with explicit native permission bits.
-    ///
-    /// This uses the same retained directory and publication barriers as
-    /// [`Self::publish`]. Permission bits do not admit a directory or source.
+    /// Uses the same retained directory and publication path as [`Self::publish`].
     pub fn publish_with_permissions(
         &self,
         name: &OsStr,

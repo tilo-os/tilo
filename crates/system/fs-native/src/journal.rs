@@ -1,12 +1,11 @@
-//! The change journal: a fanotify filesystem mark on the store volume,
-//! turned into an ordered list of path-level changes.
+//! The change journal: a fanotify filesystem mark on the store volume, turned
+//! into an ordered list of path-level changes. Writers are never intercepted:
+//! the journal observes in the order the kernel queued the events, and that
+//! order is what peers apply.
 //!
-//! Writers are never intercepted. The journal only observes, in the order
-//! the kernel queued the events, and that order is what peers apply.
-//! The journal is an optimisation:
-//! when it loses information (queue overflow, a directory that vanished
-//! before its events were read) it asks for a rescan, and capture then
-//! compares snapshots instead. The filesystem is the truth.
+//! The journal is an optimisation: when it loses information (queue overflow,
+//! a directory that vanished before its events were read) it asks for a
+//! rescan, and capture then compares snapshots instead.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -18,20 +17,19 @@ use std::time::{Duration, Instant};
 use crate::fanotify::{self as fan, FidKind, Group};
 use crate::sys::{self, FileHandle};
 
-/// What happened to a path.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum JournalOp {
     Create,
     Delete,
-    /// Bytes were written. Rate-limited to the first write per file per
-    /// batch; `CloseWrite` marks the end of a write session.
+    /// Bytes were written. Rate-limited to the first write per file per batch;
+    /// `CloseWrite` marks the end of a write session.
     Modify,
     CloseWrite,
     /// Mode, owner, times or xattrs changed.
     Attrib,
-    /// Moved from `from` to the entry's path. Either side may lie outside
-    /// the watched tree, in which case it is `None` and the move is a
-    /// create (moved in) or a delete (moved out).
+    /// Moved from `from` to the entry's path. Either side may lie outside the
+    /// watched tree, in which case it is `None` and the move is a create (moved
+    /// in) or a delete (moved out).
     Rename {
         from: Option<PathBuf>,
     },
@@ -49,7 +47,6 @@ pub struct JournalEntry {
 }
 
 impl JournalEntry {
-    /// Every path this entry touches (both sides of a rename).
     pub fn paths(&self) -> impl Iterator<Item = &Path> {
         let from = match &self.op {
             JournalOp::Rename { from } => from.as_deref(),
@@ -59,41 +56,36 @@ impl JournalEntry {
     }
 }
 
-/// Why the journal cannot vouch for completeness.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RescanReason {
     /// The kernel dropped events (`FAN_Q_OVERFLOW`).
     Overflow,
-    /// An event named a directory that no longer exists and was never seen.
-    /// Where it was is unknown, so this fires for vanished directories
-    /// anywhere on the volume; the daemon's own staging is pid-filtered and
-    /// snapshot deletion raises no per-file events, so on a store volume
-    /// this is rare.
+    /// An event named a directory that no longer exists and was never seen, so its
+    /// place is unknown. The daemon's own staging is pid-filtered and snapshot
+    /// deletion raises no per-file events, so on a store volume this is rare.
     Unresolved,
 }
 
-/// Entries taken from the journal since the last [`ChangeJournal::take`].
 #[derive(Clone, Default, Debug)]
 pub struct JournalBatch {
     pub entries: Vec<JournalEntry>,
     pub rescan: Option<RescanReason>,
-    /// Journal position after the last entry.
     pub through: u64,
 }
 
 #[derive(Clone, Debug)]
 pub struct JournalConfig {
-    /// The tree to journal, e.g. `<store>/live`. Events elsewhere on the
-    /// volume (snapshots, staging) are dropped.
+    /// The tree to journal, e.g. `<store>/live`. Events elsewhere on the volume
+    /// (snapshots, staging) are dropped.
     pub watch: PathBuf,
-    /// Use `FAN_UNLIMITED_QUEUE`. Off by default: an unbounded queue trades
-    /// an overflow for unbounded kernel memory.
+    /// Use `FAN_UNLIMITED_QUEUE`. Off by default: an unbounded queue trades an
+    /// overflow for unbounded kernel memory.
     pub unlimited_queue: bool,
-    /// Events caused by these processes are dropped; the daemon lists
-    /// itself so that applying remote changes is not captured as local.
+    /// Events caused by these processes are dropped; the daemon lists itself so
+    /// that applying remote changes is not captured as local.
     pub ignore_pids: Vec<i32>,
-    /// Suppress repeated `FAN_MODIFY` of an open file with an ignore mark
-    /// until it is closed or the batch is taken.
+    /// Suppress repeated `FAN_MODIFY` of an open file with an ignore mark until it
+    /// is closed or the batch is taken.
     pub rate_limit_modify: bool,
     /// Sequence number of the first entry. A consumer that persists journal
     /// positions continues numbering across restarts from here.
@@ -128,30 +120,29 @@ pub struct ChangeJournal {
     buf: Vec<u8>,
     entries: Vec<JournalEntry>,
     next_seq: u64,
-    /// Why the journal cannot vouch for completeness, and the journal
-    /// position (the next sequence number) at which that was noticed.
+    /// Why the journal cannot vouch for completeness, and the journal position
+    /// (the next sequence number) at which that was noticed.
     rescan: Option<(RescanReason, u64)>,
     /// Barrier files not yet seen, by path, with their id.
     pending_barriers: HashMap<PathBuf, u64>,
-    /// Journal position of every barrier seen: the last sequence number
-    /// queued before it.
+    /// Journal position of every barrier seen: the last sequence number queued
+    /// before it.
     barriers: HashMap<u64, u64>,
     next_barrier: u64,
-    /// Last known path of every directory handle seen, for events whose
-    /// directory is gone by the time they are read.
+    /// Last known path of every directory handle seen, for events whose directory
+    /// is gone by the time they are read.
     dirs: HashMap<FileHandle, PathBuf>,
-    /// Objects whose `FAN_MODIFY` was already journaled in this batch. With
-    /// a descriptor, the kernel suppresses further events through an ignore
-    /// mark; without one (the mark was refused), repeats are dropped here.
+    /// Objects whose `FAN_MODIFY` was already journaled in this batch. With a
+    /// descriptor, the kernel suppresses further events through an ignore mark;
+    /// without one (the mark was refused), repeats are dropped here.
     muted: HashMap<FileHandle, Option<OwnedFd>>,
     events_read: u64,
     kernel_mutes: u64,
 }
 
 impl ChangeJournal {
-    /// Marks the whole filesystem holding `store_root`. Needs
-    /// `CAP_SYS_ADMIN` (filesystem marks) and `CAP_DAC_READ_SEARCH`
-    /// (resolving file handles).
+    /// Marks the whole filesystem holding `store_root`. Needs `CAP_SYS_ADMIN`
+    /// (filesystem marks) and `CAP_DAC_READ_SEARCH` (resolving file handles).
     pub fn open(store_root: &Path, cfg: JournalConfig) -> io::Result<Self> {
         let mut flags = fan::FAN_CLASS_NOTIF | fan::FAN_REPORT_DFID_NAME_TARGET | fan::FAN_NONBLOCK;
         if cfg.unlimited_queue {
@@ -186,26 +177,23 @@ impl ChangeJournal {
         })
     }
 
-    /// The canonical path of the watched tree.
     pub fn watch(&self) -> &Path {
         &self.watch
     }
 
-    /// Raw events read so far, for diagnostics.
     pub fn events_read(&self) -> u64 {
         self.events_read
     }
 
-    /// How many write sessions the kernel suppressed with an ignore mark.
-    /// Btrfs refuses inode ignore marks (`EXDEV`) in a subvolume whose fsid
-    /// differs from the filesystem mark's, and then repeats are dropped in
-    /// userspace instead.
+    /// How many write sessions the kernel suppressed with an ignore mark. Btrfs
+    /// refuses inode ignore marks (`EXDEV`) in a subvolume whose fsid differs from
+    /// the filesystem mark's, and then repeats are dropped in userspace instead.
     pub fn kernel_mutes(&self) -> u64 {
         self.kernel_mutes
     }
 
-    /// Reads whatever is queued, waiting up to `timeout` for the first
-    /// event. Returns the number of journal entries appended.
+    /// Reads whatever is queued, waiting up to `timeout` for the first event.
+    /// Returns the number of journal entries appended.
     pub fn pump(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
         let before = self.entries.len();
         let mut wait = timeout;
@@ -226,8 +214,6 @@ impl ChangeJournal {
         Ok(self.entries.len().saturating_sub(before))
     }
 
-    /// Pumps until no event at all has arrived for `idle`, or `limit`
-    /// elapsed. Returns the number of journal entries appended.
     pub fn pump_until_idle(&mut self, idle: Duration, limit: Duration) -> io::Result<usize> {
         let start = Instant::now();
         let mut total = 0usize;
@@ -241,8 +227,8 @@ impl ChangeJournal {
         Ok(total)
     }
 
-    /// Takes the entries journaled so far and re-arms modify tracking, so
-    /// every batch sees at least the first write to each file.
+    /// Takes the entries journaled so far and re-arms modify tracking, so every
+    /// batch sees at least the first write to each file.
     pub fn take(&mut self) -> JournalBatch {
         self.rearm_modify();
         JournalBatch {
@@ -252,7 +238,6 @@ impl ChangeJournal {
         }
     }
 
-    /// Entries journaled but not yet taken.
     pub fn pending(&self) -> &[JournalEntry] {
         &self.entries
     }
@@ -268,11 +253,11 @@ impl ChangeJournal {
         }
     }
 
-    /// Places a barrier in the event stream: creates and removes a uniquely
-    /// named file in `dir`, which must be on the marked filesystem (outside
-    /// the watched tree, e.g. the epoch directory). fanotify queues events
-    /// in the syscall that causes them, so every change that completed
-    /// before this call is queued before the barrier's event.
+    /// Places a barrier in the event stream: creates and removes a uniquely named
+    /// file in `dir`, which must be on the marked filesystem (outside the watched
+    /// tree, e.g. the epoch directory). fanotify queues events in the syscall that
+    /// causes them, so every change that completed before this call is queued
+    /// before the barrier's event.
     pub fn barrier(&mut self, dir: &Path) -> io::Result<u64> {
         let id = self.next_barrier;
         self.next_barrier = self.next_barrier.saturating_add(1);
@@ -300,14 +285,11 @@ impl ChangeJournal {
         }
     }
 
-    /// Takes the batch for a snapshot taken between barriers `before` and
-    /// `after`.
+    /// Takes the batch for a snapshot taken between barriers `before` and `after`.
     ///
-    /// Everything queued before `after` is returned. Entries queued between
-    /// the two barriers may or may not be in the snapshot, so they are also
-    /// kept for the next batch: examining a path twice is cheap, missing one
-    /// loses a change. A rescan request noticed after `before` is likewise
-    /// kept for the next batch too.
+    /// Everything queued before `after` is returned. Entries queued between the
+    /// two barriers may or may not be in the snapshot, so they are kept for the
+    /// next batch too: examining a path twice is cheap, missing one loses a change.
     pub fn take_epoch(&mut self, before: u64, after: u64) -> io::Result<JournalBatch> {
         let a = self.barrier_position(before, Duration::from_secs(10))?;
         let b = self.barrier_position(after, Duration::from_secs(10))?;
@@ -445,7 +427,6 @@ impl ChangeJournal {
         }
     }
 
-    /// Absolute path of `name` inside the directory `dir`.
     fn resolve_dir(&mut self, dir: &FileHandle, name: Option<&OsStr>) -> Option<PathBuf> {
         let base = match dir.open(self.mount.as_fd(), libc::O_PATH) {
             Ok(fd) => {

@@ -64,7 +64,6 @@ impl ChangeSignal {
         })
     }
 
-    /// The kernel listed directory `ino`.
     pub(crate) fn note_listed(&self, ino: u64) {
         self.listed.lock_recover().insert(ino);
     }
@@ -74,7 +73,6 @@ impl ChangeSignal {
         self.live.load(Ordering::Acquire).then_some(LIVE)
     }
 
-    /// Whether `value` is this daemon's own signal.
     pub(crate) fn accepts(&self, value: &[u8]) -> bool {
         value == self.token.as_slice()
     }
@@ -114,7 +112,6 @@ mod worker {
     /// directory under it once it is gone.
     const FUSE_SUPER_MAGIC: u32 = 0x6573_5546;
 
-    /// The running worker; dropping it stops the signals.
     pub struct ChangeSignalTask {
         task: tokio::task::JoinHandle<()>,
     }
@@ -157,7 +154,6 @@ mod worker {
                 .map(|registry| registry.lock_recover().subscribe_changes());
             let (mut changes, mut seen) = {
                 let mut ns = namespace.lock_recover();
-                ns.collect_projected_changes();
                 let seen = Seen {
                     heads: ns.heads(),
                     catalogue: ns.indexed_record_revision().to_owned(),
@@ -204,7 +200,6 @@ mod worker {
                     }
                 }
                 signal.live.store(false, Ordering::Release);
-                namespace.lock_recover().stop_collecting_projected_changes();
             });
             Ok(ChangeSignalTask { task })
         }

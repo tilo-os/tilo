@@ -79,8 +79,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     fixture(root, work.path(), "probe")?;
     package(root, work.path(), &identity_path)?;
-    // Reuse the production verifier to prove a swapped JVM is rejected before
-    // any further launch. No profile/session keys or publisher are reused.
     std::fs::write(bundle.join("lib/signal-provider/java/bin/java"), b"changed")?;
     if verify_bundle_with(&bundle, &VerifyOptions::default()).is_ok() {
         return Err("runtime verifier accepted a replaced JVM".into());

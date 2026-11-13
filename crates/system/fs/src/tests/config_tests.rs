@@ -13,7 +13,6 @@ mod tests {
         let mut config = Config::default();
         config.mount_options = options;
 
-        // If AutoUnmount is present, ACL must not be Owner.
         config.acl = SessionACL::All;
 
         let has_auto_unmount = config

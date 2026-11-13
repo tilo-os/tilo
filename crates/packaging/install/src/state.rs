@@ -1,50 +1,27 @@
-//! The user's data, as distinct from the package's files.
+//! The user's app data, as distinct from the package's payload: `uninstall` always removes the
+//! payload and removes this only when told to, so it can be listed first with the workspaces it is
+//! in and the bytes it takes.
 //!
-//! Uninstalling has two halves that must not be conflated. The payload
-//! is the publisher's: bytes that came out of a signed `.tapp`, exactly
-//! reproducible by reinstalling, and removing them costs nothing.
-//! The app's *state* is the user's: notes they wrote, settings they
-//! chose, whatever the app saved. It lives outside the payload, at
-//! `<data home>/tilo-rooms/<workspace>/<package>` — one directory per
-//! workspace per package, which is the partitioning `launcher::appdir`
-//! creates and an app has no way to opt out of.
-//!
-//! Because the two are different in kind, they are removed by different
-//! decisions. `tilo-install uninstall` always removes the payload. It
-//! removes state only when told to, and this module exists so the
-//! telling is informed: it can enumerate exactly which directories
-//! would go, in which workspaces, and how much they hold, before
-//! anything is deleted.
+//! It is at `<data home>/tilo-rooms/<workspace>/<package>`, the layout `launcher::appdir` creates.
 
 use std::path::{Path, PathBuf};
 
-/// One workspace's state directory for one package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceState {
-    /// Workspace slug as it appears on disk. `personal` is the workspace
-    /// a launch with no workspace behind it gets.
+    /// The workspace slug on disk; `personal` is the workspace of a launch with none behind it.
     pub workspace: String,
     pub path: PathBuf,
-    /// Bytes on disk, summed over the tree. Approximate by design —
-    /// it is there to let a person judge "is this worth keeping", not
-    /// to balance a ledger.
+    /// Bytes on disk, approximate: a prompt shows them to judge whether it is worth keeping.
     pub bytes: u64,
-    /// Files in the tree.
     pub files: usize,
 }
 
-/// The directory every workspace lives under. Spelled `tilo-rooms`
-/// because that is the directory an installed machine already has and
-/// the one the launcher writes state into; renaming it would hide every
-/// app's saved data. Mirrors `launcher::appdir::WORKSPACES_DIR`; kept as
-/// its own constant rather than a dependency because the installer must
-/// not link the launcher.
+/// The directory every workspace is under. The name is stored format: renaming it would hide every
+/// app's saved data. Mirrors `launcher::appdir::WORKSPACES_DIR`, which the installer cannot link.
 pub const WORKSPACES_DIR: &str = "tilo-rooms";
 
-/// Every workspace in which `package_id` has state.
-///
-/// Sorted by workspace name so two runs print the same thing. A package
-/// that was never launched has none, and that is not an error.
+/// Every workspace in which `package_id` has data, sorted by workspace name. A package that was
+/// never launched has none, which is not an error.
 pub fn find(data_home: &Path, package_id: &str) -> Vec<WorkspaceState> {
     let workspaces_root = data_home.join(WORKSPACES_DIR);
     let Ok(workspaces) = std::fs::read_dir(&workspaces_root) else {
@@ -72,12 +49,10 @@ pub fn find(data_home: &Path, package_id: &str) -> Vec<WorkspaceState> {
     out
 }
 
-/// Delete the listed state directories, returning how many were
-/// removed and the failures.
+/// Delete the listed state directories, returning how many were removed and the failures.
 ///
-/// Failures are collected rather than aborting: a state directory that
-/// cannot be removed must not leave the *package* half-uninstalled, and
-/// the caller can report both outcomes.
+/// Failures are collected rather than aborting, so a state directory that cannot be removed does
+/// not leave the package half-uninstalled.
 pub fn remove(states: &[WorkspaceState]) -> (usize, Vec<(PathBuf, std::io::Error)>) {
     let mut removed: usize = 0;
     let mut failures = Vec::new();
@@ -93,12 +68,11 @@ pub fn remove(states: &[WorkspaceState]) -> (usize, Vec<(PathBuf, std::io::Error
     (removed, failures)
 }
 
-/// Total bytes across a list, for a one-line summary.
 pub fn total_bytes(states: &[WorkspaceState]) -> u64 {
     states.iter().map(|s| s.bytes).sum()
 }
 
-/// `1.4 MB`, for a prompt a person reads.
+/// `1.4 MB`, for a prompt.
 #[allow(
     clippy::cast_precision_loss,
     reason = "display only, rounded to one decimal place; precision beyond f64's 52-bit \
@@ -123,9 +97,8 @@ pub fn human_bytes(bytes: u64) -> String {
     "0 B".to_string()
 }
 
-/// Matches `launcher::appdir`'s component sanitiser. The two have to
-/// agree or the installer would look for state under a name the
-/// launcher never wrote.
+/// Matches `launcher::appdir`'s component sanitiser: the installer would otherwise look for data
+/// under a name the launcher never wrote.
 fn sanitise(raw: &str) -> String {
     let mapped: String = raw
         .trim()
@@ -159,9 +132,8 @@ fn measure(dir: &Path) -> (u64, usize) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // Symlinks are counted as files but never followed: an app that
-        // symlinked its state at $HOME must not make the installer
-        // report the whole home directory as "app state".
+        // Symlinks count as files and are never followed: an app that symlinked its data at $HOME
+        // must not make the installer report the whole home directory as app data.
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
         };
@@ -243,9 +215,8 @@ mod tests {
 
     #[test]
     fn state_paths_and_sizes_read_like_the_launchers() {
-        // Phase `the_package_component_matches_the_launchers_sanitiser`.
-        // The installer and the launcher have to agree on the directory
-        // name, or "remove this app's state" would silently miss it.
+        // The installer and the launcher have to agree on the directory name, or "remove this app's
+        // data" would silently miss it.
         {
             assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
             assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");

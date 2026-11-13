@@ -45,11 +45,8 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         revocations: RevocationList::new(),
     };
     let relay = Relay::start(config, identity).await.unwrap();
-    tilo_test_env::within(
-        "the host's own packet relay must become online",
-        relay.endpoint.online(),
-    )
-    .await;
+    // The host answers through its own packet relay from the start: what
+    // `Relay::start` waits for before it serves anything.
     let url = relay
         .node_addr()
         .relay_urls()
@@ -95,6 +92,8 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .bind()
         .await
         .unwrap();
+    let page_a = endpoint_a.clone();
+    let page_b = endpoint_b.clone();
     let first = RelayClient::connect(
         endpoint_a,
         relay_addr.clone(),
@@ -115,8 +114,13 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     )
     .await
     .unwrap();
-    for client in [&first, &second] {
+    // A page checks its relay connection after a network change (an `online`
+    // event, or a wall-clock jump such as a throttled tab): the connection it
+    // was admitted over must stay usable, while asking for admission too.
+    page_a.network_change().await;
+    for (client, page) in [(&first, &page_a), (&second, &page_b)] {
         client.send(Envelope::Subscribe { workspace_id }).unwrap();
+        page.network_change().await;
         assert!(matches!(
             tilo_test_env::within("a message on client", client.recv()).await,
             Some(Envelope::Ready { .. })
@@ -134,6 +138,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     }
     .encode()
     .unwrap();
+    page_b.network_change().await;
     first
         .send(Envelope::Delta {
             workspace_id,

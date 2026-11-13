@@ -1,24 +1,5 @@
 //! The single gate for developer-only environment overrides in the
 //! packaging stack: the store, the launcher, the app host and `app`.
-//!
-//! A handful of environment variables re-point these at trust or policy
-//! inputs other than the image's: the system app store, the official
-//! registry's owner key, the launcher and install binaries, the sandbox's
-//! policy files. Each is load-bearing for tests, the headless harnesses and
-//! the developer session — and each lets whoever sets the session
-//! environment (on a systemd desktop, anything that can write
-//! `~/.config/environment.d/`) replace what the sandbox trusts.
-//!
-//! So a shipped build does not honour them. [`DEV_ENV_OVERRIDES`] is true for
-//! debug builds and for builds with the non-default `dev-overrides` feature,
-//! false for the `--release` binaries the OS image installs. In a release
-//! build each variable is ignored, with a one-time stderr warning naming it
-//! (never its value).
-//!
-//! Consumers read overrides through [`dev_override`] rather than
-//! `std::env::var_os`, so the gate is decided in one place; the pure
-//! [`dev_override_from`] takes the gate as a parameter, so the disabled
-//! branch is compiled and unit-tested in a debug build too.
 
 use std::ffi::OsString;
 use std::sync::Mutex;
@@ -63,7 +44,6 @@ pub fn ignored_warning(name: &str) -> String {
 
 static WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-/// Whether this is the first time `name` has been ignored in this process.
 fn first_ignore(name: &'static str) -> bool {
     let mut warned = WARNED.lock_recover();
     if warned.contains(&name) {

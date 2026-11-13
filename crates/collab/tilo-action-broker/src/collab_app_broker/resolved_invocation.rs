@@ -234,9 +234,20 @@ impl AppBrokerState {
                 action,
             )
             .await?;
-        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = captured.resolution
-        else {
-            return Err("directory revision or action changed".into());
+        let row = match captured.resolution {
+            runtime_collab::ActionDirectoryResolution::Found { row, .. } => row,
+            // The surface the change was made under does not offer its
+            // action: no retry finds it there, so the report is refused.
+            runtime_collab::ActionDirectoryResolution::NotFound => {
+                return Err(format!(
+                    "{}the action is not in the surface the change was made under",
+                    runtime_collab::LOCAL_DOCUMENT_REJECTED
+                ));
+            }
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+            | runtime_collab::ActionDirectoryResolution::Unavailable => {
+                return Err("directory revision or action changed".into());
+            }
         };
         let published = published_directory_action(&row).map_err(|error| error.to_string())?;
         Ok(ResolvedOffer {

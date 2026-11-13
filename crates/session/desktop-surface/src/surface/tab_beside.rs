@@ -7,7 +7,7 @@
 use tilo_desktop_model::{GroupId, StripId, Tab, TabId};
 
 use super::tile_content::{build_tile, descriptor};
-use super::{DesktopSurface, RowOp, Shared};
+use super::{DesktopSurface, Shared, row_op::RowOp};
 use crate::TileSource;
 use crate::navigation::RouteIds;
 
@@ -27,7 +27,7 @@ pub(super) fn open_tab_beside(
         .workspaces
         .iter()
         .find(|workspace| workspace.slot == ids.workspace)?;
-    let tab = tiles.launch(workspace, tab_id, app)?;
+    let tab = tiles.launch(workspace, tab_id, app, Some(ids.tab))?;
     let group = shared
         .tree
         .workspaces

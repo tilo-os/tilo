@@ -1,9 +1,6 @@
-//! Bounded reads for host-owned path contracts; never allocate an unbounded file.
-/// Read at most `max_bytes`, returning `None` for a missing file.
-///
-/// # Errors
-/// Returns an I/O error, an invalid bound or refusal when the file exceeds
-/// the supplied bound. The oversized bytes are never returned.
+//! Bounded reads for host-owned path contracts: never allocate an unbounded file. Reads
+//! at most `max_bytes`, returning `None` for a missing file, and never returns the
+//! bytes of a file over the bound.
 pub fn read(
     path: &std::path::Path,
     max_bytes: impl TryInto<u64>,
@@ -24,7 +21,6 @@ fn invalid_bound() -> std::io::Error {
     )
 }
 
-/// Read at most `max_bytes` of an open `file`, as [`read`] does.
 pub(super) fn read_from(file: &std::fs::File, max_bytes: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
     let bound = max_bytes.checked_add(1).ok_or_else(invalid_bound)?;
@@ -39,8 +35,8 @@ pub(super) fn read_from(file: &std::fs::File, max_bytes: u64) -> std::io::Result
     Ok(bytes)
 }
 
-/// [`read`], reporting a file over the bound as the caller's `too_large`
-/// error and other failures through its `From<io::Error>`.
+/// [`read`], reporting a file over the bound as the caller's `too_large` error and other failures
+/// through its own.
 pub fn read_or<E: From<std::io::Error>>(
     path: &std::path::Path,
     max_bytes: impl TryInto<u64>,

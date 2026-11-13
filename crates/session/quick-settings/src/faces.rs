@@ -89,25 +89,46 @@ impl Sliders {
         }
         let muted = state.volume_muted();
         let level = f64::from(state.volume_level());
+        // A session without an audio server has no output to set: the row
+        // stays, saying there is no audio device, and the sound's own
+        // service turns it back on when the server appears.
+        let available = state.volume_available && state.status.volume.is_some();
+        // A row names the output it sets only when there is a choice: one
+        // output is the only place the sound can go, and its name — the card
+        // with the profile it plays through — is a line about nothing. With
+        // no device at all, the name is the absence.
+        let device = if available {
+            match state.sound_outputs.as_slice() {
+                [_] => Vec::new(),
+                outputs => outputs
+                    .iter()
+                    .find(|output| output.current)
+                    .map_or_else(Vec::new, |output| crate::sound::output_facts(&output.name)),
+            }
+        } else {
+            vec![Fact::text(t("qs-sound-no-device"))]
+        };
         sliders.push(SliderFace {
             id: "qs-volume".into(),
             kind: SliderKind::Volume,
             name: t("qs-volume"),
-            device: state
-                .sound_outputs
-                .iter()
-                .find(|output| output.current)
-                .map_or_else(Vec::new, |output| crate::sound::output_facts(&output.name)),
-            value: if muted { t("qs-muted") } else { percent(level) },
+            device,
+            value: if !available {
+                String::new()
+            } else if muted {
+                t("qs-muted")
+            } else {
+                percent(level)
+            },
             // A muted output is silent at any level: its track is empty, as
             // the volume readout's is.
             level: if muted { 0.0 } else { level },
-            available: state.volume_available && state.status.volume.is_some(),
+            available,
         });
         Self {
             rows: sliders,
             muted,
-            outputs: state.volume_available && !state.sound_outputs.is_empty(),
+            outputs: available && !state.sound_outputs.is_empty(),
         }
     }
 }
@@ -139,16 +160,37 @@ pub(crate) struct TileFace {
 pub(crate) fn tiles(state: &QuickSettingsState) -> Vec<TileFace> {
     visible_controls(&state.arrangement, state)
         .into_iter()
-        .map(|control| TileFace {
-            control,
-            icon: tile_icon(control, state),
-            label: tile_label(control, state),
-            detail: subline(control, state),
-            on: tile_on(control, state),
-            switch: tile_switch(control, state),
-            section: section_of(control, state),
-        })
+        .map(|control| tile(control, state))
         .collect()
+}
+
+/// `control`'s tile.
+fn tile(control: QuickSettingsControl, state: &QuickSettingsState) -> TileFace {
+    TileFace {
+        control,
+        icon: tile_icon(control, state),
+        label: tile_label(control, state),
+        detail: subline(control, state),
+        on: tile_on(control, state),
+        switch: tile_switch(control, state),
+        section: section_of(control, state),
+    }
+}
+
+/// The radios whose section's page has their switch in its header, as their tiles say: the
+/// page is where the person turns the radio on to see what it reaches, whether or not its tile is
+/// on the controls page.
+pub(crate) fn section_switches(state: &QuickSettingsState) -> Vec<TileFace> {
+    [
+        QuickSettingsControl::Wifi,
+        QuickSettingsControl::Bluetooth,
+        QuickSettingsControl::Vpn,
+    ]
+    .into_iter()
+    .filter(|control| available(*control, state))
+    .map(|control| tile(control, state))
+    .filter(|face| face.section.is_some())
+    .collect()
 }
 
 /// The controls of `arrangement` this machine has what they control for.
@@ -220,7 +262,7 @@ pub(crate) fn control_label(control: QuickSettingsControl) -> String {
 }
 
 /// A control's stable name in effects and test ids.
-pub(crate) fn control_id(control: QuickSettingsControl) -> &'static str {
+pub fn control_id(control: QuickSettingsControl) -> &'static str {
     match control {
         QuickSettingsControl::Wifi => "wifi",
         QuickSettingsControl::Bluetooth => "bluetooth",
@@ -235,7 +277,7 @@ pub(crate) fn control_id(control: QuickSettingsControl) -> &'static str {
 }
 
 /// The control a stable name names.
-pub(crate) fn control_named(name: &str) -> Option<QuickSettingsControl> {
+pub fn control_named(name: &str) -> Option<QuickSettingsControl> {
     QuickSettingsControl::ALL
         .into_iter()
         .find(|control| control_id(*control) == name)
@@ -945,6 +987,11 @@ fn power_mode(state: &QuickSettingsState) -> Vec<Item> {
 
 fn sound(state: &QuickSettingsState) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
+    // Nothing to list and nothing that could record: this session has no
+    // audio graph, as a check's desktop in a container has none.
+    if !state.volume_available && state.microphone.is_none() && state.sound_streams.is_empty() {
+        items.push(Item::Message(t("qs-sound-no-device")));
+    }
     // The microphone first and the outputs next, so where sound goes stays
     // put however many applications come and go below them.
     if let Some(microphone) = &state.microphone {
@@ -1103,6 +1150,112 @@ mod tests {
             .map(|row| row.id)
             .collect();
         assert_eq!(ids, ["qs-brightness", "qs-volume"]);
+    }
+
+    /// A session with no audio server: the row stays and says there is no
+    /// audio device, inert until the sound service reads an output again.
+    #[test]
+    fn the_volume_row_says_there_is_no_audio_device_until_one_appears() {
+        let mut state = QuickSettingsState::fixture();
+        state.volume_available = false;
+        state.status.volume = None;
+        state.sound_outputs.clear();
+        let sliders = Sliders::of(&state);
+        let volume = sliders
+            .rows
+            .iter()
+            .find(|row| row.id == "qs-volume")
+            .expect("the row stands without an audio server");
+        assert!(!volume.available, "there is nothing to set");
+        assert!(volume.value.is_empty(), "and no level to show");
+        assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
+        assert!(!sliders.outputs, "there is no output to choose");
+
+        // The server came: the same row reads the output it landed. There is
+        // one output, the one playing, so the row names nothing: a name is
+        // for choosing between outputs.
+        state.volume_available = true;
+        state.status.volume = Some(media::audio::default_node::VolumeState {
+            level: 0.4,
+            muted: false,
+        });
+        state.sound_outputs = vec![SoundOutput {
+            node: 41,
+            name: "Speakers".into(),
+            current: true,
+        }];
+        let sliders = Sliders::of(&state);
+        let volume = sliders
+            .rows
+            .iter()
+            .find(|row| row.id == "qs-volume")
+            .expect("an output to set");
+        assert!(volume.available);
+        assert!(volume.device.is_empty(), "the only output needs no name");
+        assert_eq!(volume.value, "40%");
+        assert!(sliders.outputs);
+
+        // A second output to choose from: the row says which one plays.
+        state.sound_outputs.push(SoundOutput {
+            node: 52,
+            name: "Studio headphones".into(),
+            current: false,
+        });
+        let sliders = Sliders::of(&state);
+        let volume = sliders
+            .rows
+            .iter()
+            .find(|row| row.id == "qs-volume")
+            .expect("an output to set");
+        assert_eq!(
+            said(&volume.device),
+            ["Speakers"],
+            "of two outputs, the one playing is named"
+        );
+    }
+
+    #[test]
+    fn the_sound_section_says_so_when_there_is_no_audio_device() {
+        let mut state = QuickSettingsState::fixture();
+        state.volume_available = false;
+        state.status.volume = None;
+        state.microphone = None;
+        state.sound_outputs.clear();
+        state.sound_streams.clear();
+        let items = sound(&state);
+        assert!(
+            matches!(items.first(), Some(Item::Message(message)) if message == &t("qs-sound-no-device")),
+            "the section names the missing audio device"
+        );
+        assert!(
+            matches!(items.last(), Some(Item::Settings { .. })),
+            "and still leads to the sound settings"
+        );
+    }
+
+    /// A panel whose device has not been read shows nothing measured: no
+    /// brightness, no level, no pack and no link, rather than a stand-in a
+    /// person would take for this machine's.
+    #[test]
+    fn nothing_of_the_device_is_invented_before_a_reading() {
+        let state = QuickSettingsState::unread();
+        assert_eq!(state.brightness, 0.0);
+        assert!(!state.can_set_brightness());
+        assert!(!state.volume_available);
+        assert_eq!(state.status.volume, None);
+        assert_eq!(state.status.battery, None);
+        assert_eq!(state.status.link, None);
+        assert!(!state.network.wifi.available);
+        let ids: Vec<String> = Sliders::of(&state)
+            .rows
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(
+            ids,
+            ["qs-volume"],
+            "no brightness row stands at a level nobody set"
+        );
     }
 
     #[test]

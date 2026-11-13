@@ -84,8 +84,8 @@ fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
     }
 }
 
-/// A video dropped anywhere on the window opens like one chosen, with no
-/// hover before it (Wayland may report only the drop).
+/// A dropped video opens like a chosen one, with no hover before it (Wayland may report
+/// only the drop).
 #[test]
 fn a_dropped_video_opens_without_a_hover() {
     let mut window = PlayerApp::new(RunMode::Capture);

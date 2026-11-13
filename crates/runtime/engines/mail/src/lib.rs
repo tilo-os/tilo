@@ -1,21 +1,10 @@
-//! Mail's message codecs and SMTP client, as an engine library beside the
-//! shared runtime (`libtilo_mail_engine.so`).
+//! Mail's message codecs and SMTP client, as its own library in the runtime bundle
+//! (`libtilo_mail_engine.so`).
 //!
-//! Mail reads messages with `mail-parser`, writes them with `mail-builder`
-//! and sends them over SMTP with `lettre`. No other app reads or sends mail,
-//! so none of them belongs in the runtime every app maps; linked into the
-//! tapp they were about a tenth of Mail's code. Here they are a library of
-//! their own in the runtime bundle that only Mail names `DT_NEEDED`, beside
-//! the accounts engine its IMAP client comes from.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crates it provides, which
-//! records them as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 

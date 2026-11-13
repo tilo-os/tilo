@@ -663,7 +663,7 @@ impl ImageStore {
             match &entry.slot {
                 Slot::Ready(img) => return Some(img.clone()),
                 // The decoders arrived since: load it again, below.
-                Slot::Undecoded if crate::image_decoders::decoders_in() => {
+                Slot::Undecoded if crate::image_decoders::IMAGE_DECODERS.is_in() => {
                     slots.slots.remove(url);
                 }
                 _ => return None,

@@ -1,4 +1,5 @@
 //! Device-local identity work. Custody persists independently of this controller.
+
 use imager_backend::prepared_identity::PreparedIdentity;
 use std::{
     path::PathBuf,
@@ -78,8 +79,6 @@ impl Personal {
                 .metadata()
                 .map_err(|_| "installer-preview-identity-prepare-failed")?;
             if &current != before {
-                // A failed durability acknowledgement may follow publication.
-                // Never report cancellation while the canonical identity differs.
                 return Err("installer-preview-identity-prepare-failed");
             }
         }
@@ -113,8 +112,6 @@ impl Personal {
         self.start("updating", move || {
             let before = prepared.metadata().map_err(|_| ())?;
             if prepared.update_presentation(&name, photo.clone()).is_err() {
-                // Best-effort recovery after an uncertain publication. Cancellation
-                // separately verifies exact canonical metadata before restoring UI.
                 let _ = prepared.update_presentation(&before.display_name, before.profile_photo);
                 return Err(());
             }
@@ -130,9 +127,6 @@ impl Personal {
         self.photo_edit = None;
     }
 
-    /// The ordinary Continue action prepares durable custody without activating
-    /// a persona in the original OS. A failed attempt keeps its exact path;
-    /// retry never silently replaces an identity created before that failure.
     pub fn select_photo(&mut self, path: String) -> Result<(), &'static str> {
         if self.busy() {
             return Err("installer-preview-identity-busy");
@@ -162,8 +156,6 @@ impl Personal {
                 "preparing"
             },
             move || {
-                // Decode before touching identity custody; a refused file cannot
-                // mint a key or partially change the existing person's name.
                 let photo = match cached {
                     Some(photo) => photo,
                     None => return Err(()),
@@ -224,8 +216,6 @@ impl Personal {
         }
     }
 
-    /// An explicit first-time choice releases imported custody without altering
-    /// its durable files or the original backup.
     pub fn imported(&self) -> bool {
         self.imported
     }
@@ -605,9 +595,6 @@ mod state_root_tests {
 
 pub(super) use imager_backend::prepared_identity::ensure_private_tree;
 
-/// The explicit selected-file grant is consumed only on the local worker.
-/// Hold a nofollow descriptor throughout admission/read, and refuse in-flight
-/// changes; canonical pixels are then retained so exports never reread it.
 fn normalize_avatar(path: &str) -> std::io::Result<runtime_identity::ProfilePhoto> {
     use std::io;
     let bytes = imager_backend::prepared_identity::read_avatar(std::path::Path::new(path))?;

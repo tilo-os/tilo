@@ -23,7 +23,6 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{HSTRING, Interface, PCWSTR};
 
-/// The Windows [`crate::FilePicker`]: each request on its own worker thread.
 pub(crate) struct WindowsFilePicker;
 
 impl crate::FilePicker for WindowsFilePicker {
@@ -268,7 +267,6 @@ mod tests {
 
     #[test]
     fn windows_dialogs_check_handles_filters_and_configuration() {
-        // phase: launch_handle_checks_type_and_prevents_replacement_during_dispatch
         {
             let temporary = tempfile::tempdir().unwrap();
             let path = temporary.path().join("chosen.txt");
@@ -281,7 +279,6 @@ mod tests {
             drop(handle);
             std::fs::rename(&path, path.with_extension("moved")).unwrap();
         }
-        // phase: filters_preserve_globs_and_expand_mime_types
         {
             let filter = crate::portal::FileFilter::new("PDF")
                 .glob("*.pdf")
@@ -293,7 +290,6 @@ mod tests {
                     .any(|glob| glob == "*.png")
             );
         }
-        // phase: native_dialog_configuration_roundtrips_without_showing_a_window
         {
             let _apartment = Apartment::new().unwrap();
             for request in [

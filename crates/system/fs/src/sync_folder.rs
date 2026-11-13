@@ -57,11 +57,9 @@ const STAGING: &str = "sync-folder.staging";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pass {
     pub imported: usize,
-    /// Paths written from the workspace into the folder.
     pub exported: usize,
     /// Paths removed on one side because they were removed on the other.
     pub removed: usize,
-    /// Renames carried across.
     pub renamed: usize,
 }
 
@@ -132,7 +130,6 @@ fn depth(path: &str) -> usize {
     path.matches('/').count()
 }
 
-/// A folder kept in step with a workspace.
 pub struct SyncFolder {
     fs: Arc<QuickFS>,
     root: PathBuf,

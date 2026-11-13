@@ -224,7 +224,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
     let theme = Theme::dark().with_text_scale(2.0);
     draw_rich_line_for_test(&mut line, &theme);
-    let wide = line.pixel_x_for_byte(&theme, 3);
+    let wide = line.caret_rect(&theme, 3).x0;
     state.doc.splice_text(&text, 0, 3, "iii").unwrap();
     state.commit_action(None, None);
     for (step, expected) in [(0, "iii"), (1, "WWW"), (2, "iii")] {
@@ -250,7 +250,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
                 .flat_map(|r| r.glyphs.iter())
                 .all(|g| g.font_weight.0 == 700)
         );
-        let x = line.pixel_x_for_byte(&theme, 3);
+        let x = line.caret_rect(&theme, 3).x0;
         if expected == "WWW" {
             assert!((x - wide).abs() < 0.01);
         } else {

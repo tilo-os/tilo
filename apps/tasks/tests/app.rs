@@ -1166,9 +1166,16 @@ fn its_palette_lists_its_own_resources_and_actions() {
         shown.iter().any(|label| label == "Write the launch notes"),
         "the issue by its title: {shown:?}"
     );
+    // What the tracker does is offered as the catalogue words it, whatever
+    // those are in the language this window speaks.
+    let made =
+        ui::tilo_actions::door::spec_of(&app.harness().resources(), "tasks.tracker", "create")
+            .expect("the tracker publishes making an issue")
+            .label
+            .clone();
     assert!(
-        shown.iter().any(|label| label == "Create an issue"),
-        "and what the tracker does: {shown:?}"
+        shown.contains(&made),
+        "and what the tracker does, named `{made}`: {shown:?}"
     );
     for internal in ["Focus", "Go to", "Submit", "Search the window"] {
         assert!(
@@ -1201,4 +1208,43 @@ fn its_palette_lists_its_own_resources_and_actions() {
             .unwrap();
         }
     }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// name of the app and its copy come from `locales/de-DE.ftl`, never from the
+/// English source catalogue beside it.
+#[test]
+fn a_german_window_reads_the_tasks_catalogue() {
+    let catalog = &tasks::locales::CATALOG;
+    assert!(
+        catalog.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalog.languages()
+    );
+    catalog.set_locale("de-DE");
+    assert_eq!(catalog.t("tasks-title"), "Aufgaben");
+    assert_eq!(catalog.t("tasks-new-issue"), "Neue Aufgabe");
+    catalog.set_locale("en-US");
+    assert_eq!(catalog.t("tasks-title"), "Tasks");
+}
+
+#[test]
+fn an_agents_create_is_shown_at_new_issue() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Write the launch notes" }))
+        .expect("create");
+    app.settle();
+    let targets = app.harness().targets();
+    let (_, button) = targets
+        .iter()
+        .find(|(name, _)| name.ends_with("-create"))
+        .expect("the list's New issue button");
+    let locus = app
+        .harness()
+        .semantic_locus(&ui::headless::agent_acting("tasks.tracker", "create"))
+        .expect("an agent's create finds New issue");
+    assert!(
+        button.contains(locus.center()),
+        "the agent acts at New issue: {locus:?} in {button:?}"
+    );
 }

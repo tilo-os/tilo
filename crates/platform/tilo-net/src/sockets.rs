@@ -1,11 +1,7 @@
 //! Raw TCP, UDP and TLS over TCP, for protocols HTTP, WebSocket and
-//! WebTransport do not carry (Gemini, IMAP, a device's own protocol).
-//!
-//! Desktop only: a page cannot open raw connections, so every constructor
-//! answers [`Unsupported`](crate::Unsupported) there ([`Feature::Sockets`]).
-//! An app that cannot work without them declares `platforms` without `web`.
-//!
-//! [`Feature::Sockets`]: crate::Feature::Sockets
+//! WebTransport do not carry (Gemini, IMAP, a device's own protocol). Desktop
+//! only: a page answers [`Unsupported`](crate::Unsupported) from every
+//! constructor.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -17,26 +13,21 @@ use imp_native as imp;
 #[cfg(target_family = "wasm")]
 use imp_web as imp;
 
-/// How a [`TlsStream`] decides to trust the server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Trust {
-    /// Verify the certificate chain and name against the system trust bundle.
     #[default]
     System,
     /// Accept any certificate whose handshake signature is valid, for
-    /// trust-on-first-use protocols (Gemini). The caller pins
+    /// trust-on-first-use protocols (Gemini); the caller pins
     /// [`TlsStream::peer_certificate`] itself.
     AnyCertificate,
 }
 
-/// A TCP connection.
 pub struct TcpStream(imp::Tcp);
 
-/// A TLS connection over TCP.
 pub struct TlsStream(imp::Tls);
 
-/// A listening TCP socket.
 pub struct TcpListener(imp::Listener);
 
 pub struct UdpSocket(imp::Udp);
@@ -53,20 +44,10 @@ macro_rules! opaque_debug {
 opaque_debug!(TcpStream, TlsStream, TcpListener, UdpSocket);
 
 impl TcpStream {
-    /// Connect to `host:port`, trying each resolved address in turn.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Unsupported`] in a page, [`NetError::Connect`].
     pub async fn connect(host: &str, port: u16) -> Result<Self, NetError> {
         imp::Tcp::connect(host, port).await.map(Self)
     }
 
-    /// [`connect`](Self::connect) with a deadline.
-    ///
-    /// # Errors
-    ///
-    /// As [`connect`](Self::connect), and [`NetError::Timeout`].
     pub async fn connect_timeout(
         host: &str,
         port: u16,
@@ -77,43 +58,22 @@ impl TcpStream {
             .map(Self)
     }
 
-    /// Read into `buffer`; `Ok(0)` at the end of the stream.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the connection failed.
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, NetError> {
         self.0.read(buffer).await
     }
 
-    /// Write all of `data`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the connection failed.
     pub async fn write_all(&mut self, data: &[u8]) -> Result<(), NetError> {
         self.0.write_all(data).await
     }
 
-    /// Close the sending half.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the connection failed.
     pub async fn shutdown(&mut self) -> Result<(), NetError> {
         self.0.shutdown().await
     }
 
-    /// The remote address.
     pub fn peer_addr(&self) -> Result<SocketAddr, NetError> {
         self.0.peer_addr()
     }
 
-    /// Start TLS on this connection, naming the server `host`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Protocol`] when the handshake or verification fails.
     pub async fn into_tls(self, host: &str, trust: Trust) -> Result<TlsStream, NetError> {
         imp::Tls::handshake(self.0, host, trust)
             .await
@@ -122,11 +82,6 @@ impl TcpStream {
 }
 
 impl TlsStream {
-    /// Connect to `host:port` and complete a TLS handshake.
-    ///
-    /// # Errors
-    ///
-    /// As [`TcpStream::connect`] and [`TcpStream::into_tls`].
     pub async fn connect(host: &str, port: u16, trust: Trust) -> Result<Self, NetError> {
         TcpStream::connect(host, port)
             .await?
@@ -134,26 +89,15 @@ impl TlsStream {
             .await
     }
 
-    /// The server's end-entity certificate (DER), for pinning.
     #[must_use]
     pub fn peer_certificate(&self) -> Option<Vec<u8>> {
         self.0.peer_certificate()
     }
 
-    /// Read into `buffer`; `Ok(0)` at the end of the stream.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the connection failed.
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, NetError> {
         self.0.read(buffer).await
     }
 
-    /// Read to the end of the stream, refusing more than `limit` bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::TooLarge`], and those of [`read`](Self::read).
     pub async fn read_to_end(&mut self, limit: usize) -> Result<Vec<u8>, NetError> {
         let mut all = Vec::new();
         let mut buffer = vec![0; 16 * 1024];
@@ -169,108 +113,55 @@ impl TlsStream {
         }
     }
 
-    /// Write all of `data`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the connection failed.
     pub async fn write_all(&mut self, data: &[u8]) -> Result<(), NetError> {
         self.0.write_all(data).await
     }
 
-    /// Send `close_notify` and close the sending half.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when the connection failed.
     pub async fn shutdown(&mut self) -> Result<(), NetError> {
         self.0.shutdown().await
     }
 }
 
 impl TcpListener {
-    /// Listen on `address`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Unsupported`] in a page, [`NetError::Connect`] when the
-    /// address is taken or not local.
     pub async fn bind(address: SocketAddr) -> Result<Self, NetError> {
         imp::Listener::bind(address).await.map(Self)
     }
 
-    /// The next connection and its remote address.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when accepting failed.
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), NetError> {
         let (tcp, peer) = self.0.accept().await?;
         Ok((TcpStream(tcp), peer))
     }
 
-    /// The bound address (with the port the system chose for port 0).
     pub fn local_addr(&self) -> Result<SocketAddr, NetError> {
         self.0.local_addr()
     }
 }
 
 impl UdpSocket {
-    /// Bind to `address`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Unsupported`] in a page, [`NetError::Connect`].
     pub async fn bind(address: SocketAddr) -> Result<Self, NetError> {
         imp::Udp::bind(address).await.map(Self)
     }
 
-    /// Send to and receive from only `address`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`] when there is no route.
     pub async fn connect(&self, address: SocketAddr) -> Result<(), NetError> {
         self.0.connect(address).await
     }
 
-    /// Send one datagram to the connected address.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`].
     pub async fn send(&self, data: &[u8]) -> Result<usize, NetError> {
         self.0.send(data).await
     }
 
-    /// Receive one datagram from the connected address.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`].
     pub async fn recv(&self, buffer: &mut [u8]) -> Result<usize, NetError> {
         self.0.recv(buffer).await
     }
 
-    /// Send one datagram to `address`.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`].
     pub async fn send_to(&self, data: &[u8], address: SocketAddr) -> Result<usize, NetError> {
         self.0.send_to(data, address).await
     }
 
-    /// Receive one datagram and its sender.
-    ///
-    /// # Errors
-    ///
-    /// [`NetError::Connect`].
     pub async fn recv_from(&self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
         self.0.recv_from(buffer).await
     }
 
-    /// The bound address.
     pub fn local_addr(&self) -> Result<SocketAddr, NetError> {
         self.0.local_addr()
     }
@@ -362,8 +253,8 @@ mod imp_native {
         pub(super) async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, NetError> {
             match self.0.read(buffer).await {
                 Ok(read) => Ok(read),
-                // Many servers close without `close_notify`; the body is
-                // still complete for protocols that end at the close.
+                // Many servers close without `close_notify`; the body is still complete for
+                // protocols that end at the close.
                 Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
                 Err(error) => Err(io(error)),
             }
@@ -440,8 +331,8 @@ mod imp_native {
 
 #[cfg(target_family = "wasm")]
 mod imp_web {
-    //! A page has no sockets: the types are uninhabited, and every
-    //! constructor answers `Unsupported`.
+    //! A page has no sockets: the types are uninhabited, and every constructor
+    //! answers `Unsupported`.
     #![allow(
         clippy::unused_async,
         clippy::needless_pass_by_ref_mut,

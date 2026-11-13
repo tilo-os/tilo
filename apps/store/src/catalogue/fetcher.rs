@@ -15,15 +15,14 @@ use ui::lock::MutexRecover as _;
 use super::details::AppDetails;
 use crate::model::StoreItem;
 
-/// What the fetcher answers.
 #[derive(Clone, Debug)]
 pub enum Fetched {
-    /// An app's details, fresh from its source.
     Details(Box<AppDetails>),
     /// The details of `id` could not be fetched; the page keeps what it has.
-    DetailsFailed { id: String, error: String },
-    /// Flathub's apps for `query`, for the search's own section after the
-    /// apps found on this device.
+    DetailsFailed {
+        id: String,
+        error: String,
+    },
     Search {
         query: String,
         items: Vec<StoreItem>,
@@ -35,18 +34,13 @@ enum Job {
     Search,
 }
 
-/// The fetch thread's handle.
 pub struct Fetcher {
     jobs: mpsc::Sender<Job>,
     answers: mpsc::Receiver<Fetched>,
-    /// The query the next search job reads: typing over a query replaces it
-    /// before the thread gets to it.
     latest_query: Arc<Mutex<Option<String>>>,
 }
 
 impl Fetcher {
-    /// Start the thread; `wake` is woken whenever an answer is ready. Its
-    /// localized reads are in `locale`.
     pub fn spawn(wake: WakeHandle, locale: String) -> Result<Self, String> {
         let (jobs, job_rx) = mpsc::channel::<Job>();
         let (answer_tx, answers) = mpsc::channel();
@@ -79,7 +73,6 @@ impl Fetcher {
         })
     }
 
-    /// Fetch the details of the Flathub app `id`.
     pub fn details(&self, id: &str) {
         let _ = self.jobs.send(Job::Details(id.to_owned()));
     }
@@ -96,7 +89,6 @@ impl Fetcher {
         }
     }
 
-    /// The next answer, if one is ready.
     #[must_use]
     pub fn try_recv(&self) -> Option<Fetched> {
         self.answers.try_recv().ok()

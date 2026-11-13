@@ -1,17 +1,19 @@
 counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
+tab-loading = Wird geladen
+tab-playing = Gibt Ton wieder
+tab-muted = Stummgeschaltet
+tab-close-named = { $title } schließen
+tab-mute-named = { $title } stummschalten
 tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
-tab-controls-desktop = Steuert deinen Desktop
-tab-dev-build = Entwicklungsversion von { $installer }
-tab-shared-with = Geteilt mit { $place }
+tab-opened-by = { $agent } hat dieses Fenster geöffnet
+tab-opened-by-run = { $run }
 standalone-search-title = Suchen
 
 history-mode-title = Verlauf
-history-mode-close = Verlauf schließen
-history-mode-select-hint = Wähle eine Änderung aus, um Details zu sehen.
-history-mode-entry-ids = Änderungen
-history-mode-selected-details = Ausgewählte Änderungen
+history-mode-select-hint = Diese Änderung im Verlauf anzeigen
+history-mode-entry-ids = Änderung
 history-mode-preview-resource = Dokument
 host-search = Suchen…
 host-search-placeholder = Suchen
@@ -26,7 +28,7 @@ host-zoom-out = Verkleinern
 host-zoom-reset = Originalgröße
 host-history-show = Verlauf einblenden
 host-history-hide = Verlauf ausblenden
-host-history-recent = { $author } · { $change } — { $when }
+host-history-recent = { $change } von { $author }, { $when }
 host-history-unavailable = Es gibt kein Dokument, dessen Verlauf angezeigt werden kann.
 host-menu-file = Ablage
 host-menu-edit = Bearbeiten
@@ -47,9 +49,13 @@ host-menu-front = Alle nach vorne bringen
 host-window-minimize = Minimieren
 host-window-maximize = Maximieren
 host-window-restore = Wiederherstellen
+host-window-snap = Zurück in den Streifen
+host-window-collapse = Einklappen
+host-window-expand = Ausklappen
 host-window-close = Schließen
 window-toolbar-back = Zurück
 window-toolbar-forward = Vorwärts
+window-toolbar-new-tab = Neuer Tab
 window-toolbar-go = Öffnen
 window-toolbar-more = Weitere Aktionen
 window-toolbar-views = Ansicht
@@ -76,8 +82,8 @@ history-review-body = Version: { $version }
     Die Wiederherstellung bringt das Dokument als eine neue Änderung genau auf diese Version zurück. Spätere Änderungen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
 history-review-selected-version = Ausgewählte Version
 history-review-not-content = Diese Aktivität enthält keinen wiederherstellbaren Dokumentinhalt.
-history-review-no-clock = Die aktuelle Uhrzeit ist nicht verfügbar. Die Wiederherstellung kann den Ablauf von Berechtigungen nicht prüfen.
-history-restore-unsupported = Diese Version kann mit dem Inhaltsformat dieser App nicht sicher wiederhergestellt werden.
+history-review-no-clock = Die Uhr dieses Computers ist nicht verfügbar, daher kann die Wiederherstellung keine Berechtigungen prüfen.
+history-restore-unsupported = Diese App kann diese Version nicht sicher wiederherstellen.
 history-preview-description = { $resource } in dieser Version
 
 # The History host's own controls and status, beside the live app.
@@ -100,17 +106,17 @@ history-mode-pending-unnamed = Eine Aktion wartet, bis du den Verlauf verlässt
 history-mode-pending-held = „{ $action }“ wurde angehalten, während der Verlauf offen war
 history-mode-pending-held-unnamed = Eine Aktion wurde angehalten, während der Verlauf offen war
 history-mode-continue = Fortfahren
-history-mode-confirm = Bestätigen
+history-mode-confirm = Zulassen
 history-mode-cancel = Abbrechen
 history-mode-type-to-confirm = Gib „{ $phrase }“ ein, um zu bestätigen
-history-mode-owner-gone = Der Besitzer des Verlaufs ist nicht mehr verfügbar
-history-mode-custody-lost = Die ursprüngliche Komponente konnte während des Verlaufs nicht wiederhergestellt werden
-history-mode-control-owner-closed = Der ursprünglich registrierte Besitzer des Steuerelements ist geschlossen
+history-mode-owner-gone = Dieses Dokument ist hier nicht mehr geöffnet
+history-mode-custody-lost = Der Verlauf konnte nicht zurückholen, was diese Aktion gebraucht hätte
+history-mode-control-owner-closed = Die App, die danach gefragt hat, ist geschlossen
 history-mode-loading-media = Frühere Medien werden geladen
-history-media-too-many = Die früheren Medien überschreiten die Vorschaugrenze von 4096 Dateien
-history-media-too-large = Die früheren Medien sind zu groß
-history-media-over-limit = Die früheren Medien überschreiten die Vorschaugrenze von 128 MiB
-history-media-hash-mismatch = Die früheren Medien stimmen nicht mit ihrem gespeicherten Inhalts-Hash überein
+history-media-too-many = Diese Version hat zu viele Bilder zum Anzeigen
+history-media-too-large = Die Bilder dieser Version sind zu groß zum Anzeigen
+history-media-over-limit = Die Bilder dieser Version sind zu groß zum Anzeigen
+history-media-hash-mismatch = Die Bilder dieser Version sind beschädigt und lassen sich nicht anzeigen
 
 ## History groups and catch-up briefs
 history-group-changes = { $count ->
@@ -203,9 +209,9 @@ history-work-task = Aufgabe
 history-work-agent-run = Lauf
 history-work-shortcut = Kurzbefehl
 history-selection-clear = Aufheben
-history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
-history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
-history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
+history-sync-finish-edit = Schließe deine Bearbeitung ab, bevor Änderungen anderer ankommen
+history-sync-queue-full = Zu viele Änderungen anderer warten. Sie kommen an, sobald deine Bearbeitung abgeschlossen ist.
+history-sync-owner-changed = Die Verbindung hat gewechselt, während Änderungen anderer ausstanden. Verbinde dich neu, um sie zu empfangen.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
 history-sync-reconnecting = Verbinde. Änderungen werden synchronisiert, sobald die Verbindung steht.
 history-sync-join-refused = Dieser Arbeitsbereich hat die App nicht beitreten lassen: { $reason }. Deine Änderungen bleiben auf diesem Gerät.
@@ -235,26 +241,27 @@ history-local-action-retry = Erneut versuchen
 history-local-action-unrecorded = Deine Änderungen in diesem Fenster sind gespeichert, aber dein Verlauf zeichnet sie nicht auf.
 
 history-sync-refused = Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Alles andere wird weiter synchronisiert; die Änderung bleibt auf diesem Gerät.
-history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
-history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
+history-sync-unreadable = Die geteilte Fassung dieses Eintrags konnte hier nicht gelesen werden. Deine eigenen Änderungen bleiben auf diesem Gerät und werden weiter gespeichert.
+history-sync-remote-waiting = Änderungen anderer kommen an, sobald deine Bearbeitung abgeschlossen ist.
+history-sync-owner-closed = Die Verbindung des Dokuments wurde geschlossen. Verbinde dich neu, um Änderungen anderer zu empfangen.
 
 # File history in the History host.
 history-files-select-file = Wähle eine Datei mit versioniertem Verlauf
-history-files-choose-parent = Wähle für „Vorher“ eine tatsächliche Vorgängerversion
+history-files-choose-parent = Wähle, mit welcher früheren Version verglichen wird
 history-files-no-earlier = Keine frühere Version
 history-files-checking-compensation = Datei: { $file }
 
-    Eine neue Prüfung zum Rückgängigmachen läuft
+    Die Datei wird erneut geprüft
 history-files-refresh-activity = Aktivität aktualisieren
 history-files-check-restore = Ergebnis der Wiederherstellung prüfen
 history-files-retry-restore = Dieselbe Wiederherstellung erneut versuchen
 history-files-redo-restore = Dateiwiederherstellung wiederholen…
 history-files-undo-restore = Dateiwiederherstellung rückgängig machen…
-history-files-current-unavailable = Aktuelle Dateiversion nicht verfügbar
-history-files-current-revision = Aktuelle Dateiversion: { $revision }
-history-files-live-updates = Die aktuelle Datei wurde geändert; die ausgewählte unveränderliche Version bleibt angeheftet
-history-files-before-parent = Vorgänger { $revision }
-history-files-showing-parent = Vorgänger: { $revision }
+history-files-current-unavailable = Die aktuelle Version lässt sich nicht lesen
+history-files-current-revision = Aktuelle Version: { $revision }
+history-files-live-updates = Die Datei hat sich seither geändert. Die gewählte Version bleibt
+history-files-before-parent = Mit Version { $revision } vergleichen
+history-files-showing-parent = Vergleich mit Version { $revision }
 history-files-created = Erstellt
 history-files-edited = Bearbeitet
 history-files-renamed = Umbenannt
@@ -265,37 +272,37 @@ history-files-conflict-resolved = Konflikt gelöst
 history-files-unknown-author = Unbekannte Person
 history-files-author = Person { $identity }
 history-files-loading = Dateiverlauf wird geladen
-history-files-loading-version = Unveränderliche Version wird geladen
-history-files-checking-permissions = Aktuelle Dateiberechtigungen und Stand werden geprüft
-history-files-earlier-pending = Eine frühere Wiederherstellung steht noch aus; prüfe ihr genaues Ergebnis
-history-files-submitting = Geprüfte Wiederherstellung wird übermittelt
+history-files-loading-version = Die Version wird geladen
+history-files-checking-permissions = Berechtigungen werden geprüft…
+history-files-earlier-pending = Eine frühere Wiederherstellung ist noch nicht abgeschlossen. Prüfe ihr Ergebnis
+history-files-submitting = Wird wiederhergestellt…
 history-files-version-count = { $count ->
-        [one] { $count } unveränderliche Version
-       *[other] { $count } unveränderliche Versionen
+        [one] { $count } Version
+       *[other] { $count } Versionen
     }
-history-files-binding-changed = Die Dateizuordnung hat sich geändert; öffne den Verlauf für die aktuelle Datei erneut
-history-files-unavailable-host = Der Dateiverlauf ist auf diesem Host nicht verfügbar
+history-files-binding-changed = Dieses Fenster zeigt jetzt eine andere Datei. Öffne den Verlauf erneut
+history-files-unavailable-host = Diese Datei hat hier keinen Verlauf
 history-files-historical-version = Frühere Version
-history-files-foreign-response = Die Verlaufsantwort gehört zu einer anderen Datei
-history-files-restore-explainer = Die Wiederherstellung erzeugt eine neue Dateiversion und behält den bisherigen Verlauf
-history-files-foreign-review = Die Prüfung gehört zu einer anderen Datei oder Einbindung
-history-files-invalid-result = Ungültiges Ergebnis vom Backend; die genaue Anfrage bleibt offen
+history-files-foreign-response = Diese Verlaufsantwort gehört zu einer anderen Datei. Versuche es erneut
+history-files-restore-explainer = Wiederherstellen erzeugt eine neue Version; die früheren bleiben im Verlauf
+history-files-foreign-review = Diese Prüfung gehört zu einer anderen Datei. Versuche es erneut
+history-files-invalid-result = Ob die Wiederherstellung lief, ist unklar. Prüfe den Verlauf der Datei
 history-files-not-visible = Diese Datei ist nicht mehr sichtbar
-history-files-error-stale = Der Dateiverlauf hat sich geändert; aktualisiere die Aktivität und versuche diese Version erneut
-history-files-error-missing-version = Diese unveränderliche Version ist nicht verfügbar
-history-files-error-invalid = Ungültige Verlaufsantwort
+history-files-error-stale = Der Verlauf der Datei hat sich geändert. Aktualisiere und versuche diese Version dann erneut
+history-files-error-missing-version = Diese Version ist nicht mehr verfügbar
+history-files-error-invalid = Der Verlauf dieser Datei ließ sich nicht lesen
 history-files-error-unavailable = Der Dateiverlauf ist vorübergehend nicht verfügbar
-history-files-error-too-large = Die frühere Vorschau überschreitet die unterstützte Größe
-history-files-error-no-content = Diese Version hat keinen gespeicherten Inhaltsverweis
-history-files-outcome-applied = Version { $revision } wiederhergestellt (Vorgang { $intent }). Der aktuelle zusammengeführte Dateiinhalt wird getrennt angezeigt. Vorheriger Verweis: beobachtete Version.
-history-files-outcome-unchanged = Der ausgewählte Inhalt stimmt bereits überein; keine neue Version und kein Rückgängig-Eintrag
-history-files-outcome-pending = Die Wiederherstellung steht aus. Prüfe das Ergebnis oder versuche denselben Vorgang erneut
-history-files-outcome-review = Die aktuelle Datei hat sich geändert. Aktualisiere die Prüfung; die ausgewählte alte Version bleibt angeheftet
-history-files-outcome-read-only = Diese Datei ist schreibgeschützt; Wiederherstellen und Rückgängigmachen sind nicht verfügbar
-history-files-outcome-pending-writes = Ausstehende Dateiänderungen müssen abgeschlossen sein, bevor wiederhergestellt wird; gepufferter Inhalt bleibt erhalten
-history-files-outcome-unsupported-owner = Nicht unterstützter Inhaltsbesitzer: { $mapping }
-history-files-outcome-unavailable = Die Bestätigung der Wiederherstellung ist nicht verfügbar. Behalte diesen Vorgang und prüfe sein Ergebnis
-history-files-outcome-invalid = Ungültige geprüfte Wiederherstellungsanfrage; es gibt keinen älteren Ausweichweg
+history-files-error-too-large = Diese Version ist zu groß zum Anzeigen
+history-files-error-no-content = Diese Version hat keinen Inhalt zum Anzeigen
+history-files-outcome-applied = Version { $revision } wiederhergestellt. Die Datei zeigt ihren aktuellen Inhalt
+history-files-outcome-unchanged = Die Datei entspricht bereits dieser Version. Es wurde nichts wiederhergestellt
+history-files-outcome-pending = Die Wiederherstellung ist noch nicht abgeschlossen. Prüfe ihr Ergebnis oder versuche es erneut
+history-files-outcome-review = Die Datei hat sich geändert. Aktualisiere die Prüfung; die gewählte alte Version bleibt ausgewählt
+history-files-outcome-read-only = Diese Datei ist schreibgeschützt und lässt sich nicht wiederherstellen
+history-files-outcome-pending-writes = Speichere deine Änderungen, bevor du wiederherstellst. Nichts Getipptes geht verloren
+history-files-outcome-unsupported-owner = Diese App kann den Inhalt dieser Datei nicht wiederherstellen
+history-files-outcome-unavailable = Die Wiederherstellung ist vielleicht nicht erfolgt. Prüfe den Verlauf der Datei, bevor du es erneut versuchst
+history-files-outcome-invalid = Diese Wiederherstellung lief nicht. Versuche es erneut
 
 close-title = Dokument schließen
 close-unsaved = Änderungen vor dem Schließen speichern?
@@ -311,6 +318,7 @@ close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Da
 block-image-untitled = Bild
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Ohne Titel
+list-row-check = { $title } als erledigt markieren
 block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig
@@ -377,8 +385,6 @@ widget-filepicker-title-choose-folder = Ordner auswählen
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
-widget-maximized-restore = Wiederherstellen
-widget-maximized-fullscreen = Vollbild
 tree-rename-field = Umbenennen
 
 # The show/hide control inside every password field.
@@ -406,29 +412,17 @@ secret-prompt-keypad-delete = Löschen
 secret-prompt-keypad-enter = Fertig
 
 # Authentication surfaces share the system theme and catalog.
-lock-welcome-back = Willkommen zurück
 
-# Now playing: Quick Settings and the lock screen.
-now-playing-title = Wird abgespielt
-now-playing-play = Abspielen
-now-playing-pause = Pausieren
-now-playing-previous = Vorheriger Titel
-now-playing-next = Nächster Titel
-now-playing-seek = Wiedergabeposition
-now-playing-seek-help = Mit Pfeil links und rechts um fünf Sekunden springen
+# Die Namen, unter denen die beiden Auswahlen der Zeile „Jetzt läuft“ gelesen werden.
 now-playing-choose-player = Player wählen
 now-playing-choose-output = Wiedergabeort wählen
-now-playing-output-local = Auf diesem Computer
-now-playing-output-device = Eines deiner Geräte
-now-playing-output-speaker-group = Eine deiner Lautsprechergruppen
-now-playing-route-gone = Dieser Wiedergabeort ist nicht mehr verfügbar
 
 # Die eingebettete Berechtigungsabfrage einer isolierten App.
 permission-prompt-allow = Erlauben
 permission-prompt-session = Diese Sitzung
 permission-prompt-always = Immer erlauben
 permission-prompt-deny = Ablehnen
-permission-prompt-requested = { $capability } – angefragt von { $app }
+permission-prompt-requested = { $capability }, angefragt von { $app }
 
 # Grobe relative Zeitangaben („vor 3 Tagen“) in Verlaufszeilen, Listen und Karten.
 relative-ago-just-now = gerade eben
@@ -544,6 +538,8 @@ format-day-heading-short = { $weekday }, { $day }. { $month }
 format-day-range-in-month = { $start }.–{ $end }. { $month }
 # Any span between two dates or times: "Jun 29 – Jul 5".
 format-range = { $start } – { $end }
+# Two already-formatted values in a list: "verschlüsselt, 134 GB frei".
+format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The clock the language reads by default: 12 or 24 (here 24-hour).
@@ -584,14 +580,14 @@ participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
 participant-bot = { $name } · Bot
-# Zwei oder mehr Personen im Raum tragen denselben Namen: jede wird
-# nummeriert, für alle im Raum gleich.
+# Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
+# wird nummeriert, für alle im Arbeitsbereich gleich.
 participant-numbered = { $name } ({ $number })
-# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
-participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.
+interaction-editing-field = bearbeitet { $field }
+interaction-added-text = Text hinzugefügt
 interaction-working = arbeitet
 interaction-action-doing = { $name }: { $doing }
 # Dasselbe mit der Phase, wo sie nur ein Mensch klären kann.
@@ -603,11 +599,44 @@ interaction-committed = Übernommen
 interaction-failed = Fehlgeschlagen
 interaction-cancelled = Abgebrochen
 interaction-progress = { $label } - { $done }/{ $total }
+
+# Was ein Arbeitsschritt ist, wie eine Person ihn neben dem Gesicht der
+# handelnden Person, in der Personenliste und auf der Karte am Ort der
+# Handlung liest: die Art Arbeit, die die Handlung selbst angibt, an dem
+# Datensatz oder Eintrag, an dem sie geschieht; der Eintrag wird mit seinem
+# Titel benannt, wo der Schritt einen nennt.
+step-creating = Legt in { $record } an
+# Ein Anlegen, dessen Angabe die Sammlung nennt, in die es schreibt, sagt, was
+# entsteht: mit dem Substantiv, das der Katalog der App dafür schreibt, samt
+# Artikel ("Legt eine Aufgabe in Aufgaben an"). "Erstellt" läse sich als
+# Vergangenheit, deshalb sagt das Verb, was gerade geschieht.
+step-creating-one = Legt { $noun } in { $record } an
+step-writing = Schreibt in { $record }
+step-editing = Bearbeitet { $record }
+step-deleting = Löscht { $record }
+step-moving = Verschiebt { $record }
+step-reading = Liest { $record }
+step-running = Führt { $command } aus
+step-running-in = Führt in { $record } aus
+step-working = Arbeitet in { $record }
+step-working-alone = Arbeitet
+
+# Was ein Lauf gerade tut, wenn es kein Schritt in einem Datensatz ist: auf
+# seine Person warten, die Apps oder eine davon ansehen, nach Wörtern suchen.
+step-waiting = Wartet
+step-looking-at = Sieht { $what } an
+step-looking-at-apps = Sieht die Apps an
+step-searching = Sucht nach { $what }
+# Eine mitwirkende Person, deren Schreibmarke ein Textfeld zeichnet: wo sie
+# ist, für eine Vorlesehilfe gesagt. Bei einer Auswahl steht das stattdessen.
+presence-writing-here = { $name } schreibt hier
+presence-selecting-here = { $name } markiert hier
 participant-unknown-agent = Unbekannter Agent
 
 
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette
+palette-argument-name = Aktionsbestätigung
 palette-results = Ergebnisse
 palette-placeholder = Suchen…
 palette-empty = Nichts anzuzeigen
@@ -655,10 +684,6 @@ widget-mention-shortcut = Kurzbefehl
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
-mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
-mention-notice-channel = { $name } hat dich in { $channel } erwähnt
-mention-notice = { $name } hat dich erwähnt
-mention-notice-someone = Jemand
 rich-text-reference-unreadable = Nicht mit dir geteilt
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
@@ -684,6 +709,7 @@ slash-numbered = Nummerierte Liste
 slash-checklist = Checkliste
 slash-page = Unternotiz
 slash-link-page = Notiz verlinken
+slash-embed-page = Notiz einbetten
 slash-image = Bild
 slash-quote = Zitat
 slash-code = Codeblock
@@ -711,9 +737,9 @@ dictation-copy-transcript = Transkript kopieren
 dictation-discard-transcript = Transkript verwerfen
 
 dropdown-no-matches = Keine passende Auswahl
-host-native-history-unobserved = Der Bearbeitungsverlauf des ursprünglichen Felds wurde noch nicht bestätigt.
-host-native-history-unconfirmed = Die Verlaufsänderung dieser Seite wurde nicht bestätigt. Prüfe die Seite, bevor du es erneut versuchst.
-host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Bearbeitungsverlauf dieser Seite. Die letzte Änderung kann in einem anderen Feld liegen.
+host-native-history-unobserved = Rückgängig ist für diese Seite noch nicht bereit.
+host-native-history-unconfirmed = Die Seite hat ihr Rückgängig nicht bestätigt. Prüfe die Seite und versuche es dann erneut.
+host-native-page-history-scope = Rückgängig und Wiederholen wirken auf diese Seite. Deine letzte Änderung kann in einem anderen Feld liegen.
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung
@@ -728,14 +754,14 @@ device-display-request-pending = Eine Anfrage zur Bildschirmposition steht berei
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
 
 app-activate-window = Dieses Fenster anzeigen
-app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
 
-terminal-service-control-unavailable = Die Shell-Verbindung ist nicht verfügbar.
-terminal-service-protocol-unavailable = Aktualisiere den Shell-Dienst, bevor du in diesem Fenster eine Sitzung öffnest.
-terminal-service-invalid-session = Der Shell-Dienst hat eine ungültige Sitzung zurückgegeben.
-terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihre Laufzeit bereitgestellt.
-terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
-terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.
+terminal-service-control-unavailable = Der Terminaldienst antwortet nicht. Versuche es erneut.
+terminal-service-protocol-unavailable = Dieses Fenster braucht ein neueres Tilo auf diesem Computer. Aktualisiere und versuche es dann erneut.
+terminal-service-invalid-session = Das Terminal ist nicht gestartet. Versuche es erneut.
+terminal-service-missing-lease = Das Terminal ist nicht gestartet. Versuche es erneut.
+terminal-service-missing-terminal = Das Terminal ist nicht gestartet. Versuche es erneut.
+terminal-service-invalid-lease = Die Verbindung des Terminals konnte nicht geprüft werden. Versuche es erneut.
 
 # Shown instead of an app's view while its record does not read as the app expects.
 framework-unreadable = Dies kann nicht geöffnet werden
@@ -744,6 +770,9 @@ framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier ges
 empty-state-details = Details
 file-open-drop-hint = Oder eine Datei hier ablegen
 file-open-release = Zum Öffnen loslassen
+# The page rail's title, above its thumbnails, unless the app names it.
+page-sidebar-title = Seiten
+widget-documents-in-workspace = In diesem Arbeitsbereich
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
@@ -751,12 +780,33 @@ display-arrangement-offline = Offline
 display-arrangement-excluded = Nicht im Layout
 display-arrangement-offline-excluded = Offline, nicht in der Anordnung
 display-arrangement-item-status = { $position }; { $status }
-display-arrangement-caption-status = { $status } · { $name }
+display-arrangement-caption-status = { $status }: { $name }
 
 # Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
 search-show-all = Alle { $count } zeigen
 search-no-matches = Keine Treffer
-approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
+# Was eine Gruppenüberschrift und ihr Chip über die Ergebnisse sagen
+search-kind-actions = Aktionen
+search-kind-apps = Apps
+search-kind-notes = Notizen
+search-kind-records = Datensätze
+search-kind-files = Dateien
+search-kind-folders = Ordner
+search-kind-creators = Creator
+search-kind-videos = Videos
+search-kind-playlists = Wiedergabelisten
+search-kind-tabs = Tabs
+search-kind-window-groups = Fenstergruppen
+window-root-name = Tilo-Anwendungsfenster
+# Was das leere Feld der Palette sagt, worüber die Suche geht, nicht wie es heißt.
+action-palette-query = Aktionen und Ergebnisse durchsuchen
+search-field-filter = Filtern
+search-field-placeholder = Suchen
+# Wie das Feld selbst heißt, abseits des Platzhalters darin.
+search-field-name = Suche
+search-field-filter-name = Filter
+presentation-window-title = Präsentationsfenster
+approved-check-reports-disabled = Läuft
 
 author-bot-chip = Bot
 author-via-chip = über { $service }
@@ -765,40 +815,32 @@ author-from-service-as = Aus { $service } als { $handle }
 author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
-author-persona-suffix = { $name } · { $service }
+author-persona-suffix = { $name }, über { $service }
 
 # Das Eingabefeld eines Kontextmenüs: Tippen schränkt seine Einträge ein, und
-# seine Senden-Zeile übernimmt das Getippte in die Sendebox, die an seiner
-# Stelle steht.
+# seine Senden-Zeile übernimmt das Getippte in die Sendebox neben dem Menü.
 menu-query-placeholder = Tippen zum Filtern
-menu-query-placeholder-ask = Tippen zum Filtern oder Senden
-menu-query-placeholder-send = Tippen zum Filtern oder Senden
 menu-query-name = Filtern oder senden
-menu-query-name-send = Filtern oder senden
-# The row that carries the typed sentence into the send-to box.
-menu-send = Senden…
+# The last row of every context menu, which opens the send-to box; once
+# something is typed it names the sentence it carries.
+menu-send = Senden an…
 menu-ask-typed = Senden: { $text }
 
 # Die Sendebox: an wen eine Nachricht geht, worum es geht und ihre Worte. Sie
-# steht, wo das Menü stand, dessen Senden-Zeile sie geöffnet hat, und für eine
+# steht neben dem Menü, dessen Senden-Zeile sie geöffnet hat, und für eine
 # Meldung allein.
 send-to-name = Senden an
 # The same box opened to the one place reports go.
 send-to-report-name = Problem melden
-send-to-to = An
 send-to-new-agent = Neuer Agent
-send-to-recipients-name = Empfänger
+send-to-recipients-name = Jemanden hinzufügen
 send-to-search-placeholder = Jemanden hinzufügen…
 send-to-no-results = Nichts gefunden
-send-to-subject = Betreff
-send-to-subjects-name = Betreffe
 send-to-add-subject = Betreff hinzufügen
 send-to-message-name = Nachricht
 send-to-message-placeholder = Nachricht schreiben
 send-to-report-placeholder = Was ist schiefgelaufen?
 send-to-send = Senden
-send-to-remove = Entfernen
-send-to-recipient-set = An { $name } gesendet
 
 widget-screenshot-saved = Gespeichert
 widget-screenshot-copied = Kopiert
@@ -951,6 +993,10 @@ text-menu-bold = Fett
 text-menu-italic = Kursiv
 text-menu-underline = Unterstrichen
 text-menu-strikethrough = Durchgestrichen
+text-menu-heading-1 = Überschrift 1
+text-menu-heading-2 = Überschrift 2
+text-menu-heading-3 = Überschrift 3
+text-menu-body-text = Fließtext
 text-menu-bulleted-list = Aufzählung
 text-menu-numbered-list = Nummerierte Liste
 
@@ -964,7 +1010,6 @@ change-mark-who = { $who }
 change-mark-created = Erstellt von { $who }
 change-mark-changed = Geändert von { $who }
 change-mark-removed = Entfernt von { $who }
-change-mark-open = Zeigen, was { $who } getan hat
 change-mark-in-run = { $what } in „{ $run }“
 change-window = { $count ->
     [one] Eine Änderung von { $who }
@@ -1072,28 +1117,24 @@ conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
 conversation-new-messages = Neue Nachrichten
+conversation-day-new = { $day }: Neue Nachrichten
+conversation-read-by = Bis hierher gelesen von { $names }
 conversation-jump-unread = Zu den ersten ungelesenen
 conversation-jump-present = Zum Neuesten
-conversation-earlier-unavailable = Frühere Nachrichten sind auf den Hosts dieses Geräts nicht verfügbar
+conversation-earlier-unavailable = Frühere Nachrichten sind auf diesem Gerät nicht verfügbar
 conversation-attachment-open = Öffnen
 conversation-attachment-open-full-size = In voller Größe öffnen
-conversation-attachment-save = Speichern
 conversation-attachment-save-as = Speichern unter …
 conversation-attachment-open-saved = Gespeicherte Kopie öffnen
 conversation-attachment-no-access = Diese Datei ist nicht für dich freigegeben
 conversation-attachment-unavailable = Diese Datei ist nicht auf diesem Gerät
 conversation-attachment-uploading = Wird hochgeladen
 conversation-attachment-cancel-upload = Cancel upload
-conversation-attachment-upload-cancelled = Upload cancelled
 conversation-attachment-saved = eine Kopie auf diesem Gerät
-conversation-attachment-save-failed = Couldn’t save the file
 conversation-attachment-image = Image
 conversation-attachment-video = Video
 conversation-attachment-file = File
 conversation-draft = Draft
-conversation-draft-preview = Draft: {$text}
-conversation-unread = Unread message
-conversation-day-earlier = {$date}
 # Jobs: what is running. A job's row says what it is doing and how far.
 jobs-starting = Wird gestartet
 jobs-phase-of = { $phase }: { $done } von { $total }
@@ -1110,7 +1151,6 @@ jobs-more = Noch { $count }
 jobs-running-heading = Läuft
 jobs-finished-heading = Beendet
 jobs-none = Es läuft nichts
-jobs-none-message = Alles, was länger dauert, steht währenddessen da und sagt, wie es geendet hat.
 
 jobs-files-one = { $count } Datei
 jobs-files = { $count } Dateien
@@ -1124,12 +1164,9 @@ attention-blocking = Jetzt
 attention-waiting = Wartet
 attention-noted = Gut zu wissen
 attention-none = Nichts braucht dich
-attention-none-message = Was auf deine Entscheidung wartet, wartet weiter.
 attention-because = { $about }, { $because }
 attention-defer = Für später beiseitelegen
-attention-deferred-one = { $count } beiseitegelegt
 attention-deferred = { $count } beiseitegelegt
-attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
 
@@ -1137,7 +1174,6 @@ action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokume
 proposal-model-on-device = { $model }, läuft auf diesem Gerät
 proposal-model-hosted = { $model }, läuft auf einem anderen Rechner
 proposal-context-selection = Die Auswahl
-proposal-context-document = Das Dokument
 proposal-context-too-many = Das ist zu viel Kontext für einen Schritt. Wähle weniger.
 # $name is the part, $limit how many kilobytes one part may carry.
 proposal-context-too-long = { $name } ist länger als { $limit } KB. Wähle weniger.
@@ -1167,3 +1203,71 @@ quote-dismiss = Nicht mehr antworten
 quote-open = Zeigen, worauf dies antwortet
 
 toast-reply-placeholder = Antworten…
+
+## Window furniture and widget chrome, named where a screen reader reads it
+floating-window-move-hint = Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten.
+widget-dialog-close = Schließen
+widget-dialog-cancel = Abbrechen
+widget-dismiss = Ausblenden
+widget-hand-to-agent = An Agenten übergeben
+widget-more = Mehr
+widget-copy = Kopieren
+widget-hosted-applications = Gehostete Anwendungen
+widget-searching = Wird gesucht…
+widget-search-results = Suchergebnisse
+widget-loading = Wird geladen
+widget-timeline-name = Position im Zeitstrahl
+widget-timeline-hint = Chronologische Sammlung. Pfeiltasten bewegen, Bild auf und Bild ab bewegen einen Bildschirm, Pos1 und Ende springen zum Anfang oder Ende; Plus und Minus ändern die Dichte.
+widget-timeline-jump = Zu { $marker } springen
+widget-timeline-group = Chronologischer Index
+widget-timeline-group-hint = Nach Datum geordnete Bildlaufleiste
+widget-shortcut-change = Tastenkürzel ändern
+widget-shortcut-unavailable = Dieses Tastenkürzel ist nicht verfügbar. Aktivieren, um ein anderes zu wählen.
+widget-chart-series = { $name } Datenreihe
+widget-step-of = Schritt { $step } von { $total }
+widget-steps-count = { $count ->
+    [one] { $count } Schritt
+   *[other] { $count } Schritte
+  }
+widget-page-of = Seite { $page } von { $total }
+widget-preview-named = Vorschau von { $label }
+widget-type-to-confirm = Zum Bestätigen { $phrase } eingeben
+widget-color-name = Farbe
+widget-color-hex = Hex-Farbe
+widget-crop-name = Seite zuschneiden
+widget-crop-hint = Von { $left }% bis { $right }% in der Breite und { $top }% bis { $bottom }% in der Höhe
+widget-document-switch-blocked = Dokumentwechsel blockiert
+widget-qr-failed = QR-Code konnte nicht gezeichnet werden: { $error }
+media-volume = Lautstärke
+media-position = Position
+media-more-controls = Weitere Steuerungen
+media-play = Wiedergeben
+media-pause = Pausieren
+media-previous = Vorheriger Titel
+media-next = Nächster Titel
+media-mute = Stummschalten
+media-unmute = Ton einschalten
+media-like = Gefällt mir
+media-unlike = Gefällt mir nicht mehr
+media-lyrics = Songtext
+media-shuffle = Zufällige Wiedergabe
+media-repeat = Wiederholen
+media-repeat-one = Titel wiederholen
+media-repeat-all = Alle wiederholen
+media-queue = Warteschlange
+media-player = Videoplayer
+media-no-video = Kein Video geladen
+media-player-hint = Leertaste gibt wieder oder pausiert; Pfeil links und rechts springen; Pfeil hoch und runter ändern die Lautstärke; M schaltet stumm; F schaltet Vollbild
+media-key-play-pause = Leertaste
+media-position-value = { $position } von { $duration }
+media-fullscreen-enter = Vollbild öffnen
+media-fullscreen-exit = Vollbild verlassen
+media-playback-settings = Wiedergabeeinstellungen
+media-toggle-on = Ein
+media-toggle-off = Aus
+floating-window-title = Schwebendes Fenster
+now-playing-seek = Wiedergabeposition
+now-playing-seek-help = Mit Pfeil links und rechts um fünf Sekunden springen
+
+## What the records are called, and the actions on them
+settings-text-assistance = Rechtschreibung und Text

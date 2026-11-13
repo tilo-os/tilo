@@ -1,5 +1,6 @@
 use super::*;
 use crate::a11y::{AccessNode, Role};
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, Column, Text};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -168,6 +169,55 @@ fn presence_preserves_custom_capability_inventory_fallback() {
             "custom producers are authoritative even without exposed child widgets"
         );
     }
+}
+
+/// A surface root that stands for the view it holds and keeps the inventory of
+/// everything below it, as the app framework's own root does: it is met by a
+/// walk that asks for the widget it stands for, and answers for that widget's
+/// whole subtree.
+struct SurfaceRoot {
+    view: Column,
+}
+impl Widget for SurfaceRoot {
+    crate::provides!(dyn ActionControls, dyn crate::widget::decorator::Decorated);
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        _theme: &crate::theme::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+    fn name(&self) -> &'static str {
+        "surface-root"
+    }
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.view.for_each_child(visitor);
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.view.children()
+    }
+}
+impl crate::widget::decorator::Decorated for SurfaceRoot {
+    fn decorated(&self) -> &dyn Widget {
+        &self.view
+    }
+}
+impl ActionControls for SurfaceRoot {}
+
+#[test]
+fn a_surface_root_that_keeps_its_inventory_counts_each_control_once() {
+    let surface = SurfaceRoot {
+        view: Column::new().push(Box::new(action_button())),
+    };
+    let inventory = control_action_bindings(&surface);
+    assert_eq!(
+        inventory.len(),
+        1,
+        "the control below the root is counted once, not again as the view it stands for: {inventory:?}"
+    );
+    assert_eq!(action_control_bindings(&surface), inventory);
 }
 
 #[test]

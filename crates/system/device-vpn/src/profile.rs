@@ -1,13 +1,5 @@
 //! The kill switch of the person's `NetworkManager` VPN profiles: when to
 //! block (docs/device-vpn.md, "Profile kill switch").
-//!
-//! A profile is set to connect from when `NetworkManager` starts bringing it
-//! up until the person turns it off on purpose. While a profile with its kill
-//! switch on is set to connect and is not connected, nothing leaves the
-//! computer but through a tunnel, to its servers and for address
-//! configuration ([`ProfileBlock`]). [`Intent`] decides that from what the
-//! person chose and what `NetworkManager` reports; it does no I/O, so the
-//! session and the tests drive the same decisions.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -15,14 +7,11 @@ use std::net::IpAddr;
 use crate::net;
 use crate::protocol::{MAX_PROFILE_SERVERS, ProfileBlock};
 
-/// A profile's kill switch, while it is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Switch {
-    /// Let the local network through while the block holds.
     pub allow_local: bool,
 }
 
-/// Where `NetworkManager` has a profile, while it has it at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
     Activating,
@@ -34,16 +23,14 @@ pub enum Activity {
 /// local network through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Blocking {
-    /// Their ids, in order.
     pub profiles: Vec<String>,
     /// The local network stays reachable only if every blocking profile
     /// allows it.
     pub allow_local: bool,
 }
 
-/// Which profiles are set to connect, remembered between readings, and
-/// kept across a restart of whoever decides: a shell that crashed must not
-/// let traffic out while its successor starts.
+/// Which profiles are set to connect, remembered between readings and across a restart:
+/// a shell that crashed must not let traffic out while its successor starts.
 #[derive(Clone, Debug, Default)]
 pub struct Intent {
     wanted: BTreeSet<String>,
@@ -110,7 +97,6 @@ impl Intent {
         })
     }
 
-    /// Whether `profile` is set to connect.
     #[must_use]
     pub fn wants(&self, profile: &str) -> bool {
         self.wanted.contains(profile)
@@ -205,7 +191,6 @@ mod tests {
         before.decide(&switches, &now(Some(Activity::Activated)), &[]);
         let kept: Vec<String> = before.wanted().cloned().collect();
         assert_eq!(kept, ["work"]);
-        // The decider restarted while the tunnel was down.
         let mut after = Intent::adopt(kept.clone());
         assert_eq!(
             after.decide(&switches, &now(None), &[]),
@@ -314,7 +299,6 @@ mod tests {
             }
         );
         assert_eq!(block.check(), Ok(()));
-        // Servers not looked up yet: the block holds all the same.
         assert!(
             block_for(&blocking(true), &BTreeMap::new())
                 .servers

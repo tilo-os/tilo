@@ -1,23 +1,14 @@
-//! Reclaiming what no installed package needs: app payloads past the
-//! store's size policy, payload trees nothing names, and per-user runtime
-//! bundles no installed package runs on.
+//! Reclaiming what no installed package needs: payloads past the store's size cap, payload trees
+//! nothing names, and runtime bundles no installed package runs on.
 //!
-//! It runs when something changed — after every `tilo-install install`,
-//! `update` and `uninstall`, and on `tilo-install gc` — never on a timer.
-//! What a running app has mounted stays ([`package_store::mounts`]), and so
-//! does what the user keeps: pinned packages, and pinned runtimes. The size
-//! cap never evicts an app a launch is opening, nor the apps the change it
-//! follows just wrote ([`Request::keep`]): the person installed it to open
-//! it, and until it opens nothing else marks it as wanted.
+//! It runs when something changed — after `install`, `update` and `uninstall`, and on `gc` — never
+//! on a timer. What a running app has mounted stays ([`package_store::mounts`]), and so do pinned
+//! packages and pinned runtimes. The size cap never evicts an app a launch is opening, nor the apps
+//! the change it follows just wrote ([`Request::keep`]).
 //!
-//! A runtime is needed while any installed package names it: as its
-//! `runtime`, or among the further runtimes it requires (`optional-runtimes`).
-//! Both the user's
-//! store and the image's count, and so does every payload tree an update
-//! left behind because a launch held it or a running app had it mounted:
-//! that launch runs on the old build's runtime. A manifest that cannot be
-//! read makes the whole runtime collection stop: its runtimes cannot be
-//! told apart.
+//! A runtime is needed while any installed package names it, as its `runtime` or among its
+//! `optional-runtimes`, in the user's store or the image's. A manifest that cannot be read stops
+//! the whole runtime collection: its runtimes cannot be told apart.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -28,8 +19,8 @@ use package_store::{Catalog, InstalledPackage, Orphans, PackageStore};
 use runtime_bundle::gc::{BundleRoot, Collected, Holds, Options};
 
 /// Where the launcher mounts a runtime inside an app's sandbox
-/// (`/run/tilo-runtime/<version>`); a process with that mount is running on
-/// that runtime build, whichever copy of it was bound.
+/// (`/run/tilo-runtime/<version>`): a process with that mount runs on that runtime build, whichever
+/// copy of it was bound.
 pub const SANDBOX_RUNTIME_ROOT: &str = "/run/tilo-runtime";
 
 /// One collection's settings.
@@ -37,19 +28,18 @@ pub const SANDBOX_RUNTIME_ROOT: &str = "/run/tilo-runtime";
 pub struct Request {
     /// The store's size cap; `0` evicts nothing for size.
     pub max_store_bytes: u64,
-    /// How long a freshly installed runtime stays unreferenced.
+    /// How long a freshly installed runtime stays unreferenced, in seconds.
     pub grace_secs: u64,
-    /// Unix seconds now.
+    /// Unix seconds.
     pub now: u64,
     /// Report the runtimes that would go; touch nothing.
     pub dry_run: bool,
-    /// Apps the size cap never evicts: what the change just installed.
+    /// Apps the size cap never evicts.
     pub keep: Vec<String>,
 }
 
 impl Request {
-    /// What runs after an install, update or uninstall: the store's cap
-    /// `max_store_bytes`, the default grace for fresh runtimes, now.
+    /// A collection after an install, update or uninstall.
     #[must_use]
     pub fn after_change(max_store_bytes: u64) -> Self {
         Self {
@@ -61,7 +51,7 @@ impl Request {
         }
     }
 
-    /// This request, never evicting the apps `keep` names for size.
+    /// This request, never evicting the `keep` apps for size.
     #[must_use]
     pub fn keeping(mut self, keep: impl IntoIterator<Item = String>) -> Self {
         self.keep.extend(keep);
@@ -69,8 +59,8 @@ impl Request {
     }
 }
 
-/// The apps in `store` a change installed or updated at or after `since`
-/// (Unix seconds): what a collection after that change keeps.
+/// The apps in `store` installed or updated at or after `since` (Unix seconds): what a collection
+/// after that change keeps.
 pub fn written_since(store: &PackageStore, since: u64) -> Result<Vec<String>, String> {
     let registry = store
         .registry()
@@ -90,13 +80,11 @@ pub struct Report {
     pub evicted: Vec<String>,
     /// Payload trees nothing named.
     pub orphans: Orphans,
-    /// The runtime bundles.
     pub runtimes: Collected,
 }
 
 impl Report {
-    /// Bytes freed, apps evicted for size not counted (their blobs are the
-    /// content store's to count).
+    /// Bytes freed. Apps evicted for size are not counted: their blobs are the content store's.
     #[must_use]
     pub fn freed_bytes(&self) -> u64 {
         self.runtimes
@@ -106,15 +94,14 @@ impl Report {
     }
 }
 
-/// Apply the size cap, remove orphaned payload trees, then collect the
-/// runtime bundles under `runtimes` that nothing in `catalog` names.
+/// Apply the size cap, remove orphaned payload trees, then collect the runtime bundles under
+/// `runtimes` that nothing in `catalog` names.
 ///
 /// A dry run only reports the runtimes; payloads are not simulated.
 ///
 /// # Errors
 ///
-/// Returns the first step that failed, as a message; the steps before it
-/// took effect.
+/// The first step that failed, as a message; the steps before it took effect.
 pub fn collect(
     store: &PackageStore,
     catalog: &Catalog,
@@ -129,8 +116,7 @@ pub fn collect(
         keep,
     } = request;
     let mut report = Report::default();
-    // A device with no app store yet has no payloads; collecting must not
-    // create one.
+    // A device with no app store yet has no payloads; collecting must not create one.
     if !dry_run && store.layout().registry().is_file() {
         let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
         report.evicted = store
@@ -174,8 +160,8 @@ pub fn referenced_runtimes<'a>(
         versions.extend(version_of(&row.runtime));
         let text = match std::fs::read_to_string(&row.manifest_path) {
             Ok(text) => text,
-            // Without its manifest a row cannot launch, so it mounts nothing
-            // beyond the runtime its row records.
+            // Without its manifest a row cannot launch, so it mounts nothing but the runtime its
+            // row records.
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
                 return Err(io::Error::new(
@@ -189,9 +175,9 @@ pub fn referenced_runtimes<'a>(
     Ok(versions)
 }
 
-/// The runtime versions the package records still under `packages`
-/// (`<store>/pkgs`) name, rows or not. Run after the orphan collection, the
-/// records without a row are the trees a launch or a running app holds.
+/// The runtime versions the package records still under `packages` (`<store>/pkgs`) name, rows or
+/// not. Run after the orphan collection, the records without a row are the trees a launch or a
+/// running app keeps.
 pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
     let mut versions = BTreeSet::new();
     let entries = match std::fs::read_dir(packages) {
@@ -202,8 +188,7 @@ pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        // Only record directories directly under `pkgs/`; a link is never
-        // followed.
+        // Only record directories directly under `pkgs/`; a link is never followed.
         let record = Path::new(&name).extension().is_some_and(|ext| ext == "pkg");
         if !entry.file_type()?.is_dir() || !record {
             continue;
@@ -224,7 +209,6 @@ pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
     Ok(versions)
 }
 
-/// The runtime and required runtimes the manifest `text` of `who` names.
 fn manifest_runtimes(text: &str, who: &str) -> io::Result<Vec<String>> {
     let manifest = tilo_app_package::Manifest::from_toml_str(text)
         .map_err(|error| io::Error::other(format!("{who}: manifest: {error}")))?;
@@ -245,8 +229,8 @@ fn manifest_runtimes(text: &str, who: &str) -> io::Result<Vec<String>> {
     Ok(versions)
 }
 
-/// What running apps hold now: a bundle directory a sandbox has mounted,
-/// or a runtime build a sandbox runs on.
+/// What running apps hold now: a bundle directory a sandbox has mounted, or a runtime build a
+/// sandbox runs on.
 #[must_use]
 pub fn in_use_now() -> Holds {
     let in_use = InUse::now();
@@ -266,11 +250,6 @@ fn version_of(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The laptop's case: the image (or a swapped userspace) ships the
-    /// Browser, which pins one engine build, while the per-user runtime
-    /// directory still holds the engines of every earlier Browser. Nothing
-    /// installed through `tilo-install` changed, so only the system store's
-    /// rows say which build is still wanted.
     #[test]
     fn engine_builds_no_installed_app_pins_are_collected() {
         const ENGINE: &str = "2026.10.9-chromium";

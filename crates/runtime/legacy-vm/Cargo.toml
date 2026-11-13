@@ -24,6 +24,11 @@ collab-types = { path = "../../collab/collab-types" }
 # A refusal carries the host contract's typed reason and next steps.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 fnv.workspace = true
+# The material a browser environment's session is started with, and the
+# endpoint address it names the relay by: one type the relay and this host
+# both build against.
+iroh-base.workspace = true
+tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 libc.workspace = true
 serde.workspace = true
@@ -44,6 +49,8 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
+# A device certificate, for a material's device.
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 
 [lints]
 workspace = true

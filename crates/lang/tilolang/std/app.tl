@@ -8,10 +8,9 @@ app tilo.std "Standard library"
 ///
 /// A window that lists resources composes it: `std.list` puts the items down a column of rows
 /// with what the platform does on a row, `std.places` the places the app names in the sidebar,
-/// `std.sorts` the fields it offers as orders, `std.add_entry` the entry at the list's end, and
-/// the app writes the shell around them and says where each stands. A window that is only that is
-/// `std.browse`, which takes the resource its window is of, the items, the places and the sorts,
-/// and writes that shell the standard way.
+/// `std.add_entry` the entry at the list's end, and the app writes the shell around them and
+/// says where each stands. A window that is only that is `std.browse`, which takes the resource
+/// its window is of, the items and the places, and writes that shell the standard way.
 ///
 /// The bar's actions are the ones the owner's type declares, which the host places there — the
 /// primary one as the Primary button, the rest behind the bar's one menu; the primary's key is
@@ -28,12 +27,14 @@ app tilo.std "Standard library"
 ///
 /// `row` draws an item, handed the item and who else is at it, and writes the `ui.ListItem` the
 /// list shows: its `group:`, its `parent:` and its `tail:` say the list's grouping, nesting and
-/// fold, which are the app's to say, and what it puts inside is the item's row. A list that
-/// nests its rows gives `tree`; one that groups says the name of the items that group under
-/// nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that does
-/// neither gives neither. The list is the column's scroller unless `in_column` is off: a list
-/// standing in a page's own scroller is as tall as its rows, and the page scrolls them with the
-/// rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
+/// fold, which are the app's to say, and what it puts inside is the item's row. A row whose item
+/// the person can finish says so as `done:`: a place counts what waits, so the heading over the
+/// rows counts what is left to do, and a row just finished keeps its place without counting. A
+/// list that nests its rows gives `tree`; one that groups says the name of the items that group
+/// under nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that
+/// does neither gives neither. The list is the column's scroller unless `in_column` is off: a
+/// list standing in a page's own scroller is as tall as its rows, and the page scrolls them with
+/// the rest, so no list scrolls inside a scroller that scrolls it. A window too narrow for a page
 /// beside the list gives the row's item a page of its own, opened in front of the list.
 ///
 /// The row the person opened is the list's own state, so a window that lists and nothing else
@@ -95,6 +96,56 @@ template view places<T>(
     }
 }
 
+/// The mark a window shows beside the name of a service it reads its items from while that
+/// service does not stand well: a quiet glyph while it cannot be reached, a warning one while it
+/// was reached and what it fetched could not be kept, each saying why on hover, and nothing
+/// while it stands well. `name` is what the person calls the service (their account's address, a
+/// site), `online` whether it answered when it was last asked, and `trouble` why not, in the
+/// service's own words.
+template view service_mark(name: Text, online: Bool, trouble: Text) {
+    if trouble != "" {
+        if online {
+            ui.Icon(.triangle_alert, size: .small, tone: .warning, description: "{name}: {trouble}")
+        } else {
+            ui.Icon(.wifi_off, size: .small, secondary: true, description: "{name}: {trouble}")
+        }
+    }
+}
+
+/// What a window says over the items it holds while the service they come from does not stand
+/// well: one calm notice naming the service and what its trouble means, with `Try again` where
+/// `retry` asks it again, and nothing while it stands well.
+///
+/// It stands as a card in the container the app gives it, a gutter in from the column it stands
+/// in — the list's own, where it stands over rows — so its rounded corners are never cut by the
+/// edge it would touch, and it is read where the items are without taking their place. What it
+/// says is what the service cannot say of itself: the title is what the window cannot do (reach
+/// it, save what it fetched), and under it the service's own reason in its words, capitalised,
+/// and when the items under it were last read from it — `fetched`, as the clock a person reads
+/// (`10:41`, `10:41 AM` in the style they chose), empty while the app knows no time to say.
+template view service_banner(
+    name: Text,
+    online: Bool,
+    trouble: Text,
+    retry: Action,
+    fetched: Text = "",
+) {
+    if trouble != "" {
+        // The reason in a sentence of its own: "connection refused" is what the server said,
+        // and the line it leads starts with a capital as every sentence does.
+        let reason = trouble.slice(0, 1).upper() + trouble.slice(1, trouble.len())
+        ui.Banner(
+            if online { "Can't save what {name} fetched" } else { "Can't reach {name}" },
+            message: if fetched == "" { reason } else { "{reason}. Last fetched {fetched}" },
+            kind: if online { .warning } else { .neutral },
+            icon: if online { .triangle_alert } else { .wifi_off },
+            action: "Try again",
+        ) {
+            on act: retry
+        }
+    }
+}
+
 /// The entry at a list's end: what is typed and Entered there — or left there with — makes an
 /// item of it, through `create`, an action whose one `Text` parameter takes the words nothing
 /// else does. What the words say of the action's other parameters ("Call the landlord fri 10am
@@ -126,12 +177,12 @@ template view add_entry(placeholder: Text, create: Action) {
 }
 
 /// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
-/// with all of them called `everything`; the sort menu when it gives `sorts`, the fields the app
-/// names as orders (`[Note.title]`), the list's own order first; the entry at the list's end when
-/// it gives `entry`; and nothing to list when the place chosen finds nothing, where it says
-/// `empty`. The window owns the query — the place a person chose and the order they chose are its
-/// state, kept for them alone — and the list is that one query, the title over it and its count
-/// naming that place.
+/// with all of them called `everything`; the entry at the list's end when it gives `entry`; and
+/// nothing to list when the place chosen finds nothing, where it says `empty`. The window owns
+/// the query — the place a person chose and what the bar's search holds are its state, kept for
+/// them alone — and the list is that one query, the title over it and its count naming that
+/// place. The search's text narrows the list beside the place, found by the same search the
+/// store answers every field from; closing the search widens it again.
 ///
 /// The rows open beside the list when their type has a window of its own (`opens`, the type's own
 /// fact): choosing one opens it in the column beside the list, and until one is chosen the list
@@ -141,13 +192,12 @@ template view add_entry(placeholder: Text, create: Action) {
 /// `row` draws one item's row and the window puts it down the list, with who else is at the item
 /// as every list shows it. The row the person opened is the list's own, unless the app keeps one
 /// (`opened`) to open a row from elsewhere. A window that needs more — grouped or nested rows, a
-/// sidebar of its own — composes `std.list`, `std.places` and `std.sorts` itself.
+/// sidebar of its own — composes `std.list`, `std.places` and `std.tree` itself.
 template view browse<R, T>(
     of: R,
     items: List<T>,
     opened: Option<State<Option<T>>> = .none,
     places: List<Filter<T>> = [],
-    sorts: List<Sort<T>> = [],
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
     entry: Option<Action> = .none,
@@ -156,9 +206,10 @@ template view browse<R, T>(
     row: (T) -> View,
 ) {
     state query: Text = ""
-    state order: Option<Sort<T>> = .none
+    state found: Text = ""
     let kind = meta(T)
-    let asked = if let o = order { query + " " + o.query } else { query }
+    // The place chosen and what the window's search holds: one query.
+    let asked = if not found.is_empty() { query + " " + found } else { query }
     let shown = items.matching(asked)
     let title = places.find(p -> p.query == query)?.label ?? everything
     let sidebar_title = if not places.is_empty() { meta(of).title }
@@ -169,14 +220,10 @@ template view browse<R, T>(
             overview_title: title,
             overview_count: shown.len(),
         ) {
+            on search(t: Text): set(found, t)
             sidebar: {
                 if not places.is_empty() {
                     std.places(query, places, everything, icon: kind.icon)
-                }
-            }
-            overview_actions: {
-                if not sorts.is_empty() {
-                    std.sorts(order, sorts)
                 }
             }
             overview: {
@@ -192,14 +239,10 @@ template view browse<R, T>(
             count: shown.len(),
             sidebar_title: sidebar_title,
         ) {
+            on search(t: Text): set(found, t)
             sidebar: {
                 if not places.is_empty() {
                     std.places(query, places, everything, icon: kind.icon)
-                }
-            }
-            actions: {
-                if not sorts.is_empty() {
-                    std.sorts(order, sorts)
                 }
             }
             content: {
@@ -255,8 +298,8 @@ template view browse_rows<T>(
 /// Items as an outline, each item over its own to any depth, opened and closed where a person
 /// puts them, its row the one `row` draws. The outline is named `name` for a reader; the name
 /// is the page's, not a row over the items, so the page states it once. A move — a drag, `Tab`
-/// and `Shift-Tab`, the accessibility move actions — is reported with the item it lands under
-/// and the item it lands before, and `place` puts it in the one place they name:
+/// and `Shift-Tab`, the accessibility move actions — names the item that moved and the item it
+/// lands at, and `place` puts it in the one place they name:
 /// `(moved, .none, .none)` is the end of the top level, `(moved, x, .none)` the end of `x`'s
 /// own, and `(moved, .none, x)` where `x` stands. One step, so two people moving
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
@@ -281,7 +324,8 @@ view outline<T>(
         ui.EmptyState(empty, icon: icon)
     } else {
         ui.TreeView(name: name, fill: fill, reorder: true, tab_indents: true, hide_root: true) {
-            on drop(moved: T): place(moved, .none, .none)
+            on drop(moved: T, at: Option<T>): place(moved, .none, at)
+            on into(moved: T, at: Option<T>): place(moved, at, .none)
             for x in items {
                 // The node just above this one under the same parent, as the outline shows
                 // them: the place the actions offered on it get. None for a first child.
@@ -290,9 +334,21 @@ view outline<T>(
                     .filter(y -> parent(y) == parent(x))
                     .last()
                 let count = if let c = progress { c(x) }
-                ui.TreeViewNode(x, label(x), parent: parent(x), above: above, progress: count) {
-                    on drop(moved: T): place(moved, .none, x)
-                    on into(moved: T): place(moved, x, .none)
+                // How deep it stands in this outline and whether it holds any of its items, said
+                // by the row itself: the tree builds the rows the window shows, so a row whose
+                // parent stands out of view keeps the place this gives it. An item above the
+                // outline's own is no step of it, so it counts none.
+                let deep = items.ancestors(x, .parent).filter(a -> items.contains(a)).len()
+                let holds = items.any(y -> parent(y) == .some(x))
+                ui.TreeViewNode(
+                    x,
+                    label(x),
+                    parent: parent(x),
+                    depth: deep,
+                    branch: holds,
+                    above: above,
+                    progress: count,
+                ) {
                     on check: toggled(x)
                     row: {
                         row(x, parent(x))
@@ -303,22 +359,229 @@ view outline<T>(
     }
 }
 
-/// The orders a window offers, in its bar: the list's own order first, called `everything`, then
-/// each field the app named, its entry saying the field's label. The one chosen is the window's
-/// `chosen` order; none of them is the list as the store keeps it. A window lists the orders its
-/// app declares, never every field its item type has.
-template view sorts<T>(
-    chosen: State<Option<Sort<T>>>,
-    of: List<Sort<T>>,
-    everything: Text = phrase("tilolang-order-default"),
+/// Items as the tree of a window's sidebar: `items` — the collection itself, so the tree asks
+/// the store for the rows it shows and for the place of each — each under the item it names as
+/// its parent (`parent`), its row the one `row` draws and its words `label`. A row says how deep
+/// it stands (`depth`) and whether it holds any (`branch`), so the rows a person does not see
+/// cost nothing: the tree builds the rows the window shows, of ten notes as of ten thousand.
+/// Each row says who else is at its item, as a list of them does (`std.list`).
+///
+/// `found` is what the window's search holds: the tree then shows the items the store finds for
+/// those words, each with the items it stands under for context, in the quietest ink, and opens
+/// the branches to them. Nothing found says so in the place of the tree. Empty, the tree is the
+/// whole collection again, with the branches a person had opened as they left them.
+///
+/// The row chosen is the one the window has open (`opened`), and the tree keeps which branches a
+/// person opened. A move — a drag before, after or inside a row, `Tab` and `Shift-Tab`, `Alt-Up`
+/// and `Alt-Down` — names the item that moved and the item it lands at, and `place` puts it in
+/// the one place they name: `(moved, .none, .none)` is the end of the top level,
+/// `(moved, x, .none)` the end of `x`'s own, and `(moved, .none, x)` where `x` stands. A move
+/// after a row and everything under it is `place_after(moved, x)`: what stands after them is a
+/// row the tree may not have built, and only the view can name the ones under it. A tree a
+/// search narrowed moves nothing: the rows it shows are not its order.
+///
+/// `add` draws the button a row shows over its trailing corner while it is hovered or holds
+/// focus, so the tree makes what a person needs beside where it will stand. The tree is named
+/// `name` for a reader, and a tree taller than the room it is given scrolls itself (`fill`);
+/// that tree is its pane's list, so its rows stand on the pane's content edge as a list's do,
+/// and a window a phone holds, where the pane is the whole screen, keeps its page gutter.
+template view tree_rows<T>(
+    name: Text,
+    items: Collection<T>,
+    opened: State<Option<T>>,
+    parent: (T) -> Option<T>,
+    depth: (T) -> Option<Int>,
+    branch: (T) -> Bool,
+    label: (T) -> Text,
+    place: (T, Option<T>, Option<T>) -> Action,
+    place_after: (T, T) -> Action,
+    add: (T) -> View,
+    found: Text = "",
+    nothing_found: Text = phrase("tilolang-nothing-found"),
+    fill: Bool = true,
+    row: (T) -> View,
 ) {
-    ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
-        ui.MenuItem(everything, checked: chosen == .none) {
-            on choose: set(chosen, .none)
+    let searching = not found.is_empty()
+    // What the search found, the rows it shows and the branches it opens: the store's own answer
+    // for the words, and nothing while the tree is the whole collection.
+    let hits: List<T> = if searching { items.matching(found).flat_map(h -> [h]) } else { [] }
+    // Each match, and the items it stands under from the top of the tree down, in the order the
+    // tree gives them: a row once, however many matches stand under it. Each match costs the
+    // items above it, never the items beside it.
+    let shown: List<T> = if searching {
+        hits.flat_map(
+            h -> [items.ancestors(h, .parent).sort_by(a -> depth(a) ?? 0), [h]]
+                .flat_map(rows -> rows),
+        )
+    } else { [] }
+    // The branches a search opens: every item a match stands under, so each match is in sight.
+    let open_branches: Option<List<T>> = if searching {
+        .some(hits.flat_map(h -> items.ancestors(h, .parent)))
+    } else { .none }
+    let matched: Option<List<T>> = if searching { .some(hits) } else { .none }
+    if searching and shown.is_empty() {
+        ui.EmptyState(nothing_found, inline: true)
+    } else {
+        ui.TreeView(
+            name: name,
+            fill: fill,
+            reorder: not searching,
+            tab_indents: true,
+            hide_root: true,
+            single_click: true,
+            selection_follows_focus: true,
+            selection: if let x = opened { [x] },
+            expanded: if let rows = open_branches { rows },
+            matching: if let rows = matched { rows },
+        ) {
+            on select(x: T): set(opened, x)
+            on activate(x: T): set(opened, x)
+            on drop(moved: T, at: Option<T>): place(moved, .none, at)
+            on into(moved: T, at: Option<T>): place(moved, at, .none)
+            on after(moved: T, at: T): place_after(moved, at)
+            // The matches and the rows they stand under, or the whole collection: one row each,
+            // in the place the tree keeps it.
+            for x in if searching { shown } else { items } {
+                // The item just before this one under the same parent: the place the actions
+                // offered on it get and the row `Tab` indents it under. The store's index
+                // answers the run of `p`'s own, never a walk of the rows before it.
+                let p = parent(x)
+                let above: Option<T> = items.filter(y -> y.parent == p).previous(x)
+                ui.TreeViewNode(
+                    x,
+                    label(x),
+                    parent: p,
+                    presence: lenses(x).find(l -> not l.mine)?.who,
+                    depth: depth(x),
+                    branch: branch(x),
+                    above: above,
+                    navigates: false,
+                ) {
+                    toolbar: {
+                        add(x)
+                    }
+                    row: {
+                        row(x)
+                    }
+                }
+            }
         }
-        for s in of {
-            ui.MenuItem(s.label, checked: chosen == s) {
-                on choose: set(chosen, s)
+    }
+}
+
+/// A window that is a tree of items: the tree down its sidebar and the item open beside it, as
+/// the page `doc` draws — one stack of blocks at the page's rhythm — with `head` the controls
+/// standing in the sidebar's header, given the item open (or none), so what can be done with it
+/// stands in the window's bar at every width rather than on a line of the page.
+///
+/// The window keeps which item it shows itself (`opened`): a view that answers `on show` with
+/// the item passes its own state here (`opened: open`), so a link, a breadcrumb or a search that
+/// shows an item moves the tree's choice to it and the page the window shows stays the tree's
+/// own, never a second page pressed over it.
+/// The bar over the page names where the open item stands (`path`: "Plans / Meetings", nothing
+/// at the top level) and keeps the window's own actions.
+///
+/// `above` is a place the app keeps over the tree — a filter of its items, such as the ones
+/// pinned — with the filter's own words over them, standing only while it holds anything.
+/// Choosing one opens it beside as any row of the tree does. A window whose tree holds nothing
+/// says `empty` in its sidebar, and one with nothing open says so beside it.
+///
+/// The bar's search is the tree's: what is typed narrows it to the items the store finds
+/// (`tree_rows`' `found`), with the items they stand under shown for them, and closing the
+/// search shows the tree as the person had it. The page beside them is found in too, where the
+/// window shows one.
+template view tree<R, T>(
+    of: R,
+    items: Collection<T>,
+    opened: State<Option<T>> = open_item,
+    parent: (T) -> Option<T>,
+    depth: (T) -> Option<Int>,
+    branch: (T) -> Bool,
+    label: (T) -> Text,
+    place: (T, Option<T>, Option<T>) -> Action,
+    place_after: (T, T) -> Action,
+    add: (T) -> View,
+    path: (T) -> Text,
+    above: List<Filter<T>> = [],
+    empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
+    head: (Option<T>) -> View,
+    row: (T) -> View,
+    doc: (T) -> View,
+) {
+    // The item the window opens: the first of the tree until a person chooses another, kept for
+    // them alone, as every window keeps what it shows.
+    state open_item: Option<T> = items.first()
+    // What the bar's search holds: the tree narrows to the items it finds.
+    state found: Text = ""
+    // A reading column: wide, the tree docks beside the page it opens; narrow, the tree is the
+    // window's first screen and the page is pushed in front of it, with the way back to it.
+    ui.NavShell(
+        content_kind: .reading,
+        sidebar_title: meta(of).title,
+        title: if let x = opened { path(x) },
+    ) {
+        on search(t: Text): set(found, t)
+        sidebar_actions: {
+            head(opened)
+        }
+        sidebar: {
+            stack {
+                // The shelves a search shows rows of its own in place of: a match stands where
+                // the tree puts it, not again over it.
+                for f in above {
+                    let held = items.matching(f)
+                    if not held.is_empty() and found.is_empty() {
+                        ui.Text(f.label, role: .label, secondary: true)
+                        std.tree_rows(
+                            f.label,
+                            held,
+                            opened,
+                            parent,
+                            depth,
+                            branch,
+                            label,
+                            place,
+                            place_after,
+                            add,
+                            fill: false,
+                        ) { x ->
+                            row(x)
+                        }
+                    }
+                }
+                if items.is_empty() {
+                    ui.EmptyState(empty, icon: meta(of).icon)
+                } else {
+                    std.tree_rows(
+                        meta(of).title,
+                        items,
+                        opened,
+                        parent,
+                        depth,
+                        branch,
+                        label,
+                        place,
+                        place_after,
+                        add,
+                        found: found,
+                    ) { x ->
+                        row(x)
+                    }
+                }
+            }
+        }
+        content: {
+            if let x = opened {
+                ui.Scroll {
+                    // The page is the view's: `doc` gives its blocks as one stack at the page's
+                    // own rhythm, so a heading keeps its content a step under it and more room
+                    // under the block over it.
+                    page {
+                        doc(x)
+                    }
+                }
+            } else {
+                ui.EmptyState(phrase("tilolang-nothing-open"), icon: meta(of).icon, inline: true)
             }
         }
     }
@@ -343,7 +606,10 @@ view document<R>(of: R, content: View) {
         content: {
             ui.Scroll {
                 page {
-                    stack(gap: .section) {
+                    // A document's blocks are groups of their own: the gutter between groups
+                    // stands over each section's heading, which keeps its content a step under
+                    // it, so a heading reads with what it opens.
+                    stack(gap: .group) {
                         content
                     }
                 }
@@ -355,9 +621,25 @@ view document<R>(of: R, content: View) {
 /// What follows a document's heading, one row lead in: the body starts under the text the
 /// heading's control leads to, so a task's notes, subtasks and facts stand in the column its
 /// title's text does, and the box that says the item is done stands in the gutter to their
-/// left. A document whose heading opens with its title alone has no lead to make.
+/// left. A document whose heading opens with its title alone has no lead to make, and a page
+/// on a phone's screen keeps none either: the column there is too narrow to give a control's
+/// cell out of every line, so the body starts on the page's gutter and the heading keeps its
+/// control beside its title.
 template view body(content: View) {
-    stack(lead: 1) {
+    // A document's blocks under its heading are groups of their own, a group gutter apart: a
+    // section's heading keeps its content a step under it and more room over it.
+    stack(lead: 1, gap: .group) {
+        content
+    }
+}
+
+/// The page's own sections after the writing it holds: what links here, the discussion, the
+/// history. A rule says where a person's writing ends, so a heading the page goes by never reads
+/// as another line of what was written, and each section stands a group gutter under it, further
+/// from the writing than the writing's own headings stand from each other.
+template view after_body(content: View) {
+    stack(gap: .group) {
+        divider()
         content
     }
 }
@@ -388,13 +670,13 @@ view page<R>(
                 ui.Scroll {
                     if canvas {
                         page(full, fill: fill) {
-                            stack(gap: .section, fill: fill) {
+                            stack(gap: .group, fill: fill) {
                                 content
                             }
                         }
                     } else {
                         page {
-                            stack(gap: .section) {
+                            stack(gap: .group) {
                                 content
                             }
                         }
@@ -455,7 +737,9 @@ template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
 ///
 /// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
 /// list draws the "New messages" divider over it, keeps the reader where they are as items
-/// arrive, and offers the way back to it, or to what is new, while they read history.
+/// arrive, and offers the way back to it, or to what is new, while they read history. Each item
+/// also says who has read to it (`seen_by(of, m)`): the list shows their faces there, once each,
+/// where their reading ends.
 view transcript<R, T>(
     of: R,
     items: List<T>,
@@ -474,7 +758,12 @@ view transcript<R, T>(
                 ui.VirtualList(follow_end: true, page_column: true, unseen_from: unread) {
                     for m in items {
                         let made = created(m)
-                        ui.ListItem(item: m, author: made?.who, time: made?.at) {
+                        ui.ListItem(
+                            item: m,
+                            author: made?.who,
+                            time: made?.at,
+                            read_by: seen_by(of, m),
+                        ) {
                             row(m)
                         }
                     }
@@ -502,9 +791,18 @@ view reply_banner<T>(to: T, cancel: Action) {
 /// Enter or the button runs `send`, then clears the field. The field takes everything the button
 /// leaves and ends at its edge, so the two read as one control at any width. What a view says
 /// over it (the message being answered, who is typing, what is being edited) is its own to place.
-view composer(draft: State<RichText>, placeholder: Text, send: Action) {
+///
+/// `speakers` names who is in the conversation, newest first, which its `@` drawer offers first:
+/// a view that shows the conversation's items says so with `speakers(items)`, and a mention in
+/// it reads as the person it names wherever it lands.
+view composer(
+    draft: State<RichText>,
+    placeholder: Text,
+    send: Action,
+    speakers: List<Principal> = [],
+) {
     row(gap: .none) {
-        rich_input(bind: draft, placeholder: placeholder, fill) {
+        rich_input(bind: draft, placeholder: placeholder, speakers: speakers, fill) {
             on submit: send.then(set(draft, RichText("")))
         }
         ui.Button("Send", icon: .send, icon_only: true) {

@@ -289,6 +289,7 @@ mod tests {
         "multiline_typing.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "page_view_shots.rs",
         "reading_face_shots.rs",
         "search_latency.rs",
         "type_specimen_shots.rs",

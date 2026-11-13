@@ -23,7 +23,6 @@ pub(super) fn toggle_on(e: &BytesStart) -> bool {
     }
 }
 
-/// `<w:u>` is on for any underline style other than `none`.
 pub(super) fn underline_on(e: &BytesStart) -> bool {
     match attr_val(e, b"w:val") {
         Some(v) => v != "none" && v != "0" && v != "false",
@@ -31,7 +30,6 @@ pub(super) fn underline_on(e: &BytesStart) -> bool {
     }
 }
 
-/// `<w:sz w:val="N"/>` is in half-points; the model stores whole points.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a font half-point size from OOXML's own bounded w:val range; far below i64::MAX"
@@ -51,7 +49,6 @@ pub(super) fn map_jc(v: &str) -> String {
     }
 }
 
-/// Normalise an OOXML `w:color w:val` to the model's canonical `#rrggbb`; `auto`/non-hex values yield `None`.
 pub(super) fn normalize_color(v: &str) -> Option<String> {
     let t = v.trim().trim_start_matches('#');
     if t.len() == 6 && t.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -98,11 +95,9 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
         b"w:color" => attr_val(e, b"w:val")
             .and_then(|v| normalize_color(&v))
             .map(|c| ("color".into(), MarkValue::Str(c))),
-        // `w:lang w:val` is already a BCP-47 tag, so it passes straight through to a `lang` mark.
         b"w:lang" => attr_val(e, b"w:val")
             .filter(|v| !v.is_empty())
             .map(|v| ("lang".into(), MarkValue::Str(v))),
-        // Prefer `w:shd w:fill` (arbitrary hex); `w:highlight` carries a named colour mapped to hex.
         b"w:shd" => attr_val(e, b"w:fill")
             .filter(|v| !v.eq_ignore_ascii_case("auto"))
             .and_then(|v| normalize_color(&v))
@@ -111,7 +106,6 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
             .filter(|v| !v.eq_ignore_ascii_case("none"))
             .and_then(|v| highlight_name_to_hex(&v))
             .map(|c| ("highlight".into(), MarkValue::Str(c))),
-        // Vertical alignment: `w:vertAlign w:val="superscript"|"subscript"`.
         b"w:vertAlign" => match attr_val(e, b"w:val").as_deref() {
             Some("superscript") => Some(("super".into(), MarkValue::Bool(true))),
             Some("subscript") => Some(("sub".into(), MarkValue::Bool(true))),
@@ -121,11 +115,9 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
     }
 }
 
-/// The document default language from `<w:docDefaults><w:rPrDefault><w:rPr><w:lang>`; a `<w:style>`'s own `<w:lang>` is that style's language, not read here.
 pub(super) fn doc_default_language(styles_xml: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(styles_xml).ok()?;
     let mut reader = Reader::from_str(s);
-    // Track the `docDefaults > rPrDefault > rPr` subtree; a `<w:lang>` inside a style's rPr is that style's language, not the default.
     let (mut in_doc_defaults, mut in_rpr_default, mut in_rpr) = (false, false, false);
     loop {
         match reader.read_event() {
@@ -199,7 +191,6 @@ pub(crate) struct NumDef {
 
 #[derive(Default)]
 pub(crate) struct StyleRegistry {
-    /// `character`- and `paragraph`-family styles by id.
     pub table: StyleTable,
     /// `w:numId` → is the list numbered (ordered) rather than bulleted?
     pub num_ordered: HashMap<String, bool>,
@@ -232,11 +223,9 @@ fn heading_from_name(id: &str, name: Option<&str>) -> (bool, Option<i64>) {
     (false, None)
 }
 
-/// Properties collected for the `<w:style>` being parsed.
 #[derive(Default)]
 struct StyleAccum {
     id: Option<String>,
-    /// `w:type`: `paragraph`, `character`, ….
     kind: Option<String>,
     display_name: Option<String>,
     parent: Option<String>,
@@ -255,7 +244,6 @@ struct StyleAccum {
 }
 
 impl StyleAccum {
-    /// A fresh accumulator for `<w:style>` element `e`.
     fn begin(e: &BytesStart) -> Self {
         Self {
             id: attr_val(e, b"w:styleId"),
@@ -264,7 +252,6 @@ impl StyleAccum {
         }
     }
 
-    /// Apply one property element (works for both Empty and Start forms).
     #[allow(
         clippy::similar_names,
         reason = "in_ppr/in_rpr mirror the OOXML element names w:pPr (paragraph properties) and w:rPr (run properties) verbatim"
@@ -279,7 +266,6 @@ impl StyleAccum {
                     .and_then(|v| v.parse::<i64>().ok())
                     .map(|n| n.saturating_add(1));
             }
-            // Paragraph spacing (twips) → px space_before/space_after; an auto-rule `w:line` → the unitless line_spacing multiple.
             b"w:spacing" if in_ppr => {
                 if let Some(v) = attr_val(e, b"w:before") {
                     self.space_before = twips_to_px(&v);
@@ -291,7 +277,6 @@ impl StyleAccum {
                     self.line_spacing = Some(ls);
                 }
             }
-            // Left indent (twips, `w:left`/`w:start`) → px indent.
             b"w:ind" if in_ppr => {
                 if let Some(v) = attr_val(e, b"w:left").or_else(|| attr_val(e, b"w:start")) {
                     self.indent = twips_to_px(&v);
@@ -421,7 +406,6 @@ pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
     };
     let mut reader = Reader::from_str(s);
 
-    // abstractNumId → its level-0 numbering, and which numId maps to which abstractNum.
     let mut abstract_def: HashMap<String, NumDef> = HashMap::new();
     let mut num_to_abstract: HashMap<String, String> = HashMap::new();
 
@@ -530,7 +514,6 @@ mod tests {
             );
         }
         {
-            // No styles.xml registered, but "Heading2" is a recognised id.
             let reg = StyleRegistry::default();
             assert_eq!(reg.heading_level("Heading2"), Some(2));
             assert_eq!(reg.heading_level("Normal"), None);

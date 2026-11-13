@@ -83,7 +83,7 @@ pub fn look(label: String) -> ActionSpec {
     let spec = ActionSpec::typed_operation(
         "look",
         label,
-        "See the window as a picture",
+        crate::i18n::t("desk-look-window-action"),
         OperationKind::View,
         LOOK,
         Vec::new(),
@@ -93,10 +93,7 @@ pub fn look(label: String) -> ActionSpec {
         },
     )
     .of_kind(ActionKind::Read)
-    .with_description(
-        "See a window this desktop does not run as it shows now: answers with the picture, \
-         kept as content of the workspace the window stands in.",
-    )
+    .with_description(crate::i18n::t("desk-look-window-detail"))
     .for_audience(Audience::Agents);
     result(spec)
 }
@@ -108,7 +105,7 @@ pub fn read(label: String) -> ActionSpec {
     let spec = ActionSpec::typed_operation(
         "read",
         label,
-        "What the window calls itself",
+        crate::i18n::t("desk-read-window-action"),
         OperationKind::View,
         READ,
         Vec::new(),
@@ -118,10 +115,7 @@ pub fn read(label: String) -> ActionSpec {
         },
     )
     .of_kind(ActionKind::Read)
-    .with_description(
-        "What a window this desktop does not run says of itself: its title and the app it \
-         belongs to.",
-    )
+    .with_description(crate::i18n::t("desk-read-window-detail"))
     .for_audience(Audience::Agents);
     result(spec)
 }

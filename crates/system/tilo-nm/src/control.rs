@@ -1,12 +1,6 @@
 //! Reading and changing what network settings shows: devices, access
 //! points, active connections, radios, saved profiles, and bringing
 //! connections up and down.
-//!
-//! Every change goes to `NetworkManager` as a method call, so polkit decides
-//! as it does for any other client. A secret a connection needs is handed
-//! over in the call that needs it or through a secret agent this process
-//! registers for that one activation ([`NmClient::activate_with_secrets`]);
-//! it is never written into argv, a file or a log.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -27,26 +21,20 @@ use crate::model::{
 };
 use crate::settings::{IpFamily, Setting, Settings};
 
-/// Where the saved profiles live.
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const WIRED_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wired";
 const ACCESS_POINT_INTERFACE: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const AGENT_MANAGER_PATH: &str = "/org/freedesktop/NetworkManager/AgentManager";
 const AGENT_MANAGER_INTERFACE: &str = "org.freedesktop.NetworkManager.AgentManager";
-/// Where `NetworkManager` calls a secret agent.
 const AGENT_PATH: &str = "/org/freedesktop/NetworkManager/SecretAgent";
 
-/// A saved connection profile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
-    /// Its object.
     pub path: String,
     pub settings: Settings,
-    /// The file it is kept in; empty for one kept in memory.
     pub filename: String,
 }
 
-/// No object: `/`.
 fn none() -> OwnedObjectPath {
     OwnedObjectPath::default()
 }
@@ -55,7 +43,6 @@ fn object(path: &str) -> Result<OwnedObjectPath, NmError> {
     OwnedObjectPath::try_from(path).map_err(|error| NmError::Bus(error.into()))
 }
 
-/// An object property, `None` for `/`.
 fn object_of(path: &OwnedObjectPath) -> Option<String> {
     (path.as_str() != "/").then(|| path.as_str().to_owned())
 }
@@ -587,7 +574,6 @@ impl NmClient {
     }
 }
 
-/// Give `settings` a `connection.uuid` when it has none; the uuid.
 fn ensure_uuid(settings: &mut Settings) -> String {
     let uuid = settings.uuid();
     if !uuid.is_empty() {
@@ -608,7 +594,6 @@ async fn all(connection: &Connection, path: &str, interface: &str) -> Result<Set
         .map_err(NmError::of_call)
 }
 
-/// One property of `all`, if it is there and of type `T`.
 fn property<T: TryFrom<OwnedValue>>(all: &Setting, name: &str) -> Option<T> {
     T::try_from(all.get(name)?.clone()).ok()
 }
@@ -679,7 +664,6 @@ async fn read_profile(connection: &Connection, path: &str) -> Result<Profile, Nm
     })
 }
 
-/// Answers `NetworkManager`'s request for one profile's unsaved secrets.
 struct SecretAgent {
     profile: String,
     secrets: HashMap<String, HashMap<String, Zeroizing<String>>>,

@@ -66,8 +66,6 @@ fn sources() -> MemoryHost {
     host
 }
 
-// find -exec, -execdir, -ok, -delete
-
 #[test]
 fn find_exec_runs_a_command_per_name() {
     let host = sources();
@@ -78,7 +76,6 @@ fn find_exec_runs_a_command_per_name() {
         "{}",
         r.err
     );
-    // `{}` inside an argument is the name too.
     let r = run_on(&host, r"find src -name a.rs -exec echo x{}y \;");
     assert_eq!(r.out, "xsrc/a.rsy\n", "{}", r.err);
 }
@@ -101,7 +98,6 @@ fn find_exec_is_a_test_whose_truth_is_the_status() {
         r"find src -name '*.rs' ! -exec grep -q foo {} \; -print",
     );
     assert_eq!(r.out, "src/b.rs\n", "{}", r.err);
-    // A failing `;` command does not change find's status.
     let r = run_on(&host, r"find src -exec false \;");
     assert_eq!(r.status, 0, "{}", r.err);
 }
@@ -109,7 +105,6 @@ fn find_exec_is_a_test_whose_truth_is_the_status() {
 #[test]
 fn find_exec_plus_runs_grep_once_with_every_name() {
     let host = sources();
-    // grep names the file only when it was given more than one: one run.
     let r = run_on(&host, "find src -name '*.rs' -exec grep foo {} +");
     assert_eq!(
         (r.out.as_str(), r.status),
@@ -121,10 +116,8 @@ fn find_exec_plus_runs_grep_once_with_every_name() {
     assert_eq!(r.out, "src/a.rs\nsrc/c.rs\n", "{}", r.err);
     let r = run_on(&host, "find src -name '*.rs' -exec echo {} +");
     assert_eq!(r.out, "src/a.rs src/b.rs src/c.rs\n", "{}", r.err);
-    // A batch that fails makes find's status 1, as GNU's.
     let r = run_on(&host, "find src -name '*.rs' -exec grep -q nothing {} +");
     assert_eq!(r.status, 1, "{}", r.err);
-    // `+` that does not follow `{}` is an argument.
     let r = run_on(&host, r"find src -name a.rs -exec echo + {} \;");
     assert_eq!(r.out, "+ src/a.rs\n", "{}", r.err);
     let r = run_on(&host, "find src -exec echo {} {} +");
@@ -206,8 +199,6 @@ fn a_dispatched_file_action_carries_the_run() {
     assert!(host.exists("/home/me/new.txt") && host.exists("/home/me/other.txt"));
 }
 
-// xargs
-
 #[test]
 fn xargs_builds_command_lines_from_its_input() {
     let host = sources();
@@ -219,7 +210,6 @@ fn xargs_builds_command_lines_from_its_input() {
     assert_eq!(r.out, "a b\nc\n", "{}", r.err);
     let r = run_on(&host, "printf 'a b\\nc d e\\n' | xargs -L 1 echo");
     assert_eq!(r.out, "a b\nc d e\n", "{}", r.err);
-    // Quotes and backslashes, as GNU reads them.
     let r = run_on(
         &host,
         r#"printf '%s\n' "'a b' \"c d\" e\\ f" | xargs -n 1 echo"#,
@@ -265,7 +255,6 @@ fn xargs_exit_statuses_are_gnus() {
     assert_eq!(r.status, 123, "{}", r.err);
     let r = run_on(&host, "printf 'a\\nb\\n' | xargs -n 1 nosuchcommand");
     assert_eq!(r.status, 127, "{}", r.err);
-    // It stops at the first command it cannot find.
     assert_eq!(r.err.matches("nosuchcommand").count(), 1, "{}", r.err);
     let r = run_on(&host, "printf \"'a\\n\" | xargs echo");
     assert_eq!(r.status, 1);
@@ -281,7 +270,6 @@ fn xargs_in_parallel_gives_the_same_lines() {
     assert_eq!(parallel.status, 0, "{}", parallel.err);
     assert_eq!(serial.out.lines().count(), 67);
     assert_eq!(serial.out, parallel.out);
-    // Every line is one command's whole output.
     for line in parallel.out.lines() {
         let n = line.split(' ').count();
         assert!(n == 3 || n == 2, "{line}");
@@ -312,8 +300,6 @@ fn a_pipeline_mixes_dispatching_commands_and_built_ins() {
     assert_eq!(r.out.trim(), "2", "{}", r.err);
 }
 
-// env, timeout, nice, nohup
-
 #[test]
 fn env_runs_its_command_in_the_changed_environment() {
     let host = sources();
@@ -323,20 +309,17 @@ fn env_runs_its_command_in_the_changed_environment() {
     assert_eq!((r.out.as_str(), r.status), ("", 1), "{}", r.err);
     let r = run_on(&host, "env -i A=b printenv");
     assert_eq!(r.out, "A=b\n", "{}", r.err);
-    // The shell's own variables stay as they were.
     let r = run_on(
         &host,
         "env FOO=bar true; echo \"${FOO-unset}\"; printenv HOME",
     );
     assert_eq!(r.out, "unset\n/home/me\n", "{}", r.err);
-    // A variable the shell does not export is not in the environment.
     let r = run_on(&host, "Y=2; env printenv Y; echo $?");
     assert_eq!(r.out, "1\n", "{}", r.err);
     let r = run_on(&host, "env -C src ls");
     assert_eq!(r.out, "a.rs\nb.rs\nc.rs\nnotes.md\n", "{}", r.err);
     let r = run_on(&host, "env nosuchcommand");
     assert_eq!(r.status, 127, "{}", r.err);
-    // With no command it still prints the environment.
     let r = run_on(&host, "env -i A=1 B=2");
     assert_eq!(r.out, "A=1\nB=2\n", "{}", r.err);
 }

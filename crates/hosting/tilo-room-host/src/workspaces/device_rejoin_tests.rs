@@ -9,17 +9,14 @@ use super::tests::{governor, signed_pre_admission, test_host};
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-/// Ask a pre-admitted join of `device` under `device_cert` with a fresh
-/// pre-admission for its person, as a browser coming through the door does.
+/// Ask a pre-admitted join of `device_cert` with a fresh pre-admission for its
+/// person, as a browser coming through the door does.
 async fn pre_admitted_join(
     workspaces: &Workspaces,
     cert: &DeviceCert,
     workspace: &str,
-    device: &SigningKey,
     device_cert: DeviceCert,
 ) -> tilo_relay_protocol::workspaces::JoinReply {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
     let token: [u8; 8] = rand::random();
     let issued = workspaces
         .pre_admit(
@@ -33,24 +30,14 @@ async fn pre_admitted_join(
         )
         .await
         .unwrap();
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert,
-            request_id: rand::random(),
-        })
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
     workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: "Returning".into(),
-            token: token.to_vec(),
-        })
+        .admit_proven(
+            issued.signed_invitation,
+            device_cert,
+            rand::random(),
+            "Returning",
+            Some(token.as_slice()),
+        )
         .await
 }
 
@@ -88,7 +75,6 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        &device,
         certify(&device, 1, DeviceCapabilities::member()),
     )
     .await;
@@ -100,7 +86,6 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        &device,
         certify(&device, 2, DeviceCapabilities::primary()),
     )
     .await;
@@ -114,7 +99,6 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        &device,
         certify(&device, 3, DeviceCapabilities::member()),
     )
     .await;
@@ -125,7 +109,6 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        &device,
         certify(&device, 2, DeviceCapabilities::member()),
     )
     .await;
@@ -139,7 +122,6 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        &renewed,
         certify(&renewed, 4, DeviceCapabilities::member()),
     )
     .await;

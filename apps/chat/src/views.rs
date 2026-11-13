@@ -57,11 +57,6 @@ pub struct Channel {
     /// Its messages, oldest first, each with its body, reactions and what it answers.
     #[serde(default)]
     pub messages: Vec<Message>,
-    /// What the person has put on the draft they are writing, that they did not type: the
-    /// resource a drop on the composer attached. It is the composer's, not a message's, so it
-    /// stands before the messages and is never part of them until Send posts it.
-    #[serde(default)]
-    pub draft: Option<Attachment>,
 }
 
 /// Someone who speaks in a channel, as their name shows them.
@@ -92,11 +87,15 @@ pub struct Names {
     pub me: String,
     /// Each agent of the workspace, by its id (the part after `agent:`), as the workspace
     /// keeps its name.
-    pub agents: std::collections::BTreeMap<String, String>,
+    pub agents: crate::projection::AgentNames,
 }
 
 /// One message of a channel, as its page shows it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the page's message carries independent facts the row draws (edited, pinned, retry, sending), each read off the record on its own"
+)]
 pub struct Message {
     /// Its id, after `chat.workspace/messages/`.
     #[serde(default)]
@@ -142,6 +141,10 @@ pub struct Message {
     /// attempt the agent answers in now. A reply is of the attempt its question is in.
     #[serde(default)]
     pub attempts: u32,
+    /// Sent from here and not written yet: the conversation's messages are on their way to this
+    /// device, and it is written once they are here. Its byline says so in place of its time.
+    #[serde(default)]
+    pub sending: bool,
 }
 
 /// What an agent recorded of its work on a reply, as the page shows it.
@@ -185,13 +188,13 @@ impl Work {
 
     /// What happened, in one line, when the work failed.
     #[must_use]
-    pub fn happened(&self) -> &'static str {
-        match self.state.as_str() {
-            "provider_cancelled" => "Stopped",
-            "provider_truncated" => "The answer was interrupted",
-            "refused" | "provider_refused" => "Could not do this",
-            _ => "Could not finish",
-        }
+    pub fn happened(&self) -> String {
+        crate::i18n::t(match self.state.as_str() {
+            "provider_cancelled" => "chat-agent-cancelled",
+            "provider_truncated" => "chat-agent-truncated",
+            "refused" | "provider_refused" => "chat-agent-refused",
+            _ => "chat-agent-failed",
+        })
     }
 }
 
@@ -317,9 +320,22 @@ impl Channel {
     ) -> Self {
         let channel_id = Id::from_raw(id);
         let channel = chat.conversation(&channel_id);
+        // What software wrote under, as its actions pinned it: the name it went by and the
+        // person it acted for, which keep naming it after it left.
+        let acting: std::collections::HashMap<&str, &sdk::tilo_resource::Acting> = rows
+            .iter()
+            .filter_map(|row| Some((row.author.as_str(), row.acting.as_ref()?)))
+            .collect();
         let mut people: Vec<Person> = Vec::new();
         for row in rows {
-            Self::named(&mut people, chat, names, me, &row.author);
+            Self::named(
+                &mut people,
+                chat,
+                names,
+                me,
+                &row.author,
+                acting.get(row.author.as_str()).copied(),
+            );
         }
         let messages = rows
             .iter()
@@ -331,6 +347,7 @@ impl Channel {
                 text: row.text.clone(),
                 edited: row.edited,
                 attempts: row.attempts,
+                sending: row.sending,
                 reply_to: row.parent.as_deref().and_then(|parent| {
                     // A reply that quotes a span of the message it answers shows those words,
                     // never the whole message's start: the person chose them, and the reply
@@ -394,7 +411,7 @@ impl Channel {
                 Some(channel) if channel.is_channel() && !channel.name.trim().is_empty() => {
                     channel.name.trim().to_owned()
                 }
-                _ => chat.display_names(&channel_id, Some(me)),
+                _ => chat.display_names(&channel_id, Some(me), &names.agents),
             },
             topic: channel
                 .as_ref()
@@ -404,33 +421,51 @@ impl Channel {
                 .is_some_and(|c| c.kind == crate::model::ChannelKind::Voice),
             people,
             messages,
-            draft: None,
         }
     }
 
     /// Add the person `author` to `people` when not already there, as they are named here: the
-    /// record's roster first, then what the reading's [`Names`] say — the reader's own name,
-    /// or the workspace's name for an agent — and otherwise Chat's honest placeholder for
-    /// someone it cannot name. Never their routing id.
+    /// record's roster first, then what the reading's [`Names`] say — the reader's own name, or
+    /// the workspace's name for an agent — and otherwise Chat's honest placeholder for someone
+    /// it cannot name. Never their routing id. Software that wrote for a person (`acting`) is
+    /// named with them, as Chat's window names its authors: "Helper for Ada", after it left too.
     fn named(
         people: &mut Vec<Person>,
         chat: &crate::record::Chat,
         names: &Names,
         me: &str,
         author: &str,
+        acting: Option<&sdk::tilo_resource::Acting>,
     ) {
         if people.iter().any(|held| held.id == author) {
             return;
         }
-        let found = chat.people.iter().find(|person| person.id.0 == author);
-        let agent = found.map_or_else(|| is_agent(author), |person| person.agent);
-        let name = found
+        let roster = chat.people.iter().find(|person| person.id.0 == author);
+        let agent = roster.map_or_else(|| is_agent(author), |person| person.agent);
+        let shown = roster
             .map(|person| person.name.trim().to_owned())
             .filter(|name| !name.is_empty())
-            .or_else(|| agent_name(chat, names, author))
+            .or_else(|| agent_name(chat, names, author, acting))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| crate::identity::unnamed_label(author));
+        let name = match acting.filter(|_| agent) {
+            Some(acting) => crate::identity::acting_label(
+                &shown,
+                acting.person.as_ref().map(|person| person.0.as_str()),
+                |person| {
+                    chat.people
+                        .iter()
+                        .find(|held| held.id.0 == person)
+                        .map_or_else(
+                            || crate::identity::unnamed_label(person),
+                            |held| held.name.trim().to_owned(),
+                        )
+                },
+                |person| person == me,
+            ),
+            None => shown,
+        };
         people.push(Person {
             id: author.to_owned(),
             name,
@@ -517,34 +552,42 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// Whether `author` is an agent rather than a person: a participant spelled `agent:<id>`, or an
-/// agent task spelled `agent-task:<task>`.
-fn is_agent(author: &str) -> bool {
+/// Whether `author` is an agent rather than a person: one of the workspace's own (`agent:<id>`,
+/// the actor its identity record names) or a run of a task (`agent-task:<task>`). An agent is a
+/// collaborator and reads as one, in the byline and its face, wherever its name is shown.
+pub(crate) fn is_agent(author: &str) -> bool {
     author.starts_with("agent:") || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-}
-
-/// The id an agent author is named by: the part after `agent:`.
-fn agent_id(author: &str) -> Option<&str> {
-    author.strip_prefix("agent:")
 }
 
 /// The name an agent author shows, as the record or the workspace names it: the name the
 /// workspace keeps for it (Chat's own `agent_names`, or the workspace agents record the reading
-/// carries), and otherwise what Chat calls an agent it has not been told the name of. An author
-/// that is not an agent has no agent's name.
-fn agent_name(chat: &crate::record::Chat, names: &Names, author: &str) -> Option<String> {
+/// carries), else the name it went by where it wrote, and otherwise what Chat calls an agent it
+/// has not been told the name of. An author that is not an agent has no agent's name.
+fn agent_name(
+    chat: &crate::record::Chat,
+    names: &Names,
+    author: &str,
+    acting: Option<&sdk::tilo_resource::Acting>,
+) -> Option<String> {
     if !is_agent(author) {
         return None;
     }
-    chat.agent_names
-        .get(author)
-        .or_else(|| agent_id(author).and_then(|id| names.agents.get(id)))
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .or_else(|| {
-            crate::i18n::ensure();
-            Some(crate::i18n::t("chat-agent-kind"))
-        })
+    // Every name the record, the workspace or what it wrote under keeps for it, the first that
+    // names it.
+    let called = [
+        chat.agent_names.get(author).map(|name| name.trim()),
+        author
+            .strip_prefix("agent:")
+            .and_then(|id| names.agents.get(id))
+            .map(|name| name.trim()),
+        acting
+            .and_then(|acting| acting.name.as_ref())
+            .map(|name| name.0.trim()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|name| !name.is_empty());
+    Some(called.map_or_else(|| crate::i18n::t("chat-agent-kind"), str::to_owned))
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -665,9 +708,9 @@ fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
             .into(),
     ];
     let caption = if c.voice {
-        "Voice channel"
+        crate::i18n::t("chat-voice-channel")
     } else {
-        c.topic.trim()
+        c.topic.trim().to_owned()
     };
     if !caption.is_empty() {
         facts.push(
@@ -684,7 +727,7 @@ fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
 ///
 /// A transcript's rows are the ones every conversation draws: a day's divider over the first
 /// message of a local day, and a run of one person's consecutive messages under their avatar and
-/// name once, the time beside it. The day is the toolkit's (`ui.DayDivider`), the avatar theirs
+/// name once, the time beside it. The day is the toolkit's (`ui.SectionDivider`), the avatar
 /// (`ui.Avatar`), the clock the person's (`ui.Time`, read in their language and zone), and the
 /// grouping the run's own rule ([`runs`]): a message continues the run above it when one person
 /// wrote it within [`RUN_WINDOW_SECS`] of the one before, on the same local day.
@@ -722,7 +765,9 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
         if let Some(label) = day {
             flush(&mut run, &mut rows);
             rows.push(
-                ui::DayDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone()).into(),
+                ui::SectionDividerBuilder::new(&cx.key(format!("day-{index}")))
+                    .label(label.clone())
+                    .into(),
             );
         }
         if !*continues {
@@ -825,18 +870,26 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
                 author_label(author, &message.author),
             )
             .role(ui::TextRole::Label)
+            // A long name ends in an ellipsis in a narrow window; the time beside it stays whole.
+            .truncate(true)
             .into(),
         ];
-        head.push(
-            ui::TimeBuilder::new(&cx.key(format!("when-{}", message.id)), moment(message.ts))
+        let when = cx.key(format!("when-{}", message.id));
+        head.push(if message.sending {
+            ui::TextBuilder::new(&when, crate::i18n::t("chat-message-sending"))
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into()
+        } else {
+            ui::TimeBuilder::new(&when, moment(message.ts))
                 .role(ui::TextRole::Caption)
                 .secondary(true)
                 .past(true)
                 // A message's line says when it was sent, by the clock the person reads
                 // ("5:16 AM"); the day it falls on is the divider over its run.
                 .clock(true)
-                .into(),
-        );
+                .into()
+        });
         vec![ui::row(
             &cx.key(format!("by-{}", message.id)),
             Gap::Tight,
@@ -876,29 +929,6 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
     }
 }
 
-/// What a message says, as the toolkit's selectable text: a read-only field the person may
-/// select a run of and answer on just those words.
-///
-/// The field holds the message's words, and what the person selects in it settles into the
-/// view's own [`SELECTED`] slot as `<start>:<end>` bytes (or nothing on a collapse). The
-/// composer reads that slot when it posts a reply, so answering a message quotes the run the
-/// person chose — never the whole message's start.
-fn message_words(message: &Message, cx: &ViewCx) -> Node {
-    let field: Node = ui::TextInputBuilder::new(&cx.key(format!("text-{}", message.id)))
-        .lines(1_i64)
-        .into();
-    let field = ui::put(field, "text", Value::Text(message.text.trim().to_owned()));
-    // What the person selected settles in the view's own slot, where the composer reads it.
-    let selected = cx.set(&field, "select", SELECTED);
-    node::on(field, "select", selected)
-}
-
-/// The name the run selected in the message the composer answers is held under: a message's
-/// words settle it as `<start>:<end>` bytes, and the composer hands it to `post` as the run the
-/// reply quotes. Empty when nothing is selected, so a reply with no run answers the whole
-/// message, as it always has.
-const SELECTED: &str = "Selected";
-
 /// What a message says and carries, in the order a conversation reads it: the message it answers
 /// (a quote), that it is pinned, its words, its attachments, that it was edited, and the
 /// reactions on it — one column under the byline.
@@ -928,7 +958,11 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
         );
     }
     if !message.text.trim().is_empty() {
-        body.push(message_words(message, cx));
+        body.push(
+            ui::TextBuilder::new(&cx.key(format!("text-{}", message.id)), message.text.trim())
+                .role(ui::TextRole::Body)
+                .into(),
+        );
     }
     for (index, attachment) in message.attachments.iter().enumerate() {
         body.push(attachment_row(
@@ -957,7 +991,7 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     {
         // A turn that ended without an answer the person can read says what happened where it
         // happened, with a Retry that asks the agent again on the same message.
-        body.push(failed_row(c, message, work, cx));
+        body.push(failed_row(message, work, cx));
     }
     ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body)
 }
@@ -970,7 +1004,7 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
 /// the turn ends.
 fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let label = if work.detail.trim().is_empty() {
-        "Writing…".to_owned()
+        crate::i18n::CATALOG.t("chat-writing")
     } else {
         work.detail.trim().to_owned()
     };
@@ -1001,7 +1035,7 @@ fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// what to do next. The run's working record (the transport's error, the partial answer, the
 /// provider's exposed reasoning) is for whoever debugs the failure later, so it sits behind a
 /// disclosure: a person who just wants to read the conversation never meets it.
-fn failed_row(c: &Channel, message: &Message, work: &Work, cx: &ViewCx) -> Node {
+fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let mut banner =
         ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
             .kind(ui::BannerKind::Error)
@@ -1011,22 +1045,15 @@ fn failed_row(c: &Channel, message: &Message, work: &Work, cx: &ViewCx) -> Node 
         banner = banner.message(reason);
     }
     if message.retry {
-        banner = banner.action("Retry");
+        banner = banner.action(crate::i18n::t("chat-retry"));
     }
     let banner: Node = banner.into();
     let banner = if let Some(summons) = message.retry_summons.clone() {
-        // The channel's `retry` takes the channel first, then the reply it asks again and the
-        // message that reply answered, exactly as the same channel's `post` takes the channel
-        // before the text: the resource is the subject, never the first argument.
         let fired = cx.action_with(
             &banner,
             "act",
             "retry",
-            vec![
-                Arg::text(c.id.clone()),
-                Arg::text(message.id.clone()),
-                Arg::text(summons),
-            ],
+            vec![Arg::text(message.id.clone()), Arg::text(summons)],
         );
         node::on(banner, "act", fired)
     } else {
@@ -1038,9 +1065,11 @@ fn failed_row(c: &Channel, message: &Message, work: &Work, cx: &ViewCx) -> Node 
     }
     // The technical record closes behind its own row: a disclosure a person opens only when they
     // want to know what went wrong under the hood, never the row's own words.
-    let details: Node =
-        ui::DisclosureRowBuilder::new(&cx.key(format!("failed-record-{}", message.id)), "Details")
-            .into();
+    let details: Node = ui::DisclosureRowBuilder::new(
+        &cx.key(format!("failed-record-{}", message.id)),
+        crate::i18n::t("chat-failure-details"),
+    )
+    .into();
     let details = node::with(
         details,
         vec![
@@ -1064,11 +1093,9 @@ fn failed_row(c: &Channel, message: &Message, work: &Work, cx: &ViewCx) -> Node 
 /// edge: answer it.
 ///
 /// The reply is the view's own state ([`REPLYING`]): a press names the message the composer
-/// answers, which the box at the foot reads, and the next message posted is its reply. A run of
-/// the message selected in its words ([`select_state`]) is what the reply answers: the composer
-/// carries the run, so the reply's quote shows the chosen words and opens on them.
-/// The message's other verbs (pin, react) are what its type offers on its own row, which a place
-/// of the message draws; the page does not repeat them here.
+/// answers, which the box at the foot reads, and the next message posted is its reply. The
+/// message's other verbs (pin, react) are what its type offers on its own row, which a place of
+/// the message draws; the page does not repeat them here.
 fn hover_actions(_c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     let reply: Node = ui::ButtonBuilder::new(&cx.key(format!("reply-{}", message.id)), "Reply")
         .icon("reply")
@@ -1096,12 +1123,12 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     let excerpt = if quote.excerpt.trim().is_empty() {
         // A message the page does not hold (one from an earlier part of the chat) still says
         // it quotes one, so the reply does not read as answering nothing.
-        "A message above".to_owned()
+        crate::i18n::t("chat-quote-earlier")
     } else {
         quote.excerpt.trim().to_owned()
     };
     let shown: Node = ui::QuoteBuilder::new(key, &excerpt)
-        .caption("In reply to")
+        .caption(crate::i18n::t("chat-quote-caption"))
         .author(principal(author, &quote.author))
         .into();
     // A quote of a message the page holds names it: pressing the quote shows the message. A
@@ -1188,11 +1215,14 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 /// The foot of the conversation: the box a message is typed in, and the button that sends it.
 ///
 /// The field is the composer's own draft, and what it holds is the `text` argument of Chat's own
-/// `post` action: Enter sends what the field carries, and the button sends the draft the field is
-/// bound to, so a press and an agent's step take the one path to the record.
+/// `send`: Enter sends what the field carries, and the button sends the draft the field is bound
+/// to, so a press, an agent's send and the desk's send-to box take the one path to the record.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
-        .placeholder(format!("Message #{}", c.name))
+        .placeholder(crate::i18n::t_args(
+            "chat-channel-composer-placeholder",
+            &[("channel", c.name.as_str().into())],
+        ))
         .lines(1_i64)
         .entry(true)
         .into();
@@ -1200,12 +1230,12 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     // once it submits, so the next message starts from an empty box.
     let input = node::bind(field, ViewCx::bind_state(DRAFT));
     // Enter hands the action the text the field carries as it submits.
-    let input = post(cx, input, "submit", &c.id, Arg::Event);
+    let input = send(cx, input, "submit", c, Arg::Event);
     // The field takes everything the buttons leave, so the two read as one full-width control.
     let input = ui::fill(input);
     // The attach button: raises the system's own file chooser for the conversation (Chat's
     // `attach-file` effect with no path), whose files become the message's attachments.
-    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), "Attach")
+    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), crate::i18n::t("chat-attach"))
         .icon("paperclip")
         .icon_only(true)
         .role(ui::ButtonRole::Plain)
@@ -1213,48 +1243,12 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let fired = cx.action(&attach, "press", "attach-file");
     let attach = node::on(attach, "press", fired);
     // The button carries no text of its own: it sends the draft the field is bound to.
-    let send: Node = ui::ButtonBuilder::new(&cx.key("send"), "Send")
+    let send: Node = ui::ButtonBuilder::new(&cx.key("send"), crate::i18n::t("chat-send"))
         .icon("send")
         .icon_only(true)
         .into();
-    let send = post(cx, send, "press", &c.id, Arg::state(DRAFT));
-    let row = ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send]);
-    // What a drop on the composer takes: a resource dragged from the canvas, a search hit, a
-    // row of another view or a message's attachment. The drop runs Chat's `attach` on the
-    // channel with the resource the drag carried, which appends it to the draft: the chip
-    // `draft_attachment` draws stands over the row, and Send posts it with the words.
-    let body: Node = ui::column(&cx.key("composer-column"), Gap::Tight, {
-        let mut parts = Vec::new();
-        if let Some(held) = draft_attachment(c, cx) {
-            parts.push(held);
-        }
-        parts.push(row);
-        parts
-    });
-    let target: Node = ui::DropTargetBuilder::new(&cx.key("composer-drop")).into();
-    let attached = cx.action_with(
-        &target,
-        "drop",
-        "attach",
-        vec![Arg::text(&c.id), Arg::Event],
-    );
-    let target = node::on(target, "drop", attached);
-    node::slot(target, "content", vec![body])
-}
-
-/// What a drop on the composer attached to the draft, as the chip that shows it: the resource's
-/// name, and a button that takes it off the draft again.
-///
-/// The draft is the reading's, not the view's: a drop runs the channel's own `attach`, the
-/// reading carries what it attached, and the next read draws the chip. Send posts it with the
-/// words, and the reading that follows has none of it — the chip goes as the message arrives.
-fn draft_attachment(c: &Channel, cx: &ViewCx) -> Option<Node> {
-    let attached = c.draft.as_ref()?;
-    let chip: Node = ui::ChipBuilder::new(&cx.key("draft-attachment"), &attached.label)
-        .icon("paperclip")
-        .into();
-    let removed = cx.action(&chip, "remove", "detach");
-    Some(node::on(chip, "remove", removed))
+    let send = self::send(cx, send, "press", c, Arg::state(DRAFT));
+    ui::row(&cx.key("composer"), Gap::Tight, vec![attach, input, send])
 }
 
 /// The name the composer's draft is held under in the view's own state.
@@ -1281,26 +1275,28 @@ fn drag_source(key: &str, node: Node, target: &ResourceRef, title: &str) -> Node
 /// button sets it, and the composer reads it as the next message's parent.
 const REPLYING: &str = "Replying";
 
-/// `node` with its event `event` running the chat's `post` of channel `channel`, with the text
-/// `text`: what the composer's field and its button both do.
-///
-/// It answers the message the person is replying to ([`REPLYING`]) and quotes the run selected
-/// in it ([`SELECTED`]), both read at the press. Neither is set for a plain message, and a
-/// reply with nothing selected answers the whole message: a `post` given nothing for either is
-/// the message it always was.
-fn post(cx: &ViewCx, node: Node, event: &str, channel: &str, text: Arg) -> Node {
+/// `node` with its event `event` running Chat's `send` to the conversation `c`, carrying nothing
+/// but the text `text`: what the composer's field and its button both do.
+fn send(cx: &ViewCx, node: Node, event: &str, c: &Channel, text: Arg) -> Node {
     let fired = cx.action_with(
         &node,
         event,
-        "post",
-        vec![
-            Arg::text(channel),
-            text,
-            Arg::state(REPLYING),
-            Arg::state(SELECTED),
-        ],
+        "send",
+        vec![to(c), Value::List(Vec::new()).into(), text],
     );
     node::on(node, event, fired)
+}
+
+/// Who a message sent from the conversation `c`'s own box goes to: that conversation, as Chat's
+/// `send` takes a recipient.
+fn to(c: &Channel) -> Arg {
+    let field = |name: &str, value: &str| (Value::Text(name.into()), Value::Text(value.into()));
+    let conversation = [
+        field("kind", "conversation"),
+        field("id", &c.id),
+        field("name", &c.name),
+    ];
+    Value::List(vec![Value::Map(conversation.into())]).into()
 }
 
 /// What a message's byline says of who wrote it: their name, or their id when the channel does
@@ -1315,15 +1311,9 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
 /// A person as a component draws them: their name, or Chat's honest placeholder for someone it
 /// cannot name, never their id.
 fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
-    match person {
-        Some(person) => tilo_view::Principal {
-            id: person.id.clone(),
-            name: person.name.trim().to_owned(),
-        },
-        None => tilo_view::Principal {
-            id: id.to_owned(),
-            name: crate::identity::unnamed_label(id),
-        },
+    tilo_view::Principal {
+        id: person.map_or_else(|| id.to_owned(), |person| person.id.clone()),
+        name: author_label(person, id),
     }
 }
 
@@ -1480,8 +1470,10 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
+            sending: false,
         }
     }
 
@@ -1593,6 +1585,34 @@ mod tests {
         assert!(
             !shown.iter().any(|name| name.contains("agent:")),
             "no byline shows the agent's id: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_departed_agents_answer_is_named_with_the_person_it_wrote_for() {
+        // Ada's agent answered and left: neither the record nor the workspace names it any more,
+        // and its answer keeps what its send pinned — the name it went by and the person it
+        // acted for — so Bob reads it named with her, as Chat's own window names it.
+        const ADA: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
+        const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
+        let mut chat = crate::record::Chat::default();
+        chat.people.push(crate::record::Person {
+            id: sdk::tilo_resource::Atom(ADA.to_owned()),
+            name: "Ada".to_owned(),
+            ..crate::record::Person::default()
+        });
+        let mut said = row("c_ask", "m_reply", "agent:helper", 1_782_470_460, "Hi");
+        said.acting = Some(sdk::tilo_resource::Acting {
+            name: Some(sdk::tilo_resource::Atom("Helper".to_owned())),
+            person: Some(sdk::tilo_resource::Atom(ADA.to_owned())),
+        });
+        let rows = vec![row("c_ask", "m_ask", ADA, 1_782_470_400, "hello"), said];
+        let channel = Channel::read(&chat, &rows, "c_ask", BOB, &Names::default());
+        let agent = channel.person("agent:helper").expect("the agent is named");
+        assert_eq!(
+            agent.name,
+            sdk::acting_line("Helper", Some("Ada"), false),
+            "the page names the agent with the person it wrote for"
         );
     }
 
@@ -1718,14 +1738,14 @@ mod tests {
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
         passes(&tree);
-        let dividers = keyed(&tree, "ui.DayDivider", "@day-");
+        let dividers = keyed(&tree, "ui.SectionDivider", "@day-");
         assert_eq!(
             dividers.len(),
             2,
             "a divider stands over the first message of each of two days"
         );
         for divider in dividers {
-            let Value::Text(label) = divider.props.get("day").expect("a divider names its day")
+            let Value::Text(label) = divider.props.get("label").expect("a divider names its day")
             else {
                 panic!("a day's label is text");
             };
@@ -1782,102 +1802,9 @@ mod tests {
     }
 
     #[test]
-    fn a_messages_words_are_selectable_and_keep_what_is_selected() {
-        // A message's words are the toolkit's selectable text: a read-only field holding them,
-        // which reports the run someone settles on as the view's own state, so the composer
-        // can answer on exactly those words.
-        let channel = demo_channel();
-        let cx = view_cx(&channel);
-        let tree = page(&channel, &cx);
-        passes(&tree);
-        let said = channel
-            .messages
-            .iter()
-            .find(|message| !message.text.trim().is_empty())
-            .expect("a message says something");
-        let words = keyed(&tree, "ui.TextInput", &format!("@text-{}", said.id))
-            .into_iter()
-            .next()
-            .expect("the message's words are a selectable field");
-        assert_eq!(
-            words.props.get("text"),
-            Some(&Value::Text(said.text.trim().to_owned())),
-            "the field holds the message's words"
-        );
-        assert_eq!(
-            cx.effect(&words.key, "select"),
-            Some(tilo_view::Effect::State {
-                name: "Selected".to_owned(),
-            }),
-            "what is selected settles where the composer reads it"
-        );
-    }
-
-    #[test]
-    fn a_dropped_resource_becomes_a_draft_attachment() {
-        // The composer is a drop target, and what a drop on it runs is the channel's `attach`
-        // with the resource the drag carried. The chip that shows the draft's attachment stands
-        // over the row, drawing the resource's label, with a button that takes it away.
-        let mut channel = demo_channel();
-        // The draft the composer draws is the reading's: a drop on the composer runs the
-        // channel's `attach`, and the next read carries what it attached here.
-        channel.draft = Some(Attachment {
-            kind: "resource".to_owned(),
-            label: "Q3 plan".to_owned(),
-            resource: Some(ResourceRef {
-                id: "notes.pages/page_1".to_owned(),
-                ty: "notes.page".to_owned(),
-            }),
-            ..Attachment::default()
-        });
-        let cx = view_cx(&channel);
-        let tree = page(&channel, &cx);
-        passes(&tree);
-        // The composer's drop target is there, and what it runs on a drop is `attach` with the
-        // channel the composer posts to.
-        let target = keyed(&tree, "ui.DropTarget", "@composer-drop")
-            .into_iter()
-            .next()
-            .expect("the composer is a drop target");
-        assert_eq!(
-            cx.effect(&target.key, "drop"),
-            Some(tilo_view::Effect::Action {
-                action: "attach".to_owned(),
-                args: vec![tilo_view::Arg::text(&channel.id), tilo_view::Arg::Event,],
-            }),
-            "a drop on the composer attaches the resource it carried to the draft"
-        );
-        // The draft's attachment draws as its chip, by the label the drag gave it.
-        let chip = keyed(&tree, "ui.Chip", "@draft-attachment")
-            .into_iter()
-            .next()
-            .expect("the draft's attachment stands as a chip");
-        assert_eq!(
-            chip.props.get("label"),
-            Some(&Value::Text("Q3 plan".to_owned())),
-            "the chip draws the attachment's label"
-        );
-        assert_eq!(
-            cx.effect(&chip.key, "remove"),
-            Some(tilo_view::Effect::Action {
-                action: "detach".to_owned(),
-                args: Vec::new(),
-            }),
-            "the chip's remove takes the attachment off the draft"
-        );
-        // The composer is still the one row: attach, the field and send, under the chip.
-        assert!(
-            walk(&tree).into_iter().any(|node| node.kind == "ui.Button"
-                && node.props.get("label") == Some(&Value::Text("Send".to_owned()))),
-            "the composer still sends"
-        );
-    }
-
-    #[test]
     fn a_messages_attachment_chip_can_be_dragged_out() {
         // A record an attachment holds is a drag source as well as a row: dragging it carries
-        // the resource's address, so a drop target elsewhere — the canvas, a composer — takes
-        // it.
+        // the resource's address, so a drop target elsewhere — the canvas — takes it.
         let mut channel = demo_channel();
         let shared = ResourceRef {
             id: "tube.video:vid_rust_async".to_owned(),
@@ -1922,9 +1849,9 @@ mod tests {
     #[test]
     fn a_resource_attachments_chip_shows_its_title_not_its_id() {
         // A resource the session placed is attached by its published address
-        // (`tl:so.tilo.lang.tasks:root-fjqi4yze`): the chip the draft over the composer draws
-        // and the chip the message draws both say what the resource is called, never the address
-        // the drag carried or a step of it (`root-fjqi4yze`).
+        // (`tl:so.tilo.lang.tasks:root-fjqi4yze`): the chip the message draws says what the
+        // resource is called, never the address the drag carried or a step of it
+        // (`root-fjqi4yze`).
         const ADDRESS: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
         let attached = tilo_reference::Attached::resource(
             tilo_reference::ResourceAt {
@@ -1949,23 +1876,7 @@ mod tests {
             .expect("the chip holds the resource");
         assert_eq!(shown.id, ADDRESS, "the address is what a press places");
         assert_eq!(shown.ty, "tl.so.tilo.lang.tasks.Tasks");
-        // The draft's chip is the message's chip: the same attachment drawn over the composer.
         let mut channel = demo_channel();
-        channel.draft = Some(attachment.clone());
-        let cx = view_cx(&channel);
-        let tree = page(&channel, &cx);
-        passes(&tree);
-        let chip = keyed(&tree, "ui.Chip", "@draft-attachment")
-            .into_iter()
-            .next()
-            .expect("the draft's attachment stands as a chip");
-        assert_eq!(
-            chip.props.get("label"),
-            Some(&Value::Text("Tasks".to_owned())),
-            "the draft's chip says the title"
-        );
-        // And the message the composer sends draws the same label.
-        channel.draft = None;
         channel.messages.push(Message {
             id: "m_dropped".to_owned(),
             author: channel.people[0].id.clone(),
@@ -2004,8 +1915,9 @@ mod tests {
             .find(|node| node.key.contains("@composer"))
             .expect("the composer's row");
         // The composer's row holds an attach button, the field and its send button, in order.
-        let buttons: Vec<&Node> = walk(composer)
-            .into_iter()
+        let buttons: Vec<&Node> = composer
+            .children
+            .iter()
             .filter(|node| node.kind == "ui.Button")
             .collect();
         let labels: Vec<String> = buttons
@@ -2016,16 +1928,21 @@ mod tests {
             })
             .collect();
         assert!(
-            labels.iter().any(|label| label == "Attach"),
+            labels
+                .iter()
+                .any(|label| *label == crate::i18n::t("chat-attach")),
             "the composer offers attach: {labels:?}"
         );
         assert!(
-            labels.iter().any(|label| label == "Send"),
+            labels
+                .iter()
+                .any(|label| *label == crate::i18n::t("chat-send")),
             "the composer offers send: {labels:?}"
         );
         // The field is full width: a `fill` argument asks for the room the buttons leave.
-        let field = walk(composer)
-            .into_iter()
+        let field = composer
+            .children
+            .iter()
             .find(|node| node.kind == "ui.TextInput")
             .expect("the composer's field");
         assert_eq!(
@@ -2036,48 +1953,45 @@ mod tests {
     }
 
     #[test]
-    fn the_composer_posts_the_typed_text_to_the_channel() {
+    fn the_composer_sends_the_typed_text_to_the_conversation() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
         passes(&tree);
         let field = walk(&tree)
             .into_iter()
-            .find(|node| node.kind == "ui.TextInput" && node.key.contains("draft"))
+            .find(|node| node.kind == "ui.TextInput")
             .expect("the composer's field");
         assert_eq!(
             cx.effect(&field.key, "submit"),
             Some(tilo_view::Effect::Action {
-                action: "post".to_owned(),
+                action: "send".to_owned(),
                 args: vec![
-                    tilo_view::Arg::text("c_crit"),
-                    tilo_view::Arg::Event,
-                    tilo_view::Arg::state("Replying"),
-                    tilo_view::Arg::state("Selected"),
+                    to(&channel),
+                    Value::List(Vec::new()).into(),
+                    tilo_view::Arg::Event
                 ],
             }),
-            "the field posts what is typed to the channel, answering the message it answers \
-             and quoting the run chosen in it"
+            "the field sends what is typed to the conversation"
         );
         let send = walk(&tree)
             .into_iter()
             .find(|node| {
                 node.kind == "ui.Button"
-                    && node.props.get("label") == Some(&Value::Text("Send".to_owned()))
+                    && node.props.get("label") == Some(&Value::Text(crate::i18n::t("chat-send")))
             })
             .expect("the composer's send button");
         assert_eq!(
             cx.effect(&send.key, "press"),
             Some(tilo_view::Effect::Action {
-                action: "post".to_owned(),
+                action: "send".to_owned(),
                 args: vec![
-                    tilo_view::Arg::text("c_crit"),
+                    to(&channel),
+                    Value::List(Vec::new()).into(),
                     tilo_view::Arg::state("Composer"),
-                    tilo_view::Arg::state("Replying"),
-                    tilo_view::Arg::state("Selected"),
                 ],
             }),
-            "the send button posts the draft the field holds"
+            "the send button sends the draft the field holds"
         );
     }
 
@@ -2553,9 +2467,9 @@ mod tests {
         // A turn that ended without an answer the person can read leaves a row saying what
         // happened, and a Retry that asks the agent again on the very same message.
         for (state, happened) in [
-            ("provider_failed", "Could not finish"),
-            ("provider_cancelled", "Stopped"),
-            ("refused", "Could not do this"),
+            ("provider_failed", "chat-agent-failed"),
+            ("provider_cancelled", "chat-agent-cancelled"),
+            ("refused", "chat-agent-refused"),
         ] {
             let mut channel = writing_channel(state, "Half an answer");
             if let Some(reply) = channel.messages.last_mut() {
@@ -2575,7 +2489,7 @@ mod tests {
             let props = &rows[0].props;
             assert_eq!(
                 props.get("title"),
-                Some(&Value::Text(happened.to_owned())),
+                Some(&Value::Text(crate::i18n::t(happened))),
                 "the row says what happened ({state})"
             );
             assert_eq!(
@@ -2590,19 +2504,16 @@ mod tests {
             );
             assert_eq!(
                 props.get("action"),
-                Some(&Value::Text("Retry".to_owned())),
+                Some(&Value::Text(crate::i18n::t("chat-retry"))),
                 "the row offers a Retry ({state})"
             );
             assert_eq!(
                 cx.effect(&rows[0].key, "act"),
                 Some(tilo_view::Effect::Action {
                     action: "retry".to_owned(),
-                    // The channel, the reply, and the message it answers: the verb asks the agent
-                    // again on that message, and posts nothing. The channel comes first, exactly
-                    // as the same channel's `post` takes it: the resource is the subject of the
-                    // invocation, never left to the first parameter.
+                    // The reply, and the message it answers: the verb asks the agent again on
+                    // that message, and posts nothing.
                     args: vec![
-                        Arg::text("c_crit"),
                         Arg::text(
                             crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide")
                                 .to_string(),
@@ -2610,7 +2521,7 @@ mod tests {
                         Arg::text("m_asked"),
                     ],
                 }),
-                "Retry is the conversation's own verb, naming the channel it asks in ({state})"
+                "Retry is the conversation's own verb, with the reply it retries ({state})"
             );
             assert!(
                 !has_kind(&tree, "ui.Spinner"),
@@ -2713,7 +2624,7 @@ mod tests {
         let rows: Vec<&Node> = keyed(&tree, "ui.Banner", "@failed-");
         assert_eq!(rows.len(), 1, "the failed attempt still says what happened");
         assert!(
-            rows[0].props.get("action").is_none(),
+            !rows[0].props.contains_key("action"),
             "an earlier attempt offers no Retry: the question is in a later one"
         );
         assert!(
@@ -2765,8 +2676,10 @@ mod tests {
             attachments: Vec::new(),
             pinned: false,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
+            sending: false,
         });
         let chat = workspace.read();
         let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
@@ -2792,6 +2705,39 @@ mod tests {
             keyed(&tree, "ui.Banner", "@failed-").len(),
             1,
             "the page draws the row where the failure happened"
+        );
+    }
+
+    #[test]
+    fn a_message_still_being_sent_says_so_in_place_of_its_time() {
+        // Sent from here while its conversation's messages arrive: the page shows it as the
+        // window does, with "Sending…" where its time will stand.
+        let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
+        let mut rows = workspace.message_rows("c_crit");
+        // A day after the rest, so it starts a run of its own and carries its byline.
+        let ts = rows.iter().map(|row| row.ts).max().unwrap_or_default() + 86_400;
+        let mut sent = row("c_crit", "m_sent", crate::model::ME, ts, "On its way");
+        sent.sending = true;
+        rows.push(sent);
+        let chat = workspace.read();
+        let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
+        assert!(
+            channel
+                .messages
+                .last()
+                .is_some_and(|message| message.sending)
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let said: Vec<String> = keyed(&tree, "ui.Text", "@when-m_sent")
+            .iter()
+            .flat_map(|node| texts(node))
+            .collect();
+        assert_eq!(said, [crate::i18n::t("chat-message-sending")]);
+        assert!(
+            keyed(&tree, "ui.Time", "@when-m_sent").is_empty(),
+            "no time yet"
         );
     }
 }

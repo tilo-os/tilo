@@ -1,38 +1,20 @@
-//! Smart type inference on cell entry.
-//!
-//! When a user types a literal into a cell, we detect its intended type
-//! the way Excel and Sheets do — `90%` becomes the number `0.9` shown as
-//! `90%`, `$1,200` becomes `1200` shown as currency, `2023-03-15` becomes
-//! a date serial shown as a date — and we set the cell's format to match.
-//!
-//! The contract: [`infer_entry`] takes the raw text and the document's
-//! effective currency, and returns the **canonical raw string** to store
-//! (so the formula engine and CSV export see a clean numeric literal) plus
-//! the [`CellFormat`] that makes it render the way the user meant. Formula
-//! entries (`=...`) and explicitly text-y input are passed through
-//! untouched so inference never fights the user.
-//!
-//! Inference is intentionally forgiving: thousands separators, leading or
-//! trailing currency symbols, surrounding spaces, and a parenthesised
-//! negative (`(1,200)`) are all accepted.
+//! Smart type inference on entry: `90%` becomes 0.9 shown as a percent, `$1,200` becomes 1200 shown
+//! as money, `2023-03-15` becomes a date. [`infer_entry`] answers the canonical raw to store and
+//! the format to show it in; formulas and quoted text pass through untouched.
 
 use crate::model::{CellFormat, date_to_serial};
 use tilo_locale::{Currency, DateStyle};
 use ui::clock::TimeStyle;
 
-/// The outcome of inferring a freshly-typed literal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Inferred {
-    /// The canonical raw to persist (a clean number for typed numerics, or
-    /// the original text otherwise).
+    /// The canonical raw to store.
     pub raw: String,
-    /// The format the cell should adopt.
     pub format: CellFormat,
 }
 
-/// Infer the stored raw + format for a literal cell entry. `default_currency`
-/// supplies the currency for bare/ambiguous money symbols and is also the
-/// fallback the document/global locale provides.
+/// The raw and format a literal entry stands for; `default_currency` answers for bare money
+/// symbols.
 pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
     let trimmed = input.trim();
 
@@ -44,7 +26,7 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // A literal wrapped in quotes is forced text (drop the quotes).
+    // A leading apostrophe forces text; the quote is dropped.
     if trimmed.len() >= 2 && trimmed.starts_with('\'') {
         return Inferred {
             raw: trimmed.get(1..).unwrap_or("").to_string(),
@@ -52,7 +34,6 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // Booleans.
     match trimmed.to_ascii_uppercase().as_str() {
         "TRUE" => {
             return Inferred {
@@ -69,18 +50,17 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         _ => {}
     }
 
-    // Percent: a trailing `%`.
+    // A trailing `%` is a percentage.
     if let Some(body) = trimmed.strip_suffix('%')
         && let Some(n) = parse_number_loose(body.trim())
     {
-        // Store the underlying fraction; Percent format multiplies by 100.
+        // The fraction is stored; the percent format multiplies by 100.
         return Inferred {
             raw: trim_float(n / 100.0),
             format: CellFormat::Percent,
         };
     }
 
-    // Currency: a leading or trailing currency symbol/code.
     if let Some((cur, amount)) = strip_currency(trimmed, default_currency)
         && let Some(n) = parse_number_loose(amount)
     {
@@ -90,7 +70,6 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // Date / time literals.
     if let Some(serial) = parse_date(trimmed) {
         return Inferred {
             raw: trim_float(serial),
@@ -104,8 +83,7 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // Number with grouping separators (`1,234.5`) → store the bare number,
-    // adopt the Number format so the grouping shows on render.
+    // Grouped digits store the bare number with the Number format, so the grouping shows.
     if has_grouping(trimmed)
         && let Some(n) = parse_number_loose(trimmed)
     {
@@ -115,8 +93,7 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // Plain number (no grouping) → keep raw, leave General so integers
-    // stay clean. The grid still right-aligns it.
+    // A plain number keeps its raw and stays General, so integers stay clean.
     if let Some(n) = parse_number_loose(trimmed) {
         return Inferred {
             raw: trim_float(n),
@@ -124,15 +101,13 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // Everything else is text.
     Inferred {
         raw: input.to_string(),
         format: CellFormat::Text,
     }
 }
 
-/// Parse a number allowing surrounding whitespace, thousands separators,
-/// and a parenthesised negative `(1,200)`.
+/// A number with surrounding space, thousands separators or a parenthesised negative.
 fn parse_number_loose(s: &str) -> Option<f64> {
     let s = s.trim();
     if s.is_empty() {
@@ -144,16 +119,14 @@ fn parse_number_loose(s: &str) -> Option<f64> {
         (false, s)
     };
     let cleaned: String = body.chars().filter(|c| *c != ',').collect();
-    // Reject things like "1.2.3" — a single optional sign, digits, one dot,
-    // optional exponent. We lean on f64::from_str after removing commas.
+    // Reject `1.2.3`: one sign, digits, one dot and an optional exponent only.
     let n: f64 = cleaned.trim().parse().ok()?;
     Some(if neg { -n } else { n })
 }
 
-/// True if the string looks like a number that uses thousands grouping
-/// (so we want the Number format to preserve the grouped look).
+/// Whether the string groups thousands, so the Number format keeps the look.
 fn has_grouping(s: &str) -> bool {
-    // A comma flanked by digits, e.g. "1,234" or "12,000.50".
+    // A comma between digits.
     let bytes: Vec<char> = s.chars().collect();
     for (i, c) in bytes.iter().enumerate() {
         if *c == ','
@@ -167,12 +140,9 @@ fn has_grouping(s: &str) -> bool {
     false
 }
 
-/// Strip a leading or trailing currency marker, returning the currency and
-/// the remaining numeric text. `$`/`¥` are ambiguous and resolve to the
-/// document default when that default already shares the symbol, otherwise
-/// to the symbol's canonical owner.
+/// A leading or trailing currency marker, with the currency it names and the text left.
 fn strip_currency(s: &str, default_currency: Currency) -> Option<(Currency, &str)> {
-    // Multi-char codes first (CHF, EUR) so they don't get mis-split.
+    // Multi-character codes first, so they are not split.
     for code in [
         "CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "CNY", "INR",
     ] {
@@ -187,7 +157,6 @@ fn strip_currency(s: &str, default_currency: Currency) -> Option<(Currency, &str
             return Some((c, rest.trim_end()));
         }
     }
-    // Single-glyph symbols.
     let symbols = ["$", "\u{20AC}", "\u{00A3}", "\u{00A5}", "\u{20B9}"];
     for sym in symbols {
         if let Some(rest) = s.strip_prefix(sym) {
@@ -200,10 +169,8 @@ fn strip_currency(s: &str, default_currency: Currency) -> Option<(Currency, &str
     None
 }
 
-/// Resolve an ambiguous symbol: if the document's default currency already
-/// uses this glyph, keep the default (so a EUR document typing `$` is odd
-/// but a USD/CAD/AUD document typing `$` keeps its own currency). Otherwise
-/// fall back to the symbol's canonical owner.
+/// An ambiguous symbol in the document's own currency stays that currency, else it takes the
+/// symbol's canonical owner.
 fn resolve_symbol(sym: &str, default_currency: Currency) -> Currency {
     if default_currency.symbol() == sym {
         return default_currency;
@@ -211,24 +178,20 @@ fn resolve_symbol(sym: &str, default_currency: Currency) -> Currency {
     Currency::from_symbol(sym).unwrap_or(default_currency)
 }
 
-/// Parse an ISO / US / EU date literal into an Excel serial.
+/// An ISO, US or EU date literal as an Excel serial.
 fn parse_date(s: &str) -> Option<f64> {
-    // ISO: YYYY-MM-DD
     if let Some((y, rest)) = split_int(s, '-')
         && let Some((m, d)) = split_two(rest, '-')
         && valid_ymd(y, m, d)
     {
         return Some(date_to_serial(y, m as u32, d as u32));
     }
-    // Slash forms: try US (M/D/Y) and EU (D/M/Y). Prefer the one that is
-    // unambiguously valid; if both are valid, US wins (matching the ISO
-    // default style we render in).
+    // Slash forms: the reading only one way wins, and M/D/Y when both are valid.
     let parts: Vec<&str> = s.split('/').collect();
     if let [a_s, b_s, y_s] = parts.as_slice() {
         let a: i64 = a_s.trim().parse().ok()?;
         let b: i64 = b_s.trim().parse().ok()?;
         let y: i64 = y_s.trim().parse().ok()?;
-        // US first.
         if valid_ymd(y, a, b) {
             return Some(date_to_serial(y, a as u32, b as u32));
         }
@@ -239,8 +202,7 @@ fn parse_date(s: &str) -> Option<f64> {
     None
 }
 
-/// Parse a `HH:MM` or `HH:MM:SS` time literal into the fractional day part
-/// of an Excel serial.
+/// A `HH:MM` or `HH:MM:SS` literal as the fraction of a day.
 fn parse_time(s: &str) -> Option<f64> {
     let (clock, pm) = if let Some(rest) = s.strip_suffix("PM").or_else(|| s.strip_suffix("pm")) {
         (rest.trim(), Some(true))
@@ -304,9 +266,8 @@ fn valid_ymd(y: i64, m: i64, d: i64) -> bool {
     (1..=9999).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d)
 }
 
-/// Render an f64 as the shortest exact-looking decimal: integers print
-/// without a fractional part, otherwise we keep up to 10 significant
-/// digits with trailing zeros trimmed. This is what we persist as the raw.
+/// An f64 as the shortest exact-looking decimal: up to ten significant digits, trailing zeros
+/// trimmed.
 fn trim_float(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         return format!("{}", n as i64);
@@ -329,7 +290,6 @@ mod tests {
             let r = infer("90%");
             assert_eq!(r.raw, "0.9");
             assert_eq!(r.format, CellFormat::Percent);
-            // And it renders back as 90.00%.
             assert_eq!(
                 crate::model::format_value(&crate::model::CellValue::Number(0.9), r.format),
                 "90.00%"
@@ -350,14 +310,9 @@ mod tests {
 
         {
             let r = infer_entry("1.200,50\u{20AC}", Currency::EUR);
-            // Euro grouping uses '.' for thousands and ',' for decimal, but our
-            // loose parser only strips commas; a euro-typed amount is uncommon as
-            // a literal. Here we accept the common Anglo style typed with €.
             let r2 = infer("1200.50\u{20AC}");
             assert_eq!(r2.format, CellFormat::Currency(Currency::EUR));
             assert_eq!(r2.raw, "1200.5");
-            // The dotted-euro literal is treated as text (we don't guess euro
-            // decimal grouping on entry), which is acceptable and non-broken.
             let _ = r;
         }
 
@@ -368,13 +323,11 @@ mod tests {
         }
 
         {
-            // A CAD document typing "$5" keeps CAD (both use $).
             let r = infer_entry("$5", Currency::CAD);
             assert_eq!(r.format, CellFormat::Currency(Currency::CAD));
         }
     }
 
-    /// ISO/US/EU dates and 24h/12h times.
     #[test]
     fn date_and_time_inputs_infer_their_format() {
         {
@@ -398,7 +351,6 @@ mod tests {
         }
 
         {
-            // 25/03/2023 can only be D/M/Y.
             let r = infer("25/03/2023");
             assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
             let n: f64 = r.raw.parse().unwrap();
@@ -408,7 +360,6 @@ mod tests {
             );
         }
 
-        // Case `time_24h`.
         {
             let r = infer("14:05");
             assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
@@ -416,7 +367,6 @@ mod tests {
             assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
         }
 
-        // Case `time_12h`.
         {
             let r = infer("2:05 PM");
             assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
@@ -458,7 +408,6 @@ mod tests {
         }
 
         {
-            // '0123 stays text, keeping the leading zero.
             let r = infer("'0123");
             assert_eq!(r.raw, "0123");
             assert_eq!(r.format, CellFormat::Text);

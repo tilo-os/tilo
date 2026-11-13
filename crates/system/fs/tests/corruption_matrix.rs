@@ -7,13 +7,9 @@
 use std::fs as stdfs;
 
 use fs::eviction::EvictionQueue;
-use fs::{
-    AvailabilityRegistry, Namespace, RecordRepository, RecordTransactionJournal,
-    load_mount_identity,
-};
+use fs::{AvailabilityRegistry, Namespace, load_mount_identity};
 use tempfile::tempdir;
 use tilo_user_identity::IdentityPaths;
-use uuid::Uuid;
 
 fn truncated(bytes: &[u8]) -> Vec<u8> {
     let midpoint = bytes.len().div_ceil(2);
@@ -26,7 +22,6 @@ fn truncated(bytes: &[u8]) -> Vec<u8> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
-    // Phase `namespace_corruption_never_becomes_an_empty_workspace`.
     {
         let mut namespace = Namespace::new("corruption-source").unwrap();
         namespace
@@ -53,7 +48,6 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
             );
         }
     }
-    // Phase `namespace_automatic_recovery_is_bounded_explicit_and_preserves_damage`.
     {
         let dir = tempdir().unwrap();
         let path = dir.path().join("namespace.bin");
@@ -95,7 +89,6 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
             "recovery chooses the last completed generation; signed-record reconciliation replays later state"
         );
     }
-    // Phase `malformed_single_file_stores_are_preserved_and_fail_closed`.
     {
         let dir = tempdir().unwrap();
         let damaged = b"{\"schema_version\":";
@@ -115,31 +108,6 @@ fn corrupt_namespaces_stores_and_journals_are_preserved_and_fail_closed() {
                 "startup validation must not overwrite corruption with an empty store"
             );
         }
-    }
-    // Phase `malformed_repository_and_transaction_journal_publish_nothing`.
-    {
-        let dir = tempdir().unwrap();
-        let repository_root = dir.path().join("records");
-        stdfs::create_dir_all(&repository_root).unwrap();
-        let log_path = repository_root.join("records.redb");
-        let damaged_log =
-            b"not a redb database, just damaged bytes padded out to a page".repeat(128);
-        stdfs::write(&log_path, &damaged_log).unwrap();
-
-        assert!(RecordRepository::open(&repository_root).is_err());
-        assert_eq!(stdfs::read(&log_path).unwrap(), damaged_log);
-
-        let journal_root = dir.path().join("transactions");
-        stdfs::create_dir_all(&journal_root).unwrap();
-        let transaction_path = journal_root.join(format!("{}.json", Uuid::new_v4()));
-        stdfs::write(&transaction_path, b"[]").unwrap();
-        assert!(RecordTransactionJournal::open(&journal_root).is_err());
-        assert_eq!(stdfs::read(&transaction_path).unwrap(), b"[]");
-
-        assert!(
-            !dir.path().join("namespace.bin").exists(),
-            "a coordinator cannot project namespace state when its journal or repository refuses open"
-        );
     }
 }
 

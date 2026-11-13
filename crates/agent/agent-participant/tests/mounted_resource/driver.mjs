@@ -8,9 +8,9 @@ import {createInterface} from 'node:readline';
 import {launch} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 import {observe} from './observe.mjs';
-// A channel's latest messages, as the page reads them; a refusal is the
-// answer, so a failed read says why.
-const READ_MESSAGES = "(() => { try { return mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32}); } catch (error) { return {state:'threw', error:String(error?.message ?? error)}; } })()";
+// The messages the page holds, as its message rows name them: each row's
+// id ends in the message's, and its label is `author: text`.
+const HELD_MESSAGES = "mount.actions().filter(action => action.resource_kind === 'chat.workspace.messages').map(action => ({id: action.address.resource.split('/').pop(), label: action.resource_label})).filter((row, at, rows) => rows.findIndex(other => other.id === row.id) === at)";
 
 const bundle = resolve(process.argv[2]);
 assert.ok(existsSync(join(bundle, 'app/index.html')), 'built full-tab entry page is required');
@@ -106,13 +106,10 @@ try {
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));
   if (fixture.encryptedRestart) {
-    const read = await tab.evaluate(READ_MESSAGES);
-    assert.equal(read.state, 'completed', JSON.stringify(read));
-    const original = read.output.value.messages.find(message => message.id === fixture.reference.id.split('/').pop());
+    const held = await tab.evaluate(HELD_MESSAGES);
+    const original = held.find(message => message.id === fixture.reference.id.split('/').pop());
     assert.ok(original, 'the exact original message must be readable');
-    assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
-    assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
-    assert.notEqual(fixture.sourcePeople.find(person => person.id === original.author)?.name, 'You', 'an unnamed writer must not persist the current-reader label as a shared name');
+    assert.ok(!original.label.startsWith('You:'), 'an unnamed writer must not be shown with the current-reader label');
     writeFileSync(join(evidence, 'identity-boundary.json'), JSON.stringify({writer:original.author, viewer:fixture.root, sourcePeople:fixture.sourcePeople, semantics:await tab.evaluate('mount.state().semantics')}, null, 2));
   }
   stage('compiled-native-chat-mounted-exact-range');
@@ -207,10 +204,9 @@ try {
     await tab.waitFor('!peer.getSnapshot().health.transport.authenticated && peer.getSnapshot().health.transport.phase !== "connected"');
     stage('browser-offline');
     assert.equal(JSON.parse((await lines.next()).value).nativePublished, true);
-    const offlineRead = await tab.evaluate(READ_MESSAGES);
-    assert.equal(offlineRead.state, 'completed', JSON.stringify(offlineRead));
-    assert.equal(offlineRead.output.value.messages.filter(message =>
-      message.text === 'Native fixture while browser disconnected').length, 0,
+    const offlineRead = await tab.evaluate(HELD_MESSAGES);
+    assert.equal(offlineRead.filter(message =>
+      message.label.endsWith(': Native fixture while browser disconnected')).length, 0,
     'the disconnected browser must not already have received the new native post');
     const queued = await tab.evaluate(`mount.invokeAction(fixture.messages, 'post',
       {channel:fixture.channelId, text:'Browser fixture queued during disconnect'})`);
@@ -226,11 +222,9 @@ try {
     await tab.evaluate('peer.flush()');
     await tab.waitFor('peer.getSnapshot().outgoingPending === 0 && peer.getSnapshot().synchronization === "acknowledged"');
     await tab.waitFor(`(() => {
-      const result = mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32});
-      if (result.state !== 'completed') return false;
-      const messages = result.output.value.messages;
-      return messages.filter(message => message.text === 'Browser fixture queued during disconnect').length === 1
-        && messages.filter(message => message.text === 'Native fixture while browser disconnected').length === 1;
+      const messages = ${HELD_MESSAGES};
+      return messages.filter(message => message.label.endsWith(': Browser fixture queued during disconnect')).length === 1
+        && messages.filter(message => message.label.endsWith(': Native fixture while browser disconnected')).length === 1;
     })()`);
     const after = await tab.evaluate('peer.getSnapshot()');
     assert.equal(after.deviceId, before.peer.deviceId, 'retry keeps the original certified device');

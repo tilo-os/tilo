@@ -66,6 +66,11 @@ impl Process {
                 command.env(key, value);
             }
         }
+        // The catalog this host verified: the worker lays its views' text out
+        // before it confines itself, and has no build directory above it.
+        if let Some(catalog) = ui::font_catalog::catalog_root() {
+            command.env(ui::font_catalog::OVERRIDE_ENV, catalog);
+        }
         let child =
             spawn(command).map_err(|error| format!("the app worker did not start: {error}"))?;
         let mut process = Self {

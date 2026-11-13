@@ -90,13 +90,11 @@ pub struct HomeSource {
     captured: Option<captured::Captured>,
     granted_path: Option<std::path::PathBuf>,
     original_roots: Option<Arc<super::GrantedHomeRoots>>,
-    /// Nested subtrees the person excluded from this source. The inventory is
-    /// built and revalidated with these applied, so the sealed archive and the
+    /// The inventory is built and revalidated with these applied, so the sealed archive and the
     /// installed import both honour them.
     exclusions: Vec<std::path::PathBuf>,
 }
 impl HomeSource {
-    /// Recover source-bound permission candidates from this Home review refusal.
     /// This never creates a coherent epoch, broker declaration or export receipt.
     #[cfg(target_os = "linux")]
     pub fn mounted_root_set(error: &io::Error) -> Option<super::HomeRootSet> {
@@ -133,14 +131,13 @@ impl HomeSource {
             .as_ref()
             .ok_or_else(|| changed("Captured inventory stays in its worker"))
     }
-    /// Capture when the approved source provides native immutable epochs.
-    /// Unsupported filesystems retain the strict live-source export contract.
+    /// Captures when the approved source provides native immutable epochs; other filesystems keep
+    /// the strict live-source export contract.
     pub fn review_for_preparation(home: &Path, cancel: &AtomicBool) -> io::Result<Arc<Self>> {
         Self::review_preparation(home, &[], cancel, None)
     }
-    /// Review with the person's nested source exclusions. The canonical Home
-    /// producer applies them to the inventory, which is what the sealed archive,
-    /// its verification and the installed import consume.
+    /// The canonical Home producer applies the person's exclusions to the inventory, which the
+    /// sealed archive, its verification and the installed import all consume.
     pub fn review_selected(
         home: &Path,
         exclusions: &[std::path::PathBuf],
@@ -159,8 +156,8 @@ impl HomeSource {
         #[cfg(target_os = "linux")]
         super::migration_review::MountedHomeLocations::discover(&pin, home, cancel)?
             .require_single_root(cancel)?;
-        // An immutable whole-home epoch cannot honour nested exclusions, so a
-        // selected review uses the live inventory that can.
+        // An immutable whole-home epoch cannot honour nested exclusions, so a selected review
+        // uses the live inventory that can.
         if exclusions.is_empty()
             && let Some(captured) =
                 captured::Captured::review(home, cancel).map_err(source_unavailable)?
@@ -187,12 +184,10 @@ impl HomeSource {
             None => Self::review_with_cancel_selected(home, exclusions, cancel),
         }
     }
-    /// Media preparation may retain permission for a source that will only be
-    /// inventoried after boot under its authenticated read-only projection.
     pub fn review_for_media_preparation(home: &Path, cancel: &AtomicBool) -> io::Result<Arc<Self>> {
         Self::review_media_preparation(home, &[], cancel, None)
     }
-    /// The same media review with nested exclusions carried into the plan.
+    /// The same media review, with nested exclusions carried into the plan.
     pub fn review_selected_for_media_preparation(
         home: &Path,
         exclusions: &[std::path::PathBuf],
@@ -207,9 +202,7 @@ impl HomeSource {
     ) -> io::Result<Arc<Self>> {
         Self::review_media_preparation(home, &[], cancel, Some(storage))
     }
-    /// # Errors
-    /// Refuses unsafe grants, unavailable working storage and exclusions
-    /// outside the Home.
+    /// Refuses unsafe grants, unavailable working storage and exclusions outside the Home.
     pub fn review_selected_media_with_working_storage(
         home: &Path,
         exclusions: &[std::path::PathBuf],
@@ -239,7 +232,7 @@ impl HomeSource {
             }
             // SAFETY: successful fstatfs initialized the output.
             let filesystem = unsafe { filesystem.assume_init() };
-            // Only the canonical original reader's supported filesystem kinds.
+            // Only the filesystem kinds the canonical original reader supports.
             if matches!(
                 filesystem.f_type,
                 libc::EXT4_SUPER_MAGIC | libc::XFS_SUPER_MAGIC
@@ -257,15 +250,12 @@ impl HomeSource {
                 }));
             }
         }
-        // Native immutable Btrfs capture remains the existing copy route.
         pin.validate()?;
         Self::review_preparation(home, exclusions, cancel, storage)
     }
-    /// All mounted grants come from the shared platform permission generation.
-    /// This retains source scope only; no contents, export or Ready is invented.
-    /// # Errors
-    /// Refuses mismatched, cancelled or substituted grants, and separately
-    /// mounted descendants which have not received their own exact grant.
+    /// All mounted grants come from the shared platform permission generation; this retains source
+    /// scope only. Refuses mismatched, cancelled or substituted grants, and mounted descendants
+    /// without their own exact grant.
     pub fn review_granted_original_roots(
         home: &Path,
         roots: Arc<super::GrantedHomeRoots>,
@@ -316,9 +306,8 @@ impl HomeSource {
             .as_ref()
             .ok_or_else(|| changed("Original Home grant missing"))?;
         roots.with_roots(cancel, |granted| {
-            // The source caller performs this discovery under its actual DAC.
-            // A separately approved child cannot silently authorize another
-            // mount beneath it; no mounted contents are enumerated on refusal.
+            // A separately approved child cannot authorize another mount beneath it; no mounted
+            // contents are enumerated on refusal.
             for entry in &granted[1..] {
                 if entry.kind() == super::RootKind::Directory {
                     let path = home.join(entry.placement());
@@ -375,7 +364,6 @@ impl HomeSource {
         self.captured.is_some()
     }
 
-    /// The nested subtrees this review excludes, if any.
     pub fn exclusions(&self) -> &[std::path::PathBuf] {
         &self.exclusions
     }
@@ -398,8 +386,8 @@ impl HomeSource {
         }
     }
 
-    /// Confined worker entry point. The native launcher supplies only the
-    /// selected captured subtree; original-scope validation belongs to its broker.
+    /// The native launcher supplies only the selected captured subtree; original-scope validation
+    /// belongs to its broker.
     #[cfg(feature = "capture-worker")]
     pub fn review_captured(
         pin: Arc<PinnedDirectory>,
@@ -428,8 +416,8 @@ impl HomeSource {
         source.validate_with_cancel(cancel)?;
         Ok(source)
     }
-    /// Original-source read only. Authenticated boot admission and the signed
-    /// launcher supply this projection; there is no immutable epoch fallback.
+    /// Authenticated boot admission and the signed launcher supply this projection; there is no
+    /// immutable epoch fallback.
     #[cfg(feature = "capture-worker")]
     pub fn review_original_reader(
         pin: Arc<PinnedDirectory>,
@@ -476,8 +464,6 @@ impl HomeSource {
         authority.validate_reader(&source.pin.file)?;
         Ok(source)
     }
-    /// # Errors
-    /// Refuses redirected, unreadable or unsupported source entries.
     pub fn review(home: &Path) -> io::Result<Arc<Self>> {
         Self::review_with_cancel(home, &AtomicBool::new(false))
     }
@@ -514,9 +500,7 @@ impl HomeSource {
             exclusions: exclusions.to_vec(),
         }))
     }
-    /// An explicitly admitted working namespace is retained with the inventory.
-    /// The caller owns its backing grant; TMPDIR and arbitrary serialized paths
-    /// never select it. Only existing canonical installer custody may overlap.
+    /// The caller owns its backing grant; TMPDIR and arbitrary serialized paths never select it.
     #[cfg(target_os = "linux")]
     pub fn review_live_with_working_storage(
         home: &Path,
@@ -555,8 +539,8 @@ impl HomeSource {
             exclusions: exclusions.to_vec(),
         }))
     }
-    /// Renew contents under the original folder grant. A captured source may
-    /// never silently downgrade to a live traversal if its provider disappears.
+    /// A captured source may never silently downgrade to a live traversal if its provider
+    /// disappears.
     pub fn review_latest(&self, cancel: &AtomicBool) -> io::Result<Arc<Self>> {
         check_cancel(cancel)?;
         self.validate_original_grant()?;
@@ -602,14 +586,12 @@ impl HomeSource {
             }
         })
     }
-    /// # Errors
     /// Refuses changes to the granted source identity or reviewed contents.
     pub fn validate(&self) -> io::Result<()> {
         self.validate_with_cancel(&AtomicBool::new(false))
     }
-    /// Recheck the retained source while honoring explicit cancellation.
-    /// # Errors
-    /// Refuses cancelled work, expired captures and changed source authority or contents.
+    /// Rechecks the retained source while honouring cancellation: cancelled work, expired captures
+    /// and changed source authority or contents are refused.
     pub fn validate_with_cancel(&self, cancel: &AtomicBool) -> io::Result<()> {
         check_cancel(cancel)?;
         if self.original_only {
@@ -633,7 +615,6 @@ impl HomeSource {
                 }
             })
     }
-    /// # Errors
     /// Refuses overflowing source counts.
     pub fn summary(&self) -> io::Result<ExportSummary> {
         if self.original_only {
@@ -662,14 +643,14 @@ impl HomeSource {
             return Ok(captured.reservation());
         }
         let entries = u64::try_from(self.entry_count()).map_err(io::Error::other)?;
-        // The canonical parser permits one local PAX extension per entry,
-        // <=1MiB each, and <=512MiB cumulatively. This is a GLOBAL ceiling.
+        // The canonical parser permits one local PAX extension per entry, <=1 MiB each and
+        // <=512 MiB cumulatively; this is a global ceiling.
         let metadata = entries
             .checked_mul(1024 * 1024)
             .ok_or_else(|| changed("Archive reservation overflows"))?
             .min(512 * 1024 * 1024);
-        // Each normal entry and its optional PAX record need a 512-byte header
-        // and at most 511 bytes of padding; final GNU tar blocking adds 10KiB.
+        // Each entry needs a 512-byte header and at most 511 bytes of padding; final GNU tar
+        // blocking adds 10 KiB.
         let plaintext_bytes = super::portable_transfer::stored_bytes(&self.pin, self.inventory()?)?
             .checked_add(
                 entries
@@ -687,8 +668,7 @@ impl HomeSource {
         .sealed_bound()
         .ok_or_else(|| changed("Archive reservation overflows"))
     }
-    /// Approximate archive footprint, including entry headers and block padding.
-    /// Extended attributes can increase it; actual filesystem bounds govern export.
+    /// Entry headers and block padding included; extended attributes can increase it.
     pub fn archive_estimate(&self) -> io::Result<u64> {
         let entries = u64::try_from(self.entry_count()).map_err(io::Error::other)?;
         super::portable_transfer::stored_bytes(&self.pin, self.inventory()?)?
@@ -700,8 +680,8 @@ impl HomeSource {
             .and_then(|bytes| bytes.checked_add(10 * 1024))
             .ok_or_else(|| changed("Archive estimate overflows"))
     }
-    /// Renew a completed package after a later setup-delivery failure without
-    /// replacing custody or encrypting another copy.
+    /// A later setup-delivery failure renews the package without replacing custody or encrypting
+    /// another copy.
     pub fn validate_existing(
         &self,
         media: &MediaGrant,
@@ -792,10 +772,9 @@ impl HomeSource {
         media.pin.validate_destination()?;
         self.validate()
     }
-    /// Stream tar directly into sealed media storage, then verify against this
-    /// exact reviewed source and atomically publish. Source changes need review.
-    /// # Errors
-    /// Refuses changed sources, inadequate storage, cancellation or publication collisions.
+    /// Streams tar into sealed media storage, verifies against this exact reviewed source and
+    /// publishes atomically. Refuses changed sources, inadequate storage, cancellation or a
+    /// publication collision.
     pub fn export_to(
         &self,
         media: &MediaGrant,
@@ -865,8 +844,8 @@ impl HomeSource {
             }
         }
         let limits = media.limits()?;
-        // Inventory sizes can count multiple names of the same hardlink.
-        // The actual bounded archive stream decides whether storage suffices.
+        // Inventory sizes can count multiple names of one hardlink; the bounded archive stream
+        // decides whether storage suffices.
         let mut temporary = Temporary::create(&media.pin)?;
         let info = portable_transfer::export_stream_reporting(
             &self.pin,
@@ -915,18 +894,17 @@ impl HomeSource {
         Ok(expectation)
     }
 }
-/// Held filesystem grant, renewed before writing. It grants no other volumes.
+/// A held filesystem grant, renewed before writing; it grants no other volumes.
 pub struct MediaGrant {
     pin: Arc<PinnedDirectory>,
     sealed_reservation: Option<u64>,
 }
-/// Inspect limits on an already pinned private destination without exporting
-/// a media grant or any elevated filesystem authority.
+/// Inspects limits on a pinned private destination without exporting a media grant or elevated
+/// filesystem authority.
 pub fn reviewed_directory_limits(pin: Arc<PinnedDirectory>) -> io::Result<Limits> {
     MediaGrant::from_reviewed_pin(pin)?.limits()
 }
 impl MediaGrant {
-    /// Clone only the already held and re-attested selected output directory.
     /// The broker receives this capability, never an ambient path to reopen.
     pub fn clone_reviewed_directory(&self) -> io::Result<File> {
         self.pin.validate_destination()?;
@@ -944,8 +922,7 @@ impl MediaGrant {
         grant.limits()?;
         Ok(grant)
     }
-    /// # Errors
-    /// Refuses redirected, readonly or unavailable media grants.
+    /// Refuses redirected, read-only or unavailable media grants.
     pub fn open(directory: &Path) -> io::Result<Self> {
         let pin = PinnedDirectory::open_absolute(directory)?;
         pin.validate_destination()?;
@@ -965,8 +942,7 @@ impl MediaGrant {
         self.limits()?;
         Ok(self)
     }
-    /// Publish only bounded metadata after the caller's verified export. An
-    /// existing identical receipt is reusable; another receipt is never replaced.
+    /// An existing identical receipt is reusable; another receipt is never replaced.
     pub fn publish_expectation(
         &self,
         expected: &Expectation,
@@ -1015,7 +991,6 @@ impl MediaGrant {
             Err(error) => Err(error),
         }
     }
-    /// Publish the exact completed home/setup pairing for installation transport.
     /// This public receipt locates ciphertext; it grants no identity authority.
     pub fn publish_setup_selection(
         &self,
@@ -1063,8 +1038,7 @@ impl MediaGrant {
             Err(error) => Err(error),
         }
     }
-    /// # Errors
-    /// Refuses changed grants, readonly media and insufficient free capacity.
+    /// Refuses changed grants, read-only media and insufficient free capacity.
     pub fn limits(&self) -> io::Result<Limits> {
         self.pin.validate_destination()?;
         let free = capacity(&self.pin.file)?;
@@ -1087,7 +1061,7 @@ impl MediaGrant {
         })
     }
 }
-/// A sealed Home unit carries the reviewed tree, sockets recreated empty.
+/// A sealed Home unit carries the reviewed tree, with sockets recreated empty.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Home {
@@ -1135,8 +1109,8 @@ fn capacity(file: &File) -> io::Result<u64> {
     }
     // SAFETY: successful fstatfs initialized storage.
     let filesystem = unsafe { filesystem.assume_init() };
-    // FAT cannot store one file larger than 4 GiB; large homes need the actual
-    // separately provisioned data filesystem, never an EFI-only claim.
+    // FAT cannot store a file larger than 4 GiB; a large home needs the separately provisioned
+    // data filesystem.
     Ok(if filesystem.f_type == 0x4d44 {
         available.min(u64::from(u32::MAX))
     } else {
@@ -1252,7 +1226,6 @@ impl Drop for Temporary {
 #[cfg(test)]
 mod tests;
 
-/// Shared prewrite/postformat payload bound; includes sealed framing and reserve.
 pub fn payload_capacity_for_free_bytes(free: u64) -> io::Result<u64> {
     let available = free
         .checked_sub(RESERVE)

@@ -186,6 +186,21 @@ pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
         .is_some_and(WindowActivation::take_window_activation_intent)
 }
 
+/// A window whose content says what it shows: the page a note is open on, the place a list is at,
+/// the record a sheet edits. The window is named by that wherever a desktop names it — its tab,
+/// the switcher, assistive technology — so a person reads which window is which without opening
+/// one. It is the window's own title, not a caption: a window that says nothing goes by its app's
+/// name.
+pub trait WindowTitle {
+    /// What the window shows now, as words a person reads: `None` where it names nothing.
+    fn window_title(&self) -> Option<&str>;
+}
+
+/// What `widget`'s window shows ([`WindowTitle`]), through its capability door.
+pub fn window_title(widget: &(impl Widget + ?Sized)) -> Option<&str> {
+    capability::<dyn WindowTitle>(widget).and_then(WindowTitle::window_title)
+}
+
 /// A presentation whose app runs elsewhere (a tilolang host's instance) can ask the shell for
 /// what only it does, as an app's own surface asks ([`crate::widget::AppHostIntent`]): show a
 /// task run's log when a change mark is activated.

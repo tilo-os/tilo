@@ -95,7 +95,6 @@ impl Paths {
     }
 }
 
-/// One user's VM for one guest OS.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmConfig {
     pub guest: GuestOs,

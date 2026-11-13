@@ -412,6 +412,52 @@ impl Attached {
         Some(format!("record:{}:{record}", at.app))
     }
 
+    /// What it points at, as an agent asked about it reads it: the record by
+    /// its app, kind and id, the items or the run of characters meant, and
+    /// what the person saw it as. `None` for words quoted from nowhere and for
+    /// a file, which name no record to act on.
+    #[must_use]
+    pub fn subject(&self) -> Option<tilo_actions::SelectionSubject> {
+        use tilo_actions::{SelectionAnchor, SelectionPlace};
+        let at = self.at()?;
+        let span = at
+            .reference
+            .span
+            .filter(|span| span.unit == crate::SpanUnit::Chars && !span.is_empty());
+        let anchor = match self.anchor() {
+            Some(Anchor::Item { id }) => SelectionAnchor::default().at(match span {
+                Some(span) => SelectionPlace::range(id.clone(), span.start, span.end),
+                None => SelectionPlace::item(id.clone()),
+            }),
+            Some(Anchor::Items { ids }) => SelectionAnchor {
+                items: ids
+                    .iter()
+                    .take(tilo_actions::MAX_SELECTED_ITEMS)
+                    .map(|id| SelectionPlace::item(id.clone()))
+                    .collect(),
+                ..SelectionAnchor::default()
+            },
+            Some(Anchor::Text { .. }) | None => SelectionAnchor::default(),
+        }
+        .with_excerpt(self.label());
+        let label = if at.reference.label.trim().is_empty() {
+            self.label()
+        } else {
+            &at.reference.label
+        };
+        Some(tilo_actions::SelectionSubject {
+            app_id: at.app.clone(),
+            app_label: at.app.clone(),
+            resource: tilo_actions::ActionResource {
+                id: at.reference.id.clone(),
+                kind: at.reference.kind.clone(),
+                label: tilo_actions::excerpt_of(label).unwrap_or_default(),
+            },
+            anchor,
+        })
+        .filter(|subject| subject.validate().is_ok())
+    }
+
     /// The one action that opens it in the workspace, on the app and record
     /// that keep it: none for a file, which a reader opens from its card.
     #[must_use]
@@ -539,6 +585,66 @@ mod tests {
         };
         assert_eq!(bare.label(), "ship on Friday");
         assert!(bare.open_target("ws-1").is_none());
+    }
+
+    /// What a message carries reaches an agent as the record it names, never
+    /// a picture of it: the app, kind and id to act on, and the item meant.
+    #[test]
+    fn an_attachment_is_the_subject_an_agent_acts_on() {
+        let issue = at(
+            "so.tilo.tasks",
+            "",
+            "tasks.issue",
+            "tasks.tracker/issues/42",
+            "Launch checklist",
+        );
+        let attached = Attached::resource(issue, Some(Anchor::item("42")), "Launch checklist");
+        let subject = attached.subject().expect("a record to act on");
+        assert_eq!(subject.app_id, "so.tilo.tasks");
+        assert_eq!(subject.resource.id, "tasks.tracker/issues/42");
+        assert_eq!(subject.resource.kind, "tasks.issue");
+        assert_eq!(
+            subject.anchor.place,
+            Some(tilo_actions::SelectionPlace::item("42"))
+        );
+        assert_eq!(subject.anchor.excerpt.as_deref(), Some("Launch checklist"));
+
+        // A whole record is still a subject, said by what the person saw.
+        let whole = Attached::resource(
+            at("so.tilo.notes", "uuid:7", "notes.page", "notes.page:1", ""),
+            None,
+            "Plan",
+        );
+        let subject = whole.subject().expect("the whole record");
+        assert_eq!(subject.resource.label, "Plan");
+        assert!(subject.anchor.place.is_none() && subject.anchor.items.is_empty());
+
+        // Quoted words name the record they came from; bare words and files
+        // name none.
+        let quoted = Attached::Text {
+            text: "ship on Friday".into(),
+            from: Some(at(
+                "so.tilo.notes",
+                "",
+                "notes.page",
+                "notes.page:1",
+                "Plan",
+            )),
+        };
+        assert_eq!(
+            quoted
+                .subject()
+                .expect("from a record")
+                .anchor
+                .excerpt
+                .as_deref(),
+            Some("ship on Friday")
+        );
+        let bare = Attached::Text {
+            text: "ship on Friday".into(),
+            from: None,
+        };
+        assert_eq!(bare.subject(), None);
     }
 
     /// A text anchor names the run, not its offsets: an edit above it, made

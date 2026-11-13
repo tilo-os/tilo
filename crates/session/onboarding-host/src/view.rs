@@ -1065,7 +1065,8 @@ impl OnboardingView {
         let _ = crate::view::tests::layout::lay_out_as_root_with_text(
             self, 1280.0, 800.0, &theme, &mut text,
         );
-        self.draw(
+        ui::widget::DrawChild::draw_child(
+            self,
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -4420,7 +4421,12 @@ mod tests {
             ]
             .map(tilo_onboarding::t)
             .join(" ");
-            for surface in ["Settings", "Devices & Sync", "Add device", "six-digit code"] {
+            for surface in [
+                "Settings",
+                "Sync between devices",
+                "Add device",
+                "six-digit code",
+            ] {
                 assert!(
                     steps.contains(surface),
                     "nearby steps must name {surface}: {steps}"

@@ -371,3 +371,41 @@ fn shipped_manifests_declare_consistent_sandbox_policy() {
         );
     }
 }
+
+/// An app's actions reach the person's desk only over the collaboration service: its running
+/// window publishes them to the workspace's broker (`CollabRequest::PublishActionSurface`), which lists
+/// them in the desktop's catalogue and routes their invocations back. An app whose surface
+/// declares verbs but whose sandbox has no `collab` service joins nothing
+/// (`CollaborationManager::join_native` disables itself), so none of its actions is ever listed
+/// or invocable — not by a palette, an agent or a script.
+#[test]
+fn an_app_that_publishes_actions_declares_the_service_it_publishes_them_over() {
+    let mut checked = 0usize;
+    let mut unreachable = Vec::new();
+    for dir in app_dirs() {
+        let m = load(&dir);
+        if m.package.kind != Kind::App {
+            continue;
+        }
+        let surface = std::fs::read_to_string(dir.join("surface.toml")).unwrap_or_default();
+        if !surface
+            .lines()
+            .any(|line| line.trim() == "[[resources.verbs]]")
+        {
+            continue;
+        }
+        checked += 1;
+        if !m.sandbox.services.contains_key("collab") {
+            unreachable.push(dir.display().to_string());
+        }
+    }
+    assert!(
+        checked >= 20,
+        "expected the fleet's acting apps, found {checked}"
+    );
+    assert!(
+        unreachable.is_empty(),
+        "these apps declare actions in surface.toml but no `collab` service in \
+         [sandbox.services], so a running window of theirs publishes none: {unreachable:?}"
+    );
+}

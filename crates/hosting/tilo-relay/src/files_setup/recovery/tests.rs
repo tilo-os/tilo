@@ -63,24 +63,6 @@ async fn peer(root: PathBuf, governor: &ed25519_dalek::SigningKey, seed: u8) -> 
     }
 }
 
-fn records(root: &Path, authority: Arc<WorkspaceAuthority>) -> fs::RecordServices {
-    fs::RecordServices {
-        authority: Arc::new(
-            fs::share_authority::ShareAuthority::open(root.join("shares.json")).unwrap(),
-        ),
-        repository: Arc::new(
-            fs::record_repository::RecordRepository::open(root.join("records")).unwrap(),
-        ),
-        access_registry: Arc::new(
-            fs::record_access::RecordAccessRegistry::new(32, 60_000).unwrap(),
-        ),
-        mutation_sink: None,
-        materializer: None,
-        availability: None,
-        workspace_authority: Some(authority),
-    }
-}
-
 fn fixture_state(governor: &ed25519_dalek::SigningKey) -> JoinedNamespace {
     let endpoint = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[74; 32]).public());
     // Replicas may legitimately differ from the originating ticket endpoint.
@@ -228,16 +210,17 @@ fn serve_host(
     let namespace = Arc::new(Mutex::new(
         fs::Namespace::new("native-host-history").unwrap(),
     ));
-    let services = records(root, Arc::clone(&authority));
-    let (hosted, ticket) = fs::Workspace::host_with_records(
-        host.endpoint.clone(),
-        host.lookup.clone(),
-        store,
-        hydrator,
-        namespace,
-        host.identity.clone(),
-        Some(authority.handle()),
-        services,
+    let (hosted, ticket) = fs::Workspace::host(
+        fs::sync::SyncNode {
+            endpoint: host.endpoint.clone(),
+            lookup: host.lookup.clone(),
+            store,
+            hydrator,
+            namespace,
+            identity: host.identity.clone(),
+            policy: Some(authority.handle()),
+        },
+        Some(&Arc::clone(&authority)),
     )
     .unwrap();
     let registration = tilo_relay::transport::ContentPeerRegistration {

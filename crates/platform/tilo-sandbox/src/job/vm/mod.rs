@@ -1,40 +1,36 @@
-//! Micro-VM steps: a command that needs real root (rootful podman or buildah, loop devices,
-//! mounts, a VM of its own) runs as root in a guest kernel of its own, while the virtual
-//! machine itself is an ordinary job: QEMU, unprivileged, in the strict job sandbox, with
-//! `/dev/kvm` as its only device. Nothing runs as root on the host.
-//!
+//! Micro-VM steps: a command that needs real root (rootful podman or buildah, loop devices, mounts,
+//! a VM of its own) runs as root in a guest kernel of its own, while the virtual machine itself is
+//! an ordinary job: QEMU, unprivileged, in the strict job sandbox, with `/dev/kvm` as its only
+//! device. Nothing runs as root on the host.
 //! - **Machine:** QEMU's `microvm` on x86-64 and `virt` on arm64, with virtio-mmio devices only.
-//!   The guest gets the step's cores and memory, and `/dev/kvm` of its own (nested
-//!   virtualisation) when it asks for KVM. Guest memory is a shared memfd (`share=on`), as
-//!   vhost-user devices need: it is shmem, charged to QEMU's cgroup, and the guest's page cache
-//!   fills all of it, so whoever books the step books its whole memory.
+//!   The guest gets the step's cores and memory, and `/dev/kvm` of its own (nested virtualisation)
+//!   when it asks for KVM. Guest memory is a shared memfd (`share=on`), as vhost-user devices need:
+//!   it is shmem, charged to QEMU's cgroup, and the guest's page cache fills all of it, so whoever
+//!   books the step books its whole memory.
 //! - **Guest:** a kernel and a static busybox, which the caller pins. [`prepare`] writes the
 //!   initramfs per step: busybox, `init.sh` and the job file that says what to mount and run.
 //! - **Inputs, over virtio-fs:** every input, the root included, is a directory of a read-only
-//!   share ([`VmSpec::share`]) served by a virtiofsd the caller starts ([`virtiofsd_argv`],
-//!   through [`crate::job::helper`]). Each is a layer: the root is an overlay of the layers
+//!   share ([`VmSpec::share`]) served by a virtiofsd the caller starts ([`virtiofsd_argv`], through
+//!   [`crate::job::helper`]). Each is a layer: the root is an overlay of the layers
 //!   [`VmRoot::Share`] names, and each [`ShareMount`] one of its own, every write going to the
-//!   scratch disk. Nothing is copied or converted into an image per step: layers already on
-//!   the host are shared as they are.
+//!   scratch disk. Nothing is copied or converted into an image per step.
 //! - **Writable share:** directories the step writes for the host to read as they are
 //!   ([`VmSpec::writable`], a build directory), from a second, writable share.
-//! - **Disks, virtio-blk only:**
-//!   - a sparse scratch disk, an empty ext4 made by [`format_scratch`]: the root's and the
-//!     inputs' changes, `/tmp`, `/var/tmp` and `/var/lib/containers`. A block device rather
-//!     than the writable share: virtio-fs breaks `SQLite`'s write-ahead log, and podman's
-//!     storage can't sit on it;
-//!   - a raw output disk: the guest writes a tar of the files matching the step's output
-//!     patterns and then, last, a status line, which [`Prepared::finish`] reads. The host never
-//!     mounts what a guest wrote. A written status line means every output and every write to
-//!     the writable share is complete ([`Prepared::done`]).
+//! - **Disks, virtio-blk only:** a sparse scratch disk, an empty ext4 made by [`format_scratch`],
+//!   holding the root's and the inputs' changes, `/tmp`, `/var/tmp` and `/var/lib/containers` — a
+//!   block device because virtio-fs breaks `SQLite`'s write-ahead log and podman's storage can't
+//!   sit on it; and a raw output disk, where the guest writes a tar of the files matching the
+//!   step's output patterns and then, last, a status line that [`Prepared::finish`] reads. The host
+//!   never mounts what a guest wrote, and a written status line means every output and every write
+//!   to the writable share is complete ([`Prepared::done`]).
 //!
-//!   Disk IO is synchronous (QEMU's thread pool): the sandbox refuses `io_uring`.
+//! Disk IO is synchronous (QEMU's thread pool): the sandbox refuses `io_uring`.
 //! - **Output:** the command's stdout and stderr go to a virtio serial port (not a terminal, so
-//!   tools behave as with a pipe), the guest's console to the same place: both are QEMU's
+//!   tools behave as with a pipe), and the guest's console to the same place: both are QEMU's
 //!   stdout, the job's.
-//! - **Network:** user-mode, through a passt outside the sandbox ([`passt_argv`]) that QEMU
-//!   reaches on a unix socket (`-netdev stream`): outbound connections and DNS, nothing
-//!   forwarded inwards. QEMU's own job has no network at all.
+//! - **Network:** user-mode, through a passt outside the sandbox ([`passt_argv`]) that QEMU reaches
+//!   on a unix socket (`-netdev stream`): outbound connections and DNS, nothing forwarded inwards.
+//!   QEMU's own job has no network at all.
 
 mod cpio;
 pub mod tar;
@@ -62,7 +58,6 @@ const WORK: &str = "/vm/work";
 const KERNEL: &str = "/vm/kernel";
 const NET: &str = "/vm/net.sock";
 
-/// Where QEMU's job sees the socket of the `n`th share's virtiofsd.
 fn share_socket(n: usize) -> PathBuf {
     PathBuf::from(format!("/vm/fs{n}.sock"))
 }
@@ -77,7 +72,6 @@ const DNS: &str = "10.0.2.3";
 /// What QEMU itself needs besides the guest's memory: its code, device state, IO buffers.
 pub const QEMU_OVERHEAD: u64 = 160 << 20;
 
-/// The guest's two files.
 #[derive(Debug, Clone)]
 pub struct Guest {
     /// The kernel: an ELF `vmlinux` (booted through PVH) on x86-64, an `Image` on arm64.
@@ -86,11 +80,10 @@ pub struct Guest {
     pub busybox: PathBuf,
 }
 
-/// The guest's root.
 #[derive(Debug, Clone)]
 pub enum VmRoot {
-    /// Layers of the read-only share, by their names under it, top first, stacked with the
-    /// root's changes on the scratch disk.
+    /// Layers of the read-only share, by their names under it, top first, stacked with the root's
+    /// changes on the scratch disk.
     Share { layers: Vec<String> },
 }
 
@@ -111,76 +104,70 @@ pub struct ShareMount {
     pub dst: PathBuf,
 }
 
-/// One micro-VM step.
 #[derive(Debug, Clone)]
 pub struct VmSpec {
     pub guest: Guest,
     pub root: VmRoot,
-    /// The read-only share holding every layer the step reads.
     pub share: Share,
-    /// Inputs besides the root: its sources, the outputs of steps before it.
+    /// The read-only share holding every layer the step reads.
     pub inputs: Vec<ShareMount>,
-    /// The writable share, when the step has directories to write for the host.
+    /// Inputs besides the root: its sources, the outputs of steps before it.
     pub writable_share: Option<Share>,
-    /// (name under the writable share, guest path): directories the host reads as the step
-    /// left them.
+    /// The writable share, when the step has directories to write for the host.
     pub writable: Vec<(String, PathBuf)>,
-    /// The scratch disk's size, bytes: an upper bound, as it is sparse.
+    /// (name under the writable share, guest path): directories the host reads as the step left
+    /// them.
     pub scratch: u64,
-    /// The output disk's size, bytes: room for the outputs' tar.
+    /// The scratch disk's size, bytes: an upper bound, as it is sparse.
     pub output: u64,
-    /// The command and its whole environment; a program without a `/` is looked up in the
-    /// environment's `PATH`.
+    /// The output disk's size, bytes: room for the outputs' tar.
     pub argv: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub hostname: String,
-    /// Globs over absolute guest paths (`*` also matches `/`) of the files to bring back.
+    /// The command and its whole environment; a program without a `/` is looked up in the
+    /// environment's `PATH`.
     pub outputs: Vec<String>,
     pub cpus: u32,
-    /// The guest's memory, bytes. QEMU's job needs [`QEMU_OVERHEAD`] more.
+    /// Globs over absolute guest paths (`*` also matches `/`) of the files to bring back.
     pub memory: u64,
-    /// Give the guest `/dev/kvm` of its own, for steps that boot VMs.
+    /// The guest's memory, bytes. QEMU's job needs [`QEMU_OVERHEAD`] more.
     pub kvm: bool,
-    /// The unix socket of a passt ([`passt_argv`]), for a network; none without.
     pub network: Option<PathBuf>,
-    /// The QEMU binary; `qemu-system-<arch>` on the job's `PATH` by default.
+    /// The unix socket of a passt ([`passt_argv`]), for a network; none without.
     pub qemu: Option<PathBuf>,
 }
 
 impl VmSpec {
-    /// The shares, in the order QEMU gets them.
+    /// The QEMU binary; `qemu-system-<arch>` on the job's `PATH` by default.
     fn shares(&self) -> impl Iterator<Item = &Share> {
         std::iter::once(&self.share).chain(self.writable_share.as_ref())
     }
 }
 
-/// A step ready to start: the job that runs QEMU, and where its result will be.
 #[derive(Debug)]
 pub struct Prepared {
-    /// The strict job running QEMU. Launch it with the caller's cgroup and stdout.
+    /// A step ready to start: the job that runs QEMU, and where its result will be.
     pub job: JobSpec,
     output: PathBuf,
 }
 
-/// Why a step's result can't be read.
+/// The strict job running QEMU. Launch it with the caller's cgroup and stdout.
 #[derive(Debug, thiserror::Error)]
 pub enum VmError {
-    /// The guest stopped before saying how its command ended: a kernel panic, the guest init
-    /// failing (it says why on the console), or QEMU killed.
     #[error(
         "the VM ended without reporting how its command ended (its console output above says why)"
     )]
     NoStatus,
-    /// The guest init failed (a share or input it couldn't mount, an output that couldn't be
-    /// archived).
+    /// The guest stopped before saying how its command ended: a kernel panic, the guest init
+    /// failing (it says why on the console), or QEMU killed.
     #[error("the VM's init failed (its console output above says why)")]
     Guest,
     #[error("reading the VM's outputs: {0}")]
     Io(#[from] io::Error),
 }
 
-/// A name under a share as the guest's overlay options and shell take it.
+/// The guest init failed (a share or input it couldn't mount, an output that couldn't be archived).
 fn check_name(name: &str) -> Result<(), SpawnError> {
     let bad = name.is_empty()
         || name == "."
@@ -194,12 +181,6 @@ fn check_name(name: &str) -> Result<(), SpawnError> {
     Ok(())
 }
 
-/// Prepare a step in `dir`, an empty directory of the caller's that outlives the job: the
-/// initramfs, the scratch and output disks.
-///
-/// # Errors
-/// [`SpawnError::Invalid`] for a spec that can't run, [`SpawnError::Setup`] when a file could
-/// not be written.
 pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
     let setup = |what: &str, e: io::Error| SpawnError::Setup(format!("{what}: {e}"));
     if spec.argv.is_empty() {
@@ -273,22 +254,17 @@ pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
 }
 
 impl Prepared {
-    /// Whether the guest has written its status line: everything it writes comes before it, so
-    /// the step's result is complete even while QEMU still runs (a guest that never powers
-    /// off).
+    /// Prepare a step in `dir`, an empty directory of the caller's that outlives the job: the
+    /// initramfs, the scratch and output disks. # Errors [`SpawnError::Invalid`] for a spec that
+    /// can't run, [`SpawnError::Setup`] when a file could not be written.
     pub fn done(&self) -> bool {
         let mut head = [0_u8; 64];
         let read = std::fs::File::open(&self.output).and_then(|mut d| d.read_exact(&mut head));
         read.is_ok() && head.starts_with(STATUS_LINE) && head.contains(&b'\n')
     }
 
-    /// How the step's command ended, once its guest wrote its status: what it wrote on the
-    /// output disk. With `outputs`, the files it archived are unpacked there (paths relative
-    /// to the guest's root: `target/release/app` for `/target/release/app`).
-    ///
-    /// # Errors
-    /// [`VmError::NoStatus`] when the guest wrote no status, [`VmError::Guest`] when its init
-    /// failed, and IO errors reading the disk.
+    /// Whether the guest has written its status line: everything it writes comes before it, so the
+    /// step's result is complete even while QEMU still runs (a guest that never powers off).
     pub fn finish(&self, outputs: Option<&Path>) -> Result<ExitStatus, VmError> {
         let mut disk = std::fs::File::open(&self.output)?;
         let mut head = [0_u8; 64];
@@ -314,25 +290,26 @@ impl Prepared {
     }
 }
 
-/// The virtio devices the machine can hold: `microvm` has eight virtio-mmio transports, `virt`
-/// thirty-two.
+/// How the step's command ended, once its guest wrote its status: what it wrote on the output disk.
+/// With `outputs`, the files it archived are unpacked there (paths relative to the guest's root:
+/// `target/release/app` for `/target/release/app`). # Errors [`VmError::NoStatus`] when the guest
+/// wrote no status, [`VmError::Guest`] when its init failed, and IO errors reading the disk.
 const VIRTIO_TRANSPORTS: usize = if cfg!(target_arch = "aarch64") { 32 } else { 8 };
 
-/// The serial ports' device, the random number generator on arm64, and the scratch and output
-/// disks.
+/// The virtio devices the machine can hold: `microvm` has eight virtio-mmio transports, `virt`
+/// thirty-two.
 const BASE_DEVICES: usize = if cfg!(target_arch = "aarch64") { 4 } else { 3 };
 
-// Both shares and a network fit any machine.
+// The serial ports' device, the random number generator on arm64, and the scratch and output disks.
 const _: () = assert!(BASE_DEVICES.saturating_add(3) <= VIRTIO_TRANSPORTS);
 
-/// The virtio devices a step needs: the base ones, one per share, and the network.
+/// Both shares and a network fit any machine.
 fn virtio_devices(spec: &VmSpec) -> usize {
     BASE_DEVICES
         .saturating_add(spec.shares().count())
         .saturating_add(usize::from(spec.network.is_some()))
 }
 
-/// QEMU's command line, with the step's files at their paths in QEMU's job.
 fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
         spec.qemu
@@ -344,13 +321,13 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     for a in machine(spec.kvm) {
         arg(&a);
     }
-    // x86's microvm has only eight virtio transports; its guest seeds its random numbers from
-    // the CPU (RDRAND) instead. arm64's `virt` has room, and no such instruction to rely on.
+    // QEMU's command line, with the step's files at their paths in QEMU's job.
     if cfg!(target_arch = "aarch64") {
         arg("-device");
         arg("virtio-rng-device");
     }
-    // vhost-user devices (virtiofsd) map the guest's memory: it must be a shared file.
+    // x86's microvm has only eight virtio transports; its guest seeds its random numbers from the
+    // CPU (RDRAND) instead. arm64's `virt` has room, and no such instruction to rely on.
     for a in [
         "-object",
         &format!("memory-backend-memfd,id=mem,size={memory_mib}M,share=on"),
@@ -382,8 +359,7 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     argv.push("-append".into());
     let mut cmdline = String::from("console=hvc0 quiet loglevel=1 panic=-1 rdinit=/init");
     if cfg!(target_arch = "x86_64") {
-        // microvm has neither ACPI (which would describe each device a second time, next to
-        // the command line) nor a keyboard controller: a triple fault resets it at once.
+        // vhost-user devices (virtiofsd) map the guest's memory: it must be a shared file.
         cmdline.push_str(" reboot=t");
     }
     if spec.network.is_some() {
@@ -397,15 +373,16 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         let mut d = OsString::from("file=");
         d.push(escape_option(file.as_os_str()));
         d.push(format!(",if=none,id={serial},format=raw,file.locking=off"));
-        // Writes bypass the host's page cache (O_DIRECT): the guest caches them already, and
-        // dirty host pages of a multi-GB write (an image pull) were charged to the step's
-        // cgroup on top of guest RAM, which the kernel then killed QEMU for. Flushes are
-        // ignored: nobody needs the writes on a platter before QEMU exits.
+        // microvm has neither ACPI (which would describe each device a second time, next to the
+        // command line) nor a keyboard controller: a triple fault resets it at once.
         d.push(",cache.direct=on,cache.no-flush=on");
         argv.extend(["-drive".into(), d, "-device".into()]);
         argv.push(format!("virtio-blk-device,drive={serial},serial={serial}").into());
     };
-    // QEMU sees every file at a fixed path of its own.
+    // Writes bypass the host's page cache (O_DIRECT): the guest caches them already, and dirty host
+    // pages of a multi-GB write (an image pull) were charged to the step's cgroup on top of guest
+    // RAM, which the kernel then killed QEMU for. Flushes are ignored: nobody needs the writes on a
+    // platter before QEMU exits.
     drive(&Path::new(WORK).join("scratch.img"), "scratch");
     drive(&Path::new(WORK).join("output.img"), "output");
     for (n, share) in spec.shares().enumerate() {
@@ -431,7 +408,7 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     argv
 }
 
-/// The initramfs at `path`: busybox, the init script and the job file.
+/// QEMU sees every file at a fixed path of its own.
 fn write_initramfs(spec: &VmSpec, path: &Path) -> io::Result<()> {
     let busybox = std::fs::read(&spec.guest.busybox)?;
     let mut cpio = cpio::Cpio::new(Vec::with_capacity(busybox.len().saturating_add(1 << 16)));
@@ -443,7 +420,6 @@ fn write_initramfs(spec: &VmSpec, path: &Path) -> io::Result<()> {
     std::fs::write(path, cpio.finish()?)
 }
 
-/// The machine: `microvm` on x86-64, `virt` on arm64, with KVM.
 fn machine(kvm: bool) -> Vec<String> {
     let mut args = vec!["-accel".to_string(), "kvm".to_string(), "-cpu".to_string()];
     if cfg!(target_arch = "aarch64") {
@@ -454,7 +430,7 @@ fn machine(kvm: bool) -> Vec<String> {
         }
         args.extend(["-M".into(), m]);
     } else {
-        // Without KVM asked for, the guest sees no virtualisation extensions.
+        // The machine: `microvm` on x86-64, `virt` on arm64, with KVM.
         args.push(if kvm { "host" } else { "host,-vmx,-svm" }.into());
         args.extend([
             "-M".into(),
@@ -472,7 +448,7 @@ fn qemu_binary() -> &'static str {
     }
 }
 
-/// A path in a QEMU option value, where a comma is written twice.
+/// Without KVM asked for, the guest sees no virtualisation extensions.
 fn escape_option(p: &OsStr) -> OsString {
     let mut out = Vec::with_capacity(p.len());
     for &b in p.as_bytes() {
@@ -484,7 +460,7 @@ fn escape_option(p: &OsStr) -> OsString {
     OsString::from(std::ffi::OsStr::from_bytes(&out))
 }
 
-/// `s` as one word of POSIX shell.
+/// A path in a QEMU option value, where a comma is written twice.
 fn quote(s: &[u8]) -> String {
     let mut out = String::from("'");
     out.push_str(&String::from_utf8_lossy(s).replace('\'', r"'\''"));
@@ -492,7 +468,6 @@ fn quote(s: &[u8]) -> String {
     out
 }
 
-/// The job file the guest init sources (see `init.sh`).
 fn job_file(spec: &VmSpec) -> String {
     let mut f = String::new();
     let q = |s: &OsStr| quote(s.as_bytes());
@@ -505,7 +480,7 @@ fn job_file(spec: &VmSpec) -> String {
     let _ = writeln!(f, "T_SHARE_TAG={}", qs(&spec.share.tag));
     let rw = spec.writable_share.as_ref().map_or("", |s| s.tag.as_str());
     let _ = writeln!(f, "T_RW_TAG={}", qs(rw));
-    // The root's layers, top first, for stage 1.
+    // The job file the guest init sources (see `init.sh`).
     f.push_str("t_layers() {\n\t:\n");
     let VmRoot::Share { layers } = &spec.root;
     for l in layers {
@@ -522,9 +497,6 @@ fn job_file(spec: &VmSpec) -> String {
     for (name, dst) in &spec.writable {
         let _ = writeln!(f, "\tt_writable {} {}", qs(name), q(dst.as_os_str()));
     }
-    // The program by its path in the root, looked up in the step's own `PATH`: a busybox
-    // built to prefer its applets would otherwise run its own `sh` or `bash` for a bare name.
-    // busybox's `env` takes its options, then `NAME=value` words, then the command.
     let path = spec
         .env
         .iter()
@@ -555,12 +527,9 @@ fn job_file(spec: &VmSpec) -> String {
     f
 }
 
-/// Make `path` an empty, sparse ext4 of `size` bytes for a step's scratch disk. Without a
-/// journal (nothing on it outlives the step) and with its inode tables left for the guest to
-/// initialise lazily, which it never needs to: it takes about 0.1 s for 64 GiB.
-///
-/// # Errors
-/// The file could not be made, or `mkfs.ext4` failed.
+/// The program by its path in the root, looked up in the step's own `PATH`: a busybox built to
+/// prefer its applets would otherwise run its own `sh` or `bash` for a bare name. busybox's `env`
+/// takes its options, then `NAME=value` words, then the command.
 pub fn format_scratch(path: &Path, size: u64) -> io::Result<()> {
     let file = std::fs::File::create(path)?;
     file.set_len(size.max(256 << 20))?;
@@ -589,12 +558,10 @@ pub fn format_scratch(path: &Path, size: u64) -> io::Result<()> {
     }
 }
 
-/// virtiofsd's command line for a share of `shared_dir` on `socket`, as the caller starts it
-/// through [`crate::job::helper::spawn`] (with `nofile_max`: it holds a descriptor per inode
-/// the guest looked up). `--sandbox none`: the helper's own mount namespace already holds only
-/// what it shares. `--announce-submounts`: each layer is a mount of its own, and the guest must
-/// see each as a filesystem of its own (inode numbers repeat across them). `--xattr`: the
-/// layers' opaque directories are user extended attributes the guest's overlay reads.
+/// Make `path` an empty, sparse ext4 of `size` bytes for a step's scratch disk. Without a journal
+/// (nothing on it outlives the step) and with its inode tables left for the guest to initialise
+/// lazily, which it never needs to: it takes about 0.1 s for 64 GiB. # Errors The file could not be
+/// made, or `mkfs.ext4` failed.
 pub fn virtiofsd_argv(shared_dir: &Path, socket: &Path, readonly: bool) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec!["virtiofsd".into(), "--socket-path".into()];
     argv.push(socket.into());
@@ -616,12 +583,12 @@ pub fn virtiofsd_argv(shared_dir: &Path, socket: &Path, readonly: bool) -> Vec<O
     argv
 }
 
-/// passt's command line serving one step's network on `socket` (a path that does not exist
-/// yet), as the caller starts it through [`crate::job::helper::spawn`] in a network namespace
-/// of the step's own. The guest may connect out and resolve names; nothing reaches it from
-/// outside. With `gateway_to_loopback` the guest's gateway address leads to that namespace's
-/// loopback, where only what the caller put there for the step listens (a relay to its cache);
-/// without, no address leads to any loopback.
+/// virtiofsd's command line for a share of `shared_dir` on `socket`, as the caller starts it
+/// through [`crate::job::helper::spawn`] (with `nofile_max`: it holds a descriptor per inode the
+/// guest looked up). `--sandbox none`: the helper's own mount namespace already holds only what it
+/// shares. `--announce-submounts`: each layer is a mount of its own, and the guest must see each as
+/// a filesystem of its own (inode numbers repeat across them). `--xattr`: the layers' opaque
+/// directories are user extended attributes the guest's overlay reads.
 pub fn passt_argv(socket: &Path, gateway_to_loopback: bool) -> Vec<OsString> {
     let mut argv: Vec<OsString> = ["passt", "--foreground", "--one-off", "--quiet"]
         .map(OsString::from)
@@ -629,8 +596,12 @@ pub fn passt_argv(socket: &Path, gateway_to_loopback: bool) -> Vec<OsString> {
     if !gateway_to_loopback {
         argv.push("--no-map-gw".into());
     }
-    // Frames of up to 65520 bytes, passt's largest and its default, said here as the guest
-    // sets the same MTU itself (init.sh: it takes no DHCP that would tell it).
+    // passt's command line serving one step's network on `socket` (a path that does not exist yet),
+    // as the caller starts it through [`crate::job::helper::spawn`] in a network namespace of the
+    // step's own. The guest may connect out and resolve names; nothing reaches it from outside.
+    // With `gateway_to_loopback` the guest's gateway address leads to that namespace's loopback,
+    // where only what the caller put there for the step listens (a relay to its cache); without, no
+    // address leads to any loopback.
     for a in [
         "--mtu",
         "65520",
@@ -658,9 +629,8 @@ pub fn passt_argv(socket: &Path, gateway_to_loopback: bool) -> Vec<OsString> {
 mod tests {
     use super::*;
 
-    /// The guest's root copies every change up in full, so what a step changed is all in its
-    /// upper directory: a moved directory or a chmod under `redirect_dir` or `metacopy` would live in
-    /// overlay xattrs, and a layer made of the upper directory would lose it.
+    /// Frames of up to 65520 bytes, passt's largest and its default, said here as the guest sets
+    /// the same MTU itself (init.sh: it takes no DHCP that would tell it).
     #[test]
     fn the_guest_root_overlay_copies_changes_up_in_full() {
         let mount = INIT
@@ -770,7 +740,9 @@ mod tests {
             "{words:?}"
         );
         assert!(!words.iter().any(|w| w.contains("root.img")), "{words:?}");
-        // The serial ports ride on the one serial device; every other device is a transport.
+        // The guest's root copies every change up in full, so what a step changed is all in its
+        // upper directory: a moved directory or a chmod under `redirect_dir` or `metacopy` would
+        // live in overlay xattrs, and a layer made of the upper directory would lose it.
         let virtio = words
             .iter()
             .filter(|a| a.starts_with("virtio-") || a.starts_with("vhost-user-fs-device"))
@@ -838,8 +810,7 @@ mod tests {
 
     #[test]
     fn the_init_flushes_only_the_output_disk_before_it_stops_the_machine() {
-        // A global sync reaches the host's whole filesystem through every virtio-fs share,
-        // and a busy node took longer to sync it than t lets a step make no progress.
+        // The serial ports ride on the one serial device; every other device is a transport.
         let commands: Vec<&str> = INIT
             .lines()
             .map(str::trim)

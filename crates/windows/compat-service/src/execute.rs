@@ -119,7 +119,6 @@ impl SandboxExecutor for BwrapExecutor {
 }
 
 fn duplicate_above_child_slots(fd: BorrowedFd<'_>) -> Result<File, std::io::Error> {
-    // The duplicate stays close-on-exec in the parent.
     Ok(rustix::io::fcntl_dupfd_cloexec(fd, GROUP_CHILD_FD + 1)?.into())
 }
 

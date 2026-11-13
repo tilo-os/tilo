@@ -19,6 +19,7 @@ use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::emoji_picker::{EmojiPicker, PickerEvent};
 use crate::widget::reaction_strip::{self, ReactionStrip, StripMetrics};
 use crate::window_toolbar::{ToolbarEvent, ToolbarReaction, WindowToolbar, reaction_action};
@@ -186,7 +187,7 @@ impl ToolbarRow {
                     usize::MAX,
                 );
                 let metrics = StripMetrics::of(theme);
-                let laid = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                let laid = crate::text_render::with_layout_renderer(theme, |text| {
                     reaction_strip::layout(
                         &groups,
                         REACTION_SHOWER,
@@ -346,7 +347,7 @@ impl ToolbarRow {
             self.reactions.picker.open_at(Some(anchor), area, theme);
         }
         if self.reactions.picker.is_open() {
-            Widget::draw(
+            DrawChild::draw_child(
                 &mut *self.reactions.picker,
                 scene,
                 transform,

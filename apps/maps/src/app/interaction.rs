@@ -1,10 +1,6 @@
 use super::{Key, MapInfo, MapsApp, NamedKey, Panel, WindowEvent};
 
 impl MapsApp {
-    /// Route a keystroke into the focused endpoint field. Enter runs its
-    /// search; any text edit is mirrored into the model (`*_query`) so the
-    /// geocode / dropdown logic runs unchanged. Returns whether the key was
-    /// consumed.
     pub(super) fn route_field_key(
         &mut self,
         event: &WindowEvent,
@@ -21,9 +17,6 @@ impl MapsApp {
         false
     }
 
-    /// Drive one raw event into the ⋯ overflow [`ContextMenu`] (hand-laid: the
-    /// menu hit-tests against its own `open_at` rect). Poll `take_selection`
-    /// afterwards.
     pub(super) fn drive_overflow(
         &mut self,
         event: &WindowEvent,
@@ -34,7 +27,6 @@ impl MapsApp {
         crate::hand_laid::drive(&mut self.overflow, event, scale, modifiers, doc);
     }
 
-    /// Map a row chosen in the open menu to app state.
     pub(super) fn overflow_select(&mut self, idx: usize) {
         if self.menu_for == super::MapMenu::Layers {
             if idx == 0 {
@@ -50,8 +42,6 @@ impl MapsApp {
         }
     }
 
-    /// Forward a `CursorMoved` to the endpoint inputs so their hover state
-    /// tracks (a click then lands a caret; a press-drag extends a selection).
     pub(super) fn forward_move_to_field_inputs(
         &mut self,
         event: &WindowEvent,
@@ -63,10 +53,6 @@ impl MapsApp {
     }
 
     pub(super) fn handle_key(&mut self, key: &Key, modifiers: winit::event::Modifiers) -> bool {
-        // A focused Directions field (From / To) owns typed characters
-        // through `route_field_key`; `handle_key` runs only when no field has
-        // keyboard focus, so it dispatches the map-level shortcuts. `/` and
-        // Ctrl+K belong to the platform search.
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         match key {
             Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
@@ -86,8 +72,6 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("f") => {
-                // Fit whatever is shown: a road route, or — in Transit mode
-                // — the selected itinerary's geometry, or the endpoints.
                 self.fit_current();
                 true
             }
@@ -134,9 +118,6 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("m") => {
-                // Only reachable while the dialog is closed (once open, its city
-                // field owns the keyboard), so this opens it — focusing the
-                // search field. Escape / ✕ / the scrim close it.
                 if !self.offline_panel.is_open() {
                     self.offline_panel.open(self.tiles.cache_bytes());
                 }

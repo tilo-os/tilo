@@ -28,22 +28,16 @@ use crate::output::{Channel, OrderedRouter, OskOutput, PreeditEmulator, Step};
 
 static SERVING: AtomicBool = AtomicBool::new(false);
 
-/// Make this process the session's keyboard: its live window takes the
-/// compositor's input method and types into the focused field. The binary
-/// calls it before running the app.
 pub fn serve() {
     SERVING.store(true, Ordering::Relaxed);
 }
 
-/// Whether this process serves the session as its keyboard.
 pub(crate) fn serving() -> bool {
     SERVING.load(Ordering::Relaxed)
 }
 
-/// Whether the keyboard uses the compositor's input method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InputMethodChoice {
-    /// Use it when the compositor offers it, else stay on screen.
     Auto,
     /// Use it; the keyboard cannot serve without it.
     Require,
@@ -76,10 +70,7 @@ impl ContextChanges {
     }
 }
 
-/// A keyboard serving the session: the focus changes the input method
-/// reports, and where the typed output goes.
 pub(crate) struct Connection {
-    /// Focus changes; `None` for an always-visible keyboard.
     pub focus: Option<FocusChanges>,
     pub context: Option<ContextChanges>,
     pub invoke_context: Box<dyn FnMut(u32, u32) -> Result<(), String>>,
@@ -91,7 +82,6 @@ pub(crate) struct Connection {
 pub(crate) struct FocusChanges(Option<Receiver<ImTransition>>);
 
 impl FocusChanges {
-    /// The changes reported since the last call.
     pub fn take(&mut self) -> Vec<ImTransition> {
         let Some(changes) = &self.0 else {
             return Vec::new();
@@ -111,8 +101,6 @@ impl FocusChanges {
     }
 }
 
-/// Connect the keyboard to the session. `wake` wakes the app when the input
-/// method reports a focus change.
 pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Connection, String> {
     let im = match choice {
         InputMethodChoice::Off => None,
@@ -188,10 +176,7 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
     })
 }
 
-/// What the focus thread reads from the input method: the live client, or a
-/// fake in tests.
 trait FocusSource: Send + 'static {
-    /// Everything that arrived, without blocking.
     fn poll_events(&mut self) -> (Vec<ImEvent>, Vec<ContextTransition>);
 }
 
@@ -202,10 +187,6 @@ impl FocusSource for InputMethodClient {
     }
 }
 
-/// Read the input method's focus events on a thread of their own, folded
-/// through an [`ImState`] into the changes the keyboard follows. The thread
-/// sleeps in [`ConnectionWait::wait`] between batches: no input-method event,
-/// no wakeup.
 fn follow_focus<S: FocusSource>(
     im: Arc<Mutex<S>>,
     waiter: ConnectionWait,
@@ -258,10 +239,6 @@ fn follow_focus<S: FocusSource>(
     receive
 }
 
-/// Deliver one keyboard output, keeping it ordered after everything
-/// delivered before it even when it travels on the other connection.
-/// Returns whether it read the input method's socket (a barrier), which
-/// leaves events for the focus thread to collect.
 fn deliver(
     router: &mut OrderedRouter,
     im: &mut InputMethodClient,
@@ -292,8 +269,6 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::AtomicUsize;
 
-    /// Stands in for the input-method client: reads what the "compositor"
-    /// wrote to the socket and hands out the events queued for it.
     struct FakeSource {
         socket: UnixStream,
         queued: Arc<Mutex<Vec<ImEvent>>>,
@@ -306,7 +281,6 @@ mod tests {
         fn poll_events(&mut self) -> (Vec<ImEvent>, Vec<ContextTransition>) {
             #[cfg(target_os = "linux")]
             {
-                // SAFETY: `gettid` has no preconditions.
                 let tid = unsafe { libc::gettid() };
                 *self.thread.lock().expect("thread") = Some(tid);
             }

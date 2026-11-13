@@ -34,9 +34,6 @@ use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 
-/// The variable a host sets when the gate is the child's stdin. Internal to a
-/// host and the child it starts; the child removes it, or replaces its stdin,
-/// before anything it runs could inherit it.
 pub const LAUNCH_REGISTRATION_STDIN_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_STDIN";
 
 /// The variable an earlier host set instead, naming an inherited descriptor
@@ -44,10 +41,6 @@ pub const LAUNCH_REGISTRATION_STDIN_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATI
 /// from before [`LAUNCH_REGISTRATION_STDIN_ENV`]; [`install`] never sets it.
 pub const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
-/// The host's end of a launch's registration gate.
-///
-/// Dropping it without [`Self::release`] closes the gate: the child reads
-/// end-of-file and goes no further.
 #[derive(Debug)]
 pub struct RegistrationGate(UnixStream);
 
@@ -57,9 +50,6 @@ impl RegistrationGate {
         self.0.write_all(&[1])
     }
 
-    /// [`Self::release`], handing the launcher the shell's window door for
-    /// the app (`crate::windows`) with the release: the launcher passes it on
-    /// to the app it starts.
     #[cfg(target_os = "linux")]
     pub fn release_with_window_door(self, door: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
         use std::os::fd::AsFd as _;
@@ -72,8 +62,6 @@ impl RegistrationGate {
 #[cfg(target_os = "linux")]
 static WINDOW_DOOR: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
 
-/// The window door the shell released this launcher with, once; `None` when
-/// it sent none.
 #[cfg(target_os = "linux")]
 pub fn take_window_door() -> Option<OwnedFd> {
     WINDOW_DOOR.lock().map_or_else(
@@ -97,9 +85,6 @@ pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
     Ok(RegistrationGate(release))
 }
 
-/// [`install`] for a host that starts the child some other way than
-/// `command.spawn()` (the launcher's app spawner): `command` gets the gate's
-/// variable, and the child's end comes back to be placed as its stdin.
 pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, OwnedFd)> {
     let (release, wait) = UnixStream::pair()?;
     command
@@ -128,8 +113,6 @@ pub fn wait_on_stdin() -> io::Result<()> {
     Ok(())
 }
 
-/// Read the host's release off stdin, keeping the window door that came with
-/// it.
 #[cfg(target_os = "linux")]
 fn read_release() -> io::Result<()> {
     // SAFETY: fd 0 is the gate the host handed over, open until `dup2`
@@ -143,7 +126,6 @@ fn read_release() -> io::Result<()> {
     Ok(())
 }
 
-/// The release on `gate`, and the window door that came with it.
 #[cfg(target_os = "linux")]
 fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
     let mut release = [0_u8; 1];
@@ -223,7 +205,6 @@ mod tests {
         );
     }
 
-    /// Start the child gated; its stdout and the gate.
     fn spawn_gated() -> (
         std::process::Child,
         BufReader<std::process::ChildStdout>,
@@ -233,7 +214,6 @@ mod tests {
         command
             .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
-            // A host that once used the descriptor handoff: `install` drops it.
             .env(LAUNCH_REGISTRATION_FD_ENV, "9")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -253,7 +233,6 @@ mod tests {
                 0,
                 "the child ended without reporting"
             );
-            // libtest may print the test's name on the same line first.
             let line = line.trim();
             if let Some(report) = [
                 "waiting",

@@ -1,16 +1,10 @@
-//! The conversion page: a quantity, two units and an amount, converted.
-//!
-//! It is a page of the same window the calculator and the graphs are, reached
-//! from the bar's mode switcher the way they are. The amount is a field of its
-//! own, so a conversion never disturbs the expression being typed on the
-//! calculator page.
-//!
-//! Everything on it is drawn here from the theme, like the keypad, and every
-//! target it publishes is also a semantic action
-//! (`calculator.convert:…`), so assistive technology reaches the same
-//! conversion a press does.
+//! The conversion page: a quantity, two units and an amount, converted. It is a
+//! page of the same window, so its own amount field never disturbs the
+//! expression being typed on the calculator page. Every target it publishes is
+//! also a semantic action (`calculator.convert:…`).
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -22,28 +16,23 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::convert::{self, Dimension, Unit};
 use crate::draw::{self, Align};
+use crate::resource::CATALOG;
+use ui::widget::DrawChild;
 
-/// What a press on the conversion page asks for.
+/// What a press on the page asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConvertAction {
-    /// Show this quantity's units.
     Quantity(Dimension),
-    /// Ask for money: the one quantity Tilo has no rate source for.
     Currency,
-    /// Step the source unit by `-1` or `1` within the quantity.
     From(i32),
-    /// Step the target unit by `-1` or `1`.
     To(i32),
-    /// Exchange the two units.
     Swap,
-    /// Copy the converted result.
     Copy,
-    /// Focus the amount field.
     Focus,
 }
 
-/// The measurements the page lays itself out with, cached from the last draw
-/// so the event path places everything the same way.
+/// Cached from the last draw so the event path places everything the same
+/// way.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     pad: f64,
@@ -66,16 +55,15 @@ impl Metrics {
     }
 }
 
-/// The conversion page: its state is the quantity, the two units and the
-/// amount being typed. None of it is the shared document.
+/// The quantity, the two units and the amount being typed; none of it is in
+/// the shared document.
 pub struct ConvertPage {
     dimension: Dimension,
     from: usize,
     to: usize,
     field: TextInput,
-    /// What the last copy did, for the mark beside the result.
+    /// What the last copy did.
     copied: Option<(bool, ui::time::Instant)>,
-    /// Geometry, laid out by [`Self::layout`].
     area: Rect,
     chips: Vec<(Dimension, Rect)>,
     from_rect: Rect,
@@ -108,8 +96,8 @@ impl ConvertPage {
             from,
             to,
             field: TextInput::local()
-                .with_placeholder("Amount")
-                .with_accessible_name("Amount to convert")
+                .with_placeholder(crate::resource::CATALOG.t("calculator-amount"))
+                .with_accessible_name(crate::resource::CATALOG.t("calculator-amount-to-convert"))
                 .with_id("calculator.amount"),
             copied: None,
             area: Rect::ZERO,
@@ -129,13 +117,12 @@ impl ConvertPage {
         }
     }
 
-    /// The quantity shown.
     pub fn dimension(&self) -> Dimension {
         self.dimension
     }
 
-    /// The source unit: the quantity's first when an index somehow outlives
-    /// the quantity it was chosen in.
+    /// The quantity's first unit when the index outlived the quantity it was
+    /// chosen in.
     pub fn from(&self) -> &'static Unit {
         let units = self.dimension.units();
         units
@@ -152,12 +139,10 @@ impl ConvertPage {
             .unwrap_or(&crate::convert::FALLBACK_UNIT)
     }
 
-    /// The amount as typed.
     pub fn amount(&self) -> &str {
         self.field.value()
     }
 
-    /// The amount as a number, `None` while it is not one.
     pub fn value(&self) -> Option<f64> {
         let text = self.amount().trim();
         if text.is_empty() {
@@ -166,8 +151,7 @@ impl ConvertPage {
         text.parse::<f64>().ok().filter(|value| value.is_finite())
     }
 
-    /// The converted amount as the display would write it, or what is
-    /// missing.
+    /// The converted amount as the display writes it, or what is missing.
     pub fn result_text(&self) -> Option<String> {
         let value = self.value()?;
         let converted = convert::convert(value, self.from(), self.to());
@@ -180,9 +164,7 @@ impl ConvertPage {
         })
     }
 
-    /// The field's widget, for typing.
-    /// Put `text` in the amount, as a capture's scenario does; a live window
-    /// only ever types into it.
+    /// For a capture's scenario; a live window only ever types.
     pub fn set_field_text(&mut self, text: &str) {
         self.field.set_text(text);
     }
@@ -199,7 +181,6 @@ impl ConvertPage {
         self.field.set_focus(focused);
     }
 
-    /// The field's rect: a press inside it lands the caret.
     pub fn field_rect(&self) -> Rect {
         self.field_rect
     }
@@ -209,19 +190,16 @@ impl ConvertPage {
         self.copied = Some((copied, ui::time::now()));
     }
 
-    /// Whether the page is showing the currency note instead of units.
     pub fn currency_note_shown(&self) -> bool {
         self.currency
     }
 
-    /// The copied mark, for the page's tests and its paint.
     pub fn copied(&self) -> Option<bool> {
         self.copied
             .filter(|(_, at)| ui::time::now().saturating_duration_since(*at).as_secs_f32() < 1.4)
             .map(|(copied, _)| copied)
     }
 
-    /// Where the control `action` stands, once the page has laid out.
     pub fn control_rect(&self, action: &ConvertAction) -> Option<Rect> {
         Some(match action {
             ConvertAction::Quantity(dimension) => self
@@ -238,7 +216,6 @@ impl ConvertPage {
         })
     }
 
-    /// What a press at `p` asks for.
     pub fn action_at(&self, p: Point) -> Option<ConvertAction> {
         if self.field_rect.contains(p) {
             return Some(ConvertAction::Focus);
@@ -257,8 +234,8 @@ impl ConvertPage {
         if self.copy.contains(p) {
             return Some(ConvertAction::Copy);
         }
-        // A unit is one target: pressing it steps to the next unit of its
-        // quantity. Assistive technology reaches the step back as well.
+        // A unit is one target: a press steps to the next unit of its quantity.
+        // Assistive technology reaches the step back as well.
         if self.from_rect.contains(p) {
             return Some(ConvertAction::From(1));
         }
@@ -268,8 +245,7 @@ impl ConvertPage {
         None
     }
 
-    /// Do `action`: the page's whole vocabulary, shared by a press, a key and
-    /// assistive technology.
+    /// A press, a key and assistive technology all come through here.
     pub fn apply(&mut self, action: &ConvertAction) {
         let units = self.dimension.units().len();
         match action {
@@ -300,8 +276,7 @@ impl ConvertPage {
         }
     }
 
-    /// The semantic target the page publishes for `action`, the same address
-    /// a press runs.
+    /// The address a press runs.
     pub fn semantic_target(action: &ConvertAction) -> String {
         match action {
             ConvertAction::Quantity(dimension) => {
@@ -336,7 +311,7 @@ impl ConvertPage {
         })
     }
 
-    /// Lay the page out in `area`, in the theme's own measurements.
+    /// In the theme's own measurements.
     pub fn layout(&mut self, area: Rect, theme: &Theme) {
         self.m = Metrics::of(theme);
         self.area = area;
@@ -348,19 +323,17 @@ impl ConvertPage {
             area.y1 - m.pad,
         );
         let width = inner.width();
-        // The quantity chips wrap: eight of them do not fit a phone at a
-        // readable size, and a chip nobody can read is not a choice.
+        // The chips wrap: eight do not fit a phone at a readable size.
         let chip_gap = m.gap * 0.5;
-        // Each chip is as wide as its own word, measured in the face it is
-        // drawn in, so a row of them reads as one row of choices.
-        let chip_widths = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        // Each chip is as wide as its own word, in the face it is drawn in.
+        let chip_widths = ui::text_render::with_layout_renderer(theme, |text| {
             let mut widths = Vec::with_capacity(convert::DIMENSIONS.len() + 1);
             for label in convert::DIMENSIONS
                 .iter()
                 .map(|dimension| dimension.label())
-                .chain(std::iter::once("Currency"))
+                .chain(std::iter::once(CATALOG.t("calculator-currency")))
             {
-                let face = ButtonFace::new(Rect::ZERO, label)
+                let face = ButtonFace::new(Rect::ZERO, &label)
                     .control_size(ControlSize::Small)
                     .role(ButtonRole::Secondary);
                 widths.push(face.intrinsic_width(text, theme));
@@ -379,8 +352,7 @@ impl ConvertPage {
             chips.push((dimension, Rect::new(x, y, x + w, y + m.chip_h)));
             x += w + chip_gap;
         }
-        // Money last, on the same flow, because it is the quantity people
-        // look for and the one this page cannot convert.
+        // Money last: it is the one quantity this page cannot convert.
         let w = chip_widths
             .last()
             .copied()
@@ -398,8 +370,7 @@ impl ConvertPage {
             .map(|(_, rect)| rect.y1)
             .fold(self.currency_chip.y1, f64::max);
 
-        // The two units side by side with a swap between them, then the
-        // amount and the result.
+        // Two units with a swap between them, then the amount and result.
         let top = chips_bottom + m.gap * 2.0;
         let swap_w = m.field_h;
         let unit_w = ((width - swap_w - 2.0 * m.gap) / 2.0).max(0.0);
@@ -435,7 +406,7 @@ impl ConvertPage {
             inner.x1,
             (result_top + m.result_h).min(inner.y1),
         );
-        // The note sits under the result, where the currency sentence goes.
+        // Where the currency sentence goes.
         self.note = Rect::new(
             inner.x0,
             self.result.y1 + m.gap,
@@ -454,18 +425,17 @@ impl ConvertPage {
         presence: &ui::presence::PresenceCtx,
     ) {
         let m = self.m;
-        // The quantity chips.
         for (dimension, rect) in &self.chips {
-            let face = ButtonFace::new(*rect, dimension.label())
+            let label = dimension.label();
+            let face = ButtonFace::new(*rect, &label)
                 .control_size(ControlSize::Small)
                 .role(ButtonRole::Secondary)
                 .toggled(*dimension == self.dimension);
             Button::paint(scene, transform, text, theme, &face);
         }
-        // Money: the one quantity that needs a rate, and the page says so
-        // where the units would be rather than converting with numbers it
-        // would have had to invent.
-        let currency = ButtonFace::new(self.currency_chip, "Currency")
+        // Where the units would be, the page says why it cannot convert.
+        let currency_label = CATALOG.t("calculator-currency");
+        let currency = ButtonFace::new(self.currency_chip, &currency_label)
             .control_size(ControlSize::Small)
             .role(ButtonRole::Secondary)
             .toggled(self.currency);
@@ -489,8 +459,7 @@ impl ConvertPage {
             return;
         }
 
-        // The two units, each a button that steps to the next unit of its
-        // quantity, so the pair is chosen without a list to open.
+        // Each unit steps to the next of its quantity: no list to open.
         for (unit, rect) in [(self.from(), self.from_rect), (self.to(), self.to_rect)] {
             let face = ButtonFace::new(rect, unit.symbol)
                 .control_size(ControlSize::Regular)
@@ -498,23 +467,21 @@ impl ConvertPage {
                 .accessible_name(unit.name);
             Button::paint(scene, transform, text, theme, &face);
         }
-        // Two arrows, one each way: the units exchange places.
         let swap = ButtonFace::new(self.swap, "")
             .control_size(ControlSize::Small)
             .role(ButtonRole::Secondary)
             .icon(ui::icons::Icon::ArrowUpDown);
         Button::paint(scene, transform, text, theme, &swap);
 
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field
+            .draw_child(scene, transform, text, theme, presence);
 
-        // The answer, in the display's own numerals, with the copy target on
-        // its end.
+        // In the display's own numerals, with the copy target on its end.
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         let style = theme.text(TextRole::Title).numeric();
         let (text_value, colour) = match self.result_text() {
             Some(result) => (result, theme.text_primary),
             None => (
-                // Nothing convert yet: the page still says what it is set to.
                 format!("{} to {}", self.from().symbol, self.to().symbol),
                 theme.tokens.colors.text_dim,
             ),
@@ -552,7 +519,7 @@ impl ConvertPage {
     }
 }
 
-/// `index` stepped by `step` and wrapped into `0..len`.
+/// Wrapped into `0..len`.
 #[allow(
     clippy::cast_possible_wrap,
     clippy::cast_possible_truncation,
@@ -568,8 +535,7 @@ fn step_index(index: usize, step: i32, len: usize) -> usize {
 }
 
 impl crate::app::CalculatorApp {
-    /// Take `event` for the amount field: typing lands in it, and Escape
-    /// leaves it.
+    /// Typing lands in the amount; Escape leaves it.
     pub(crate) fn convert_key(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -590,7 +556,6 @@ impl crate::app::CalculatorApp {
         self.convert_page_mut().field_mut().handle_event(event, ctx);
     }
 
-    /// Do what a press on the conversion page asked for.
     pub(crate) fn on_press_convert(&mut self, p: Point) {
         let Some(action) = self.convert_page().action_at(p) else {
             return;
@@ -598,8 +563,7 @@ impl crate::app::CalculatorApp {
         self.apply_convert_action(&action);
     }
 
-    /// Do `action` on the conversion page: the one path a press, a key and an
-    /// assistive action all take.
+    /// The one path a press, a key and an assistive action take.
     pub(crate) fn apply_convert_action(&mut self, action: &ConvertAction) {
         match action {
             ConvertAction::Focus => self.convert_page_mut().set_field_focus(true),
@@ -611,7 +575,6 @@ impl crate::app::CalculatorApp {
         }
     }
 
-    /// Copy the converted amount, and say whether it reached the clipboard.
     fn copy_convert_result(&mut self) {
         let Some(text) = self.convert_page().result_text() else {
             return;
@@ -620,14 +583,13 @@ impl crate::app::CalculatorApp {
         self.convert_page_mut().say_copied(copied);
     }
 
-    /// The conversion page as assistive technology reads it: the amount, the
-    /// quantity, each unit, and what the conversion came to.
+    /// The amount, the quantity, each unit and what the conversion came to.
     pub(crate) fn convert_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         let page = self.convert_page();
         let mut children = Vec::new();
         let mut amount = AccessNode::new(Role::TextInput)
-            .with_name("Amount to convert")
+            .with_name(crate::resource::CATALOG.t("calculator-amount-to-convert"))
             .with_value(page.amount().to_owned())
             .with_action_target(ConvertPage::semantic_target(&ConvertAction::Focus))
             .with_state(AccessState::new().focusable(true));
@@ -656,7 +618,7 @@ impl crate::app::CalculatorApp {
             .chain(std::iter::once({
                 let target = ConvertAction::Currency;
                 let mut node = AccessNode::new(Role::RadioButton)
-                    .with_name("Currency")
+                    .with_name(crate::resource::CATALOG.t("calculator-currency"))
                     .with_action_target(ConvertPage::semantic_target(&target))
                     .with_state(AccessState::new().focusable(true).checked(page.currency));
                 if let Some(bounds) = page.control_rect(&target) {
@@ -667,7 +629,7 @@ impl crate::app::CalculatorApp {
             .collect();
         children.push(
             AccessNode::new(Role::Group)
-                .with_name("Quantity")
+                .with_name(crate::resource::CATALOG.t("calculator-quantity"))
                 .with_hashed_key("calculator.convert.quantities")
                 .with_children(quantities),
         );
@@ -678,7 +640,10 @@ impl crate::app::CalculatorApp {
         ] {
             let mut node = AccessNode::new(Role::Button)
                 .with_name(format!("{name} unit: {}", unit.name))
-                .with_description(format!("Change {} to the next unit", unit.symbol))
+                .with_description(CATALOG.t_args(
+                    "calculator-next-unit",
+                    &[("unit", ArgValue::Text(unit.symbol.to_owned()))],
+                ))
                 .with_action_target(ConvertPage::semantic_target(&step))
                 .with_state(AccessState::new().focusable(true));
             if let Some(bounds) = page.control_rect(&step) {
@@ -711,8 +676,8 @@ impl crate::app::CalculatorApp {
                 .with_hashed_key("calculator.convert.result"),
         );
         AccessNode::new(Role::Group)
-            .with_name("Unit conversion")
-            .with_description("Convert an amount from one unit to another, offline.")
+            .with_name(crate::resource::CATALOG.t("calculator-unit-conversion"))
+            .with_description(crate::resource::CATALOG.t("calculator-unit-conversion-description"))
             .with_hashed_key("calculator.convert")
             .with_children(children)
     }
@@ -722,7 +687,6 @@ impl crate::app::CalculatorApp {
 mod tests {
     use super::*;
 
-    /// A page laid out in a phone-width window, as a live one is.
     fn laid_out() -> ConvertPage {
         let mut page = ConvertPage::new();
         page.layout(Rect::new(0.0, 0.0, 390.0, 700.0), &Theme::dark());
@@ -810,7 +774,7 @@ mod tests {
         let mut page = laid_out();
         page.apply(&ConvertAction::Currency);
         assert!(page.currency_note_shown());
-        // The units stay where they were for when the person comes back.
+        // The units stay for when the person comes back.
         assert_eq!(page.dimension(), Dimension::Length);
         page.apply(&ConvertAction::Quantity(Dimension::Mass));
         assert!(!page.currency_note_shown(), "a quantity leaves the note");

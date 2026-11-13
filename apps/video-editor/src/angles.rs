@@ -1,28 +1,16 @@
-//! Two angles of one moment in one frame.
-//!
-//! A cut of the same instant filmed twice — two cameras on one desk, two
-//! machines side by side — reaches the frame through the track order: the
-//! bottom-most visible video track takes the left half, the next one the
-//! right, and nothing has to be named or tagged to make it work. The
-//! placement is an ordinary [`Transform`], so a picture placed this way
-//! moves and scales like any other afterwards.
+//! Two angles of one moment in one frame: the bottom-most visible video track
+//! takes the left half, the next one the right, so nothing has to be named to
+//! pair them. The placement is an ordinary [`Transform`].
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ClipId, Project, Track, TrackKind, Transform};
 
-/// How much of the frame each picture of a cut takes: the way two angles
-/// filmed at the same time — two cameras on one desk, two machines —
-/// reach the frame together instead of one covering the other.
-///
-/// The pictures share the frame evenly and keep their own aspect, so two
-/// 16:9 sources on a 16:9 frame meet in the middle with the black bars a
-/// full-frame cut would have shown. Back to front is [`Side::Left`],
-/// [`Side::Right`] — the arrangement reads in the order the tracks were
-/// put together.
+/// Which half of the frame a clip of a cut takes. Back to front is
+/// [`Side::Left`], [`Side::Right`], in track order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
-    /// Nothing is placed: the clip keeps the picture it had.
+    /// The clip keeps the picture it had.
     #[default]
     #[serde(rename = "none")]
     None,
@@ -50,10 +38,8 @@ impl Side {
         })
     }
 
-    /// The placement this side gives a clip: half the frame wide, the same
-    /// height it was, with the anchor moved to that edge so the picture
-    /// fills it. `None` for [`Side::None`] — a side places a picture, and
-    /// that one says the clip is not part of the cut.
+    /// Half the frame wide and full height, the anchor moved to that edge so
+    /// the picture fills it. `None` for [`Side::None`].
     pub fn placement(self) -> Option<Transform> {
         let (pos_x, anchor_x) = match self {
             Side::None => return None,
@@ -72,8 +58,8 @@ impl Side {
     }
 }
 
-/// Where a clip sits in a cut made by [`Project::place_angles`], and
-/// how to put its picture back. What the editor's undo returns to.
+/// Where a clip sits in a cut by [`Project::place_angles`], and how to put its
+/// picture back.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SidePlacement {
     pub clip: ClipId,
@@ -82,7 +68,6 @@ pub struct SidePlacement {
     pub before: Transform,
 }
 
-/// The clip of a cut that a given frame shows `side`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CutSides {
     pub left: Option<ClipId>,
@@ -90,7 +75,6 @@ pub struct CutSides {
 }
 
 impl CutSides {
-    /// The clip this cut places on `side`, if any.
     pub fn clip(self, side: Side) -> Option<ClipId> {
         match side {
             Side::Left => self.left,
@@ -101,18 +85,9 @@ impl CutSides {
 }
 
 impl Project {
-    /// Place every clip covering `at` on the two sides of the frame: the
-    /// bottom-most visible video track on the left, the next one on the
-    /// right. That is what turns two angles of the same moment into one
-    /// picture, and it needs whatever footage the person has rather than a
-    /// named or tagged media: the track order is the arrangement.
-    ///
-    /// Only what is actually on screen at `at` is placed — a clip the
-    /// timeline has not reached, a clip on a muted track or a clip left out
-    /// by a solo keeps its picture — and a clip already on the side it
-    /// belongs to keeps the other half of its placement, so pressing the
-    /// action again neither drifts the picture nor shows the same take in
-    /// the same place twice.
+    /// Place the two clips on screen at `at` on the sides of the frame. Only
+    /// what is visible is placed, and a clip already on its side is left alone,
+    /// so pressing the action again changes nothing.
     ///
     /// Returns what it placed, with the transform each clip had, for
     /// [`Project::restore_angles`] and for undo.
@@ -138,9 +113,8 @@ impl Project {
         placed
     }
 
-    /// Undo [`Project::place_angles`]: give each clip back the
-    /// transform it had, where it still sits on that side and the person
-    /// has not placed it somewhere else since.
+    /// Give each clip back the transform it had, unless it has been placed
+    /// elsewhere since.
     pub fn restore_angles(&mut self, placements: &[SidePlacement]) {
         for p in placements {
             let Some(c) = self.clip_mut(p.clip) else {
@@ -152,10 +126,7 @@ impl Project {
         }
     }
 
-    /// The clips a side-by-side cut shows at `at`: the bottom-most visible
-    /// video track's clip on the left, the next on the right. `None` when
-    /// two pictures do not meet at that instant, which is also what a cut
-    /// of one angle cannot be.
+    /// `None` when two pictures do not meet at `at`.
     pub fn cut_sides(&self, at: f64) -> Option<CutSides> {
         let soloing = self
             .tracks
@@ -179,10 +150,8 @@ impl Project {
         })
     }
 
-    /// Whether [`Project::place_angles`] would change anything at `at`: two
-    /// pictures meet there, on tracks that may be edited, and at least one
-    /// of them is not already in its half. A control that could only fail
-    /// or do nothing is left out rather than drawn disabled.
+    /// Whether [`Project::place_angles`] would change anything at `at`. A
+    /// control that could only fail is left out rather than drawn disabled.
     pub fn side_by_side_available(&self, at: f64) -> bool {
         let Some(sides) = self.cut_sides(at) else {
             return false;

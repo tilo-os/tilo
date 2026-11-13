@@ -112,7 +112,7 @@ impl ChatApp {
             }
             "agent-streaming" | "agent-failed" | "agent-reasoning" | "agent-long-thread" => {
                 if matches!(scenario, "agent-reasoning" | "agent-long-thread") {
-                    self.expanded_reasoning.insert("shot_agent_stream".into());
+                    self.expanded_agent.insert("shot_agent_stream".into());
                 }
                 self.thread_open =
                     (scenario == "agent-long-thread").then(|| "shot_agent_stream".into());

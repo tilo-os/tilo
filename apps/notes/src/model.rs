@@ -240,7 +240,7 @@ impl Workspace {
         let id = Uuid::new_v4();
         self.data.pages.push(PageMeta {
             id,
-            title: crate::notebook::UNTITLED.to_string(),
+            title: crate::notebook::NO_TITLE.to_string(),
             parent,
         });
         id

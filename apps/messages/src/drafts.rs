@@ -28,7 +28,7 @@ pub struct MessageDrafts {
     pub drafts: BTreeMap<String, String>,
 }
 
-#[ui::tilo_resource::resource(kind = "messages.drafts", label = "Message drafts", params = drafts)]
+#[ui::tilo_resource::resource(kind = "messages.drafts", params = drafts)]
 impl MessageDrafts {
     /// Keep a draft.
     ///

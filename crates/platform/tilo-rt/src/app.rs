@@ -9,7 +9,6 @@ use tokio::task::JoinHandle;
 
 use crate::{Error, pool};
 
-/// Name of the thread that drives the app runtime.
 pub(crate) const APP_THREAD: &str = "tilo-rt";
 
 /// The process-wide app runtime: a current-thread tokio runtime driven by a
@@ -29,7 +28,6 @@ pub struct AppRuntime {
 
 static APP: OnceLock<Result<AppRuntime, String>> = OnceLock::new();
 
-/// The app runtime, started on first use.
 #[allow(
     clippy::panic,
     reason = "a process that cannot start one thread cannot run an app; try_app reports it"
@@ -41,12 +39,6 @@ pub fn app() -> &'static AppRuntime {
     }
 }
 
-/// The app runtime, started on first use.
-///
-/// # Errors
-///
-/// [`Error::Start`] when the runtime thread could not be started. The
-/// failure is remembered; later calls report it again without retrying.
 pub fn try_app() -> Result<&'static AppRuntime, Error> {
     APP.get_or_init(|| AppRuntime::start().map_err(|error| error.to_string()))
         .as_ref()
@@ -62,8 +54,6 @@ impl AppRuntime {
             .build()?;
         let handle = runtime.handle().clone();
         let driver = crate::spawn_thread(APP_THREAD, move || {
-            // Drives every task spawned through the handle, for the life of
-            // the process.
             let _driving = crate::Driving::enter();
             runtime.block_on(std::future::pending::<()>());
         })?;
@@ -73,18 +63,14 @@ impl AppRuntime {
         })
     }
 
-    /// The runtime's handle, for APIs that take one or need a runtime
-    /// context (`handle().enter()`) to construct I/O resources.
     pub const fn handle(&self) -> &Handle {
         &self.handle
     }
 
-    /// The thread that drives this runtime.
     pub const fn thread_id(&self) -> ThreadId {
         self.thread
     }
 
-    /// Whether the calling thread is the one driving this runtime.
     pub fn is_runtime_thread(&self) -> bool {
         std::thread::current().id() == self.thread
     }
@@ -171,7 +157,6 @@ impl AppRuntime {
     }
 }
 
-/// Poll `future` on the calling thread, parking it between wakes.
 fn park_on<F: Future>(future: F) -> F::Output {
     use std::sync::Arc;
     use std::task::{Context, Poll, Wake, Waker};
@@ -207,7 +192,6 @@ mod tests {
 
     #[test]
     fn the_app_runtime_runs_on_its_own_thread_and_drives_spawned_tasks() {
-        // phase: app_runtime_runs_on_its_own_named_thread
         {
             let runtime = app();
             let caller = std::thread::current().id();
@@ -223,13 +207,11 @@ mod tests {
             assert_eq!(name.as_deref(), Some(APP_THREAD));
             assert!(!runtime.is_runtime_thread());
         }
-        // phase: spawning_does_not_enter_a_runtime_on_the_caller
         {
             let runtime = app();
             let _task = runtime.spawn(async {});
             assert!(!crate::in_runtime());
         }
-        // phase: app_runtime_drives_timers_and_io_for_spawned_tasks
         {
             let (tx, rx) = mpsc::channel();
             app().spawn_then(
@@ -241,7 +223,6 @@ mod tests {
             );
             assert_eq!(tilo_test_env::recv("the slept task's output", &rx), "slept");
         }
-        // phase: a_pinned_task_may_hold_a_value_that_stays_on_its_thread
         {
             let (tx, rx) = mpsc::channel();
             app().spawn_pinned(move || async move {
@@ -255,7 +236,6 @@ mod tests {
 
     #[test]
     fn blocking_is_allowed_off_the_runtime_thread_only() {
-        // phase: worker_threads_can_wait_but_the_runtime_thread_cannot
         {
             let runtime = app();
             assert_eq!(runtime.block_on(async { 3 }).unwrap(), 3);
@@ -264,7 +244,6 @@ mod tests {
                 .unwrap();
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: a_blocked_caller_can_borrow_and_still_use_the_drivers
         {
             let label = String::from("borrowed");
             let seen = app()
@@ -275,7 +254,6 @@ mod tests {
                 .unwrap();
             assert_eq!(seen, label.len());
         }
-        // phase: blocking_calls_leave_the_runtime_thread_free
         {
             let runtime = app();
             let (release, gate) = mpsc::channel::<()>();
@@ -288,13 +266,8 @@ mod tests {
         }
     }
 
-    /// A synchronous call made inside another runtime's context — a test on
-    /// its own runtime, or a crate's runtime driving a synchronous library
-    /// entry point — waits with the app runtime's drivers, so tokio's
-    /// "runtime within a runtime" panic never reaches it.
     #[test]
     fn a_caller_inside_another_runtime_waits_with_the_app_drivers() {
-        // phase: a_call_inside_another_runtimes_block_on_waits_on_the_app_drivers
         {
             let foreign = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -308,10 +281,7 @@ mod tests {
             });
             assert_eq!(seen.unwrap(), 7);
         }
-        // phase: async_code_that_calls_synchronous_code_which_waits_still_answers
         {
-            // The shape of a test that drives a session control loop on its
-            // own runtime and reaches code that waits on one answer.
             fn radios() -> u32 {
                 app()
                     .block_on(async {
@@ -327,7 +297,6 @@ mod tests {
             let seen = tokio::task::LocalSet::new().block_on(&foreign, async { radios() });
             assert_eq!(seen, 11);
         }
-        // phase: the_waited_future_may_await_tasks_of_the_app_runtime
         {
             let foreign = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -344,14 +313,12 @@ mod tests {
             });
             assert_eq!(seen.unwrap(), 5);
         }
-        // phase: a_caller_that_entered_the_app_handle_itself_still_answers
         {
             let entered = app().handle().enter();
             let seen = app().block_on(async { 13 }).unwrap();
             drop(entered);
             assert_eq!(seen, 13);
         }
-        // phase: a_second_wait_inside_the_wait_is_refused
         {
             let foreign = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -364,7 +331,6 @@ mod tests {
         }
     }
 
-    /// The UI thread is refused even when it is also inside a runtime.
     #[test]
     fn a_ui_thread_inside_another_runtime_is_refused() {
         let result = crate::spawn_thread("ui-app-block-on", || {

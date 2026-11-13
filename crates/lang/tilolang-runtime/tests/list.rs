@@ -1,12 +1,8 @@
 //! A collection: inserts, moves and removes keep item identity and patch by key.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{Patch, Value};
 
     fn world() -> (World, tilolang_runtime::ResourceRef) {

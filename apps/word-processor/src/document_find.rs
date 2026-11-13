@@ -1,19 +1,12 @@
-//! Find and replace in the document for the window bar's search.
-//!
-//! The editor is the [`ui::widget::Findable`] the bar's search drives
-//! (`widget/find.rs`); this keeps what a find needs between the bar's calls:
-//! the whole document's paragraphs as of its last change (the editor's own
-//! paragraphs are only those around the viewport), the matches in the
-//! document's own terms, `(block, start, end)` in characters, the current
-//! one, and a replacement the bar asked for until the editor applies it
-//! through its own actions.
+//! What the window bar's search needs between its calls: the whole document's
+//! paragraphs as of its last change (the editor holds only those around the viewport),
+//! the matches as `(block, start, end)` in characters, and a pending replacement.
 
 use tilo_doc::snapshot::BlockView;
 use ui::widget::FindOptions;
 
 pub(crate) type FindMatch = (String, usize, usize);
 
-/// A replacement the bar asked for, applied with the document in hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingReplace {
     pub(crate) matches: Vec<FindMatch>,
@@ -22,22 +15,14 @@ pub(crate) struct PendingReplace {
 
 #[derive(Debug, Default)]
 pub(crate) struct DocumentFind {
-    /// A search is open on the document.
     active: bool,
     query: String,
     options: FindOptions,
-    /// Every paragraph as of the document's last change, while a search is
-    /// open; `None` until the editor reads them.
     blocks: Option<Vec<BlockView>>,
-    /// Moves whenever `blocks` does, so the bar finds again.
     revision: u64,
     matches: Vec<FindMatch>,
     current: Option<usize>,
-    /// A query ran before the paragraphs were read: the first match is
-    /// shown once they are, as the bar shows it for a query that found.
     reveal_on_read: bool,
-    /// Replacements the bar asked for, in order, each against the
-    /// paragraphs as the ones before it left them.
     pending: Vec<PendingReplace>,
 }
 
@@ -62,22 +47,16 @@ impl DocumentFind {
         self.revision
     }
 
-    /// Whether the editor should read every paragraph again: a search is
-    /// open and has none yet, or the document `moved`.
     pub(crate) fn wants_blocks(&self, moved: bool) -> bool {
         self.active && (moved || self.blocks.is_none())
     }
 
-    /// The document's paragraphs as they are now; the query runs on them
-    /// again, keeping the current match where it still is.
     pub(crate) fn set_blocks(&mut self, blocks: Vec<BlockView>) {
         self.blocks = Some(blocks);
         self.revision = self.revision.wrapping_add(1);
         self.rerun();
     }
 
-    /// Run `query` under `options` on the paragraphs; an empty query closes
-    /// the search. Returns how many matches there are.
     pub(crate) fn find(&mut self, query: &str, options: FindOptions) -> usize {
         if query.is_empty() {
             self.clear();
@@ -101,7 +80,6 @@ impl DocumentFind {
         self.current = self.current.filter(|index| *index < self.matches.len());
     }
 
-    /// Make match `index` the current one; whether there is such a match.
     pub(crate) fn reveal(&mut self, index: usize) -> bool {
         let found = index < self.matches.len();
         self.current = found.then_some(index);
@@ -109,13 +87,10 @@ impl DocumentFind {
         found
     }
 
-    /// Whether to show the first match now the paragraphs are read: once,
-    /// for a query that ran before them.
     pub(crate) fn take_first_reveal(&mut self) -> bool {
         self.blocks.is_some() && std::mem::take(&mut self.reveal_on_read) && self.reveal(0)
     }
 
-    /// The search closed: forget its matches and the paragraphs read for it.
     pub(crate) fn clear(&mut self) {
         self.active = false;
         self.query.clear();
@@ -125,9 +100,6 @@ impl DocumentFind {
         self.reveal_on_read = false;
     }
 
-    /// Ask for `matches` to be replaced with `with`, and show the paragraphs
-    /// as they will read, so the bar's count follows at once. Returns how
-    /// many matches are to be replaced.
     pub(crate) fn queue_replace(&mut self, matches: Vec<FindMatch>, with: &str) -> usize {
         if matches.is_empty() {
             return 0;
@@ -144,14 +116,11 @@ impl DocumentFind {
         count
     }
 
-    /// The replacements to apply now, in the order the bar asked for them.
     pub(crate) fn take_pending(&mut self) -> Vec<PendingReplace> {
         std::mem::take(&mut self.pending)
     }
 }
 
-/// Replace `matches` in `blocks` with `with`, from the last offset of a
-/// paragraph back so the earlier offsets hold.
 pub(crate) fn splice_blocks(blocks: &mut [BlockView], matches: &[FindMatch], with: &str) {
     let mut ordered = matches.to_vec();
     ordered.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
@@ -173,19 +142,13 @@ pub(crate) fn splice_blocks(blocks: &mut [BlockView], matches: &[FindMatch], wit
     }
 }
 
-/// Every match of `query` in `blocks` under `options`, as character spans.
 fn find_in(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindMatch> {
     if options.mode == ui::widget::FindMode::Regex {
         return find_pattern(blocks, query, options);
     }
-    // Match against the original text: lowercasing can expand a character
-    // (for example İ), so offsets in a folded copy are not document offsets.
     find_pattern(blocks, &regex::escape(query), options)
 }
 
-/// Every match of the regular expression `query` in the paragraphs, in
-/// characters. A pattern that does not compile, or matches only empty
-/// spans, finds nothing.
 fn find_pattern(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindMatch> {
     let Ok(pattern) = regex::RegexBuilder::new(query)
         .case_insensitive(!options.match_case)
@@ -248,8 +211,6 @@ mod tests {
         }
     }
 
-    /// Case and whole-word options narrow literal matches, and a query runs
-    /// across every paragraph in reading order.
     #[test]
     fn matching_honours_the_options_across_paragraphs() {
         let blocks = [
@@ -310,8 +271,6 @@ mod tests {
         }
     }
 
-    /// A search finds once it has the paragraphs, keeps the current match,
-    /// and closing it forgets every match.
     #[test]
     fn a_search_finds_reveals_and_closing_forgets() {
         let mut find = DocumentFind::default();
@@ -335,8 +294,6 @@ mod tests {
         assert!(!find.wants_blocks(true), "a closed search reads nothing");
     }
 
-    /// A replacement shows in the paragraphs at once, so the count follows,
-    /// and waits for the editor in the order it was asked for.
     #[test]
     fn replacements_wait_in_order_and_show_at_once() {
         let mut find = DocumentFind::default();

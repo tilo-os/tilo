@@ -1,5 +1,5 @@
-//! Host readiness: facts plus blockers with stable IDs. Unprivileged where
-//! the platform allows; the helper re-probes before mutating.
+//! Host readiness: facts plus blockers with stable IDs. Unprivileged where the platform
+//! allows; the helper re-probes before mutating.
 
 use super::plan::{PlanError, Requirements};
 
@@ -20,9 +20,6 @@ pub fn probe() -> HostFacts {
     facts
 }
 
-/// Blockers every platform derives the same way from a basis: Secure Boot,
-/// an unfinished staging record for the disk, and no internal bundle for
-/// this architecture.
 pub fn add_shared_blockers(facts: &mut HostFacts) {
     let mut found = Vec::new();
     if let Some(basis) = &facts.basis {
@@ -48,8 +45,6 @@ pub fn add_shared_blockers(facts: &mut HostFacts) {
     }
 }
 
-/// `InsufficientSpace` when not even the installer minimum fits beside
-/// staging of `requirements` (whose `target_bytes` is ignored).
 pub fn space_blocker(facts: &HostFacts, requirements: Requirements) -> Option<Blocker> {
     let basis = facts.basis.as_ref()?;
     match super::plan::target_bounds(basis, requirements) {

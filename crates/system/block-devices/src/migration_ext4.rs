@@ -1,5 +1,5 @@
-//! Fixed format policy ONLY for the installer migration-data partition.
-//! General ext4 formatting deliberately does not use these settings.
+//! Fixed format policy for the installer migration-data partition only; general
+//! ext4 formatting does not use these settings.
 use std::io;
 const BLOCK: u64 = 4096;
 const GROUP_BLOCKS: u64 = 32768;
@@ -36,9 +36,9 @@ pub fn available_bytes(extent: u64) -> io::Result<u64> {
     let descriptors = groups.checked_mul(64).ok_or_else(fail)?.div_ceil(BLOCK);
     let inodes_per_group = GROUP_BLOCKS * BLOCK / BYTES_PER_INODE;
     let inode_table = (inodes_per_group * INODE_BYTES).div_ceil(BLOCK);
-    // Charge a superblock and a full descriptor table in EVERY group even
-    // though sparse_super2 writes at most two backups. No resize/meta_bg/flex
-    // features are enabled. Charge both allocation bitmaps and full tables.
+    // Charge a superblock and a full descriptor table in EVERY group, though
+    // sparse_super2 writes at most two backups. No resize/meta_bg/flex features are
+    // enabled. Charge both allocation bitmaps and full tables.
     let per_group = inode_table
         .checked_add(3)
         .and_then(|v| v.checked_add(descriptors))
@@ -47,10 +47,10 @@ pub fn available_bytes(extent: u64) -> io::Result<u64> {
         .checked_mul(per_group)
         .and_then(|v| v.checked_add(JOURNAL_BLOCKS))
         .ok_or_else(fail)?;
-    // Worst-case one physical extent per data block: 340 twelve-byte entries
-    // fit in each 4KiB extent node (12-byte header), recursively through the
-    // complete possible index tree. Fixed root/lost+found/carrier directory
-    // allowance includes short-lived atomic publication entries.
+    // Worst-case one physical extent per data block: 340 twelve-byte entries fit in
+    // each 4KiB extent node (12-byte header), recursively through the whole index
+    // tree. The fixed allowance covers root, lost+found and carrier directories,
+    // including short-lived atomic publication entries.
     let mut nodes = blocks;
     loop {
         nodes = nodes.div_ceil(340);

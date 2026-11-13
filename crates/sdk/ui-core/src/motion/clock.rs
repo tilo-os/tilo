@@ -55,6 +55,8 @@ thread_local! {
     static OWNER: Cell<Option<usize>> = const { Cell::new(None) };
     /// The next key [`motion_key`] hands out.
     static NEXT_KEY: Cell<u64> = const { Cell::new(1) };
+    /// The next [`surface_id`].
+    static NEXT_SURFACE: Cell<usize> = const { Cell::new(1) };
     /// How many [`testing::settled`] scopes are open on this thread.
     static SETTLED: Cell<u32> = const { Cell::new(0) };
     /// The instant this thread's frame reads its motions at, while a frame's
@@ -206,16 +208,51 @@ fn wish(key: Option<u64>, caller: &'static Location<'static>, until: Instant) {
     });
 }
 
-/// Run `f` on behalf of the surface `owner` on this thread: the wishes its
-/// motions make while it runs and the frames it draws are its own, and only
-/// a frame of its own meets them. What the thread does outside such a scope
-/// asks for every surface, as before surfaces shared a thread.
+/// Run `f` on behalf of the surface `owner` on this thread ([`owning`]).
 #[cfg(feature = "native")]
 pub(crate) fn own<T>(owner: usize, f: impl FnOnce() -> T) -> T {
-    let previous = OWNER.with(|cell| cell.replace(Some(owner)));
-    let done = f();
-    OWNER.with(|cell| cell.set(previous));
-    done
+    let _owning = owning(owner);
+    f()
+}
+
+/// While held, the thread runs on behalf of the surface `owner`: the wishes its motions make and
+/// the frames it draws are its own, and only a frame of its own meets them. What the thread does
+/// outside such a scope asks for every surface, as before surfaces shared a thread.
+pub(crate) fn owning(owner: usize) -> Owning {
+    Owning(OWNER.with(|cell| cell.replace(Some(owner))))
+}
+
+/// The scope [`owning`] opened; the surface the thread ran for before comes back as it ends.
+pub(crate) struct Owning(Option<usize>);
+
+impl Drop for Owning {
+    fn drop(&mut self) {
+        OWNER.with(|cell| cell.set(self.0));
+    }
+}
+
+/// A surface on this thread that is not an app's: told apart from every other on the motion
+/// clock, and from the apps, whose surfaces are the addresses of their state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MotionSurface(pub(crate) usize);
+
+impl MotionSurface {
+    /// A surface no other is.
+    pub(crate) fn new() -> Self {
+        Self(NEXT_SURFACE.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1).max(1));
+            id
+        }))
+    }
+}
+
+/// Run `f` on behalf of `surface`: a motion it starts asks frames of that surface alone, so a
+/// motion the session moves for what one surface draws (the overview's flight) draws nothing on
+/// the surfaces beside it.
+pub fn on_surface<T>(surface: MotionSurface, f: impl FnOnce() -> T) -> T {
+    let _owning = owning(surface.0);
+    f()
 }
 
 /// Whether `wish` has had the frame showing its end drawn: one its own

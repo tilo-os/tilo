@@ -67,6 +67,13 @@ pub(crate) enum Hit {
     FocusMain,
     FocusThread,
     Send,
+    /// Send again what the composer kept after a refused send: its own
+    /// control, beside the send button, so a marker for a send rests on the
+    /// button rather than on the retry line.
+    RetrySend,
+    /// Send what the thread's box holds: the thread has its own button, so a
+    /// send from the conversation's box is found at that box and nowhere else.
+    ThreadSend,
     /// Bring back the message of your own you just deleted.
     UndoDelete,
     /// Return a scrolled conversation to its newest message without changing
@@ -74,6 +81,8 @@ pub(crate) enum Hit {
     JumpToLatest,
     ThreadScroll(bool),
     AgentReasoning(String),
+    /// Open or fold the list of what an agent did for its reply.
+    AgentWork(String),
     /// Open the workspace file picker to share an attachment.
     Attach,
     /// One rung of an attachment's ladder: open it at full size, save a copy,
@@ -92,10 +101,6 @@ pub(crate) enum Hit {
     AttachDevice,
     StartCall,
     StopSharingLiveContext,
-    CopyResourceLink {
-        msg: Id,
-        attachment: usize,
-    },
     /// Replay the recording the report a message shows carries.
     ReplayRecording(Id),
     OpenResource {
@@ -166,10 +171,13 @@ impl Hit {
             Self::FocusEdit => "chat.message-edit".into(),
             Self::HostModel(command) => format!("chat.model.{command}"),
             Self::Send => "chat.send".into(),
+            Self::RetrySend => "chat.retry-send".into(),
+            Self::ThreadSend => "chat.thread-send".into(),
             Self::UndoDelete => "chat.undo-delete".into(),
             Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
             Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
+            Self::AgentWork(id) => format!("chat.work.{id}"),
             Self::Attach => "chat.attach".into(),
             Self::Attachment {
                 msg,
@@ -181,9 +189,6 @@ impl Hit {
             Self::AttachDevice => "chat.attach-device".into(),
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
-            Self::CopyResourceLink { msg, attachment } => {
-                format!("chat.copy-resource-link:{msg}:{attachment}")
-            }
             Self::ReplayRecording(id) => format!("chat.replay-recording:{id}"),
             Self::OpenResource { msg, attachment } => {
                 format!("chat.open-resource:{msg}:{attachment}")
@@ -380,7 +385,8 @@ impl ChatApp {
                     Hit::HostModel(command) => {
                         (copy(&format!("chat-model-{command}")), Role::Button, false)
                     }
-                    Hit::Send => (copy("chat-send-message"), Role::Button, false),
+                    Hit::Send | Hit::ThreadSend => (copy("chat-send-message"), Role::Button, false),
+                    Hit::RetrySend => (copy("chat-retry"), Role::Button, false),
                     Hit::UndoDelete => (copy("chat-undo"), Role::Button, false),
                     Hit::JumpToLatest => (copy("chat-jump-latest-message"), Role::Button, false),
                     Hit::ThreadScroll(end) => (
@@ -392,8 +398,17 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
+                    Hit::AgentWork(id) => (
+                        copy(if self.expanded_agent.contains(id) {
+                            "chat-agent-work-hide-details"
+                        } else {
+                            "chat-agent-work-show-details"
+                        }),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::AgentReasoning(id) => (
-                        copy(if self.expanded_reasoning.contains(id) {
+                        copy(if self.expanded_agent.contains(id) {
                             "chat-agent-hide-reasoning"
                         } else {
                             "chat-agent-show-reasoning"
@@ -439,14 +454,6 @@ impl ChatApp {
                         ControlName {
                             text: self.resource_navigation.replay_label(message, true),
                             interface: self.resource_navigation.replay_label_is_copy(message),
-                        },
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::CopyResourceLink { msg, attachment } => (
-                        ControlName {
-                            text: self.resource_navigation.label(msg, *attachment, true),
-                            interface: self.resource_navigation.label_is_copy(msg, *attachment),
                         },
                         Role::Button,
                         false,
@@ -736,6 +743,8 @@ impl ChatApp {
                         | Hit::CallParticipantsToggle
                         | Hit::Attach
                         | Hit::Send
+                        | Hit::RetrySend
+                        | Hit::ThreadSend
                         | Hit::AddReaction { .. }
                         | Hit::MessageBar { .. }
                         | Hit::MessageMore { .. }

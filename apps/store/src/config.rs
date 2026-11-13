@@ -23,9 +23,6 @@ pub use app_cli::config::{
     load_registries, placeholder_owner_pubkey, registries_path,
 };
 
-/// The person's app repositories, through the app host. Without one (a
-/// test, a development run outside a session) the configuration directory
-/// the environment names is read, and nothing is ever written there.
 pub fn repositories(
     host: Option<&app_host::client::BlockingClient>,
 ) -> Result<RegistriesFile, String> {
@@ -42,8 +39,6 @@ mod tests {
     use tempfile::TempDir;
     use tilo_test_env::ScopedEnv;
 
-    /// Point the store's config directory and official registry trust key
-    /// at `td` for as long as the returned scope lives.
     fn scoped_dir(td: &TempDir) -> ScopedEnv {
         let trust = td.path().join("registry-owner.pub");
         std::fs::write(

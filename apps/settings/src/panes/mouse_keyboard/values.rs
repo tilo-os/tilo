@@ -1,6 +1,5 @@
-//! What the keyboard, pointing and spelling settings found by search are
-//! set to, as their pages read them from the person's input and text
-//! preferences.
+//! What the keyboard, pointing and spelling settings found by search are set
+//! to, as their pages read them from the person's input and text preferences.
 
 use super::{
     CLICK_METHOD_CHOICES, InputPrefs, SCROLL_METHOD_CHOICES, SPELLING_LANGUAGES,
@@ -15,7 +14,6 @@ fn input(app: &SettingsApp, follows: &Follows) -> InputPrefs {
     follows.get::<InputPrefs>(app.storage())
 }
 
-/// A slider's position, as a share of its track.
 fn position(fraction: f64) -> String {
     ui::format::percent(fraction.clamp(0.0, 1.0))
 }
@@ -41,7 +39,6 @@ pub(crate) fn caps_lock(app: &SettingsApp, follows: &Follows) -> String {
     caps_lock_shown(caps_lock_label(input(app, follows).caps_lock.as_deref()))
 }
 
-/// Natural scrolling, as the touchpad has it: the mouse has its own.
 pub(crate) fn natural_scrolling(app: &SettingsApp, follows: &Follows) -> String {
     on_off(input(app, follows).touchpad_natural_scroll)
 }

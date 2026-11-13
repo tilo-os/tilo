@@ -16,17 +16,14 @@ use tilo_app_package::PackageId;
 
 use crate::key::{CacheKey, KeyDigest};
 
-/// One key's tool image.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub tool: PackageId,
     pub key: CacheKey,
-    /// What was asked for when it was first built (`["pandoc"]`).
     #[serde(default)]
     pub requested: Vec<String>,
 }
 
-/// Looks a key up somewhere: the local index, a catalog, a chain of both.
 pub trait ToolLookup {
     fn lookup(&self, digest: &KeyDigest) -> Option<PackageId>;
 }
@@ -43,7 +40,6 @@ impl<T: ToolLookup> ToolLookup for Option<T> {
     }
 }
 
-/// No catalog.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoCatalog;
 
@@ -53,7 +49,6 @@ impl ToolLookup for NoCatalog {
     }
 }
 
-/// `<root>/<digest-hex>.json`, one [`Entry`] each.
 #[derive(Clone, Debug)]
 pub struct LocalIndex {
     root: PathBuf,
@@ -75,7 +70,6 @@ impl LocalIndex {
         (entry.key.digest() == *digest).then_some(entry)
     }
 
-    /// Record `entry` under its key, atomically.
     pub fn put(&self, entry: &Entry) -> std::io::Result<()> {
         tilo_files::native::atomic::write_creating_parent(
             &self.path(&entry.key.digest()),
@@ -114,8 +108,6 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Read a catalog document. Entries whose key doesn't hash to their name
-    /// are dropped.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)?;
         let mut catalog: Self = serde_json::from_slice(&bytes)?;
@@ -129,12 +121,10 @@ impl Catalog {
         self.tools.insert(entry.key.digest().to_hex(), entry);
     }
 
-    /// Merge `other` in; its entries win.
     pub fn merge(&mut self, other: Self) {
         self.tools.extend(other.tools);
     }
 
-    /// Write the document, sorted by digest.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
         Ok(())

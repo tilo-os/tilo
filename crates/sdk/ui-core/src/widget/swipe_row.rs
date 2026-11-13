@@ -25,6 +25,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
 use crate::tokens::{MotionSource, TextRole};
+use crate::widget::DrawChild;
 use crate::widget::{Decorator, Element, EventCtx, SwipeActionProps, Widget};
 
 /// How far a released row must have moved, as a share of its width, for its action to run.
@@ -450,7 +451,8 @@ impl Decorator for SwipeRow {
         let offset = self.offset.get(now);
         self.drawn = offset;
         if offset == 0.0 {
-            self.content.draw(scene, transform, text, theme, presence);
+            self.content
+                .draw_child(scene, transform, text, theme, presence);
             return;
         }
         let row = self.content.get_rect();
@@ -471,7 +473,7 @@ impl Decorator for SwipeRow {
             None,
             &row,
         );
-        self.content.draw(scene, moved, text, theme, presence);
+        self.content.draw_child(scene, moved, text, theme, presence);
         scene.pop_layer();
     }
 

@@ -1,30 +1,18 @@
 //! [`SegChoice`] — one choice of a few, over published actions.
-//!
-//! The toolkit's segmented control (`ui::ToggleGroup`) draws the choice,
-//! moves its focus and answers the arrow keys. The installer owns what is
-//! chosen: each segment fires the [`Control`] choosing it, and the
-//! [`crate::setup::destination::installer_app::InstallerApp`] runs that
-//! action and composes the step again with the new choice selected, so the
-//! choice survives the per-step rebuild because it lives in the wizard.
 
 use ui::widget::toggle_group::Segment;
 use ui::widget::{ToggleGroup, Widget};
 
 use crate::setup::destination::control::{Bound, Control};
 
-/// The segmented choice of `labels`, the `selected` one chosen, each
-/// segment firing its index-aligned control. `test_id` names it for E2E
-/// targeting and in the inventory.
 pub fn seg_choice(
-    labels: &[&str],
+    labels: Vec<String>,
     controls: Vec<Control>,
     selected: usize,
     test_id: &str,
 ) -> Bound {
-    let segments = labels.iter().map(|label| Segment::new(*label)).collect();
     let selected = selected.min(labels.len().saturating_sub(1));
-    // Every segment runs the same action with its own argument: the
-    // inventory lists that action once, under the choice's id.
+    let segments = labels.into_iter().map(Segment::new).collect();
     let listed = controls.first().cloned();
     let choice = ToggleGroup::new(segments, selected)
         .with_id(test_id)
@@ -65,7 +53,12 @@ mod tests {
                 }))
             })
             .collect();
-        let mut choice = seg_choice(&["btrfs", "ext4", "xfs"], controls, 1, "filesystem_choice");
+        let mut choice = seg_choice(
+            ["btrfs", "ext4", "xfs"].map(str::to_owned).to_vec(),
+            controls,
+            1,
+            "filesystem_choice",
+        );
         assert_eq!(choice.test_id(), Some("filesystem_choice"));
         let bindings = ui::widget::controls::control_action_bindings(&choice);
         assert_eq!(bindings.len(), 1, "one action, one inventory entry");
@@ -93,8 +86,6 @@ mod tests {
             .doc(&mut doc)
             .layout(&taffy, node);
         keys.send(&mut choice, &named_key(NamedKey::ArrowRight));
-        // The choice publishes its selection as its view action; the tree that holds it
-        // answers the press, as the window does after handling the key.
         let mut tree: Box<dyn Widget> = Box::new(choice);
         ui::widget::controls::start_pending_control_invocations(
             tree.as_mut(),

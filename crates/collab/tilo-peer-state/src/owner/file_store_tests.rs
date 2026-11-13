@@ -1,7 +1,8 @@
 //! The owner's record on disk: an index and one file per workspace, written
 //! apart. A change writes its own workspace's file and the index; a record
 //! written as one file before the split reads once and is kept split, with
-//! the file it came from left as it is.
+//! the file it came from left as it is. A later change of a workspace alone
+//! appends to that workspace's journal.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,6 +13,7 @@ use crate::owner::{
     NativeAuthorityStorage, NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing,
 };
 use ed25519_dalek::SigningKey;
+use futures::executor::block_on;
 use std::{
     cell::Cell,
     collections::BTreeMap,
@@ -60,12 +62,24 @@ fn index(path: &Path) -> serde_json::Value {
 
 /// Every workspace file on disk, by name.
 fn part_files(path: &Path) -> BTreeMap<String, Vec<u8>> {
+    files_ending(path, ".json")
+}
+
+/// Every workspace file's journal on disk, by name.
+fn journal_files(path: &Path) -> BTreeMap<String, Vec<u8>> {
+    files_ending(path, ".log")
+}
+
+fn files_ending(path: &Path, suffix: &str) -> BTreeMap<String, Vec<u8>> {
     let Ok(entries) = std::fs::read_dir(parts_of(path)) else {
         return BTreeMap::new();
     };
     entries
         .flatten()
-        .filter(|entry| entry.file_name() != "index.json")
+        .filter(|entry| {
+            let name = entry.file_name();
+            name != "index.json" && name.to_string_lossy().ends_with(suffix)
+        })
         .map(|entry| {
             (
                 entry.file_name().into_string().unwrap(),
@@ -114,11 +128,14 @@ fn a_record_written_as_one_file_reads_once_and_is_then_kept_split() {
     let path = record_path(&directory);
     std::fs::write(&path, predecessor()).unwrap();
 
-    // Opening it splits it: one file per workspace, then the index that names
-    // them.
+    // Opening it splits it: one file per workspace and its journal, then the
+    // index that names them.
     let (opened, replaced) = replacements(|| open_file(&path));
     let owner = opened.unwrap();
-    assert_eq!(replaced, 3, "two workspace files and the index");
+    assert_eq!(
+        replaced, 5,
+        "two workspace files, their journals and the index"
+    );
 
     let record = read_file(&path).unwrap();
     assert_eq!(record.revision(), 3);
@@ -137,7 +154,7 @@ fn a_record_written_as_one_file_reads_once_and_is_then_kept_split() {
     let index = index(&path);
     assert_eq!(
         index.get("version").and_then(serde_json::Value::as_u64),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         index.get("revision").and_then(serde_json::Value::as_u64),
@@ -171,22 +188,30 @@ fn a_record_written_as_one_file_reads_once_and_is_then_kept_split() {
     assert_eq!(reopened.unwrap().storage().held().count(), 2);
 }
 
-#[test]
-fn a_change_writes_only_its_own_workspace_file_and_the_index() {
+#[tokio::test]
+async fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let first = testing::founded(&owner, "One", &device, &key, now).unwrap();
-    let second = testing::founded(&owner, "Two", &device, &key, now).unwrap();
+    let first = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
+    let second = testing::founded(&owner, "Two", &device, &key, now)
+        .await
+        .unwrap();
     let before = part_files(&path);
     assert_eq!(before.len(), 2);
+    let journals_before = journal_files(&path);
 
     let (created, replaced) =
-        replacements(|| testing::founded(&owner, "Three", &device, &key, now));
+        replacements(|| block_on(testing::founded(&owner, "Three", &device, &key, now)));
     created.unwrap();
-    assert_eq!(replaced, 2, "the workspace's file and the index");
+    assert_eq!(
+        replaced, 3,
+        "the workspace's file, its journal and the index"
+    );
 
     let after = part_files(&path);
     assert_eq!(after.len(), 3);
@@ -203,7 +228,8 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let record = read_file(&path).unwrap();
     let written = after
         .iter()
-        .filter(|(name, _)| !before.contains_key(*name))
+        .chain(&journal_files(&path))
+        .filter(|(name, _)| !before.contains_key(*name) && !journals_before.contains_key(*name))
         .map(|(_, bytes)| bytes.len())
         .sum::<usize>()
         + index_bytes(&path).len();
@@ -218,19 +244,22 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     assert!(record.holds(first) && record.holds(second));
 }
 
-#[test]
-fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
+#[tokio::test]
+async fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let first = testing::founded(&owner, "One", &device, &key, now).unwrap();
+    let first = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
     let durable = index_bytes(&path);
 
-    // The workspace's file is written; the index that would name it is not.
-    let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-        testing::founded(&owner, "Two", &device, &key, now)
+    // The workspace's journal and file are written; the index that would
+    // name them is not.
+    let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 3, || {
+        block_on(testing::founded(&owner, "Two", &device, &key, now))
     });
     assert!(stopped.is_err());
     assert_eq!(index_bytes(&path), durable);
@@ -249,19 +278,23 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let reopened = open_file(&path).unwrap();
     assert_eq!(reopened.storage().held().count(), 1);
     assert_eq!(part_files(&path).len(), 1);
-    testing::founded(&reopened, "Two", &device, &key, now).unwrap();
+    testing::founded(&reopened, "Two", &device, &key, now)
+        .await
+        .unwrap();
     assert_eq!(part_files(&path).len(), 2);
     assert_eq!(read_file(&path).unwrap().held().count(), 2);
 }
 
-#[test]
-fn a_workspace_costs_its_own_record() {
+#[tokio::test]
+async fn a_workspace_costs_its_own_record() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let founded = testing::founded(&owner, "Founders", &device, &key, now).unwrap();
+    let founded = testing::founded(&owner, "Founders", &device, &key, now)
+        .await
+        .unwrap();
     let record = read_file(&path).unwrap();
     let founded_bytes = part_bytes(record.workspaces.get(&founded).unwrap())
         .unwrap()
@@ -294,15 +327,17 @@ fn a_workspace_costs_its_own_record() {
     );
 }
 
-#[test]
-fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
+#[tokio::test]
+async fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
     let directory = directory();
     let path = record_path(&directory);
     std::fs::write(&path, predecessor()).unwrap();
     let (key, device) = device();
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    testing::founded(&owner, "Third", &device, &key, now).unwrap();
+    testing::founded(&owner, "Third", &device, &key, now)
+        .await
+        .unwrap();
     drop(owner);
 
     // A build before the split reads the file it wrote, whole, and holds two
@@ -322,13 +357,15 @@ fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
     assert_eq!(reread.held().count(), 3);
 }
 
-#[test]
-fn a_released_workspace_leaves_no_file_behind() {
+#[tokio::test]
+async fn a_released_workspace_leaves_no_file_behind() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
-    let workspace = testing::founded(&owner, "One", &device, &key, SystemTime::now()).unwrap();
+    let workspace = testing::founded(&owner, "One", &device, &key, SystemTime::now())
+        .await
+        .unwrap();
     assert!(owner.release_workspace(workspace).unwrap());
 
     assert!(part_files(&path).is_empty());
@@ -336,17 +373,137 @@ fn a_released_workspace_leaves_no_file_behind() {
     assert_eq!(open_file(&path).unwrap().storage().held().count(), 0);
 }
 
-#[test]
-fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
+#[tokio::test]
+async fn an_index_that_names_a_missing_workspace_file_is_not_a_record() {
     let directory = directory();
     let path = record_path(&directory);
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
-    testing::founded(&owner, "One", &device, &key, SystemTime::now()).unwrap();
+    testing::founded(&owner, "One", &device, &key, SystemTime::now())
+        .await
+        .unwrap();
     drop(owner);
     let files = part_files(&path);
     let (name, _) = files.iter().next().unwrap();
     std::fs::remove_file(parts_of(&path).join(name)).unwrap();
     assert!(read_file(&path).is_err());
     assert!(open_file(&path).is_err());
+}
+
+/// A change of one workspace after its file was written appends to that
+/// file's journal, replacing no file, and reads back after a restart.
+#[tokio::test]
+async fn a_later_change_appends_to_its_workspace_journal() {
+    let directory = directory();
+    let path = record_path(&directory);
+    let (key, device) = device();
+    let now = SystemTime::now();
+    let owner = open_file(&path).unwrap();
+    let founded = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
+    let files = part_files(&path);
+    let index = index_bytes(&path);
+    let journal = |path: &Path| journal_files(path).into_values().next().unwrap();
+    let empty = journal(&path);
+
+    testing::start_record(&owner, founded, "so.tilo.chat", "a", &key, now);
+    let one = journal(&path);
+    testing::start_record(&owner, founded, "so.tilo.chat", "b", &key, now);
+    let two = journal(&path);
+    assert!(empty.is_empty());
+    assert!(
+        two.len() > one.len() && two.starts_with(&one),
+        "each change is appended"
+    );
+    assert_eq!(
+        part_files(&path),
+        files,
+        "the workspace's file is as it was"
+    );
+    assert_eq!(index_bytes(&path), index, "the index is as it was");
+    let revision = owner.storage().revision();
+    drop(owner);
+
+    let record = read_file(&path).unwrap();
+    assert_eq!(record.revision(), revision);
+    let reopened = open_file(&path).unwrap();
+    let held = |reopened: &NativeWorkspaceOwner, record: &str| {
+        reopened
+            .with_current(founded, |view| {
+                Ok(view.peer().document("so.tilo.chat", record).is_some())
+            })
+            .unwrap()
+    };
+    assert!(held(&reopened, "a") && held(&reopened, "b"));
+}
+
+/// An entry a crash cut short was never acknowledged: the record is what the
+/// entries before it hold, and the next change is kept after it.
+#[tokio::test]
+async fn a_journal_entry_cut_short_is_not_part_of_the_record() {
+    let directory = directory();
+    let path = record_path(&directory);
+    let (key, device) = device();
+    let now = SystemTime::now();
+    let owner = open_file(&path).unwrap();
+    let founded = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
+    testing::start_record(&owner, founded, "so.tilo.chat", "a", &key, now);
+    drop(owner);
+    let journals = journal_files(&path);
+    let (name, bytes) = journals.iter().next().unwrap();
+    let mut torn = bytes.clone();
+    torn.extend_from_slice(&[200, 0, 0, 0, 1, 2, 3]);
+    std::fs::write(parts_of(&path).join(name), torn).unwrap();
+
+    let reopened = open_file(&path).unwrap();
+    let held = |owner: &NativeWorkspaceOwner, record: &str| {
+        owner
+            .with_current(founded, |view| {
+                Ok(view.peer().document("so.tilo.chat", record).is_some())
+            })
+            .unwrap()
+    };
+    assert!(held(&reopened, "a"));
+    testing::start_record(&reopened, founded, "so.tilo.chat", "b", &key, now);
+    drop(reopened);
+    let reopened = open_file(&path).unwrap();
+    assert!(held(&reopened, "a") && held(&reopened, "b"));
+}
+
+/// A record an earlier build kept, its index naming the workspace files
+/// alone, reads as it was, and its next change starts a journal.
+#[tokio::test]
+async fn an_index_before_journals_reads_and_gains_them() {
+    let directory = directory();
+    let path = record_path(&directory);
+    let (key, device) = device();
+    let now = SystemTime::now();
+    let owner = open_file(&path).unwrap();
+    let founded = testing::founded(&owner, "One", &device, &key, now)
+        .await
+        .unwrap();
+    drop(owner);
+    for name in journal_files(&path).keys() {
+        std::fs::remove_file(parts_of(&path).join(name)).unwrap();
+    }
+    let mut index = index(&path);
+    index["version"] = 1.into();
+    std::fs::write(index_path(&path), serde_json::to_vec(&index).unwrap()).unwrap();
+
+    let reopened = open_file(&path).unwrap();
+    assert_eq!(name(&reopened, founded).as_deref(), Some("One"));
+    testing::start_record(&reopened, founded, "so.tilo.chat", "a", &key, now);
+    assert_eq!(journal_files(&path).len(), 1);
+    drop(reopened);
+    let reopened = open_file(&path).unwrap();
+    assert!(
+        reopened
+            .with_current(founded, |view| {
+                Ok(view.peer().document("so.tilo.chat", "a").is_some())
+            })
+            .unwrap()
+    );
 }

@@ -179,6 +179,7 @@ mod tests {
                 .map(|(id, who)| (*id, (*who).to_owned()))
                 .collect(),
             records: Vec::new(),
+            opened_by: std::collections::BTreeMap::new(),
         }
     }
 

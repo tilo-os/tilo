@@ -1,12 +1,4 @@
 //! The provider-neutral reading of HTTP responses, shared by every provider.
-//!
-//! Each provider speaks its own API over its own client, but what a status
-//! means, how `Content-Range` and `Retry-After` read, how much of a body is
-//! buffered and how a ranged read is cut from a response are one policy.
-//! These helpers are pure: they take statuses, header values and readers,
-//! so this crate stays free of an HTTP client. Provider-specific rules (a
-//! route error, a quota reason, a pre-authenticated URL) are matched by the
-//! provider first; [`classify`] is the fallback.
 
 use std::io::{self, Read};
 use std::ops::Range;
@@ -153,14 +145,10 @@ impl<R: Read> Read for Exact<R> {
     }
 }
 
-/// What a download response said about its body.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Served {
-    /// The status was 206 Partial Content.
     pub partial: bool,
-    /// Its `Content-Range`, parsed with [`parse_content_range`].
     pub content_range: Option<(Range<u64>, Option<u64>)>,
-    /// Its `Content-Length`.
     pub declared: Option<u64>,
 }
 
@@ -225,7 +213,6 @@ pub fn ranged_body(
             return Err(Error::InvalidResponse("content-range"));
         }
     } else {
-        // The server ignored the range and sent the whole body.
         let skipped = io::copy(&mut (&mut body).take(wanted.start), &mut io::sink())?;
         if skipped != wanted.start {
             return Err(Error::InvalidResponse("short body"));
@@ -260,7 +247,6 @@ pub fn format_rfc3339_millis(time: SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// An HTTP-date (`Sun, 06 Nov 1994 08:49:37 GMT`). `None` for anything else.
 pub fn parse_http_date(text: &str) -> Option<SystemTime> {
     chrono::DateTime::parse_from_rfc2822(text.trim())
         .ok()
@@ -472,7 +458,6 @@ mod tests {
             ranged_body(body(b"01"), Some(5..8), short.clone()),
             Err(Error::InvalidResponse("short body"))
         ));
-        // A 206 that covers the range.
         let partial = Served {
             partial: true,
             content_range: Some((2..5, Some(10))),
@@ -481,7 +466,6 @@ mod tests {
         let download = ranged_body(body(b"234"), Some(2..5), partial.clone()).unwrap();
         assert_eq!((download.range.clone(), download.total), (2..5, Some(10)));
         assert_eq!(read(download).unwrap(), b"234");
-        // A 206 at the wrong place, or one without its Content-Range.
         for content_range in [Some((1..5, Some(10))), Some((2..4, Some(10))), None] {
             let served = Served {
                 content_range,

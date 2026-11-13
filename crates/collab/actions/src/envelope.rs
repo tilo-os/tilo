@@ -49,30 +49,25 @@ pub struct ActionEnvelope {
 
 impl ActionEnvelope {
     /// The content the change's recorded action names
-    /// ([`crate::executor::recorded_form`]): the large parts of an action
-    /// over the history budget, which the committing device keeps in its
-    /// content store so receivers can resolve them to replay. Empty for an
-    /// action recorded whole.
+    /// ([`crate::executor::recorded_form`]), by reference: the large parts
+    /// of an action over the history budget, read from the action as it
+    /// ran. A device that applies the action keeps them in its content
+    /// store, sealed as their writer sealed them, so receivers can resolve
+    /// them to replay. Empty for an action recorded whole.
+    ///
+    /// # Errors
+    /// [`ActionError::Refused`] when the recorded action is not this one.
     pub fn recorded_content(&self) -> Result<crate::content::ContentParts, crate::ActionError> {
-        let named = self
+        let Some(recorded) = self
             .context
             .as_ref()
             .and_then(|context| context.action.as_ref())
-            .map(EncodedAction::content_parts)
-            .unwrap_or_default();
-        if named.is_empty() {
+        else {
             return Ok(crate::content::ContentParts::new());
-        }
-        let (_, content) = self
-            .action
-            .with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
-        let mut kept = crate::content::ContentParts::new();
-        for hash in &named {
-            if let Some(bytes) = content.get(hash) {
-                kept.add(bytes.to_vec());
-            }
-        }
-        Ok(kept)
+        };
+        recorded.recorded_parts_of(&self.action).ok_or_else(|| {
+            crate::ActionError::Refused("the recorded action is not the action that ran".into())
+        })
     }
 
     /// The base heads as Automerge [`ChangeHash`]es.

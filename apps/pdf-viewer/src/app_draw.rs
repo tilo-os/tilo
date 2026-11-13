@@ -1,23 +1,10 @@
-// Included into `app.rs` (shares its module + imports). Holds the drawing
-// routines and the pure layout helpers that both `draw` and event
-// hit-testing rely on, so a click always lands where the pixel is.
-//
-// The reader's controls are the window bar's slots (`app/window_bar.rs`) and
-// find is the window bar's search; the review panel stands on the inspector
-// region and its tabs, rows, cards, avatars and buttons are library faces. Only the document itself (pages, markup, the selection and
-// find highlights over its glyphs) is painted here, from theme values.
-
-/// Measured heights for a single comment card (shared by scroll layout + draw).
 struct CommentMetrics {
     card_h: f64,
     body_h: f64,
     reply_heights: Vec<f64>,
-    /// Height contributed by the reply-compose row, including its top gap.
     compose_h: f64,
 }
 
-/// One comment card being painted: its rect, the comment, the metrics it
-/// was measured with and the width of its text column.
 struct CommentCard<'a> {
     rect: Rect,
     comment: &'a Thread,
@@ -25,34 +12,22 @@ struct CommentCard<'a> {
     text_w: f64,
 }
 
-/// Non-overlapping layout of a comment card's header row: the author's
-/// avatar and name, then the Resolve button and the delete button, all on
-/// one centre line. The name is bounded so a long name (or an email address)
-/// elides instead of running under the buttons. Pure geometry so both the
-/// draw pass and a test can assert the pieces never collide.
+/// A comment card's header row on one centre line: avatar, name, Resolve and delete.
+/// The name is bounded, so a long one elides instead of running under the buttons.
 struct CommentHeader {
     avatar: Rect,
-    /// Where the author's name is set (its band is the header row).
     name: Rect,
     resolve: Rect,
     delete: Rect,
-    /// The left edge every text line of the card shares: the author's
-    /// name, the body and the replies.
     text_x: f64,
-    /// Top y where the card body begins, clear of the header row.
     body_top: f64,
 }
 
-/// Where a sidebar-tab draw pass accumulates its clickable regions and (if
-/// something on that tab is being edited) the live inline-editor's screen
-/// rect. Bundled so `draw_comments` / `draw_signatures` — which both write
-/// to both — stay under the argument-count limit.
 struct SidebarHits<'a> {
     hits: &'a mut Vec<(SidebarHit, Rect)>,
     edit_rect: &'a mut Rect,
 }
 
-/// The glyph a tool's toggle shows.
 fn tool_icon(tool: Tool) -> Icon {
     match tool {
         Tool::Select => Icon::MousePointer2,
@@ -64,39 +39,25 @@ fn tool_icon(tool: Tool) -> Icon {
     }
 }
 
-/// The review panel's tab labels, full and short.
-fn tab_labels(short: bool) -> [&'static str; 3] {
-    if short {
-        ["Notes", "Index", "Sign"]
-    } else {
-        ["Comments", "Contents", "Signatures"]
-    }
+fn tab_labels() -> [String; 3] {
+    ["pdf-tab-comments", "pdf-tab-contents", "pdf-tab-signing"].map(crate::t)
 }
 
 impl PdfApp {
-    // ---- pure layout ------------------------------------------------
-
-    /// Measure the review panel's tabs in `theme`, so the pure layout
-    /// places them at the width they paint at.
     fn measure_tabs(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        // Tabs pack from the leading edge, each as wide as its label.
-        let tab_widths = [false, true].map(|short| {
-            let segments = tab_labels(short).map(Segment::new);
-            let rects = SegmentedFace::partition_segments(
-                Rect::new(0.0, 0.0, f64::MAX / 4.0, 1.0),
-                &segments,
-                SegmentedStyle::Tabs,
-                ControlSize::Regular,
-                tr,
-                theme,
-            );
-            [0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width))
-        });
-        self.tab_widths = Some(tab_widths);
+        let labels = tab_labels();
+        let segments = labels.each_ref().map(Segment::new);
+        let rects = SegmentedFace::partition_segments(
+            Rect::new(0.0, 0.0, f64::MAX / 4.0, 1.0),
+            &segments,
+            SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            tr,
+            theme,
+        );
+        self.tab_widths = Some([0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width)));
     }
 
-    /// The review panel's tab strip: across the top of the panel, one
-    /// control tall, its first label on the panel content's edge.
     fn sidebar_tab_strip(&self) -> Rect {
         let theme = &self.layout_theme;
         let sb = self.sidebar_panel();
@@ -106,24 +67,10 @@ impl PdfApp {
         Rect::new(sb.x0 + inset, top, sb.x1 - inset, top + h)
     }
 
-    /// Whether the tabs use their short labels: the full ones do not fit.
-    fn sidebar_tabs_short(&self) -> bool {
-        self.tab_widths
-            .is_some_and(|[full, _]| full.iter().sum::<f64>() > self.sidebar_tab_strip().width())
-    }
-
-    /// The tabs packed from the strip's leading edge, each as wide as its
-    /// label (equal thirds until the labels are measured).
     fn sidebar_tab_rects(&self) -> [(SidebarTab, Rect); 3] {
         let strip = self.sidebar_tab_strip();
         let widths = match self.tab_widths {
-            Some([full, short]) => {
-                if self.sidebar_tabs_short() {
-                    short
-                } else {
-                    full
-                }
-            }
+            Some(widths) => widths,
             None => [strip.width() / 3.0; 3],
         };
         let mut x = strip.x0;
@@ -148,9 +95,6 @@ impl PdfApp {
         ])
     }
 
-    /// The panel the review sidebar's contents stand on: the whole column
-    /// when docked; inset from the window edges when it floats over a narrow
-    /// window.
     fn sidebar_panel(&self) -> Rect {
         if self.overlay_mode {
             self.sidebar_rect
@@ -171,41 +115,23 @@ impl PdfApp {
         set
     }
 
-    // ---- orchestration ---------------------------------------------
-
     fn draw_all(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.canvas_hover_zones.clear();
         self.current_page = self.nearest_page();
-        // A page or zoom change (not the opening) says itself in the bar.
         self.follow_page_line();
         self.measure_tabs(tr, theme);
-        // A key (a tool's hotkey, B, Ctrl+plus) changes what the window bar
-        // shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
 
-        // No window fill: the framework painted the content ground already.
-
-        // A PDF page is a fixed-layout document: accessibility text scale
-        // enlarges the reader chrome, not the page's coordinates. Rendering
-        // its stored glyph positions at the chrome scale makes headings,
-        // annotations and signatures collide instead of preserving the
-        // document users are reviewing. Screen readers still get the complete
-        // document semantics; zoom remains the explicit visual magnifier.
         let chrome_text_scale = tr.text_scale();
         tr.set_text_scale(1.0);
-        // Refresh the engine's text layer and links for the visible pages so
-        // selection + search overlays line up with the glyphs.
         if self.raster_active() {
             self.refresh_raster_text();
             self.refresh_raster_links();
         }
         tr.set_text_scale(chrome_text_scale);
 
-        // Resolve sidebar scroll + any reveal request before painting it.
         self.prepare_sidebar_scroll(tr);
 
-        // Resolve the page rail's geometry for this frame before rasterising, so
-        // the thumbnail slots (which pages, at what width) are known.
         if self.show_rail {
             self.page_sidebar.set_aspect(self.ph() / self.pw());
             self.page_sidebar.set_marked(
@@ -221,8 +147,6 @@ impl PdfApp {
                 self.doc.page_count(),
                 cur,
             );
-            // Screenshot hook: stage a live reorder drag so a still frame shows
-            // the floating ghost + the reflow gap. Never armed at runtime.
             if self.shots_rail_drag {
                 let rects = self.page_sidebar.thumb_rects();
                 if let (Some(first), Some(third)) = (rects.first(), rects.get(2)) {
@@ -235,11 +159,8 @@ impl PdfApp {
             }
         }
 
-        // Rasterise the pages + thumbnails on screen once, up front.
         let (page_imgs, thumb_imgs, page_tiles) = self.rasterize_visible();
 
-        // Pages are fixed-layout (see above); the no-document surface is
-        // reader chrome and keeps the chrome scale.
         if self.has_document {
             tr.set_text_scale(1.0);
         }
@@ -248,14 +169,11 @@ impl PdfApp {
         let free_text_edit = self.draw_free_text_editor(scene, base, tr, theme);
         tr.set_text_scale(chrome_text_scale);
 
-        // The floating selection HUD over the page (shared `ui` component).
         self.draw_selection_hud(scene, base, tr, theme);
-        // On a touchscreen, the grips that move either end of the selection.
         if let Some(grips) = self.selection_grips() {
             grips.draw(scene, base, theme);
         }
 
-        // On a narrow window the panels float above the canvas behind a scrim.
         if self.overlay_mode && (self.show_rail || self.show_sidebar) {
             ui::chrome::fill_scrim(
                 scene,
@@ -277,16 +195,11 @@ impl PdfApp {
             self.edit_rect = rect;
         }
         self.stage_shots_context_menu();
-        // The context menu paints in the top layer (`draw_overlay`). File
-        // open/save is the host desktop's portal picker (HIG §5), so there is
-        // no in-app dialog to draw here.
 
         self.sidebar_hits = hits;
         self.shown.note(self.canvas_shown(base, theme));
     }
 
-    /// What this frame shows of the document and what floats over it, for
-    /// [`Widget::collect_damage`] to tell a scroll-only frame from the rest.
     fn canvas_shown(&self, base: Affine, theme: &Theme) -> CanvasShown {
         CanvasShown {
             scroll: (self.scroll_x(), self.scroll_y()),
@@ -308,8 +221,6 @@ impl PdfApp {
         }
     }
 
-    /// Screenshot hook: open the delete menu of the first markup, as a
-    /// right-click at its start would, once the sync has populated it.
     fn stage_shots_context_menu(&mut self) {
         if !self.shots_context_menu || self.context_menu.is_some() {
             return;
@@ -326,9 +237,6 @@ impl PdfApp {
         self.shots_context_menu = false;
     }
 
-    /// What a delete menu acts on, on screen: the whole marked-up text, the
-    /// note's glyph, the ink's or text box's extent, or the placed
-    /// signature. `None` if it has no place on a laid-out page.
     fn delete_target_screen_rect(&self, target: &DeleteTarget) -> Option<Rect> {
         let (page, r) = match target {
             DeleteTarget::Annotation(id) => {
@@ -370,9 +278,8 @@ impl PdfApp {
         ))
     }
 
-    /// Where the delete menu for `target`, asked for at `at`, opens: under
-    /// what it acts on, from the pointer's column, so it never covers it
-    /// (above it when there is no room below).
+    /// Where the delete menu for `target` opens: from the pointer's column, above when
+    /// there is no room below.
     fn delete_menu_anchor(&self, target: &DeleteTarget, at: Point) -> Rect {
         self.delete_target_screen_rect(target).map_or_else(
             || Rect::new(at.x, at.y, at.x, at.y),
@@ -383,14 +290,6 @@ impl PdfApp {
         )
     }
 
-    /// The bitmaps for every page (and thumbnail) currently on screen, keyed
-    /// by 1-based page number, from what the PDF worker has delivered, and
-    /// the worker's next renders asked for. Nothing here waits: a page is
-    /// drawn from the best bitmap held for it (another width scaled, while
-    /// the sharp one renders), and the worker's queue is replaced by what
-    /// this frame wants, most important first: the pages on screen, the
-    /// pages the scroll is heading into, then rail thumbnails. Empty when no
-    /// PDF is open.
     fn rasterize_visible(&mut self) -> RasterFrame {
         let mut page_imgs = std::collections::HashMap::new();
         let mut thumb_imgs = std::collections::HashMap::new();
@@ -405,8 +304,6 @@ impl PdfApp {
         let canvas = self.canvas_rect;
         self.raster_heading.follow(self.scroll_y());
         let card_w_px = (self.pw() * self.zoom()).max(1.0);
-        // Render a little above display resolution so pages stay crisp when
-        // the compositor scales the surface.
         let page_bucket = crate::source::RasterBackend::bucket_for(
             ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096),
         );
@@ -421,7 +318,6 @@ impl PdfApp {
         let wanted_tiles =
             crate::tiles::wanted_tiles(&tiled, (canvas.x0, canvas.y0, canvas.x1, canvas.y1));
 
-        // Whole-page renders this frame wants, most important first.
         let mut wanted: Vec<(usize, u32)> = Vec::new();
         for (i, _) in &visible {
             match self.raster_images.best(*i, page_bucket) {
@@ -441,7 +337,6 @@ impl PdfApp {
             if let Some((_, image)) = best {
                 page_imgs.insert(i + 1, image);
             }
-            // A thumbnail is only a stand-in; ask for the real placeholder.
             if best_bucket < placeholder_bucket {
                 wanted.push((i, placeholder_bucket));
             }
@@ -459,40 +354,29 @@ impl PdfApp {
         let thumbs = self.rail_thumbnails(&mut thumb_imgs);
         let mut ahead_of_scroll = Vec::new();
         for (i, _) in &prefetch {
-            // A page drawn from tiles once it scrolls in needs only the
-            // placeholder its tiles arrive over, never a whole bitmap too
-            // large for one.
+            // A page drawn from tiles needs only the placeholder its tiles arrive over.
             let bucket = if self.drawn_from_tiles(*i) {
                 placeholder_bucket
             } else {
                 page_bucket
             };
             if !self.raster_images.contains_key(&(*i, bucket)) {
-                // Marked drawn so the bitmap the scroll is about to need is
-                // not the one evicted for it.
                 let _ = self.raster_images.best(*i, bucket);
                 ahead_of_scroll.push((*i, bucket));
             }
         }
-        // Order: the screen first, then thumbnails, then what lies ahead.
         let mut order = wanted;
         order.extend(thumbs);
         order.extend(ahead_of_scroll);
         self.submit_page_renders(document_id, &order);
-        // Renders still in flight (prefetch included) keep a capture waiting.
         self.pending_visuals |= !self.raster_render_pending.is_empty();
 
         self.request_tiled_pages(document_id, &wanted_tiles, &mut page_tiles);
-        // The worker wakes the window when a result is queued, so no frame
-        // spins while it is rasterising.
         (page_imgs, thumb_imgs, page_tiles)
     }
 
-    /// The pages within reach of the canvas, from the page stack's geometry
-    /// alone (never a walk over the whole document): those on screen with
-    /// their distance from its centre, those `ahead`/`behind` of it with
-    /// their distance from its edge, each nearest first, and the on-screen
-    /// pages drawn too large for one bitmap, which are drawn from tiles.
+    /// The pages within reach of the canvas from the stack's geometry alone: those on
+    /// screen and those `ahead` or `behind` it, nearest first.
     fn pages_in_reach(&self, (ahead, behind): (f64, f64)) -> PagesInReach {
         let canvas = self.canvas_rect;
         let mut tiled = Vec::new();
@@ -536,8 +420,6 @@ impl PdfApp {
         }
     }
 
-    /// The rail thumbnails on screen, drawn from the best bitmap held for
-    /// each (`thumb_imgs`, 1-based), and the renders they still want.
     fn rail_thumbnails(
         &mut self,
         thumb_imgs: &mut std::collections::HashMap<usize, PenikoImage>,
@@ -547,7 +429,6 @@ impl PdfApp {
             return thumbs;
         }
         let rail = self.rail_rect;
-        // 0-based display indices + widths, from the shared rail's geometry.
         for (i, r) in self.page_sidebar.thumb_rects() {
             if r.y0 > rail.y1 || r.y1 < rail.y0 {
                 continue;
@@ -568,12 +449,6 @@ impl PdfApp {
         thumbs
     }
 
-    /// Hand the worker this frame's page renders as one batch replacing its
-    /// queue, most important first. A render already asked for keeps its
-    /// place; at most [`MAX_NEW_PAGE_RASTERS_PER_FRAME`] new pages and
-    /// [`MAX_NEW_THUMB_RASTERS_PER_FRAME`] new thumbnails join per frame,
-    /// so the open→first-paint path pays for the top page alone and the rest
-    /// follow as results wake later frames.
     fn submit_page_renders(&mut self, document_id: u64, order: &[(usize, u32)]) {
         let batch = tilo_page_raster::admit(
             order,
@@ -610,10 +485,6 @@ impl PdfApp {
         }
     }
 
-    /// Where a visible page's pixels land if it is drawn from tiles: `None`
-    /// when a whole-page bitmap at this zoom stays under
-    /// [`crate::tiles::TILE_MIN_PAGE_PX`]. The placement follows the page's
-    /// card mapping, so tiles line up with text and markup overlays.
     fn tile_placement(&self, i: usize, origin: Point) -> Option<crate::tiles::PagePlacement> {
         if !self.drawn_from_tiles(i) {
             return None;
@@ -633,8 +504,6 @@ impl PdfApp {
         })
     }
 
-    /// Whether 0-based page `i` is drawn from tiles at this zoom: its
-    /// whole-page bitmap would pass [`crate::tiles::TILE_MIN_PAGE_PX`].
     fn drawn_from_tiles(&self, i: usize) -> bool {
         let Some(size) = self.display_page_size(i) else {
             return false;
@@ -643,17 +512,12 @@ impl PdfApp {
         width > crate::tiles::TILE_MIN_PAGE_PX && width.is_finite()
     }
 
-    /// Displayed size (points, recorded rotation applied) of 0-based page `i`.
     fn display_page_size(&self, i: usize) -> Option<(f64, f64)> {
         self.raster_document.as_ref()?.page_sizes.get(i).copied()
     }
 
-    /// Worker mode for zoomed pages: draw the tiles already here, over the
-    /// tiles of other zoom levels still held for the page (scaled, so a zoom
-    /// keeps showing the last sharp pixels until the new level's arrive),
-    /// and hand the worker the missing tiles as one batch, most important
-    /// first. The batch replaces the previous one, so tiles that scrolled
-    /// out of view are never rendered ahead of the ones now on screen.
+    /// Draw the tiles already here, over the other levels still held, and hand the
+    /// worker the missing ones as one batch, most important first.
     fn request_tiled_pages(
         &mut self,
         document_id: u64,
@@ -698,10 +562,8 @@ impl PdfApp {
         }
     }
 
-    /// Ask for the link areas of the pages currently in view (raster backend
-    /// only). Links are cheap to read and must be ready before the pointer
-    /// reaches them, so unlike the text layer they are fetched on idle and
-    /// scroll frames too; each page is read once per document and plan.
+    /// Ask for the link areas of the pages in view. Links are cheap and must be ready
+    /// before the pointer reaches them, so they are fetched on every frame.
     fn refresh_raster_links(&mut self) {
         let pageh = self.ph() * self.zoom();
         let canvas = self.canvas_rect;
@@ -717,15 +579,7 @@ impl PdfApp {
         }
     }
 
-    /// Ask the PDF worker for the engine text layer of the pages currently in
-    /// view; the layers land in `self.raster_text` as they arrive.
     fn refresh_raster_text(&mut self) {
-        // The engine text layer feeds the selection and search-hit overlays.
-        // It is read on the worker, below the window's thread, and kept
-        // (bounded by `evict_text_layers`) once here: a press needs the
-        // page's layer, which `hover_text` asks for ahead of it. While a
-        // selection, search hits or a highlight drag is live, every page on
-        // screen asks for its layer so the overlays follow the scroll.
         let need = self.selection.is_some()
             || !self.raster_matches.is_empty()
             || self
@@ -762,12 +616,6 @@ impl PdfApp {
         }
     }
 
-    // ---- canvas -----------------------------------------------------
-
-    /// The no-document surface: the library empty state, with the one action
-    /// that gets a document on screen. While an open is in flight it names
-    /// the wait and offers nothing; when the last open failed it says why in
-    /// one bounded line (the full reason stays in the accessible error).
     fn draw_empty_state(
         &self,
         scene: &mut Scene,
@@ -778,12 +626,28 @@ impl PdfApp {
     ) {
         let detail;
         let waiting;
-        let content = if self.pending_open.is_some() {
+        let waited;
+        let opening = crate::t("pdf-empty-opening");
+        let open_failed = crate::t("pdf-empty-open-failed");
+        let empty = crate::t("pdf-empty-heading");
+        let open = crate::t("pdf-empty-open");
+        let open_another = crate::t("pdf-empty-open-another");
+        let offers: Vec<ui::widget::DocumentOffer<'_>> = self
+            .workspace_documents
+            .iter()
+            .map(|document| ui::widget::DocumentOffer {
+                target: &document.target,
+                name: &document.name,
+                caption: Some(&document.caption),
+            })
+            .collect();
+        let content = if self.opening() {
             EmptyStateContent {
                 icon: Some(Icon::FileText),
-                ..EmptyStateContent::new("Opening PDF…")
+                ..EmptyStateContent::new(&opening)
             }
         } else if let Some((title, message, error)) = self.source_wait_text() {
+            waited = title;
             waiting = message;
             EmptyStateContent {
                 icon: Some(if error {
@@ -793,43 +657,39 @@ impl PdfApp {
                 }),
                 message: Some(&waiting),
                 error,
-                ..EmptyStateContent::new(title)
+                ..EmptyStateContent::new(&waited)
             }
-        } else if let Some(err) = &self.load_error {
-            let lower = err.to_ascii_lowercase();
-            detail = if lower.contains("password") || lower.contains("encrypt") {
-                "This PDF needs a password before it can be opened."
-            } else if lower.contains("unavailable") || lower.contains("not a readable pdf") {
-                "The file is unavailable or isn't a readable PDF."
-            } else {
-                "Check the file and try again."
-            };
+        } else if let Some(failure) = self.open_failure_text() {
+            detail = failure;
             EmptyStateContent {
                 icon: Some(Icon::TriangleAlert),
-                message: Some(detail),
-                // A window whose record marks up a document keeps it: another
-                // file opens in a window of its own, so none is offered here.
-                action_label: self.record_source.is_none().then_some("Open another PDF"),
+                message: Some(&detail),
+                action_label: self
+                    .record_source
+                    .is_none()
+                    .then_some(open_another.as_str()),
                 error: true,
-                ..EmptyStateContent::new("Couldn't open this document")
+                ..EmptyStateContent::new(&open_failed)
             }
         } else {
             EmptyStateContent {
                 icon: Some(Icon::FileText),
-                action_label: Some("Open PDF"),
-                ..EmptyStateContent::new("No document open")
+                documents: &offers,
+                action_label: Some(&open),
+                ..EmptyStateContent::new(&empty)
             }
         };
-        let action = self.file_open.paint(
+        let painted = self.file_open.paint(
             &mut PaintCtx::new(scene, base, tr, theme),
             canvas,
             &content,
             self.last_mouse,
             false,
+            self.interaction,
         );
-        // The click handler reads this exact rect back
-        // (`empty_open_button_rect`); nothing to click while opening.
-        self.empty_open_button.set(action.unwrap_or(Rect::ZERO));
+        self.empty_open_button
+            .set(painted.action.unwrap_or(Rect::ZERO));
+        *self.empty_document_rows.borrow_mut() = painted.documents;
     }
 
     fn draw_canvas(
@@ -843,7 +703,6 @@ impl PdfApp {
     ) {
         let canvas = self.canvas_rect;
 
-        // No document open: a calm empty surface on the content ground.
         if !self.has_document {
             self.draw_empty_state(scene, base, tr, theme, canvas);
             return;
@@ -855,7 +714,6 @@ impl PdfApp {
         let origins = self.page_origins();
         for (i, origin) in origins.iter().enumerate() {
             let page_num = i + 1;
-            // Vertical cull.
             if origin.y > canvas.y1 || origin.y + pageh < canvas.y0 {
                 continue;
             }
@@ -885,12 +743,9 @@ impl PdfApp {
             self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
             self.draw_form_fields(scene, base, tr, theme, page_num, *origin);
 
-            // Search-hit + selection bands over the page image, from the
-            // real glyph geometry so they land on the text.
             self.draw_text_overlays(scene, base, theme, page_num, *origin);
         }
 
-        // Drag preview.
         if let Some(d) = &self.drag
             && let Some(origin) = origins.get(d.page.saturating_sub(1))
         {
@@ -923,15 +778,9 @@ impl PdfApp {
 
         scene.pop_layer();
 
-        // Vertical + horizontal scrollbars: painted by the shared viewport
-        // kernel so they match the other document apps (they appear only when
-        // the content overflows the viewport on that axis).
         self.viewport.draw_scrollbars(scene, base, theme);
     }
 
-    /// Cover a page-shaped imported occurrence whose verified bytes are not
-    /// here yet, so a page still waiting on a collaborator cannot be mistaken
-    /// for a blank page of the document.
     fn draw_import_placeholder(
         &self,
         scene: &mut Scene,
@@ -946,11 +795,9 @@ impl PdfApp {
         };
         let label = match self.content.state(&imported.hash) {
             ContentState::Resolved => return,
-            ContentState::Pending => "Imported page is loading…",
-            ContentState::Waiting => {
-                "Imported page arrives once a collaborator who has it is online"
-            }
-            ContentState::Unavailable => "Imported page is unavailable",
+            ContentState::Pending => crate::t("pdf-imported-page-loading"),
+            ContentState::Waiting => crate::t("pdf-imported-page-waiting"),
+            ContentState::Unavailable => crate::t("pdf-imported-page-unavailable"),
         };
         let page_rect = Rect::new(
             origin.x,
@@ -963,15 +810,12 @@ impl PdfApp {
             page_rect,
             &EmptyStateContent {
                 icon: Some(Icon::Image),
-                ..EmptyStateContent::new(label)
+                ..EmptyStateContent::new(&label)
             },
             Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
         );
     }
 
-    /// Form widgets on a page: a quiet outline so fields are discoverable,
-    /// and any value recorded in the document's record drawn over the PDF's
-    /// own appearance (the export writes the same value into the file).
     fn draw_form_fields(
         &self,
         scene: &mut Scene,
@@ -1010,8 +854,6 @@ impl PdfApp {
         }
     }
 
-    /// The inline editor over the free text box being edited, if any: typed
-    /// in place, at the box's position, width and text size.
     fn draw_free_text_editor(
         &mut self,
         scene: &mut Scene,
@@ -1046,8 +888,6 @@ impl PdfApp {
             ..
         }) = self.editing.as_mut()
         {
-            // The note is edited in place at its own size on the page, so
-            // the text does not jump when the edit ends.
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a note's on-screen type size is far inside f32"
@@ -1058,7 +898,6 @@ impl PdfApp {
         Some(r)
     }
 
-    /// The inline editor over the text field being edited, if any.
     fn draw_field_editor(
         &mut self,
         scene: &mut Scene,
@@ -1097,9 +936,6 @@ impl PdfApp {
         }
     }
 
-    /// The find highlights on page `page_num`, in its page space: one band
-    /// per line a match covers, and whether the match is the current one,
-    /// which paints emphasised.
     fn found_bands(&self, page_num: usize) -> Vec<(PtRect, bool)> {
         let Some(layer) = self.raster_text.get(&page_num) else {
             return Vec::new();
@@ -1118,10 +954,6 @@ impl PdfApp {
             .collect()
     }
 
-    /// Draw the raster text-layer overlays for one page: every find match
-    /// over exactly its glyphs (the current one emphasised) and the live
-    /// selection in your selection tint. All rectangles come from the real
-    /// engine glyph boxes, so they sit exactly over the printed characters.
     fn draw_text_overlays(
         &self,
         scene: &mut Scene,
@@ -1140,15 +972,12 @@ impl PdfApp {
             )
         };
 
-        // Image-region marquee (Shift + Select): your selection tint with a
-        // dashed edge in your colour, drawn even when the page has no text.
         if let Some(region) = self.region
             && region.page == page_num
         {
             render::draw_region_marquee(scene, base, theme, to_screen(&region.rect()));
         }
 
-        // Find matches, one highlight per line a match covers.
         for (band, current) in self.found_bands(page_num) {
             ui::widget::paint_find_match(scene, base, to_screen(&band), current, theme);
         }
@@ -1157,7 +986,6 @@ impl PdfApp {
             return;
         };
 
-        // Live selection, the part of it on this page.
         if let Some((a, b)) = self
             .selection
             .filter(TextSelection::is_active)
@@ -1168,11 +996,8 @@ impl PdfApp {
         }
     }
 
-    /// The floating selection HUD — the shared `ui::SelectionHud`, identical to
-    /// the ebook reader's bar: highlight swatches + Copy + Note over the live
-    /// text selection. Rebuilt each frame and stored for the next press to
-    /// hit-test. Only shown once the drag has settled (a live drag would make
-    /// the bar chase the pointer) and never while the inline editor is open.
+    /// The floating selection HUD over the live selection, rebuilt each frame. Shown once
+    /// the drag settled, never while the inline editor is open.
     fn draw_selection_hud(
         &mut self,
         scene: &mut Scene,
@@ -1189,7 +1014,6 @@ impl PdfApp {
         let Some(bounds_rect) = self.selection_screen_bounds() else {
             return;
         };
-        // Anchor above the top edge of the selection, horizontally centred on it.
         let anchor = Point::new(
             f64::midpoint(bounds_rect.x0, bounds_rect.x1),
             bounds_rect.y0,
@@ -1201,16 +1025,11 @@ impl PdfApp {
                 ui::HudSwatch::new([r, g, b], s == self.swatch)
             })
             .collect();
-        // The HUD is a floating Panel on the window's theme. It stands under
-        // the selection, so a heading above the passage stays readable at
-        // any zoom.
         let hud = ui::SelectionHud::draw(
             scene,
             base,
             tr,
             theme,
-            // One menu for the selection whatever made it: keyboard
-            // shortcuts shown where a keyboard is the way in.
             &ui::HudControls {
                 swatches: &swatches,
                 show_note: true,
@@ -1218,7 +1037,6 @@ impl PdfApp {
                 show_select_all: true,
                 shortcuts: self.interaction.modality != ui::interaction::InputModality::Touch,
             },
-            // Clear of the end grip's knob, where it shows.
             ui::HudPlacement::new(anchor, self.canvas_rect).below(
                 self.selection_grips().map_or(bounds_rect.y1, |grips| {
                     grips.reach_below().max(bounds_rect.y1)
@@ -1230,8 +1048,6 @@ impl PdfApp {
         self.canvas_hover_zones.push(hud.rect());
         self.sel_hud = Some(hud);
     }
-
-    // ---- thumbnail rail --------------------------------------------
 
     fn draw_rail(
         &mut self,
@@ -1246,13 +1062,6 @@ impl PdfApp {
         }
         let (pw, ph) = (self.pw(), self.ph());
 
-        // The shared page rail draws its region, the thumbnails' frames,
-        // the current-page lift, page numbers, markup dots, drag reflow +
-        // ghost, scrollbar, context menu and the import affordance. It renders
-        // the page content through this closure — a real engine bitmap when
-        // the raster backend has one, otherwise the actual vector page. Move the
-        // rail out of `self` so the closure can borrow the (immutable)
-        // document alongside it.
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(1.0));
         let doc = &self.doc;
         sb.render(scene, base, tr, theme, |scene, tr, base, i, rect| {
@@ -1275,8 +1084,6 @@ impl PdfApp {
         self.page_sidebar = sb;
     }
 
-    // ---- review panel -----------------------------------------------
-
     fn draw_sidebar(
         &mut self,
         scene: &mut Scene,
@@ -1289,8 +1096,6 @@ impl PdfApp {
         if !self.show_sidebar {
             return hits;
         }
-        // Docked, the panel is the window's inspector region; floating over
-        // a narrow window it is the floating material.
         let panel = self.sidebar_panel();
         let local = if self.overlay_mode {
             ui::widget::floating_surface::paint(scene, base, panel, theme);
@@ -1302,10 +1107,10 @@ impl PdfApp {
         let theme = &local;
         let ground = theme.tokens.colors.surfaces.content;
 
-        // Tabs.
         let tab_rects = self.sidebar_tab_rects();
         let rects: Vec<Rect> = tab_rects.iter().map(|(_, r)| *r).collect();
-        let labels = tab_labels(self.sidebar_tabs_short());
+        let labels = tab_labels();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
         let selected = tab_rects
             .iter()
             .position(|(tab, _)| *tab == self.sidebar_tab)
@@ -1326,8 +1131,8 @@ impl PdfApp {
         ui::surface::separator(scene, base, panel.x0, panel.x1, strip.y1, 0.0, ground);
 
         let body = self.sidebar_body();
-        // Everything pushed from here on is painted inside the `body` clip, so
-        // its hit rect must be clipped the same way (see below).
+        // Everything pushed from here on is painted inside the `body` clip, so its hit
+        // rect is clipped the same way.
         let body_hits_start = hits.len();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &body);
         match self.sidebar_tab {
@@ -1356,12 +1161,6 @@ impl PdfApp {
             ),
         }
         scene.pop_layer();
-        // Hit rect == painted rect. Cards, buttons and rows scrolled under the
-        // tab strip (or off the bottom) were still pushed at their unclipped
-        // positions; because `apply_sidebar` picks the smallest containing
-        // rect, an invisible delete button scrolled under "Contents" would
-        // beat the tab. Clip every body hit to the body and drop the ones
-        // nothing of which remains visible.
         let clipped: Vec<(SidebarHit, Rect)> = hits
             .drain(body_hits_start..)
             .filter_map(|(hit, r)| {
@@ -1370,9 +1169,8 @@ impl PdfApp {
             })
             .collect();
         hits.extend(clipped);
-        // The inline editor's rect is routed before any tab hit,
-        // so it is clipped the same way: an editor scrolled under the tab
-        // strip must not swallow the press meant for the tab covering it.
+        // Clipped the same way: an editor scrolled under the tab strip must not swallow
+        // the press meant for the tab covering it.
         let visible_edit = edit_rect.intersect(body);
         *edit_rect = if visible_edit.width() > 0.0 && visible_edit.height() > 0.0 {
             visible_edit
@@ -1382,7 +1180,6 @@ impl PdfApp {
         hits
     }
 
-    /// The scrollable body of the review panel (below the tab strip).
     fn sidebar_body(&self) -> Rect {
         let panel = self.sidebar_panel();
         let rule = f64::from(self.layout_theme.tokens.metrics.chrome_rule_px);
@@ -1394,14 +1191,10 @@ impl PdfApp {
         )
     }
 
-    /// The inset of the panel's content from its edges.
     fn panel_inset(&self) -> f64 {
         f64::from(self.layout_theme.tokens.spacing.s3)
     }
 
-    /// The y where the comments list starts painting (before scroll): below
-    /// the fixed summary line. Shared by the draw pass, `sidebar_item_layout`
-    /// and the reveal-scroll origin so they agree.
     fn comments_list_top(&self, body: Rect) -> f64 {
         let theme = &self.layout_theme;
         let rhythm = &theme.tokens.spacing.rhythm;
@@ -1409,22 +1202,22 @@ impl PdfApp {
         body.y0 + f64::from(rhythm.sibling) + caption + f64::from(rhythm.sibling)
     }
 
-    /// The width the Resolve button needs for its widest label.
     fn resolve_button_w(tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        ["Resolve", "Reopen"]
-            .iter()
-            .map(|label| {
-                ButtonFace::new(Rect::ZERO, label)
-                    .role(ButtonRole::Plain)
-                    .control_size(ControlSize::Small)
-                    .intrinsic_width(tr, theme)
-            })
-            .fold(0.0, f64::max)
+        [
+            crate::t("pdf-comment-resolve"),
+            crate::t("pdf-comment-reopen"),
+        ]
+        .iter()
+        .map(|label| {
+            ButtonFace::new(Rect::ZERO, label)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme)
+        })
+        .fold(0.0, f64::max)
     }
 
-    /// Lay out a comment card's header row in the card's body rect so the
-    /// avatar, author name, Resolve button and delete button never overlap
-    /// regardless of the name's length, all centred on one line.
+    /// The header row's pieces, which never overlap however long the name is.
     fn comment_header_layout(body: Rect, resolve_w: f64, theme: &Theme) -> CommentHeader {
         let row_h = ButtonFace::height(ControlSize::Small, theme);
         let cy = body.y0 + row_h / 2.0;
@@ -1455,8 +1248,6 @@ impl PdfApp {
         }
     }
 
-    /// The card's body rect for a card whose outer width is `card_w`, placed
-    /// at the origin: the width its text is laid out to.
     fn comment_text_w(theme: &Theme, card_w: f64) -> f64 {
         let body = CardFace::new().body_rect(
             &mut TextRenderer::new(),
@@ -1482,8 +1273,6 @@ impl PdfApp {
         let line = f64::from(theme.text(TextRole::Body).line_height_px());
         let label = f64::from(theme.text(TextRole::Label).line_height_px());
         let row_h = ButtonFace::height(ControlSize::Small, theme);
-        // The body is the live editor while this comment is focused, else its
-        // text as written (a line's height when empty, for the hint).
         let bh = match self.editing_field(&EditTarget::CommentBody(cm.id.clone())) {
             Some(field) => field.rect().height().max(line),
             None if cm.comment.text.is_empty() => line,
@@ -1507,7 +1296,6 @@ impl PdfApp {
             reply_heights.push(rh);
             inner += f64::from(rhythm.sibling) + label + f64::from(rhythm.tight) + rh;
         }
-        // Reply-compose row: the Reply button, or the open field.
         let compose_h = f64::from(rhythm.related)
             + match self.editing_field(&EditTarget::Reply(cm.id.clone())) {
                 Some(field) => {
@@ -1525,7 +1313,6 @@ impl PdfApp {
         }
     }
 
-    /// The comment editor open on `target`, if it is the edit in progress.
     fn editing_field(&self, target: &EditTarget) -> Option<&CommentField> {
         match self.editing.as_ref() {
             Some(Editing {
@@ -1536,14 +1323,10 @@ impl PdfApp {
         }
     }
 
-    /// Comments are reader chrome, not fixed-size PDF content. The editor
-    /// applies accessibility text scale itself; its body size needs UI scale.
     fn comment_body_size(theme: &Theme) -> f32 {
         theme.text(TextRole::Body).size / theme.text_scale
     }
 
-    /// The height `blocks` take shown at `width`, measured with the view
-    /// that draws them.
     fn comment_view_height(
         &self,
         tr: &mut TextRenderer,
@@ -1561,18 +1344,11 @@ impl PdfApp {
         view.layout(rect, &theme, tr)
     }
 
-    /// The rect a comment's rich text is laid out in so its glyphs start at
-    /// `x` and wrap at `width`: the editor sets each line in from its rect
-    /// by its own inset, on both sides.
     fn rich_text_rect(&self, tr: &mut TextRenderer, x: f64, y: f64, width: f64) -> Rect {
         let pad = self.rich_text_inset(tr);
         Rect::new(x - pad, y, x + width + pad, y)
     }
 
-    /// How far in from its rect the rich-text view sets the first glyph of a
-    /// line, read from the view itself (where its caret stands before the
-    /// first character), so comment text shares the author name's edge
-    /// exactly. Measured once per text scale.
     fn rich_text_inset(&self, tr: &mut TextRenderer) -> f64 {
         let theme = &self.layout_theme;
         if let Some(((text_scale, ui_scale), inset)) = self.rich_inset.get()
@@ -1598,15 +1374,10 @@ impl PdfApp {
         inset
     }
 
-    /// The width of a card in the comments list.
     fn comment_card_w(&self, body: Rect) -> f64 {
         (body.width() - 2.0 * self.panel_inset()).max(1.0)
     }
 
-    /// Content-relative layout of the active sidebar list as
-    /// `(id, top, height)` entries plus the total content height. Tops are
-    /// measured from the same origin the draw routines use *before* the
-    /// scroll offset is applied, so the reveal math lines up exactly.
     fn sidebar_item_layout(&self, tr: &mut TextRenderer) -> (Vec<(String, f64, f64)>, f64) {
         let theme = &self.layout_theme;
         let body = self.sidebar_body();
@@ -1625,7 +1396,6 @@ impl PdfApp {
                 (items, y - list_origin)
             }
             SidebarTab::Signatures => {
-                // The composer is fixed; only the placed rows scroll.
                 let base = self.sig_list_top(body);
                 let row_h = self.sig_row_h(tr);
                 let mut y = base;
@@ -1636,9 +1406,6 @@ impl PdfApp {
                 (items, y - base)
             }
             SidebarTab::Outline => {
-                // Contents is a genuine navigable list. Keep its geometry here
-                // with the other sidebar lists so wheel scrolling and
-                // draw-time hit regions remain in lockstep.
                 let row_h = ui::chrome::nav_row_height(theme);
                 let top = self.outline_top(body);
                 let mut y = top;
@@ -1651,14 +1418,10 @@ impl PdfApp {
         }
     }
 
-    /// Where the contents list starts.
     fn outline_top(&self, body: Rect) -> f64 {
         body.y0 + f64::from(self.layout_theme.tokens.spacing.s2)
     }
 
-    /// Resolve `sidebar_scroll`: honour a pending reveal request (scrolling a
-    /// freshly created comment/signature into view) and clamp to the list's
-    /// scroll range so a deleted tail can't leave the list scrolled off.
     fn prepare_sidebar_scroll(&mut self, tr: &mut TextRenderer) {
         if !self.show_sidebar {
             self.sidebar_scroll = 0.0;
@@ -1678,8 +1441,6 @@ impl PdfApp {
         if let Some(id) = self.sidebar_reveal.take()
             && let Some((_, top, h)) = items.iter().find(|(iid, _, _)| iid == &id)
         {
-            // `top` is measured from the same origin as `list_origin`; bring
-            // the item just inside the viewport.
             let rel_top = top - list_origin;
             let rel_bot = rel_top + h;
             if rel_top < self.sidebar_scroll {
@@ -1703,31 +1464,26 @@ impl PdfApp {
         let inset = self.panel_inset();
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         let card_w = self.comment_card_w(body);
-        // Snapshot the comment cache so the loop can borrow `self.editing`
-        // mutably (to draw the inline editor) without aliasing `self.comments`.
         let comments = self.comments.clone();
 
         let total = comments.len();
         let open = comments.iter().filter(|c| !c.comment.resolved).count();
         if total == 0 {
+            let title = crate::t("pdf-comments-empty-title");
+            let message = crate::t("pdf-comments-empty-message");
             EmptyState::paint(
                 &mut PaintCtx::new(scene, base, tr, theme),
                 body.inset(-inset),
                 &EmptyStateContent {
                     icon: Some(Icon::Pencil),
-                    message: Some("Select text or use the Note tool to add one."),
-                    ..EmptyStateContent::new("No comments yet")
+                    message: Some(&message),
+                    ..EmptyStateContent::new(&title)
                 },
                 self.last_mouse,
             );
             return;
         }
-        let summary = match (total, open) {
-            (1, 1) => "1 comment, open".to_string(),
-            (1, _) => "1 comment, resolved".to_string(),
-            (_, 0) => format!("{total} comments, all resolved"),
-            _ => format!("{total} comments, {open} open"),
-        };
+        let summary = comments_summary(total, open);
         let caption = theme.text(TextRole::Caption);
         tr.draw_style(
             scene,
@@ -1741,7 +1497,6 @@ impl PdfApp {
             &caption,
         );
 
-        // Scrollable region starts below the fixed summary line.
         let mut y = self.comments_list_top(body) - self.sidebar_scroll;
         let resolve_w = Self::resolve_button_w(tr, theme);
         for cm in &comments {
@@ -1752,15 +1507,11 @@ impl PdfApp {
             let m = self.comment_metrics(tr, theme, cm, card_w);
             let card = Rect::new(body.x0 + inset, y, body.x0 + inset + card_w, y + m.card_h);
             out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
-            // Cull cards scrolled out of the body, but keep advancing `y`.
             if card.y1 < body.y0 || card.y0 > body.y1 {
                 y += m.card_h + gap;
                 continue;
             }
 
-            // A comment is an object (it opens its markup on the page): a
-            // card. The thread of the markup you have selected is the selected
-            // card.
             let face = CardFace::new().pressable().selected(selected).interaction(
                 ui::widget::Interaction {
                     hovered: card.contains(self.last_mouse),
@@ -1786,8 +1537,6 @@ impl PdfApp {
         }
     }
 
-    /// A comment card's header row: the author's avatar and name, the
-    /// Resolve button and the delete button, on one centre line.
     fn draw_comment_header_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1798,9 +1547,9 @@ impl PdfApp {
         let theme = ctx.theme;
         AvatarFace::new(&cm.comment.author, &cm.comment.author).paint(ctx, hdr.avatar);
         let style = theme.text(TextRole::Label).strong();
-        let name = ctx
-            .text
-            .elide_to_width_style(&cm.comment.author, hdr.name.width() as f32, &style);
+        let name =
+            ctx.text
+                .elide_to_width_style(&cm.comment.author, hdr.name.width() as f32, &style);
         let (_, h) = ctx.text.measure_style(&name, None, &style);
         ctx.text(
             &name,
@@ -1810,7 +1559,12 @@ impl PdfApp {
             None,
         );
 
-        let resolve = ButtonFace::new(hdr.resolve, if cm.comment.resolved { "Reopen" } else { "Resolve" })
+        let resolve_label = if cm.comment.resolved {
+            crate::t("pdf-comment-reopen")
+        } else {
+            crate::t("pdf-comment-resolve")
+        };
+        let resolve = ButtonFace::new(hdr.resolve, &resolve_label)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
             .hovered(hdr.resolve.contains(self.last_mouse));
@@ -1818,7 +1572,8 @@ impl PdfApp {
         out.hits
             .push((SidebarHit::Resolve(cm.id.clone()), hdr.resolve));
 
-        let delete = ButtonFace::icon_only(hdr.delete, Icon::X, "Delete comment")
+        let delete_label = crate::t("pdf-comment-delete");
+        let delete = ButtonFace::icon_only(hdr.delete, Icon::X, &delete_label)
             .control_size(ControlSize::Small)
             .hovered(hdr.delete.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &delete);
@@ -1828,9 +1583,6 @@ impl PdfApp {
         ));
     }
 
-    /// A comment card's body — the text as written, or the shared editor
-    /// while it's focused (click to edit; caret while focused). Returns the
-    /// running `y` where the replies start.
     fn draw_comment_body(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1849,9 +1601,6 @@ impl PdfApp {
         let body_top = hdr.body_top;
         let tight = f64::from(theme.tokens.spacing.rhythm.tight);
         let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
-        // The body as a field: its box stands one field pad out from the text
-        // (the edge the reply field and the Reply button share), so the text
-        // itself keeps the author name's edge.
         let pad = f64::from(theme.tokens.spacing.s2);
         let body_hit = Rect::new(
             body_x - pad,
@@ -1869,8 +1618,6 @@ impl PdfApp {
                 theme,
             );
             *out.edit_rect = body_hit;
-            // The SDK editor owns the text, caret and selection while this
-            // comment is focused, set where the static body draws.
             if let Some(Editing {
                 input: EditInput::Rich(field),
                 ..
@@ -1880,9 +1627,10 @@ impl PdfApp {
                 field.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
         } else if cm.comment.text.is_empty() {
+            let placeholder = crate::t("pdf-viewer-comment-placeholder");
             tr.draw_style(
                 scene,
-                "Write a comment…",
+                &placeholder,
                 theme.text_tertiary,
                 base * Affine::translate((body_x, body_top)),
                 Some(text_w as f32),
@@ -1903,8 +1651,6 @@ impl PdfApp {
         body_top + m.body_h
     }
 
-    /// A comment card's replies: each author over their reply, on the same
-    /// text edge as the comment. Returns the updated running `y`.
     fn draw_comment_replies(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1950,8 +1696,6 @@ impl PdfApp {
         yy
     }
 
-    /// A comment card's reply composer: the live editor while composing a
-    /// reply, or the Reply button that starts one.
     fn draw_comment_composer(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1970,8 +1714,6 @@ impl PdfApp {
         let composing = self.is_editing(&EditTarget::Reply(cm.id.clone()));
         let top = yy + f64::from(theme.tokens.spacing.rhythm.related);
         if composing {
-            // A field on the card: the raised well with its edge, in your
-            // colour's focus ring while it types.
             let pad = f64::from(theme.tokens.spacing.s2);
             let field = Rect::new(
                 hdr.text_x - pad,
@@ -2004,13 +1746,12 @@ impl PdfApp {
             out.hits
                 .push((SidebarHit::ReplyField(cm.id.clone()), field));
         } else {
-            let face = ButtonFace::new(Rect::ZERO, "Reply")
+            let label = crate::t("pdf-comment-reply");
+            let face = ButtonFace::new(Rect::ZERO, &label)
                 .icon(Icon::Reply)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
             let w = face.intrinsic_width(tr, theme);
-            // A Plain button's label sits one pad in; pull the button back by
-            // that pad so its label lines up with the text above it.
             let pad = f64::from(theme.tokens.spacing.s2);
             let rect = Rect::new(
                 hdr.text_x - pad,
@@ -2018,7 +1759,7 @@ impl PdfApp {
                 hdr.text_x - pad + w,
                 top + ButtonFace::height(ControlSize::Small, theme),
             );
-            let face = ButtonFace::new(rect, "Reply")
+            let face = ButtonFace::new(rect, &label)
                 .icon(Icon::Reply)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
@@ -2038,12 +1779,13 @@ impl PdfApp {
         hits: &mut Vec<(SidebarHit, Rect)>,
     ) {
         if self.doc.outline.is_empty() {
+            let empty = crate::t("pdf-contents-empty");
             EmptyState::paint(
                 &mut PaintCtx::new(scene, base, tr, theme),
                 body.inset(-self.panel_inset()),
                 &EmptyStateContent {
                     icon: Some(Icon::List),
-                    ..EmptyStateContent::new("This document has no contents")
+                    ..EmptyStateContent::new(&empty)
                 },
                 self.last_mouse,
             );
@@ -2051,7 +1793,6 @@ impl PdfApp {
         }
         let row_h = ui::chrome::nav_row_height(theme);
         let mut y = self.outline_top(body) - self.sidebar_scroll;
-        // The current section: the last entry at or before the current page.
         let current = self
             .doc
             .outline
@@ -2078,8 +1819,6 @@ impl PdfApp {
         }
     }
 
-    /// Height of the signature compose well, which differs by mode (the draw
-    /// pad is taller than the name field).
     fn sig_compose_h(&self) -> f64 {
         let theme = &self.layout_theme;
         let row = ButtonFace::height(ControlSize::Regular, theme);
@@ -2089,10 +1828,9 @@ impl PdfApp {
         }
     }
 
-    /// One placed-signature row.
     fn sig_row_h(&self, tr: &mut TextRenderer) -> f64 {
-        ListRowFace::new("Signer")
-            .secondary("Page 1")
+        ListRowFace::new(&crate::t("pdf-viewer-signing-as"))
+            .secondary(&crate::t_args("pdf-a11y-page", &[("page", "1".into())]))
             .height(tr, &self.layout_theme)
     }
 
@@ -2103,7 +1841,6 @@ impl PdfApp {
         self.signature_geometry(body).list_top
     }
 
-    /// Where every fixed part of the Signatures panel sits.
     fn signature_geometry(&self, body: Rect) -> SignatureGeometry {
         let theme = &self.layout_theme;
         let rhythm = &theme.tokens.spacing.rhythm;
@@ -2126,9 +1863,10 @@ impl PdfApp {
         y = compose.y1 + f64::from(rhythm.sibling);
         let hint_y = y;
         if self.tool == Tool::Sign {
-            let (_, height) = ui::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            let hint = signature_place_hint();
+            let (_, height) = ui::text_render::with_layout_renderer(theme, |tr| {
                 tr.measure_style(
-                    SIGNATURE_PLACE_HINT,
+                    &hint,
                     Some((x1 - x0).max(1.0) as f32),
                     &theme.text(TextRole::Caption),
                 )
@@ -2161,33 +1899,36 @@ impl PdfApp {
     ) {
         let geo = self.signature_geometry(body);
         let heading = theme.text(TextRole::Subheading);
+        let heading_text = crate::t("pdf-viewer-signature-your");
         tr.draw_style(
             scene,
-            "Your signature",
+            &heading_text,
             theme.text_primary,
             base * Affine::translate((geo.mode.x0, geo.heading_y)),
             None,
             &heading,
         );
 
-        // Type / Draw: a segmented control.
-        let seg_labels = ["Type", "Draw"];
+        let seg_labels = [
+            crate::t("pdf-signature-type"),
+            crate::t("pdf-signature-draw"),
+        ];
+        let seg_refs = [seg_labels[0].as_str(), seg_labels[1].as_str()];
         let seg_rects =
-            SegmentedFace::partition(geo.mode, &seg_labels, ControlSize::Regular, tr, theme);
+            SegmentedFace::partition(geo.mode, &seg_refs, ControlSize::Regular, tr, theme);
         let sel = usize::from(self.sig_mode == SigMode::Draw);
         ToggleGroup::paint(
             scene,
             base,
             tr,
             theme,
-            &SegmentedFace::new(&seg_rects, &seg_labels, sel)
+            &SegmentedFace::new(&seg_rects, &seg_refs, sel)
                 .hovered(seg_rects.iter().position(|r| r.contains(self.last_mouse))),
         );
         for (mode, rect) in [SigMode::Type, SigMode::Draw].into_iter().zip(&seg_rects) {
             out.hits.push((SidebarHit::SigMode(mode), *rect));
         }
 
-        // The compose well: a name field (Type) or a draw pad (Draw).
         self.sig_pad_rect = Rect::ZERO;
         match self.sig_mode {
             SigMode::Type => {
@@ -2203,8 +1944,6 @@ impl PdfApp {
         self.draw_placed_signatures_list(ctx, body, &geo, out);
     }
 
-    /// The well the signature is composed in: a raised field on the panel,
-    /// in your colour's focus ring while it is being written into.
     fn paint_compose_well(
         scene: &mut Scene,
         base: Affine,
@@ -2225,8 +1964,6 @@ impl PdfApp {
         }
     }
 
-    /// The "type your name" composer: the signer-name field (editable
-    /// inline) beside a live script preview of the stamped signature.
     fn draw_signature_compose_type(
         &mut self,
         scene: &mut Scene,
@@ -2241,15 +1978,15 @@ impl PdfApp {
         let pad = f64::from(theme.tokens.spacing.s3);
         let caption = theme.text(TextRole::Caption);
         let caption_h = f64::from(caption.line_height_px());
+        let signing_as = crate::t("pdf-viewer-signing-as");
         tr.draw_style(
             scene,
-            "Signing as",
+            &signing_as,
             theme.text_dim,
             base * Affine::translate((card.x0 + pad, card.y0 + f64::from(theme.tokens.spacing.s2))),
             None,
             &caption,
         );
-        // The name takes the left half; the preview the right.
         let mid = f64::midpoint(card.x0, card.x1);
         let name_rect = Rect::new(
             card.x0 + pad,
@@ -2274,7 +2011,7 @@ impl PdfApp {
         } else {
             let body = theme.text(TextRole::Body).strong();
             let (shown, ink) = if name_shown.is_empty() {
-                ("Your name".to_string(), theme.text_tertiary)
+                (crate::t("pdf-signature-your-name"), theme.text_tertiary)
             } else {
                 (
                     tr.elide_to_width_style(&name_shown, name_rect.width() as f32, &body),
@@ -2292,8 +2029,6 @@ impl PdfApp {
             );
         }
         out.hits.push((SidebarHit::EditSigner, name_rect));
-        // Live preview: the typed name in the script that will be stamped,
-        // in the document's ink on its paper.
         let prev = Rect::new(mid, card.y0 + pad, card.x1 - pad, card.y1 - pad);
         render::draw_signature_ink(
             scene,
@@ -2306,8 +2041,6 @@ impl PdfApp {
         );
     }
 
-    /// The freehand draw pad: the person drags here to draw their signature,
-    /// with a Clear button once there is something drawn.
     fn draw_signature_compose_draw(
         &mut self,
         scene: &mut Scene,
@@ -2320,12 +2053,12 @@ impl PdfApp {
         Self::paint_compose_well(scene, base, theme, card, self.sig_stroke.is_some());
         self.sig_pad_rect = card;
         if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
-            let hint = "Draw your signature here";
+            let hint = crate::t("pdf-signature-draw-hint");
             let style = theme.text(TextRole::Body);
-            let (hw, hh) = tr.measure_style(hint, None, &style);
+            let (hw, hh) = tr.measure_style(&hint, None, &style);
             tr.draw_style(
                 scene,
-                hint,
+                &hint,
                 theme.text_tertiary,
                 base * Affine::translate((
                     card.center().x - f64::from(hw) / 2.0,
@@ -2335,7 +2068,6 @@ impl PdfApp {
                 &style,
             );
         } else {
-            // The committed strokes plus the in-progress one.
             let mut strokes = self.sig_strokes.clone();
             if let Some(cur) = &self.sig_stroke {
                 strokes.push(cur.clone());
@@ -2350,9 +2082,9 @@ impl PdfApp {
                 "",
             );
         }
-        // Clear, at the pad's top trailing corner, once there is ink.
         if !self.sig_strokes.is_empty() {
-            let probe = ButtonFace::new(Rect::ZERO, "Clear")
+            let clear = crate::t("pdf-signature-clear");
+            let probe = ButtonFace::new(Rect::ZERO, &clear)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
             let w = probe.intrinsic_width(tr, theme);
@@ -2363,7 +2095,7 @@ impl PdfApp {
                 card.x1 - inset,
                 card.y0 + inset + ButtonFace::height(ControlSize::Small, theme),
             );
-            let face = ButtonFace::new(clr, "Clear")
+            let face = ButtonFace::new(clr, &clear)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
                 .hovered(clr.contains(self.last_mouse));
@@ -2372,8 +2104,6 @@ impl PdfApp {
         }
     }
 
-    /// The button that arms the Sign tool so the next page click stamps the
-    /// composed signature, with a one-line hint while it is armed.
     fn draw_signature_place_button(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2384,25 +2114,28 @@ impl PdfApp {
         let arming = self.tool == Tool::Sign;
         let ready = self.composed_ink().is_some();
         if arming {
+            let hint = signature_place_hint();
             tr.draw_style(
                 scene,
-                SIGNATURE_PLACE_HINT,
+                &hint,
                 theme.text_dim,
                 base * Affine::translate((geo.place.x0, geo.hint_y)),
                 Some(geo.place.width() as f32),
                 &theme.text(TextRole::Caption),
             );
         }
-        let label = if arming { "Cancel" } else { "Place on page" };
-        let face = ButtonFace::new(geo.place, label)
+        let label = if arming {
+            crate::t("pdf-signature-cancel")
+        } else {
+            crate::t("pdf-signature-place")
+        };
+        let face = ButtonFace::new(geo.place, &label)
             .hovered(geo.place.contains(self.last_mouse))
             .disabled(!arming && !ready);
         Button::paint(scene, base, tr, theme, &face);
         out.hits.push((SidebarHit::AddSignature, geo.place));
     }
 
-    /// The "Placed" heading and the scrollable list of signatures already
-    /// placed on the document.
     fn draw_placed_signatures_list(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2412,8 +2145,9 @@ impl PdfApp {
     ) {
         let theme = ctx.theme;
         let heading = theme.text(TextRole::Subheading);
+        let placed = crate::t("pdf-viewer-signature-placed");
         ctx.text(
-            "Placed",
+            &placed,
             &heading,
             theme.text_primary,
             Point::new(geo.place.x0, geo.placed_y),
@@ -2435,7 +2169,7 @@ impl PdfApp {
         );
         if self.signatures.is_empty() {
             ctx.text(
-                "Placed signatures appear here.",
+                &crate::t("pdf-viewer-signature-placed-note"),
                 &theme.text(TextRole::Body),
                 theme.text_dim,
                 Point::new(geo.place.x0, geo.list_top),
@@ -2455,9 +2189,10 @@ impl PdfApp {
         );
         let row_h = self.sig_row_h(ctx.text);
         let mut y = geo.list_top - self.sidebar_scroll;
+        let delete_label = crate::t("pdf-signature-delete");
         let delete = [RowAction {
             icon: Icon::Trash2,
-            label: "Delete signature",
+            label: &delete_label,
         }];
         let n = self.signatures.len();
         for (i, s) in self.signatures.iter().enumerate() {
@@ -2471,12 +2206,13 @@ impl PdfApp {
                 .signatures
                 .get(i + 1)
                 .is_some_and(|next| self.selected_sig.as_deref() == Some(next.id.as_str()));
-            let page = format!("Page {}", s.page);
+            let page = crate::t_args("pdf-a11y-page", &[("page", s.page.to_string().into())]);
+            let signed = crate::dates::shown(&s.date);
             let hovered = row.contains(self.last_mouse);
             let face = ListRowFace::new(&s.signer)
                 .leading(RowLeading::Icon(Icon::PenTool))
                 .secondary(&page)
-                .meta(&s.date)
+                .meta(&signed)
                 .selected(selected)
                 .actions(&delete)
                 .interaction(ui::widget::Interaction {
@@ -2501,10 +2237,6 @@ impl PdfApp {
         ctx.scene.pop_layer();
     }
 
-    // ---- the page and the zoom ---------------------------------------
-
-    /// The zoom the bar says, in percent. With no document there is
-    /// nothing being zoomed: it reads 100%, not a value fitted to the window.
     pub(crate) fn shown_zoom_percent(&self) -> f64 {
         if self.has_document {
             (self.zoom() * 100.0).round()
@@ -2513,19 +2245,17 @@ impl PdfApp {
         }
     }
 
-    /// What the window's bar says on a page or zoom change: the page, and
-    /// the zoom.
     pub(crate) fn page_line(&self) -> String {
-        format!(
-            "Page {} of {}, {:.0}%",
-            self.current_page,
-            self.doc.page_count(),
-            self.shown_zoom_percent()
+        crate::t_args(
+            "pdf-page-line",
+            &[
+                ("page", self.current_page.into()),
+                ("pages", self.doc.page_count().into()),
+                ("zoom", (self.shown_zoom_percent() as i64).into()),
+            ],
         )
     }
 
-    /// Say the page and the zoom in the window's bar when either changes
-    /// while a document is open; opening one is not a change.
     fn follow_page_line(&mut self) {
         if !self.has_document {
             self.page_said = None;
@@ -2538,7 +2268,6 @@ impl PdfApp {
         )]
         let now = (self.current_page, self.shown_zoom_percent() as u32);
         if self.page_said.is_some_and(|said| said != now) {
-            // The bar says it; nothing on the pages changes.
             self.page_notice.show(self.page_line());
             self.page_notice.publish(|line| {
                 ui::window_toolbar::ToolbarNotice::new(
@@ -2551,9 +2280,22 @@ impl PdfApp {
     }
 }
 
-const SIGNATURE_PLACE_HINT: &str = "Click on a page to place your signature.";
+pub(crate) fn comments_summary(total: usize, open: usize) -> String {
+    match (total, open) {
+        (1, 1) => crate::t("pdf-comments-one-open"),
+        (1, _) => crate::t("pdf-comments-one-resolved"),
+        (_, 0) => crate::t_args("pdf-comments-all-resolved", &[("total", total.into())]),
+        _ => crate::t_args(
+            "pdf-comments-open",
+            &[("total", total.into()), ("open", open.into())],
+        ),
+    }
+}
 
-/// Where the fixed parts of the Signatures panel sit.
+fn signature_place_hint() -> String {
+    crate::t("pdf-signature-place-hint")
+}
+
 struct SignatureGeometry {
     heading_y: f64,
     mode: Rect,
@@ -2564,13 +2306,6 @@ struct SignatureGeometry {
     list_top: f64,
 }
 
-// ----------------------------------------------------------------------
-// Free-standing helpers
-// ----------------------------------------------------------------------
-
-/// Position + draw the shared inline `TextInput` over `rect` (the box it
-/// edits), its text inset by the field's own padding so the first glyph sits
-/// where the static text it replaces did.
 fn draw_inline_editor(
     input: &mut TextInput,
     scene: &mut Scene,
@@ -2580,17 +2315,11 @@ fn draw_inline_editor(
     rect: Rect,
 ) {
     input.apply_layout_external(rect);
-    input.draw(scene, base, tr, theme, &PresenceCtx::empty());
+    input.draw_child(scene, base, tr, theme, &PresenceCtx::empty());
 }
 
-/// The pages within reach of the canvas this frame (0-based indices).
 struct PagesInReach {
-    /// On screen, drawn from one bitmap, with the distance from the canvas
-    /// centre; nearest first.
     visible: Vec<(usize, f64)>,
-    /// Ahead of or behind the canvas, with the distance from its edge;
-    /// nearest first.
     prefetch: Vec<(usize, f64)>,
-    /// On screen, drawn from tiles.
     tiled: Vec<crate::tiles::PagePlacement>,
 }

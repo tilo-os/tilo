@@ -52,8 +52,6 @@ fn registration(
     {
         return Err(SecretError::Denied);
     }
-    // FilesDisabled alone is present even on providers without a Files service.
-    // Require the actual enabled interface; this does not refresh credentials.
     let files = fixed_proxy(connection, owner, &path, "org.gnome.OnlineAccounts.Files")?;
     let files_uri: String = files.get_property("Uri").map_err(|_| SecretError::Denied)?;
     if files_uri.is_empty() || files_uri.len() > 2048 || files_uri.chars().any(char::is_control) {

@@ -1,21 +1,6 @@
 //! Tilo Sans' distinct letters at UI sizes, rendered by Tilo's own text
 //! stack from the shipped font catalog: what "Always distinguish similar
 //! letters" changes, for review on a high-resolution screen.
-//!
-//! ```bash
-//! cargo run -p ui-examples \
-//!     --example distinct-letters-specimen -- --out target/look/distinct-letters-specimen
-//! ```
-//!
-//! Writes, for each theme (`light`, `dark`):
-//!
-//! - `specimen-<theme>.png`: confusable strings at 12, 13, 14 and 17 px in
-//!   Regular, Bold and Condensed Bold, upright and italic; the setting off on
-//!   the left, on on the right; laid out at those sizes and drawn at 4x
-//!   device scale, as a `HiDPI` display draws them.
-//! - `glyphs-<theme>.png`: I l 1 | 0 O at 14 px drawn at 16x, so every glyph
-//!   is rasterised from its outlines at 224 px; the default forms (old) on
-//!   the left, the distinct forms (new) on the right.
 
 use std::path::{Path, PathBuf};
 

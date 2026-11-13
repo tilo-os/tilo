@@ -46,12 +46,6 @@ impl ResourceKind {
     /// source of the chip strip's scriptable `palette:filter:*` address and
     /// the control socket's `kind` field. `Custom` variants carry their own.
     pub fn id(&self) -> &str {
-        self.label()
-    }
-
-    /// Human-readable label used in the filter chip strip and group
-    /// headers. `Custom` variants surface their own string verbatim.
-    pub fn label(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
             ResourceKind::Application => "Apps",
@@ -66,6 +60,34 @@ impl ResourceKind {
             ResourceKind::WindowGroup => "Window groups",
             ResourceKind::Custom(s) => s.as_str(),
         }
+    }
+
+    /// The kind's own label, as [`Self::id`], for scripted addresses and
+    /// comparisons.
+    pub fn label(&self) -> &str {
+        self.id()
+    }
+
+    /// What the group header and the chip strip say this kind is, in the
+    /// desktop's language. A kind a provider minted carries the words the
+    /// provider wrote, which are already the person's.
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        let key = match self {
+            ResourceKind::Action => "search-kind-actions",
+            ResourceKind::Application => "search-kind-apps",
+            ResourceKind::Note => "search-kind-notes",
+            ResourceKind::Record => "search-kind-records",
+            ResourceKind::File => "search-kind-files",
+            ResourceKind::Folder => "search-kind-folders",
+            ResourceKind::Creator => "search-kind-creators",
+            ResourceKind::Video => "search-kind-videos",
+            ResourceKind::Playlist => "search-kind-playlists",
+            ResourceKind::Tab => "search-kind-tabs",
+            ResourceKind::WindowGroup => "search-kind-window-groups",
+            ResourceKind::Custom(s) => return s.clone(),
+        };
+        crate::i18n::widget_format(key, &[])
     }
 
     /// Stable sort key pinning the well-known kinds to a fixed palette
@@ -396,6 +418,94 @@ fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
         }
     }
     found
+}
+
+/// The words of `needle` that name what a resource is rather than what it is called: the ones a
+/// [`type_match_score_with`] over `ty` (with its kindred types' nouns, `kin`, and its app's
+/// names, `keywords`) leaves out. The rest is the text the resource itself must match — and what
+/// an outside origin is asked for what the query names (search.md §4, §7). Empty when no word of
+/// the query names the type.
+#[must_use]
+pub fn type_words_rest<'k>(
+    needle: &str,
+    ty: &tilo_actions::ResourceType,
+    kin: impl IntoIterator<Item = &'k tilo_actions::Noun>,
+    keywords: &[&str],
+) -> Option<String> {
+    let words = split_words(needle);
+    let kin: Vec<&tilo_actions::Noun> = kin.into_iter().collect();
+    let covered = type_coverage(&words, ty, &kin, keywords)?;
+    let rest: Vec<&str> = words
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !covered.contains(at))
+        .map(|(_, word)| word.as_str())
+        .collect();
+    Some(rest.join(" "))
+}
+
+/// Whether `needle` names `ty` by its own noun rather than only by its app's name or a kindred
+/// type's noun: "videos" names a `Video` so, while "videos of <channel>" names a `Channel` only
+/// through its kindred type. What tells the type a query means when several of its app's types
+/// name the words — the channel the person looks for, not the videos they would search.
+#[must_use]
+pub fn named_by_own_noun(needle: &str, ty: &tilo_actions::ResourceType) -> bool {
+    let words = split_words(needle);
+    let mut at = Vec::new();
+    named_at(&words, &ty.noun.one, &mut at) | named_at(&words, &ty.noun.many, &mut at)
+}
+
+/// `needle`'s words, folded for matching.
+fn split_words(needle: &str) -> Vec<String> {
+    super::fold_search_text(needle)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The positions in `words` a query names `ty` by (its noun or app, or a kindred type's noun):
+/// `None` when no word names it. The rule [`type_match_score_with`] scores by.
+fn type_coverage(
+    words: &[String],
+    ty: &tilo_actions::ResourceType,
+    kin: &[&tilo_actions::Noun],
+    keywords: &[&str],
+) -> Option<Vec<usize>> {
+    let type_names: Vec<String> = std::iter::once(ty.noun.clone())
+        .chain(kin.iter().map(|noun| (*noun).clone()))
+        .flat_map(|noun| [noun.one, noun.many])
+        .map(|name| super::fold_search_text(&name))
+        .collect();
+    let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
+        .chain(
+            keywords
+                .iter()
+                .map(|keyword| super::fold_search_text(keyword))
+                .filter(|keyword| !type_names.contains(keyword)),
+        )
+        .collect();
+    let mut own = Vec::new();
+    for name in [&ty.noun.one, &ty.noun.many] {
+        named_at(words, name, &mut own);
+    }
+    for name in &app_names {
+        named_at(words, name, &mut own);
+    }
+    let mut covered = own;
+    let title: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
+        .collect();
+    for noun in kin {
+        for name in [&noun.one, &noun.many] {
+            if !title.contains(&super::fold_search_text(name)) {
+                named_at(words, name, &mut covered);
+            }
+        }
+    }
+    (!covered.is_empty()).then_some(covered)
 }
 
 /// How well `needle` names a resource by what it is ([`tilo_actions::ResourceType`]):
@@ -1041,7 +1151,7 @@ pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<Command
     for group in groups {
         for row in &group.results {
             let mut entry = CommandEntry::new(format!("result:{}", entries.len()), row.title())
-                .group(group.kind.label())
+                .group(group.kind.display_label())
                 .group_total(group.total)
                 .icon(icon_for_kind(row.kind()));
             if let Some(subtitle) = row.subtitle() {

@@ -83,10 +83,22 @@ impl ThemePreview {
     pub fn show(mut self, show: Show) -> Self {
         self.show = show;
         self.label = match show {
-            Show::Desktop => format!("Preview of {}", self.theme.name),
-            Show::List => format!("List preview of {}", self.theme.name),
-            Show::Dialog => format!("Dialog preview of {}", self.theme.name),
-            Show::Presence => format!("Presence colours of {}", self.theme.name),
+            Show::Desktop => crate::locales::CATALOG.t_args(
+                "themes-preview-label-desktop",
+                &[("theme", ui::i18n::ArgValue::Text(self.theme.name.clone()))],
+            ),
+            Show::List => crate::locales::CATALOG.t_args(
+                "themes-preview-label-list",
+                &[("theme", ui::i18n::ArgValue::Text(self.theme.name.clone()))],
+            ),
+            Show::Dialog => crate::locales::CATALOG.t_args(
+                "themes-preview-label-dialog",
+                &[("theme", ui::i18n::ArgValue::Text(self.theme.name.clone()))],
+            ),
+            Show::Presence => crate::locales::CATALOG.t_args(
+                "themes-preview-label-presence",
+                &[("theme", ui::i18n::ArgValue::Text(self.theme.name.clone()))],
+            ),
         };
         self
     }

@@ -17,6 +17,7 @@ use super::super::host_commands::HostCommandsKey;
 use crate::host_chrome::HostChrome;
 use crate::host_chrome::frame::app_draws_frame;
 use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, resize_edge};
+use crate::widget::DrawChild;
 use crate::widget::Widget;
 
 pub(super) enum Decorations {
@@ -91,7 +92,9 @@ impl Decorations {
             && !header.passenger
         {
             let (text, theme, presence) = (&mut app.text_renderer, &app.theme, &app.presence_ctx);
-            header.bar.draw(scene, transform, text, theme, presence);
+            header
+                .bar
+                .draw_child(scene, transform, text, theme, presence);
             header
                 .bar
                 .draw_overlay(scene, transform, text, theme, presence);

@@ -157,8 +157,6 @@ pub struct Surface {
     pub exclusive: i32,
     /// How it takes the keyboard.
     pub keyboard: Keyboard,
-    /// The person the app shows (its own name, its own avatar).
-    pub person: String,
     /// Whether its window becomes the session's lock screen instead of a layer surface.
     pub lock: bool,
     /// The output it stands on when its window names none of its own: the display its client is
@@ -182,7 +180,6 @@ impl Surface {
             margin: (0, 0, 0, 0),
             exclusive: 0,
             keyboard: Keyboard::None,
-            person: String::new(),
             lock: false,
             output: None,
         }
@@ -253,13 +250,6 @@ impl Surface {
         self
     }
 
-    /// Show `person` in the app.
-    #[must_use]
-    pub fn person(mut self, person: impl Into<String>) -> Self {
-        self.person = person.into();
-        self
-    }
-
     /// Make the window the session's lock screen.
     #[must_use]
     pub fn lock(mut self) -> Self {
@@ -309,9 +299,6 @@ impl Surface {
                 self.keyboard.name().to_owned(),
             ),
         ];
-        if !self.person.is_empty() {
-            environment.push((String::from("TILO_SURFACE_PERSON"), self.person.clone()));
-        }
         if self.lock {
             environment.push((String::from("TILO_SURFACE_LOCK"), String::from("1")));
         }
@@ -1048,22 +1035,25 @@ impl Surfaces {
     }
 
     /// Stop `name` , if it runs, and wait for it: its socket closes and the compositor forgets its
-    /// surfaces.
+    /// Stop `name` , if it runs: its socket closes and the compositor forgets its surfaces. The
+    /// process is signalled now and reaped on a thread of its own, never waited for here, which
+    /// runs on the loop's pass (a keyboard change, the lock screen): a killed process can take a
+    /// moment to end, and the loop draws every window in the meantime.
     pub fn stop(&mut self, name: &str) {
         let Some(place) = self.running.iter().position(|running| running.name == name) else {
             return;
         };
         let mut app = self.running.remove(place);
         let _ = app.child.kill();
-        let _ = app.child.wait();
+        crate::connectors::reap(app.child);
         tracing::info!(surface = %app.name, "stopped a surface app");
     }
 
-    /// Stop every surface app the session runs, and wait for them.
+    /// Stop every surface app the session runs.
     pub fn stop_all(&mut self) {
         for mut app in self.running.drain(..) {
             let _ = app.child.kill();
-            let _ = app.child.wait();
+            crate::connectors::reap(app.child);
         }
     }
 }
@@ -1179,7 +1169,15 @@ pub(crate) fn outcome(
         ReceiptStatus::Rejected { error } => Some(InvocationUpdate::Failed {
             invocation,
             error: tilo_actions::ActionFailure {
-                code: String::from("refused"),
+                // An action that waits for the person's word is told apart
+                // from one that ran and was refused: what a person reads is
+                // that their answer is missing, not that it failed.
+                code: match error {
+                    ActionHostError::ConfirmationRequired { .. } => {
+                        tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned()
+                    }
+                    _ => String::from("refused"),
+                },
                 message: error.to_string(),
                 details: None,
                 retryable: false,
@@ -1192,12 +1190,22 @@ pub(crate) fn outcome(
     }
 }
 
-/// A door's refusal as the action protocol says it.
+/// A door's refusal as the action protocol says it: the door's own code, so a caller tells "no
+/// such action" apart from "not now" and "not shaped like that" without reading prose. A door that
+/// refused for a reason of its own says it in words, its code leading them.
 pub(crate) fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
+    use tilo_actions::DoorError;
     match error {
-        tilo_actions::DoorError::Unknown(_) => ActionHostError::UnknownAction,
-        other => ActionHostError::Refused {
-            reason: other.to_string(),
+        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => ActionHostError::UnknownAction,
+        DoorError::MissingArgument(_)
+        | DoorError::UnexpectedArgument(_)
+        | DoorError::InvalidArguments(_)
+        | DoorError::ArgumentOutOfRange { .. } => ActionHostError::InvalidRequest {
+            reason: error.to_string(),
+        },
+        DoorError::ConfirmationRequired => ActionHostError::confirmation_required(),
+        DoorError::Unavailable { .. } | DoorError::Failed(_) => ActionHostError::Refused {
+            reason: error.to_string(),
         },
     }
 }
@@ -1208,14 +1216,13 @@ mod tests {
 
     #[test]
     fn a_bar_tells_the_app_where_its_window_goes() {
-        let bar = Surface::new("topbar", "/usr/bin/tilo-topbar")
+        let bar = Surface::new("topbar", "/usr/bin/tilo-quick-settings")
             .layer(Layer::Top)
             .namespace("tilo-bar")
             .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)
             .size((0, 32))
             .exclusive(32)
-            .keyboard(Keyboard::None)
-            .person("Ada");
+            .keyboard(Keyboard::None);
         let environment: std::collections::BTreeMap<String, String> =
             bar.environment().into_iter().collect();
         let expected = [
@@ -1226,7 +1233,6 @@ mod tests {
             ("TILO_SURFACE_MARGIN", "0,0,0,0"),
             ("TILO_SURFACE_EXCLUSIVE", "32"),
             ("TILO_SURFACE_KEYBOARD", "none"),
-            ("TILO_SURFACE_PERSON", "Ada"),
         ];
         for (name, value) in expected {
             assert_eq!(

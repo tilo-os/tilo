@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use settings_store::hardware::ShortcutAction;
 use tilo_compositor::{Compositor, TEXT_MIME, TextField, TextFieldRefusal, TextInsertion};
+
 use tilo_desktop_surface::{DesktopHandle, TypedField, TypedInsertion, TypedRefusal};
 use tilo_dictation::{
     DictationError, DictationLink, DictationService, DictationStatus, Field, FieldRefusal,
@@ -29,8 +30,7 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::dictation::{Answer, DictationSeat, Failure, Prompt, RecoveryReason, Stage};
 
 use crate::Options;
-use crate::mount::clipboard::Clipboard;
-use crate::panels::Held;
+use crate::clipboard::Clipboard;
 use crate::sheets::Sheet;
 
 /// How much of what is being heard the card shows: the last words, so the person sees the
@@ -54,7 +54,7 @@ impl Dictation {
     /// Start the dictation service and mount the sheet that asks about the microphone.
     pub(crate) fn mount(
         compositor: &mut Compositor,
-        doors: &mut tilo_surface_host::Doors,
+        doors: &mut tilo_session_core::door::Doors,
         services: &Rc<RefCell<tilo_service::Services>>,
         options: &Options,
     ) -> Self {
@@ -470,7 +470,7 @@ impl OwnFields for DesktopHandle {
 /// from the field they are dictating into.
 fn mount_sheet(
     compositor: &mut Compositor,
-    doors: &mut tilo_surface_host::Doors,
+    doors: &mut tilo_session_core::door::Doors,
     options: &Options,
 ) -> Option<DictationSeat> {
     let who = (options.device.as_str(), options.person.as_str());
@@ -483,8 +483,8 @@ fn mount_sheet(
     ) {
         Ok(sheet) => {
             let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet.typing_through()));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            let sheet = sheet.typing_through().layer();
+            compositor.add_host(sheet.clone());
             doors.add(sheet);
             Some(seat)
         }

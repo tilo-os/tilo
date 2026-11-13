@@ -279,7 +279,7 @@ mod tests {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let node = root.build_layout(&mut tree, &theme, &mut map);
-        crate::text_render::with_layout_renderer(1.0, |text| {
+        crate::text_render::with_layout_renderer(&theme, |text| {
             tree.compute_layout_with_measure(
                 node,
                 taffy::Size {

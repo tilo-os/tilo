@@ -13,7 +13,6 @@
 //! that fails or goes away therefore costs time, never a different answer.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use tilo_actions::offload::{ActionOffload, OffloadRequest, Offloaded};
 use tilo_actions::remote::InvokeRequest;
@@ -157,7 +156,7 @@ impl AppBrokerState {
             if here.len() >= MAX_OFFLOADED_HERE {
                 here.clear();
             }
-            here.insert(id, (request, Instant::now()));
+            here.insert(id, (request, tilo_clock::now()));
         }
         let invocation = envelope.invocation;
         if app.send(envelope).is_err() {

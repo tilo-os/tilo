@@ -1,22 +1,18 @@
 //! Pure decoders for the native disk structures the Windows adapter reads:
 //! `IOCTL_DISK_GET_DRIVE_LAYOUT_EX`, `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`,
-//! `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` output buffers, and the on-disk GPT
-//! header and entry array. Compiled on every platform so fixtures run on any
-//! development host; the Win32 side (`sys.rs`) statically asserts that the
-//! offsets below match the `windows-sys` definitions for the target.
+//! `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` output buffers, and the on-disk GPT header and entry
+//! array. Compiled everywhere so fixtures run on any host; `sys.rs` asserts that the offsets match
+//! `windows-sys` for the target.
 
 use super::super::platform::{Disk, Partition};
 
-/// `PARTITION_STYLE_*`.
 pub const STYLE_MBR: u32 = 0;
 pub const STYLE_GPT: u32 = 1;
 
-// `DRIVE_LAYOUT_INFORMATION_EX` on 64-bit Windows.
 pub const LAYOUT_HEADER_BYTES: usize = 48;
 pub const LAYOUT_GPT_DISK_ID: usize = 8;
 pub const LAYOUT_GPT_STARTING_USABLE: usize = 24;
 pub const LAYOUT_GPT_USABLE_LENGTH: usize = 32;
-// `PARTITION_INFORMATION_EX` on 64-bit Windows.
 pub const ENTRY_BYTES: usize = 144;
 pub const ENTRY_STYLE: usize = 0;
 pub const ENTRY_OFFSET: usize = 8;
@@ -26,11 +22,9 @@ pub const ENTRY_GPT_TYPE: usize = 32;
 pub const ENTRY_GPT_ID: usize = 48;
 pub const ENTRY_GPT_NAME: usize = 72;
 pub const ENTRY_GPT_NAME_UNITS: usize = 36;
-// `DISK_GEOMETRY_EX`.
 pub const GEOMETRY_BYTES_PER_SECTOR: usize = 20;
 pub const GEOMETRY_DISK_SIZE: usize = 24;
 pub const GEOMETRY_MIN_BYTES: usize = 32;
-// `VOLUME_DISK_EXTENTS` / `DISK_EXTENT`.
 pub const EXTENTS_FIRST: usize = 8;
 pub const EXTENT_BYTES: usize = 24;
 pub const EXTENT_DISK_NUMBER: usize = 0;
@@ -60,14 +54,13 @@ pub fn u64_at(buf: &[u8], at: usize) -> ParseResult<u64> {
     bytes::<8>(buf, at).map(u64::from_le_bytes)
 }
 
-/// A signed 64-bit Win32 byte count that must not be negative.
 fn nonneg_at(buf: &[u8], at: usize) -> ParseResult<u64> {
     let value = bytes::<8>(buf, at).map(i64::from_le_bytes)?;
     u64::try_from(value).map_err(|_| format!("negative byte count at byte {at}"))
 }
 
-/// Format a little-endian (in-memory `GUID` / on-disk GPT) GUID as the
-/// lowercase hyphenated form the staging contract uses.
+/// Formats a little-endian (in-memory `GUID`, on-disk GPT) GUID as the lowercase hyphenated form the
+/// staging contract uses.
 pub fn guid_from_le(raw: [u8; 16]) -> String {
     uuid::Uuid::from_bytes_le(raw).to_string()
 }
@@ -76,8 +69,8 @@ fn guid_at(buf: &[u8], at: usize) -> ParseResult<String> {
     bytes::<16>(buf, at).map(guid_from_le)
 }
 
-/// Accept `{XXXXXXXX-...}` or bare, any case; return lowercase bare or `None`
-/// when the text is not exactly one GUID.
+/// Accepts `{XXXXXXXX-...}` or bare, any case; returns lowercase bare, or `None` when the text is not
+/// exactly one GUID.
 pub fn normalize_guid(text: &str) -> Option<String> {
     let trimmed = text.trim();
     let bare = trimmed
@@ -114,13 +107,11 @@ fn utf16_name(buf: &[u8], at: usize, units: usize) -> ParseResult<String> {
     Ok(String::from_utf16_lossy(&out))
 }
 
-/// One partition as `IOCTL_DISK_GET_DRIVE_LAYOUT_EX` reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayoutPartition {
     pub number: u32,
     pub offset: u64,
     pub length: u64,
-    /// `None` for MBR entries.
     pub type_guid: Option<String>,
     pub guid: Option<String>,
     pub name: String,
@@ -129,15 +120,14 @@ pub struct LayoutPartition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriveLayout {
     pub style: u32,
-    /// GPT only.
     pub disk_guid: Option<String>,
     pub starting_usable_offset: u64,
     pub usable_length: u64,
     pub partitions: Vec<LayoutPartition>,
 }
 
-/// Decode a `DRIVE_LAYOUT_INFORMATION_EX` buffer. Unused MBR slots and
-/// zero-length entries are dropped.
+/// Decodes a `DRIVE_LAYOUT_INFORMATION_EX` buffer; unused MBR slots and zero-length entries are
+/// dropped.
 pub fn parse_drive_layout(buf: &[u8]) -> ParseResult<DriveLayout> {
     let style = u32_at(buf, 0)?;
     let count = u32_at(buf, 4)?;
@@ -168,7 +158,6 @@ pub fn parse_drive_layout(buf: &[u8]) -> ParseResult<DriveLayout> {
         let offset = nonneg_at(buf, at(ENTRY_OFFSET)?)?;
         let length = nonneg_at(buf, at(ENTRY_LENGTH)?)?;
         let number = u32_at(buf, at(ENTRY_NUMBER)?)?;
-        // The entry must be fully present even when it is skipped below.
         bytes::<1>(buf, at(ENTRY_BYTES.saturating_sub(1))?)?;
         if length == 0 {
             continue;
@@ -210,7 +199,6 @@ pub struct Geometry {
     pub bytes_per_sector: u64,
 }
 
-/// Decode a `DISK_GEOMETRY_EX` buffer.
 pub fn parse_geometry(buf: &[u8]) -> ParseResult<Geometry> {
     if buf.len() < GEOMETRY_MIN_BYTES {
         return Err("disk geometry truncated".into());
@@ -228,7 +216,6 @@ pub struct VolumeExtent {
     pub length: u64,
 }
 
-/// Decode a `VOLUME_DISK_EXTENTS` buffer.
 pub fn parse_volume_extents(buf: &[u8]) -> ParseResult<Vec<VolumeExtent>> {
     let count = usize::try_from(u32_at(buf, 0)?).map_err(|_| "extent count overflow")?;
     if count > 256 {
@@ -272,9 +259,8 @@ fn lba_span(offset: u64, length: u64, sector: u64) -> ParseResult<(u64, u64)> {
     Ok((offset / sector, last))
 }
 
-/// Combine the native layout and geometry of disk `number` into the staging
-/// [`Disk`]. Usable LBA bounds come straight from the GPT header values the
-/// layout IOCTL reports, so no raw read (and no elevation) is required.
+/// Combines the native layout and geometry of disk `number` into the staging [`Disk`]. Usable LBA
+/// bounds come from the GPT header the layout IOCTL reports, so no raw read or elevation is needed.
 pub fn disk_from_layout(
     number: u32,
     geometry: Geometry,
@@ -353,8 +339,6 @@ pub struct GptHeader {
 }
 
 impl GptHeader {
-    /// Bytes to read at `entries_lba` for the whole entry array, rounded up
-    /// to whole sectors.
     pub fn entries_read_bytes(&self, sector: u64) -> ParseResult<u64> {
         let raw = u64::from(self.entry_count)
             .checked_mul(u64::from(self.entry_bytes))
@@ -365,7 +349,7 @@ impl GptHeader {
     }
 }
 
-/// Decode and CRC-check the primary GPT header (the sector at LBA 1).
+/// Decodes and CRC-checks the primary GPT header (the sector at LBA 1).
 pub fn parse_gpt_header(sector_buf: &[u8]) -> ParseResult<GptHeader> {
     if sector_buf.get(0..8) != Some(b"EFI PART".as_slice()) {
         return Err("LBA 1 does not hold a GPT header".into());
@@ -409,7 +393,6 @@ pub fn parse_gpt_header(sector_buf: &[u8]) -> ParseResult<GptHeader> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GptEntry {
-    /// 1-based index in the entry array: the EFI `HD()` partition number.
     pub index: u32,
     pub type_guid: String,
     pub guid: String,
@@ -417,7 +400,7 @@ pub struct GptEntry {
     pub last_lba: u64,
 }
 
-/// Decode and CRC-check the GPT entry array; unused entries are dropped.
+/// Decodes and CRC-checks the GPT entry array; unused entries are dropped.
 pub fn parse_gpt_entries(buf: &[u8], header: &GptHeader) -> ParseResult<Vec<GptEntry>> {
     let entry_bytes =
         usize::try_from(header.entry_bytes).map_err(|_| "entry size overflow".to_string())?;
@@ -453,9 +436,8 @@ pub fn parse_gpt_entries(buf: &[u8], header: &GptHeader) -> ParseResult<Vec<GptE
     Ok(entries)
 }
 
-/// The elevated helper reads the GPT itself and requires it to agree exactly
-/// with what Windows reports, including that Windows' partition numbers are
-/// the GPT entry indices the EFI device path needs.
+/// The elevated helper reads the GPT itself and requires it to agree with what Windows reports,
+/// including that Windows' partition numbers are the GPT entry indices the EFI device path needs.
 pub fn cross_check_gpt(disk: &Disk, header: &GptHeader, entries: &[GptEntry]) -> ParseResult<()> {
     if header.disk_guid != disk.guid {
         return Err("GPT header disk GUID differs from the Windows layout".into());

@@ -5,14 +5,20 @@
 //!
 //! Only the literal a component shows is a message: the value given to a prop that shows words
 //! (not one the toolkit marks as data), or what such a value takes from a branch, an option or a
-//! list. A literal compared, passed to a function or used as a key stays text.
+//! list — and the same value kept in a `let`, chosen by a branch or passed on under another name,
+//! so where the words were written is nothing the author has to know. A literal compared, passed
+//! to a function or used as a key stays text.
 //!
 //! A view's text parameter is words it shows, so the literal a caller gives it is the caller's
 //! message too ([`super::template::Checker::expand`]).
+//!
+//! Which literals those are is known before any of them is lowered: a `let` comes before the prop
+//! that shows it, so the pass that lowers reads the answer of a pass that said it
+//! ([`super::check_module`]).
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
-use crate::ast::{self, ExprKind, StmtKind, StrPart};
+use crate::ast::{self, BinOp, ExprKind, StmtKind, StrPart};
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
 use crate::meta::WordMeta;
@@ -23,11 +29,28 @@ const SLUG_WORDS: usize = 6;
 
 impl Checker<'_> {
     /// Marks the literals `value` shows as its result: the value itself, a branch's, an
-    /// option's or a list's.
+    /// option's or a list's, or one a `let` kept under the name it is given by.
     pub(super) fn mark_shown(&mut self, value: &ast::Expr) {
         match &value.kind {
             ExprKind::Str(_) => {
-                self.st.shown.insert(value.span);
+                self.shown.insert(value.span);
+            }
+            // A name a `let` bound is the value it was written as: the literals inside it are
+            // the ones the prop shows, whichever branch or binding chose them.
+            ExprKind::Ident(name) => {
+                if let Some(written) = self.lookup(name).and_then(|(id, _)| self.st.lets.get(&id)) {
+                    let written = written.clone();
+                    self.mark_shown(&written);
+                }
+            }
+            // `chosen?.label ?? "Tasks"`: the words where the value on the left is none.
+            ExprKind::Binary {
+                op: BinOp::Coalesce,
+                lhs,
+                rhs,
+            } => {
+                self.mark_shown(lhs);
+                self.mark_shown(rhs);
             }
             ExprKind::If { then, els, .. } | ExprKind::IfLet { then, els, .. } => {
                 self.mark_shown_block(then);
@@ -68,9 +91,42 @@ impl Checker<'_> {
         }
     }
 
+    /// The declaration whose message the words being checked are attributes of: the view or
+    /// action being checked, or the one [`super::FnState::words_of`] names.
+    fn words_owner(&self) -> String {
+        self.st
+            .words_of
+            .clone()
+            .unwrap_or_else(|| self.st.view_id.clone())
+    }
+
+    /// `std.say("Morning: {n} done")`: words the code writes for a person to read, such as the
+    /// title of a record it makes, as a message of the declaration it is written in. They read in
+    /// the language of whoever runs the code, with each interpolation its argument. It is the
+    /// library's word, not a bare name, so a package's own action can be called `say`.
+    pub(super) fn builtin_say(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        match args {
+            [ast::Arg { name: None, value }] if matches!(value.kind, ExprKind::Str(_)) => {
+                self.mark_shown(value);
+                self.expr_as(value, &Ty::Text)
+            }
+            _ => {
+                self.err(
+                    "E022",
+                    span,
+                    "`std.say` takes the words in quotes, as a person reads them: `std.say(\"Morning: {n} done\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Ex::error()
+            }
+        }
+    }
+
     /// Whether the literal at `span` is one a component shows.
     pub(super) fn shows(&self, span: Span) -> bool {
-        self.st.shown.contains(&span)
+        self.shown.contains(&span)
     }
 
     /// A literal a view shows: its message, with each interpolation its argument, falling back
@@ -113,7 +169,7 @@ impl Checker<'_> {
             });
         }
         let key = self.word_key(&text);
-        let message = format!("{}.{key}", crate::messages::key_of(&self.st.view_id));
+        let message = format!("{}.{key}", crate::messages::key_of(&self.words_owner()));
         let list = self.text_pairs(args);
         let call = Ex::host(
             Imp::Word,
@@ -130,7 +186,7 @@ impl Checker<'_> {
     /// The attribute naming `text` under the view's message: a slug of its words, numbered
     /// when another text of the view has the same slug.
     fn word_key(&mut self, text: &str) -> String {
-        let view = self.st.view_id.clone();
+        let view = self.words_owner();
         let base = format!("w-{}", slug(text));
         let mut key = base.clone();
         let mut n = 1;

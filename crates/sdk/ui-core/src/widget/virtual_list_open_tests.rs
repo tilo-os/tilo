@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::tests::{ProbeRow, lay_out};
+use super::tests::{ProbeRow, inside, lay_out, named, within};
 use super::*;
 
 use crate::testing::Dispatch;
@@ -357,4 +357,231 @@ fn a_list_too_narrow_to_hold_its_item_opens_it_in_front_instead() {
     roomy.activate_key(0);
     assert_eq!(roomy.open_row(), Some(&0));
     assert!(opened.borrow().is_empty());
+}
+
+/// A list whose even rows carry a document, drawn as the row standing open into it draws it.
+fn opening_list() -> VirtualList<Opens> {
+    VirtualList::with_selection_delegate(
+        Opens {
+            rows: (0..6_u64).collect(),
+        },
+        20.0,
+        |_, _, key, build| {
+            let document: Element = Box::new(ProbeRow::new(
+                format!("row {key}"),
+                120.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ));
+            if build.expanded {
+                Box::new(super::open::RowOpen::new(document, false)) as Element
+            } else {
+                document
+            }
+        },
+    )
+    .with_viewport_height(200.0)
+}
+
+/// The row standing open into its item is the item, and a reader is handed it once: the box that
+/// took the row's place names the same row, so the item's controls stand under the row rather
+/// than under a second row of the same item.
+#[test]
+fn the_row_standing_open_is_handed_to_a_reader_once() {
+    let mut list = opening_list();
+    let _ = lay_out(&mut list, 300.0);
+    list.set_open(Some(0));
+
+    let semantics = list.accessibility().expect("the list has a node");
+    let item = semantics.children.first().expect("the list hands its rows");
+    assert_eq!(item.role, crate::a11y::Role::ListItem);
+    assert_eq!(item.state.expanded, Some(true));
+    assert_eq!(item.name.as_deref(), Some("row 0"));
+    let nested: Vec<_> = item
+        .children
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.role,
+                crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
+            )
+        })
+        .collect();
+    assert!(
+        nested.is_empty(),
+        "the open row is one row, not one inside another: {nested:?}"
+    );
+}
+
+/// The document an item opens into where its row stands: the field its title is typed in, the
+/// page under it, the box that ticks it off and the button that saves it.
+fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {
+    use crate::widget::{Button, Checkbox, Column, TextInput};
+    Box::new(
+        Column::new()
+            .push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_text_role(crate::tokens::TextRole::Title)
+                    .with_id("title")
+                    .with_accessible_name("Title")
+                    .with_initial_value("Ring the plumber"),
+            ))
+            .push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("notes")
+                    .multiline(true)
+                    .with_accessible_name("Notes")
+                    .with_initial_value("The tap drips"),
+            ))
+            .push(Box::new(
+                Checkbox::from_state(&done).with_accessible_name("Done"),
+            ))
+            .push(Box::new(
+                Button::new("save", "Save").on_view(move || saved.set(saved.get() + 1)),
+            )),
+    )
+}
+
+/// A list whose even rows open the item into a document of its own where they stand.
+fn documented_list(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> VirtualList<Opens> {
+    VirtualList::with_selection_delegate(
+        Opens {
+            rows: (0..6_u64).collect(),
+        },
+        20.0,
+        move |_, _, key, build| {
+            if build.expanded {
+                Box::new(super::open::RowOpen::new(
+                    document(Rc::clone(&saved), done.clone()),
+                    false,
+                )) as Element
+            } else {
+                Box::new(ProbeRow::new(
+                    format!("row {key}"),
+                    20.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                )) as Element
+            }
+        },
+    )
+    .with_viewport_height(400.0)
+}
+
+/// An item open where its row stands hands a reader the fields that edit it: the title, the
+/// page, the box that ticks it off and the buttons, each under the row it is in and where it is
+/// drawn, and each operated as an assistive technology operates it.
+#[test]
+fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+    use accesskit::{Action as AkAction, Role as AkRole};
+
+    let saved = Rc::new(Cell::new(0));
+    let done = crate::LocalState::new(false);
+    let mut harness = FrameHarness::for_root(
+        crate::State::new(),
+        documented_list(Rc::clone(&saved), done.clone()),
+        (400, 600),
+        crate::theme::Theme::dark(),
+    );
+    harness.root_mut::<VirtualList<Opens>>().set_open(Some(0));
+    harness.relayout();
+
+    let nodes = harness.a11y_nodes();
+    let (row_id, row) = named(&nodes, AkRole::ListItem, "Ring the plumber");
+    let row_bounds = row.bounds().expect("the row stands where it is drawn");
+    let controls = inside(&nodes, row_id);
+    assert_eq!(
+        controls
+            .iter()
+            .filter(|(_, node)| matches!(node.role(), AkRole::ListItem | AkRole::TreeItem))
+            .count(),
+        0,
+        "the open row is one row, not one inside another"
+    );
+    let (_, title) = named(&controls, AkRole::TextInput, "Title");
+    assert_eq!(
+        title.value(),
+        Some("Ring the plumber"),
+        "the field reads the title it edits"
+    );
+    let (_, page) = named(&controls, AkRole::MultilineTextInput, "Notes");
+    assert_eq!(page.value(), Some("The tap drips"));
+    let (checkbox, box_node) = named(&controls, AkRole::CheckBox, "Done");
+    assert_eq!(box_node.toggled(), Some(accesskit::Toggled::False));
+    assert!(
+        box_node.supports_action(AkAction::Click),
+        "the box can be ticked from a reader"
+    );
+    named(&controls, AkRole::Button, "Save");
+    for (_, control) in &controls {
+        let bounds = control
+            .bounds()
+            .unwrap_or_else(|| panic!("{:?} is drawn nowhere", control.role()));
+        assert!(
+            within(row_bounds, bounds),
+            "{:?} stands outside its row: {bounds:?} not in {row_bounds:?}",
+            control.role()
+        );
+    }
+
+    // The keyboard reaches the same controls, in the same order a reader is handed them.
+    let stops: Vec<(crate::a11y::Role, Option<String>)> = harness
+        .tab_through()
+        .into_iter()
+        .filter(|(role, _)| {
+            matches!(
+                role,
+                crate::a11y::Role::TextInput
+                    | crate::a11y::Role::MultilineTextInput
+                    | crate::a11y::Role::Checkbox
+                    | crate::a11y::Role::Button
+            )
+        })
+        .collect();
+    let named_stops: Vec<Option<&str>> = stops
+        .iter()
+        .map(|(_, name)| name.as_deref())
+        .filter(|name| matches!(*name, Some("Title" | "Notes" | "Done" | "Save")))
+        .collect();
+    assert_eq!(
+        named_stops,
+        vec![Some("Title"), Some("Notes"), Some("Done"), Some("Save")],
+        "the keyboard reaches what the row holds, in reading order"
+    );
+
+    // The box ticks, and the row says so.
+    harness
+        .perform_a11y_action(checkbox, &Action::Activate)
+        .expect("the box is operated");
+    let nodes = harness.a11y_nodes();
+    let (row_id, _) = named(&nodes, AkRole::ListItem, "Ring the plumber");
+    let controls = inside(&nodes, row_id);
+    assert_eq!(
+        named(&controls, AkRole::CheckBox, "Done").1.toggled(),
+        Some(accesskit::Toggled::True),
+        "the tick reaches the box"
+    );
+    assert!(done.with(|checked| *checked), "the box's value is ticked");
+
+    // The button is pressed.
+    let (button, _) = named(&nodes, AkRole::Button, "Save");
+    harness
+        .perform_a11y_action(button, &Action::Activate)
+        .expect("the button is pressed");
+    assert_eq!(saved.get(), 1, "the press reaches the button");
+
+    // The page is written to.
+    let nodes = harness.a11y_nodes();
+    let (page, _) = named(&nodes, AkRole::MultilineTextInput, "Notes");
+    harness
+        .perform_a11y_action(page, &Action::SetValue("The tap runs".into()))
+        .expect("the page is written in");
+    let nodes = harness.a11y_nodes();
+    assert_eq!(
+        named(&nodes, AkRole::MultilineTextInput, "Notes").1.value(),
+        Some("The tap runs"),
+        "what the reader writes stands in the page"
+    );
 }

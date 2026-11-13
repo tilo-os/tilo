@@ -147,7 +147,11 @@ pub type Builds = Arc<dyn Fn(&ActionArgs, i64) -> Result<Built, String> + Send +
 #[derive(Clone)]
 pub struct Declaration {
     pub id: &'static str,
+    /// What a person reads it by, in the language it was declared in.
     pub label: String,
+    /// The declared word [`Self::label`] is the source text of, read in the
+    /// person's language each time the action is published.
+    pub word: Option<crate::label::Word>,
     /// The other words people use for the action
     /// ([`tilo_actions::ActionSpec::keywords`]).
     pub keywords: Vec<String>,
@@ -180,6 +184,13 @@ pub struct Declaration {
     /// places its invoker (the caret an append leaves its writer at).
     /// See [`bind_declaration`](crate::bind_declaration).
     pub refines: bool,
+    /// The kind of step it takes, as it declares it
+    /// ([`tilo_actions::StepKind`]), published with its contract.
+    pub step: Option<tilo_actions::StepKind>,
+    /// The collection of its resource it adds to, when it is a create whose
+    /// declaration names one (`writes = issues`): what the step makes, so a
+    /// surface says that collection's own noun ("Creating an issue in Issues").
+    pub creates: Option<&'static str>,
     /// The units the action writes ([`crate::footprint`]): `record`, an
     /// item's unit, declared fields'.
     pub writes: Vec<String>,
@@ -199,6 +210,10 @@ pub struct Declaration {
     /// what the surface publishes of it. A parameter without one is
     /// published as its schema says.
     pub param_types: Vec<(&'static str, ParamFieldType)>,
+    /// The type of the value it answers with, when the code declares one
+    /// ([`JsonSchema::field_type`](crate::JsonSchema::field_type)): what the
+    /// surface publishes of its result.
+    pub result_type: Option<ParamFieldType>,
 }
 
 /// How a parameter's [`FieldType`](crate::FieldType) is worked out,
@@ -212,6 +227,24 @@ impl AsRef<Self> for Declaration {
 }
 
 impl Declaration {
+    /// What a person reads it by now, in their language.
+    #[must_use]
+    pub fn shown_label(&self) -> String {
+        self.word
+            .as_ref()
+            .map_or_else(|| self.label.clone(), crate::label::Word::read)
+    }
+
+    /// Its parameters, each called what the person reads it by where its
+    /// catalogue has a word for it ([`crate::label::titled`]).
+    #[must_use]
+    pub fn shown_params(&self) -> Vec<ActionParam> {
+        match &self.word {
+            Some(word) => crate::label::titled(word, self.resource, self.params.clone()),
+            None => self.params.clone(),
+        }
+    }
+
     /// The declaration `id` of the resource `vocabulary`, labelled `label`,
     /// taking `params`, built by `build`.
     pub(crate) fn new(
@@ -224,6 +257,7 @@ impl Declaration {
         Self {
             id,
             label,
+            word: None,
             keywords: Vec::new(),
             icon: None,
             description: None,
@@ -236,12 +270,15 @@ impl Declaration {
             tags: Vec::new(),
             content: None,
             refines: false,
+            step: None,
+            creates: None,
             writes: vec![crate::footprint::RECORD_UNIT.to_owned()],
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,
             build,
             invokes: None,
             param_types: Vec::new(),
+            result_type: None,
         }
     }
 }
@@ -255,6 +292,8 @@ pub struct Vocabulary {
     pub app: &'static str,
     /// [`Resource::LABEL`].
     pub label: &'static str,
+    /// [`Resource::CATALOGUE`].
+    pub catalogue: Option<&'static crate::label::Catalogue>,
     /// [`Resource::ACTION_TYPE`].
     pub action_type: &'static str,
     /// [`Resource::EDITS`].
@@ -353,6 +392,7 @@ impl<R: Resource> VocabularyOf<R> {
         kind: R::KIND,
         app: R::APP_ID,
         label: R::LABEL,
+        catalogue: R::CATALOGUE,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
         record_table: R::RECORD_TABLE,

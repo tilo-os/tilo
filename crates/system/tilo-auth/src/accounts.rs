@@ -13,7 +13,6 @@ pub struct Account {
     pub display_name: String,
 }
 
-/// `/etc/passwd` and `/etc/group` under `root`.
 pub struct Accounts {
     root: PathBuf,
 }
@@ -57,7 +56,6 @@ impl Accounts {
         }))
     }
 
-    /// The device admin: in `wheel` and in `tilo-identity`.
     pub fn is_admin(&self, account: &Account) -> Result<bool> {
         Ok(self.in_group(account, "wheel")? && self.in_group(account, "tilo-identity")?)
     }
@@ -83,9 +81,7 @@ fn parse_passwd(line: &str) -> Option<Account> {
     })
 }
 
-/// The password check people are moved off, and locking it once they are.
 pub trait Legacy: Send + Sync {
-    /// Whether `typed` is the person's old password.
     fn verify(&self, name: &str, typed: &str) -> Result<bool>;
     /// Whether the person still has a password hash some check would accept.
     fn has_password(&self, name: &str) -> Result<bool>;

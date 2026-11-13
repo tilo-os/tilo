@@ -79,6 +79,15 @@ class WireEnumTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("no longer has Task", problems[0])
 
+    def test_a_variant_the_base_gained_after_head_branched_is_no_removal(self):
+        with self.repository(lifetime("Once"), lifetime("Once")) as root:
+            self.git(root, "checkout", "-q", "-b", "behind")
+            self.git(root, "checkout", "-q", "main")
+            (root / "crates/x/src/lib.rs").write_text(lifetime("Once", "Task"))
+            self.git(root, "commit", "-qam", "gains Task")
+            self.git(root, "checkout", "-q", "behind")
+            self.assertEqual(wire.against("main", root), [])
+
     def test_a_variant_moved_or_inserted_before_others_fails(self):
         self.assertEqual(
             len(self.judged(lifetime("Once", "Until"), lifetime("Until", "Once"))), 1

@@ -29,13 +29,8 @@ fn policy(remote: bool, dark: bool) -> Policy<'static> {
     }
 }
 
-/// An element as [`elements`] reads it: its name, its attributes, and the
-/// text of its style sheet when it is one.
 type Element = (String, Vec<(String, String)>, String);
 
-/// A prepared document as the engine reads it: every element, with its
-/// attributes (lower-case names and values), and the text of its style
-/// sheets. Text the document shows is left out.
 fn elements(document: &str) -> Vec<Element> {
     use html5ever::tendril::TendrilSink as _;
     use markup5ever_rcdom::{NodeData, RcDom};
@@ -88,8 +83,6 @@ fn elements(document: &str) -> Vec<Element> {
     found
 }
 
-/// The markup of a prepared document as the engine reads it: its elements
-/// with their attributes, and its style sheets, without the text it shows.
 fn markup(document: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -105,7 +98,6 @@ fn markup(document: &str) -> String {
     out
 }
 
-/// The attribute names on the elements of a prepared document, lower-cased.
 fn attribute_names(document: &str) -> Vec<String> {
     elements(document)
         .into_iter()
@@ -113,8 +105,6 @@ fn attribute_names(document: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every address the document makes the engine fetch: image sources and
-/// candidates, backgrounds, style sheets, and CSS `url()`s.
 fn fetched(document: &str) -> Vec<String> {
     let mut found = Vec::new();
     let lower = document.to_ascii_lowercase();
@@ -127,7 +117,6 @@ fn fetched(document: &str) -> Vec<String> {
                     .get(start..)
                     .and_then(|rest| rest.find('"'))
                     .unwrap_or(0);
-            // A link's href is followed, not fetched.
             let tag_start = lower
                 .get(..start)
                 .and_then(|head| head.rfind('<'))
@@ -222,7 +211,6 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
         }
         // What a script would say may stay as words the mail shows (the
         // engine reads `<scr<script>ipt>alert(5)` as text too), never as
-        // markup.
         let markup = markup(&document);
         assert!(!markup.contains("alert("), "remote {remote}: {markup}");
         assert!(
@@ -232,7 +220,6 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
             "remote {remote}: {:?}",
             attribute_names(&document)
         );
-        // The only policy is the reader's, and it comes first.
         assert_eq!(document.matches("<meta http-equiv").count(), 1);
         let csp = document
             .find("content-security-policy")
@@ -286,10 +273,8 @@ fn nothing_remote_is_fetched_before_the_person_allows_it() {
     assert_eq!(allowed.remote, blocked.remote);
     assert!(fetched(&allowed.document).iter().any(|url| is_web(url)));
     assert!(allowed.document.contains("img-src data: https: http:"));
-    // Allowed, it is still no more than images, fonts and styles.
     assert!(allowed.document.contains("script-src 'none'"));
     assert!(allowed.document.contains("connect-src 'none'"));
-    // A plain mail has nothing to allow.
     assert_eq!(prepare("<p>Hi</p>", &policy(false, false)).remote, 0);
 }
 
@@ -354,7 +339,6 @@ fn escaped_and_disguised_addresses_are_read_as_the_engine_reads_them() {
         );
         assert_eq!(prepared.remote, 1, "{case} is one remote reference");
     }
-    // Encoded twice, the engine reads the text an entity, not a URL.
     let twice = prepare(
         "<div style=\"background:&amp;#117;rl(https://t.example/a.gif)\">x</div>",
         &policy(false, false),
@@ -450,20 +434,14 @@ fn inline_parts_and_data_images_always_show() {
         "{images:?}"
     );
     assert_eq!(prepared.remote, 0);
-    // The logo is part of the message, not a file attached to it.
     assert!(message.shown_attachments().next().is_none());
-    // An inline part the HTML does not show is still offered as a file.
     let unreferenced = String::from_utf8_lossy(INLINE).replace("cid:logo-v3", "cid:other");
     let unreferenced = self::message(unreferenced.as_bytes());
     assert_eq!(unreferenced.shown_attachments().count(), 1);
-    // A missing part is never a fetch: it is held back like a remote one.
     let missing = prepare("<img src=\"cid:gone@x\">", &policy(false, false));
     assert_eq!(fetched(&missing.document), [HELD_BACK_IMAGE]);
 }
 
-/// A held-back image is an empty neutral box at the size the mail declares,
-/// takes no room when it declares none, and keeps its alternative text as
-/// its accessible name, never the engine's broken image over the layout.
 #[test]
 fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
     let sized = prepare(
@@ -505,7 +483,6 @@ fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
         styled.document
     );
 
-    // Without a size of its own it is the held-back pixel: no box.
     let bare = prepare(
         "<img src=\"https://t.example/a.png\" alt=\"Logo\">",
         &policy(false, false),
@@ -517,7 +494,6 @@ fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
         bare.document
     );
 
-    // Allowed, it is the image itself.
     let allowed = prepare(
         "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\">",
         &policy(true, false),
@@ -715,8 +691,6 @@ fn the_engine_test_holds_chromium_to_the_end_mark_the_mail_writes() {
     assert!(test.contains(&format!("END_MARK = '{END_MARK}'")));
 }
 
-/// The reader scrolls the mail as one page: the document, as tall as its
-/// view, never shows a scroll bar of its own.
 #[test]
 fn a_document_shows_no_scroll_bar_of_its_own() {
     for dark in [false, true] {
@@ -744,7 +718,6 @@ fn the_mail_keeps_its_body_attributes_and_its_text_stays_text() {
         "{document}"
     );
     assert_eq!(document.matches("<body").count(), 1, "{document}");
-    // Misnested formatting is closed where the engine closes it.
     assert!(
         document.contains("<p>Fish &amp; chips &lt;3 <b>bold <i>both</i></b><i> slanted</i></p>"),
         "{document}"

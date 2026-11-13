@@ -1,11 +1,9 @@
 //! Connecting to a service socket that only this user can have created.
 //!
-//! A session service publishes its socket below a directory private to the
-//! user (the runtime directory, `0700`). Before trusting the endpoint, a
-//! client checks that every directory from that root down to the socket, and
-//! the socket itself, belongs to it and admits nobody else, so another user
-//! cannot have planted it. The connect has a deadline: a stale or saturated
-//! endpoint must not stall the caller.
+//! A session service publishes its socket below a directory private to the user (the
+//! runtime directory, `0700`), and a client checks that every directory from that root
+//! down to the socket, and the socket itself, belongs to it, so another user cannot
+//! have planted it. The connect has a deadline.
 
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -13,9 +11,9 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-/// Connect to `socket`, which lies below `root`, once `root`, every directory
-/// between it and `socket`, and `socket` itself are owned by this process's
-/// user and closed to group and others. Gives up after `timeout`.
+/// Connect to `socket`, which lies below `root`, once every directory from `root` down to
+/// `socket`, and the socket itself, are owned by this process's user and closed to group
+/// and others.
 pub fn connect_owner_only(root: &Path, socket: &Path, timeout: Duration) -> io::Result<UnixStream> {
     let invalid = |why| io::Error::new(io::ErrorKind::InvalidInput, why);
     if !root.is_absolute() {

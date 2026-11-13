@@ -14,7 +14,6 @@ const CHANNELS: i32 = 1;
 /// encoder settle into DTX.
 const MAX_ENCODE_SAMPLES: usize = 5 * 48_000;
 const MAX_ENCODE_BYTES: u64 = 2 * 5 * 48_000 + 2_000;
-/// 250 frames plus the encoder's trailing flush.
 const MAX_ENCODE_PACKETS: usize = 264;
 
 pub fn test_tone(rate: i32, channels: i32, ms: u64) -> Vec<i16> {

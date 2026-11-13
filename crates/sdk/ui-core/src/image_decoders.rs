@@ -3,10 +3,8 @@
 //! [`crate::ImageStore`] loads.
 //!
 //! Without `lazy-image-decode` they are linked and always there. With it,
-//! nothing in the toolkit names them: the program hands over a loader
-//! (`defer_image_decoders`) that fetches their code the first time
-//! something decodes and passes back [`builtin_image_decoders`]
-//! (`install_image_decoders`). Until then page images are left out and an
+//! nothing in the toolkit names them: the program fetches their code the
+//! first time something decodes and installs it ([`IMAGE_DECODERS`]). Until then page images are left out and an
 //! image store holds the pictures it fetched as undecoded, loading them again
 //! once the decoders are in. The browser desktop uses this to keep the
 //! decoders out of its start module.
@@ -28,9 +26,6 @@ pub struct ImageDecoders {
     /// with the decoders, out of a browser's start module.
     pub small_png: fn(&[u8], u32) -> Option<Vec<u8>>,
 }
-
-/// Hands over the decoders, for `install_image_decoders`.
-pub type MakeImageDecoders = fn() -> ImageDecoders;
 
 /// The `image` crate's decoders.
 #[must_use]
@@ -59,78 +54,24 @@ pub fn builtin_image_decoders() -> ImageDecoders {
     }
 }
 
-#[cfg(not(feature = "lazy-image-decode"))]
-mod linked {
-    use super::ImageDecoders;
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the lazy-image-decode build has none until they are fetched"
-    )]
-    pub(crate) fn decoders() -> Option<ImageDecoders> {
-        Some(super::builtin_image_decoders())
-    }
-
-    pub(crate) fn decoders_in() -> bool {
-        true
-    }
-
-    /// Linked decoders are always in: nothing waits for them.
-    pub(crate) fn wake_when_in(_window: crate::wake::WakeHandle) {}
+crate::lazy_code! {
+    /// The decoders ([`builtin_image_decoders`]).
+    pub static IMAGE_DECODERS: ImageDecoders = builtin_image_decoders, feature = "lazy-image-decode";
 }
 
-#[cfg(not(feature = "lazy-image-decode"))]
-pub(crate) use linked::{decoders, decoders_in, wake_when_in};
+/// The decoders, or `None` while they are still to come (and then fetched).
+pub(crate) fn decoders() -> Option<ImageDecoders> {
+    IMAGE_DECODERS.get()
+}
 
-#[cfg(feature = "lazy-image-decode")]
-mod fetched {
-    use super::{ImageDecoders, MakeImageDecoders};
-    use crate::deferred::Deferred;
-
-    static DECODERS: Deferred<ImageDecoders> = Deferred::new();
-
-    /// The decoders, or `None` while they are still to come (and then
-    /// fetched).
-    pub(crate) fn decoders() -> Option<ImageDecoders> {
-        DECODERS.get()
-    }
-
-    /// Whether the decoders are in, without fetching them.
-    pub(crate) fn decoders_in() -> bool {
-        DECODERS.generation() > 0
-    }
-
-    /// Wake `window` once the decoders are in (or their fetch failed): work
-    /// it does once a frame that found them missing then runs again.
-    pub(crate) fn wake_when_in(window: crate::wake::WakeHandle) {
-        struct Window(crate::wake::WakeHandle);
-        impl std::task::Wake for Window {
-            fn wake(self: std::sync::Arc<Self>) {
-                self.0.wake();
-            }
+/// Wake `window` once the decoders are in (or their fetch failed): work it
+/// does once a frame that found them missing then runs again.
+pub(crate) fn wake_when_in(window: crate::wake::WakeHandle) {
+    struct Window(crate::wake::WakeHandle);
+    impl std::task::Wake for Window {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.wake();
         }
-        DECODERS.wake_on_arrival(std::task::Waker::from(std::sync::Arc::new(Window(window))));
     }
-
-    /// How the program fetches the decoders' code: `load` starts the fetch
-    /// and, once the code is in, calls [`install_image_decoders`] (or
-    /// [`image_decoders_load_failed`]).
-    pub fn defer_image_decoders(load: fn()) {
-        DECODERS.defer(load);
-    }
-
-    /// The decoders' code is in: images decode from now on.
-    pub fn install_image_decoders(make: MakeImageDecoders) {
-        DECODERS.install(make());
-    }
-
-    /// The fetch failed: the next decode fetches again.
-    pub fn image_decoders_load_failed() {
-        DECODERS.load_failed();
-    }
+    IMAGE_DECODERS.wake_on_arrival(std::task::Waker::from(std::sync::Arc::new(Window(window))));
 }
-
-#[cfg(feature = "lazy-image-decode")]
-pub(crate) use fetched::{decoders, decoders_in, wake_when_in};
-#[cfg(feature = "lazy-image-decode")]
-pub use fetched::{defer_image_decoders, image_decoders_load_failed, install_image_decoders};

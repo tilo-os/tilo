@@ -106,8 +106,6 @@ impl App {
         )
     }
 
-    /// What the slot runs now, the `vm` slot's components and which session
-    /// the cohort replaces.
     fn cohort_state(remote: &mut Remote, slot: &str) -> Result<CohortState, CliError> {
         let status = remote.call(Status { slot: None })?;
         let current = status
@@ -134,7 +132,6 @@ impl App {
         })
     }
 
-    /// Admit the cohort and report what it activated.
     fn apply_cohort(
         &mut self,
         remote: &mut Remote,
@@ -158,13 +155,6 @@ impl App {
         )
     }
 
-    /// Build the VM-wide runtime services this cohort's declaration expects
-    /// from the same tree and swap them in. The runtime services apps reach
-    /// (fs) serve every slot, so a device a generation behind has them older
-    /// than the cohort it is about to run: the swap that carries each service
-    /// names this cohort's next generation as its partner, and the interface
-    /// check judges the pair, so the session never runs against a service of
-    /// another version.
     fn move_runtime_services(
         &mut self,
         remote: &mut Remote,
@@ -243,19 +233,13 @@ impl App {
     }
 }
 
-/// The slot a cohort lands on: what it runs now, its session, its generation
-/// and the `vm` slot's components.
 struct CohortState {
     generation: u64,
     session: tilo_vm_protocol::UserspaceSession,
-    /// The `vm` slot's components, where the runtime services live.
     services: std::collections::BTreeMap<String, String>,
-    /// The generation of the slot the cohort replaces.
     current: std::collections::BTreeMap<String, String>,
 }
 
-/// What moving a cohort's VM-wide runtime services needs: the tree they are
-/// built from, the cohort landing on the slot, and the generation it replaces.
 struct CohortMove<'a> {
     vm: &'a super::Resolved,
     root: &'a std::path::Path,
@@ -264,14 +248,10 @@ struct CohortMove<'a> {
     command: &'a [String],
     inputs: &'a crate::source_inputs::Snapshot,
     members: &'a [tilo_vm_protocol::UserspaceMember],
-    /// The `vm` slot's components, where the runtime services live.
     services: &'a std::collections::BTreeMap<String, String>,
-    /// The generation of `slot` the cohort replaces.
     current: &'a std::collections::BTreeMap<String, String>,
 }
 
-/// The generation `slot` ends up with when a cohort swap lands on `current`:
-/// every other component stays, the cohort's replace what `current` has.
 fn partner_for(
     slot: &str,
     current: &std::collections::BTreeMap<String, String>,
@@ -301,9 +281,6 @@ mod tests {
         }
     }
 
-    /// The paired swap is judged against what the slot will read: the
-    /// cohort's layers replace the ones it runs, and a component outside the
-    /// cohort (a manager, the launcher's data) stays as it is.
     #[test]
     fn a_partner_generation_keeps_what_the_cohort_does_not_replace() {
         let current = [

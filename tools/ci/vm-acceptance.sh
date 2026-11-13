@@ -17,6 +17,14 @@
 #                              end-to-end scenario (checks/agents_e2e.py) on
 #                              this tree's own disk, nothing swapped, its
 #                              report in /target/e2e-agents/report
+#   vm-acceptance.sh e2e-ws-branch
+#                              what e2e-ws-branch runs: a workspace set up
+#                              once and branched (checks/ws_branch_e2e.py),
+#                              on this tree's own disk, nothing swapped, its
+#                              report written on this guest's disk and
+#                              copied to /target/e2e-ws-branch/report at the
+#                              end; `--input hold=SECONDS` keeps a failed
+#                              run's VM up for `t vm ssh`
 #
 # Inputs (t dispatch <check> --input name=value; every other run gets the
 # defaults):
@@ -46,12 +54,20 @@
 set -euo pipefail
 
 mode=${1:-}
-[[ -z $mode || $mode == cohort || $mode == e2e-agents ]] \
-  || { echo "usage: vm-acceptance.sh [cohort|e2e-agents]" >&2; exit 2; }
+[[ -z $mode || $mode == cohort || $mode == e2e-agents || $mode == e2e-ws-branch ]] \
+  || { echo "usage: vm-acceptance.sh [cohort|e2e-agents|e2e-ws-branch]" >&2; exit 2; }
 arch=x86_64
 work=/var/tmp/vm-acceptance
 reports=${CARGO_TARGET_DIR:-/target}/vm-acceptance
 [[ $mode != e2e-agents ]] || reports=${CARGO_TARGET_DIR:-/target}/e2e-agents
+# The workspace-branch scenario writes its report on this guest's own disk and copies it into
+# the outputs when it ends: a descriptor held open on the outputs' virtio-fs share for a long
+# run can start failing with EBADF partway (tools/ci/publish/os-dev-disk.sh).
+published=""
+if [[ $mode == e2e-ws-branch ]]; then
+  published=${CARGO_TARGET_DIR:-/target}/e2e-ws-branch
+  reports=$work/e2e-ws-branch
+fi
 gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 cohort=/target/vm-cohort
@@ -75,8 +91,8 @@ python3 os/dev/probe-kvm.py "$arch" || {
   exit 1
 }
 
-rm -rf "$work" "$reports"
-mkdir -p "$work" "$reports"
+rm -rf "$work" "$reports" ${published:+"$published"}
+mkdir -p "$work" "$reports" ${published:+"$published"}
 
 # A run without a git checkout names its commit.
 target=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
@@ -125,6 +141,14 @@ if [[ $mode == e2e-agents ]]; then
   # The scenario's checks, all of them: each sets up what it needs through the ones before it.
   only=agents-e2e
   swap=""
+elif [[ $mode == e2e-ws-branch ]]; then
+  only=ws-branch-e2e
+  swap=""
+  # `--test hold` keeps a failed run's VM up for an hour, to reach it with `t vm ssh`.
+  # `--test hold`, or `t dispatch e2e-ws-branch --input hold=SECONDS`, keeps a failed run's VM up
+  # for `t vm ssh`.
+  [[ ${T_TEST_FILTER:-} != *hold* ]] || export TILO_ACCEPTANCE_HOLD_S=3600
+  [[ ${T_INPUT_HOLD:-0} == 0 ]] || export TILO_ACCEPTANCE_HOLD_S=$T_INPUT_HOLD
 elif [[ -n ${T_TEST_FILTER:-} ]]; then
   only=${T_TEST_FILTER//|/,}
 elif [[ -z $only && -z ${T_TRIGGER:-} ]]; then
@@ -226,6 +250,12 @@ status=0
 if [[ $mode == e2e-agents ]]; then
   part "$reports/report" --locales en || status=$?
   phase 'scenario done'
+  exit "$status"
+fi
+if [[ $mode == e2e-ws-branch ]]; then
+  part "$reports/report" --locales en || status=$?
+  phase 'scenario done'
+  cp -a "$reports/report" "$published/report"
   exit "$status"
 fi
 if [[ $mode == cohort ]]; then

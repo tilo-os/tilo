@@ -1,14 +1,5 @@
-//! Open-Meteo request construction + response parsing.
-//!
-//! This module is **pure**: it builds URLs and turns JSON strings into
-//! model types. The actual HTTP (`tilo_net`) lives in `net.rs` so
-//! the parsing can be unit-tested without a network. The `--shots`
-//! offscreen path never calls into here at all — it renders bundled
-//! sample data (`sample.rs`).
-//!
-//! Endpoints (no API key required):
-//!   * Forecast:  <https://api.open-meteo.com/v1/forecast>
-//!   * Geocoding: <https://geocoding-api.open-meteo.com/v1/search>
+//! Open-Meteo request URLs and response parsing; the HTTP lives in `net`, so the
+//! parsing is testable without a network.
 
 use serde::Deserialize;
 
@@ -22,7 +13,6 @@ pub const FORECAST_BASE: &str = "https://api.open-meteo.com/v1/forecast";
 pub const GEOCODE_BASE: &str = "https://geocoding-api.open-meteo.com/v1/search";
 pub const AIR_QUALITY_BASE: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 
-/// Build the forecast request URL for a location + unit preference.
 pub fn forecast_url(lat: f64, lon: f64, units: Units) -> String {
     format!(
         "{base}?latitude={lat:.4}&longitude={lon:.4}\
@@ -39,8 +29,7 @@ pub fn forecast_url(lat: f64, lon: f64, units: Units) -> String {
     )
 }
 
-/// Build the air-quality request URL for a location. AQI + the key pollutants
-/// are all unitless indices or µg/m³, so no unit preference is threaded here.
+/// The air-quality URL: AQI and pollutants need no unit preference.
 pub fn air_quality_url(lat: f64, lon: f64) -> String {
     format!(
         "{AIR_QUALITY_BASE}?latitude={lat:.4}&longitude={lon:.4}\
@@ -49,15 +38,10 @@ pub fn air_quality_url(lat: f64, lon: f64) -> String {
     )
 }
 
-/// Build the geocoding search URL.
 pub fn geocode_url(query: &str) -> String {
     let encoded = ui::uri::encode_component(query.trim());
     format!("{GEOCODE_BASE}?name={encoded}&count=8&language=en&format=json")
 }
-
-// ---------------------------------------------------------------------
-// Forecast response
-// ---------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct ForecastResponse {
@@ -107,8 +91,7 @@ struct DailyRaw {
     uv_index_max: Vec<Option<f64>>,
 }
 
-/// Parse a forecast JSON body into a [`WeatherSnapshot`]. The hourly strip
-/// is sliced to the 24 hours starting at the current observation time.
+/// The hourly strip is the 24 hours from the current observation.
 pub fn parse_forecast(
     body: &str,
     location_id: LocationId,
@@ -139,7 +122,6 @@ pub fn parse_forecast(
         time: raw.current.time.clone(),
     };
 
-    // Find the hourly index at/after the current time, take 24 forward.
     let start = raw
         .hourly
         .time
@@ -197,10 +179,6 @@ pub fn parse_forecast(
     })
 }
 
-// ---------------------------------------------------------------------
-// Air-quality response
-// ---------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 struct AirQualityResponse {
     current: AirQualityCurrentRaw,
@@ -224,8 +202,7 @@ struct AirQualityCurrentRaw {
     ozone: Option<f64>,
 }
 
-/// Parse an air-quality JSON body into an [`AirQuality`] reading. Missing
-/// fields decode to `None` (honest "unavailable"), never a fabricated zero.
+/// A missing field decodes to `None`, never to a fabricated zero.
 pub fn parse_air_quality(
     body: &str,
     location_id: LocationId,
@@ -246,7 +223,6 @@ pub fn parse_air_quality(
     })
 }
 
-/// The European-AQI qualitative band label for an index value.
 pub fn european_aqi_band(aqi: f64) -> &'static str {
     match aqi.round() as i64 {
         i64::MIN..=20 => "Good",
@@ -257,10 +233,6 @@ pub fn european_aqi_band(aqi: f64) -> &'static str {
         _ => "Extremely poor",
     }
 }
-
-// ---------------------------------------------------------------------
-// Geocoding response
-// ---------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct GeocodeResponse {
@@ -283,7 +255,6 @@ struct GeocodeResult {
     timezone: String,
 }
 
-/// Parse a geocoding JSON body into a list of candidate locations.
 pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
     let raw: GeocodeResponse =
         serde_json::from_str(body).map_err(|e| format!("geocode decode: {e}"))?;
@@ -308,12 +279,9 @@ pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
         .collect())
 }
 
-/// The places worth offering for `query`, in the provider's order.
-///
-/// Open-Meteo also matches a place's other names, so "Amsterdam" brings back
-/// a town now called "eMvelo"; when some results carry the query in their
-/// own name, the others are dropped. Places that would read the same in the
-/// list ("Amsterdam, Ohio, United States" twice) are shown once.
+/// The places worth offering, in the provider's order: Open-Meteo also matches
+/// a place's other names ("Amsterdam" brings back a town now called "eMvelo"),
+/// and results that would read the same show once.
 #[must_use]
 pub fn refine_geocode(query: &str, results: Vec<SavedLocation>) -> Vec<SavedLocation> {
     let needle = query.trim().to_lowercase();
@@ -380,7 +348,6 @@ mod tests {
                 "New Amsterdam, Indiana"
             ]
         );
-        // A query in another language matches no own name: keep them all.
         let munich = vec![place("Munich", "Bavaria", "Germany", 48.1)];
         assert_eq!(refine_geocode("München", munich).len(), 1);
     }
@@ -391,9 +358,8 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn open_meteo_responses_parse_forecast_air_quality_and_geocode() {
-        // Case `parse_forecast_slices_24_hours_from_current`.
         {
-            // 26-hour hourly array; current time is hour index 2.
+            // A 26-hour hourly array; the current time is hour index 2.
             let mut times = Vec::new();
             for h in 0..26 {
                 times.push(format!("2026-06-30T{h:02}:00"));

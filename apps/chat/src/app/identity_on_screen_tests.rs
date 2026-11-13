@@ -353,3 +353,104 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
         app.display_name("ada-root")
     );
 }
+
+/// An agent is a collaborator like a person: its answer reads by the name the workspace's own
+/// record of its agents keeps for it — whether or not its device works here — and the conversation
+/// with it is named for it. Never by a placeholder that spells part of its routing id.
+#[test]
+fn an_agents_answer_reads_by_the_workspaces_agent_record() {
+    let mut doc = crate::testing::Workspace::default();
+    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    let mut app = ChatApp::new_ephemeral();
+    app.attach_workspace(&doc);
+    // The workspace's record of its agents names it; presence never saw it.
+    app.workspace_agent_names
+        .insert("notes".to_owned(), "Notes".to_owned());
+    app.reload(&doc);
+    let conversation = crate::record::Chat::direct_id([
+        crate::record::Participant::person(crate::model::ME),
+        crate::record::Participant::agent("notes"),
+    ]);
+    let replied = crate::testing::say(
+        &mut doc,
+        "agent:notes",
+        conversation.as_str(),
+        "Here it is.",
+    );
+    app.reload(&doc);
+
+    let answer = doc.message_row(&replied).expect("the agent's answer");
+    assert_eq!(app.display_name("agent:notes"), "Notes");
+    assert_eq!(app.user_name("agent:notes"), "Notes (agent)");
+    assert_eq!(app.message_author_name(&answer), "Notes (agent)");
+    assert!(
+        matches!(
+            app.message_author(&answer, "Notes (agent)", "", None),
+            ui::author::Author::Agent {
+                for_person: None,
+                ..
+            }
+        ),
+        "an agent's answer is drawn as an agent, not as a person"
+    );
+    assert!(
+        !app.is_provider_output(&answer),
+        "an agent's own answer is the agent's, not a model's output"
+    );
+
+    // The conversation reads by its name, as the bar and the card's header name it.
+    let read = crate::projection::read(&doc);
+    assert_eq!(
+        read.display_names(
+            &conversation,
+            Some(crate::model::ME),
+            &app.workspace_agent_names
+        ),
+        "Notes"
+    );
+
+    // An agent wears the colour its own record gives it, whatever presence announced.
+    app.workspace_agent_colours.insert("notes".to_owned(), 3);
+    app.workspace_colors
+        .insert("agent:notes".to_owned(), (255, 0, 0));
+    assert_eq!(
+        app.participant_hue("agent:notes"),
+        ui::tokens::PresenceHue::from_slot(3)
+    );
+
+    // The sidebar lists the conversation once, by the agent's name and wearing its own face in
+    // the colour it wears everywhere in the workspace.
+    app.show_sidebar();
+    let (sections, _) = app.places.shown().expect("the sidebar is shown");
+    let rows: Vec<_> = sections
+        .last()
+        .expect("the direct messages")
+        .items
+        .iter()
+        .filter(|item| item.label == "Notes")
+        .collect();
+    assert_eq!(rows.len(), 1, "one row for the one conversation");
+    let face = rows[0]
+        .person
+        .as_ref()
+        .expect("the row wears the agent's face");
+    assert!(face.agent, "an agent's face, never a person's");
+    assert_eq!(face.identity, "agent:notes");
+    assert_eq!(face.colour, Some(app.identity_colour("agent:notes")));
+
+    // Open, the conversation's bar leads with the same face.
+    app.active_channel = conversation.to_string();
+    let (_, bar) = app.location_lead();
+    let bar = bar.expect("the bar wears the agent's face");
+    assert!(bar.agent);
+    assert_eq!(
+        (bar.name.as_str(), bar.identity.as_str()),
+        ("Notes", "agent:notes")
+    );
+
+    // An agent the record names not is never shown a part of its routing id either.
+    assert_eq!(
+        app.user_name("agent:stranger"),
+        crate::identity::unnamed_label("agent:stranger")
+    );
+}

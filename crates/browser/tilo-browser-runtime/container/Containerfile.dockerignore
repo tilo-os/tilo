@@ -3,3 +3,4 @@
 !Caddyfile
 !entrypoint.sh
 !install.sh
+!compress.sh

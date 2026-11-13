@@ -5,8 +5,8 @@
 use vello::kurbo::Vec2;
 
 use super::{
-    COMFORTABLE_LOCATION_PX, CONTROL_GAP, CONTROL_PX, FieldFace, LOCATION_ICON_PX, MIN_LOCATION_PX,
-    Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
+    COMFORTABLE_LOCATION_PX, CONTROL_GAP, CONTROL_PX, FieldFace, Icon, LOCATION_ICON_PX,
+    MIN_LOCATION_PX, Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,8 +60,8 @@ pub(crate) struct Slots {
     /// The widths the actions' words need, whether or not the row shows them
     /// (`0.0`: the action has no words).
     pub action_words: Vec<f64>,
-    /// The room the location leaves empty in the row, beside its label: room a
-    /// label of the row's actions could stand in.
+    /// The room the location leaves empty in the row, beside its label and above
+    /// the least it needs: room a label of the row's actions could stand in.
     pub spare: f64,
     /// The overflow button (`Rect::ZERO`: every action is in the row).
     pub overflow: Rect,
@@ -114,6 +114,9 @@ pub(crate) struct LocationForms {
     /// Each of the notice's buttons as a text button (none: the notice up
     /// has none, or it is not measured).
     pub actions: Vec<f64>,
+    /// The word that follows the label ([`super::trailing_word`]): its width and the gap before
+    /// it, where there is one.
+    pub trailing: Option<(f64, f64)>,
 }
 
 impl LocationForms {
@@ -214,23 +217,30 @@ pub(super) struct Measured {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MeasureKey {
     pub(super) labels: Vec<String>,
-    /// Each leading action's name where it is labelled, else empty.
-    pub(super) leading: Vec<String>,
-    /// Each action's name where it is labelled, else empty.
-    pub(super) actions: Vec<String>,
+    /// Each leading action's name where it is labelled, else empty, and whether it is the
+    /// app's primary one: the face it is drawn with decides how wide its button is.
+    pub(super) leading: Vec<(String, bool)>,
+    /// Each action's name where it is labelled, else empty, and whether it is the app's
+    /// primary one.
+    pub(super) actions: Vec<(String, bool)>,
     pub(super) forms: Vec<String>,
     pub(super) editable: bool,
     pub(super) picker: bool,
-    pub(super) icon: bool,
+    pub(super) lead: LocationLead,
     /// The notice's buttons' names.
     pub(super) notice: Vec<String>,
+    /// The word that follows the label: "Edited", "View only".
+    pub(super) trailing: Option<String>,
     pub(super) text_scale: u32,
 }
 
 /// What stands beside the label's text in the location at rest
 /// ([`paint_location`]): a picker's face and chevron where it chooses
 /// among places, a field's frame where it is edited, its icon.
-pub(super) fn location_chrome((editable, picker, icon): (bool, bool, bool), theme: &Theme) -> f64 {
+pub(super) fn location_chrome(
+    (editable, picker, lead): (bool, bool, LocationLead),
+    theme: &Theme,
+) -> f64 {
     if picker {
         return picker_width(0.0, theme);
     }
@@ -239,10 +249,32 @@ pub(super) fn location_chrome((editable, picker, icon): (bool, bool, bool), them
         let rect = Rect::new(0.0, 0.0, COMFORTABLE_LOCATION_PX, CONTROL_PX);
         chrome += rect.width() - FieldFace::new(rect, "").text_rect(theme).width();
     }
-    if icon {
-        chrome += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
-    }
+    chrome += match lead {
+        LocationLead::None => return chrome,
+        LocationLead::Icon => LOCATION_ICON_PX,
+        LocationLead::Avatar => crate::widget::AvatarSize::Small.side(theme),
+    } + f64::from(theme.tokens.spacing.s2);
     chrome
+}
+
+/// What leads a location's label: nothing, its icon, or the face of who it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LocationLead {
+    None,
+    Icon,
+    Avatar,
+}
+
+impl LocationLead {
+    pub(super) fn of(location: &crate::window_toolbar::ToolbarLocation) -> Self {
+        if location.avatar.is_some() {
+            Self::Avatar
+        } else if location.icon.as_deref().and_then(Icon::from_name).is_some() {
+            Self::Icon
+        } else {
+            Self::None
+        }
+    }
 }
 
 /// Where the views stand in one layout of the row.
@@ -265,6 +297,18 @@ pub(super) fn folded_views(measured: ViewsMeasure) -> ViewsPlace {
     measured
         .location
         .map_or(ViewsPlace::Menu(measured.menu), ViewsPlace::InLocation)
+}
+
+/// The actions a row never gives up: those up to and including the window's main one
+/// ([`crate::window_toolbar::ToolbarAction::primary`]), and none where it declares none.
+fn main_action_floor(toolbar: &WindowToolbar, row_actions: usize) -> usize {
+    toolbar
+        .actions
+        .iter()
+        .take_while(|action| !action.menu)
+        .position(|action| action.primary)
+        .map_or(0, |index| index + 1)
+        .min(row_actions)
 }
 
 /// Whether `toolbar`'s location can be the views' picker: a plain label,
@@ -343,7 +387,9 @@ impl Slots {
     /// location narrower than [`MIN_LOCATION_PX`], the rest goes into the
     /// overflow menu in [`Slots::yielding`]'s order, so the location stays
     /// in the row, elided. One action never goes into the menu alone: the
-    /// menu's button would take its place and hide it.
+    /// menu's button would take its place and hide it. The window's main
+    /// action ([`crate::window_toolbar::ToolbarAction::primary`]) stays in
+    /// the row at every width, its icon alone where the words do not fit.
     ///
     /// The location shows the widest form of its label that stands whole
     /// beside the navigation, with everything that yields before it in the
@@ -406,18 +452,145 @@ impl Slots {
         } else {
             icons
         };
-        slots.form = form;
+        // The room this layout leaves empty beside its location: what a word of an action could
+        // stand in ([`Self::spare`], before the notice takes its own).
+        let spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
+        // The actions that say what they do say it where the row leaves room for their words
+        // beside its location, the first actions first, even while the rest keep their glyph
+        // alone: a glyph with the room to be read is a glyph nobody can name.
+        if !slots.actions_labelled {
+            let mut extra = 0.0;
+            let mut kept = vec![0.0; action_labels.len()];
+            for (index, action) in toolbar.actions.iter().enumerate() {
+                if !action.labelled {
+                    continue;
+                }
+                let Some(words) = action_labels
+                    .get(index)
+                    .copied()
+                    .filter(|words| *words > CONTROL_PX)
+                else {
+                    continue;
+                };
+                let needed = words - CONTROL_PX;
+                if extra + needed <= spare {
+                    extra += needed;
+                    if let Some(slot) = kept.get_mut(index) {
+                        *slot = words;
+                    }
+                }
+            }
+            if extra > 0.0 {
+                let labelled = Self::arranged(toolbar, row, views, shown, (&[], &kept));
+                if labelled.folds_as(&slots) {
+                    slots = labelled;
+                }
+            }
+        }
+        // The window's main action says what it does where the row leaves room for its words
+        // beside its location: a glyph with the room to be read is a glyph nobody can name.
+        if !slots.labelled
+            && let Some(index) = toolbar.leading.iter().position(|action| action.primary)
+            && let Some(words) = labels
+                .get(index)
+                .copied()
+                .filter(|words| *words > CONTROL_PX)
+            && spare + CONTROL_PX >= words
+        {
+            let mut kept = vec![0.0; labels.len()];
+            if let Some(slot) = kept.get_mut(index) {
+                *slot = words;
+            }
+            let labelled = Self::arranged(toolbar, row, views, shown, (&kept, &[]));
+            if labelled.folds_as(&slots) {
+                slots = labelled;
+            }
+        }
+        // A row short of room for the words keeps the window's main action and puts the rest
+        // behind its door, rather than standing glyphs nobody can name with room beside them.
+        let floor = main_action_floor(
+            toolbar,
+            toolbar
+                .row_actions()
+                .min(crate::window_toolbar::MAX_ACTIONS),
+        );
+        if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
+            // The main action keeps its words where the row leaves room for them once the rest
+            // are behind the door: a glyph with room to say what it does is a glyph nobody can
+            // name. Every other action goes behind the door unnamed, as before.
+            let main = floor.saturating_sub(1);
+            let mut below =
+                Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
+            let words = action_labels.get(main).copied().unwrap_or(0.0);
+            if words > CONTROL_PX && spare + CONTROL_PX >= words {
+                let labels: Vec<f64> = action_labels
+                    .iter()
+                    .enumerate()
+                    .map(|(index, width)| if index == main { *width } else { 0.0 })
+                    .collect();
+                below =
+                    Self::arranged_below(toolbar, row, views, shown, (&[], &labels), floor, false);
+            }
+            slots = below;
+        }
+        slots.settle(form, labels, action_labels, notice, forms);
+        // The room the location leaves empty beside its own label is where its actions say what
+        // they do: the bar stands their words there rather than glyphs nobody can name.
+        let extra: f64 = action_labels
+            .iter()
+            .take(slots.actions.len())
+            .map(|words| (words - CONTROL_PX).max(0.0))
+            .sum();
+        if !slots.actions_labelled
+            && extra > 0.0
+            && extra <= slots.spare
+            && !slots.views_in_location()
+        {
+            // The words take the room out of the location's end, so whatever stands between it and
+            // the actions moves along, and the actions grow from their own trailing edge.
+            let moved = |rect: Rect| Rect::new(rect.x0 - extra, rect.y0, rect.x1 - extra, rect.y1);
+            let mut x1 = slots.actions.iter().map(|rect| rect.x1).fold(0.0, f64::max);
+            for (rect, words) in slots.actions.iter_mut().zip(action_labels).rev() {
+                *rect = Rect::new(x1 - CONTROL_PX.max(*words), rect.y0, x1, rect.y1);
+                x1 = rect.x0 - CONTROL_GAP;
+            }
+            for rect in &mut slots.views {
+                *rect = moved(*rect);
+            }
+            if slots.views_menu.area() > 0.0 {
+                slots.views_menu = moved(slots.views_menu);
+            }
+            slots.location.x1 -= extra;
+            slots.actions_labelled = true;
+            let notice = forms.notice(toolbar, room);
+            slots.settle(form, labels, action_labels, notice, forms);
+        }
+        slots
+    }
+
+    /// What a layout of the row carries whatever stood in it: the form the location shows, the
+    /// words its slots ask for, the notice in the location, and the room its label leaves empty.
+    fn settle(
+        &mut self,
+        form: usize,
+        labels: &[f64],
+        action_labels: &[f64],
+        notice: Option<NoticeFit>,
+        forms: &LocationForms,
+    ) {
+        self.form = form;
         // What the actions' words need, whether or not this layout shows them: a row that had
         // room for a label and showed its icon instead is what a check reports.
-        slots.leading_words = labels.to_vec();
-        slots.action_words = action_labels.to_vec();
+        self.leading_words = labels.to_vec();
+        self.action_words = action_labels.to_vec();
         if let Some(notice) = notice {
-            slots.place_notice(notice, forms.width(form) + forms.chrome);
+            self.place_notice(notice, forms.width(form) + forms.chrome);
         }
-        // The room the location leaves empty beside its label, once the notice has its own: what
-        // a label of the actions could stand in.
-        slots.spare = (slots.location.width() - (forms.width(form) + forms.chrome)).max(0.0);
-        slots
+        // The room the location leaves empty beside its label, once the notice has its own, and
+        // above the least it needs: what a label of the actions could stand in.
+        self.spare =
+            (self.location.width() - (forms.width(form) + forms.chrome) - super::MIN_LOCATION_PX)
+                .max(0.0);
     }
 
     /// Put the notice's buttons in order right after its text, `text` wide
@@ -490,8 +663,24 @@ impl Slots {
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
+        shown: (f64, f64, bool),
+        labels: (&[f64], &[f64]),
+    ) -> Self {
+        Self::arranged_below(toolbar, row, views, shown, labels, usize::MAX, true)
+    }
+
+    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar short of room for
+    /// the words keeps the window's main action and puts the rest behind its door. A row that
+    /// folds down to one action keeps it (`keep_alone`) unless its words are what it cannot
+    /// show: then the menu's row says what its glyph cannot.
+    pub(super) fn arranged_below(
+        toolbar: &WindowToolbar,
+        row: Rect,
+        views: ViewsSize,
         (form_w, least, shortened): (f64, f64, bool),
         (labels, action_labels): (&[f64], &[f64]),
+        most: usize,
+        keep_alone: bool,
     ) -> Self {
         let row_actions = toolbar
             .row_actions()
@@ -513,7 +702,8 @@ impl Slots {
         // A menu holding one action alone saves no width: its button takes
         // the action's place and hides it.
         let lone = |inline: usize, place: ViewsPlace| {
-            row_actions - inline == 1
+            keep_alone
+                && row_actions - inline == 1
                 && toolbar.actions.len() == row_actions
                 && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
         };
@@ -525,8 +715,11 @@ impl Slots {
         if shortened {
             all.plain = 0;
         }
+        // The window's main action stands in the row wherever the bar is drawn
+        // ([`crate::window_toolbar::ToolbarAction::primary`]).
+        let floor = main_action_floor(toolbar, row_actions);
         for &place in &places {
-            let mut inline = row_actions;
+            let mut inline = row_actions.min(most).max(floor).min(row_actions);
             loop {
                 let slots = Self::with_inline(
                     toolbar,
@@ -545,7 +738,7 @@ impl Slots {
                 if room && placed && !lone(inline, place) {
                     return slots;
                 }
-                if inline == 0 {
+                if inline <= floor {
                     break;
                 }
                 inline -= 1;
@@ -553,12 +746,18 @@ impl Slots {
         }
         let mut last = Self::default();
         for (kept, place) in Self::yielding(all, measured) {
-            let inline =
-                if kept.plain == all.plain && kept.navigating == all.navigating && lone(0, place) {
-                    row_actions
-                } else {
-                    0
-                };
+            let kept = Kept {
+                inline: kept.inline.max(floor),
+                ..kept
+            };
+            let inline = if kept.plain == all.plain
+                && kept.navigating == all.navigating
+                && lone(kept.inline, place)
+            {
+                row_actions
+            } else {
+                kept.inline
+            };
             let slots = Self::with_inline(
                 toolbar,
                 row,
@@ -750,6 +949,30 @@ impl Slots {
             .chain((self.views_menu.area() > 0.0).then_some(&self.views_menu))
             .chain((self.overflow.area() > 0.0).then_some(&self.overflow))
             .all(|rect| rect.x0 >= lead)
+    }
+
+    /// Whether the slots could not keep the room they need across `row`: a button standing on
+    /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
+    /// shorter forms cut short in the one it shows. Where the bar itself took that room (its
+    /// strip's "+" ahead of the row), it asks before it keeps it.
+    pub(super) fn crowded(
+        &self,
+        toolbar: Option<&WindowToolbar>,
+        row: Rect,
+        forms: Option<&LocationForms>,
+    ) -> bool {
+        let declared = toolbar.is_some_and(|toolbar| toolbar.location.is_some());
+        if declared && self.location.area() <= 0.0 {
+            return true;
+        }
+        // A location with shorter forms names itself in one that stands whole: where the room it
+        // got cuts even that one short, the row is short of room.
+        let cut = declared
+            && forms.is_some_and(|forms| {
+                forms.text.len() > 1
+                    && self.location.width() < forms.width(self.form) + forms.chrome
+            });
+        cut || !self.fits(row)
     }
 
     /// Whether the location is the views' picker.

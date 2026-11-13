@@ -600,6 +600,12 @@ impl<S: RichTextSource + 'static> Composer<S> {
         self.host.widget_mut().take_outcome()
     }
 
+    /// The text menu the editor opened on its words, as assistive technology
+    /// reads it where it is drawn.
+    pub fn text_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.host.widget().text_menu_accessibility()
+    }
+
     /// Bring the editor up to date with the document.
     pub fn sync(&mut self, doc: &AutoCommit) {
         self.host.sync(doc, &automerge::ROOT);
@@ -625,6 +631,22 @@ impl<S: RichTextSource + 'static> Composer<S> {
     ) -> bool {
         self.host.sync(doc, path);
         let done = Widget::perform_action(self.host.widget_mut(), action, &[], doc, path);
+        self.host.sync(doc, path);
+        done
+    }
+
+    /// An accessibility action an editor row names (a text menu's row,
+    /// activated where it is drawn).
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.host.sync(doc, path);
+        let done =
+            Widget::perform_semantic_action(self.host.widget_mut(), target, action, doc, path);
         self.host.sync(doc, path);
         done
     }

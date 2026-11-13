@@ -236,8 +236,10 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         semantic_key,
         action_target,
         name,
+        name_found,
         description,
         value,
+        value_length,
         text_selection,
         state,
         live,
@@ -250,13 +252,16 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         interface_name: _,
         role_description,
         item,
+        action,
     } = a;
     *role == b.role
         && *semantic_key == b.semantic_key
         && *action_target == b.action_target
         && *name == b.name
+        && *name_found == b.name_found
         && *description == b.description
         && *value == b.value
+        && *value_length == b.value_length
         && *text_selection == b.text_selection
         && *state == b.state
         && *live == b.live
@@ -267,6 +272,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         && *bounds == b.bounds
         && *role_description == b.role_description
         && *item == b.item
+        && *action == b.action
 }
 
 /// Whether two widget nodes say the same apart from their semantics and

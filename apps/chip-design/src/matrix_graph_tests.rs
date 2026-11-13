@@ -211,7 +211,7 @@ fn inspector_input_invokes_the_same_matrix_edit_and_system_undo() {
     app.harness().resize((1600, 1400)).unwrap();
     app.settle();
     let expected =
-        ui::i18n::I18nManager::format("chip-tensor-shape", &[("shape", "[8192, 2048]".into())]);
+        crate::view::CATALOG.t_args("chip-tensor-shape", &[("shape", "[8192, 2048]".into())]);
     assert!(
         app.harness()
             .inspection_json()

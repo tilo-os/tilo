@@ -180,6 +180,12 @@ pub enum Envelope {
         /// Number of pending deltas queued for this peer that the
         /// relay is about to flush.
         pending_deltas: u32,
+        /// The workspace sends this peer its records only when it opens
+        /// them ([`Self::OpenRecord`]), as a public workspace does: the
+        /// replay carried its governance and shared desktop, and a record
+        /// the peer holds from before, or does not hold at all, is asked
+        /// for when it is opened, never taken as complete or as new.
+        records_when_opened: bool,
     },
 
     /// The relay's response to a subscribe that failed — e.g.
@@ -489,7 +495,10 @@ pub enum Envelope {
     /// workspace, which asked the workspace for it. Routed like
     /// [`Envelope::RemoteAction`] — to the addressed device's live
     /// connection, never stored, never fanned out — but never answered:
-    /// content that does not arrive is asked for again.
+    /// content that does not arrive is asked for again. A shared window's
+    /// control message (a viewer's ask, its input, a keyframe request) takes
+    /// the same route to a device no direct connection reaches, such as a
+    /// hosted environment's.
     RecordContent {
         /// Workspace id both devices are subscribed to.
         workspace_id: u64,
@@ -596,23 +605,19 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// A device asks the host it is joined to who is here in a workspace: the
-    /// postcard-encoded [`HereRequest`], answered through [`Self::HereReply`]
-    /// with the asker's `request_id`. The connection says who asks; the host
-    /// checks that device's place in the workspace as it does for any other
-    /// frame.
-    ///
-    /// [`HereRequest`]: crate::web::HereRequest
-    HereRequest {
+    /// Retired: a device asked the host it is joined to who is here, and the
+    /// host answered ([`Self::RetiredHereReply`]). Who is here is the live
+    /// plane alone now; nothing sends it, and it stays only so every later
+    /// variant keeps its postcard position.
+    RetiredHereRequest {
         request_id: u64,
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
 
-    /// The host's answer to [`Self::HereRequest`] with the same `request_id`:
-    /// the postcard-encoded `Result<`[`HereReply`](crate::web::HereReply)`,`
-    /// `String>` — a host that cannot answer says why.
-    HereReply {
+    /// Retired: the host's answer to [`Self::RetiredHereRequest`]. Nothing
+    /// sends it; it keeps its postcard position.
+    RetiredHereReply {
         request_id: u64,
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
@@ -629,6 +634,55 @@ pub enum Envelope {
         /// What names this connection to the host.
         token: [u8; 32],
     },
+
+    /// A device says this session is one run of the agent `label` names (as
+    /// History names its runs), answered through [`Self::AgentRunAnswer`]
+    /// with the asker's `request_id`. Said before anything else: every
+    /// request the session makes from then on is the agent's, for the person,
+    /// within what bounds an agent, and the person's agent door lists the run
+    /// while the session lasts.
+    AgentRun { request_id: u64, label: String },
+
+    /// The host's answer to [`Self::AgentRun`] with the same `request_id`:
+    /// `None` once the session is that agent's run, else why not.
+    AgentRunAnswer {
+        request_id: u64,
+        refusal: Option<String>,
+    },
+
+    /// The host's word that the person stopped the agent run this session is
+    /// ([`Self::AgentRun`]), said just before the host ends it: the device
+    /// does not connect again, so the agent and its presence end here.
+    AgentRunStopped,
+
+    /// The host's answer to the entry the session's hello asked for
+    /// ([`crate::entering`]): the first envelope of that session, before
+    /// anything else it is sent.
+    Entered(crate::entering::Entered),
+
+    /// The host's own word for a run it executes
+    /// ([`crate::host_voice::HostSaid`]): sent by the host's device to the
+    /// relay that is the host, which fans it out to the workspace's other
+    /// subscribers only when its own device said it. A device takes it only
+    /// when `signature` is its host's over `said`. It never rides the live
+    /// plane, whose keys a host that is no member of it does not hold.
+    HostSaid {
+        workspace_id: u64,
+        /// The canonical [`crate::host_voice::HostSaid`] encoding.
+        #[serde(with = "serde_bytes")]
+        said: Vec<u8>,
+        /// The host device's signature over `said`.
+        #[serde(with = "serde_bytes")]
+        signature: [u8; 64],
+    },
+
+    /// This session's device only follows the channel groups it is in: it
+    /// never admits another device to one, as a page does. The host then
+    /// sends it no device's request to be admitted, which only a device that
+    /// admits others acts on; a newcomer to a workspace of hundreds would
+    /// download one per member. Said once, before the session subscribes,
+    /// and it stays for the session.
+    ChannelReader,
 }
 
 impl Envelope {
@@ -681,9 +735,15 @@ impl Envelope {
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::WorkspacesRequest { .. } => "WorkspacesRequest",
             Self::WorkspacesReply { .. } => "WorkspacesReply",
-            Self::HereRequest { .. } => "HereRequest",
-            Self::HereReply { .. } => "HereReply",
+            Self::RetiredHereRequest { .. } => "HereRequest",
+            Self::RetiredHereReply { .. } => "HereReply",
             Self::FetchGrant { .. } => "FetchGrant",
+            Self::AgentRun { .. } => "AgentRun",
+            Self::AgentRunAnswer { .. } => "AgentRunAnswer",
+            Self::AgentRunStopped => "AgentRunStopped",
+            Self::Entered(_) => "Entered",
+            Self::HostSaid { .. } => "HostSaid",
+            Self::ChannelReader => "ChannelReader",
         }
     }
 
@@ -730,19 +790,28 @@ impl Envelope {
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
-            | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
+            | Self::RecordContentWant { workspace_id, .. }
+            | Self::HostSaid { workspace_id, .. } => Some(*workspace_id),
             Self::Ping
             | Self::Pong
             | Self::PeerRelayHello { .. }
             | Self::HostAction { .. }
             | Self::WorkspacesRequest { .. }
             | Self::WorkspacesReply { .. }
-            | Self::HereRequest { .. }
-            | Self::HereReply { .. }
+            | Self::RetiredHereRequest { .. }
+            | Self::RetiredHereReply { .. }
+            | Self::AgentRun { .. }
+            | Self::AgentRunAnswer { .. }
+            | Self::AgentRunStopped
+            | Self::Entered(_)
+            | Self::ChannelReader
             | Self::FetchGrant { .. } => None,
         }
     }
 }
+
+/// Bound, in characters, of the agent name an [`Envelope::AgentRun`] carries.
+pub const MAX_AGENT_LABEL_CHARS: usize = 32;
 
 /// Largest [`Envelope::RecordContent`] frame a relay routes.
 pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;
@@ -774,8 +843,9 @@ mod tests {
                 Envelope::Ready {
                     workspace_id: 7,
                     pending_deltas: 2,
+                    records_when_opened: true,
                 },
-                vec![4, 7, 2],
+                vec![4, 7, 2, 1],
             ),
             (
                 Envelope::NotAuthorised {

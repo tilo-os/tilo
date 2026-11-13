@@ -1,19 +1,7 @@
 //! The pre-built system view exposes exactly what per-path binds did.
 //!
-//! A view replaces ~40 per-path `--ro-bind-try` operations with a few binds
-//! of a tree assembled once (`launcher::sandbox_view`). That is only
-//! acceptable if the app cannot tell, so this test does not compare argvs: it
-//! starts real sandboxes both ways and lists, from inside, every path the app
-//! can see with its type, mode, owner and read-only flag, for representative
-//! launches. The listings must be identical except for the directories
-//! bubblewrap creates as parents of the binds (`/usr`, `/etc`, ...): per path
-//! they sit in bubblewrap's writable root tmpfs, in the view they are `0755`
-//! and read-only — the app can still read and traverse them and can no
-//! longer create entries in them. Anything else differing fails.
-//!
-//! Building a view needs mount privilege, so the comparison runs in a user
-//! namespace of its own (`unshare`), where it builds the view with the same
-//! code the root service runs.
+//! A view replaces ~40 per-path `--ro-bind-try` operations with a few binds of a tree
+//! assembled once (`launcher::sandbox_view`).
 
 #![allow(
     clippy::unwrap_used,
@@ -45,8 +33,8 @@ const LISTER: &str = "/tilo-view-lister";
 fn the_view_exposes_exactly_what_per_path_binds_did() {
     let exe = std::env::current_exe().unwrap();
     let mut unshare = Command::new("unshare");
-    // Root (a CI container) already holds mount privilege; anyone else
-    // takes it in a user namespace of their own.
+    // Root (a CI container) already holds mount privilege; anyone else takes it in a user namespace of
+    // their own.
     if !rustix::process::geteuid().is_root() {
         unshare.args(["--user", "--map-root-user"]);
     }
@@ -96,9 +84,9 @@ fn compare_inside_a_user_namespace() {
         std::fs::create_dir_all(grants.join(dir)).unwrap();
     }
 
-    // A graphical app on a runtime bundle, no network: the runtime's
-    // loader is bound before the profile (and hidden by it), a GPU-style
-    // narrowing bind lands inside a profile directory after it.
+    // A graphical app on a runtime bundle, no network: the runtime's loader is bound before the
+    // profile (and hidden by it), a GPU-style narrowing bind lands inside a profile directory after
+    // it.
     let mut inside = Vec::new();
     if let Some(file) = a_file_inside_the_profile() {
         inside.extend(["--ro-bind".to_string(), file.clone(), file]);
@@ -113,8 +101,8 @@ fn compare_inside_a_user_namespace() {
         variant: Variant::Plain,
     });
 
-    // Unrestricted network and the user's files: the network view, the
-    // resolver files fresh per launch, grants with a private store masked.
+    // Unrestricted network and the user's files: the network view, the resolver files fresh per
+    // launch, grants with a private store masked.
     compare(&Launch {
         view: &view,
         manifest: manifest("host"),
@@ -131,8 +119,7 @@ fn compare_inside_a_user_namespace() {
         variant: Variant::Net,
     });
 
-    // The control panel's host binaries: a path the view does not have. The
-    // launch keeps its per-path binds, untouched.
+    // The control panel's host binaries: a path the view does not have.
     let mut argv = argv_for(&Launch {
         view: &view,
         manifest: manifest("off"),
@@ -198,8 +185,8 @@ fn walk(path: &Path, depth: usize, lines: &mut Vec<String>) {
     if !kind.is_dir() {
         return;
     }
-    // A process's own /proc differs per run; /sys is the same live bind both
-    // ways and only its top level is listed.
+    // A process's own /proc differs per run; /sys is the same live bind both ways and only its top
+    // level is listed.
     if path == Path::new("/proc") || (path.starts_with("/sys") && depth >= 2) {
         return;
     }
@@ -368,9 +355,8 @@ fn compare(launch: &Launch<'_>) {
     );
 }
 
-/// The directories bubblewrap creates as parents of the profile's binds:
-/// ancestors of each present entry (and launch file) that no present entry
-/// contains.
+/// The directories bubblewrap creates as parents of the profile's binds: ancestors of each present
+/// entry (and launch file) that no present entry contains.
 fn skeleton(variant: Variant) -> BTreeSet<String> {
     let present: Vec<&str> = view_read_paths()
         .filter(|path| Path::new(path).exists())

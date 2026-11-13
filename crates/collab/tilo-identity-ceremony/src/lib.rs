@@ -4,7 +4,7 @@
 //! directly.
 
 use std::sync::{Arc, Mutex};
-use tilo_clock::SystemTime;
+use tilo_clock::time::SystemTime;
 
 use collab_types::Ed25519PublicKey;
 use serde::{Deserialize, Serialize};
@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey as DalekSigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
-    use tilo_clock::Duration;
+    use tilo_clock::time::Duration;
 
     #[test]
     fn identity_record_serialization_and_signing_round_trips() {

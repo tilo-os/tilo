@@ -1,5 +1,4 @@
 //! Encoded size refusal caps, checked before anything is cloned or written.
-use serde::Serialize;
 use std::io::{self, Write};
 
 /// One workspace's record in the owner's file, pretty-printed.
@@ -38,9 +37,27 @@ impl<W: Write> Write for LimitedWriter<W> {
         self.inner.flush()
     }
 }
+/// Check that a workspace's record pretty-prints to at most `limit` bytes.
+/// Its replica is written as base64, whose length follows from the
+/// replica's; encoding the replica only to count it made every write cost
+/// the record's whole history.
+///
 /// # Errors
-/// `value` pretty-prints to more than `limit` bytes.
-pub fn preflight<T: Serialize>(value: &T, limit: usize) -> io::Result<()> {
-    serde_json::to_writer_pretty(LimitedWriter::new(io::sink(), limit), value)
-        .map_err(io::Error::other)
+/// `stored` pretty-prints to more than `limit` bytes.
+pub(crate) fn preflight_record(
+    stored: &super::record::StoredWorkspace,
+    limit: usize,
+) -> io::Result<()> {
+    let peer = stored.peer.len().div_ceil(3).saturating_mul(4);
+    let rest = limit
+        .checked_sub(peer)
+        .ok_or_else(|| io::Error::other("native encoded state refusal cap exceeded"))?;
+    let fields = super::record::StoredWorkspace {
+        peer: super::record::DurablePeer::default(),
+        ..stored.clone()
+    };
+    let mut writer = LimitedWriter::new(io::sink(), rest);
+    serde_json::to_writer_pretty(&mut writer, &fields).map_err(io::Error::other)?;
+    crate::write_work::read(rest.saturating_sub(writer.remaining));
+    Ok(())
 }

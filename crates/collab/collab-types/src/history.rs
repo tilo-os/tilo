@@ -54,6 +54,43 @@ pub struct RosterAgent {
     pub color: [u8; 3],
 }
 
+/// What an application installed on this device is called, in each language
+/// its package names it in: what a window reads a change of another app as
+/// ("Heute"), never as the words its id makes. The session sends these with
+/// the names of the workspace's people, and each window reads the name its
+/// own language gives.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NamedApp {
+    /// The app's package id (`so.tilo.lang.today`).
+    pub id: String,
+    /// The name its package gives itself.
+    pub name: String,
+    /// The name in other languages, by BCP 47 tag.
+    pub names: std::collections::BTreeMap<String, String>,
+}
+
+impl NamedApp {
+    /// What the app is called in `locale`: [`localized_name`], else the name its package gives
+    /// itself.
+    #[must_use]
+    pub fn name_in(&self, locale: &str) -> &str {
+        localized_name(&self.names, locale).unwrap_or(self.name.as_str())
+    }
+}
+
+/// The name `names` (a package's `[package.names]`, by language tag) gives in `locale`: the
+/// name of its exact tag, else of its language, else of another region of its language — the
+/// one rule for which tag a reader gets ([`tilo_paths::matching`]), so a package named `de-DE`
+/// reads as `Aufgaben` on a German machine whatever its locale is spelled like.
+#[must_use]
+pub fn localized_name<'a>(
+    names: &'a std::collections::BTreeMap<String, String>,
+    locale: &str,
+) -> Option<&'a str> {
+    let position = tilo_paths::matching(locale, names.keys().map(String::as_str))?;
+    names.values().nth(position).map(String::as_str)
+}
+
 /// Collect up to `max` ops of `artifact` with `seq < before_seq`: the newest
 /// such window, in ascending `seq` order, plus whether nothing older remains.
 /// The page semantics every history host shares.

@@ -214,10 +214,62 @@ pub async fn link_bridge(
     if let Some(entry) = &served.web_entry {
         env.push(("DISCORD_LINK_URL".to_owned(), entry.clone()));
     }
+    env.extend(api_env(served.discord_api_base.as_deref()));
     Ok(env)
 }
 
-/// What the workspace's host serves publicly that the bridge's posts point at.
+/// Discord's own API origin: the worker reaches it with no setting at all.
+const DISCORD: &str = "https://discord.com";
+
+/// The worker settings that point the bridge at the Discord API `base` names,
+/// `base` being the host's `--discord-api-base` — an origin such as
+/// `http://127.0.0.1:8090`, the shape the sign-in appends `/api/v10` to. The
+/// REST base under that origin and the CDN beside it, and, for an origin on
+/// this machine, the override that lets the worker reach loopback at all (a
+/// fake Discord). `None`, and Discord's own origin, give nothing: the worker's
+/// own defaults.
+#[must_use]
+pub fn api_env(base: Option<&str>) -> Vec<(String, String)> {
+    let Some(base) = base.map(str::trim).filter(|base| !base.is_empty()) else {
+        return Vec::new();
+    };
+    let base = base.trim_end_matches('/');
+    if base == DISCORD {
+        return Vec::new();
+    }
+    let mut env = vec![
+        ("DISCORD_API_BASE".to_owned(), format!("{base}/api/v10")),
+        ("DISCORD_CDN_BASE".to_owned(), format!("{base}/cdn")),
+    ];
+    if loopback(base) {
+        env.push(("DISCORD_ALLOW_LOOPBACK".to_owned(), "1".to_owned()));
+    }
+    env
+}
+
+/// Whether the origin `base` names this machine.
+fn loopback(base: &str) -> bool {
+    use std::net::IpAddr;
+    let authority = base
+        .split_once("://")
+        .map_or(base, |(_, authority)| authority);
+    let authority = authority.split('/').next().unwrap_or_default();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host.strip_prefix('[') {
+        Some(address) => address.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    host == "localhost"
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// What the bridge's worker is told about the host it runs beside: the public
+/// URLs its posts point at, and the Discord API the deployment named where it
+/// is not Discord's own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Served {
     /// The public URL of the avatars the bridge publishes.
@@ -227,6 +279,11 @@ pub struct Served {
     pub web_entry: Option<String>,
     /// The host's browser origin.
     pub origin: Option<String>,
+    /// The `--discord-api-base` origin the host was given, when the
+    /// deployment points the workspace at another Discord than Discord's own
+    /// (a fake one in a test stack), so the bridge's worker reaches the same
+    /// one the host's sign-in does.
+    pub discord_api_base: Option<String>,
 }
 
 impl Served {
@@ -287,6 +344,7 @@ mod tests {
             avatars_url: Some("https://rooms.example/avatars".into()),
             web_entry: Some("https://tilo.example/".into()),
             origin: Some("https://host.example:9764".into()),
+            ..Served::default()
         };
         assert_eq!(
             served.context("lounge", &cert),
@@ -311,6 +369,37 @@ mod tests {
                 .get("links")
                 .is_none()
         );
+    }
+
+    /// A deployment that names another Discord hands the bridge's worker the
+    /// REST and CDN bases under that origin — the values a fake Discord prints
+    /// — and lets it reach loopback only when the origin is this machine.
+    #[test]
+    fn a_named_api_base_points_the_bridge_worker_at_it() {
+        let env = |base: Option<&str>| -> BTreeMap<String, String> {
+            api_env(base).into_iter().collect()
+        };
+        assert!(env(None).is_empty(), "production reaches Discord's own API");
+        assert!(env(Some("")).is_empty());
+        assert!(env(Some("https://discord.com")).is_empty());
+        assert!(env(Some("https://discord.com/")).is_empty());
+        assert_eq!(
+            env(Some("http://127.0.0.1:8090")),
+            inputs(&[
+                ("DISCORD_API_BASE", "http://127.0.0.1:8090/api/v10"),
+                ("DISCORD_CDN_BASE", "http://127.0.0.1:8090/cdn"),
+                ("DISCORD_ALLOW_LOOPBACK", "1"),
+            ])
+        );
+        assert_eq!(
+            env(Some("http://127.0.0.1:8090/")),
+            env(Some("http://127.0.0.1:8090"))
+        );
+        let loopback = |base: &str| env(Some(base)).contains_key("DISCORD_ALLOW_LOOPBACK");
+        assert!(loopback("http://localhost:8090"));
+        assert!(loopback("http://[::1]:8090"));
+        assert!(!loopback("https://discord.test"));
+        assert!(!loopback("http://10.0.0.5:8090"));
     }
 
     #[test]

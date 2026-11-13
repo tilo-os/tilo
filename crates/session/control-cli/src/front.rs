@@ -833,6 +833,31 @@ pub fn run(
     )
 }
 
+/// Do the desktop's own action `id` of `provider` with `args`, called `title` where the answer
+/// names it: a verb `tilo` spells itself (`tilo workspace branch`), which needs no listing to
+/// find. Prints what it answers, as [`run`] does.
+pub fn run_address(
+    doors: &[Door],
+    (provider, id, title): (&str, &str, &str),
+    args: &serde_json::Value,
+    spelling: &Spelling,
+    io: &mut Io<'_>,
+) -> u8 {
+    let mut desktop = match connect(doors) {
+        Ok(desktop) => desktop,
+        Err(failure) => return report(&failure, spelling, io),
+    };
+    let action = Action {
+        provider: provider.to_owned(),
+        id: id.to_owned(),
+        kind: String::new(),
+        title: title.to_owned(),
+        subtitle: None,
+        params: Vec::new(),
+    };
+    invoke(&mut desktop, &action, args, spelling, io)
+}
+
 fn invoke(
     desktop: &mut Desktop,
     action: &Action,

@@ -46,7 +46,16 @@ pub(super) struct Missed {
     /// be, its sequence behind the author's. Forgotten once it is applied
     /// or refused, never to make workspace: forgetting it would let a later
     /// write overtake it.
-    behind: std::collections::BTreeMap<(Route, [u8; 32]), u64>,
+    behind: std::collections::BTreeMap<(Route, [u8; 32]), LetGo>,
+}
+
+/// An author's earliest write to a record that was let go unapplied.
+#[derive(Clone, Copy)]
+struct LetGo {
+    sequence: u64,
+    /// Written in the clear: part of the base the record's seal waits behind
+    /// ([`StatePeer::holds_cleartext_of`]). A sealed write let go is no base.
+    cleartext: bool,
 }
 
 impl Missed {
@@ -57,8 +66,13 @@ impl Missed {
 
 /// A held message decided again when its place was needed.
 enum Decided {
-    Admitted(Vec<DocumentAdmission>),
+    Admitted(Vec<DocumentAdmission>, Vec<crate::Released>),
     LetGo(DroppedInput),
+}
+
+/// Whether `message` is a record write in the clear.
+fn in_the_clear(message: &NeighbourMsg) -> bool {
+    matches!(message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_none())
 }
 
 fn dropped_input(
@@ -106,12 +120,20 @@ impl StatePeer {
             now,
         } = held;
         let bytes = crate::postcard_sink::encoded_len(&message, usize::MAX).map_err(err)?;
-        let deferred = |dropped| {
+        // A write held for the changes or the checkpoint its record builds on
+        // waits for history: its sender holds it, and is asked for it. Held
+        // already, it was asked for when it first came.
+        let lacks_history = matches!(
+            prerequisite,
+            MissingPrerequisite::CausalDependencies | MissingPrerequisite::RecordCheckpoint
+        );
+        let deferred = |dropped, lacks_history| {
             AdmissionReport::new(
                 InputDisposition::RetryLater(prerequisite.clone()),
                 ReceiveOutcome {
                     deferred: true,
                     dropped,
+                    lacks_history,
                     ..Default::default()
                 },
             )
@@ -119,7 +141,7 @@ impl StatePeer {
         if self.core.pending.iter().any(|(key, prior, replayed)| {
             key == &source && *prior == message && *replayed == retained_replay
         }) {
-            return Ok(deferred(Vec::new()));
+            return Ok(deferred(Vec::new(), false));
         }
         let full = |held: usize, held_bytes: usize| {
             held >= MAX_HELD_INPUTS || held_bytes.saturating_add(bytes) > MAX_HELD_BYTES
@@ -138,13 +160,14 @@ impl StatePeer {
                 Some(prerequisite.clone()),
                 DropReason::TooLarge,
             );
-            self.remember_missed(&input);
-            let mut report = deferred(vec![input]);
+            self.remember_missed(&input, in_the_clear(&message));
+            let mut report = deferred(vec![input], lacks_history);
             report.summary.deferred = false;
             return Ok(report);
         }
         let mut dropped = Vec::new();
         let mut settled = Vec::new();
+        let mut released = Vec::new();
         while full(self.core.pending.len(), self.core.pending_bytes) {
             let Some((author, oldest, replayed)) = self.core.pending.pop_front() else {
                 break;
@@ -152,9 +175,12 @@ impl StatePeer {
             let size = crate::postcard_sink::encoded_len(&oldest, usize::MAX).map_err(err)?;
             self.core.pending_bytes = self.core.pending_bytes.saturating_sub(size);
             match self.decide_held(author, &oldest, replayed, now) {
-                Decided::Admitted(admitted) => settled.extend(admitted),
+                Decided::Admitted(admitted, taken) => {
+                    settled.extend(admitted);
+                    released.extend(taken);
+                }
                 Decided::LetGo(input) => {
-                    self.remember_missed(&input);
+                    self.remember_missed(&input, in_the_clear(&oldest));
                     dropped.push(input);
                 }
             }
@@ -163,9 +189,50 @@ impl StatePeer {
         self.core
             .pending
             .push_back((source, message, retained_replay));
-        let mut report = deferred(dropped);
+        let mut report = deferred(dropped, lacks_history);
         report.settled.extend(settled);
+        report.released = released;
         Ok(report)
+    }
+    /// Decide every held message again now that the input `into` reports on
+    /// landed: what each takes in is added to `into`, released writes
+    /// included, and one that still waits is held again.
+    pub(super) fn retry_held(
+        &mut self,
+        into: &mut AdmissionReport,
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<(), AdmissionError> {
+        let pending = std::mem::take(&mut self.core.pending);
+        self.core.pending_bytes = 0;
+        for (author, message, replayed) in pending {
+            let held = message.clone();
+            match self.receive_with_context(author, message, now, replayed, strict_report) {
+                Ok(applied) => {
+                    if let InputDisposition::RetryLater(waiting_for) = &applied.primary {
+                        into.still_held.push(crate::admission::StillHeld {
+                            message: held.clone(),
+                            waiting_for: waiting_for.clone(),
+                        });
+                    }
+                    into.changed |= applied.changed;
+                    into.metadata_changed |= applied.metadata_changed;
+                    into.rejected = into.rejected.saturating_add(applied.rejected);
+                    into.released
+                        .extend(applied.taken_in(author, held, replayed));
+                    into.settled.extend(applied.settled);
+                    into.summary.dropped.extend(applied.summary.dropped);
+                }
+                Err(error) => {
+                    if self.core.native_cut_publisher.is_some() {
+                        return Err(error);
+                    }
+                    into.rejected = into.rejected.saturating_add(1);
+                }
+            }
+        }
+        into.deferred = !self.core.pending.is_empty();
+        Ok(())
     }
     /// Decide the held `message` again on a copy of this peer, holding
     /// nothing else: admitted there, the copy becomes this peer, keeping what
@@ -193,7 +260,8 @@ impl StatePeer {
                 probe.core.pending = std::mem::take(&mut self.core.pending);
                 probe.core.pending_bytes = self.core.pending_bytes;
                 *self = probe;
-                Decided::Admitted(report.settled)
+                let released = report.taken_in(author, message.clone(), replayed);
+                Decided::Admitted(report.settled, released)
             }
             Err(error) => Decided::LetGo(dropped_input(
                 &author,
@@ -203,8 +271,41 @@ impl StatePeer {
             )),
         }
     }
-    /// Note what `input`, let go unapplied, waited for.
-    pub(super) fn remember_missed(&mut self, input: &DroppedInput) {
+    /// Whether a cleartext write of `route` waits here: held for what it
+    /// builds on, or let go and not applied since. A write sealing the record
+    /// waits behind it ([`MissingPrerequisite::CausalDependencies`]).
+    pub(super) fn holds_cleartext_of(&self, route: &Route) -> bool {
+        let held = self.core.pending.iter().any(|(_, message, _)| {
+            matches!(message, NeighbourMsg::AppDocument { app_id, record_id, envelope, .. }
+                if *app_id == route.app && *record_id == route.record && envelope.encryption.is_none())
+        });
+        held || self
+            .missed
+            .behind
+            .iter()
+            .any(|((behind, author), earlier)| {
+                behind == route
+                    && earlier.cleartext
+                    && !self.applied(route, *author, earlier.sequence)
+            })
+    }
+    /// Whether `author`'s write `sequence` to `route` is applied here.
+    fn applied(&self, route: &Route, author: [u8; 32], sequence: u64) -> bool {
+        self.core
+            .documents
+            .get(route)
+            .and_then(|document| {
+                document
+                    .channel
+                    .last_seq_per_author
+                    .get(&collab_types::Ed25519PublicKey::from_bytes(author))
+                    .copied()
+            })
+            .is_some_and(|last| last >= sequence)
+    }
+    /// Note what `input`, let go unapplied, waited for; `cleartext` when it
+    /// was written in the clear.
+    pub(super) fn remember_missed(&mut self, input: &DroppedInput, cleartext: bool) {
         if matches!(input.reason, DropReason::Refused(_)) {
             // Decided, not waiting: refused as any delivery of it would be.
             return;
@@ -214,11 +315,19 @@ impl StatePeer {
             record: input.record.clone(),
         };
         if !input.app.is_empty() {
+            let let_go = LetGo {
+                sequence: input.sequence,
+                cleartext,
+            };
             self.missed
                 .behind
                 .entry((route.clone(), input.author))
-                .and_modify(|sequence| *sequence = (*sequence).min(input.sequence))
-                .or_insert(input.sequence);
+                .and_modify(|earliest| {
+                    if let_go.sequence < earliest.sequence {
+                        *earliest = let_go;
+                    }
+                })
+                .or_insert(let_go);
         }
         match input.waiting_for {
             Some(MissingPrerequisite::Certificate) => {
@@ -258,20 +367,8 @@ impl StatePeer {
         sequence: u64,
     ) -> Option<u64> {
         let key = (route.clone(), author);
-        let earlier = *self.missed.behind.get(&key)?;
-        let applied = self
-            .core
-            .documents
-            .get(route)
-            .and_then(|document| {
-                document
-                    .channel
-                    .last_seq_per_author
-                    .get(&collab_types::Ed25519PublicKey::from_bytes(author))
-                    .copied()
-            })
-            .is_some_and(|last| last >= earlier);
-        if applied {
+        let earlier = self.missed.behind.get(&key)?.sequence;
+        if self.applied(route, author, earlier) {
             self.missed.behind.remove(&key);
             return None;
         }
@@ -284,7 +381,7 @@ impl StatePeer {
             return;
         };
         let key = (route.clone(), author);
-        if self.missed.behind.get(&key) == Some(sequence) {
+        if self.missed.behind.get(&key).map(|let_go| let_go.sequence) == Some(*sequence) {
             self.missed.behind.remove(&key);
         }
     }

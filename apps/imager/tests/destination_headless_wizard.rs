@@ -1,14 +1,11 @@
-//! The installer on the live medium, hosted as the imager app hosts it: its
-//! effects reached through the app's own door, with the availability, the
-//! items they are bound to and the confirmation they ask for. The console
-//! and the wizard's controls reach the same handler (the surface's own
-//! tests walk the whole wizard through both).
-
 #![allow(
     clippy::unwrap_used,
     clippy::indexing_slicing,
     reason = "test assertions"
 )]
+
+//! The installer on the live medium, hosted as the imager app hosts it: its effects
+//! through the app's door.
 
 use imager::ImagerShell;
 use imager::setup::destination::effects::DestinationEffect;
@@ -26,7 +23,6 @@ fn the_installer_answers_its_effects_through_the_app_door() {
     let mut app = TestApp::<ImagerShell>::launched(&["--destination"]).unwrap();
     assert_eq!(status(&mut app)["step"], "keyboard");
 
-    // A control that is not on screen is not available either, and says why.
     let off_step = app.effect(&DestinationEffect::SetHostname {
         hostname: "lab-1".into(),
     });
@@ -41,7 +37,6 @@ fn the_installer_answers_its_effects_through_the_app_door() {
     app.effect(&DestinationEffect::Next).unwrap();
     assert_eq!(status(&mut app)["step"], "accounts");
 
-    // Online accounts can be skipped without any private input.
     app.effect(&DestinationEffect::ContinueOffline).unwrap();
     assert_eq!(status(&mut app)["step"], "disk");
     assert!(
@@ -49,7 +44,6 @@ fn the_installer_answers_its_effects_through_the_app_door() {
         "the accounts step is behind the installer now"
     );
 
-    // A disk is chosen on the disk itself, as the console names it.
     let disk = status(&mut app)["storage"]["disks"][1]["device"]
         .as_str()
         .unwrap()

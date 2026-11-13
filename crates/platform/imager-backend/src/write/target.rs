@@ -1,5 +1,4 @@
 //! Native target identity, exclusive custody and platform preparation.
-/// Bind an already-open block descriptor to the freshly reviewed device node.
 #[cfg(target_os = "linux")]
 pub fn attest_target_descriptor(target: &TargetDrive, file: &std::fs::File) -> io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -34,8 +33,7 @@ use std::process::{Command, Stdio};
 use std::{fs::OpenOptions, path::Path};
 use std::{io, time::Duration};
 
-/// # Errors
-/// Rejects failed inventory probes, missing targets, or changed identity, size, model, removability or system-disk status.
+/// Rejects missing targets or changed identity, size, model, removability or system-disk status.
 pub fn revalidate_target(selected: &TargetDrive) -> io::Result<()> {
     let current = crate::probe::probe()
         .and_then(|drives| drives.into_iter().find(|drive| drive.name == selected.name))
@@ -136,10 +134,8 @@ pub fn prepare_target(_target: &TargetDrive) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn finish_target(target: &TargetDrive, result: &JobResult) {
-    // Keep a failed target attached so the user can retry without physically
-    // reconnecting it. It remains unmounted from `prepare_target`, which is
-    // also the safe state for another raw-write attempt. Successful media is
-    // ejected so it can be removed immediately.
+    // Keep a failed target attached so the user can retry without reconnecting it; it stays
+    // unmounted, which is also safe for another raw-write attempt. Successful media is ejected.
     if macos_should_eject(result) {
         let mut command = Command::new("diskutil");
         command.args(["eject", &format!("/dev/{}", target.name)]);
@@ -154,8 +150,8 @@ pub fn macos_should_eject(result: &JobResult) -> bool {
 
 #[cfg(target_os = "windows")]
 pub fn finish_target(target: &TargetDrive, _result: &JobResult) {
-    // Set-Disk took the device offline before opening its raw handle. Always
-    // restore it, including after a failed attempt, so it remains usable.
+    // Set-Disk took the device offline before opening its raw handle, so always restore it, even
+    // after a failed attempt.
     if let Some(number) = target.name.strip_prefix("PhysicalDrive") {
         let script =
             format!("Set-Disk -Number {number} -IsOffline $false -ErrorAction SilentlyContinue");
@@ -188,19 +184,13 @@ pub fn run_finite_status(
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
 
-/// Whether this platform can let go of a written drive on request, so the
-/// window can offer it instead of only saying the drive may be pulled out.
 #[must_use]
 pub fn can_eject() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
-/// Eject the written drive: flush it and take it out of the system, so it can
-/// be removed without pulling a medium the kernel still holds.
-///
-/// # Errors
-/// Returns the platform's own refusal (no udisks service, the drive already
-/// gone, an operator who declined the privilege).
+/// Flushes and takes the drive out of the system, so it can be removed without pulling a medium the
+/// kernel still holds. Returns the platform's own refusal.
 #[cfg(any(test, feature = "test-support", target_os = "macos"))]
 pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
     let mut command = Command::new("diskutil");
@@ -212,17 +202,10 @@ pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("diskutil could not eject the drive"))
 }
 
-/// Eject the written drive, on the service that manages removable media.
-///
-/// # Errors
-/// Returns the platform's own refusal (no udisks service, the drive already
-/// gone, an operator who declined the privilege).
 #[cfg(all(not(test), not(feature = "test-support"), target_os = "linux"))]
 pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
-    // `power-off` flushes, unmounts and powers the device down: the state in
-    // which a USB stick or a card can be taken out. It is the same service
-    // the write itself went through (`udisks`), so a person who allowed the
-    // write is not asked twice.
+    // `power-off` flushes, unmounts and powers the device down, through the same service the write
+    // went through, so a person who allowed the write is not asked twice.
     let mut command = Command::new("udisksctl");
     command.args([
         "power-off",
@@ -236,8 +219,7 @@ pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("udisks could not power the drive off"))
 }
 
-/// Eject the written drive, where this platform cannot do it: there is
-/// nothing to run, and [`can_eject`] said so.
+/// Where the platform cannot do it: there is nothing to run, and [`can_eject`] said so.
 #[cfg(not(any(
     test,
     feature = "test-support",
@@ -250,10 +232,9 @@ pub fn eject_target(_target: &TargetDrive) -> io::Result<()> {
     ))
 }
 
-/// A stable hardware identity is the rendezvous key shared by separately
-/// elevated helpers, falling back to the canonical device path when probing
-/// cannot provide one. The helper owns the lock, so the kernel releases it if
-/// either the UI or helper crashes.
+/// The rendezvous key shared by separately elevated helpers, falling back to the device path when
+/// probing cannot provide one. The helper owns the lock, so the kernel releases it if either side
+/// crashes.
 pub fn target_lock_name(target: &TargetDrive) -> String {
     let identity = target
         .stable_id
@@ -289,8 +270,7 @@ pub fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
     })
 }
 
-/// Keep the existing privileged writer lock through reviewed mounted output.
-/// This grants no raw descriptor or filesystem authority to its callback.
+/// Grants no raw descriptor or filesystem authority to its callback.
 #[cfg(target_os = "linux")]
 pub fn with_locked_media_root<T>(
     target: &TargetDrive,
@@ -305,8 +285,7 @@ pub fn with_locked_media_root<T>(
     callback()
 }
 
-/// # Errors
-/// Rejects unsafe lock-directory ownership/permissions and propagates native directory, file-open and exclusive-lock failures.
+/// Rejects unsafe lock-directory ownership or permissions.
 #[cfg(unix)]
 pub fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

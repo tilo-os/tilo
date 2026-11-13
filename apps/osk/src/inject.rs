@@ -46,11 +46,7 @@
 
 use std::fmt::Write as _;
 
-/// A sink for committed keyboard input. Implementors push text / key actions
-/// into the focused surface (real backend) or record them (test backend).
 pub trait TextInjector {
-    /// Inject a literal string, character by character. Equivalent to typing
-    /// each grapheme; the backend is responsible for newlines, spaces, etc.
     fn commit_text(&mut self, text: &str);
 
     /// Press each symbol in order.
@@ -65,31 +61,23 @@ pub trait TextInjector {
     /// before a request on another connection that must land after them.
     fn sync(&mut self) {}
 
-    /// Short, stable identifier for the active backend (`"virtual-keyboard-v1"`
-    /// or `"null"`). Used in logs and tests.
     fn backend_name(&self) -> &'static str;
 }
 
-/// One injectable symbol: either a literal Unicode scalar (most keys) or one of
-/// the named special editing keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Symbol {
-    /// A printable Unicode character (letters, digits, punctuation, emoji).
     Unicode(char),
     BackSpace,
     Return,
     Space,
     Tab,
-    /// Move the caret one character left (the space-bar cursor drag).
     Left,
-    /// Move the caret one character right.
     Right,
     Up,
     Down,
     Escape,
 }
 
-/// The modifiers held with a key: those a terminal reads in a chord.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Modifiers {
     pub ctrl: bool,
@@ -107,16 +95,11 @@ impl Modifiers {
         self == Self::NONE
     }
 
-    /// The `wl_keyboard.modifiers` depressed mask: XKB's core modifiers,
-    /// whose indices every keymap shares (Control is 2, Mod1, which Alt
-    /// sets, is 3).
     #[must_use]
     pub fn xkb_mask(self) -> u32 {
         (u32::from(self.ctrl) << 2) | (u32::from(self.alt) << 3)
     }
 
-    /// The modifiers as a chord prefix (`Control+Alt+`), for logs and the
-    /// recording injector.
     #[must_use]
     pub fn prefix(self) -> String {
         let mut prefix = String::new();
@@ -130,7 +113,6 @@ impl Modifiers {
     }
 }
 
-/// One key pressed with the modifiers held for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Keypress {
     pub symbol: Symbol,
@@ -147,15 +129,6 @@ impl From<Symbol> for Keypress {
 }
 
 impl Symbol {
-    /// Map one source character to a [`Symbol`]. `'\n'`/`'\r'` → [`Return`],
-    /// `'\t'` → [`Tab`], `' '` → [`Space`], `'\u{8}'` (BS) → [`BackSpace`];
-    /// everything else is a literal [`Unicode`].
-    ///
-    /// [`Return`]: Symbol::Return
-    /// [`Tab`]: Symbol::Tab
-    /// [`Space`]: Symbol::Space
-    /// [`BackSpace`]: Symbol::BackSpace
-    /// [`Unicode`]: Symbol::Unicode
     pub fn from_char(c: char) -> Self {
         match c {
             '\n' | '\r' => Symbol::Return,
@@ -166,12 +139,6 @@ impl Symbol {
         }
     }
 
-    /// The XKB keysym name for this symbol, as it appears on the right-hand
-    /// side of a `key <CODE> { [ NAME ] };` line in a generated keymap.
-    ///
-    /// Printable characters use the Unicode keysym form `UXXXX` (uppercase hex,
-    /// at least 4 digits) understood by libxkbcommon and X11; the specials use
-    /// their canonical keysym names.
     pub fn keysym_name(self) -> String {
         match self {
             Symbol::BackSpace => "BackSpace".to_string(),
@@ -222,8 +189,6 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
 
     // --- keycodes: name every code we use; <I N> = code N. ---
     keymap.push_str("xkb_keycodes \"tilo-osk\" {\n");
-    // `write!` into a `String` is infallible; the `Result` is intentionally
-    // discarded rather than `unwrap()`-ed.
     let _ = writeln!(keymap, "minimum = {KEYCODE_BASE};");
     let _ = writeln!(keymap, "maximum = {};", max_code.max(KEYCODE_BASE));
     for (_, code) in &assigned {
@@ -247,11 +212,8 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
     (keymap, assigned)
 }
 
-/// XKB keycode base: evdev keycodes are offset by 8 in the X11/XKB world, so
-/// the first usable code is 8. We start our synthetic codes here.
 pub const KEYCODE_BASE: u32 = 8;
 
-/// Convert the generated XKB keycode to the evdev value carried by Wayland.
 fn wire_keycode(xkb_keycode: u32) -> u32 {
     xkb_keycode.saturating_sub(KEYCODE_BASE)
 }
@@ -260,7 +222,6 @@ fn wire_keycode(xkb_keycode: u32) -> u32 {
 /// and headless runs. Never touches Wayland.
 #[derive(Default, Debug)]
 pub struct NullInjector {
-    /// Strings passed to [`commit_text`](TextInjector::commit_text).
     pub committed: Vec<String>,
     /// Keysym names passed to [`send`](TextInjector::send), in order.
     pub keys: Vec<String>,
@@ -327,7 +288,6 @@ mod wayland {
 
     use super::{Keypress, Symbol, TextInjector, build_keymap};
 
-    /// `wl_keyboard.key_state` value for a press / release.
     const KEY_PRESSED: u32 = 1;
     const KEY_RELEASED: u32 = 0;
     /// `wl_keyboard.keymap_format` XKB-v1 text format (this protocol declares
@@ -335,23 +295,17 @@ mod wayland {
     #[cfg(not(target_os = "macos"))]
     const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 
-    /// Injects text into the focused surface via a synthetic virtual keyboard.
-    ///
-    /// Holds its own Wayland connection + event queue, independent of winit's.
     pub struct VirtualKeyboardInjector {
         conn: Connection,
         queue: wayland_client::EventQueue<State>,
         state: State,
         keyboard: ZwpVirtualKeyboardV1,
-        /// Monotonic millisecond clock for `key` event timestamps.
         time: u32,
         /// Keysyms currently described by the keyboard's active keymap, so we
         /// only re-upload a keymap when a new symbol appears.
         current_keymap: Vec<(Symbol, u32)>,
     }
 
-    /// Dispatch sink. We don't react to any events (no keymap/modifier
-    /// round-trips are required to *send* keys), so this stays empty.
     struct State;
 
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -418,10 +372,7 @@ mod wayland {
             let (globals, mut queue) = registry_queue_init::<State>(&conn).ok()?;
             let qh = queue.handle();
 
-            // The manager is the protocol that may be missing — its absence is
-            // the expected "degrade to null" path.
             let manager: ZwpVirtualKeyboardManagerV1 = globals.bind(&qh, 1..=1, ()).ok()?;
-            // A seat is required to create the keyboard.
             let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=8, ()).ok()?;
 
             let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
@@ -462,8 +413,6 @@ mod wayland {
                 .collect()
         }
 
-        /// Write `keymap_str` to an anonymous, sealed-ish memfd and hand it to
-        /// the compositor via `keymap(xkb_v1, fd, size)`.
         #[cfg(target_os = "macos")]
         #[allow(
             clippy::unused_self,
@@ -478,8 +427,6 @@ mod wayland {
             use std::io::{Seek, SeekFrom, Write};
 
             let name = c"tilo-osk-keymap";
-            // SAFETY: `memfd_create` with a valid C string and a documented
-            // flag set; the returned fd is owned by `File` below.
             let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
             if raw < 0 {
                 return None;
@@ -500,14 +447,9 @@ mod wayland {
             let size = (bytes.len() + 1) as u32;
             self.keyboard
                 .keymap(KEYMAP_FORMAT_XKB_V1, file.as_fd(), size);
-            // `file` (and its fd) is dropped here; the compositor has already
-            // dup'd it during the request marshalling.
             self.flush()
         }
 
-        /// Press then release a single XKB keycode with the `mods` depressed
-        /// mask held, then clear it. Each keysym is encoded directly, so text
-        /// needs no shift; a chord holds Control or Mod1 like a real keyboard.
         fn tap(&mut self, keycode: u32, mods: u32) {
             let keycode = super::wire_keycode(keycode);
             self.keyboard.modifiers(mods, 0, 0, 0);
@@ -520,16 +462,12 @@ mod wayland {
             }
         }
 
-        /// Flush queued requests to the compositor.
         fn flush(&self) -> Option<()> {
             self.queue.flush().ok()?;
-            // A blocking dispatch isn't needed to *send*; a flush suffices.
             let _ = self.conn;
             Some(())
         }
 
-        /// Inject an ordered list of symbols: (re)upload a keymap covering them,
-        /// then tap each in turn and flush.
         fn inject_symbols(&mut self, symbols: &[Symbol]) {
             if symbols.is_empty() {
                 return;
@@ -603,11 +541,8 @@ mod tests {
 
         eprintln!("phase keysym_names_are_correct");
         {
-            // ASCII 'A' = U+0041.
             assert_eq!(Symbol::Unicode('A').keysym_name(), "U0041");
-            // lowercase 'a' = U+0061.
             assert_eq!(Symbol::Unicode('a').keysym_name(), "U0061");
-            // Euro sign U+20AC — five hex digits round to the natural width.
             assert_eq!(Symbol::Unicode('€').keysym_name(), "U20AC");
             assert_eq!(Symbol::Unicode('😀').keysym_name(), "U1F600");
             assert_eq!(Symbol::BackSpace.keysym_name(), "BackSpace");
@@ -636,13 +571,10 @@ mod tests {
             assert!(keymap.contains("xkb_symbols"));
             assert!(keymap.contains("include \"complete\""));
 
-            // Codes start at the evdev+8 base and increment per distinct symbol.
             assert_eq!(assigned.len(), 5);
             assert_eq!(assigned[0].1, KEYCODE_BASE);
             assert_eq!(assigned[4].1, KEYCODE_BASE + 4);
 
-            // Each symbol gets a keycode declaration and a symbols line with the
-            // right keysym name.
             assert!(keymap.contains(&format!("<I{KEYCODE_BASE}> = {KEYCODE_BASE}")));
             assert!(keymap.contains(&format!("key <I{KEYCODE_BASE}> {{ [ U0068 ] }}")));
             assert!(keymap.contains(&format!("key <I{}> {{ [ U0069 ] }}", KEYCODE_BASE + 1)));
@@ -661,12 +593,10 @@ mod tests {
 
         eprintln!("phase build_keymap_handles_empty_input");
         {
-            // No symbols → still a well-formed, compilable keymap (no key lines).
             let (keymap, assigned) = build_keymap(&[]);
             assert!(assigned.is_empty());
             assert!(keymap.contains("xkb_keycodes"));
             assert!(keymap.contains("xkb_symbols"));
-            // Range is well-formed even with nothing declared.
             assert!(keymap.contains(&format!("minimum = {KEYCODE_BASE};")));
             assert!(keymap.contains(&format!("maximum = {KEYCODE_BASE};")));
         }
@@ -709,10 +639,6 @@ mod tests {
                 assert_eq!(syms.len(), 1, "one keysym per synthetic key ({sym:?})");
                 let got = xkb::keysym_get_name(syms[0]);
                 let want = sym.keysym_name();
-                // libxkbcommon canonicalises Unicode keysyms to their named form
-                // when one exists (e.g. U0061 → "a", U0020 wouldn't appear since we
-                // use the named `space`). Accept either the requested name or the
-                // canonical character/name for that codepoint.
                 let ok = got == want
                     || matches!(sym, Symbol::Unicode(c) if got == c.to_string())
                     || matches!(sym, Symbol::Unicode(c)

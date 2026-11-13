@@ -1,7 +1,9 @@
-//! A row open into its item where it stands: which row the list holds open, and the height it
-//! grows through on the way to its document.
+//! A row open into its item where it stands: which row the list holds open, the height it
+//! grows through on the way to its document, and the name it keeps over it.
 
-use super::{ListModel, VirtualList};
+use super::{Element, ListModel, VirtualList, Widget};
+use crate::arriving::Arrival;
+use crate::widget::Decorator;
 
 /// How far a row's height may be from where it is going before it is drawn on its way there
 /// ([`VirtualList::grown_height`]), in logical pixels.
@@ -50,10 +52,46 @@ impl<M: ListModel> VirtualList<M> {
         self.invalidate_rows(changed);
     }
 
+    /// Hold the item `item` open where its row stands, as a host keeping which item is open asks
+    /// it to, or none. An item no row of the list shows closes the row standing open. An item
+    /// the rows cannot answer for yet — the app is reading them, or its row has not arrived, so
+    /// whether it opens where it stands is unknown — leaves the row standing open as it is, and
+    /// opens as its row arrives: a window that moves to another place to show an item names
+    /// the item before the place's rows are there.
+    pub fn hold_open(&mut self, item: Option<&str>) {
+        self.held_open = None;
+        let Some(item) = item else {
+            self.set_open(None);
+            return;
+        };
+        let index = self
+            .model
+            .key_presenting(item)
+            .and_then(|key| Some((self.model.index_of(&key)?, key)));
+        match index {
+            Some((index, key)) if matches!(self.model.row_state(index), Arrival::Ready(())) => {
+                self.set_open(Some(key));
+            }
+            Some(_) => self.held_open = Some(item.to_owned()),
+            None if self.model.len() > 0 && self.model.key_at(0).is_none() => {
+                self.held_open = Some(item.to_owned());
+            }
+            None => self.set_open(None),
+        }
+    }
+
+    /// The item held open waiting for its row ([`Self::hold_open`]), asked again as rows arrive.
+    pub(super) fn open_held(&mut self) {
+        if let Some(item) = self.held_open.take() {
+            self.hold_open(Some(&item));
+        }
+    }
+
     /// The person opened `key` where it stands, or closed it when it was the row standing open:
     /// the row grows into its document, and a host keeping which item is open hears it as
     /// [`VirtualList::on_opened`].
     pub(super) fn open_where_it_stands(&mut self, key: M::Key) {
+        self.held_open = None;
         let closing = self.open.as_ref() == Some(&key);
         self.set_open(if closing { None } else { Some(key) });
         self.report_open();
@@ -62,6 +100,7 @@ impl<M: ListModel> VirtualList<M> {
     /// The person closed the row standing open (Escape, or a press beside it), if one stands
     /// open. Whether it did.
     pub(super) fn close_open(&mut self) -> bool {
+        self.held_open = None;
         if self.open.is_none() {
             return false;
         }
@@ -151,4 +190,71 @@ impl<M: ListModel> VirtualList<M> {
             target
         }
     }
+}
+
+/// The row a list opened into its item where it stands: the item's document takes the row's
+/// place, so the words the document titles itself with stand once, and this carries them as the
+/// row's own name. A reader hears the item the row opened, and the list still shows one row
+/// where the person pressed, with the document under it.
+pub(crate) struct RowOpen {
+    inner: Element,
+    /// The row stands in a tree list, and is a tree item of it.
+    tree: bool,
+}
+
+impl RowOpen {
+    pub(crate) fn new(inner: Element, tree: bool) -> Self {
+        Self { inner, tree }
+    }
+}
+
+impl Decorator for RowOpen {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
+
+    fn name(&self) -> &'static str {
+        "RowOpen"
+    }
+
+    fn is_item_opened_in_place(&self) -> bool {
+        true
+    }
+
+    /// The row the document stands in for, named by the title the document itself states. A
+    /// document that says no title of its own is the row's own name already.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let document = self.inner.as_ref();
+        let name = first_page_title(document)
+            .or_else(|| document.accessibility().and_then(|node| node.name))?;
+        Some(
+            crate::a11y::AccessNode::new(if self.tree {
+                crate::a11y::Role::TreeItem
+            } else {
+                crate::a11y::Role::ListItem
+            })
+            .with_name(name)
+            .with_state(crate::a11y::AccessState::new().expanded(true)),
+        )
+    }
+}
+
+/// The title the document `widget` states: the words of the heading it writes, or of the field
+/// it opens with where the person types the title there, found through the whole it holds.
+pub(super) fn first_page_title(widget: &dyn Widget) -> Option<String> {
+    Widget::own_page_title(widget).or_else(|| {
+        let mut found = None;
+        widget.for_each_child(&mut |child| {
+            if found.is_none() {
+                found = first_page_title(child);
+            }
+        });
+        found
+    })
 }

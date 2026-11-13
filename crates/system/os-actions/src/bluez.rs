@@ -1,27 +1,8 @@
-//! Blocking Bluetooth operations over `BlueZ`'s D-Bus API.
-//!
-//! The rest of this crate shells out to command-line tools, which is the
-//! right shape for a one-shot setting like screen brightness. Bluetooth is
-//! the exception, for two reasons that are properties of `BlueZ` rather than
-//! preferences:
-//!
-//! - **A scan lives as long as its D-Bus connection.** `bluetoothctl scan on`
-//!   from a script stops scanning the moment the process exits, so a CLI
-//!   wrapper cannot hold a discovery session open while a pane is on screen.
-//! - **Pairing is a conversation.** `BlueZ` calls back into a registered agent
-//!   object mid-pairing and blocks until it answers. There is no command line
-//!   for "the daemon asks you a question".
-//!
-//! So this module talks to `org.bluez` directly, via `tilo-bluez`, and
-//! presents a blocking API for callers that are not async.
-//!
-//! # Who answers the passkey
-//!
-//! Not this crate, and not the Settings app. The pairing agent is registered
-//! by the compositor, because a pairing prompt authorises a device to inject
-//! input events and stream audio — precisely the kind of decision an
-//! application must not be able to draw. Calling [`pair`] from a settings
-//! pane starts the pairing; the prompt that results appears in OS chrome.
+//! Blocking Bluetooth operations over `BlueZ`'s D-Bus API: discovery, pairing, bonds. A
+//! one-shot setting can shell out, but a scan lives as long as its bus connection and
+//! pairing puts a passkey to the person, so these use the client.
+//! The pairing agent is the compositor's: approving a device may let it inject input,
+//! which an app must not decide.
 
 use std::fs;
 use std::path::Path;
@@ -31,10 +12,7 @@ use std::time::Duration;
 use tilo_bluez::BluezClient;
 pub use tilo_bluez::DeviceInfo;
 
-/// The shared client, and with it the connection whose lifetime a scan is
-/// bound to. It is kept once opened: a connection per call would end
-/// discovery, which `BlueZ` ties to the connection. The connection's tasks
-/// live on the process's app runtime, which outlives every call.
+/// The shared client and the connection a scan is bound to: a connection per call would end discovery.
 fn client() -> Result<&'static BluezClient, String> {
     static CLIENT: OnceLock<BluezClient> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
@@ -48,14 +26,8 @@ fn client() -> Result<&'static BluezClient, String> {
     Ok(CLIENT.get_or_init(|| client))
 }
 
-/// The process's one `BlueZ` client, for code that needs the connection
-/// itself rather than one of the blocking calls here. The compositor
-/// serves its pairing agent on it, so a pairing that quick settings or a
-/// handoff starts through this module is answered on the connection that
-/// asked, and the process never holds a second one.
-///
-/// Blocking; call it from a worker thread, never from the UI thread or
-/// inside an async task.
+/// The process's one client, for code that needs the connection itself: the compositor serves its
+/// pairing agent on it.
 pub fn shared_client() -> Result<BluezClient, String> {
     client().cloned()
 }
@@ -67,7 +39,6 @@ where
     crate::block_on(async { f.await.map_err(|e| tilo_bluez::error_text(&e)) })
 }
 
-/// Following `BlueZ` for [`follow_changes`]; it stops when this is dropped.
 #[derive(Debug)]
 pub struct BluetoothFollow {
     task: tilo_rt::JoinHandle<()>,
@@ -79,21 +50,11 @@ impl Drop for BluetoothFollow {
     }
 }
 
-/// Call `on_change` on the app runtime each time `BlueZ` reports a change a
-/// Bluetooth page shows ([`BluezClient::watch_changes`]): headphones that
-/// connect by themselves, a device paired from quick settings. It listens
-/// on a connection of its own, so following never waits for, or holds up,
-/// the shared client's calls. Nothing polls.
-///
-/// # Errors
-///
-/// When the app runtime cannot start. A system bus that cannot be reached
-/// is logged and followed no further.
+/// Calls `on_change` on the app runtime whenever `BlueZ` reports a change a Bluetooth page shows, such
+/// as headphones that connect by themselves.
 pub fn follow_changes(
     on_change: impl Fn() + Send + Sync + 'static,
 ) -> Result<BluetoothFollow, String> {
-    // Not generic past here: the runtime holds the follower, its D-Bus
-    // connection and its tasks once, rather than every app calling it.
     follow_changes_boxed(Box::new(on_change))
 }
 
@@ -117,9 +78,7 @@ fn follow_changes_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<Blueto
 
 const BLUETOOTH_CLASS: &str = "/sys/class/bluetooth";
 
-/// Whether this machine has a Bluetooth controller. Desktops without a
-/// dongle and most VMs do not; Quick Settings uses this to leave the tile
-/// out rather than show a toggle that talks to a missing adapter.
+/// Whether this machine has a controller: a desktop without a dongle, and most VMs, have none.
 pub fn has_adapter() -> bool {
     has_adapter_in(Path::new(BLUETOOTH_CLASS))
 }
@@ -133,7 +92,6 @@ fn has_adapter_in(root: &Path) -> bool {
         .any(|entry| entry.file_name().to_string_lossy().starts_with("hci"))
 }
 
-/// The adapter every operation here targets.
 pub fn adapter_path() -> Result<String, String> {
     let c = client()?;
     block(async { c.default_adapter().await })?
@@ -141,21 +99,17 @@ pub fn adapter_path() -> Result<String, String> {
         .ok_or_else(|| "no Bluetooth adapter on this machine".to_string())
 }
 
-/// Every device `BlueZ` knows about — paired or merely seen — newest signal
-/// first. Unlike the paired-only list, this is what a "nearby devices" view
-/// needs.
 pub fn devices() -> Result<Vec<DeviceInfo>, String> {
     let c = client()?;
     block(async { c.devices().await })
 }
 
-/// Only the devices that completed pairing.
 pub fn paired_devices() -> Result<Vec<DeviceInfo>, String> {
     let c = client()?;
     block(async { c.paired_devices().await })
 }
 
-/// Begin scanning. Runs until [`stop_scan`], or until the process exits.
+/// Runs until [`stop_scan`] or the process exits.
 pub fn start_scan() -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
@@ -174,10 +128,8 @@ pub fn is_scanning() -> Result<bool, String> {
     block(async { c.is_discovering(&adapter).await })
 }
 
-/// Scan for `window`, then stop and return what is in range.
-///
-/// The bounded form exists because an unbounded scan costs radio time on
-/// every device nearby, not just this one.
+/// Scans for `window`, then stops and returns what is in range: an unbounded scan costs radio time on
+/// every device nearby.
 pub fn scan_for(window: Duration) -> Result<Vec<DeviceInfo>, String> {
     start_scan()?;
     std::thread::sleep(window);
@@ -186,18 +138,14 @@ pub fn scan_for(window: Duration) -> Result<Vec<DeviceInfo>, String> {
     found
 }
 
-/// Pair, trust, then connect — what a user means by "pair this device".
-///
-/// Blocks for as long as the pairing takes, which includes however long the
-/// user spends comparing a passkey, so callers must not run this on a thread
-/// that is painting.
+/// Pairs, trusts and connects, which is what a person means by pairing. Blocks while they compare a
+/// passkey, so not on a thread that is painting.
 pub fn pair(device_path: &str) -> Result<tilo_bluez::PairOutcome, String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.pair_and_connect(&adapter, device_path).await })
 }
 
-/// Abort a pairing that is in flight.
 pub fn cancel_pairing(device_path: &str) -> Result<(), String> {
     let c = client()?;
     block(async { c.cancel_pairing(device_path).await })
@@ -213,8 +161,6 @@ pub fn disconnect(device_path: &str) -> Result<(), String> {
     block(async { c.disconnect_device(device_path).await })
 }
 
-/// Forget a device: drops the bond, the keys and the trust, so it must pair
-/// again from scratch.
 pub fn forget(device_path: &str) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
@@ -226,14 +172,12 @@ pub fn set_trusted(device_path: &str, trusted: bool) -> Result<(), String> {
     block(async { c.set_trusted(device_path, trusted).await })
 }
 
-/// Rename a device through `BlueZ`'s Device1.Alias property. No parallel local
-/// nickname store is maintained.
+/// Renames through `BlueZ`'s Device1.Alias; there is no local nickname store.
 pub fn set_alias(device_path: &str, alias: &str) -> Result<(), String> {
     let c = client()?;
     block(async { c.set_alias(device_path, alias).await })
 }
 
-/// Power the controller on or off.
 pub fn set_powered(on: bool) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
@@ -246,24 +190,16 @@ pub fn is_powered() -> Result<bool, String> {
     block(async { c.is_powered(&adapter).await })
 }
 
-/// Make this machine visible to others.
-///
-/// Deliberately not called anywhere by default. A permanently discoverable
-/// adapter is a standing invitation, and Tilo pairs by scanning *outward*
-/// rather than by advertising itself.
+/// Makes this machine visible to others. Nothing calls it by default: Tilo pairs by scanning outward.
 pub fn set_discoverable(on: bool) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.set_discoverable(&adapter, on).await })
 }
 
-/// Local evidence available for a cross-device accessory handoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandoffTarget {
-    /// This adapter already owns a bond and may connect without creating trust.
     Paired,
-    /// The exact address was discovered locally but still requires local user
-    /// authorization before pairing can create a bond.
     Pairable,
 }
 
@@ -283,7 +219,7 @@ fn unique_device_by_address<'a>(
     Ok(first)
 }
 
-/// Whether `address` is a Bluetooth address: six colon-separated hex octets.
+/// Six colon-separated hex octets.
 #[must_use]
 pub fn valid_address(address: &str) -> bool {
     address.len() == 17
@@ -293,12 +229,8 @@ pub fn valid_address(address: &str) -> bool {
             .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-/// Verify an accessory against this device's own `BlueZ` inventory, performing
-/// one bounded discovery when it is not already known.
-///
-/// A peer-provided name or object path is never accepted as evidence. Address
-/// ambiguity across adapters fails closed because `BlueZ` object paths, unlike
-/// Bluetooth addresses, are the locally authoritative operation handles.
+/// Checks an accessory against this device's own `BlueZ` inventory, discovering once if needed; a
+/// peer-provided name or object path is never evidence, and an address on two adapters fails closed.
 pub fn inspect_handoff_target(
     address: &str,
     discovery_window: Duration,
@@ -322,11 +254,8 @@ pub fn inspect_handoff_target(
     })
 }
 
-/// Resolve an approved handoff address back to one local `BlueZ` object and
-/// pair, trust, then connect it using the compositor-owned pairing agent.
-///
-/// Callers must hold their own one-shot local authorization; this helper does
-/// not interpret a remote handoff request as consent.
+/// Pairs, trusts and connects one local object for an approved handoff address; callers hold their own
+/// one-shot local authorization.
 pub fn pair_handoff(address: &str) -> Result<(), String> {
     if !valid_address(address) {
         return Err("invalid Bluetooth address".into());
@@ -346,12 +275,10 @@ fn connected_pair_outcome(outcome: tilo_bluez::PairOutcome) -> Result<(), String
     }
 }
 
-/// Connect the paired device with this address.
 pub fn connect_address(address: &str) -> Result<(), String> {
     connect(&known_address(address)?.path)
 }
 
-/// Disconnect the device with this address, keeping its bond.
 pub fn disconnect_address(address: &str) -> Result<(), String> {
     disconnect(&known_address(address)?.path)
 }

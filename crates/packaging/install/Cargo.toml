@@ -58,6 +58,7 @@ tilo-os-search = { path = "../../runtime/os-search" }
 getrandom.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
+test-http = { path = "../../dev/test-http" }
 # A sealed runtime needs a filesystem with fs-verity; the test says so where
 # there is none.
 tilo-test-env = { path = "../../dev/test-env" }

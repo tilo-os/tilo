@@ -29,7 +29,6 @@ pub struct Record {
     /// finish by itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention: Option<Attention>,
-    /// What the secret looks like, so a screen labels its field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<SecretKind>,
 }
@@ -58,7 +57,6 @@ pub enum Attention {
     SystemKeyslotPending,
 }
 
-/// What a sign-in screen can offer for a person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Factor {

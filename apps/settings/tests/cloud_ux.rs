@@ -55,9 +55,6 @@ fn capture<A: ui::framework::ResourceApp>(app: &mut TestApp<A>, name: &str) -> T
     Ok(())
 }
 
-/// Wait for the Accounts pane's work to finish, which answers off the UI
-/// thread: the vault's Mail grants among it, which a connected card's status
-/// line shows. A capture taken before they land shows the card without them.
 fn wait_for_accounts_work(settings: &mut TestApp<SettingsShell>) -> TestResult {
     let started = Instant::now();
     while settings
@@ -235,8 +232,6 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
         1,
         "one Google provider card"
     );
-    // Each account's secondary actions are in its row's menu, one More
-    // button per account, and every entry runs the account's own action.
     for label in ["More for Google Drive files", "More for Gmail"] {
         assert_button(app, label);
     }
@@ -323,7 +318,6 @@ fn progress_phase(app: &mut Files) -> TestResult<String> {
 
 struct Profile {
     _env: tilo_test_env::ScopedEnv,
-    /// Keeps the isolated profile on disk for the test's lifetime.
     _scratch: tempfile::TempDir,
     // Only the Linux import journey runs a cloud service inside the profile.
     #[cfg(target_os = "linux")]
@@ -701,7 +695,6 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
-    // Both services share one registration, as required for one consent.
     let mut clients = account_custody::ClientTable::default();
     clients.google.client_id = "google-services-client".into();
     clients.google.scopes.files = vec!["https://www.googleapis.com/auth/drive".into()];
@@ -852,8 +845,6 @@ fn google_mail_only_is_not_presented_as_drive() -> TestResult {
     Ok(())
 }
 
-// The import journey runs on the FUSE-backed cloud service, which exists
-// only on Linux; the Settings-only journeys above stay portable.
 #[test]
 #[cfg(target_os = "linux")]
 fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {

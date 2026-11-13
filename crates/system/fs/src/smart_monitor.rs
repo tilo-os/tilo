@@ -1,7 +1,6 @@
-//! Production policy inputs for predictive hydration.
-//!
-//! Prediction is optional, so an unreadable or ambiguous system signal denies
-//! speculation rather than guessing. Foreground hydration is unaffected.
+//! Production policy inputs for predictive hydration. Prediction is optional: an
+//! unreadable or ambiguous signal denies it rather than guessing, and foreground
+//! hydration is unaffected.
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
@@ -16,22 +15,18 @@ use crate::smart::{DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES, Heuristics, PredictivePo
 const MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 const MIN_FREE_PERCENT: u64 = 10;
 const MIN_BATTERY_PERCENT: u8 = 25;
-/// Power and storage are sampled on this interval while files are being
-/// opened, and a missing `NetworkManager` connection is retried on it.
-/// Network changes apply as they are signalled.
+/// Power and storage are sampled on this interval while files are opened, and a
+/// missing `NetworkManager` connection is retried on it.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
 
-/// The network gate: the internet is reachable and the primary connection,
-/// the one traffic actually leaves on, is known not to be metered. A second
-/// unmetered device does not make a metered primary tether free, and an
-/// unreadable `NetworkManager` reads as unknown, which denies.
+/// The internet is reachable and the primary connection, the one traffic leaves
+/// on, is known not to be metered; unreadable reads as unknown, which denies.
 fn network_allows(state: &NetworkState) -> bool {
     state.allows_speculative_traffic()
 }
 
-/// Wait for the followed network state to change. A follower that stopped
-/// (its bus connection closed) is dropped, so the next sample denies and the
-/// loop reconnects.
+/// Wait for the followed network state to change; a follower that stopped is
+/// dropped, so the next sample denies and the loop reconnects.
 async fn network_changed(network: &mut Option<NmWatch>) {
     match network {
         Some(watch) => {
@@ -99,7 +94,7 @@ fn sample(cache_root: &Path, network: Option<&NmWatch>) -> PredictivePolicy {
 }
 
 /// Apply a real system snapshot before the mount becomes visible, then keep it
-/// current. Missing `NetworkManager`, ambiguous metering, unreadable power state,
+/// current. Missing `NetworkManager`, ambiguous metering, unreadable power state
 /// or storage pressure disables only speculative work and cancels its queue.
 pub async fn start(
     heuristics: Arc<Heuristics>,
@@ -120,12 +115,10 @@ pub async fn start(
     heuristics.set_policy(applied);
     Some(tokio::spawn(async move {
         loop {
-            // Power and storage only matter to an open's predictions, so
-            // they are sampled every interval while files are opened, and
-            // at the first open after a quiet interval; an idle mount
-            // sleeps. That first open is judged by the previous
-            // sample, and a gate the fresh one closes cancels what it
-            // queued. Network changes apply as signalled.
+            // Power and storage only matter to an open's predictions, so they are
+            // sampled while files are opened and at the first open after a quiet
+            // interval; an idle mount sleeps. A gate the fresh sample closes
+            // cancels what it queued.
             let busy = heuristics.take_opened();
             tokio::select! {
                 () = tokio::time::sleep(SAMPLE_INTERVAL), if busy => {}
@@ -136,8 +129,8 @@ pub async fn start(
                 network = tilo_nm::watch().await.ok();
             }
             let policy = sample(&cache_root, network.as_ref());
-            // An unchanged policy is not re-applied: applying one cancels
-            // every queued and running prediction.
+            // An unchanged policy is not re-applied: applying one cancels every
+            // queued and running prediction.
             if policy != applied {
                 heuristics.set_policy(policy);
                 applied = policy;
@@ -168,9 +161,6 @@ mod tests {
     fn network_allows_requires_full_and_unmetered_primary() {
         assert!(network_allows(&online(LinkKind::Wired, Some(false))));
         assert!(network_allows(&online(LinkKind::Wifi, Some(false))));
-        // Ethernet (unmetered) and a phone tether (metered) are both up, and
-        // NetworkManager made the tether primary: its global Metered is the
-        // tether's. The idle Ethernet must not license traffic on the tether.
         assert!(
             !network_allows(&online(LinkKind::Wired, Some(true))),
             "a metered primary connection denies speculation"

@@ -1,10 +1,6 @@
-//! Per-participant view state.
-//!
-//! A participant is a person's window or an agent task. Each owns a
-//! [`ParticipantView`](crate::actions::participant::ParticipantView) — caret, selection anchor, region and Find state — and
-//! Writer builds that participant's resource tree from it through the pure
-//! [`ParticipantView::ctx`](crate::actions::participant::ParticipantView::ctx). The view is presentation state: it is never
-//! written into the document.
+//! Per-participant view state: a person's window or an agent task owns one caret,
+//! selection, region and Find state, and the resource tree is built from it. It is
+//! presentation state and never written into the document.
 
 use automerge::AutoCommit;
 
@@ -12,7 +8,6 @@ use super::{
     MAX_RESOURCE_SEARCH_HITS, RegionKind, SearchTarget, SelectionTarget, Span, WpResourceCtx,
 };
 
-/// A position in one block of the participant's region, in characters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ViewPoint {
     pub block: String,
@@ -28,8 +23,6 @@ impl ViewPoint {
     }
 }
 
-/// A participant's Find state. `hits` are bounded by
-/// [`MAX_RESOURCE_SEARCH_HITS`]; use [`FindState::new`] to enforce it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FindState {
     pub query: String,
@@ -37,7 +30,6 @@ pub struct FindState {
 }
 
 impl FindState {
-    /// Keep at most [`MAX_RESOURCE_SEARCH_HITS`] hits, in the order given.
     pub fn new(query: impl Into<String>, hits: impl IntoIterator<Item = SearchTarget>) -> Self {
         Self {
             query: query.into(),
@@ -46,33 +38,17 @@ impl FindState {
     }
 }
 
-/// A caret an edit could not name yet: the edit inserts blocks whose ids are
-/// minted by the pinned actor at apply time (Enter's `SplitBlock`, a
-/// multi-paragraph `PasteFragment`). [`ParticipantView::settle`] resolves it
-/// against the document once the edit has been applied, exactly as the widget
-/// finds the new block by comparing the block order before and after.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PendingCaret {
-    /// The block the edit inserts after.
     pub after: String,
-    /// The block that followed `after` before the edit (`None` at the end of
-    /// the region). While it still directly follows `after`, the edit has not
-    /// been applied and the caret stays at the fallback in `caret`.
     pub was_next: Option<String>,
-    /// How many blocks past `after` the caret lands (at least 1).
     pub steps: usize,
-    /// Character offset in the landing block.
     pub offset: usize,
 }
 
-/// One participant's view of a Writer document.
-///
-/// `anchor` is the selection's fixed end (the caret is the moving end);
-/// `None` or an anchor equal to the caret means no selection. Offsets are
-/// character offsets within `region`'s blocks. `pending`, when set, replaces
-/// `caret` after the edit that produced it lands (see [`PendingCaret`]); every
-/// reader goes through [`ParticipantView::settle`] first, so callers may keep
-/// an unsettled view across the dispatch.
+/// One participant's view of a Writer document: the caret, the selection's fixed end
+/// (`None` or the caret's own means no selection) and character offsets within the region.
+/// A `pending` caret replaces the caret once its edit lands; readers settle first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParticipantView {
     pub caret: ViewPoint,
@@ -91,8 +67,6 @@ impl ParticipantView {
         }
     }
 
-    /// A collapsed caret at the end of the body's last block, or `None` for a
-    /// document without body blocks. The default spawn position of an agent.
     pub fn at_document_end(doc: &AutoCommit) -> Option<Self> {
         let containers = crate::model::open(doc).ok()?;
         let block = tilo_doc::model::region_blocks_in_order(
@@ -105,8 +79,6 @@ impl ParticipantView {
         Some(Self::at(ViewPoint::new(block, offset), RegionKind::Body))
     }
 
-    /// The view an edit told where to act (`at`) acts from: a paragraph
-    /// selected whole, a collapsed caret in it, or a range of it.
     pub fn at_place(doc: &AutoCommit, place: &ui::tilo_resource::Place) -> Result<Self, String> {
         use ui::tilo_resource::Place;
         let containers = crate::model::open(doc)?;
@@ -140,25 +112,19 @@ impl ParticipantView {
         })
     }
 
-    /// Resolve a [`PendingCaret`] against `doc`: once the edit that set it
-    /// has been applied, the caret moves into the block it created and the
-    /// selection collapses; before that (or if the edit was refused) the
-    /// fallback `caret` stands. A view without a pending caret is returned
-    /// unchanged. Pure.
+    /// Resolve a [`PendingCaret`] against `doc`: once its edit applied, the caret moves
+    /// into the created block; before that the fallback caret stands.
     #[must_use]
     pub fn settle(&self, doc: &AutoCommit) -> Self {
         self.settle_in(doc, None)
     }
 
-    /// [`Self::settle`] reading the body's order from `body`, the kept order
-    /// of `doc`, so a body caret settles without listing the body.
     #[must_use]
     pub fn settle_in(&self, doc: &AutoCommit, body: Option<&tilo_document::BodyOrder>) -> Self {
         let mut out = self.clone();
         let Some(pending) = out.pending.take() else {
             return out;
         };
-        // The block after `pending.after`, and the one `steps` after it.
         let at = |id_at: &dyn Fn(usize) -> Option<String>, index: usize| {
             (id_at(index + 1), id_at(index + pending.steps.max(1)))
         };
@@ -187,8 +153,6 @@ impl ParticipantView {
         out
     }
 
-    /// The selection in document order when it is non-empty and both ends
-    /// are blocks of this view's region in `doc`.
     pub fn selection(&self, doc: &AutoCommit) -> Option<SelectionTarget> {
         if self.pending.is_some() {
             return self.settle(doc).selection(doc);
@@ -212,8 +176,6 @@ impl ParticipantView {
         self.ordered_selection_by(|block| order.iter().position(|b| b == block))
     }
 
-    /// [`Self::ordered_selection`] with the region's positions read through
-    /// `position`.
     pub(super) fn ordered_selection_by(
         &self,
         position: impl Fn(&str) -> Option<usize>,
@@ -232,12 +194,8 @@ impl ParticipantView {
         })
     }
 
-    /// Project this view into the resource-tree context, exactly as the
-    /// widget's `wp_resource_ctx` does for the local window: `None` when the
-    /// caret has no block or its block is not in the view's region (the
-    /// widget then publishes no resources), otherwise the caret-anchored
-    /// context with the selection's per-block non-empty spans and the
-    /// bounded Find hits. Pure: it reads only `self` and `doc`.
+    /// This view as the resource-tree context, as the widget's `wp_resource_ctx` is for
+    /// the local window: `None` when the caret's block is not in the view's region.
     pub fn ctx(&self, doc: &AutoCommit) -> Option<WpResourceCtx> {
         if self.pending.is_some() {
             return self.settle(doc).ctx(doc);
@@ -279,8 +237,6 @@ impl ParticipantView {
         Some(WpResourceCtx {
             caret_block: self.caret.block.clone(),
             caret_offset: self.caret.offset,
-            // Matches the widget: block-level palette targets anchor on the
-            // caret block, not the selection.
             target_blocks: vec![self.caret.block.clone()],
             format_spans,
             selection: ordered.map(|(start, end)| SelectionTarget {
@@ -297,8 +253,6 @@ impl ParticipantView {
                 .take(MAX_RESOURCE_SEARCH_HITS)
                 .cloned()
                 .collect(),
-            // The view owns no content; a host publishing these resources
-            // replaces this with its document's store.
             content: tilo_content::ContentStore::memory(),
         })
     }

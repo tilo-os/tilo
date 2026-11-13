@@ -154,7 +154,7 @@ fn markup_checkouts(path: &str, file: &RecordId) -> (RecordCheckout, RecordCheck
 
 fn stored_bytes(root: &Path, package: &str, workspace: &str, id: &RecordId) -> Vec<u8> {
     app_state::FsStore::new(root)
-        .read(&StorageKey::record(package, workspace, id.storage_key()))
+        .read(&StorageKey::document(package, workspace, id.storage_key()))
         .unwrap()
         .unwrap()
         .bytes

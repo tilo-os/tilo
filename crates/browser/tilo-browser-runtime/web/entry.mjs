@@ -23,6 +23,7 @@ import {takeLinkSecrets} from './link-secrets.mjs';
 import {UNAVAILABLE, openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
+import {nameSiteHost} from './site-host.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
@@ -239,6 +240,14 @@ async function recordArrived(peer, {app, record}) {
   }
 }
 
+/** The apps this page shows as HTML (`mountDesktop({dom: true})`): every
+ * widget of their windows renders as its own elements (`Widget::html`), so
+ * the page holds real text, fields, lists and buttons that the browser lays
+ * out, finds, selects and reads out. Any other app is drawn on the canvas
+ * until its widgets render as HTML too; which renderer shows an app is this
+ * page's choice, never the link's. */
+export const HTML_APPS = new Set(['so.tilo.notes']);
+
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
  * whichever mount draws the desk: the page's own, or a peer's. */
@@ -250,7 +259,8 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   if (mode === 'app') {
     if (!target.app) throw new Error('This link opens a whole workspace, so it opens on the desktop');
     if (peer && target.record !== undefined) await recordArrived(peer, target);
-    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), onStatus});
+    const html = HTML_APPS.has(target.app) ? {dom: true} : {};
+    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), ...html, onStatus});
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};
   }
@@ -266,6 +276,12 @@ export async function present({route, peer, surface, mountDesktop, directory = n
   navigation ??= mounted.navigation;
   await openTarget({mount: mounted, navigation, target, mode});
   return {mount: mounted, navigation};
+}
+
+/** What the page says while the host replays the workspace to it: how many
+ * of its records are here (`records`). */
+export function receivingNote(records) {
+  return `Receiving the workspace… ${records} ${records === 1 ? 'record' : 'records'} so far`;
 }
 
 /**
@@ -297,11 +313,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // in and reads no route from the address.
   const sealed = sealedLink({location: window.location, secrets});
   // The runtime (most of the page's download) loads while the entry is read
-  // and, for a bare entry under a home workspace, while admission starts:
-  // a host's door is asked, and the person and device keys opened, before
-  // anything needs the runtime. Each door waits for it where it does.
+  // and the route chosen; admission waits for it, as the way in is its to say.
   const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
+  // The host the site names with its home workspace: the page dials it as named.
+  nameSiteHost(entry.home);
   const linked = loaded.then(runtime => grammar(runtime, entry));
   // Awaited below; a failure is the first door's to report.
   void linked.catch(() => {});
@@ -316,18 +332,29 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     say(error?.message ?? String(error));
     throw error;
   }
+  // A link whose workspace reads but whose document (or item, or view) is
+  // damaged names that workspace: it opens, and the page says what of the
+  // link it did not use.
+  const {damaged = null, ...named} = route;
+  route = named;
+  // What a desktop's first frame needs beyond the runtime is fetched while
+  // the page is let in, not once the desktop mounts and lays out.
+  if (route.mode === 'desktop') deps.prefetchDesktop?.();
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
-  // The page hears which workspace it is getting into, under which entry, before admission.
-  deps.onScope?.({scope: route.target.scope, entry});
+  // The page hears which workspace it is getting into, under which entry,
+  // and how its links read once the runtime is in, before admission.
+  deps.onScope?.({scope: route.target.scope, entry, link: linked});
   const {peer, idle} = await admit({
-    scope: route.target.scope, secrets, tickets: entry.tickets,
+    scope: route.target.scope, secrets, tickets: entry.tickets, runtime: await loaded,
     home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');
-      say(event.phase === 'pairing' ? 'Asking to pair this device…'
-        : event.phase === 'waiting' ? 'Waiting for someone in the workspace to let you in…'
-        : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
+      // A host replaying a big workspace to this device is working: the
+      // page says how far it got, in place of a note that it takes long.
+      say(event.phase === 'receiving' ? receivingNote(event.records)
+        : event.phase === 'pairing' ? 'Asking to pair this device…'
+          : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
   // Nothing to mount: an embed shows its site's fallback until the visitor
@@ -361,11 +388,18 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   say(loading);
   onStep('open');
   const link = await linked;
+  // The address names what opened, not the damaged part the page left out.
+  if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
   if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
     // The workspace is known now: show its canonical link, in place of the
-    // address the link reached the page at.
+    // address the link reached the page at. Not while the first screen of a
+    // setup covers it (first-run.mjs): this workspace is not in front of
+    // the person then, and a reload or Back must not take its link for one
+    // they opened.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.workspace}}};
-    window.history.replaceState(window.history.state, '', link.format(route));
+    if (window.document?.documentElement?.dataset?.firstRun === undefined) {
+      window.history.replaceState(window.history.state, '', link.format(route));
+    }
   }
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
@@ -385,8 +419,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),
-      // The workspace service's watching count, for the desktop's people panel.
-      ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...(invite ? {invite} : {}), ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
@@ -420,5 +452,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         });
     },
     onError: error => say(error?.message ?? String(error))});
+  if (damaged) say(`${damaged}, so the workspace opened without it.`);
   return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};
 }

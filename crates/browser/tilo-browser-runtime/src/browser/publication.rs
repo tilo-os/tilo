@@ -73,8 +73,10 @@ pub fn semantic(
                 .perform_semantic_named(path, target.as_deref(), &action)
         })
         .map_err(error)?;
-        m.pending = true;
-        m.window.request_redraw();
+        // What the person typed into a field the page shows as HTML reaches
+        // the app here, so this is an input like a key: its frame is drawn
+        // before the browser paints again.
+        m.present_after_input();
         Ok(true)
     })
 }

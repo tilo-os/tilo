@@ -1,8 +1,6 @@
 use super::*;
 use crate::widget::{NavFeed, NavItem, NavList, NavSection};
-use crate::window_toolbar::{
-    ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar, declare, declared,
-};
+use crate::window_toolbar::{ToolbarEvent, declared};
 
 fn places() -> Vec<NavSection> {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
@@ -116,7 +114,8 @@ fn bar_back(h: &FrameHarness) -> bool {
 
 /// A phone-wide (420 px) window whose bar holds the sidebar's toggle opens
 /// on its top-level page with nowhere to go back to: the toggle reaches the
-/// sidebar, and no Back stands beside it, in the bar or in the shell.
+/// sidebar, and no Back stands beside it, in the bar or in the shell. The
+/// places it reaches then carry Back to the page the toggle covered.
 #[test]
 fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
     const NARROW: u32 = 420;
@@ -148,7 +147,15 @@ fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
         NavPane::Sidebar,
         "the toggle reaches the sidebar"
     );
-    assert!(!bar_back(&h), "the sidebar is a first screen too");
+    assert!(
+        bar_back(&h),
+        "the places' screen offers the way back to the place it covered"
+    );
+    assert_eq!(
+        h.root::<NavShell>().window_toolbar().sidebar,
+        None,
+        "and the toggle stands aside for it"
+    );
 }
 
 /// With a list beside its content, the list is the top-level page: no Back
@@ -204,7 +211,6 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     // Passwords: places, the list, the item.
     let mut shell = NavShell::new()
         .content_kind(ContentKind::Page)
-        .with_header_in_window_bar()
         .sidebar(Probe::boxed("sidebar").0)
         .overview(Probe::boxed("overview").0)
         .content(Probe::boxed("content").0);
@@ -229,7 +235,6 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     // Files: places and the folder.
     let mut shell = NavShell::new()
         .content_kind(ContentKind::List)
-        .with_header_in_window_bar()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0)
         .content_header("", Vec::new());
@@ -301,6 +306,10 @@ fn a_narrow_window_on_its_list_still_settles_the_content_behind_it() {
     let mut h = harness(shell, 480, 800, Theme::dark());
     settle(&mut h, 480, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    // The window opens on its content; the person brings the list up.
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    h.root_mut::<NavShell>().show(NavPane::Sidebar);
+    settle(&mut h, 480, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let list = h.root::<NavShell>().sidebar_ref::<NavList>();
     assert!(list.and_then(|list| list.row_rect("later")).is_some());
@@ -464,142 +473,125 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
     );
 }
 
-/// A shell that hands its own header to the window's bar, showing the
-/// place "Home".
-fn place_shell(w: u32, height: u32) -> FrameHarness {
+/// Every column's header row — its title and the buttons that act on what it shows — stands at
+/// the top of its column while the desktop's bar hosts the window, at rest and with the bar out:
+/// the rows share one height and top, the row is the window's bar (its controls come into the
+/// room the row keeps at its trailing end), the bar declares none of the columns' titles or
+/// buttons, and a button pressed in its row runs.
+#[test]
+fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let compose =
+        Button::new("mail.compose", "Compose").on_effect(move || count.set(count.get() + 1));
     let shell = NavShell::new()
-        .with_id("places")
+        .content_kind(ContentKind::Page)
         .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
         .content(Probe::boxed("content").0)
-        .sidebar_header("Places", Vec::new())
-        .content_header("Home", Vec::new());
-    let mut h = harness(shell, w, height, Theme::dark());
-    settle(&mut h, w, height);
-    h.present_in_window_bar();
-    settle(&mut h, w, height);
-    h
+        .sidebar_header(
+            "Mailboxes",
+            vec![Box::new(Button::icon_only(
+                "mail.new-mailbox",
+                Icon::Plus,
+                "New mailbox",
+            ))],
+        )
+        .overview_header("Inbox", vec![Box::new(compose)])
+        .content_header(
+            "Design review",
+            vec![Box::new(Button::icon_only(
+                "mail.reply",
+                Icon::Reply,
+                "Reply",
+            ))],
+        );
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    for revealed in [true, false] {
+        if revealed {
+            h.present_in_window_bar();
+        } else {
+            h.present_window_bar_at_rest();
+        }
+        settle(&mut h, 1280, 800);
+        let at = if revealed { "bar out" } else { "at rest" };
+        assert_eq!(
+            declared(),
+            None,
+            "{at}: the bar declares none of the columns' titles or buttons"
+        );
+        assert!(
+            h.row_holds_bar(),
+            "{at}: the header row is the window's bar"
+        );
+        let g = geometry(&h);
+        let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.header(c));
+        for row in rows {
+            assert!(
+                row.width() > 0.0 && row.y0.abs() < 1e-9,
+                "{at}: every column's row stands at the window's top: {rows:?}"
+            );
+            assert!(
+                (row.height() - rows[0].height()).abs() < 1e-9,
+                "{at}: every row is as tall as the sidebar's: {rows:?}"
+            );
+        }
+        for (id, row) in ["mail.new-mailbox", "mail.compose", "mail.reply"]
+            .into_iter()
+            .zip(rows)
+        {
+            let button = rect_named(&h, id).expect("the button shows in its row");
+            assert!(
+                button.x0 >= row.x0 - 1e-9 && button.x1 <= row.x1 + 1e-9 && button.y1 <= row.y1,
+                "{at}: {id} stands in its own column's header row: {button:?} in {row:?}"
+            );
+        }
+        assert!(
+            rect_named(&h, "mail.reply").is_some_and(|reply| reply.x1 <= g.window_controls.x0),
+            "{at}: the row's buttons stand before the room kept for the window's controls"
+        );
+    }
+    let compose = rect_named(&h, "mail.compose").expect("Compose shows");
+    h.click_at(compose.center().x, compose.center().y);
+    assert_eq!(pressed.get(), 1, "the press in the row runs the button");
 }
 
-/// The shell's slots in the window's bar name the place it shows. Another
-/// part of the window may declare them for a while (a mode's commands, an
-/// inspector's); when that part goes (the place changed to one without it)
-/// the shell takes the slots back, so the bar names the place the shell
-/// shows rather than the tab's own title, which still says where the
-/// window opened.
+/// A conversation floated as a card beside the window it was sent from shows only itself: no
+/// list stands over it and the bar offers no toggle for one, whatever the app last remembered of
+/// its sidebar. Snapped into its strip, still narrow, the window keeps the conversation in front.
 #[test]
-fn the_bar_names_the_place_again_once_another_parts_slots_go() {
-    let other = |label: &str| WindowToolbar {
-        location: Some(ToolbarLocation {
-            label: label.to_owned(),
-            ..ToolbarLocation::default()
-        }),
-        actions: vec![ToolbarAction::new(
-            "place.share",
-            "share",
-            "Share this place",
-        )],
-        ..WindowToolbar::default()
-    };
-    let label = || {
-        declared()
-            .and_then(|toolbar| toolbar.location)
-            .map(|location| location.label)
-    };
-    let mut h = place_shell(W, H);
-    // A part of the window that is not the shell declares the slots: the
-    // shell steps aside.
-    declare(Some(other("Shared sessions")));
-    settle(&mut h, W, H);
-    assert_eq!(label().as_deref(), Some("Shared sessions"));
-    // That part goes, and the place moves on in the same breath.
-    declare(None);
-    h.root_mut::<NavShell>()
-        .set_content_header("History", Vec::new());
-    settle(&mut h, W, H);
+fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Reading);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 360, 520, Theme::dark());
+    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
+    // What the app remembered: its list shown. What it opened: a conversation.
+    link.stage_sidebar(true);
+    link.put_drawer_away();
+    settle(&mut h, 360, 520);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::None);
     assert_eq!(
-        label().as_deref(),
-        Some("History"),
-        "the bar names the place the shell shows once the other part's slots go"
+        link.slots().sidebar,
+        None,
+        "no toggle for a sidebar it does not show"
     );
-    // The shell's own header actions are the bar's again.
+    assert!(child_rect(&h, "content").is_some_and(|r| r.width() >= 359.0));
     assert!(
-        declared().is_some_and(|toolbar| toolbar.location.is_some()),
-        "the shell declares the window's slots again"
-    );
-}
-
-/// A shell that stepped aside for another part keeps the slots while that
-/// part declares them, even as the place changes under it.
-#[test]
-fn another_parts_slots_stand_while_it_holds_them() {
-    let mut h = place_shell(W, H);
-    declare(Some(WindowToolbar {
-        location: Some(ToolbarLocation {
-            label: "Shared sessions".into(),
-            ..ToolbarLocation::default()
-        }),
-        ..WindowToolbar::default()
-    }));
-    settle(&mut h, W, H);
-    h.root_mut::<NavShell>()
-        .set_content_header("History", Vec::new());
-    settle(&mut h, W, H);
-    assert_eq!(
-        declared()
-            .and_then(|toolbar| toolbar.location)
-            .map(|location| location.label)
-            .as_deref(),
-        Some("Shared sessions"),
-        "the other part's slots stand while it holds them"
-    );
-    declare(None);
-    settle(&mut h, W, H);
-}
-
-/// The bar's Back is the window's, so it reaches the first screen too: from
-/// a place it goes back to the app's navigation, and the bar names that
-/// again.
-#[test]
-fn the_window_bars_back_names_the_app_again() {
-    let label = || {
-        declared()
-            .and_then(|toolbar| toolbar.location)
-            .map(|location| location.label)
-    };
-    let shell = NavShell::new()
-        .mode(NavMode::Push)
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .sidebar_header("Places", Vec::new())
-        .content_header("Home", Vec::new());
-    let mut h = harness(shell, 360, 800, Theme::dark());
-    h.present_in_window_bar();
-    settle(&mut h, 360, 800);
-    assert_eq!(
-        h.root::<NavShell>().front_pane(),
-        NavPane::Sidebar,
-        "a pushed window opens on its navigation"
-    );
-    assert_eq!(
-        label().as_deref(),
-        Some("Places"),
-        "the bar names the navigation the sidebar screen shows"
+        child_rect(&h, "sidebar").is_none_or(|r| r.area() <= 0.0),
+        "no list over the card"
     );
 
-    h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, 360, 800);
-    assert_eq!(label().as_deref(), Some("Home"), "and follows to the place");
-
-    h.press_window_slot(ToolbarEvent::Back);
-    settle(&mut h, 360, 800);
-    assert_eq!(
-        h.root::<NavShell>().front_pane(),
-        NavPane::Sidebar,
-        "the bar's Back reaches the navigation screen"
-    );
-    assert_eq!(
-        label().as_deref(),
-        Some("Places"),
-        "and the bar names it again"
+    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
+    settle(&mut h, 376, 520);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert!(
+        link.slots().sidebar.is_some(),
+        "in the strip its list is a press away"
     );
 }

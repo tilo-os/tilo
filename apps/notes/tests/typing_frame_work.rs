@@ -338,3 +338,73 @@ fn a_keystroke_draws_one_frame_and_services_its_owner_once() {
         }
     });
 }
+
+/// The same keystrokes into a note shown by an app mounted alone, as the page
+/// that shows one app hosts it: the key's frame shows the edit, and the
+/// store's write landing asks for its owner's service, not for a frame of its
+/// own. While that wake marked the component woken, each landed save synced
+/// and laid the whole window out again in a second frame after the key's.
+#[test]
+fn a_keystroke_in_an_app_mounted_alone_draws_one_frame() {
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        ui::i18n::I18nManager::init("en-US");
+        let f = NotebookFixture::rich();
+        let checkout = component_support::notebook(&f);
+        let mut harness = FrameHarness::from_component_with_wake_notifier(
+            component_support::component(&f, 1, component_support::existing(&checkout)),
+            (1200, 900),
+            component_support::runner_inputs(),
+            || {},
+        )
+        .unwrap();
+        harness.set_coalesce_input_frames(true);
+        for _ in 0..4 {
+            harness.poll_frame().unwrap();
+            harness.relayout();
+        }
+        let editor = harness
+            .targets()
+            .into_iter()
+            .find(|(key, _)| key == "block_editor")
+            .map(|(_, rect)| rect)
+            .expect("a note's editor");
+        harness.click_at(editor.x0 + 20.0, editor.y0 + 10.0);
+        // The first key may settle what the click left (focus, the caret).
+        harness.key("x");
+        for _ in 0..6 {
+            let _ = f.records.try_flush();
+            if harness.has_pending_owner_models() {
+                harness.service_pending_owner_models().unwrap();
+            }
+            if !harness.poll_frame().unwrap() {
+                break;
+            }
+        }
+        for key in "typing".chars() {
+            harness.key(&key.to_string());
+            let mut frames = 0_usize;
+            for _ in 0..8 {
+                // The host draws when queued work asks; a wake it was sent
+                // reaches the owner's service and asks for nothing more.
+                let due = harness.frame_schedule().queued_work;
+                if due {
+                    let sources = harness.queued_work_sources();
+                    assert!(harness.poll_frame().unwrap(), "a due frame draws");
+                    frames += 1;
+                    assert!(
+                        frames <= 1,
+                        "typing {key:?} drew a second frame, for {sources:?}"
+                    );
+                }
+                if harness.has_pending_owner_models() {
+                    harness.service_pending_owner_models().unwrap();
+                } else if !due {
+                    break;
+                }
+                // The store lands the key's write after the key's frame.
+                let _ = f.records.try_flush();
+            }
+            assert_eq!(frames, 1, "typing {key:?} drew {frames} frames");
+        }
+    });
+}

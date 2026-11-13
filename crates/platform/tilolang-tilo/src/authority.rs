@@ -271,7 +271,7 @@ impl Authority for TiloAuthority {
         let own = standing
             .as_ref()
             .filter(|_| state.own.contains(&action.app))
-            .and_then(|standing| crate::member_record_of(&standing.person));
+            .and_then(|standing| crate::member_record_of(standing.person_id().unwrap_or_default()));
         let node = match own {
             Some(record) => node.resource(record),
             None => node,
@@ -285,7 +285,7 @@ impl Authority for TiloAuthority {
             None => Some(invoker.0.as_str()),
         };
         let person = person.map(|person| match &standing {
-            Some(standing) if person == self.viewer.0 => standing.person.as_str(),
+            Some(standing) if person == self.viewer.0 => standing.person_id().unwrap_or_default(),
             _ => person,
         });
         // A migration is the platform running the package's own update of its records, and a
@@ -303,7 +303,7 @@ impl Authority for TiloAuthority {
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
-            (Some(_), Some(person)) => Some(roles::agent_turn(
+            (Some(_), Some(person)) => Some(roles::agent_grants(
                 workspace,
                 agent_id(&invoker.0),
                 person,
@@ -343,7 +343,10 @@ impl Authority for TiloAuthority {
         let earlier = crate::schema::earlier_ids();
         let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
-            policy = policy.bounded_by(delegation.party(workspace_grants));
+            policy = policy.bounded_by(
+                Party::new(vec![Subject::agent(agent_id(&invoker.0))], workspace_grants)
+                    .with_grants(delegation),
+            );
         }
         for (subject, own, of_app) in &authors {
             // The workspace's grants bound an application's code; a block's author holds only what

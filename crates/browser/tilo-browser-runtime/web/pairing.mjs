@@ -53,6 +53,13 @@ export function openInvites({now = () => Date.now(), ttl = INVITE_TTL_MS, random
       open.set(id, invite);
       return invite;
     },
+    /** An invite this page made before it was loaded again (`{id, expiresAt}`), open again until it expires. */
+    adopt({id, expiresAt}) {
+      if (typeof id !== 'string' || !id || !(expiresAt > now())) return null;
+      const invite = {id, expiresAt};
+      open.set(id, invite);
+      return invite;
+    },
     has: id => open.has(id) && open.get(id).expiresAt > now(),
     spend: id => open.delete(id),
     prune() {
@@ -64,7 +71,7 @@ export function openInvites({now = () => Date.now(), ttl = INVITE_TTL_MS, random
   };
 }
 
-/** The waiting requests (`pendingPairings`) that answer one of `invites`:
+/** The waiting requests (`PairingHost.pending`) that answer one of `invites`:
  * the first per invite, since an invite admits one device. */
 export function forInvites(pending, invites) {
   const seen = new Set();

@@ -3,15 +3,6 @@
 //! TOTP code, a revealed password and a permission prompt, with "Always
 //! distinguish similar letters" off and on, in the default face,
 //! Hyperlegible and a probe face that has every distinct form as a feature.
-//!
-//! ```bash
-//! cargo run -p ui-examples \
-//!     --example distinct-letters-shots -- \
-//!     --shots target/look/distinct-letters/specimen.png --viewport 1280x420 --scale 2
-//! ```
-//!
-//! Writes `<stem>-<face>-<off|on>.png` next to the `--shots` path for the
-//! faces `default`, `hyperlegible` and `probe`.
 
 use std::path::{Path, PathBuf};
 

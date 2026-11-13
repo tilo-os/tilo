@@ -168,7 +168,7 @@ pub(crate) fn window_gives_place() -> bool {
 /// Whether a launch with `args` opens a live window that joins its
 /// workspace.
 pub(crate) fn joins_its_workspace(spec: &LaunchSpec, args: &LaunchArgs) -> bool {
-    live_native(spec, args) && (spec.runtime_attachment)(args)
+    live_native(spec, args) && spec.attaches_runtime(args)
 }
 
 /// Whether `args` open a live window of the native component `spec`.

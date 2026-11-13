@@ -1,34 +1,72 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "camera"
 label = "Camera"
 version = 1
 fields = [
-  { path = "scans", type = "Vec<ScanEntry>", readonly = true },
-  { path = "recent", type = "Option<SharedCapture>", readonly = true, stored = "record" },
-  { path = "recent.id", type = "String" },
-  { path = "recent.media_id", type = "String" },
-  { path = "recent.kind", type = "CaptureKind" },
-  { path = "recent.ts", type = "i64" },
-  { path = "recent.w", type = "u32" },
-  { path = "recent.h", type = "u32" },
-  { path = "recent.dur_ms", type = "i64" },
-  { path = "recent.label", type = "String", label = true },
-  { path = "recent.facing", type = "Facing" },
+  { path = "scans", type = { list = { named = "ScanEntry" } }, readonly = true },
+  { path = "recent", type = { option = { named = "SharedCapture" } }, readonly = true, stored = "record" },
+  { path = "recent.id", type = "text" },
+  { path = "recent.media_id", type = "text" },
+  { path = "recent.kind", type = { named = "CaptureKind" } },
+  { path = "recent.ts", type = "int" },
+  { path = "recent.w", type = "int" },
+  { path = "recent.h", type = "int" },
+  { path = "recent.dur_ms", type = "int" },
+  { path = "recent.label", type = "text", label = true },
+  { path = "recent.facing", type = { named = "Facing" } },
 ]
 
 [[resources.verbs]]
 id = "register-capture"
 kind = "undoable"
 params = [
-  { name = "capture", required = true, schema = { type = "object", additionalProperties = false, properties = { dur_ms = { type = "integer" }, facing = { type = "string", enum = ["Back", "Front", "Wide"] }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, kind = { type = "string", enum = ["Photo", "Video"] }, label = { type = "string" }, media_id = { type = "string" }, ts = { type = "integer" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "media_id", "kind", "ts", "w", "h", "dur_ms", "label", "facing"] } },
+  { name = "capture", type = { named = "SharedCapture" }, required = true, schema = { type = "object", additionalProperties = false, properties = { dur_ms = { type = "integer" }, facing = { type = "string", enum = ["Back", "Front", "Wide"] }, h = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, kind = { type = "string", enum = ["Photo", "Video"] }, label = { type = "string" }, media_id = { type = "string" }, ts = { type = "integer" }, w = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "media_id", "kind", "ts", "w", "h", "dur_ms", "label", "facing"] } },
 ]
 
 [[resources.verbs]]
 id = "record-scan"
 kind = "undoable"
 params = [
-  { name = "raw", required = true, schema = { type = "string" } },
+  { name = "raw", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "CaptureKind"
+cases = [
+  { name = "photo" },
+  { name = "video" },
+]
+
+[[resources.types]]
+name = "Facing"
+cases = [
+  { name = "back" },
+  { name = "front" },
+  { name = "wide" },
+]
+
+[[resources.types]]
+name = "ScanEntry"
+fields = [
+  { name = "raw", type = "text" },
+  { name = "ts", type = "int" },
+]
+
+[[resources.types]]
+name = "SharedCapture"
+fields = [
+  { name = "id", type = "text" },
+  { name = "media_id", type = "text" },
+  { name = "kind", type = { named = "CaptureKind" } },
+  { name = "ts", type = "int" },
+  { name = "w", type = "int" },
+  { name = "h", type = "int" },
+  { name = "dur_ms", type = "int" },
+  { name = "label", type = "text" },
+  { name = "facing", type = { named = "Facing" } },
 ]
 

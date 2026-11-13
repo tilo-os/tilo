@@ -1,12 +1,8 @@
 //! The ABI additions end to end: scalar sets and maps, map reads, `sort_by` and `try`.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = "app so.tilo.gaps \"Gaps\"\n\

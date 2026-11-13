@@ -2,19 +2,12 @@
 //! choose, streamed into the row as the answer is written. The row the person is on never moves
 //! while the text arrives: the rows are built again around the same selection. Choosing the row
 //! copies the answer.
-//! With no provider set up the one row opens the page that sets one up, so a question is never a
-//! dead end and search never explains a setting by name.
-//! The ask goes through the session's model gateway as Activity does ([`crate::activity_models`]),
-//! on a thread of its own; nothing typed leaves the machine before the person asks, and nothing
-//! about a failure reaches anything but the row's own line.
-
-#![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "the page answers its own questions through this role next"
-    )
-)]
+//! With no provider set up a question's one row opens the page that sets one up, so a question is
+//! never a dead end and search never explains a setting by name; a name typed asks nothing.
+//! The ask goes through this host's model gateway as Activity does ([`crate::activity_models`]): on
+//! a thread of its own on a desktop, as a task of its own turn on the page, where nothing may
+//! block. Nothing typed leaves the machine before the person asks, and nothing about a failure
+//! reaches anything but the row's own line.
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -121,10 +114,37 @@ impl Ask {
             deltas: Some(receiver),
         };
         drop(state);
-        let needle = needle.to_owned();
+        self.start(needle.to_owned(), sender);
+    }
+
+    /// Answer `question` with what this host's gateway writes into `deltas`: on a thread of its own
+    /// on a Linux desktop, as a task of the page's own turn on the web, where nothing may block.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start(&self, question: String, deltas: Sender<Chunk>) {
         let wake = self.wake.clone();
         let models = self.models.clone();
-        std::thread::spawn(move || answer(needle, &sender, wake.as_ref(), models.as_deref()));
+        std::thread::spawn(move || {
+            let Ok(runtime) = tilo_rt::try_app() else {
+                land(&deltas, wake.as_ref(), Chunk::Failed(no_gateway()));
+                return;
+            };
+            if let Err(error) =
+                runtime.block_on(answer(question, &deltas, wake.as_ref(), models.as_deref()))
+            {
+                land(&deltas, wake.as_ref(), Chunk::Failed(error.to_string()));
+            }
+        });
+    }
+
+    /// Answer `question` as a task of the page's own turn: its one thread serves the frame too, so
+    /// the answer waits on the browser rather than holding it.
+    #[cfg(target_arch = "wasm32")]
+    fn start(&self, question: String, deltas: Sender<Chunk>) {
+        let wake = self.wake.clone();
+        let models = self.models.clone();
+        tilo_rt::spawn_task(async move {
+            answer(question, &deltas, wake.as_ref(), models.as_deref()).await;
+        });
     }
 
     fn row(&self, needle: &str) -> Hit {
@@ -148,7 +168,8 @@ impl Ask {
         };
         let preview = body.map(|body| SearchPreview::default().body(body));
         Hit {
-            row: None,
+            // The row says the question back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview,
             faces: Vec::new(),
             outcome: Some(tilo_desktop_search::i18n::t("search-ask-copy")),
@@ -204,26 +225,30 @@ fn chosen() -> Option<(String, String)> {
     Some((profile.label.clone(), model.label.clone()))
 }
 
-/// Ask `question` through the session's model gateway, on this thread (the ask is started on one of
-/// its own), sending what comes as it is written.
-fn answer(
+/// Ask `question` through this host's model gateway, sending what comes as it is written.
+#[expect(
+    clippy::future_not_send,
+    reason = "the model capability is not Send on the web; natively the ask runs on its own thread"
+)]
+async fn answer(
     question: String,
     deltas: &Sender<Chunk>,
     wake: Option<&tilo_service::Wake>,
     gateway: Option<&dyn crate::platform::Models>,
 ) {
     let Some(models) = gateway.and_then(crate::platform::Models::models) else {
-        land(
-            deltas,
-            wake,
-            Chunk::Failed(tilo_desktop_search::i18n::t("search-ask-no-gateway")),
-        );
+        land(deltas, wake, Chunk::Failed(no_gateway()));
         return;
     };
-    answer_with(&models, question, deltas, wake);
+    answer_with(&models, question, deltas, wake).await;
 }
 
-/// What the answering thread wrote back, waking the loop so the row shows it.
+/// What the row says while no gateway answers here.
+fn no_gateway() -> String {
+    tilo_desktop_search::i18n::t("search-ask-no-gateway")
+}
+
+/// What the answer wrote back, waking the loop so the row shows it.
 fn land(deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>, chunk: Chunk) {
     if deltas.send(chunk).is_ok()
         && let Some(wake) = wake
@@ -233,20 +258,16 @@ fn land(deltas: &Sender<Chunk>, wake: Option<&tilo_service::Wake>, chunk: Chunk)
 }
 
 /// [`answer`] against a model capability, wherever it comes from.
-fn answer_with(
+#[expect(
+    clippy::future_not_send,
+    reason = "the model capability is not Send on the web; natively the ask runs on its own thread"
+)]
+async fn answer_with(
     models: &ui::models::Models,
     question: String,
     deltas: &Sender<Chunk>,
     wake: Option<&tilo_service::Wake>,
 ) {
-    let Ok(runtime) = tilo_rt::try_app() else {
-        land(
-            deltas,
-            wake,
-            Chunk::Failed(tilo_desktop_search::i18n::t("search-ask-no-gateway")),
-        );
-        return;
-    };
     let request = ModelRequest {
         messages: vec![
             Message {
@@ -266,18 +287,13 @@ fn answer_with(
     };
     let writing = deltas.clone();
     let waking = wake.cloned();
-    let outcome = runtime.block_on(async move {
-        let sink: agent_provider_config::protocol::StreamSink<'_> = Box::new(move |event| {
-            if let StreamEvent::TextDelta { text } = event {
-                land(&writing, waking.as_ref(), Chunk::Text(text));
-            }
-        });
-        models.stream(&request, sink).await
+    let sink: agent_provider_config::protocol::StreamSink<'_> = Box::new(move |event| {
+        if let StreamEvent::TextDelta { text } = event {
+            land(&writing, waking.as_ref(), Chunk::Text(text));
+        }
     });
-    match outcome {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => land(deltas, wake, Chunk::Failed(error.message)),
-        Err(error) => land(deltas, wake, Chunk::Failed(error.to_string())),
+    if let Err(error) = models.stream(&request, sink).await {
+        land(deltas, wake, Chunk::Failed(error.message));
     }
 }
 
@@ -297,15 +313,15 @@ impl Source for Ask {
 
     fn query(&self, needle: &str) -> Vec<Hit> {
         let needle = needle.trim();
-        if needle.is_empty() {
+        // A name typed is looked up, not asked: a search that found nothing
+        // for it says so, rather than offering to set up an answer to a
+        // question nobody asked.
+        if !question::asks(needle) {
             return Vec::new();
         }
         let Some((provider, model)) = chosen() else {
             return vec![self.setup_row()];
         };
-        if !question::asks(needle) {
-            return Vec::new();
-        }
         self.ask(needle, &provider, &model);
         vec![self.row(needle)]
     }
@@ -357,14 +373,15 @@ mod tests {
     }
 
     /// A question with nothing set up leads to the place that sets it up: the row opens Settings at
-    /// its providers, in the workspace the search was opened in.
+    /// its providers, in the workspace the search was opened in. A name typed asks nothing, so a
+    /// search that finds nothing for it shows that, not this row.
     #[test]
     fn without_a_provider_the_one_row_opens_the_setup() {
         let ask = setup("workspace");
-        for typed in ["what is a CRDT?", "notes", ""] {
+        for typed in ["what is a CRDT?", "notes", "xqzv", ""] {
             let rows = ask.query(typed);
-            if typed.is_empty() {
-                assert!(rows.is_empty(), "an empty field asks nothing");
+            if !question::asks(typed) {
+                assert!(rows.is_empty(), "{typed:?} asks nothing");
                 continue;
             }
             assert_eq!(rows.len(), 1);
@@ -403,6 +420,12 @@ mod tests {
         }
         let row = ask.row("what is a CRDT?");
         assert_eq!(row.title, "Ask Anthropic: what is a CRDT?");
+        // The row says the question back, so nothing in it is drawn as a match.
+        assert!(
+            matches!(&row.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
+            "the row declares it echoes the query: {:?}",
+            row.row
+        );
         assert_eq!(row.subtitle.as_deref(), Some("Claude"));
         assert_eq!(
             row.preview
@@ -473,7 +496,13 @@ mod tests {
             "A conflict-free ",
             "replicated data type.",
         ])));
-        answer_with(&models, "what is a CRDT?".into(), &sender, None);
+        tilo_rt::block_on(answer_with(
+            &models,
+            "what is a CRDT?".into(),
+            &sender,
+            None,
+        ))
+        .expect("the test's own thread waits for the answer");
         // The gateway returns, so nothing more comes: the thread that would have written more is
         // gone with its end of the channel.
         drop(sender);
@@ -489,6 +518,51 @@ mod tests {
         );
         assert!(!ask.poll(), "a finished answer changes nothing more");
         assert!(!ask.answered().streaming);
+    }
+
+    /// The gateway a host runs, as it answers here: the pieces below, on the provider it names.
+    struct Host;
+
+    impl crate::platform::Models for Host {
+        fn models(&self) -> Option<ui::models::Models> {
+            Some(ui::models::Models::new(std::rc::Rc::new(Writing(vec![
+                "A conflict-free ",
+                "replicated data type.",
+            ]))))
+        }
+    }
+
+    /// The ask started where this host starts it reaches the host's gateway, and what the answer
+    /// writes arrives at the row.
+    #[test]
+    fn the_hosts_gateway_answers_a_started_ask() {
+        let ask = Ask::new(
+            Shared::default(),
+            "workspace",
+            None,
+            Some(std::sync::Arc::new(Host) as Arc<dyn crate::platform::Models>),
+        );
+        {
+            let mut state = ask.answered();
+            *state = Answering {
+                question: "what is a CRDT?".into(),
+                provider: "Anthropic".into(),
+                model: "Claude".into(),
+                streaming: true,
+                ..Answering::default()
+            };
+        }
+        let (sender, receiver) = mpsc::channel();
+        ask.start("what is a CRDT?".into(), sender);
+        // The answer's own thread closes its end when it is done, which ends this read.
+        let mut written = String::new();
+        for chunk in receiver {
+            match chunk {
+                Chunk::Text(text) => written.push_str(&text),
+                Chunk::Failed(reason) => panic!("the host's gateway answered: {reason}"),
+            }
+        }
+        assert_eq!(written, "A conflict-free replicated data type.");
     }
 
     #[test]

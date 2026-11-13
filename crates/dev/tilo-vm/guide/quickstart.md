@@ -35,13 +35,13 @@ Set up one VM the way you want every VM to start, then branch it:
 ```sh
 tilo-vm vm create box        # once
 tilo-vm vm start box         # on a current image; log in, add git/SSH keys, the t token, model API keys, sign in
-tilo-vm vm branch box a b c --stop   # shut box down cleanly, then three VMs, each a copy of it
+tilo-vm vm branch box a b c --stop   # shut box down cleanly, three VMs, each a copy of it, taken in
 tilo-vm vm start a           # a, b and c run side by side and diverge from here
 tilo-vm vm list              # what each VM was branched from, and the bases they share
 tilo-vm vm rm box            # the branches keep working
 ```
 
-Branching is copy-on-write, so it takes seconds and copies nothing. Each
+Making the branches is copy-on-write, so it takes seconds and copies nothing. Each
 branch carries the whole disk (home, keys, vaults, settings) and gets its own
 name, UUID, MAC and SSH port; on first boot it notices the new UUID and gives
 itself a new device identity. `box` itself keeps working and keeps its
@@ -50,6 +50,22 @@ current image before branching it: the guest records its UUID only on an image
 with `tilo-device-branch.service`, and without that record its branches keep
 its device key (`tilo-vm vm upgrade box` first if it runs an older one). A frozen base is deleted only once
 no VM uses it (`tilo-vm guide concepts`, "Branch"). libvirt, WHPX and UTM.
+
+Then `vm branch` boots each branch once beside `box`, which takes a few
+minutes. A branch's new device identity is a new device to every workspace it
+holds, and a workspace takes a new device in only through its host: `box`
+hosts the desk and every workspace it made. A branch first started while
+`box` is off shows its windows "waiting for box to take this device in", and
+one whose `box` was removed waits for good; its secrets, settings and
+workspace list come along with the disk either way. So `vm branch` boots
+`box` (it runs on its own copy-on-write disk, beside its branches) and the
+branches, as many at a time as the host's memory holds, waits until each has
+re-keyed and every workspace `box` hosts has taken it in, and stops them: the
+branches off, `box` as it was before (off, with `--stop`). That needs `box`
+to boot here; with too little free memory it says so, and `--no-admit` makes
+the branches without booting anything (each is then taken in at its first
+boot while `box` runs; the next `vm branch box` of the same names boots it
+to be taken in).
 
 A board, a laptop or another real machine that runs a Tilo dev image is
 registered instead: `tilo-vm vm add <name> --ssh root@<address>`, or as its

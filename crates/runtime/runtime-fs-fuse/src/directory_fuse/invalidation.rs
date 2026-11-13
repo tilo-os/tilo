@@ -1,6 +1,7 @@
-//! Kernel dentry eviction, never native pin eviction. Only actual FORGET lets
-//! the filesystem release lookup custody. Notifications run outside callbacks
-//! and table locks; the same managed worker's `NamespaceOwner` owns kernel stop.
+//! Kernel dentry eviction: once the table holds more than `TRIM_AT` nodes, the
+//! thread asks the kernel to drop lookups it no longer needs. Only an actual
+//! FORGET releases a lookup, and notifications run outside callbacks and the
+//! table lock.
 use super::{Node, ROOT, TRIM_AT, TRIM_TO, Table};
 use fuser::{INodeNo, Notifier};
 use std::{
@@ -20,9 +21,9 @@ pub struct InvalidationControl {
     sender: Arc<Mutex<Option<SyncSender<()>>>>,
     started: Arc<AtomicBool>,
 }
-/// A stop request for the same FUSE process, not an observed kernel retirement.
-/// Drop never waits on a notifier syscall that could require FUSE dispatch.
-/// The canonical `NamespaceOwner` must still stop/reap the worker process.
+/// A stop request for this FUSE process, not a sign the kernel retired it.
+/// Drop does not wait on a notifier call that may need FUSE dispatch; the
+/// `NamespaceOwner` still stops the worker process.
 pub struct InvalidationWorker {
     stop: Arc<AtomicBool>,
     control: InvalidationControl,
@@ -40,7 +41,6 @@ impl InvalidationControl {
         if let Ok(sender) = self.sender.lock()
             && let Some(sender) = sender.as_ref()
         {
-            // Coalesce notifications: neither callbacks nor publication wait.
             let _ = sender.try_send(());
         }
     }
@@ -66,7 +66,7 @@ impl InvalidationControl {
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                     let Some(table) = table.upgrade() else { break };
-                    // At most RESIDENT_NODES candidates, never whole Home metadata.
+                    // At most RESIDENT_NODES candidates, never all of Home's.
                     let candidates = match table.lock() {
                         Ok(state) if state.nodes.len() >= TRIM_AT => {
                             let count = state.nodes.len().saturating_sub(TRIM_TO);
@@ -105,7 +105,6 @@ impl InvalidationControl {
                             clear_candidate(&table, ino, &candidate);
                             continue;
                         };
-                        // No table lock, source RPC, callback or lookup decrement.
                         if let Err(failure) =
                             notifier.inval_entry(INodeNo(candidate.parent), name.as_os_str())
                         {
@@ -119,10 +118,8 @@ impl InvalidationControl {
                             }
                             return;
                         }
-                        // Notifier treats ENOENT as success: the positive reply
-                        // may not yet be installed, or a dentry may be busy.
-                        // Retry bounded idle candidates on later wakes/ticks;
-                        // only actual FORGET changes lookup/pin ownership.
+                        // ENOENT is success: the positive reply may not be
+                        // installed yet, or the dentry is busy.
                         clear_candidate(&table, ino, &candidate);
                     }
                 }
@@ -164,8 +161,8 @@ impl Drop for InvalidationWorker {
         if let Ok(mut sender) = self.control.sender.lock() {
             sender.take();
         }
-        // A blocked kernel notification is retained in this exact process;
-        // detaching is not a join/stop witness. NamespaceOwner handles exit.
+        // Detaching is not proof the thread stopped; `NamespaceOwner` handles
+        // the exit.
         if let Some(thread) = self.thread.take()
             && thread.is_finished()
         {

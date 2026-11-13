@@ -8,46 +8,15 @@
 //! scope ([`register`]), the scope the toolkit enters whenever it runs the
 //! window's code; [`current`] answers the store of the scope entered now.
 //!
-//! That is how code no view reaches gets it: an action applying
-//! ([`ActionCx::content`](crate::ActionCx::content)), an action's arguments
-//! being built, the window's views and handlers. Work that leaves the
-//! window's thread captures the store when it starts, as it captures its
-//! wake handle.
+//! That is how code no view reaches gets it: an action's arguments being
+//! built where it is invoked, the window's views and handlers, and the large
+//! parts of a recorded action ([`tilo_actions::content`]), which are kept in
+//! the same store and read back from it. Work that leaves the window's thread
+//! captures the store when it starts, as it captures its wake handle.
 
-use std::cell::RefCell;
-
-use tilo_content::ContentStore;
-use tilo_wake::WakeHandle;
-
-thread_local! {
-    static STORES: RefCell<Vec<(WakeHandle, ContentStore)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Keep `store` as the content store of the window whose wake scope
-/// `window` names, in place of any it had. Windows that closed are
-/// forgotten.
-pub fn register(window: &WakeHandle, store: ContentStore) {
-    STORES.with(|stores| {
-        let mut stores = stores.borrow_mut();
-        stores.retain(|(handle, _)| handle.is_active() && !handle.same_open_scope(window));
-        stores.push((window.clone(), store));
-    });
-}
-
-/// The content store of the window whose code is running: the one
-/// registered for the wake scope entered now. `None` outside a window, or
-/// for one whose host lent no store.
-#[must_use]
-pub fn current() -> Option<ContentStore> {
-    let here = WakeHandle::new();
-    STORES.with(|stores| {
-        stores
-            .borrow()
-            .iter()
-            .find(|(handle, _)| handle.same_open_scope(&here))
-            .map(|(_, store)| store.clone())
-    })
-}
+/// The one registry of window content stores: it lives beside the recorded
+/// actions that keep their parts in them.
+pub use tilo_actions::content::{current, register};
 
 /// Why a content reference an action was given does not resolve here.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -70,10 +39,27 @@ pub enum ContentRefusal {
     NotReadable(String),
 }
 
-/// The hash a `tilo.content:<hash>` reference names, when `value` is one.
+/// The content reference a `tilo.content:<reference>` names, when `value` is one.
 #[must_use]
 pub fn reference_hash(value: &str) -> Option<&str> {
-    tilo_actions::content_hash(value.trim()).filter(|hash| tilo_content::valid_hash(hash))
+    tilo_actions::content_hash(value.trim()).filter(|hash| tilo_content::valid_reference(hash))
+}
+
+/// The content reference `value` names, as a content store reads it: a
+/// `tilo.content:<reference>` address, the reference alone, or a kept
+/// value's stored form (`blake3:<hex>:<len>[:<reference>]`). Its address is
+/// lower case; a sealed reference keeps its key. `None` for anything else.
+#[must_use]
+pub fn named(value: &str) -> Option<String> {
+    let value = value.trim();
+    let reference = tilo_actions::named_reference(value)
+        .map(str::to_owned)
+        .or_else(|| {
+            <crate::Bytes as crate::model::Model>::from_json(&value.into())
+                .ok()?
+                .reference()
+        })?;
+    tilo_content::ContentRef::parse(&reference).map(|parsed| parsed.to_string())
 }
 
 /// The bytes the content reference `address` names, read from the store of
@@ -102,115 +88,42 @@ pub fn read_reference(address: &str) -> Result<Vec<u8>, ContentRefusal> {
 /// As [`read_reference`].
 pub fn read_hash(hash: &str) -> Result<Vec<u8>, ContentRefusal> {
     let named = tilo_actions::content_resource(hash).unwrap_or_else(|| hash.to_owned());
-    if !tilo_content::valid_hash(hash) {
+    if !tilo_content::valid_reference(hash) {
         return Err(ContentRefusal::NotAReference(named));
     }
     let store = current().ok_or_else(|| ContentRefusal::NoStore(named.clone()))?;
     if !store.workspace_scoped() {
         return Err(ContentRefusal::NotInWorkspace(named));
     }
-    store
-        .read(hash)
-        .filter(|bytes| tilo_content::verify(hash, bytes))
-        .ok_or(ContentRefusal::NotReadable(named))
+    // The store verifies what it reads against the address, and opens
+    // sealed content with the reference's key.
+    store.read(hash).ok_or(ContentRefusal::NotReadable(named))
 }
 
-/// The schema of a byte parameter: the bytes inline, as integers, or a
-/// reference to content readable in the workspace.
-#[must_use]
-pub fn bytes_schema() -> serde_json::Value {
-    serde_json::json!({
-        "oneOf": [
-            {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
-            reference_schema(),
-        ]
-    })
+thread_local! {
+    static INVOKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// The schema of a list of byte parameters, each as [`bytes_schema`].
-#[must_use]
-pub fn byte_list_schema() -> serde_json::Value {
-    serde_json::json!({"type": "array", "items": bytes_schema()})
+/// Run `build` as the side invoking an action builds it from its arguments:
+/// the data a [`Bytes`](crate::Bytes) argument carries is kept, sealed, in
+/// the window's store there, and the action carries the reference. Where an
+/// action replays, its arguments already are references.
+pub(crate) fn invoking<T>(build: impl FnOnce() -> T) -> T {
+    let before = INVOKING.with(|invoking| invoking.replace(true));
+    let action = build();
+    INVOKING.with(|invoking| invoking.set(before));
+    action
 }
 
-fn reference_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "string",
-        tilo_actions::CONTENT_ANNOTATION: true,
-        "pattern": "^tilo\\.content:[0-9a-f]{64}$",
-    })
-}
-
-/// Bytes as a byte parameter takes them: inline, or by a content reference
-/// resolved through [`read_reference`] where the action is built.
-struct ByteArgument(Vec<u8>);
-
-impl<'de> serde::Deserialize<'de> for ByteArgument {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visit;
-
-        impl<'de> serde::de::Visitor<'de> for Visit {
-            type Value = ByteArgument;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("bytes, or a tilo.content:<hash> reference")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<ByteArgument, E> {
-                read_reference(value).map(ByteArgument).map_err(E::custom)
-            }
-
-            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<ByteArgument, E> {
-                Ok(ByteArgument(value.to_vec()))
-            }
-
-            fn visit_byte_buf<E: serde::de::Error>(
-                self,
-                value: Vec<u8>,
-            ) -> Result<ByteArgument, E> {
-                Ok(ByteArgument(value))
-            }
-
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<ByteArgument, A::Error> {
-                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1 << 20));
-                while let Some(byte) = seq.next_element::<u8>()? {
-                    bytes.push(byte);
-                }
-                Ok(ByteArgument(bytes))
-            }
-        }
-
-        deserializer.deserialize_any(Visit)
-    }
-}
-
-/// Decode a byte parameter: its bytes inline, or a `tilo.content:<hash>`
-/// reference read through [`read_reference`]. Actions carry intent and
-/// references; bytes travel by session transport into the content store,
-/// and are read from there where the action is built. A recorded action
-/// keeps the bytes it was built with, so its replay reads no reference.
-pub fn bytes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-    <ByteArgument as serde::Deserialize>::deserialize(deserializer).map(|bytes| bytes.0)
-}
-
-/// Decode a list of byte parameters, each as [`bytes`].
-///
-/// # Errors
-///
-/// As [`bytes`], for any item.
-pub fn byte_lists<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<Vec<u8>>, D::Error> {
-    <Vec<ByteArgument> as serde::Deserialize>::deserialize(deserializer)
-        .map(|items| items.into_iter().map(|bytes| bytes.0).collect())
+/// Whether an action is being built where it is invoked ([`invoking`]).
+pub(crate) fn is_invoking() -> bool {
+    INVOKING.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_content::ContentStore;
 
     #[test]
     fn each_window_reads_its_own_store() {
@@ -230,49 +143,69 @@ mod tests {
         }
     }
 
-    #[derive(Debug, serde::Deserialize)]
-    struct Picture {
-        #[serde(deserialize_with = "bytes")]
-        bytes: Vec<u8>,
-        #[serde(default, deserialize_with = "byte_lists")]
-        more: Vec<Vec<u8>>,
-    }
-
-    fn decode(value: serde_json::Value) -> Result<Picture, String> {
+    fn decode(value: serde_json::Value) -> Result<crate::Bytes, String> {
         serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
-    /// A byte parameter takes its bytes inline or by a reference to content
-    /// the window's workspace holds, and refuses any other hash.
+    /// Where an action is invoked, data its argument carries inline, or by a
+    /// reference to content the window's workspace holds, is kept sealed in
+    /// the window's store and named by its reference; any other hash is
+    /// refused. Where it replays, its stored form is read as it is.
     #[test]
-    fn a_byte_parameter_reads_a_reference_only_from_the_workspaces_store() {
+    fn a_bytes_argument_is_kept_sealed_where_the_action_is_invoked() {
         let window = tilo_wake::WakeScope::new();
-        let workspace = ContentStore::memory_in_workspace();
+        let workspace = ContentStore::memory_in_workspace().sealing();
         register(&window.handle(), workspace.clone());
-        let held = workspace.put(b"a picture the workspace holds").unwrap();
+        let picture = vec![9_u8; 4096];
+        let held = workspace.put(&picture).unwrap();
         let reference = tilo_actions::content_resource(&held).unwrap();
         let elsewhere = tilo_content::hash_bytes(b"content kept elsewhere");
         let _entered = window.enter();
 
-        let inline = decode(serde_json::json!({"bytes": [1, 2, 3]})).unwrap();
-        assert_eq!(inline.bytes, [1, 2, 3]);
-        let named =
-            decode(serde_json::json!({"bytes": reference, "more": [[4], reference]})).unwrap();
-        assert_eq!(named.bytes, b"a picture the workspace holds");
         assert_eq!(
-            named.more,
-            [b"\x04".to_vec(), b"a picture the workspace holds".to_vec()]
+            invoking(|| decode(serde_json::json!([1, 2, 3]))).unwrap(),
+            crate::Bytes::Inline(vec![1, 2, 3])
         );
+        let kept = invoking(|| decode(serde_json::json!(picture))).unwrap();
+        let sealed = kept.reference().unwrap();
+        assert!(tilo_content::is_sealed(&sealed), "{sealed}");
+        assert_eq!(kept.read(&workspace), Some(picture.clone()));
+        assert!(
+            !workspace.has(&tilo_content::hash_bytes(&picture)),
+            "never kept in the clear"
+        );
+        let named = invoking(|| decode(serde_json::json!(reference))).unwrap();
+        assert_eq!(named.reference().as_deref(), Some(held.as_str()));
+        assert_eq!(named.hash(), *blake3::hash(&picture).as_bytes());
+
+        // The reference alone names the same content: an operation that
+        // collects content takes a bare reference, sealed or plain, and the
+        // hash content was named by before it was sealed still reads where
+        // the bytes were kept so.
+        let bare = invoking(|| decode(serde_json::json!(held))).unwrap();
+        assert_eq!(bare.hash(), *blake3::hash(&picture).as_bytes());
+        assert_eq!(bare.read(&workspace), Some(picture.clone()));
+        let plain = ContentStore::memory_in_workspace();
+        let plain_hash = plain.put(b"kept in the clear").unwrap();
+        register(&window.handle(), plain.clone());
+        let earlier = invoking(|| decode(serde_json::json!(plain_hash))).unwrap();
+        assert_eq!(earlier.read(&plain), Some(b"kept in the clear".to_vec()));
 
         let missing = format!("tilo.content:{elsewhere}");
-        let refused = decode(serde_json::json!({"bytes": missing})).unwrap_err();
+        let refused = invoking(|| decode(serde_json::json!(missing.clone()))).unwrap_err();
         assert!(
             refused.contains(&ContentRefusal::NotReadable(missing).to_string()),
             "{refused}"
         );
-        assert!(
-            decode(serde_json::json!({"bytes": held})).is_err(),
-            "a bare hash is no reference"
+
+        // Replaying, the stored form reads back as it is; a reference to
+        // read is no stored form, and inline data is an earlier version's.
+        let stored = serde_json::to_value(&kept).unwrap();
+        assert_eq!(decode(stored).unwrap(), kept);
+        assert!(decode(serde_json::json!(reference)).is_err());
+        assert_eq!(
+            decode(serde_json::json!(picture)).unwrap(),
+            crate::Bytes::of(&picture)
         );
     }
 

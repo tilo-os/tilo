@@ -1,10 +1,8 @@
-//! Python behaviours that signed documents, status files and checks were
-//! first defined with, kept exact so the Rust ports judge and write them the
-//! same way: what counts as whitespace and as a line break, how `int()` reads
-//! a number, how strictly `base64.b64decode(validate=True)` decodes, what
-//! `bool()`, `str()`, `repr()` and `==` make of a JSON value, the text
-//! `json.dumps` writes, `hashlib.sha256().hexdigest()`, and the command lines
-//! `argparse` read ([`argparse`]).
+//! Python behaviours that signed documents, status files and checks were first
+//! defined with, kept exact so the Rust ports judge and write them the same way:
+//! whitespace and line breaks, `int()`, `base64.b64decode(validate=True)`,
+//! JSON's `bool()`, `str()`, `repr()` and `==`, the text `json.dumps` writes,
+//! `hashlib.sha256().hexdigest()`, and `argparse` command lines ([`argparse`]).
 
 pub mod argparse;
 
@@ -21,7 +19,6 @@ pub fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
-/// `str.strip()`.
 #[must_use]
 pub fn strip(text: &str) -> &str {
     text.trim_matches(is_space)
@@ -50,7 +47,6 @@ fn is_line_break(c: char) -> bool {
     )
 }
 
-/// `str.splitlines()`.
 #[must_use]
 pub fn splitlines(text: &str) -> Vec<&str> {
     let mut lines = Vec::new();
@@ -71,10 +67,9 @@ pub fn splitlines(text: &str) -> Vec<&str> {
     lines
 }
 
-/// `int(text)` for a decimal string: surrounding whitespace, a sign, and `_`
-/// between digits. Values beyond `i128` saturate; callers refuse them by
-/// range, as Python did. Non-ASCII decimal digits, which Python also reads,
-/// are refused.
+/// `int(text)` for a decimal string: surrounding whitespace, a sign and `_`
+/// between digits. Values beyond `i128` saturate; callers refuse them by range.
+/// Non-ASCII decimal digits, which Python also reads, are refused.
 ///
 /// # Errors
 /// Anything else, worded as Python worded it.
@@ -115,8 +110,8 @@ pub fn int(text: &str) -> Result<i128, String> {
     })
 }
 
-/// `base64.b64decode(text, validate=True)`: the standard alphabet with
-/// correct padding and nothing else; unused trailing bits are ignored.
+/// `base64.b64decode(text, validate=True)`: the standard alphabet with correct
+/// padding and nothing else; unused trailing bits are ignored.
 pub fn b64decode(text: &str) -> Result<Vec<u8>, base64::DecodeError> {
     const STRICT: GeneralPurpose = GeneralPurpose::new(
         &base64::alphabet::STANDARD,
@@ -127,7 +122,6 @@ pub fn b64decode(text: &str) -> Result<Vec<u8>, base64::DecodeError> {
     STRICT.decode(text)
 }
 
-/// `bool(value)` for a parsed JSON value.
 #[must_use]
 pub fn truthy(value: &Value) -> bool {
     match value {
@@ -221,7 +215,6 @@ pub fn equal(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// `value == number`.
 #[must_use]
 pub fn equals_number(value: &Value, number: i64) -> bool {
     equal(value, &Value::from(number))
@@ -257,7 +250,6 @@ pub fn repr_str(text: &str) -> String {
     out
 }
 
-/// `repr()` of a parsed JSON value.
 #[must_use]
 pub fn repr(value: &Value) -> String {
     match value {
@@ -280,7 +272,6 @@ pub fn repr(value: &Value) -> String {
     }
 }
 
-/// `str()` of a parsed JSON value.
 #[must_use]
 pub fn str_of(value: &Value) -> String {
     match value {
@@ -289,14 +280,13 @@ pub fn str_of(value: &Value) -> String {
     }
 }
 
-/// `hashlib.sha256(bytes).hexdigest()`.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
-/// A number as Python's `repr` (and `json.dumps`) writes it.
+/// A number as Python's `repr` writes it.
 #[must_use]
 pub fn number_repr(number: &serde_json::Number) -> String {
     if number.is_i64() || number.is_u64() {
@@ -318,10 +308,8 @@ pub fn number_repr(number: &serde_json::Number) -> String {
     }
 }
 
-/// How `json.dumps` was called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dumps {
-    /// `sort_keys=True`; otherwise insertion order.
     pub sort_keys: bool,
     /// `separators=(",", ":")`; otherwise the default `", "` and `": "`.
     pub compact: bool,
@@ -355,7 +343,7 @@ impl Dumps {
         indent: true,
     };
 
-    /// The text `json.dumps` wrote for `value` (with `ensure_ascii`).
+    /// The text `json.dumps` wrote for `value`, with `ensure_ascii`.
     #[must_use]
     pub fn dumps(self, value: &Value) -> String {
         let mut out = String::new();
@@ -400,7 +388,6 @@ impl Dumps {
         }
     }
 
-    /// What goes before the item at `index` of a container at `level`.
     fn separate(self, index: usize, level: usize, out: &mut String) {
         if index > 0 {
             out.push_str(if self.compact || self.indent {
@@ -428,8 +415,8 @@ fn newline(level: usize, out: &mut String) {
     }
 }
 
-/// A JSON string with `ensure_ascii`: everything outside printable ASCII is
-/// a `\uXXXX` escape (a surrogate pair above the BMP).
+/// A JSON string with `ensure_ascii`: everything outside printable ASCII is a
+/// `\uXXXX` escape, and a surrogate pair above the BMP.
 fn string(text: &str, out: &mut String) {
     out.push('"');
     for c in text.chars() {

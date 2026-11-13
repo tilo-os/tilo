@@ -1,37 +1,40 @@
 //! The model that names what a run of changes was: the one the person's AI settings choose for
-//! Activity, else their default, asked through the model gateway as Activity, which may ask a
-//! completion without tools and nothing more. A session with no provider configured never asks, and
-//! its history keeps the deterministic digest.
+//! Activity, else their default, asked through the host's model gateway, which may ask a completion
+//! without tools and nothing more. A session with no provider configured never asks, and its
+//! history keeps the deterministic digest.
 
-use agent_provider_config::ProviderConfig;
-use tilo_desktop_surface::activity::describer;
+use tilo_desktop_surface::activity::describer::{self, Job};
+
+use crate::platform::Models;
 
 /// The package the describer asks as, as every question this session asks does.
+#[cfg(target_os = "linux")]
 pub(crate) use crate::search_ask::PACKAGE;
 
-/// Whether the person chose any model for Activity: what the describer asks of the desk's thread,
-/// before a request is worth building.
-pub(crate) fn configured() -> bool {
-    ProviderConfig::load().selection_for(PACKAGE).is_some()
-}
-
-/// Ask the model `job`'s question, on a thread of its own: the answer's text,
-/// or nothing when no model is configured or the ask failed. Nothing about a
-/// failure reaches the document.
-pub(crate) fn ask(job: &tilo_desktop_surface::activity::describer::Job) -> Option<String> {
-    let models = models()?;
+/// Ask the model `job`'s question through `models`: the answer's text, or nothing when no model is
+/// available or the ask failed. Nothing about a failure reaches the document.
+#[allow(
+    clippy::future_not_send,
+    reason = "asked on the app runtime's own thread, whose model gateway handle is not Send"
+)]
+pub(crate) async fn answer(models: Option<&dyn Models>, job: &Job) -> String {
+    let Some(models) = models.and_then(Models::models) else {
+        return String::new();
+    };
     let request = job.request();
-    let answer = tilo_rt::try_app()
-        .ok()?
-        .block_on(async move { models.complete(&request).await.ok() })
-        .ok()??;
-    Some(describer::answer_text(&answer))
+    models
+        .complete(&request)
+        .await
+        .map(|response| describer::answer_text(&response))
+        .unwrap_or_default()
 }
 
-/// The model gateway this session runs, as a question asked here reaches it.
+/// The model gateway this desktop runs, as a question asked here reaches it.
+#[cfg(target_os = "linux")]
 pub(crate) struct Gateway;
 
-impl crate::platform::Models for Gateway {
+#[cfg(target_os = "linux")]
+impl Models for Gateway {
     fn models(&self) -> Option<ui::models::Models> {
         models()
     }
@@ -39,10 +42,11 @@ impl crate::platform::Models for Gateway {
 
 /// The model Activity asks, as a capability of this session; `None` while settings choose none or
 /// no gateway runs in this session.
+#[cfg(target_os = "linux")]
 pub(crate) fn models() -> Option<ui::models::Models> {
-    let config = ProviderConfig::load();
+    let config = agent_provider_config::ProviderConfig::load();
     let (profile_id, model_id) = config
-        .selection_for(PACKAGE)
+        .selection_for(crate::search_ask::PACKAGE)
         .map(|(profile, model)| (profile.id.clone(), model.id.clone()))?;
     let gateway = gateway()?;
     match tilo_model_client::runtime_client::from_descriptor_selection(
@@ -60,6 +64,7 @@ pub(crate) fn models() -> Option<ui::models::Models> {
 
 /// A connection to this session's model gateway, made for Activity the way the launcher makes one
 /// for an app it starts.
+#[cfg(target_os = "linux")]
 fn gateway() -> Option<std::os::fd::OwnedFd> {
     let name = launcher::services::MODEL_GATEWAY_SERVICE;
     let requirement = launcher::manifest::ServiceReq::parse(

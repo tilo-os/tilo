@@ -1,12 +1,4 @@
 //! The freedesktop Trash, by its directory layout alone.
-//!
-//! A Trash directory holds `files/<name>`, the trashed item, and
-//! `info/<name>.trashinfo`, where it came from and when
-//! (<https://specifications.freedesktop.org/trash-spec/latest/>). Everything
-//! here works from those two directories and the item: no mount table, which
-//! a sandboxed app cannot read. Whether an item can go into a Trash is the
-//! rename's answer (`EXDEV`: another filesystem, or another mount of one),
-//! not a lookup.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
@@ -16,10 +8,8 @@ use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
-/// Why an item did not go into any of the Trashes it was offered.
 #[derive(Debug)]
 pub(super) enum MoveError {
-    /// It is on another filesystem than every one of them.
     OtherFilesystem,
     Io(io::Error),
 }
@@ -40,7 +30,6 @@ pub(super) fn move_in(
     prepare: &dyn Fn(&Path) -> io::Result<()>,
 ) -> Result<PathBuf, MoveError> {
     let original = absolute(path)?;
-    // The item itself, not what a symbolic link names.
     std::fs::symlink_metadata(&original)?;
     for (index, files) in trashes.iter().enumerate() {
         if index > 0 {
@@ -111,7 +100,6 @@ fn move_into(original: &Path, files: &Path) -> io::Result<PathBuf> {
     Err(io::Error::other("no free name in Trash"))
 }
 
-/// The `.trashinfo` record of `original`, trashed now.
 fn record(original: &Path) -> String {
     format!(
         "[Trash Info]\nPath={}\nDeletionDate={}\n",
@@ -120,7 +108,6 @@ fn record(original: &Path) -> String {
     )
 }
 
-/// The Trash's `info` directory beside `files`.
 fn info_dir(files: &Path) -> io::Result<PathBuf> {
     if files.file_name() != Some(OsStr::new("files")) {
         return Err(io::Error::new(
@@ -140,7 +127,6 @@ fn info_name(name: &OsStr) -> OsString {
     info
 }
 
-/// The record of `entry` (an item in a Trash's `files` directory).
 fn info_of(entry: &Path) -> io::Result<PathBuf> {
     let files = entry
         .parent()
@@ -305,7 +291,6 @@ fn decode(encoded: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Local time now as the spec's `DeletionDate` wants it, `YYYY-MM-DDThh:mm:ss`.
 fn local_now() -> String {
     // SAFETY: `time` with a null pointer only returns the current time.
     let now = unsafe { libc::time(std::ptr::null_mut()) };

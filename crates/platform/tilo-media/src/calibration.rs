@@ -1,33 +1,17 @@
-//! Acoustic calibration of a speaker group from a measured sweep.
+//! Acoustic calibration of a speaker group: each member plays an exponential sine
+//! sweep at a scheduled time while a microphone at the listening position records
+//! it, and deconvolving with the sweep's inverse filter (Farina's method) yields
+//! that speaker's impulse response.
 //!
-//! Each member plays an exponential sine sweep at a scheduled time while a
-//! microphone at the listening position records it. Convolving the recording
-//! with the sweep's inverse filter (Farina's method) yields the speaker's
-//! impulse response at the microphone, from which [`LogSweep::measure`] reads:
-//!
-//! * the arrival delay relative to the scheduled play time, with sub-sample
-//!   precision from parabolic interpolation around the impulse peak;
-//! * the level in dB, as the log-average of the magnitude response over the
-//!   mid band, where room reflections average out;
-//! * the magnitude response, smoothed to 1/6 octave;
-//! * a room-EQ fit of at most eight peaking cuts below 500 Hz that flattens
-//!   room modes toward that level, never boosting.
-//!
-//! [`CalibrationResult::align`] then turns the measurements of every member
-//! into per-member trims: each member is delayed to the latest arrival and
-//! attenuated to the quietest level, so the group sounds as one speaker.
-//!
-//! Harmonic distortion of the speaker lands at negative time in the
-//! deconvolved response, ahead of the scheduled play time, so the measured
-//! response window never contains it.
+//! [`CalibrationResult::align`] turns the measurements into per-member trims: each
+//! member is delayed to the latest arrival and attenuated to the quietest level, so
+//! the group sounds as one speaker.
 
 use std::f64::consts::PI;
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 
-/// Peak amplitude of the generated sweep: 6 dB of headroom for the playback
-/// path.
 pub const SWEEP_AMPLITUDE: f64 = 0.5;
 /// Fade applied to each end of the sweep so it starts and stops without a
 /// click.
@@ -39,27 +23,17 @@ pub const MAX_ARRIVAL_S: f64 = 0.3;
 const RESPONSE_WINDOW_S: f64 = 0.25;
 /// Response kept before the peak, so a smeared onset is not cut.
 const PRE_PEAK_S: f64 = 0.002;
-/// Band whose log-average magnitude is the speaker's level. Above the room
-/// modes, below where directivity dominates.
 const LEVEL_BAND_HZ: (f64, f64) = (300.0, 6_000.0);
-/// Spacing of the reported response points, in octaves.
 const RESPONSE_STEP_OCTAVES: f64 = 1.0 / 24.0;
-/// Width of the smoothing window around each response point, in octaves.
 const SMOOTHING_OCTAVES: f64 = 1.0 / 6.0;
 /// A peak must be this much stronger than the impulse response's RMS to
 /// count as an arrival rather than noise.
 const MIN_PEAK_TO_RMS: f64 = 8.0;
 
-/// Room-EQ bands a single member may use.
 pub const EQ_MAX_BANDS: usize = 8;
-/// Highest centre frequency of a room-EQ band: above this, response dips and
-/// peaks depend on the listening position too much to correct.
 pub const EQ_MAX_HZ: f64 = 500.0;
-/// Deepest cut the room EQ applies at any frequency.
 pub const EQ_MAX_CUT_DB: f64 = 12.0;
-/// Excess over the target that is left alone.
 const EQ_TOLERANCE_DB: f64 = 1.0;
-/// Narrowest and widest room-EQ band.
 const EQ_Q_RANGE: (f64, f64) = (0.5, 10.0);
 
 /// Why a measurement could not be made.
@@ -68,12 +42,8 @@ pub enum CalibrationError {
     /// The sweep parameters are outside `0 < start < end < Nyquist`, or the
     /// sweep is shorter than 100 ms.
     InvalidSweep,
-    /// The recording started after the sweep was scheduled to play.
     CaptureStartedLate,
-    /// The recording ends before the whole sweep could have arrived.
     CaptureTooShort,
-    /// No impulse stands out of the noise: the speaker is silent, muted or
-    /// out of range of the microphone.
     NoArrival,
 }
 
@@ -90,7 +60,6 @@ impl std::fmt::Display for CalibrationError {
 
 impl std::error::Error for CalibrationError {}
 
-/// An exponential sine sweep and its inverse filter.
 #[derive(Clone, Debug)]
 pub struct LogSweep {
     sample_rate: u32,
@@ -169,20 +138,18 @@ impl LogSweep {
         self.sample_rate
     }
 
-    /// The sweep to play.
     pub fn signal(&self) -> &[f32] {
         &self.signal
     }
 
-    /// The impulse response contained in `capture`, starting `pre` samples
-    /// before the whole sample at or before the scheduled play time, which
-    /// lies `play_offset` samples into the capture. Also returns the fraction
-    /// of a sample by which that whole sample precedes the play time.
+    /// The impulse response contained in `capture`, starting `pre` samples before the
+    /// whole sample at or before the scheduled play time, which lies `play_offset`
+    /// samples into the capture. Also returns the fraction of a sample by which that
+    /// whole sample precedes the play time.
     ///
-    /// Samples before the play time come from the convolution's leading
-    /// half, which holds only the (zero) response to silence and, much
-    /// earlier, harmonic distortion; they let a peak at zero delay keep its
-    /// leading side.
+    /// Samples before the play time come from the convolution's leading half, which
+    /// holds only the response to silence and, much earlier, harmonic distortion; they
+    /// let a peak at zero delay keep its leading side.
     fn impulse_response(&self, capture: &[f32], play_offset: f64, pre: usize) -> (Vec<f64>, f64) {
         let capture: Vec<f64> = capture.iter().map(|&s| f64::from(s)).collect();
         let inverse: Vec<f64> = self.inverse.iter().map(|&s| f64::from(s)).collect();
@@ -207,10 +174,6 @@ impl LogSweep {
         (response, play_offset - whole)
     }
 
-    /// Measures one speaker from a recording of its sweep.
-    ///
-    /// `capture` starts at local time `capture_start_ns`; the sweep was
-    /// scheduled to leave the speaker at local time `play_at_ns`.
     pub fn measure(
         &self,
         capture: &[f32],
@@ -273,38 +236,28 @@ impl LogSweep {
     }
 }
 
-/// What one speaker sounds like at the microphone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpeakerMeasurement {
-    /// Delay from the scheduled play time to the direct sound, in samples.
     pub arrival_samples: f64,
-    /// The same delay in nanoseconds.
     pub arrival_ns: i64,
-    /// Level relative to a speaker that reproduces the sweep at unity gain.
     pub level_db: f64,
-    /// How far the direct sound's peak stands above the impulse response's
-    /// RMS, in dB: how much a fused result should trust this reading.
     pub snr_db: f64,
     pub response: MagnitudeResponse,
-    /// Cuts that flatten this speaker's room modes toward `level_db`.
     pub eq: Vec<EqBand>,
 }
 
-/// A point of a smoothed magnitude response.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResponsePoint {
     pub hz: f64,
     pub db: f64,
 }
 
-/// A magnitude response smoothed to 1/6 octave, sampled every 1/24 octave.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MagnitudeResponse {
     pub points: Vec<ResponsePoint>,
 }
 
 impl MagnitudeResponse {
-    /// The smoothed response of `impulse` between `start_hz` and `end_hz`.
     fn from_impulse(impulse: &[f64], rate: f64, start_hz: f64, end_hz: f64) -> Self {
         let size = impulse.len().max(16_384).next_power_of_two();
         let power: Vec<f64> = spectrum(impulse, size)
@@ -360,7 +313,6 @@ impl MagnitudeResponse {
         })
     }
 
-    /// Mean of the dB values of the points between `low_hz` and `high_hz`.
     pub fn log_average_db(&self, low_hz: f64, high_hz: f64) -> f64 {
         let (sum, count) = self
             .points
@@ -376,8 +328,6 @@ impl MagnitudeResponse {
         }
     }
 
-    /// The smoothed level at `hz`, interpolated between points; `None` past
-    /// the highest point.
     #[cfg(test)]
     pub fn db_at(&self, hz: f64) -> Option<f64> {
         let after = self.points.iter().position(|p| p.hz >= hz)?;
@@ -390,8 +340,6 @@ impl MagnitudeResponse {
     }
 }
 
-/// Normalized biquad coefficients (`a0 = 1`), for a transposed direct form II
-/// filter: `y = b0·x + z1; z1 = b1·x − a1·y + z2; z2 = b2·x − a2·y`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BiquadCoefficients {
     pub b0: f64,
@@ -414,7 +362,6 @@ impl BiquadCoefficients {
     }
 }
 
-/// One peaking filter of a room EQ.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EqBand {
     pub center_hz: f64,
@@ -424,7 +371,6 @@ pub struct EqBand {
 }
 
 impl EqBand {
-    /// Peaking-filter coefficients from the audio EQ cookbook.
     pub fn coefficients(&self, sample_rate: u32) -> BiquadCoefficients {
         let amplitude = 10.0_f64.powf(self.gain_db / 40.0);
         let w0 = 2.0 * PI * self.center_hz / f64::from(sample_rate);
@@ -441,7 +387,6 @@ impl EqBand {
     }
 }
 
-/// The combined gain of `bands` at `hz`, in dB.
 pub fn eq_db(bands: &[EqBand], hz: f64, sample_rate: u32) -> f64 {
     bands
         .iter()
@@ -514,27 +459,19 @@ pub fn fit_room_eq(response: &MagnitudeResponse, target_db: f64, sample_rate: u3
     bands
 }
 
-/// The trims one member applies.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MemberCalibration {
-    /// Extra playout delay: how much earlier this member's sound arrives
-    /// than the latest member's.
     pub delay_trim_ns: i64,
-    /// Gain change in dB, zero or negative: how much louder this member is
-    /// than the quietest.
     pub gain_trim_db: f64,
     pub eq: Vec<EqBand>,
 }
 
-/// Trims that make a group's members arrive together at the same level.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CalibrationResult {
-    /// One entry per measurement, in the order given.
     pub per_member: Vec<MemberCalibration>,
 }
 
 impl CalibrationResult {
-    /// Aligns every member to the latest arrival and the quietest level.
     pub fn align(measurements: &[SpeakerMeasurement]) -> Self {
         let latest = measurements.iter().map(|m| m.arrival_ns).max().unwrap_or(0);
         let quietest = measurements
@@ -555,13 +492,10 @@ impl CalibrationResult {
     }
 }
 
-/// Band well inside the sweep, where its spectrum is flat.
 fn mid_band(start_hz: f64, end_hz: f64) -> (f64, f64) {
     (start_hz * 2.0, end_hz / 2.0)
 }
 
-/// Fraction of a sample by which the true peak lies after `peak`, from a
-/// parabola through the magnitudes around it.
 fn parabolic_offset(signal: &[f64], peak: usize) -> f64 {
     let at = |i: Option<usize>| i.and_then(|i| signal.get(i)).map_or(0.0, |v| v.abs());
     let (before, center, after) = (
@@ -577,7 +511,6 @@ fn parabolic_offset(signal: &[f64], peak: usize) -> f64 {
     }
 }
 
-/// Half-Hann fade over the last quarter of a window of `len` samples.
 fn tail_fade(index: usize, len: usize) -> f64 {
     let fade = len / 4;
     let from_end = len.saturating_sub(index);
@@ -617,7 +550,6 @@ fn multiply(a: &[Complex<f64>], b: &[Complex<f64>]) -> Vec<Complex<f64>> {
         .collect()
 }
 
-/// Indices of the bins of a `size`-point spectrum between `low` and `high` Hz.
 fn band_bins(size: usize, rate: f64, low: f64, high: f64) -> std::ops::RangeInclusive<usize> {
     let bin_hz = rate / usize_to_f64(size);
     round_to_usize(low / bin_hz)..=round_to_usize(high / bin_hz)
@@ -682,7 +614,6 @@ mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
-    /// The recording starts this long before the sweep is scheduled.
     const LEAD_NS: i64 = 100_000_000;
     const CAPTURE_START_NS: i64 = 7_000_000_000;
 
@@ -697,9 +628,6 @@ mod tests {
         }
     }
 
-    /// A synthetic room: the sweep delayed by `delay` samples (the fraction
-    /// through a windowed-sinc interpolator), scaled by `gain_db`, with two
-    /// early reflections, an optional resonance, and white noise at -60 dBFS.
     fn room(
         sweep: &LogSweep,
         delay: f64,
@@ -798,8 +726,6 @@ mod tests {
         let m = measure(&sweep, &capture);
         assert!(m.arrival_samples.abs() < 0.05, "{}", m.arrival_samples);
         assert!(m.level_db.abs() < 0.1, "{}", m.level_db);
-        // Flat within half a decibel over the mid band; the analysis window
-        // and the sweep's low edge allow a little more deep in the bass.
         for point in &m.response.points {
             let tolerance = match point.hz {
                 hz if (200.0..10_000.0).contains(&hz) => 0.5,

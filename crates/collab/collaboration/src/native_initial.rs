@@ -13,25 +13,9 @@ struct Construction {
     manager: RefCell<Option<CollaborationManager>>,
     bridge: Option<InitialReadBridge>,
     primary: RefCell<Option<CommittedDocument>>,
-    #[cfg(feature = "broker-transport")]
-    creation: RefCell<std::collections::BTreeMap<String, CreationCapture>>,
     failure: RefCell<Option<String>>,
     transferring: Cell<bool>,
     component_scope: RefCell<Option<crate::wake::WakeScope>>,
-}
-#[cfg(feature = "broker-transport")]
-struct CreationCapture {
-    read: CommittedDocument,
-    claimed: bool,
-}
-#[cfg(feature = "broker-transport")]
-impl CreationCapture {
-    fn new(read: CommittedDocument) -> Self {
-        Self {
-            read,
-            claimed: false,
-        }
-    }
 }
 /// The record a component is bound to, as construction custody reads it: the
 /// toolkit's callback binding (`ui::bound_dispatch::CallbackBinding`).
@@ -57,9 +41,6 @@ pub trait ComponentBinding {
 /// (`ui::record::RecordOpenError`), in the same words.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RecordReadError {
-    /// The record is not the one the custody was taken for.
-    #[error("record identity does not match its binding")]
-    IdentityMismatch,
     /// The record the workspace sends this device only once it asks is not here
     /// yet: it was asked for.
     #[error("the record is on its way from the workspace")]
@@ -195,24 +176,10 @@ impl NativeConstruction {
                 }
             }
         };
-        #[cfg(feature = "broker-transport")]
-        let creations = {
-            let creation = primary
-                .as_ref()
-                .filter(|read| read.creation_workspace().is_some())
-                .cloned();
-            let mut creations = std::collections::BTreeMap::new();
-            if let (Some(read), Some(bridge)) = (creation, bridge.as_ref()) {
-                creations.insert(bridge.route.channel_id(), CreationCapture::new(read));
-            }
-            creations
-        };
         let state = Rc::new(Construction {
             manager: RefCell::new(Some(manager)),
             bridge,
             primary: RefCell::new(primary),
-            #[cfg(feature = "broker-transport")]
-            creation: RefCell::new(creations),
             failure: RefCell::new(None),
             transferring: Cell::new(false),
             component_scope: RefCell::new(scope),
@@ -332,98 +299,6 @@ impl NativeConstruction {
         Ok(())
     }
 }
-/// Retains only an actual original creation capture, never a restore heuristic.
-pub struct RecordInitialization {
-    read: CommittedDocument,
-    #[cfg(feature = "broker-transport")]
-    bridge: InitialReadBridge,
-    checkout: crate::record::RecordCheckout,
-}
-impl RecordInitialization {
-    /// Check the document `checkout` is initialized with against the
-    /// original creation capture: `validate` reads the capture, and is
-    /// called only for the record the capture was taken for.
-    ///
-    /// # Errors
-    /// [`RecordReadError::IdentityMismatch`] for another record, else what
-    /// `validate` found.
-    pub fn validate_original<E: From<RecordReadError>>(
-        &self,
-        checkout: &crate::record::RecordCheckout,
-        validate: impl FnOnce(&CommittedDocument) -> Result<(), E>,
-    ) -> Result<(), E> {
-        if checkout != &self.checkout {
-            return Err(RecordReadError::IdentityMismatch.into());
-        }
-        validate(&self.read)
-    }
-    pub fn workspace(&self) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
-        #[cfg(feature = "broker-transport")]
-        {
-            self.read.creation_workspace()
-        }
-        #[cfg(not(feature = "broker-transport"))]
-        {
-            None
-        }
-    }
-    pub fn commit(&self, kind: &str, document: Vec<u8>) -> Result<(), String> {
-        #[cfg(feature = "broker-transport")]
-        {
-            let request = self.read.initialization_request(kind, document)?;
-            self.bridge.initialize(request)?;
-            self.read.initialized();
-            Ok(())
-        }
-        #[cfg(not(feature = "broker-transport"))]
-        {
-            let _ = (kind, document);
-            Err("native initialization unavailable".into())
-        }
-    }
-}
-#[cfg(feature = "broker-transport")]
-pub fn take_initialization(
-    app: &str,
-    workspace: &str,
-    checkout: &crate::record::RecordCheckout,
-) -> Result<Option<RecordInitialization>, String> {
-    let Some(state) = current() else {
-        return Ok(None);
-    };
-    let Some(bridge) = state.bridge.as_ref() else {
-        return Ok(None);
-    };
-    bridge.check_scope(app, Some(workspace))?;
-    let mut scoped = bridge.clone();
-    if !checkout.id.is_package_primary() {
-        scoped.route = RouteSpec::record(app, bridge.route.cluster_id, checkout.id.as_str());
-    }
-    let mut captures = state.creation.borrow_mut();
-    let Some(capture) = captures.get_mut(&scoped.route.channel_id()) else {
-        return Ok(None);
-    };
-    if capture.claimed {
-        return Ok(None);
-    }
-    capture.claimed = true;
-    Ok(Some(RecordInitialization {
-        read: capture.read.clone(),
-        bridge: scoped,
-        checkout: checkout.clone(),
-    }))
-}
-// Portable hosts cannot receive a native creation capture. Keep the public
-// construction path available without ever fabricating a broker witness.
-#[cfg(not(feature = "broker-transport"))]
-pub fn take_initialization(
-    _app: &str,
-    _workspace: &str,
-    _checkout: &crate::record::RecordCheckout,
-) -> Result<Option<RecordInitialization>, String> {
-    Ok(None)
-}
-
 impl NativeConstruction {
     /// Leave construction, handing back the manager and the component's
     /// wake scope when nothing took them: a launch whose record is not on
@@ -623,41 +498,6 @@ impl InitialReadBridge {
         }
         Ok(received)
     }
-    fn initialize(
-        &self,
-        request: runtime_collab::committed_document::Request,
-    ) -> Result<(), String> {
-        self.check()?;
-        let tx = self
-            .commands
-            .upgrade()
-            .ok_or("native initialization worker ended")?;
-        let (reply, received) = std::sync::mpsc::sync_channel(1);
-        if !enqueue_sdk_command(
-            &tx,
-            SdkCommand::Initialize {
-                route: self.route.clone(),
-                request,
-                reply,
-            },
-            &self.state,
-        ) {
-            return Err("native initialization queue unavailable".into());
-        }
-        // No clock ends the wait: the worker answers once the broker has
-        // committed the initialization, or it failed. A worker that ends
-        // drops the reply unanswered; the bound only re-checks custody.
-        loop {
-            self.check()?;
-            match received.recv_timeout(crate::time::Duration::from_millis(10)) {
-                Ok(result) => return result.map(|_| ()),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("native initialization reply ended".into());
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-        }
-    }
     /// The manager's connection to the session, whether its primary route
     /// is acknowledged yet or not: the route it announced is the one the
     /// session answers, and a request sent before the join waits for it in
@@ -748,11 +588,6 @@ impl InitialReadBridge {
         if binding.admission_route().as_ref() != Some(requested) {
             return Err("component record route changed before history application".into());
         }
-        // Creation remains owned by the original receipt/initialization path.
-        // A staged replacement must never materialize a reservation implicitly.
-        if read.creation_workspace().is_some() {
-            return Err("original application creation is not initialized".into());
-        }
         let _entry = binding
             .enter()
             .map_err(|error| format!("component owner history admission refused: {error:?}"))?;
@@ -815,53 +650,13 @@ impl InitialReadBridge {
         checkout: &crate::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, String> {
         self.check_scope(app, Some(workspace))?;
-        let route = if checkout.id.is_package_primary() {
-            self.route.clone()
-        } else {
-            RouteSpec::record(app, self.route.cluster_id, checkout.id.as_str())
-        };
-        if let Some(read) = current()
-            .and_then(|state| {
-                state
-                    .creation
-                    .borrow()
-                    .get(&route.channel_id())
-                    .map(|capture| capture.read.clone())
-            })
-            .filter(|read| read.creation_workspace().is_some())
-        {
-            // A receiptless refresh cannot replace the source of first
-            // materialization. But it must not conceal newer owner history.
-            if let Some(observed) = self.state.document_reads.initial(&route.channel_id()) {
-                if captured_heads(&read)? != captured_heads(&observed)? {
-                    return Err("original creation graph changed before initialization".into());
-                }
-                observed.applied();
-            }
-            return Ok(Some(read));
-        }
-        let read = if checkout.id.is_package_primary() {
+        if checkout.id.is_package_primary() {
             if let Some(initial) = primary(app, Some(workspace)) {
-                Some(initial.map(|(_, read)| read)?)
-            } else {
-                self.read(None)?
+                return initial.map(|(_, read)| Some(read));
             }
-        } else {
-            self.read(Some(checkout))?
-        };
-        let Some(read) = read else {
-            return Ok(None);
-        };
-        if read.creation_workspace().is_some()
-            && let Some(state) = current()
-        {
-            state
-                .creation
-                .borrow_mut()
-                .entry(route.channel_id())
-                .or_insert_with(|| CreationCapture::new(read.clone()));
+            return self.read(None);
         }
-        Ok(Some(read))
+        self.read(Some(checkout))
     }
     /// Whether the broker answered `checkout`'s read as the app's own
     /// channel's: a record a sealed workspace does not hold yet, which is new and
@@ -968,18 +763,6 @@ impl InitialReadBridge {
     }
 }
 
-#[cfg(feature = "broker-transport")]
-fn captured_heads(read: &CommittedDocument) -> Result<Vec<automerge::ChangeHash>, String> {
-    read.with_mutation(|mutation| {
-        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            return Err("creation capture is not a full committed graph".into());
-        };
-        automerge::AutoCommit::load(bytes)
-            .map(|document| automerge::transaction::Transactable::base_heads(&document))
-            .map_err(|error| error.to_string())
-    })?
-}
-
 /// Without the broker transport there is no SDK worker to read committed
 /// history from, so no bridge can exist: the portable host always takes the
 /// non-Required path.
@@ -1045,102 +828,10 @@ impl InitialReadBridge {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-#[cfg(feature = "broker-transport")]
-#[path = "native_initial/named_creation.rs"]
-pub mod named_creation;
-
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]
 mod tests {
-    use super::{
-        BridgeState, CollaborationManager, Construction, InitialReadBridge, NativeConstruction,
-        RouteSpec, take_initialization,
-    };
-    use crate::broker::{ByteBudget, committed_document::read_capture_using};
-    use runtime_collab::committed_document::{
-        CreationChunk, CreationReceipt, CreationWorkspace, Reply,
-    };
-    use std::{
-        cell::{Cell, RefCell},
-        collections::BTreeMap,
-        rc::Rc,
-    };
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn component_primary_read_retains_original_creation_receipt_without_eager_read() {
-        let workspace_id = uuid::Uuid::new_v4();
-        let route = RouteSpec::app("so.tilo.chat", workspace_id);
-        let workspace = CreationWorkspace {
-            id: workspace_id.to_string(),
-            name: "Verified workspace".into(),
-        };
-        let first = Reply::Created {
-            receipt: CreationReceipt {
-                token: [7; 16],
-                workspace: workspace.clone(),
-            },
-            chunk: CreationChunk {
-                capture: 1,
-                revision: [3; 32],
-                total: 1,
-                bytes: vec![1],
-                token: [4; 16],
-            },
-        };
-        let (read, _) = read_capture_using(first, &ByteBudget::new(), async |request| {
-            assert_eq!(
-                request,
-                runtime_collab::committed_document::Request::Cancel {
-                    capture: 1,
-                    token: [4; 16],
-                }
-            );
-            Ok(Reply::Cancelled)
-        })
-        .await
-        .unwrap();
-        let bridge_state = BridgeState::new();
-        bridge_state
-            .document_reads
-            .stage_for_test(&route.channel_id(), read);
-        let (sender, _receiver) = tokio::sync::mpsc::channel(4);
-        let bridge = InitialReadBridge {
-            route,
-            commands: sender.downgrade(),
-            state: bridge_state,
-        };
-        let state = Rc::new(Construction {
-            manager: RefCell::new(Some(CollaborationManager::disabled())),
-            bridge: Some(bridge.clone()),
-            primary: RefCell::new(None),
-            creation: RefCell::new(BTreeMap::new()),
-            failure: RefCell::new(None),
-            transferring: Cell::new(false),
-            component_scope: RefCell::new(None),
-        });
-        let previous = super::CONSTRUCTION.with(|slot| slot.replace(Some(Rc::downgrade(&state))));
-        let _construction = NativeConstruction { state, previous };
-        let checkout = crate::record::RecordCheckout::new(
-            crate::record::RecordId::package_primary(),
-            crate::record::RecordKind::new("chat.workspace"),
-        );
-        bridge
-            .record("so.tilo.chat", &workspace_id.to_string(), &checkout)
-            .unwrap()
-            .unwrap()
-            .applied();
-        let initialization =
-            take_initialization("so.tilo.chat", &workspace_id.to_string(), &checkout)
-                .unwrap()
-                .unwrap();
-        assert_eq!(initialization.workspace(), Some(&workspace));
-        assert!(
-            take_initialization("so.tilo.chat", &workspace_id.to_string(), &checkout)
-                .unwrap()
-                .is_none()
-        );
-    }
+    use super::{BridgeState, InitialReadBridge, RouteSpec};
 
     /// A record a sealed workspace does not hold yet is new, and the app makes it
     /// on its own channel: the broker answers its read so ([`Reply::Legacy`]).

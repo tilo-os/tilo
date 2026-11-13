@@ -2,20 +2,6 @@
 //! real session: the production `runtime-identity` and `secret-vault` code,
 //! not their test builds (which always choose files), against the built
 //! `tilo-secret-service` on a private session bus.
-//!
-//! The four states a session can meet: no Secret Service on the bus, one that
-//! answers, one that is locked (its vault belongs to another device
-//! identity, as when the device key is unavailable), and the same service
-//! restarted under a client that keeps running. Each is asserted on what the
-//! code records and reports (the identity record's secret reference, the
-//! `KeyProtection` Settings shows, the files on disk), and a locked store
-//! must never cost an existing key.
-//!
-//! The bus is a `dbus-daemon` with its own configuration: no service
-//! directories, so nothing but the service this test starts can own
-//! `org.freedesktop.secrets`. The tools must exist: a check that cannot
-//! observe its subject fails (CI installs them with
-//! `tools/ci/ensure-session-bus-tools.sh`).
 
 #![allow(
     clippy::unwrap_used,
@@ -78,7 +64,6 @@ impl Bus {
         self.root.path().join(name)
     }
 
-    /// What every client of this session passes as `DBUS_SESSION_BUS_ADDRESS`.
     fn address(&self) -> &str {
         self.daemon.address()
     }
@@ -106,7 +91,6 @@ impl Bus {
             .success()
     }
 
-    /// Serve the person's store with the device identity under `device`.
     fn start_service(&mut self, device: &str) {
         let command = self.service_command(device);
         self.spawn_service(command);
@@ -240,7 +224,6 @@ fn key_file(identities: &Path, seed: u8) -> PathBuf {
         .join(format!("{}.key", locator(seed)))
 }
 
-/// The key file fallback: the key alone, mode 0600, below a 0700 directory.
 fn assert_private_key_file(identities: &Path, seed: u8) {
     let file = key_file(identities, seed);
     assert_eq!(std::fs::read(&file).unwrap(), [seed; 32]);
@@ -308,7 +291,6 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     let launch_metadata = runtime_identity::load_metadata_for_launch(&keyring).unwrap();
     let vault = bus.path("data/tilo/secrets/vault.tseal");
     let sealed = std::fs::read(&vault).unwrap();
-    // The item's value is the key in hex, as `secret-tool` stored it.
     let hex_key = hex::encode([2_u8; 32]);
     assert!(
         !sealed.windows(32).any(|window| window == [2_u8; 32])
@@ -370,7 +352,6 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     );
     assert_eq!(std::fs::read(&vault).unwrap(), sealed_before);
 
-    // 5. The device identity is back: the original key opens again.
     bus.stop_service();
     bus.start_service("device-a");
     assert_eq!(bus.status(), "open");
@@ -402,7 +383,6 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
 // process. These tests run the production client code in child processes of
 // this test binary (`custody_child`), so only a child turns non-dumpable.
 
-/// Which client a child process of this test is, and what it is given.
 #[cfg(target_os = "linux")]
 const CHILD: &str = "TILO_CUSTODY_CHILD";
 #[cfg(target_os = "linux")]
@@ -465,7 +445,6 @@ fn dumpable() -> bool {
     unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) == 1 }
 }
 
-/// Turn non-dumpable without holding any device key.
 #[cfg(target_os = "linux")]
 fn turn_non_dumpable() {
     // SAFETY: PR_SET_DUMPABLE takes scalar arguments only.
@@ -543,7 +522,7 @@ fn assert_access_denied<T: std::fmt::Debug>(answer: zbus::Result<T>) {
 #[cfg(target_os = "linux")]
 fn serve_with_this_binary_as_portal_host() {
     use std::sync::Arc;
-    use tilo_secret_service::app::AppId;
+    use tilo_secret_service::app::CallerId;
     use tilo_secret_service::service::{BUS_NAME, BusResolver, Core, Managers, publish};
     use tilo_secret_service::store::{DeviceIdentityKey, Store};
     let device = child_env(CHILD_DEVICE);
@@ -555,7 +534,7 @@ fn serve_with_this_binary_as_portal_host() {
     let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));
     assert!(store.locked().is_none(), "the store did not open");
     let exe = std::fs::read_link("/proc/self/exe").unwrap();
-    let host = AppId::parse(&format!("local-process:{}", exe.display())).unwrap();
+    let host = CallerId::parse(&format!("local-process:{}", exe.display())).unwrap();
     block_on(async move {
         let connection = zbus::Connection::session().await.unwrap();
         let core = Core::new(
@@ -667,7 +646,6 @@ fn custody_child() {
             assert_eq!(secret.len(), 32);
             // The proof holds for the connection: no second one is needed.
             assert_eq!(sandbox_secret(&connection).await.unwrap(), secret);
-            // It names that connection only: another one proves on its own.
             let other = session_connection().await;
             assert_access_denied(sandbox_secret(&other).await);
             assert!(!dumpable(), "the client turned dumpable again");
@@ -678,7 +656,6 @@ fn custody_child() {
 
 #[cfg(target_os = "linux")]
 impl Bus {
-    /// Start this test binary again as the child `role`.
     fn child(&self, role: &str, device: &str) -> Child {
         use std::os::unix::process::CommandExt as _;
         let mut command = self.command(std::env::current_exe().unwrap());
@@ -706,7 +683,6 @@ impl Bus {
         self.spawn_service(command);
     }
 
-    /// Run the child `role` to its end; it asserts its own part.
     fn run_child(&self, role: &str, device: &str) {
         let status = self.child(role, device).wait().unwrap();
         assert!(status.success(), "custody child {role} failed: {status}");

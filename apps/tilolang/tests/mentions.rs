@@ -11,8 +11,6 @@
     reason = "test assertions"
 )]
 
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 
@@ -59,7 +57,7 @@ fn said(app: &mut TestApp<TlApp>) -> String {
 
 #[test]
 fn references_and_times_read_for_the_reader_at_every_size_and_theme() {
-    support::installed("mentions");
+    crate::support::installed("mentions");
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("richtext-shots");
     for (size, viewport) in [("desktop", (1280, 800)), ("phone", (420, 860))] {
         for (theme, dark) in [("light", false), ("dark", true)] {

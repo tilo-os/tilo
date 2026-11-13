@@ -1,6 +1,6 @@
-//! Unpacking a step's outputs: the tar archive its guest wrote, which the host reads as
-//! untrusted. Only regular files and directories come out, below the destination: links,
-//! devices and paths with `..` or a root are skipped, so nothing written can point elsewhere.
+//! Unpacking a step's outputs: the tar archive its guest wrote, which the host reads as untrusted.
+//! Only regular files and directories come out, below the destination: links, devices and paths
+//! with `..` or a root are skipped, so nothing written can point elsewhere.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
@@ -9,8 +9,8 @@ use std::path::{Component, Path, PathBuf};
 
 const BLOCK: usize = 512;
 
-/// Unpack the archive `from` reads into `dest`, a directory nothing else writes. Returns the
-/// number of files written.
+/// Unpack the archive `from` reads into `dest`, a directory nothing else writes. Returns the number
+/// of files written.
 pub fn unpack(from: &mut impl Read, dest: &Path) -> io::Result<u64> {
     let mut files = 0_u64;
     let mut long_name: Option<Vec<u8>> = None;
@@ -63,7 +63,6 @@ pub fn unpack(from: &mut impl Read, dest: &Path) -> io::Result<u64> {
     }
 }
 
-/// Where `name` goes below `dest`, if it stays there.
 fn place(dest: &Path, name: &[u8]) -> Option<PathBuf> {
     let name = std::str::from_utf8(name).ok()?;
     let rel = Path::new(name.trim_start_matches("./"));

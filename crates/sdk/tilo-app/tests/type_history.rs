@@ -18,15 +18,16 @@ use ui_core::automerge::ROOT;
 use super::history_actions::BoardApp;
 
 /// A file: bytes with no text rendering of their own, and a name beside them.
-/// Its read adapter answers the name and names the bytes by content address.
+/// Its read adapter answers the name and the reference the bytes are kept
+/// under.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Blob {
     pub name: String,
     pub content: Bytes,
 }
 
-/// The type's own read of the record: the name, and the bytes by address,
-/// never as text.
+/// The type's own read of the record: the name, and the reference that opens
+/// the bytes, never as text.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "a read adapter answers a Result, as every type's must"
@@ -34,12 +35,18 @@ pub struct Blob {
 fn read_blob(blob: &Blob, _item: Option<&Id>) -> Result<Value, String> {
     Ok(json!({
         "name": blob.name,
-        "binary": { "address": blob.content.address(), "len": blob.content.len() },
+        "binary": { "reference": blob.content.reference(), "len": blob.content.len() },
     }))
 }
 
-#[resource(kind = "test.blob", label = "File", read_content = read_blob)]
+#[resource(kind = "test.blob", read_content = read_blob, catalogue = "tests/locales")]
 impl Blob {
+    /// Keep the bytes a file holds.
+    #[action]
+    pub fn store(&mut self, content: Bytes) {
+        self.content = content;
+    }
+
     /// Keep the bytes under a new name.
     #[action]
     pub fn rename(&mut self, name: String) {
@@ -169,29 +176,26 @@ fn a_delete_is_a_version_like_any_other_and_keeps_its_identity() {
 #[test]
 fn a_binary_type_names_the_exact_bytes_a_version_holds_through_its_adapter() {
     let mut app = TestApp::<BlobApp>::new().unwrap();
-    let first = vec![0u8, 159, 146, 150, 0, 1, 2];
-    let second = b"a later picture".to_vec();
-    app.invoke(Invoke::edit(&Blob::paths().content.set(Bytes::of(&first))).unwrap())
+    let first: Vec<u8> = (0..3_000_u32).map(|i| (i % 251) as u8).collect();
+    let second: Vec<u8> = (0..2_500_u32).map(|i| (i % 241) as u8).collect();
+    // A file's bytes are kept where the action storing them is invoked, and
+    // the record carries the reference that opens them.
+    app.invoke(Blob::STORE.with(Bytes::to_keep(first.clone())))
         .unwrap();
     app.call("checkpoint", json!({"name": "original"}))
         .unwrap()
         .unwrap();
-    app.invoke(Invoke::edit(&Blob::paths().content.set(Bytes::of(&second))).unwrap())
+    app.invoke(Blob::STORE.with(Bytes::to_keep(second.clone())))
         .unwrap();
 
     let past = read_at(&mut app, "original").expect("a binary version is readable");
     let binary = &past["content"]["binary"];
-    let address = binary["address"].as_str().expect("a content address");
+    let reference = binary["reference"].as_str().expect("a content reference");
     assert_eq!(binary["len"], json!(first.len()));
-    // The address is the bytes themselves: the storage layer's own hash of
-    // what the version held, so a restore fetches exactly that content.
-    assert!(address.starts_with("blake3:"), "{address}");
-    let (hash, len) = address
-        .trim_start_matches("blake3:")
-        .split_once(':')
-        .expect("hash and length");
-    assert_eq!(len, first.len().to_string());
-    assert_eq!(hash.len(), 64, "a BLAKE3 hash names the bytes: {address}");
+    // The reference is the bytes the version held: the store opens exactly
+    // them, so a restore fetches that content.
+    assert!(tilo_content::names(reference, &first), "{reference}");
+    assert_eq!(app.content().read(reference).as_ref(), Some(&first));
     assert!(
         past["content"].get("content").is_none(),
         "binary content is never rendered as text: {past}"
@@ -201,7 +205,10 @@ fn a_binary_type_names_the_exact_bytes_a_version_holds_through_its_adapter() {
     assert_eq!(past["content"]["name"], "");
 
     // The live record still holds the later bytes: history never moves it.
-    assert_eq!(app.state().content, Bytes::of(&second));
+    assert_eq!(
+        app.state().content.read(&app.content()).as_ref(),
+        Some(&second)
+    );
 }
 
 #[test]
@@ -216,7 +223,7 @@ fn the_same_type_surface_answers_for_every_app() {
 
     let mut blob = TestApp::<BlobApp>::new().unwrap();
     let bytes = b"bytes".to_vec();
-    blob.invoke(Invoke::edit(&Blob::paths().content.set(Bytes::of(&bytes))).unwrap())
+    blob.invoke(Blob::STORE.with(Bytes::to_keep(bytes.clone())))
         .unwrap();
     let version = newest(&blob);
     let binary = read_at(&mut blob, &version).unwrap();

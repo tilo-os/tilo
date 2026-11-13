@@ -22,14 +22,8 @@ use super::{
 };
 
 impl Editor {
-    /// Drag-and-drop a file onto the window inserts it as an image at the
-    /// **drop point**: seat the caret under the last pointer position (where
-    /// the file was released) before inserting, so the image lands where the
-    /// user dropped it rather than wherever the caret happened to be. winit's
-    /// `DroppedFile` carries no coordinates, so the tracked pointer (updated
-    /// on every `CursorMoved`, including during the drag-hover) is the drop
-    /// location. A drop over the page body relocates the caret; a drop over
-    /// chrome falls back to the existing caret.
+    // A dropped file carries no coordinates: seat the caret under the last pointer, so the
+    // image lands where it was released.
     fn handle_dropped_file(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -50,8 +44,6 @@ impl Editor {
         }
     }
 
-    /// Ctrl+wheel zooms a step per notch (scroll-up = zoom in); a plain wheel
-    /// scrolls, clamped to the content overflow.
     pub(super) fn handle_mouse_wheel(
         &mut self,
         delta: &MouseScrollDelta,
@@ -63,7 +55,6 @@ impl Editor {
             MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
             MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
         };
-        // Over the inspector, the wheel scrolls its column.
         if self.styles_panel_visible() && self.panel_body.contains(self.pointer) {
             let next = (self.panel_scroll - dy).clamp(0.0, self.panel_max_scroll);
             if next.to_bits() != self.panel_scroll.to_bits() {
@@ -74,10 +65,7 @@ impl Editor {
             return;
         }
         if ctrl {
-            // Ctrl + wheel zooms the page (a step per notch of scroll), the
-            // standard editor gesture. Scroll-up (positive dy) zooms in. A
-            // hosted window offers this gesture through `ContentZoom` before
-            // the widget sees it; a bare one lands here, on the same steps.
+            // Ctrl + wheel zooms a step per notch; a hosted window offers the same gesture first.
             let step = if dy > 0.0 {
                 ui::content_zoom::ZoomStep::In
             } else {
@@ -88,9 +76,7 @@ impl Editor {
             return;
         }
         let new = (self.scroll_y - dy).clamp(self.scroll_floor(), self.max_scroll);
-        // Exact-change check (not "close enough"): any scroll delta, however
-        // tiny, should mark the frame dirty, so bit-compare rather than use a
-        // tolerance that could mask a real change.
+        // Any scroll delta, however small, marks the frame dirty: compare bits, not a tolerance.
         if new.to_bits() != self.scroll_y.to_bits() {
             self.scroll_y = new;
             self.lifecycle.dirty = true;
@@ -98,10 +84,6 @@ impl Editor {
         }
     }
 
-    /// Track the pointer, update hover feedback, and continue
-    /// whichever live drag is active (style-field scrub, ruler marker, layout
-    /// guide, or a text-selection extend) — scrub takes priority, since a
-    /// scrub in progress should never fall through to selection.
     pub(super) fn handle_cursor_moved(
         &mut self,
         x: f64,
@@ -110,7 +92,6 @@ impl Editor {
         handled: &mut bool,
     ) {
         self.pointer = Point::new(x / scale_factor, y / scale_factor);
-        // Hover lifts on the chrome the editor paints itself.
         let hover_changed = self.outline.pointer_moved(self.pointer)
             | self.review.pointer_moved(self.pointer)
             | self.panel_rect.contains(self.pointer)
@@ -139,36 +120,23 @@ impl Editor {
             self.lifecycle.dirty = true;
             *handled = true;
         } else if self.ruler.is_dragging() {
-            // Live-drag a ruler marker (margin / indent / tab). Updates the
-            // value for an instant preview; persisted on release.
             self.ruler_drag_move();
             self.lifecycle.dirty = true;
             *handled = true;
         } else if let Some(gd) = self.guide_drag {
-            // Live-drag a layout guide (margin / border / spacing). Guides
-            // live in unscaled page space, so map the pointer through the
-            // inverse zoom first.
+            // Guides live in unscaled page space: map the pointer through the inverse zoom first.
             self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
             self.lifecycle.dirty = true; // repaint every move so the preview is live
             *handled = true;
         } else if let Some(granularity) = self.drag.drag() {
-            // Extend the selection: keep the anchor, move the caret. The
-            // `Laid` rects are unscaled, so hit-test in content space.
             self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
             if granularity != Granularity::Char {
                 self.extend_by_units(granularity);
             }
-            // Claim the move so the host App repaints (its redraw is gated
-            // behind `handled`).
             *handled = true;
         }
     }
 
-    /// After a double- or triple-click, a drag (even the pointer's first
-    /// jitter, which lands inside the clicked word) selects whole words or
-    /// paragraphs and keeps the clicked one: the caret `caret_from_pointer`
-    /// just placed is widened to the unit under it, on the far side of the
-    /// clicked unit, as every toolkit text field does.
     fn extend_by_units(&mut self, granularity: Granularity) {
         let Some((start, end)) = self.drag_unit.clone() else {
             return;
@@ -207,18 +175,11 @@ impl Editor {
         };
     }
 
-    /// Right-click: open the style-management menu when it lands on a
-    /// styles-panel chip, else the editing/spell-check context menu when it
-    /// lands on the page body (chrome — toolbar/panel/status bar — ignores
-    /// the right button; it only hit-tests the left one).
     fn handle_right_press(&mut self, state: &AutoCommit, handled: &mut bool) {
         if !self.rect.contains(self.pointer) {
             return;
         }
         self.lifecycle.focused = true;
-        // A right-click on a style chip in the styles panel opens the
-        // style-management menu (Delete / Duplicate) before the generic
-        // "panel is chrome, ignore" rule kicks in.
         if self.view.styles_panel_visible && self.panel_rect.contains(self.pointer) {
             if let Some(id) = self.style_chip_at(self.pointer) {
                 self.style_menu.open(&id, self.pointer);
@@ -242,11 +203,6 @@ impl Editor {
         }
     }
 
-    /// Left press: route to an open menu first, then dismiss any staged
-    /// toast, then (once the pointer is inside this widget and it's focused)
-    /// walk the chrome regions in priority order, falling back to the page
-    /// body — review affordances, layout guides, header/footer band switch,
-    /// then the text-selection gesture.
     fn handle_left_press(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -257,7 +213,6 @@ impl Editor {
         if self.handle_left_press_menu_routing(state, handled) {
             return;
         }
-        // Any left press dismisses a staged toast (a transient cue).
         if self.toast.dismiss() {
             self.lifecycle.dirty = true;
         }
@@ -274,18 +229,11 @@ impl Editor {
         self.handle_left_press_body(state, shift, ctrl, handled);
     }
 
-    /// While the context / "New" template / paragraph-style menu is open,
-    /// route the left press to it: a row dispatches its action, a click
-    /// outside dismisses it. Either way the click is consumed so it never
-    /// reaches the page beneath. Returns whether a menu claimed the press.
     pub(super) fn handle_left_press_menu_routing(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        // While the context menu is open, route the left press to it: a
-        // row dispatches its action, a click outside dismisses it. Either
-        // way the click is consumed so it never reaches the page beneath.
         if self.context_menu.is_open() {
             let point = [self.pointer.x, self.pointer.y];
             if let Some(idx) = self.context_menu.item_at(point) {
@@ -297,7 +245,6 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // Likewise route the press to the "New" template picker when open.
         if self.file_menu.is_open() {
             if let Some(choice) = self.file_menu.click(self.pointer) {
                 self.apply_file_choice(state, choice);
@@ -306,8 +253,6 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // The paragraph-style menu (Delete / Duplicate) captures the press
-        // the same way: a row runs its action, an outside click dismisses.
         if self.style_menu.is_open() {
             if let Some(action) = self.style_menu.click(self.pointer) {
                 self.dispatch_style_menu(action, state);
@@ -319,15 +264,11 @@ impl Editor {
         false
     }
 
-    /// A pending numeric-field commit, the styles panel, and the outline
-    /// pane — in that priority order. Returns whether one of them claimed
-    /// the press.
     fn handle_left_press_panels(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        // The failed-save banner's dismiss control.
         if self
             .save_error
             .is_some_and(|close| close.contains(self.pointer))
@@ -337,8 +278,6 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // A drawer over the page dismisses on a press on its scrim, instead
-        // of placing a caret through it.
         if !self.styles_panel_full_window() && self.inspector_drawer.press_dismisses(self.pointer) {
             self.view.styles_panel_visible = false;
             self.lifecycle.dirty = true;
@@ -353,7 +292,6 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // Styles panel (right side): dispatch a click on its controls.
         if self.view.styles_panel_visible && self.panel_rect.contains(self.pointer) {
             if let Some(hit) = self
                 .panel_hits
@@ -368,8 +306,6 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // Outline / navigation pane (left side): a click on an entry
-        // scrolls that heading into view.
         if self.outline.contains(self.pointer) {
             if let Some(block_id) = self.outline.heading_at(self.pointer).map(str::to_owned) {
                 self.scroll_to_block(&block_id);
@@ -381,22 +317,17 @@ impl Editor {
         false
     }
 
-    /// The Find bar's fields, the ruler band and the bottom layout bar — in
-    /// that priority order. Returns whether one of them claimed the press.
     fn handle_left_press_find_ruler_bars(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        // Ruler band (when on): grab a marker to drag, else a click in the
-        // page span adds a tab stop on the current paragraph.
         if self.view.ruler_visible && self.ruler.rect().contains(self.pointer) {
             self.ruler_press(state);
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
-        // Bottom layout bar sits at the very bottom; document status floats above it.
         let lbar_top = self.rect.y1 - self.layout_bar_height;
         if self.pointer.y >= lbar_top {
             if let Some(mode) = self
@@ -414,9 +345,6 @@ impl Editor {
         false
     }
 
-    /// The page-body left press: right-margin review affordances, then (in a
-    /// layout-edit mode) grabbing a guide, then the header/footer
-    /// edit-context switch, and finally the text-selection gesture.
     fn handle_left_press_body(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -424,21 +352,14 @@ impl Editor {
         ctrl: bool,
         handled: &mut bool,
     ) {
-        // Page-content hit-tests work in unscaled content space; map the
-        // pointer through the inverse zoom transform once here.
+        // Page-content hit-tests work in unscaled content space: map the pointer once here.
         let cp = self.pointer_to_content(self.pointer);
-        // Right-margin review affordances (comment Resolve, change
-        // Accept/Reject) are drawn through the zoom transform, so they
-        // hit-test in content space too. A hit dispatches + consumes the
-        // click before it can start a text selection.
         if let Some(action) = self.review.action_at(self.pointer) {
             self.dispatch_review_action(action, state);
             self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
-        // In a layout-edit mode, grabbing a guide starts a drag instead of
-        // a text selection.
         if self.layout_mode != LayoutMode::None
             && let Some(side) = self.hit_guide(cp)
         {
@@ -458,9 +379,7 @@ impl Editor {
             *handled = true;
             return;
         }
-        // Direct manipulation for free page objects. The laid rectangles and
-        // pointer were both converted to unscaled content space, so this
-        // selection never drifts at non-100% zoom.
+        // The rectangles and the pointer are both in content space, so the drag never drifts.
         let free_image = self
             .laid
             .iter()
@@ -503,18 +422,9 @@ impl Editor {
             *handled = true;
             return;
         }
-        // Edit-context switch: a click into a page header/footer band
-        // focuses that running region (creating an empty paragraph if the
-        // region is empty); a click in the body while editing a running
-        // region returns to the body. This is the entry point to Word-style
-        // header/footer editing.
         let band = self.band_at_pointer(cp);
         match band {
             Some(region) if region != self.inner.region() => {
-                // Switch into the band. `focus_region` seats the caret on
-                // the region's (possibly newly-created) first block; the
-                // band lays out next frame, after which clicks refine the
-                // exact offset.
                 self.inner.focus_region(state, region);
                 self.refresh_blocks(state);
                 self.drag.press(self.pointer, shift);
@@ -523,15 +433,11 @@ impl Editor {
                 return;
             }
             None if self.inner.in_running_region() => {
-                // Click in the body area exits header/footer editing.
                 self.inner.focus_body(state);
                 self.refresh_blocks(state);
-                // Fall through so the same click also seats the body caret.
             }
             _ => {}
         }
-        // Selection gesture (ui::DragSelect): shift extends; double/triple
-        // click select word/paragraph; a plain press starts a fresh drag.
         let intent = self.drag.press(self.pointer, shift);
         self.caret_from_pointer(cp, intent.extend);
         match intent.granularity {
@@ -548,9 +454,6 @@ impl Editor {
         *handled = true;
     }
 
-    /// Left release: persist whichever live drag was active (style-field
-    /// scrub, ruler marker, or layout guide) into the document, or — with no
-    /// drag active — end a text-selection drag.
     fn handle_left_release(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         if false {
         } else if let Some(drag) = self.object_drag.take() {
@@ -571,14 +474,10 @@ impl Editor {
             self.lifecycle.dirty = true;
             *handled = true;
         } else if self.ruler.is_dragging() {
-            // A ruler-marker drag persists on release (margins → page meta,
-            // indents / tab stops → the caret block's attrs).
             self.ruler_drag_release(state);
             self.lifecycle.dirty = true;
             *handled = true;
         } else if let Some(gd) = self.guide_drag.take() {
-            // A layout edit persists into the document on release: spacing
-            // into the stylesheet, margins into the page-setup meta.
             match gd.mode {
                 LayoutMode::Spacing => {
                     self.persist_stylesheet_via_actions(state);
@@ -596,11 +495,6 @@ impl Editor {
         }
     }
 
-    /// A key press once the guard checks (focus, Escape, a numeric-field
-    /// edit in progress, the Find bar, Ctrl+Enter's page break) and any
-    /// Ctrl+<char> shortcut have both passed it through: motion keys extend
-    /// or clear the selection, editing keys mutate the document, and any
-    /// other printable text is inserted.
     pub(super) fn autocorrect_before_boundary(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -643,9 +537,7 @@ impl Editor {
         })
     }
 
-    /// Apply markdown-style paragraph prefixes through typed absolute actions.
-    /// The two field-granular envelopes share the current input event's undo
-    /// boundary; caret movement remains presentation-local.
+    /// The two field-granular envelopes share the input event's undo boundary.
     fn autoformat_on_space_via_actions(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let block = self.inner.caret.block.clone();
         let offset = self.inner.caret.offset;
@@ -687,8 +579,6 @@ impl Editor {
         let Some(mut correction) = self.last_autocorrection.clone() else {
             return false;
         };
-        // Enter commits a word by splitting the block. Immediate Backspace
-        // first rejoins that empty/new block, then restores the spelling.
         if self.inner.caret.block != correction.block && self.inner.caret.offset == 0 {
             self.delete_via_action(state, true);
             correction.boundary_end = self.inner.caret.offset;
@@ -767,7 +657,6 @@ impl Editor {
         };
         if effect != KeyPressEffect::Ignored {
             if effect == KeyPressEffect::Edit {
-                // editing consumes/collapses any selection
                 self.inner.clear_anchor();
             }
             if effect == KeyPressEffect::Edit {
@@ -820,9 +709,6 @@ impl Editor {
     }
 
     fn handle_tab_key(&mut self, state: &mut ui::widget::Edits<'_>, shift: bool) -> KeyPressEffect {
-        // Inside a table, Tab/Shift-Tab walk cells (and Tab in the last cell
-        // appends a row). Paragraph tab stops insert a tab; otherwise use the
-        // conventional four-space fallback.
         let table_target = self.caret_table_target();
         let append_row = !shift
             && table_target
@@ -888,8 +774,6 @@ impl Editor {
                 self.extend_or_clear(shift);
                 self.inner.move_end(state);
             }
-            // One page down is the same place on the next sheet: the one app
-            // that paginates moves by pages, as every reader does.
             NamedKey::PageUp | NamedKey::PageDown => {
                 self.extend_or_clear(shift);
                 self.move_page(matches!(key, NamedKey::PageDown), shift);
@@ -927,8 +811,6 @@ impl Editor {
         KeyPressEffect::Edit
     }
 
-    /// Native word and visual-line selection use the toolkit's existing
-    /// Unicode boundaries and shaped line geometry, preserving the anchor.
     fn handle_modified_navigation(
         &mut self,
         state: &AutoCommit,
@@ -972,8 +854,7 @@ impl Editor {
         } else if left {
             ui::text_selection::prev_word_boundary_chars(&text, offset)
         } else if mods.alt_key() {
-            // Option+Right follows macOS word-end semantics; Ctrl+Right
-            // retains the shared next-word-start convention on other hosts.
+            // Option+Right follows macOS word-end; Ctrl+Right keeps the shared next-word start.
             let (_, end) = ui::text_selection::word_boundaries(&text, byte);
             let end = if end > byte {
                 end
@@ -1001,11 +882,6 @@ impl Editor {
         true
     }
 
-    /// Early exits before a key press reaches editing: an unfocused widget,
-    /// Escape (closing an open menu, or exiting header/footer editing), a
-    /// numeric-field edit in progress, the Find bar capturing non-Ctrl keys,
-    /// and Ctrl+Enter's manual page break. Returns whether one of these fully
-    /// handled the event (the caller should stop dispatching further).
     fn handle_key_press_guards(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1016,16 +892,13 @@ impl Editor {
         if !self.lifecycle.focused {
             return true;
         }
-        // A free-object drag is a preview until release. Escape discards that
-        // preview (rather than committing an accidental move) and leaves the
-        // document/action history untouched.
+        // A free-object drag is a preview until release: Escape discards it.
         if matches!(logical_key, Key::Named(NamedKey::Escape)) && self.object_drag.is_some() {
             self.object_drag = None;
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
-        // Escape dismisses an open context / style menu before anything else.
         if matches!(logical_key, Key::Named(NamedKey::Escape))
             && (self.context_menu.is_open()
                 || self.style_menu.is_open()
@@ -1038,7 +911,6 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // Escape exits header/footer editing, returning to the body.
         if self.inner.in_running_region() && matches!(logical_key, Key::Named(NamedKey::Escape)) {
             self.inner.focus_body(state);
             self.refresh_blocks(state);
@@ -1046,14 +918,11 @@ impl Editor {
             *handled = true;
             return true;
         }
-        // While a style field has the keyboard, the document does not.
         if self.editing_field.is_some() {
             *handled = true;
             return true;
         }
-        // Ctrl+Enter inserts a manual page break: the caret block splits
-        // and the new block is marked to start on a fresh page. (Handled
-        // here because `NamedKey::Enter` is not a `Key::Character`.)
+        // Ctrl+Enter splits the caret block and marks the new one to start a page.
         if ctrl && matches!(logical_key, Key::Named(NamedKey::Enter)) {
             self.page_break_via_action(state);
             self.refresh_blocks(state);
@@ -1064,12 +933,7 @@ impl Editor {
         false
     }
 
-    /// Ctrl+<char> shortcuts while the keyboard has focus: save/open/find,
-    /// spell-check/markup view toggles, zoom, page-number insert, and the
-    /// formatting/selection shortcuts dispatched through the same actions the
-    /// toolbar uses. Always consumes the event once `ctrl` holds a
-    /// `Character` key, whether or not `s` matched a known shortcut (so an
-    /// unrecognized Ctrl+<char> doesn't fall through to plain typing).
+    /// A Ctrl chord is consumed even when no shortcut matches, so it never falls through to typing.
     fn handle_ctrl_shortcut(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1077,11 +941,7 @@ impl Editor {
         shift: bool,
         handled: &mut bool,
     ) {
-        // Save is not an editing action — don't mark the doc
-        // modified again after writing it. Ctrl+Shift+S always
-        // opens the host Save-As picker; a bare Ctrl+S saves to
-        // the current path (or, when untitled, prompts via the
-        // same picker rather than inventing a path).
+        // Save is not an editing action: do not mark the document modified after writing it.
         if s.eq_ignore_ascii_case("s") {
             self.invoke_effect(&if shift {
                 WordProcessorEffect::SaveAs { path: None }
@@ -1091,30 +951,21 @@ impl Editor {
             *handled = true;
             return;
         }
-        // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
             self.invoke_effect(&WordProcessorEffect::OpenDocument { path: None });
             *handled = true;
             return;
         }
-        // Ctrl+Shift+L toggles the spell-check squiggles (view-only,
-        // default ON). Never mutates the document.
         if shift && s.eq_ignore_ascii_case("l") {
             self.toggle_spellcheck();
             *handled = true;
             return;
         }
-        // Ctrl+Shift+M toggles comment + tracked-change markup
-        // (view-only, default ON). Never mutates the document.
         if shift && s.eq_ignore_ascii_case("m") {
             self.toggle_markup();
             *handled = true;
             return;
         }
-        // Ctrl+Shift+P inserts a page-number field at the caret.
-        // Primarily for header/footer editing (a running "Page N"),
-        // but works in the body too (the field renderer substitutes
-        // the page number per page).
         if shift && s.eq_ignore_ascii_case("p") {
             self.insert_page_number_via_action(state);
             self.refresh_blocks(state);
@@ -1122,13 +973,6 @@ impl Editor {
             *handled = true;
             return;
         }
-        // Zoom: Ctrl+= / Ctrl++ (in), Ctrl+- (out), Ctrl+0 (reset
-        // to 100%). These are view-only — they never mutate the doc,
-        // so they return before the editing path below.
-        // The page's own zoom, the same steps the window's zoom gestures take
-        // ([`ui::content_zoom::ContentZoom`]): a hosted window offers the
-        // chord to that first, so this is the bare widget's way to the one
-        // rule rather than a second, private meaning for the chord.
         match s {
             "=" | "+" => {
                 self.zoom_page(ui::content_zoom::ZoomStep::In);
@@ -1148,14 +992,10 @@ impl Editor {
             _ => {}
         }
         match s.to_lowercase().as_str() {
-            // Formatting shortcuts dispatch the same
-            // `RichTextAction` the toolbar + Ctrl+K palette
-            // do (one replayable source of truth).
+            // The same `RichTextAction` the toolbar and the palette dispatch.
             "b" => self.dispatch_toggle_mark(state, "strong"),
             "i" => self.dispatch_toggle_mark(state, "em"),
             "u" => self.dispatch_toggle_mark(state, "underline"),
-            // Ctrl+. → superscript, Ctrl+, → subscript (mutually
-            // exclusive; matches common word-processor bindings).
             "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
             "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
             "c" => {
@@ -1166,16 +1006,13 @@ impl Editor {
                     self.insert_text_via_action(state, "");
                 }
             }
-            // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
             "v" if shift => self.clipboard_paste_plain(state),
             "v" => self.clipboard_paste(state),
             "a" => self.select_all_via_primitive(state),
-            // Ctrl+1/2/3 → heading levels. (Ctrl+0 is zoom-reset;
-            // Body paragraph is reachable via the toolbar / panel.)
             "1" => self.dispatch_paragraph_style(state, "heading", Some(1), None),
             "2" => self.dispatch_paragraph_style(state, "heading", Some(2), None),
             "3" => self.dispatch_paragraph_style(state, "heading", Some(3), None),
-            // z / y (undo/redo) are handled by the host App.
+            // z and y (undo and redo) are the host app's.
             _ => {}
         }
         self.refresh_blocks(state);
@@ -1190,7 +1027,6 @@ impl Editor {
     )]
     pub(super) fn route_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.styles_panel_full_window() {
-            // Displaced document overlays cannot act above the Styles page.
             self.context_menu.close();
             if self.thread_comment.is_some() {
                 self.close_comment_thread();
@@ -1204,9 +1040,6 @@ impl Editor {
         }
         let shift = ctx.modifiers.state().shift_key();
         let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-        // An open menu owns input until selection or dismissal. Forward
-        // movement as well as presses so the shared menu can paint its hover;
-        // keep navigation/typing from editing the document behind the popup.
         if self.file_menu.is_open() || self.context_menu.is_open() || self.style_menu.is_open() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.pointer = ctx.logical(position);
@@ -1252,9 +1085,6 @@ impl Editor {
         ) {
             return;
         }
-        // While the colour-picker popover is open it captures input (modal-ish):
-        // route drags to it, apply committed colours, and let an outside-click /
-        // Escape dismiss it before any page/panel hit-testing.
         if self.color_picker.is_open()
             && self.pump_color_picker(
                 event,
@@ -1267,9 +1097,6 @@ impl Editor {
         {
             return;
         }
-        // The expanded comment thread owns its reply field and modal-like
-        // button surface. Keep it ahead of the editor and Find bar so typing
-        // never leaks into the document beneath it.
         let comment_thread_handled = self.handle_comment_thread_event(
             event,
             &mut EditorEventCtx {
@@ -1291,24 +1118,16 @@ impl Editor {
         }
 
         match event {
-            // Drag-and-drop a file onto the window inserts it as an image at the
-            // drop point (see `handle_dropped_file`).
             WindowEvent::DroppedFile(path) => {
                 self.handle_dropped_file(&mut ctx.state, path, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Window groups offer unclaimed events to visible apps in
-                // presentation order. Ctrl+wheel represents a browser
-                // trackpad pinch, so an unfocused Writer must leave it for
-                // the host-selected app rather than zoom in the background.
+                // An unfocused Writer leaves Ctrl+wheel to the app the host selected.
                 if self.lifecycle.focused || !ctrl {
                     self.handle_mouse_wheel(delta, ctx.scale_factor, ctrl, ctx.handled);
                 }
             }
             WindowEvent::PinchGesture { delta, phase, .. } => {
-                // Native pinch follows the same host-ownership rule as the
-                // browser's Ctrl+wheel form above. Pointer geometry still
-                // determines where a focused Writer zooms.
                 if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
                     *ctx.handled = true;
                     if delta.is_finite()
@@ -1321,8 +1140,6 @@ impl Editor {
                         let before = self.zoom.factor();
                         let after = (before * (1.0 + delta).max(0.01)).clamp(ZOOM_MIN, ZOOM_MAX);
                         if self.set_zoom(after) {
-                            // Keep the document row beneath the gesture steady.
-                            // Horizontal alignment remains the centered-page convention.
                             let pointer_y = self.pointer.y - self.zoom.anchor().y;
                             self.scroll_y = (self.scroll_y + pointer_y / before
                                 - pointer_y / after)
@@ -1334,9 +1151,6 @@ impl Editor {
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, ctx.handled);
             }
-            // Right (secondary) press opens the editing / spell-check context
-            // menu on the page body. Toolbar / panel / status-bar chrome ignore
-            // it (they have their own hit-testing on the left button).
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
@@ -1416,9 +1230,8 @@ impl Editor {
     }
 }
 
-/// A path the windowing toolkit spooled a drag-and-drop payload into: lives
-/// under `$XDG_RUNTIME_DIR` and is named `winit-dnd-…`. Only such files are
-/// deleted after an insert — never a file the user chose.
+/// A path the toolkit spooled a drag-and-drop payload into: only files it made are deleted
+/// after an insert, never one the user chose.
 pub(super) fn is_dnd_spool_path(path: &std::path::Path) -> bool {
     let named_by_the_toolkit = path
         .file_name()
@@ -1427,11 +1240,7 @@ pub(super) fn is_dnd_spool_path(path: &std::path::Path) -> bool {
     if !named_by_the_toolkit {
         return false;
     }
-    // The toolkit spools into the first of these it can actually write
-    // to — inside a sandbox `$XDG_RUNTIME_DIR` is set but is not always
-    // writable — so a spool file is one that sits under any of them.
-    // The name check above is what keeps this from ever matching a file
-    // the user chose.
+    // The toolkit spools into the first of these it can write; in a sandbox one may not be.
     ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"]
         .into_iter()
         .filter_map(std::env::var_os)

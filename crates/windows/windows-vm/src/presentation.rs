@@ -10,8 +10,6 @@ use std::fmt;
 /// The only normal application presentation modes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationPresentation {
-    /// `FreeRDP`'s upstream RAIL client, when Tilo has a RAIL-capable local
-    /// surface (for example an Xwayland bridge or a future native adapter).
     NativeRail,
     /// A guest-focused SPICE surface. The guest helper starts/focuses the
     /// selected application before the viewer is attached. This is a whole
@@ -21,8 +19,6 @@ pub enum ApplicationPresentation {
 }
 
 impl ApplicationPresentation {
-    /// Selects a normal application surface from capabilities that have been
-    /// probed by Tilo.  The fallback is explicit and deterministic.
     #[must_use]
     pub fn select(has_rail_surface: bool) -> Self {
         if has_rail_surface {

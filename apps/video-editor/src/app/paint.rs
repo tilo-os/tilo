@@ -7,11 +7,9 @@
 use super::*;
 pub(super) use ui::paint::{fill_rect, fill_round, stroke_round};
 
-/// A label colour guaranteed legible on `fill`, and the (possibly deepened)
-/// fill to paint under it — the toolkit's own contrast rule, so a clip name on
-/// a label colour reads in light and dark alike. The preferred ink is the
-/// media ink: these fills are the person's own label colours, which sit on
-/// the timeline like footage does.
+/// A label colour guaranteed legible on `fill`, and the (possibly deepened) fill to
+/// paint under it: the toolkit's own contrast rule, inked with the media colour,
+/// since these fills are the person's own label colours.
 pub(super) fn on_fill(theme: &Theme, fill: Color) -> (Color, Color) {
     let c = &theme.tokens.colors;
     c.legible_fill(fill, c.media.ink)
@@ -23,7 +21,6 @@ pub(super) fn text_baseline(rect: Rect, style: &TextStyle, tr: &mut TextRenderer
     rect.center().y - line_height(tr, style) / 2.0
 }
 
-/// Top-left corner for `s` drawn centred both ways inside `rect`.
 pub(super) fn text_centre(rect: Rect, s: &str, style: &TextStyle, tr: &mut TextRenderer) -> Point {
     let (w, h) = tr.measure_style(s, None, style);
     Point::new(
@@ -36,23 +33,20 @@ pub(super) fn text_width(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f
     f64::from(tr.measure_style(s, None, style).0)
 }
 
-/// Cell width and count for a filmstrip drawn across `inner`. Shared by the
-/// request pass and the draw pass so the two never disagree about how many
-/// frames a strip needs — a mismatch would request frames at times the strip
-/// never asks for, and leave the cells it does ask for undecoded.
+/// Shared by the request pass and the draw pass, so the two never disagree about how
+/// many frames a strip needs: a mismatch requests frames at times the strip never
+/// asks for and leaves the cells it does ask for undecoded.
 pub(super) fn filmstrip_cells(inner: Rect) -> (f64, i64) {
     let cell_w = (inner.height() * 16.0 / 9.0).clamp(24.0, 56.0);
     let n = (inner.width() / (cell_w + 2.0)).floor().max(1.0) as i64;
     (cell_w, n)
 }
 
-/// The content rect inside a clip body, below its header strip. Shared for the
-/// same reason as [`filmstrip_cells`].
+/// Shared for the same reason as [`filmstrip_cells`].
 ///
-/// `header_h` is the title band the caller reserved, from
-/// `VideoEditorApp::clip_header_rect`. It has to be the same number the header
-/// was drawn with: at a raised UI scale a filmstrip that still cut at an
-/// unscaled 18px began inside the scaled title and painted frames through it.
+/// `header_h` must be the number the header was drawn with: at a raised UI scale a
+/// filmstrip that cut at an unscaled 18px began inside the scaled title and painted
+/// frames through it.
 pub(super) fn clip_inner_rect(cr: Rect, header_h: f64) -> Rect {
     let strip_y1 = (cr.y0 + header_h).min(cr.y1);
     Rect::new(cr.x0 + 2.0, strip_y1, cr.x1 - 2.0, cr.y1 - 2.0)
@@ -67,19 +61,14 @@ pub(super) fn display_name(path: &Path) -> String {
     )
 }
 
-/// Honest, human-readable summary of an import batch. Never claims a success
-/// that did not happen — and never throws away *why* a file was refused.
-///
-/// A batch with any refusal in it reads as a failure, because it is one for
-/// the files that did not make it. It used to collapse to "Imported 3 of 5
-/// files": the two refusals and the probe's reasons for them were dropped on
-/// the floor, and the line was painted in the success tint on top of that.
+/// Never claims a success that did not happen, and never throws away *why* a file
+/// was refused: a batch with any refusal in it reads as a failure, because it is one
+/// for the files that did not make it.
 pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
     if report.refused.is_empty() {
-        return Notice::ok(format!(
-            "Imported {} clip{}",
-            report.added,
-            if report.added == 1 { "" } else { "s" },
+        return Notice::ok(crate::resource::CATALOG.t_args(
+            "video-editor-import-counted",
+            &[("count", ui::i18n::ArgValue::Number(report.added as f64))],
         ));
     }
     // Name the files and quote the probe. Two fit a one-line strip; the rest
@@ -88,26 +77,51 @@ pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
         .refused
         .iter()
         .take(IMPORT_REFUSALS_NAMED)
-        .map(|(name, reason)| format!("{name}: {reason}"))
+        .map(|(name, reason)| {
+            crate::resource::CATALOG.t_args(
+                "video-editor-import-refused",
+                &[
+                    ("head", ui::i18n::ArgValue::Text(name.clone())),
+                    ("why", ui::i18n::ArgValue::Text(reason.clone())),
+                ],
+            )
+        })
         .collect();
     let mut why = listed.join("; ");
     let hidden = report.refused.len() - listed.len();
     if hidden > 0 {
-        why = format!("{why} and {hidden} more");
+        why = crate::resource::CATALOG.t_args(
+            "video-editor-import-more",
+            &[
+                ("why", ui::i18n::ArgValue::Text(why)),
+                ("hidden", ui::i18n::ArgValue::Number(hidden as f64)),
+            ],
+        );
     }
     let head = if report.added == 0 {
-        "No media could be imported".to_string()
+        crate::resource::CATALOG.t("video-editor-import-none")
     } else {
-        format!("Imported {} of {}", report.added, report.total())
+        crate::resource::CATALOG.t_args(
+            "video-editor-import-partial",
+            &[
+                ("count", ui::i18n::ArgValue::Number(report.added as f64)),
+                ("total", ui::i18n::ArgValue::Number(report.total() as f64)),
+            ],
+        )
     };
     // A refused file is fixed by choosing another one.
-    Notice::failed(format!("{head} — {why}")).with_action(super::notices::NoticeAction::ChooseMedia)
+    let report = crate::resource::CATALOG.t_args(
+        "video-editor-import-refused",
+        &[
+            ("head", ui::i18n::ArgValue::Text(head)),
+            ("why", ui::i18n::ArgValue::Text(why)),
+        ],
+    );
+    Notice::failed(report).with_action(super::notices::NoticeAction::ChooseMedia)
 }
 
-/// Blit an RGBA frame into `canvas`, scaled to fit (letterboxed), centred.
-/// Carries the preview's composited picture in every build — the compositor
-/// runs with or without a decoder, drawing real footage when it has any and
-/// representative fills when it does not.
+/// Centred and letterboxed. Carries the preview's composited picture in every build:
+/// real footage when a decoder is there and representative fills when not.
 pub(super) fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas: Rect) {
     use vello::peniko::{Blob, ImageBrush};
     let iw = f64::from(frame.width);
@@ -127,10 +141,8 @@ pub(super) fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFr
     scene.fill(Fill::NonZero, tf, &brush, Some(brush_tf), &dest);
 }
 
-/// Blit a thumbnail into `dest`, cover-fitting (fill + crop) with rounded
-/// corners `radius`. Used for the bin swatch and timeline filmstrip cells; the
-/// same path shows the generated representative frame or (under decode) the real
-/// decoded frame.
+/// Cover-fitting (fill and crop) with rounded corners, for the bin swatch and
+/// filmstrip cells.
 pub(super) fn blit_thumb(
     scene: &mut Scene,
     tf: Affine,
@@ -144,9 +156,6 @@ pub(super) fn blit_thumb(
     if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
         return;
     }
-    // The thumbnail cache builds the render handle once and hands it out by
-    // reference, so painting a frame costs a clone of the handle rather than a
-    // copy of the pixels.
     let img = thumb.image().clone();
     // Cover: scale so the frame fills the dest, cropping the overflow.
     let scale = (dest.width() / iw).max(dest.height() / ih);
@@ -164,9 +173,8 @@ pub(super) fn blit_thumb(
         &RoundedRect::from_rect(dest, radius),
     );
 }
-/// Diagonal hatching clipped to `rect`, for a surface whose content is a
-/// stand-in rather than the real thing. Hatching (not a flat tint) so the
-/// state survives a colour-blind reading and a greyscale screenshot.
+/// Hatching rather than a flat tint, so the state survives a colour-blind reading and
+/// a greyscale screenshot.
 pub(super) fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
     if rect.width() <= 1.0 || rect.height() <= 1.0 {
         return;
@@ -216,7 +224,6 @@ pub(super) fn stroke_line(
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
 }
-/// One line of `s` in `style`, its line box's top-left at (`x`, `y`).
 pub(super) fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -230,9 +237,6 @@ pub(super) fn text(
     tr.draw_style(scene, s, color, tf * Affine::translate((x, y)), None, style);
 }
 
-/// A button in the editor's painted chrome: the toolkit's own face for the
-/// role, at the control size the editor's rows lay out, so every command in
-/// the window is the same button the rest of the system draws.
 pub(super) fn draw_button(
     scene: &mut Scene,
     tf: Affine,
@@ -291,9 +295,6 @@ pub(super) fn draw_icon_button(
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// A command that stays down while its state is on (mute, lock, solo): a
-/// plain labelled button standing on the selection lift while it is on,
-/// exactly as a toolbar toggle is drawn.
 pub(super) fn draw_toggle_button(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -321,9 +322,8 @@ pub(super) fn control_size_for(rect: Rect, theme: &Theme) -> ControlSize {
     }
 }
 
-/// A switch beside its label across `rect`: the on/off settings of a clip
-/// (play backwards, key a colour out, invert the mask) read as a state, not
-/// as a button whose wording flips.
+/// The on/off settings of a clip (play backwards, key a colour out, invert the mask)
+/// read as a state, not as a button whose wording flips.
 pub(super) fn draw_switch_row(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -346,9 +346,6 @@ pub(super) fn draw_switch_row(
     ui::widget::Toggle::paint(ctx.scene, ctx.transform, theme, &face);
 }
 
-/// Where a [`draw_switch_row`]'s switch sits: trailing, vertically centred,
-/// in the retained switch's 44×24 proportions — the knob (`icon_md`) plus
-/// its edge gap either side.
 pub(super) fn switch_rect(rect: Rect, theme: &Theme) -> Rect {
     let knob = f64::from(theme.tokens.metrics.icon_md);
     let h = (knob * 1.2).min(rect.height());
@@ -357,13 +354,10 @@ pub(super) fn switch_rect(rect: Rect, theme: &Theme) -> Rect {
     Rect::new(rect.x1 - w, cy - h / 2.0, rect.x1, cy + h / 2.0)
 }
 
-/// The keyboard cursor: a ring around the control the next key will reach.
-///
-/// The editor paints its own panes, so it has no child widgets to inherit a
-/// focus treatment from — this is the toolkit's own ring for a painted
-/// surface, so the cursor reads the same here as anywhere else. It is drawn
-/// just inside `rect`, so a row or band that butts against its neighbour
-/// never lends the ring to the next one.
+/// The editor paints its own panes, so it has no child widgets to inherit a focus
+/// treatment from; this is the toolkit's ring for a painted surface. Drawn just
+/// inside `rect`, so a row butting against its neighbour never lends the ring to the
+/// next one.
 pub(super) fn draw_focus_ring(
     scene: &mut Scene,
     tf: Affine,
@@ -384,9 +378,8 @@ pub(super) fn draw_focus_ring(
     );
 }
 
-/// How far a slider's rail stays inside the row it is laid out across: the
-/// knob at its largest (pressed) reaches past the rail's end by its radius,
-/// and must stay inside the inspector's column rather than overhang it.
+/// The knob at its largest (pressed) reaches past the rail's end by its radius and
+/// must stay inside the inspector's column rather than overhang it.
 pub(super) fn slider_rail(track: Rect) -> Rect {
     let reach = S3;
     Rect::new(
@@ -404,9 +397,8 @@ pub(super) fn slider_value_at(track: Rect, x: f64) -> f64 {
     ((x - rail.x0) / rail.width().max(1e-6)).clamp(0.0, 1.0)
 }
 
-/// Draw a slider across `track` through the toolkit's shared
-/// [`ui::widget::Slider::paint`]. The knob travels [`slider_rail`], so at
-/// either end it stays inside the row it belongs to.
+/// Through the toolkit's shared [`ui::widget::Slider::paint`]; the knob travels
+/// [`slider_rail`], so at either end it stays inside its row.
 pub(super) fn draw_track(
     scene: &mut Scene,
     tf: Affine,
@@ -429,18 +421,10 @@ pub(super) fn draw_track(
     ui::widget::Slider::paint(scene, tf, theme, &face);
 }
 
-/// Where each part of the transport's readout goes, or `None` for a part
-/// that does not fit **whole**.
-///
-/// The rule this encodes: a number the pane edge cuts mid-digit does not read
-/// as a clipped number, it reads as a shorter one — a 42-second project
-/// arriving as "00:4" states a length that is simply false. So a part that
-/// cannot be drawn in full is not drawn at all, and the parts are dropped in
-/// reverse order of what the user cannot get anywhere else: the playhead's
-/// own time is the last to go, then the total, then what the playhead is
-/// *doing*, and the static frame size first — the frame is also stated in the
-/// inspector's PROJECT section, while "shuttling backwards at 8x" is stated
-/// nowhere else at all.
+/// `None` for a part that does not fit **whole**: a number the pane edge cuts
+/// mid-digit reads as a shorter one, so "00:4" states a false length. Parts are
+/// dropped in reverse order of what the user cannot get elsewhere — the playhead's
+/// own time last, the frame size first, since the inspector states that too.
 #[derive(Debug, Default, PartialEq)]
 #[expect(
     clippy::struct_field_names,
@@ -449,11 +433,8 @@ pub(super) fn draw_track(
 pub(super) struct ReadoutFit {
     pub(super) big_x: Option<f64>,
     pub(super) total_x: Option<f64>,
-    /// What the playhead is doing, beside the total rather than over the top
-    /// of the playhead time. The old "PLAYING" line was drawn 16px above the
-    /// scrubber, which on this 58px strip is inside the 18px timecode's own
-    /// line box — the two overlapped, and a longer shuttle readout made a
-    /// pre-existing collision unmissable.
+    /// Beside the total rather than over the playhead time: drawn 16px above the
+    /// scrubber it sat inside the timecode's own line box.
     pub(super) motion_x: Option<f64>,
     pub(super) meta_x: Option<f64>,
 }
@@ -467,11 +448,8 @@ pub(super) fn readout_fit(
     meta_w: f64,
 ) -> ReadoutFit {
     let right_edge = transport.x1 - 12.0;
-    // `content_x` is where the caller says the strip's right-hand content
-    // may begin — past the history buttons when they are showing. Taking it
-    // as an argument rather than assuming an offset is what keeps the
-    // buttons and the timecode off each other; laid out apart, the readout
-    // drew straight over them.
+    // Past the history buttons when they show. Taking it as an argument rather than
+    // assuming an offset keeps the buttons and the timecode off each other.
     let big_x = transport.x0 + content_x;
     let mut fit = ReadoutFit::default();
     // Nothing at all when even the playhead time would overrun.
@@ -500,15 +478,12 @@ pub(super) fn readout_fit(
     fit
 }
 
-/// The key control at the head of an animatable inspector row: a diamond,
-/// the standard mark for a keyframe.
+/// A diamond: the standard mark for a keyframe.
 ///
-/// Its three states have to be told apart at a glance, so they differ in
-/// **two** ways each rather than only in colour: not animated is a small dim
-/// outline, animated-but-between-keys is a larger primary-ink outline, and a key
-/// on the playhead is a filled diamond with a ring. A control that
-/// only changed hue would be unreadable to anyone who cannot separate those
-/// hues, and indistinguishable in a screenshot.
+/// The three states differ in **two** ways each and not only in colour — a small dim
+/// outline, a larger primary-ink outline, and a filled diamond with a ring — since a
+/// control that changed only hue would be unreadable to anyone who cannot separate
+/// those hues.
 pub(super) fn draw_key_control(
     scene: &mut Scene,
     tf: Affine,
@@ -553,11 +528,9 @@ pub(super) fn draw_key_control(
     }
 }
 
-/// Whether this event ends a title edit, and whether it accepts.
-///
-/// `Some(true)` accepts, `Some(false)` cancels, `None` leaves the field to
-/// handle the event itself. Kept out of the handler so the key contract is
-/// one readable thing that a test can drive directly.
+/// `Some(true)` accepts, `Some(false)` cancels, `None` leaves the event to the field.
+/// Kept out of the handler so the key contract is one readable thing a test can
+/// drive.
 pub(super) fn title_edit_verdict(
     event: &WindowEvent,
     modifiers: winit::event::Modifiers,
@@ -580,35 +553,38 @@ pub(super) fn title_edit_verdict(
     }
 }
 
-/// The three positions each anchor axis can take, in source uv.
 pub(super) const ANCHOR_STOPS: [f64; 3] = [0.0, 0.5, 1.0];
 
-/// What a clip's tone curves amount to, in one line — or `None` when they
-/// amount to nothing.
-///
-/// One function so the folded header and the reader's summary cannot drift
-/// apart. It reports which channels have been shaped, and says plainly when
-/// a shaped curve is turned down or bypassed: "RGB" and "RGB, bypassed" are
-/// different states, and a summary that showed only the first would hide the
-/// second.
+/// One function, so the folded header and the reader's summary cannot drift apart.
+/// "RGB" and "RGB, bypassed" are different states, and a summary showing only the
+/// first would hide the second.
 pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
-    use std::fmt::Write as _;
     let shaped = clip.curves.shaped_channels();
     if shaped.is_empty() {
         return None;
     }
     let names: Vec<&str> = shaped.iter().map(|c| c.label()).collect();
-    let mut s = names.join(", ");
-    // How much of the curve is mixed in *at the playhead*. The amount is an
-    // animatable parameter, so the raw `curves.mix` is dead the moment it is
-    // keyed — a grade ramping on reported itself as bypassed for its whole
-    // length while the canvas beside it graded.
+    let s = names.join(", ");
+    // At the playhead: the amount is animatable, so the raw `curves.mix` is dead the
+    // moment it is keyed, and a grade ramping on reported itself as bypassed.
     let mix = clip.param_at(Param::CurveMix, at);
     if mix <= 1e-9 {
-        s.push_str(", bypassed");
-    } else if mix < 0.999 {
-        // Writing into a `String` cannot fail.
-        let _ = write!(s, " at {:.0}%", mix * 100.0);
+        return Some(crate::resource::CATALOG.t_args(
+            "video-editor-summary-bypassed",
+            &[("channels", ui::i18n::ArgValue::Text(s))],
+        ));
+    }
+    if mix < 0.999 {
+        return Some(crate::resource::CATALOG.t_args(
+            "video-editor-summary-curve-amount",
+            &[
+                ("channels", ui::i18n::ArgValue::Text(s)),
+                (
+                    "percent",
+                    ui::i18n::ArgValue::Text(format!("{:.0}", mix * 100.0)),
+                ),
+            ],
+        ));
     }
     Some(s)
 }
@@ -617,9 +593,8 @@ pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
 /// is 0..1 on both axes), to grab it rather than add a new one.
 pub(super) const POINT_GRAB: f64 = 0.055;
 
-/// How far outside the curve box a drag has to end for the point to be
-/// removed. Generous, because a small overshoot at the edge of the box is an
-/// ordinary way to pin a point to 0 or 1 and must not delete it.
+/// Generous, because a small overshoot at the edge of the box is an ordinary way to pin
+/// a point to 0 or 1 and must not delete it.
 pub(super) const POINT_DROP_MARGIN: f64 = 22.0;
 
 /// Where curve coordinates land on the editor's box. Output runs **up**, so
@@ -639,12 +614,8 @@ pub(super) fn curve_coords(canvas: Rect, p: Point) -> (f64, f64) {
     ((p.x - canvas.x0) / w, (canvas.y1 - p.y) / h)
 }
 
-/// The colour a channel's curve is drawn in.
-///
-/// Resolved from the theme rather than hardcoded to pure red/green/blue: the
-/// OS owns the palette, and a raw `#f00` line is both off-theme and hard to
-/// read on a light surface. The three are still unmistakably red-, green- and
-/// blue-ish, because that is what the letters on the chooser say.
+/// Resolved from the theme rather than hardcoded: the OS owns the palette, and a raw
+/// `#f00` line is off-theme and hard to read on a light surface.
 pub(super) fn curve_channel_color(theme: &Theme, ch: crate::curve::Channel) -> Color {
     let c = &theme.tokens.colors;
     match ch {
@@ -655,26 +626,18 @@ pub(super) fn curve_channel_color(theme: &Theme, ch: crate::curve::Channel) -> C
     }
 }
 
-/// A title's authored colour as a Vello colour. Unlike a clip's palette slot
-/// this is a real stored value — the user picked it and it must survive a
-/// theme change — so it is converted, not resolved.
+/// A real stored value, unlike a clip's palette slot: the user picked it and it must
+/// survive a theme change, so it is converted, not resolved.
 pub(super) fn title_color(c: [f64; 4]) -> Color {
     Color::new([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32])
 }
 
-/// The quietest level a meter shows. Below -48 dBFS a signal is under the
-/// noise of anything it is sitting with, so the bar has nothing useful to say
-/// about it; spending half the bar's length down there would cost the top of
-/// the scale, which is where every decision is made.
+/// Below -48 dBFS a signal is under the noise of anything it sits with, and spending
+/// half the bar down there would cost the top of the scale.
 pub(super) const METER_FLOOR_DB: f64 = -48.0;
 
-/// Where a meter changes colour, as fractions of its length.
-///
-/// -12 dB and -3 dB, which is the convention: amber says "you are into the
-/// last twelve", red says "three left". Resolved through the toolkit's shared
-/// [`ui::widget::GaugeThresholds`], so a meter's green, amber and red are the
-/// same three tokens every other gauge in the fleet uses — including the
-/// high-contrast theme, where they are not simply green, amber and red.
+/// -12 dB and -3 dB, through the toolkit's shared [`ui::widget::GaugeThresholds`], so
+/// a meter's three colours are the tokens every other gauge in the fleet uses.
 pub(super) fn meter_thresholds() -> ui::widget::GaugeThresholds {
     ui::widget::GaugeThresholds {
         warning: meter_frac(-12.0) as f32,
@@ -682,14 +645,12 @@ pub(super) fn meter_thresholds() -> ui::widget::GaugeThresholds {
     }
 }
 
-/// A level, in decibels, as a fraction of a meter's length. Full scale is the
-/// far end; anything over it pins there and lights the clip flag instead,
-/// which is what makes "over" a state rather than a longer bar.
+/// Full scale is the far end; anything over it pins there and lights the clip flag,
+/// which makes "over" a state rather than a longer bar.
 pub(super) fn meter_frac(db: f64) -> f64 {
     ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
 }
 
-/// A linear amplitude as that fraction.
 pub(super) fn meter_frac_linear(level: f32) -> f64 {
     if level <= 0.0 {
         return 0.0;
@@ -697,16 +658,12 @@ pub(super) fn meter_frac_linear(level: f32) -> f64 {
     meter_frac(crate::model::linear_to_db(f64::from(level)))
 }
 
-/// A stereo level meter: two bars in `area`, left over right, with the
-/// peak-hold marked and a clip flag at the far end.
+/// Everything it draws it is given: the mixer measured these numbers where the sound
+/// was made. Nothing here reads a sample, allocates or analyses, because this runs on
+/// the paint path.
 ///
-/// Everything it draws it is *given* — the mixer measured these numbers on
-/// the thread that made the sound. Nothing here reads a sample, allocates or
-/// analyses anything, because this runs on the paint path.
-///
-/// The clip flag is latched by the meter, not by this function: it stays lit
-/// after the level has fallen away, which is the whole difference between a
-/// warning and a flicker you were not looking at.
+/// The clip flag is latched by the meter: it stays lit after the level has fallen
+/// away, which is the difference between a warning and a flicker you missed.
 pub(super) fn draw_level_meter(
     scene: &mut Scene,
     tf: Affine,
@@ -744,9 +701,8 @@ pub(super) fn draw_level_meter(
             thresholds.color(theme, frac as f32),
         );
     }
-    // Peak-hold: the loudest this has been since the meter was cleared. It is
-    // the number a person actually wants — the bar is where you are, the hold
-    // is where you have been.
+    // The number a person actually wants: the bar is where you are, the hold is where
+    // you have been.
     let hold_frac = meter_frac_linear(hold);
     if hold_frac > 0.01 {
         let x = bars.x0 + bars.width() * hold_frac;
@@ -778,13 +734,9 @@ pub(super) fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
     p.close_path();
     p
 }
-/// What one timeline paint needs to know about link groups: how many clips
-/// each group holds and whether any of them is selected.
-///
-/// Built once per paint and handed down rather than asked per clip. "Is
-/// anything linked to me" is a scan of every clip in the project, and asking it
-/// inside the per-clip draw would make painting the lanes quadratic in the
-/// project — the one thing the draw pass is not allowed to become.
+/// Built once per paint and handed down rather than asked per clip: "is anything
+/// linked to me" is a scan of every clip, and asking it inside the per-clip draw
+/// would make painting the lanes quadratic in the project.
 #[derive(Default)]
 pub(super) struct LinkMarks {
     /// `(group, members, any member selected)`, sorted by group so a lookup is
@@ -838,9 +790,8 @@ impl LinkMarks {
     }
 }
 
-/// The chain glyph that marks a linked clip: two interlocking links, drawn
-/// with the header's own foreground so it reads on every label colour and in
-/// every theme.
+/// Two interlocking links, in the header's own foreground, so it reads on every label
+/// colour and in every theme.
 pub(super) fn draw_chain(scene: &mut Scene, tf: Affine, color: Color, x: f64, y: f64) {
     let stroke = Stroke::new(1.3);
     for dx in [0.0, 5.0] {
@@ -854,7 +805,6 @@ pub(super) fn draw_chain(scene: &mut Scene, tf: Affine, color: Color, x: f64, y:
     }
 }
 
-/// The width the chain glyph reserves at the head of a clip's header.
 pub(super) const CHAIN_W: f64 = 16.0;
 
 pub(super) fn triangle_corner(x: f64, y: f64, s: f64) -> BezPath {
@@ -866,9 +816,8 @@ pub(super) fn triangle_corner(x: f64, y: f64, s: f64) -> BezPath {
     p
 }
 
-/// A clip's, marker's or media item's label colour: the person's own tag on
-/// their content, drawn from the presence series so every label is as
-/// legible and as loud as every other.
+/// The person's own tag on their content, drawn from the presence series so every
+/// label is as legible and as loud as every other.
 pub(super) fn clip_color(theme: &Theme, palette: u8) -> Color {
     theme.tokens.colors.presence.series(usize::from(palette))
 }
@@ -878,10 +827,6 @@ pub(super) fn with_alpha(c: Color, a: f64) -> Color {
     c.with_alpha(alpha)
 }
 
-/// Everything needed to paint one sampled window of an audio waveform.
-///
-/// Keeping the source interval and its media duration together prevents the
-/// three adjacent time values at call sites from being silently transposed.
 #[derive(Clone, Copy)]
 pub(super) struct WaveformPaint<'a> {
     pub(super) area: Rect,
@@ -893,9 +838,8 @@ pub(super) struct WaveformPaint<'a> {
     pub(super) color: Color,
 }
 
-/// Draw a real audio waveform from normalized peaks into its target area,
-/// mapping the requested source window into the peaks array so a trimmed clip
-/// shows its own portion.
+/// Maps the requested source window into the peaks array, so a trimmed clip shows its
+/// own portion.
 #[allow(
     clippy::indexing_slicing,
     reason = "waveform draw buckets are paired with their validated sample interval before each read"
@@ -925,14 +869,9 @@ pub(super) fn draw_waveform(scene: &mut Scene, tf: Affine, paint: WaveformPaint<
     }
 }
 
-/// The placeholder an audio body shows when there is no real signal to draw:
-/// a flat line down the middle.
-///
-/// It is deliberately flat. What stood here before was a sum of three sines
-/// dressed up as an envelope — invented data drawn in the same ink as measured
-/// data, which is the one thing a waveform must never do. A flat line says
-/// "nothing measured yet"; a wiggle says "this is your audio", and would be a
-/// lie whether the peaks were still computing or could never be read at all.
+/// Deliberately flat: the sum of sines that stood here was invented data drawn in the
+/// same ink as measured data. A flat line says "nothing measured yet"; a wiggle says
+/// "this is your audio".
 pub(super) fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color: Color) {
     if area.width() <= 2.0 || area.height() <= 2.0 {
         return;
@@ -946,7 +885,6 @@ pub(super) fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color:
     );
 }
 
-/// Fit a w:h aspect rect centered inside `area`.
 pub(super) fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return area;
@@ -981,7 +919,6 @@ pub(super) fn nice_tick(px_per_sec: f64) -> f64 {
     600.0
 }
 
-/// The roles the editor's sheets set their text in.
 pub(super) fn dialog_type(theme: &Theme) -> DialogType {
     DialogType {
         sm: theme.text(TextRole::Body),
@@ -1026,13 +963,10 @@ pub(super) fn modal_layout_with_stacking_actions(
     layout
 }
 
-/// A well inside content (the curve box, an effect row, the title's words):
-/// the raised surface with the edge derived from it.
 pub(super) fn well(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, radius: f64) {
     ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.surfaces.raised);
 }
 
-/// The hover and selection lift of a row in one of the editor's lists.
 pub(super) fn selection_row(
     scene: &mut Scene,
     tf: Affine,

@@ -17,6 +17,7 @@ use tilo_automation::{
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
+use crate::locales::CATALOG;
 use crate::model::{Draft, block_at, step_at};
 use tilo_automation::grant;
 
@@ -56,11 +57,19 @@ pub fn problem_lines(steps: &[Step], problems: &BTreeMap<String, Vec<String>>) -
     let mut lines = Vec::new();
     for (path, reasons) in problems {
         let place = match path.as_str() {
-            "" => String::from("Shortcut"),
-            "output" => String::from("Result"),
+            "" => crate::locales::CATALOG.t("shortcuts-problem-shortcut"),
+            "output" => crate::locales::CATALOG.t("shortcuts-problem-result"),
             path => step_at(steps, path)
                 .and_then(|step| step_number(steps, &step.id))
-                .map_or_else(|| String::from("A step"), |number| format!("Step {number}")),
+                .map_or_else(
+                    || crate::locales::CATALOG.t("shortcuts-problem-a-step"),
+                    |number| {
+                        crate::locales::CATALOG.t_args(
+                            "shortcuts-problem-step",
+                            &[("number", number.to_string().into())],
+                        )
+                    },
+                ),
         };
         lines.extend(reasons.iter().map(|reason| format!("{place}: {reason}")));
     }
@@ -241,7 +250,8 @@ fn opened_branch(step: &Step) -> Option<&'static str> {
         | StepKind::SetVar { .. }
         | StepKind::Ask { .. }
         | StepKind::Ai { .. }
-        | StepKind::Task { .. } => None,
+        | StepKind::Task { .. }
+        | StepKind::Read { .. } => None,
     }
 }
 
@@ -312,7 +322,8 @@ pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
-                | StepKind::Task { .. } => None,
+                | StepKind::Task { .. }
+                | StepKind::Read { .. } => None,
             };
             if found.is_some() {
                 return found;
@@ -468,6 +479,14 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
             None => prompt.clone(),
         },
         StepKind::Task { instruction, .. } => instruction.clone(),
+        StepKind::Read {
+            app,
+            record,
+            joined,
+        } => {
+            let parts = if *joined { " with its parts" } else { "" };
+            format!("Read record “{record}” of {app}{parts}")
+        }
     }
 }
 
@@ -517,6 +536,8 @@ pub fn substance(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String
         StepKind::Task { instruction, .. } => {
             let _ = write!(line, " ({instruction:?})");
         }
+        // The heading names the record and app; nothing else is held.
+        StepKind::Read { .. } => {}
     }
     line
 }
@@ -545,7 +566,8 @@ pub fn outline(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> Vec<Stri
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
-            | StepKind::Task { .. } => {}
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
         }
     }
     let mut out = Vec::new();
@@ -720,18 +742,18 @@ pub const fn param_type_name(ty: ParamType) -> &'static str {
 /// What a value of `ty` is called to a person: "Whole number", not
 /// "integer".
 #[must_use]
-pub const fn param_type_label(ty: ParamType) -> &'static str {
-    match ty {
-        ParamType::Text => "Text",
-        ParamType::Integer => "Whole number",
-        ParamType::Number => "Number",
-        ParamType::Boolean => "Yes or no",
-        ParamType::DateTime => "Date and time",
-        ParamType::Secret => "Secret",
-        ParamType::Resource => "Item from an app",
-        ParamType::Object => "Group of values",
-        ParamType::Array => "List",
-    }
+pub fn param_type_label(ty: ParamType) -> String {
+    CATALOG.t(match ty {
+        ParamType::Text => "shortcuts-param-type-text",
+        ParamType::Integer => "shortcuts-param-type-integer",
+        ParamType::Number => "shortcuts-param-type-number",
+        ParamType::Boolean => "shortcuts-param-type-boolean",
+        ParamType::DateTime => "shortcuts-param-type-date-time",
+        ParamType::Secret => "shortcuts-param-type-secret",
+        ParamType::Resource => "shortcuts-param-type-resource",
+        ParamType::Object => "shortcuts-param-type-object",
+        ParamType::Array => "shortcuts-param-type-array",
+    })
 }
 
 #[cfg(test)]
@@ -815,6 +837,6 @@ fn substance_text(kind: &StepKind, steps: &[Step]) -> String {
         StepKind::Ai { prompt, .. } => format!(" “{prompt}”"),
         StepKind::Task { instruction, .. } => format!(" “{instruction}”"),
         StepKind::Ask { param } => format!(" “{}”", param.description),
-        StepKind::Invoke { .. } => String::new(),
+        StepKind::Invoke { .. } | StepKind::Read { .. } => String::new(),
     }
 }

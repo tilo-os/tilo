@@ -1,7 +1,3 @@
-//! The record through its own door: field edits and verbs on replicas, how
-//! concurrent edits merge, what is published, and that imported bytes stay
-//! out of it.
-
 use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
 use std::sync::Mutex;
@@ -25,7 +21,6 @@ use crate::model::{
     AnnoKind, Annotation, GeomSpace, HighlightColor, PtRect, Signature, SignatureInk, new_id,
 };
 
-/// A replica of a record whose plan lays out `pages` source pages.
 fn planned_replica(pages: usize) -> Replica<PdfMarkup> {
     Replica::load(&PdfMarkup::planned(pages)).expect("the record loads")
 }
@@ -59,7 +54,6 @@ fn signature(id: &str, page: usize, rect: PtRect, signer: &str, ink: SignatureIn
     }
 }
 
-/// The published resource `id` within `root`, wherever it nests.
 fn find<'a>(
     root: &'a tilo_actions::ResourceSpec,
     id: &str,
@@ -199,7 +193,6 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
         .expect("delete");
     assert!(markup(&replica).list_annotations().is_empty());
 
-    // Ink points round-trip exactly.
     let mut replica = planned_replica(1);
     let ink = anno(
         1,
@@ -220,7 +213,6 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
         _ => panic!("expected ink"),
     }
 
-    // Repositioning moves a note marker ...
     let note = anno(
         1,
         AnnoKind::Note { x: 30.0, y: 40.0 },
@@ -248,7 +240,6 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
     }
     assert_eq!(stored.space, GeomSpace::User);
 
-    // ... but ink is a polyline, not a single anchor: it has no position.
     assert!(
         set_annotation_position_user_action(&markup(&replica), &ink.id, 99.0, 99.0).is_none(),
         "ink is not repositioned as a point"
@@ -264,7 +255,6 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
         _ => panic!("expected ink"),
     }
 
-    // A note whose position is not a number is refused whole.
     let paths = PdfMarkup::paths().annotations.item(&Id::from_raw(note.id));
     assert!(
         replica
@@ -332,7 +322,6 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
     assert!(got[0].comment.resolved);
     assert_eq!(got[0].comment.text, "Edited: confirmed accurate.");
 
-    // Comments list in the order they were written, each dated.
     let mut replica = planned_replica(1);
     for (id, created) in [("a", 30), ("b", 10), ("c", 20)] {
         replica.set_now_ms(created);
@@ -352,7 +341,6 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
         "in the order they were written, a clock running behind notwithstanding"
     );
 
-    // Reply ids survive reload, retries and concurrent merges.
     let mut base = planned_replica(1);
     base.apply(add_comment_action(
         "thread-1",
@@ -372,7 +360,6 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
         "Looks good.",
     ))
     .expect("left reply");
-    // A retried delivery has the same id and must remain exactly one reply.
     left.apply(add_reply_action_with_id(
         "thread-1",
         "reply-left",
@@ -452,7 +439,6 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
     }
 
-    // Deleting a free comment removes it.
     let mut replica = planned_replica(1);
     let free = new_id();
     replica
@@ -463,8 +449,6 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         .expect("delete comment");
     assert!(markup(&replica).list_comments().is_empty());
 
-    // Deleting an annotation removes its anchored comments; an unrelated
-    // free comment must survive the delete.
     let a = hl(1);
     replica
         .apply(add_annotation_on(&a, "source-1"))
@@ -498,9 +482,6 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn page_plan_converges_imports_atomically_and_carries_markup() {
-    // Both clients open the same record, past its genesis, before either
-    // sees the other: each lays out the plan. The plan has one occurrence
-    // per id.
     let genesis = Replica::<PdfMarkup>::new().save();
     let mut left = Replica::<PdfMarkup>::load(&genesis).unwrap();
     let mut right = Replica::<PdfMarkup>::load(&genesis).unwrap();
@@ -530,7 +511,6 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
     assert_eq!(ids.len(), 3);
     assert_eq!(markup(&a).page_plan(), markup(&b).page_plan());
 
-    // Markup anchors follow a page occurrence through move and delete.
     let mut replica = planned_replica(3);
     let annotation = hl(1);
     replica
@@ -570,7 +550,6 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
     assert!(deleted.list_annotations().is_empty());
     assert!(deleted.list_comments().is_empty());
     assert!(deleted.list_signatures().is_empty());
-    // The markup stays in the record, attached to the deleted page.
     let hidden = deleted.annotations_with_hidden();
     assert_eq!(hidden.len(), 1);
     assert_eq!(hidden[0].page, 0);
@@ -578,7 +557,6 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
         deleted.annotation_page_id(&hidden[0].id).as_deref(),
         Some("source-1")
     );
-    // The last page stays.
     replica
         .apply(crate::actions::delete_page_plan_action("source-2"))
         .unwrap();
@@ -589,7 +567,6 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
         "a document keeps at least one page"
     );
 
-    // Imported pages are atomic and keep their durable identity.
     let mut replica = planned_replica(2);
     let page = PagePlanEntry {
         id: "imported-image".into(),
@@ -607,8 +584,6 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
         .apply(import_pages_action(Some("source-1"), vec![page.clone()]))
         .unwrap();
     assert_eq!(markup(&replica).page_plan()[1], page);
-    // A malformed batch refuses as a whole, including the otherwise valid
-    // first entry. It cannot leave a partial shared page plan behind.
     let mut good = page.clone();
     good.id = "good".into();
     let mut bad = page;
@@ -622,9 +597,6 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
     assert_eq!(markup(&replica).page_plan().len(), 3);
 }
 
-/// The page rail reorders as `Vec::remove(from)` then `Vec::insert(to, _)`:
-/// a drag down or the menu's Move down lands the page exactly where the
-/// rail showed it, as a drag up does, for every page and position.
 #[test]
 fn a_rail_reorder_lands_the_page_where_the_rail_put_it() {
     let pages = 4;
@@ -673,10 +645,6 @@ fn resource_ctx(
     }
 }
 
-/// The record publishes its pages, markup, threads and signatures as items
-/// with the verbs each implies; the outline and find hits are live rows
-/// beside it, bounded, with omitted hits resolvable by id; outline ids
-/// survive reordering but fail closed when changed.
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn document_resources_publish_items_and_bounded_stable_rows() {
@@ -725,7 +693,6 @@ fn document_resources_publish_items_and_bounded_stable_rows() {
         "a thread stays addressable by id for agents and history"
     );
 
-    // The palette offers what a reviewer reaches for.
     let labels: Vec<String> = std::iter::once(&document)
         .chain(document.children.iter())
         .flat_map(|resource| resource.actions.iter().map(|a| a.label.clone()))
@@ -759,7 +726,6 @@ fn document_resources_publish_items_and_bounded_stable_rows() {
     requeried.search_token = search_result_token("other", false, false);
     assert!(live_row(&requeried, &omitted_find).is_none());
 
-    // Outline resource ids survive reordering but fail closed when changed.
     let mut ctx = resource_ctx(
         "Outline fixture",
         vec!["p-1".into(), "p-2".into(), "p-3".into()],
@@ -805,9 +771,6 @@ fn document_resources_publish_items_and_bounded_stable_rows() {
     );
 }
 
-/// Signatures and notes through the door sign as their invoker; deleting an
-/// annotation removes every comment pinned to it; a markup action is one
-/// undo step of its author's.
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
@@ -832,8 +795,6 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
         .expect("delete");
     assert!(markup(&replica).list_signatures().is_empty());
 
-    // The typed signature uses the named signer and signs as the invoker
-    // when none is named; one call adds a note with its thread.
     let mut app =
         ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
     app.invoke(PdfMarkup::START_PAGE_PLAN.with(3))
@@ -882,7 +843,6 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
         "the note's marker is on the page"
     );
 
-    // Deleting an annotation that carries a pinned comment.
     let mut replica = planned_replica(3);
     for edit in crate::scenarios::sample_review() {
         replica.apply(edit).expect("the sample review");
@@ -914,7 +874,6 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
         "and every comment pinned to it went with it"
     );
 
-    // A markup action is one undo step of its author's.
     let mut app =
         ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
     app.invoke(PdfMarkup::START_PAGE_PLAN.with(1))
@@ -935,10 +894,6 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
     );
 }
 
-/// Peer B's content backend: its own local content, plus a peer (A) it
-/// fetches from. A miss is not served synchronously; it asks the peer,
-/// reports the fetch as pending, and installs the bytes (verified against
-/// the hash that named them) for a later read. The two peers share nothing.
 struct PeerFetchingBackend {
     local: MemoryBackend,
     peer: ContentStore,
@@ -954,8 +909,6 @@ impl PeerFetchingBackend {
         }
     }
 
-    /// Ask the peer for `hash`; the answer lands locally on the next
-    /// `state` query, like a transfer completing between frames.
     fn want(&self, hash: &str) {
         if let Ok(mut requested) = self.requested.lock() {
             requested.insert(hash.to_string());
@@ -1030,8 +983,6 @@ fn imported_pages_replay_identically_and_bytes_travel_through_the_content_store(
     assert_eq!(a.heads(), b.heads());
     assert_eq!(markup(&a).page_plan(), markup(&b).page_plan());
 
-    // Imported bytes cross between content stores without entering the
-    // record.
     let producer = ContentStore::memory();
     let consumer = ContentStore::new(PeerFetchingBackend::new(producer.clone()));
     let bytes = b"content that is deliberately not in Automerge";
@@ -1042,7 +993,6 @@ fn imported_pages_replay_identically_and_bytes_travel_through_the_content_store(
     assert!(!consumer.has(&hash));
     assert_eq!(consumer.state(&hash), ContentState::Unavailable);
 
-    // The import names the content by hash only.
     let mut replica = planned_replica(1);
     replica
         .apply(import_pages_action(
@@ -1075,18 +1025,13 @@ fn imported_pages_replay_identically_and_bytes_travel_through_the_content_store(
             .is_some_and(|page| page.hash == hash)
     }));
 
-    // First read is intentionally non-blocking; it asks the peer.
     assert!(consumer.read(&hash).is_none());
     assert_eq!(consumer.state(&hash), ContentState::Resolved);
     assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
-    // Different bytes can never be stored under this address.
     assert_ne!(consumer.put(b"tampered").ok().as_ref(), Some(&hash));
     assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
 }
 
-/// What an agent does for a person is history the person reads: the
-/// reader's sentence for each field and verb, naming the thread as it was
-/// called, and who did it for whom.
 #[test]
 fn history_entries_render_as_the_readers_sentences() {
     use ui::framework::testing::TestApp;

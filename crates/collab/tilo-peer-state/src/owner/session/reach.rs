@@ -5,7 +5,7 @@ use super::Connect;
 use crate::direct::{Dialed, DirectSync};
 use crate::join::TransportHint;
 use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_identity_host::custody::HostIdentity;
@@ -61,8 +61,8 @@ impl Linked {
 }
 
 impl Reach {
-    /// Link `connect`'s workspace to its host at `via` as the device whose
-    /// signing key is `key`: in process when `via` is this device's own host,
+    /// Link `connect`'s workspace to its host at `via` as the device `signer`
+    /// is the custody of: in process when `via` is this device's own host,
     /// and over [`DIRECT_ALPN`](crate::direct::DIRECT_ALPN) otherwise.
     ///
     /// # Errors
@@ -73,7 +73,7 @@ impl Reach {
         &self,
         connect: &Connect,
         via: &TransportHint,
-        key: SigningKey,
+        signer: Arc<dyn DeviceSigner>,
     ) -> Result<Linked, String> {
         let (payload, _) =
             IrohWorkspaceHostHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
@@ -84,7 +84,7 @@ impl Reach {
         {
             return Err("native link workspace pin mismatch".into());
         }
-        let link = connect.link(key)?;
+        let link = connect.link(signer)?;
         let own = link.device();
         if super::hosted_by(via, &own) {
             let host = self
@@ -98,10 +98,15 @@ impl Reach {
                 host: Host::Paired(host),
             });
         }
-        let addr = payload.endpoint_addr;
-        let dialed = tokio::time::timeout(Duration::from_secs(10), link.dial(&self.endpoint, addr))
-            .await
-            .map_err(|_| "native link connection timed out".to_string())??;
+        // The relay answers on a service key of its own, which the hint's signature binds to the
+        // host device: the link's history is that device's.
+        let host = payload.host_device_certificate.device_public_key;
+        let dialed = tokio::time::timeout(
+            Duration::from_secs(10),
+            link.dial(&self.endpoint, payload.endpoint_addr, host),
+        )
+        .await
+        .map_err(|_| "native link connection timed out".to_string())??;
         Ok(Linked {
             link,
             host: Host::Dialled(Box::new(dialed)),

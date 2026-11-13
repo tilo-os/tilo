@@ -4,21 +4,17 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// A hosted VM's machine and disk. The disk is persistent: it outlives
-/// every suspend and stop, and only deleting the VM frees it.
+/// A VM's machine and disk; the disk outlives every suspend and stop and is freed only by deleting
+/// the VM.
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum VmSize {
-    /// 2 vCPU, 4 GiB, 50 GiB disk.
     Small,
-    /// 4 vCPU, 8 GiB, 50 GiB disk.
     #[default]
     Default,
-    /// 8 vCPU, 16 GiB, 110 GiB disk.
     Large,
-    /// 16 vCPU, 32 GiB, 250 GiB disk.
     Xlarge,
 }
 
@@ -74,7 +70,6 @@ impl VmSize {
         Self::ALL.into_iter().find(|size| size.as_str() == name)
     }
 
-    /// `default (4 vCPU, 8 GB, 50 GB disk)`: how a person reads a size.
     #[must_use]
     pub fn describe(self) -> String {
         format!(

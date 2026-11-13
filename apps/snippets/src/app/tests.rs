@@ -83,8 +83,8 @@ fn press_bar(app: &mut TestApp<SnippetsShell>, name: &str) {
     app.settle();
 }
 
-/// The list's item for the snippet titled `title`: the node the list
-/// exports around the row, named by the row's language badge and title.
+/// The list's item for the snippet titled `title`: the row's own node, which
+/// the list exports as the item, named by the row's language badge and title.
 fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::NodeId {
     let suffix = format!(" {title}");
     app.harness()
@@ -92,7 +92,6 @@ fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::No
         .into_iter()
         .find(|(_, node)| {
             node.role() == ui::accesskit::Role::ListItem
-                && !node.children().is_empty()
                 && node.label().is_some_and(|label| label.ends_with(&suffix))
         })
         .map_or_else(|| panic!("the list item of {title:?}"), |(id, _)| id)

@@ -1,19 +1,6 @@
-//! The sandbox's packet filter: one nftables table in its network
-//! namespace, programmed over netlink.
-//!
-//! ```text
-//! table inet tilo_egress {
-//!     set allowed4 { type ipv4_addr; flags timeout; }
-//!     set allowed6 { type ipv6_addr; flags timeout; }
-//!     chain output { type filter hook output priority 0; policy drop; … }
-//! }
-//! ```
-//!
-//! [`rules`] is the chain, as data; [`render`] prints it in `nft` syntax
-//! (for `-v` and the tests) and [`Netfilter`] encodes the same rules as
-//! `nf_tables` netlink messages. No `nft` binary is involved: the socket the
-//! messages go over was opened inside the namespace by a process holding
-//! `CAP_NET_ADMIN` there, and is the only handle on the filter that exists.
+//! The sandbox's packet filter: one nftables table in its network namespace,
+//! programmed over netlink. The table is created in one transaction, so
+//! nothing leaves the namespace before the filter is in place.
 
 use std::io;
 use std::net::IpAddr;
@@ -27,7 +14,6 @@ pub const SET6: &str = "allowed6";
 const SET4_ID: u32 = 1;
 const SET6_ID: u32 = 2;
 
-/// The loopback interface's index, the same in every network namespace.
 const LOOPBACK_IFINDEX: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,20 +47,14 @@ impl Proto {
     }
 }
 
-/// One condition of a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Match {
-    /// The packet leaves through `lo`: the sandbox talking to itself,
-    /// including to the DNS stub.
     ToLoopback,
     /// Part of (or related to) a connection already allowed.
     Established,
     Family(Family),
     Proto(Proto),
-    /// Destination port (TCP/UDP; follows a [`Match::Proto`]).
     DestPort(u16),
-    /// Destination address is in the family's allowed set (follows a
-    /// [`Match::Family`]).
     DestAllowed(Family),
     /// `ICMPv6` type in `from..=to` (follows `Family(V6)`, `Proto(Icmpv6)`).
     Icmpv6Types(u8, u8),
@@ -86,7 +66,6 @@ pub enum Verdict {
     /// Refuse a TCP connection at once with a reset, so `connect` fails with
     /// "connection refused" instead of hanging until it times out.
     RejectReset,
-    /// Refuse anything else with an ICMP "administratively prohibited".
     RejectProhibited,
 }
 
@@ -112,8 +91,6 @@ pub fn rules() -> Vec<Rule> {
     vec![
         rule(&[ToLoopback], Verdict::Accept),
         rule(&[Established], Verdict::Accept),
-        // DNS goes to the stub on loopback, accepted above, and nowhere
-        // else — even to an address that is allowed for something else.
         rule(&[P(Udp), DestPort(53)], Verdict::RejectProhibited),
         rule(&[P(Tcp), DestPort(53)], Verdict::RejectReset),
         // Neighbour discovery: without it IPv6 never finds its gateway.
@@ -142,7 +119,6 @@ pub fn rules() -> Vec<Rule> {
     ]
 }
 
-/// The table in `nft` syntax.
 pub fn render(rules: &[Rule]) -> String {
     let mut out = format!(
         "table inet {TABLE} {{\n\
@@ -230,7 +206,6 @@ const NFTA_CHAIN_TYPE: u16 = 7;
 const NFTA_HOOK_HOOKNUM: u16 = 1;
 const NFTA_HOOK_PRIORITY: u16 = 2;
 const NF_INET_LOCAL_OUT: u32 = 3;
-/// `NF_BR_FORWARD`: frames the bridge passes from one port to another.
 const NF_BR_FORWARD: u32 = 2;
 const NF_DROP: u32 = 0;
 const NF_ACCEPT: u32 = 1;
@@ -300,7 +275,6 @@ const NFT_REJECT_ICMPX_UNREACH: u32 = 2;
 const NFT_REJECT_ICMPX_ADMIN_PROHIBITED: u8 = 3;
 const CT_STATE_ESTABLISHED_RELATED: u32 = 0x02 | 0x04;
 
-/// One `nf_tables` expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Expr {
     Meta(u32),
@@ -397,7 +371,6 @@ fn verdict_exprs(v: Verdict) -> Expr {
     }
 }
 
-/// Netlink attributes, appended to a buffer.
 struct Attrs<'a>(&'a mut Vec<u8>);
 
 impl Attrs<'_> {
@@ -508,8 +481,6 @@ fn encode_expr(a: &mut Attrs<'_>, e: &Expr) {
     });
 }
 
-/// A batch of `nf_tables` messages, applied by the kernel as one
-/// transaction: all of it or none.
 struct Batch {
     buf: Vec<u8>,
     seq: u32,
@@ -643,7 +614,6 @@ fn key_of(addr: IpAddr) -> Vec<u8> {
     }
 }
 
-/// Elements for one set, each with an optional timeout.
 fn element_message(
     b: &mut Batch,
     kind: u16,
@@ -686,32 +656,28 @@ fn element_message(
 /// tap, which re-makes every connection from a host socket). Frames from
 /// the uplink are answers (nothing is forwarded inwards) and pass. From the
 /// VM, ARP passes, and IPv4 does unless its destination is in a blocked
-/// network; the one exception is DNS to the uplink's forwarder. Everything
-/// else, IPv6 included, is dropped. Only destinations are matched, so no
-/// connection tracking is needed on the bridge.
+/// network; the two exceptions are DNS to the uplink's forwarder and the one
+/// [`GuestFilter::endpoint`] the VM is given. Everything else, IPv6
+/// included, is dropped. Only destinations are matched, so no connection
+/// tracking is needed on the bridge.
 pub const GUEST_TABLE: &str = "tilo_guest";
 pub const GUEST_CHAIN: &str = "forward";
 
-/// What a VM's bridge lets through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuestFilter {
-    /// The VM's tap device.
     pub guest: String,
-    /// The uplink's tap device.
     pub uplink: String,
     /// The uplink's DNS forwarder, reachable on port 53 though blocked.
     pub dns: std::net::Ipv4Addr,
+    pub endpoint: Option<(std::net::Ipv4Addr, u16)>,
     /// Networks the VM never reaches: the host's, the cluster's, the cloud's
     /// metadata endpoints, other VMs'.
     pub blocked: Vec<(std::net::Ipv4Addr, u8)>,
 }
 
-/// One condition of a [`GuestFilter`] rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuestMatch {
-    /// The frame came in on this port (an interface name, NUL-padded).
     InIface([u8; 16]),
-    /// An ARP frame.
     Arp,
     /// An IPv4 packet.
     Ipv4,
@@ -733,7 +699,6 @@ pub struct GuestRule {
     pub verdict: GuestVerdict,
 }
 
-/// An interface name as `nf_tables` compares it.
 fn ifname(name: &str) -> [u8; 16] {
     let mut out = [0_u8; 16];
     for (slot, byte) in out.iter_mut().zip(name.bytes().take(15)) {
@@ -742,7 +707,6 @@ fn ifname(name: &str) -> [u8; 16] {
     out
 }
 
-/// The network's mask, `prefix` leading ones.
 fn mask4(prefix: u8) -> [u8; 4] {
     let bits = u32::MAX
         .checked_shl(32_u32.saturating_sub(u32::from(prefix.min(32))))
@@ -780,6 +744,20 @@ impl GuestFilter {
                 GuestVerdict::Accept,
             ));
         }
+        if let Some((address, port)) = self.endpoint {
+            for proto in [Proto::Udp, Proto::Tcp] {
+                rules.push(rule(
+                    &[
+                        InIface(guest),
+                        Ipv4,
+                        DestNet(address, 32),
+                        P(proto),
+                        DestPort(port),
+                    ],
+                    GuestVerdict::Accept,
+                ));
+            }
+        }
         for (address, prefix) in &self.blocked {
             rules.push(rule(
                 &[InIface(guest), Ipv4, DestNet(*address, *prefix)],
@@ -790,7 +768,6 @@ impl GuestFilter {
         rules
     }
 
-    /// The table in `nft` syntax.
     pub fn render(&self) -> String {
         let mut out = format!(
             "table bridge {GUEST_TABLE} {{\n\tchain {GUEST_CHAIN} {{\n\
@@ -918,7 +895,6 @@ fn add_guest_messages(b: &mut Batch, filter: &GuestFilter) {
     }
 }
 
-/// The filter of one network namespace.
 #[derive(Debug)]
 pub struct Netfilter {
     sock: OwnedFd,
@@ -926,12 +902,9 @@ pub struct Netfilter {
     installed: bool,
 }
 
-/// How long to wait for the kernel to acknowledge a batch.
 const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Netfilter {
-    /// The filter behind `sock`, a `NETLINK_NETFILTER` socket opened inside
-    /// the namespace.
     pub fn new(sock: OwnedFd) -> io::Result<Self> {
         let tv = libc::timeval {
             tv_sec: libc::time_t::try_from(ACK_TIMEOUT.as_secs()).unwrap_or(5),
@@ -960,10 +933,8 @@ impl Netfilter {
         })
     }
 
-    /// The protocol number the socket must be opened with.
     pub const PROTOCOL: libc::c_int = NETLINK_NETFILTER;
 
-    /// Whether [`Self::install`] has run (and [`Self::remove`] has not).
     pub fn installed(&self) -> bool {
         self.installed
     }
@@ -991,7 +962,6 @@ impl Netfilter {
         self.commit(b)
     }
 
-    /// Delete the table: egress is unrestricted afterwards.
     pub fn remove(&mut self) -> io::Result<()> {
         if !self.installed {
             return Ok(());
@@ -1169,9 +1139,6 @@ table inet tilo_egress {
 
     #[test]
     fn nothing_but_the_set_lookup_accepts_traffic_leaving_the_namespace() {
-        // Every accepting rule is loopback, an established flow, neighbour
-        // discovery, or a destination in an allowed set — there is no rule
-        // that accepts by port or by protocol alone.
         for r in rules().iter().filter(|r| r.verdict == Verdict::Accept) {
             let ok = r.matches.contains(&Match::ToLoopback)
                 || r.matches.contains(&Match::Established)
@@ -1181,7 +1148,6 @@ table inet tilo_egress {
                     .any(|m| matches!(m, Match::Icmpv6Types(133, 136)));
             assert!(ok, "{r:?} accepts more than it should");
         }
-        // DNS rejections come before the set accepts.
         let all = rules();
         let dns = all
             .iter()
@@ -1194,7 +1160,6 @@ table inet tilo_egress {
         assert!(dns < first_set);
     }
 
-    /// Walk the attributes of a buffer: `(type, payload)`.
     fn attrs(mut buf: &[u8]) -> Vec<(u16, Vec<u8>)> {
         let mut out = Vec::new();
         while buf.len() >= 4 {
@@ -1207,7 +1172,6 @@ table inet tilo_egress {
         out
     }
 
-    /// Split a batch into `(type, flags, family, attrs)` messages.
     fn messages(mut buf: &[u8]) -> Vec<(u16, u16, u8, Vec<u8>)> {
         let mut out = Vec::new();
         while buf.len() >= 20 {
@@ -1238,11 +1202,9 @@ table inet tilo_egress {
         expected.extend(std::iter::repeat_n(nft(NFT_MSG_NEWRULE), rules().len()));
         expected.push(NFNL_MSG_BATCH_END);
         assert_eq!(kinds, expected);
-        // Everything between begin and end is acknowledged, in sequence.
         assert_eq!(acked.len(), msgs.len() - 2);
         assert_eq!(acked.first(), Some(&101));
         assert_eq!(next, 100 + u32::try_from(msgs.len()).unwrap());
-        // The chain hooks output with policy drop.
         let chain = attrs(&msgs[4].3);
         assert!(chain.contains(&(NFTA_CHAIN_POLICY, NF_DROP.to_be_bytes().to_vec())));
         let hook = chain
@@ -1252,11 +1214,9 @@ table inet tilo_egress {
         assert!(
             attrs(&hook.1).contains(&(NFTA_HOOK_HOOKNUM, NF_INET_LOCAL_OUT.to_be_bytes().to_vec()))
         );
-        // Sets time their elements out.
         let set = attrs(&msgs[2].3);
         assert!(set.contains(&(NFTA_SET_FLAGS, NFT_SET_TIMEOUT.to_be_bytes().to_vec())));
         assert!(set.contains(&(NFTA_SET_KEY_LEN, 4_u32.to_be_bytes().to_vec())));
-        // Every nftables message is for the inet family.
         assert!(msgs[1..msgs.len() - 1].iter().all(|m| m.2 == NFPROTO_INET));
     }
 
@@ -1265,12 +1225,73 @@ table inet tilo_egress {
             guest: "tap0".into(),
             uplink: "pt0".into(),
             dns: std::net::Ipv4Addr::new(10, 0, 2, 3),
+            endpoint: Some((std::net::Ipv4Addr::new(10, 0, 2, 4), 7704)),
             blocked: vec![
                 (std::net::Ipv4Addr::new(10, 0, 0, 0), 8),
                 (std::net::Ipv4Addr::new(169, 254, 169, 254), 16),
                 (std::net::Ipv4Addr::new(168, 63, 129, 16), 32),
+                (std::net::Ipv4Addr::new(127, 0, 0, 0), 8),
             ],
         }
+    }
+
+    fn passes(filter: &GuestFilter, address: std::net::Ipv4Addr, port: u16, proto: Proto) -> bool {
+        for rule in filter.rules() {
+            let matched = rule.matches.iter().all(|m| match *m {
+                GuestMatch::InIface(name) => name == ifname(&filter.guest),
+                GuestMatch::Ipv4 => true,
+                GuestMatch::DestNet(network, prefix) => {
+                    u32::from(address) & u32::from_be_bytes(mask4(prefix))
+                        == u32::from(network) & u32::from_be_bytes(mask4(prefix))
+                }
+                GuestMatch::Proto(p) => p == proto,
+                GuestMatch::DestPort(port_here) => port_here == port,
+                GuestMatch::Arp => false,
+            });
+            if matched {
+                return rule.verdict == GuestVerdict::Accept;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_vm_reaches_the_one_endpoint_it_is_given_and_no_other_private_address() {
+        let filter = guest_filter();
+        let endpoint = std::net::Ipv4Addr::new(10, 0, 2, 4);
+        for proto in [Proto::Tcp, Proto::Udp] {
+            assert!(
+                passes(&filter, endpoint, 7704, proto),
+                "the relay's endpoint passes, {proto:?}"
+            );
+            assert!(
+                !passes(&filter, endpoint, 7705, proto),
+                "and no other port on it"
+            );
+        }
+        for address in ["10.0.2.5", "10.244.1.5", "169.254.169.254", "127.0.0.1"] {
+            let address: std::net::Ipv4Addr = address.parse().unwrap();
+            assert!(!passes(&filter, address, 7704, Proto::Udp), "{address}");
+        }
+        assert!(
+            passes(&filter, "1.1.1.1".parse().unwrap(), 443, Proto::Tcp),
+            "the internet still passes"
+        );
+        assert!(
+            passes(
+                &filter,
+                std::net::Ipv4Addr::new(10, 0, 2, 3),
+                53,
+                Proto::Udp
+            ),
+            "and so does DNS to the uplink's forwarder"
+        );
+        let linux = GuestFilter {
+            endpoint: None,
+            ..guest_filter()
+        };
+        assert!(!passes(&linux, endpoint, 7704, Proto::Udp));
+        assert!(!linux.render().contains("dport 7704"));
     }
 
     #[test]
@@ -1283,15 +1304,17 @@ table bridge tilo_guest {
 \t\tiifname \"tap0\" ether type arp accept
 \t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.3 meta l4proto udp udp dport 53 accept
 \t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.3 meta l4proto tcp tcp dport 53 accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.4 meta l4proto udp udp dport 7704 accept
+\t\tiifname \"tap0\" ether type ip ip daddr 10.0.2.4 meta l4proto tcp tcp dport 7704 accept
 \t\tiifname \"tap0\" ether type ip ip daddr 10.0.0.0/8 drop
 \t\tiifname \"tap0\" ether type ip ip daddr 169.254.0.0/16 drop
 \t\tiifname \"tap0\" ether type ip ip daddr 168.63.129.16 drop
+\t\tiifname \"tap0\" ether type ip ip daddr 127.0.0.0/8 drop
 \t\tiifname \"tap0\" ether type ip accept
 \t}
 }
 ";
         assert_eq!(guest_filter().render(), expected);
-        // A blocked network is a masked compare of the destination.
         assert_eq!(
             guest_exprs(GuestMatch::DestNet(
                 std::net::Ipv4Addr::new(169, 254, 169, 254),
@@ -1310,7 +1333,6 @@ table bridge tilo_guest {
                 Expr::Cmp(NFT_CMP_EQ, vec![169, 254, 0, 0]),
             ]
         );
-        // One bridge-family transaction: table, chain on the forward hook, rules.
         let mut b = Batch::of_family(1, NFPROTO_BRIDGE);
         add_guest_messages(&mut b, &guest_filter());
         let (bytes, _, _) = b.finish();

@@ -1,10 +1,4 @@
-//! "New File" **templates**: the files in the user's Templates directory
-//! (`$XDG_TEMPLATES_DIR`, else `~/Templates`). Each becomes a "New …" entry in
-//! the right-click menu that copies the template into the current directory —
-//! the standard Nautilus / Finder "New Document from template" affordance.
-//!
-//! When the Templates directory has no files the whole submenu is hidden (see
-//! [`crate::files_app`]), so a user with no templates never sees an empty menu.
+//! New File templates: the files in the person's Templates directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +8,6 @@ use std::thread::Thread;
 
 use ui::lock::MutexRecover as _;
 
-/// The Templates directory: `$XDG_TEMPLATES_DIR` when set (and non-empty),
-/// otherwise `~/Templates`. `None` only when there is no home directory.
 pub fn templates_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("XDG_TEMPLATES_DIR") {
         let p = p.trim();
@@ -26,9 +18,6 @@ pub fn templates_dir() -> Option<PathBuf> {
     tilo_paths::home().map(|h| h.join("Templates"))
 }
 
-/// The template files inside `dir`: regular files only (directories and
-/// dotfiles are skipped), sorted by name for a stable menu order. An absent or
-/// unreadable directory yields an empty list.
 pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
     ui::storage::waiting::refused("listing the Templates folder");
     let mut out = Vec::new();
@@ -48,24 +37,12 @@ pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The template files of one Templates folder, as the menus and the
-/// published rows read them.
-///
-/// On the compositor's frame loop, which never waits on the disk, a worker
-/// thread lists the folder and lists it again when its watch reports a
-/// change (or, while the folder does not exist, when one of its ancestors
-/// changes), and the window reads the last list from memory. Elsewhere, in a
-/// test or a standalone window, the folder is listed when asked.
 pub(crate) struct Catalog {
     dir: Option<PathBuf>,
     wake: ui::WakeHandle,
-    /// The worker, started the first time the catalog is read on a frame
-    /// loop: a window built before its thread became one still reads it
-    /// from memory there.
     live: std::cell::OnceCell<Option<Live>>,
 }
 
-/// The worker's last list, and how to stop it.
 struct Live {
     shared: Arc<Shared>,
     worker: Thread,
@@ -77,16 +54,12 @@ struct Shared {
 }
 
 impl Catalog {
-    /// The catalog of `dir`, or an empty one for `None`. `wake` wakes the
-    /// window when a worker's list changes.
     pub(crate) fn new(dir: Option<PathBuf>, wake: ui::WakeHandle) -> Self {
         let catalog = Self {
             dir,
             wake,
             live: std::cell::OnceCell::new(),
         };
-        // On a frame loop the worker starts at once, so the first menu
-        // already has the list.
         if ui::storage::waiting::forbidden() {
             let _ = catalog.live();
         }
@@ -102,8 +75,6 @@ impl Catalog {
             .as_ref()
     }
 
-    /// The template files, sorted by name. Listed when asked, except on a
-    /// frame loop, where the worker's last list is read.
     pub(crate) fn templates(&self) -> Vec<PathBuf> {
         if ui::storage::waiting::forbidden() || self.live.get().is_some() {
             return self
@@ -136,13 +107,11 @@ impl Live {
 
 impl Drop for Live {
     fn drop(&mut self) {
-        // The worker may be listing: it is not waited for, only told to stop.
         self.shared.stopped.store(true, Ordering::Release);
         self.worker.unpark();
     }
 }
 
-/// Unparks the worker when its watch has news.
 struct Unpark(Thread);
 
 impl Wake for Unpark {
@@ -181,8 +150,6 @@ fn keep_listing(dir: &Path, shared: &Shared, wake: &ui::WakeHandle) {
     }
 }
 
-/// The menu label for a template file: `New <stem>` (the extension is dropped
-/// from the label but kept when the file is created).
 pub fn menu_label(path: &Path) -> String {
     let stem = path
         .file_stem()
@@ -192,14 +159,6 @@ pub fn menu_label(path: &Path) -> String {
     crate::i18n::t_args("files-new-from-template", &[crate::i18n::arg("name", stem)])
 }
 
-/// Create a new file in `dest_dir` by copying `template` there under a
-/// non-colliding name. Returns the created path. Delegates de-duplication to
-/// [`crate::fileops::copy_into`] so `Untitled.md` → `Untitled 2.md`.
-///
-/// # Errors
-///
-/// Returns an error if `template` has no file name, or the underlying copy
-/// fails (see [`crate::fileops::copy_into`]).
 pub fn create_from_template(template: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     crate::fileops::copy_into(template, dest_dir)
 }
@@ -209,10 +168,8 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Templates list sorted files skipping dirs and dotfiles, empty dirs yield nothing, labels drop extensions and creation copies content.
     #[test]
     fn templates_list_label_and_create_files() {
-        // --- phase: list_templates_returns_files_sorted_skipping_dirs_and_dotfiles ---
         {
             let d = tempfile::tempdir().unwrap();
             fs::write(d.path().join("Document.md"), b"# ${title}\n").unwrap();
@@ -232,15 +189,12 @@ mod tests {
             );
         }
 
-        // --- phase: empty_templates_dir_yields_nothing ---
         {
             let d = tempfile::tempdir().unwrap();
             assert!(list_templates(d.path()).is_empty());
-            // A missing directory is also empty, not an error.
             assert!(list_templates(&d.path().join("nope")).is_empty());
         }
 
-        // --- phase: a_catalog_off_the_frame_loop_lists_when_asked ---
         {
             let d = tempfile::tempdir().unwrap();
             let catalog = Catalog::new(Some(d.path().to_path_buf()), ui::WakeHandle::detached());
@@ -249,13 +203,11 @@ mod tests {
             assert_eq!(catalog.templates(), [d.path().join("Note.md")]);
         }
 
-        // --- phase: menu_label_drops_extension ---
         {
             assert_eq!(menu_label(Path::new("/t/Document.md")), "New Document");
             assert_eq!(menu_label(Path::new("/t/notes")), "New notes");
         }
 
-        // --- phase: create_from_template_copies_content_into_dest ---
         {
             let d = tempfile::tempdir().unwrap();
             let tmpl = d.path().join("Document.md");
@@ -266,7 +218,6 @@ mod tests {
             let made = create_from_template(&tmpl, &dest).unwrap();
             assert_eq!(made.file_name().unwrap().to_string_lossy(), "Document.md");
             assert_eq!(fs::read(&made).unwrap(), b"hello template");
-            // A second create de-duplicates the name.
             let made2 = create_from_template(&tmpl, &dest).unwrap();
             assert_eq!(
                 made2.file_name().unwrap().to_string_lossy(),
@@ -275,9 +226,6 @@ mod tests {
         }
     }
 
-    /// On the frame loop, which never waits on the disk, the catalog is listed by its worker, kept current by a watch (here
-    /// on a folder created only after the catalog started), and read from
-    /// memory.
     #[test]
     fn a_catalog_on_the_frame_loop_is_kept_by_its_worker() {
         let home = tempfile::tempdir().unwrap();
@@ -287,7 +235,6 @@ mod tests {
                 .spawn(|| {
                     let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
                     let catalog = Catalog::new(Some(dir.clone()), ui::WakeHandle::detached());
-                    // Reading it waits on nothing: this would panic otherwise.
                     assert!(catalog.templates().is_empty());
                     catalog
                 })
@@ -305,8 +252,6 @@ mod tests {
         });
     }
 
-    /// A window built before its thread became the frame loop's (one
-    /// restored at startup) still never lists the folder on that thread.
     #[test]
     fn a_catalog_built_before_the_frame_loop_is_read_there_from_memory() {
         let dir = tempfile::tempdir().unwrap();
@@ -316,7 +261,6 @@ mod tests {
             scope
                 .spawn(move || {
                     let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
-                    // This would panic were the folder listed here.
                     let _ = catalog.templates();
                     catalog
                 })

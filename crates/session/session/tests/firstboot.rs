@@ -10,8 +10,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -19,7 +17,7 @@ use tilo_compositor::OutputConfig;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_onboarding_host::identity::IdentityProblem;
 use tilo_onboarding_host::identity_provisioning::IDENTITY_RECOVERY_ENV;
-use tilo_session::mount::firstboot::{OneShot, one_shot};
+use tilo_session::firstboot::{OneShot, one_shot};
 use tilo_session::startup::{self, Identity};
 use tilo_session::{BeforeDesk, Options, Session};
 use tilo_user_identity::{DeviceCertError, IdentityPaths, persist};

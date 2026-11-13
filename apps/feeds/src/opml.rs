@@ -89,7 +89,6 @@ pub fn parse(text: &str) -> Vec<OpmlFeed> {
     feeds
 }
 
-/// Extract an attribute value from a tag string (handles `"` and `'`).
 fn attr(tag: &str, key: &str) -> Option<String> {
     let mut search = 0;
     while let Some(tail) = tag.get(search..) {
@@ -225,10 +224,8 @@ mod tests {
   </body>
 </opml>"#;
 
-    /// OPML parses nested and flat outlines, imports with folders and dedup, round-trips export and handles escaped ampersands.
     #[test]
     fn opml_parses_imports_and_round_trips() {
-        // --- phase: parses_nested_and_flat ---
         {
             let feeds = parse(SAMPLE);
             assert_eq!(feeds.len(), 3);
@@ -239,7 +236,6 @@ mod tests {
             assert_eq!(feeds[2].folder, None);
         }
 
-        // --- phase: import_creates_folders_and_dedups ---
         {
             let mut store = Library::new();
             let feeds = parse(SAMPLE);
@@ -252,7 +248,6 @@ mod tests {
             assert_eq!(n2, 0);
         }
 
-        // --- phase: export_round_trips_through_parse ---
         {
             let mut store = Library::new();
             import_into(&mut store, &parse(SAMPLE));
@@ -264,7 +259,6 @@ mod tests {
             assert!(titles.contains(&"Top Level".to_string()));
         }
 
-        // --- phase: handles_escaped_ampersand ---
         {
             let xml = r#"<outline text="A &amp; B" xmlUrl="https://x.com/feed?a=1&amp;b=2"/>"#;
             let feeds = parse(xml);

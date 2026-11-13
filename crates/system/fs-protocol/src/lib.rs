@@ -1,25 +1,5 @@
 //! `fs-protocol` — the collaborative filesystem's wire records and its local
 //! control protocols.
-//!
-//! Pure types and pure functions, no I/O. Shared by the filesystem daemon
-//! (`tilo-fs`), the Files app, the toolkit's history and conflict widgets and
-//! the launcher, none of which then link one another.
-//!
-//! - [`files`] — stable file records: [`FileRecordId`], versions, bindings,
-//!   content revisions, conflicts, history and merge-preflight projections, and
-//!   the signed [`FileMutationTransaction`].
-//! - [`projection`] — the per-entry projections the mount answers through
-//!   extended attributes (sync state, metadata, record index, availability,
-//!   history) and their xattr names.
-//! - [`file_invite`] — signed, record-scoped file invitations
-//!   ([`FileInviteV1`], [`BearerFileInvite`]).
-//! - [`tree`] — a workspace's files as the record that carries them
-//!   ([`tree::FilesTree`]): the namespace document's resource type, which
-//!   the Files app keeps and the daemon writes.
-//!
-//! Every signed payload canonicalises and signs through `collab-types`
-//! ([`collab_types::canonical`], [`collab_types::crypto`]); the dependency
-//! points one way, from here to the collaboration core.
 
 #![cfg_attr(
     test,

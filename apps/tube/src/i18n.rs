@@ -1,15 +1,10 @@
-//! Tube's copy, through the toolkit's Fluent catalogues.
-//!
-//! The catalogue is embedded, so a live window, a `--shots` capture and a
-//! test resolve the same strings with no file I/O. The language is the
-//! desktop's one answer — the person's language, else the system locale; a
-//! message a locale lacks falls back to `en-US`.
+//! Tube's copy, through the toolkit's Fluent catalogues. The catalogue is embedded, so a live
+//! window, a `--shots` capture and a test resolve the same strings with no file I/O.
 
 use ui::i18n::ArgValue;
 
-ui::embedded_catalog!(pub fn, ["en-US"]);
+ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
-/// One named variable for [`t_args`].
 pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
     (name, value.into())
 }
@@ -44,5 +39,24 @@ mod tests {
             }
             assert_ne!(t(key), key, "{key} resolves to copy");
         }
+    }
+}
+
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(catalogue.t("tube-nav-settings"), "Einstellungen");
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("tube-nav-settings"), "Settings");
     }
 }

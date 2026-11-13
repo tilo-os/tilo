@@ -1,6 +1,6 @@
 git-remote-running = Remote-Vorgang läuft…
 git-remote-busy = Warte, bis der aktuelle Remote-Vorgang abgeschlossen ist.
-git-remote-worker-stopped = Der Remote-Prozess wurde unerwartet beendet. Prüfe den Repository-Zustand vor einem erneuten Versuch.
+git-remote-worker-stopped = Der Remote-Vorgang wurde unerwartet beendet. Prüfe das Repository vor einem erneuten Versuch.
 
 # Screens
 git-screen-changes = Änderungen
@@ -27,7 +27,7 @@ git-confirm-discard-body = Deine Änderungen gehen verloren. Das lässt sich nic
 git-confirm-delete-branch-body = Commits, die nur dieser Branch enthält, gehen verloren.
 git-confirm-discard = Verwerfen
 git-confirm-switch-title = Zu { $name } wechseln?
-git-confirm-switch-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
+git-confirm-switch-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; Wechseln scheitert, wenn eine Änderung überschrieben würde.
 git-switch-stash = Stash und wechseln
 git-switch-carry = Änderungen behalten
 git-cancel = Abbrechen
@@ -191,3 +191,40 @@ git-show-commit-file = Die Änderungen dieser Datei im Commit zeigen
 # Diff controls in the window bar
 git-whitespace-name = Leerraum anzeigen
 git-wrap-name = Lange Zeilen umbrechen
+git-window-name = Git
+
+## Actions
+
+git-client-effect-open-repository = Repository öffnen
+git-client-effect-choose-repository = Repository wählen
+git-client-effect-run-approved-check = Genehmigte Projektprüfung ausführen
+git-client-effect-show-changes = Änderungen anzeigen
+git-client-effect-show-history = Verlauf anzeigen
+git-client-effect-show-branches = Branches und Remotes anzeigen
+git-client-effect-open-change = Diff öffnen
+git-client-effect-read-change = Änderung lesen
+git-client-effect-open-commit = Commit öffnen
+git-client-effect-stage-all = Alle Änderungen vormerken
+git-client-effect-unstage-all = Vormerkung aller Änderungen aufheben
+git-client-effect-stage-file = Datei vormerken
+git-client-effect-unstage-file = Vormerkung der Datei aufheben
+git-client-effect-discard-file = Änderungen der Datei verwerfen
+git-client-effect-commit = Vorgemerkte Änderungen committen
+git-client-effect-create-branch = Branch anlegen
+git-client-effect-create-worktree = Verknüpften Worktree anlegen
+git-client-effect-checkout-branch = Branch auschecken
+git-client-effect-delete-branch = Branch löschen
+git-client-effect-save-stash = Änderungen stashen
+git-client-effect-apply-stash = Stash anwenden
+git-client-effect-fetch = Remote abrufen
+git-client-effect-pull = Vom Remote pullen
+git-client-effect-push = Zum Remote pushen
+git-client-effect-diff-layout = Diff-Layout wechseln
+git-client-effect-syntax-highlight = Syntaxhervorhebung ein- oder ausschalten
+git-client-effect-show-whitespace = Leerzeichen ein- oder ausblenden
+git-client-effect-wrap-lines = Lange Zeilen umbrechen
+git-client-repo = Repository
+git-client-repo-record-repository = Zustand des Repositorys erfassen
+
+## What the app is called in a window and in the launcher
+git-client-app-title = Git

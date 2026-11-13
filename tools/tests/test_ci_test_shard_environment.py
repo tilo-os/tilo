@@ -35,10 +35,9 @@ class PrepareTestShardScript(unittest.TestCase):
             shutil.copy(SCRIPT, tree / "tools/ci/prepare-test-shard.sh")
             for name in ("nested_sandboxes.py", "nested-sandboxes.toml"):
                 shutil.copy(ROOT / "tools/ci" / name, tree / "tools/ci" / name)
+            shutil.copy(ROOT / "tools/as-test-user.sh", tree / "tools/as-test-user.sh")
             recorder = '#!/usr/bin/env bash\nprintf "%s %s\\n" "{name}" "$*" >> "$CALLS"\n{tail}'
             stubs = {
-                tree / "tools/ensure-headless-audio.sh": "",
-                tree / "tools/ci/ensure-session-bus-tools.sh": "",
                 tree / "tools/ci/install-pdfium.sh": 'echo /usr/lib64/libpdfium.so\n',
                 tree / "tools/ci/require-pdf-sandbox.sh": "",
                 tree / "tools/ci/measure.sh": "",
@@ -67,11 +66,11 @@ class PrepareTestShardScript(unittest.TestCase):
     def tools(calls: list[str]) -> list[str]:
         return [call.split(" ", 1)[0] for call in calls]
 
-    def test_every_shard_gets_headless_audio(self) -> None:
+    def test_an_ordinary_shard_needs_nothing_beyond_the_image(self) -> None:
         for packages in ("", "-p collab-types"):
             with self.subTest(packages=packages):
                 calls, exported = self.prepare(packages)
-                self.assertEqual(self.tools(calls), ["tools/ensure-headless-audio.sh"])
+                self.assertEqual(self.tools(calls), [])
                 self.assertEqual(exported, "")
 
     def test_nested_sandbox_shards_probe_user_namespaces(self) -> None:
@@ -80,15 +79,9 @@ class PrepareTestShardScript(unittest.TestCase):
         calls, _ = self.prepare("-p collab-types -p ush-extra")
         self.assertNotIn("bwrap", self.tools(calls))
 
-    def test_secret_service_shards_get_the_session_bus_client(self) -> None:
-        calls, _ = self.prepare("-p tilo-secret-service")
-        self.assertIn("tools/ci/ensure-session-bus-tools.sh", self.tools(calls))
-        calls, _ = self.prepare("-p tilo-secret-service-extra")
-        self.assertNotIn("tools/ci/ensure-session-bus-tools.sh", self.tools(calls))
-
     def test_package_names_match_exactly(self) -> None:
         calls, _ = self.prepare("-p shell-extra -p example-imager -p tilo-app-cli")
-        self.assertEqual(self.tools(calls), ["tools/ensure-headless-audio.sh"])
+        self.assertEqual(self.tools(calls), [])
 
     def test_pdf_shards_stage_pdfium_and_require_its_sandbox(self) -> None:
         for package in ("pdf-viewer", "tilo-pdf", "tilo-pdf-helper", "tilo-thumbnail"):

@@ -2,7 +2,6 @@
 use crate::{Secret, SecretError};
 use std::{fs::File, os::unix::fs::MetadataExt};
 
-/// Upstream build brands with verified fixed libsecret application attributes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChromiumBrand {
     Chrome,
@@ -21,8 +20,6 @@ impl ChromiumBrand {
     }
 }
 
-/// Native consent capability. It retains the selected directory, not a wildcard
-/// keychain query. It cannot be serialized into an action or copied into CRDT state.
 pub struct ChromiumKey {
     profile: File,
     identity: (u32, u64, u64),

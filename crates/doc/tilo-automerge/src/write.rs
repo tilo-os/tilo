@@ -41,8 +41,6 @@ pub trait WriteTyped: Transactable {
         self.put(obj, prop, ScalarValue::Uint(value))
     }
 
-    /// Put `value` at `prop` of `obj` when it is `Some` and differs; delete
-    /// the entry when it is `None` and a value is present.
     fn put_opt_str_if_changed(
         &mut self,
         obj: &ObjId,

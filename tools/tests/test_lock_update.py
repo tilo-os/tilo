@@ -38,6 +38,12 @@ REGISTRY = {
     "dep-x": {"1.0.0": [], "1.0.1": [], "1.0.2": [("dep-z", "1")]},
     "dep-y": {"1.0.0": [], "1.0.1": []},
     "dep-z": {"1.0.0": []},
+    # A crate two versions of: one package accepts either, another needs the
+    # old one, so both stay in the lock and one reference may point at either.
+    "dep-w": {"1.0.0": [], "2.0.0": []},
+    "dep-legacy": {"1.0.0": [("dep-w", "1")]},
+    "dep-modern": {"1.0.0": [("dep-w", "2")]},
+    "dep-span": {"1.0.0": [("dep-w", ">=1.0, <3")]},
 }
 
 
@@ -116,6 +122,9 @@ class LockUpdateAllowanceTests(unittest.TestCase):
                 [dependencies]
                 dep-x = "1"
                 dep-y = "1"
+                dep-legacy = "1"
+                dep-modern = "1"
+                dep-span = "1"
                 """
             ),
             encoding="utf-8",
@@ -151,6 +160,7 @@ class LockUpdateAllowanceTests(unittest.TestCase):
         self._cargo("generate-lockfile")
         self._cargo("update", "-p", "dep-x", "--precise", "1.0.0")
         self._cargo("update", "-p", "dep-y", "--precise", "1.0.0")
+        self._canonicalize()
         self._run("git", "add", "-A")
         self._run("git", "commit", "-q", "--no-verify", "-m", "fixture")
 
@@ -168,6 +178,27 @@ class LockUpdateAllowanceTests(unittest.TestCase):
     def _stage_update(self, *args: str) -> None:
         self._cargo("update", *args)
         self._run("git", "add", "Cargo.lock")
+
+    def _point_at(self, parent: str, reference: str, wanted: str) -> None:
+        """Re-point one package's reference in the lock, as a re-resolve may."""
+        lock = self.root / "Cargo.lock"
+        text = lock.read_text(encoding="utf-8")
+        start = text.index(f'name = "{parent}"')
+        end = text.find("[[package]]", start)
+        end = len(text) if end == -1 else end
+        block = text[start:end].replace(f' "{reference}",\n', f' "{wanted}",\n', 1)
+        self.assertNotEqual(block, text[start:end], "the reference to re-point is not there")
+        lock.write_text(text[:start] + block + text[end:], encoding="utf-8")
+
+    def _canonicalize(self) -> list[str]:
+        old_env = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(self.env)
+        try:
+            return checker.write_canonical_references(self.root)
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
 
     def _check(self, intent: str | None) -> list[str]:
         old_env = dict(os.environ)
@@ -286,6 +317,40 @@ class LockUpdateAllowanceTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("differs from the staged lock", problems[0])
 
+    def test_a_reference_cargo_drifted_down_is_refused_until_canonical(self) -> None:
+        # What a re-resolve does to a wide requirement: dep-span may take either
+        # dep-w, and cargo answers with the older one after an unrelated update.
+        self._point_at("dep-span", "dep-w 2.0.0", "dep-w 1.0.0")
+        self._run("git", "add", "Cargo.lock")
+
+        problems = self._check(None)
+        self.assertEqual(len(problems), 1)
+        self.assertIn(
+            "dep-span 1.0.0 points at dep-w 1.0.0, but 2.0.0 is the newest version", problems[0]
+        )
+        self.assertIn("--write", problems[0])
+
+        self.assertEqual(self._canonicalize(), ["dep-span 1.0.0: dep-w 1.0.0 -> 2.0.0"])
+        self._run("git", "add", "Cargo.lock")
+        self.assertEqual(self._check(None), [])
+
+    def test_a_bump_that_drifts_a_reference_is_admitted_canonical(self) -> None:
+        # The declared update is the only version that moves; the reference cargo
+        # re-resolved besides it is canonical after the write, and then admitted.
+        self._point_at("dep-span", "dep-w 2.0.0", "dep-w 1.0.0")
+        self._run("git", "add", "Cargo.lock")
+        self._run("git", "commit", "-q", "--no-verify", "-m", "span on the older w")
+        self._cargo("update", "-p", "dep-x", "--precise", "1.0.1")
+        self._run("git", "add", "Cargo.lock")
+
+        problems = self._check("-p dep-x --precise 1.0.1")
+        self.assertTrue(any("dep-span 1.0.0 points at dep-w 1.0.0" in p for p in problems))
+        self.assertFalse(any("dep-y moved" in p for p in problems))
+
+        self._canonicalize()
+        self._run("git", "add", "Cargo.lock")
+        self.assertEqual(self._check("-p dep-x --precise 1.0.1"), [])
+
 
 class LockDiffTests(unittest.TestCase):
     OLD = textwrap.dedent(
@@ -331,6 +396,139 @@ class LockDiffTests(unittest.TestCase):
         )
         problems = checker.lock_violations(self.OLD, new, checker.parse_intent("-p a"))
         self.assertIn("c 1.0.0 was added but no declared update needs it", problems)
+
+
+class RequirementMatchingTests(unittest.TestCase):
+    """The semver rules the canonical reference is chosen by."""
+
+    CASES = [
+        ("0.61", "0.61.2", True),
+        ("0.61", "0.62.0", False),
+        ("^0.61", "0.61.2", True),
+        ("^0.0.3", "0.0.4", False),
+        ("~1.2.3", "1.2.9", True),
+        ("~1.2.3", "1.3.0", False),
+        (">=0.52, <0.62", "0.52.0", True),
+        (">=0.52, <0.62", "0.61.2", True),
+        (">=0.52, <0.62", "0.62.0", False),
+        ("<=0.61", "0.61.2", True),
+        ("<=0.61", "0.62.0", False),
+        ("<0.61", "0.61.0", False),
+        (">0.4", "0.4.9", False),
+        (">0.4", "0.5.0", True),
+        ("=1.2", "1.2.7", True),
+        ("=1.2", "1.3.0", False),
+        ("1.2.*", "1.2.9", True),
+        ("1.2.*", "1.3.0", False),
+        ("*", "9.9.9", True),
+        (">=1.0.220", "1.0.228", True),
+        ("^1.0.6+spec", "1.0.7+spec-1.1.0", True),
+        ("=0.1.0-beta.1", "0.1.0-beta.1", True),
+        ("=0.1.0-beta.1", "0.1.0", False),
+    ]
+
+    def test_requirements_match_as_cargo_semver_does(self) -> None:
+        for requirement, version, wanted in self.CASES:
+            with self.subTest(requirement=requirement, version=version):
+                self.assertEqual(checker.requirement_matches(requirement, version), wanted)
+
+
+class CanonicalReferenceTests(unittest.TestCase):
+    """The canonical form, judged on lock text alone."""
+
+    OLD = textwrap.dedent(
+        """\
+        version = 4
+
+        [[package]]
+        name = "member"
+        version = "0.1.0"
+        dependencies = [
+         "span",
+         "legacy",
+        ]
+
+        [[package]]
+        name = "span"
+        version = "1.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        checksum = "55"
+        dependencies = [
+         "w 1.0.0",
+        ]
+
+        [[package]]
+        name = "legacy"
+        version = "1.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        checksum = "11"
+        dependencies = [
+         "w 1.0.0",
+        ]
+
+        [[package]]
+        name = "w"
+        version = "1.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        checksum = "01"
+
+        [[package]]
+        name = "w"
+        version = "2.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+        checksum = "02"
+
+        """
+    )
+    REQUIREMENTS = {
+        ("member", "0.1.0", ""): {"span": frozenset({"1"}), "legacy": frozenset({"1"})},
+        ("span", "1.0.0", "registry+https://github.com/rust-lang/crates.io-index"): {
+            "w": frozenset({">=1.0, <3"})
+        },
+        ("legacy", "1.0.0", "registry+https://github.com/rust-lang/crates.io-index"): {
+            "w": frozenset({"1"})
+        },
+    }
+
+    def test_the_wider_requirement_is_reported_and_the_narrow_one_is_not(self) -> None:
+        lock = tomllib.loads(self.OLD)
+
+        problems = checker.reference_problems(lock, self.REQUIREMENTS)
+
+        self.assertEqual(
+            problems,
+            ["span 1.0.0 points at w 1.0.0, but 2.0.0 is the newest version of it the lock holds "
+             "that span allows"],
+        )
+
+    def test_canonicalizing_moves_the_reference_and_keeps_the_narrow_one(self) -> None:
+        text, changes = checker.canonical_lock_text(self.OLD, self.REQUIREMENTS)
+
+        self.assertEqual(changes, ["span 1.0.0: w 1.0.0 -> 2.0.0"])
+        self.assertIn(' "w 2.0.0",\n', text)
+        self.assertIn(' "w 1.0.0",\n', text)  # legacy keeps the version it needs
+        self.assertEqual(checker.reference_problems(tomllib.loads(text), self.REQUIREMENTS), [])
+
+    def test_a_version_nothing_references_any_more_is_dropped(self) -> None:
+        requirements = {
+            **self.REQUIREMENTS,
+            ("legacy", "1.0.0", "registry+https://github.com/rust-lang/crates.io-index"): {
+                "w": frozenset({">=1.0, <3"})
+            },
+        }
+
+        text, changes = checker.canonical_lock_text(self.OLD, requirements)
+
+        self.assertIn("legacy 1.0.0: w 1.0.0 -> 2.0.0", changes)
+        self.assertIn("w 1.0.0: dropped, nothing references it", changes)
+        self.assertNotIn('name = "w"\nversion = "1.0.0"', text)
+        self.assertTrue(text.endswith("\n"))
+        self.assertEqual(checker.reference_problems(tomllib.loads(text), requirements), [])
+
+    def test_the_lock_this_repository_commits_is_canonical(self) -> None:
+        # What CI's lockfile check runs.
+        self.assertEqual(checker.tree_reference_problems(ROOT), [])
+
 
 
 if __name__ == "__main__":

@@ -284,7 +284,9 @@ fn held_lease_interoperates_with_legacy_flock_in_real_processes() {
                         reader.read_line(&mut line).unwrap() > 0,
                         "child exited before ready"
                     );
-                    if line.trim() == "READY" {
+                    // The harness writes the test's name to the same line, without a newline,
+                    // before the test prints: what it said is the line's last word.
+                    if line.split_whitespace().last() == Some("READY") {
                         break;
                     }
                 }

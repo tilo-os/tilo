@@ -33,7 +33,6 @@ mod generated_clip {
     ));
 }
 
-/// The render helper, where the run put it.
 fn helper() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-video-render")
 }
@@ -102,8 +101,6 @@ fn timeline(seconds: f64, source: Option<&str>) -> Project {
     project
 }
 
-/// Run the helper on `project` (with `sources` laid out by hash) for
-/// `request`.
 fn run(project: &Project, sources: &[(&str, &[u8])], request: &Request) -> Finished {
     let parent = tempfile::tempdir().unwrap();
     let mut job = JobDir::create(parent.path(), 64 << 20).unwrap();

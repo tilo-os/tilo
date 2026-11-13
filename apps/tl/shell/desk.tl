@@ -117,8 +117,9 @@ view strips(a: Arrangement) {
 ///
 /// The places at points on a pannable, zoomable canvas, each in its own frame.
 view frames(a: Arrangement) {
+    let lists = desk_lists(false, space.width_class == .expanded or space.width_class == .wide)
     desk_style(a, false) {
-        canvas(a, "Canvas", true, fill)
+        canvas(a, "Canvas", true, lists, fill)
     }
 }
 
@@ -127,7 +128,7 @@ view frames(a: Arrangement) {
 /// The places at points, each drawn as its own view standing as content.
 view spaces(a: Arrangement) {
     desk_style(a, false) {
-        canvas(a, "Spaces", false, fill)
+        canvas(a, "Spaces", false, false, fill)
     }
 }
 
@@ -265,10 +266,11 @@ view top_bar(d: Desk, traditional: Bool) {
 /// The desk at rest under its bar: the banner a notice rose as. A person with windows sees
 /// them through the compositor behind this, and who is here is in the bar's own menu, so the
 /// desk at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
-/// A banner stands the desk's gutter in from the window's edge, as a surface does.
+/// A banner stands the desk's gutter in from the window's edge, as a surface does: its card is
+/// rounded, and a rounded card on the edge has its corners cut by it.
 view at_rest(d: Desk) {
     if d.banner != "" {
-        stack(padding: if space.compact { .section } else { .none }) {
+        stack(padding: .group) {
             banner(d)
         }
     }

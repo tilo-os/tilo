@@ -1,11 +1,5 @@
-//! The Applications place ([`crate::applications`]) in the window: the
-//! person's apps as items, asked of the shell off the UI thread, opened and
-//! uninstalled through the shell.
-//!
-//! Files never opens, removes or hides an app itself. Open asks the shell to
-//! open it (`ToolIntent::OpenApplication`); Uninstall, Delete and a drop on
-//! the Trash ask the shell's one Uninstall action
-//! (`ToolIntent::UninstallApplication`), which asks the person first.
+//! The Applications place in the window: the apps the shell lists, opened and
+//! uninstalled through it.
 #[cfg(test)]
 #[path = "applications_tests.rs"]
 mod tests;
@@ -18,19 +12,11 @@ use super::*;
 use runtime_portal::tools::{AppEntry, AppKind, AppRemoval, ToolIntent};
 use std::sync::Mutex;
 
-/// How soon to ask again while the shell's list is still being read. The
-/// place is open in the window, so a list still filling in is waited for.
-/// Once an answer holds the person's apps, the shell says when that changes
-/// instead ([`CollabEvent::ApplicationsChanged`](ui::collaboration::CollabEvent::ApplicationsChanged));
-/// asking on a timer woke the frame loop with nothing to show.
 const SETTLING_POLL: Duration = Duration::from_secs(1);
 
 pub(super) type AppLister = fn() -> Result<Vec<AppEntry>, String>;
-/// Ask the shell for an intent, for the broker invocation it is made for
-/// ([`runtime_portal::tools::open_tool`]).
 pub(super) type AppRequest = fn(ToolIntent, Option<[u8; 16]>) -> Result<(), String>;
 
-/// One answer of the lister: the apps, and the files of `~/Applications`.
 struct Listed {
     apps: Vec<AppEntry>,
     folder_files: Vec<Entry>,
@@ -38,18 +24,13 @@ struct Listed {
 
 pub(super) struct Applications {
     pub(super) shown: Vec<AppEntry>,
-    /// The files of `~/Applications`, as last read.
     folder_files: Vec<Entry>,
     listed: Arc<Mutex<Option<Listed>>>,
     refused: Arc<Mutex<Option<String>>>,
     listing: bool,
-    /// The place is shown, so its list is kept current.
     wanted: bool,
     next_poll: Option<Instant>,
-    /// The shell said the person's apps changed since they were last asked
-    /// for. A change during an unanswered ask becomes one more ask.
     stale: bool,
-    /// `None` for a window whose apps are given (scenarios, tests).
     lister: Option<AppLister>,
     request: AppRequest,
 }
@@ -73,20 +54,16 @@ impl Default for Applications {
 }
 
 impl Applications {
-    /// When the window should look again.
     pub(super) fn next_wake(&self) -> Option<Instant> {
-        // An answer that arrived has to be taken in.
         if self.listed.lock().is_ok_and(|slot| slot.is_some()) {
             return Some(Instant::now());
         }
-        // A refusal stands until the shell says something changed.
         if self.refused.lock().is_ok_and(|slot| slot.is_some()) {
             return self.stale.then(Instant::now);
         }
         if !self.wanted || self.lister.is_none() {
             return None;
         }
-        // A read already under way answers the change too.
         if self.listing {
             return None;
         }
@@ -96,8 +73,6 @@ impl Applications {
         Some(self.next_poll.unwrap_or_else(Instant::now))
     }
 
-    /// Take in `event`: a change the shell announced is asked about on the
-    /// next pump.
     pub(super) fn event(&mut self, event: &ui::collaboration::CollabEvent) {
         if matches!(event, ui::collaboration::CollabEvent::ApplicationsChanged) {
             self.stale = true;
@@ -106,13 +81,10 @@ impl Applications {
 }
 
 impl FilesState {
-    /// Whether the Applications place is shown.
     pub(super) fn is_applications_view(&self) -> bool {
         crate::applications::is_location(&self.current_path)
     }
 
-    /// The place `path` opens: `~/Applications` is part of the Applications
-    /// place; every other path is itself.
     pub(super) fn place_of(&mut self, path: PathBuf) -> PathBuf {
         let folder = self.home_path.as_deref().map(crate::applications::folder);
         let path = if folder.as_deref() == Some(path.as_path()) {
@@ -122,8 +94,6 @@ impl FilesState {
         };
         let wanted = crate::applications::is_location(&path);
         if wanted && !self.applications.wanted {
-            // Coming to the place asks at once, for what changed while the
-            // shell had no one to tell.
             self.applications.next_poll = None;
             self.applications.stale = true;
         }
@@ -131,18 +101,14 @@ impl FilesState {
         path
     }
 
-    /// The place's items, from what the shell last answered. No I/O.
     pub(super) fn applications_entries(&self) -> Vec<Entry> {
         crate::applications::listing(&self.applications.shown, &self.applications.folder_files)
     }
 
-    /// How the app at `path` leaves the person's apps.
     pub(super) fn app_removal(&self, path: &Path) -> AppRemoval {
         crate::applications::removal_of(&self.applications.shown, path)
     }
 
-    /// Take in answers that arrived, and ask again when due. Returns whether
-    /// what the window shows changed.
     pub(super) fn poll_applications(&mut self, now: Instant) -> bool {
         let mut changed = false;
         if let Some(listed) = self
@@ -210,7 +176,6 @@ impl FilesState {
         changed
     }
 
-    /// Send `intent` to the shell off the UI thread; a refusal is shown.
     fn ask_shell(&self, intents: Vec<ToolIntent>) {
         let request = self.applications.request;
         let refused = Arc::clone(&self.applications.refused);
@@ -228,13 +193,10 @@ impl FilesState {
             });
     }
 
-    /// Open the app with this id, through the shell.
     pub(super) fn open_app(&self, app: String) {
         self.ask_shell(vec![ToolIntent::OpenApplication { app }]);
     }
 
-    /// Ask the shell to uninstall each app among `paths`; it asks the person
-    /// first, one app at a time.
     pub(super) fn uninstall_apps(&self, paths: &[PathBuf]) {
         let intents: Vec<ToolIntent> = paths
             .iter()
@@ -249,7 +211,6 @@ impl FilesState {
         }
     }
 
-    /// The selected items that are apps.
     fn selected_app_paths(&self) -> Vec<PathBuf> {
         self.selected_paths()
             .into_iter()
@@ -257,16 +218,12 @@ impl FilesState {
             .collect()
     }
 
-    /// `FileCommand::Uninstall`, and Delete on apps.
     pub(super) fn uninstall_selected_apps(&self) -> bool {
         let apps = self.selected_app_paths();
         self.uninstall_apps(&apps);
         true
     }
 
-    /// Whether `cmd` is refused in the Applications place: it is not a
-    /// folder, and an app is not a file to copy, rename or open with
-    /// another app. A file of `~/Applications` keeps working.
     pub(super) fn refuses_in_applications(&mut self, cmd: &FileCommand) -> bool {
         if matches!(
             cmd,
@@ -299,17 +256,12 @@ impl FilesState {
         false
     }
 
-    /// The context menu in the Applications place, when it is not a file's:
-    /// Open, and Uninstall where a file has Move to Trash (Remove from apps
-    /// for a part of the system). `None` leaves a file of `~/Applications`
-    /// its own menu.
     pub(super) fn applications_menu_spec(&self) -> Option<Vec<(String, Option<FileCommand>)>> {
         if !self.is_applications_view() {
             return None;
         }
         let apps = self.selected_app_paths();
         if apps.is_empty() {
-            // Nothing is made here: the place's empty space has no menu.
             return self.selection.is_empty().then(Vec::new);
         }
         let mut spec = vec![
@@ -336,7 +288,6 @@ impl FilesState {
         Some(tidy_menu(spec))
     }
 
-    /// Show `apps` and stop asking the shell: the scenario and test seam.
     #[doc(hidden)]
     pub fn debug_show_applications(&mut self, apps: Vec<AppEntry>) {
         self.applications.lister = None;
@@ -348,30 +299,22 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// Route the shell requests (open, uninstall) through `request`.
     #[cfg(test)]
     pub(super) fn set_app_request(&mut self, request: AppRequest) {
         self.applications.request = request;
     }
 
-    /// Ask `lister`, off the UI thread, for the person's apps: the test seam
-    /// for a window that keeps its list current.
     #[cfg(test)]
     pub(super) fn set_app_lister(&mut self, lister: AppLister) {
         self.applications.lister = Some(lister);
     }
 
-    /// Take in a collaboration event the way the app does.
     #[cfg(test)]
     pub(super) fn take_apps_event(&mut self, event: &ui::collaboration::CollabEvent) {
         self.applications.event(event);
     }
 
-    /// The `applications` screenshot scenario: one app of each kind, made
-    /// up, in the Applications place. No shell is asked.
     pub(super) fn debug_show_sample_applications(&mut self) {
-        // Made-up artwork in the capture's scratch home, so a capture never
-        // depends on the icons of the machine it is taken on.
         let art = self.current_path.join(".sample-app-icons");
         let mut apps = sample_apps();
         if std::fs::create_dir_all(&art).is_ok() {
@@ -390,7 +333,6 @@ impl FilesState {
     }
 }
 
-/// The sample apps' made-up artwork: a ground and a shape on it.
 const SAMPLE_ART: [(&str, &str); 4] = [
     (
         "#f5c542",
@@ -410,7 +352,6 @@ const SAMPLE_ART: [(&str, &str); 4] = [
     ),
 ];
 
-/// One made-up app of each kind.
 pub(super) fn sample_apps() -> Vec<AppEntry> {
     let app =
         |id: &str, name: &str, removal: AppRemoval, kind: AppKind, size: Option<u64>| AppEntry {

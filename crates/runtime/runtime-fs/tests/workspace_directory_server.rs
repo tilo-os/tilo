@@ -110,7 +110,6 @@ fn assert_listing<'a>(directory: &'a DirectoryClient, raw: &'a [u8]) -> LocalFut
         let second = directory.list(page.next).await.unwrap();
         assert_eq!(second.entries.len(), 3);
         assert_eq!(second.next, 0);
-        // A consumed continuation is stale: native custody is read once.
         assert!(directory.list(page.next).await.is_err());
     })
 }

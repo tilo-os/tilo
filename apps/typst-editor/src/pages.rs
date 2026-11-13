@@ -55,12 +55,8 @@ impl Hash for Looks<'_> {
 /// The laid-out pages of one compile.
 pub struct TypstPages {
     pages: Vec<Page>,
-    /// Page sizes in points.
     sizes: Vec<(f64, f64)>,
-    /// What each page looks like, as a hash of what it draws: equal for a
-    /// page an edit left as it was.
     looks: Vec<u128>,
-    /// Each page's selectable text.
     text: Vec<PageText>,
 }
 
@@ -89,7 +85,6 @@ impl TypstPages {
         }
     }
 
-    /// These pages with `text` as their selectable text.
     #[cfg(test)]
     #[must_use]
     pub fn with_text(mut self, text: Vec<PageText>) -> Self {
@@ -97,7 +92,6 @@ impl TypstPages {
         self
     }
 
-    /// Blank pages of `sizes` (in points).
     #[cfg(test)]
     pub fn blank(sizes: &[(f64, f64)]) -> Self {
         Self::new(
@@ -131,7 +125,6 @@ impl TypstPages {
         &self.looks
     }
 
-    /// The selectable text of `page`; none past the last page.
     pub fn text(&self, page: usize) -> &PageText {
         static NONE: PageText = PageText::EMPTY;
         self.text.get(page).unwrap_or(&NONE)

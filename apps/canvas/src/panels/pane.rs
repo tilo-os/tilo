@@ -4,6 +4,7 @@
 
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Rect};
+use ui::widget::DrawChild;
 use ui::widget::{Element, Widget};
 use ui::{PresenceCtx, TextRenderer, Theme};
 
@@ -94,6 +95,6 @@ impl ui::widget::Decorator for Band {
     ) {
         self.ground(scene, transform, theme);
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 }

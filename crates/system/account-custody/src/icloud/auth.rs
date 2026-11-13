@@ -54,13 +54,10 @@ use tilo_crypto::srp_apple;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedPhone {
     pub id: u64,
-    /// As Apple shows it, mostly obscured (`+•• ••••• •••12`).
     pub number: String,
-    /// `sms` or `voice`.
     pub mode: String,
 }
 
-/// Where the code the person types came from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CodeDelivery {
     /// Pushed to the account's trusted Apple devices.
@@ -69,8 +66,6 @@ pub enum CodeDelivery {
     Phone { id: u64, mode: String },
 }
 
-/// idmsa's per-sign-in state: the headers Apple expects echoed back and the
-/// cookies it set.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct IdmsaState {
     frame_id: String,
@@ -145,22 +140,18 @@ impl PendingSignIn {
         &self.phones
     }
 
-    /// Where the code the person is about to type was sent.
     pub fn delivery(&self) -> &CodeDelivery {
         &self.delivery
     }
 }
 
-/// The outcome of [`Authenticator::sign_in`].
 #[derive(Debug)]
 pub enum SignIn {
     /// Signed in without a second factor (a trusted browser or trust token).
     Complete(StoredSession),
-    /// A code was sent; finish with [`Authenticator::submit_code`].
     NeedsCode(PendingSignIn),
 }
 
-/// Runs sign-in, 2FA and refresh against one set of [`Endpoints`].
 #[derive(Clone)]
 pub struct Authenticator {
     http: Client,
@@ -186,7 +177,6 @@ impl Answer {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
 
-    /// The first `serviceErrors[].code`, Apple's reason for a refusal.
     fn service_error(&self) -> Option<String> {
         let body = self.json();
         let errors = body
@@ -248,7 +238,6 @@ impl Authenticator {
         trust_token: Option<&str>,
         ask_for_code: bool,
     ) -> Result<SignIn, AuthError> {
-        // Apple's client-side proof is computed over the lowercased ID.
         let apple_id = apple_id.trim().to_lowercase();
         let mut state = IdmsaState::new(trust_token);
         self.authorize(&mut state)?;
@@ -327,7 +316,6 @@ impl Authenticator {
                     .map(SignIn::NeedsCode);
             }
             412 => {
-                // Accounts without 2FA acknowledge a notice first.
                 let repair = self.idmsa(
                     &mut state,
                     Method::POST,
@@ -372,8 +360,6 @@ impl Authenticator {
                 .ok_or(AuthError::NoTrustedPhone)?;
             self.send_sms(&mut pending, phone)?;
         } else {
-            // Recent iOS versions no longer push on the 409 alone. A failed
-            // push is not fatal: the person can still ask for an SMS.
             let _ = self.idmsa(
                 &mut pending.state,
                 Method::PUT,
@@ -458,8 +444,6 @@ impl Authenticator {
             ),
         };
         let answer = self.idmsa(&mut pending.state, Method::POST, path, Some(&body))?;
-        // Since mid-2026 idmsa may answer 409 to an accepted code; the
-        // session token it still issues is the ground truth.
         let accepted = answer.status.is_success()
             || (answer.status == StatusCode::CONFLICT
                 && http::header(&answer.headers, "X-Apple-Session-Token").is_some());
@@ -544,7 +528,6 @@ impl Authenticator {
         Ok(renewed)
     }
 
-    /// `setup.icloud.com/accountLogin` from the idmsa session token.
     fn account_login(
         &self,
         apple_id: &str,
@@ -652,7 +635,6 @@ impl Authenticator {
         Ok(())
     }
 
-    /// One request to `idmsa` with the headers its web client sends.
     fn idmsa(
         &self,
         state: &mut IdmsaState,
@@ -719,8 +701,6 @@ impl Authenticator {
     }
 }
 
-/// `base` + `/path` (a leading `..` climbs one segment), keeping `base`'s
-/// own path.
 fn join(base: &Url, path: &str) -> Url {
     let mut url = base.clone();
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
@@ -770,7 +750,6 @@ struct PhoneWire {
 }
 
 impl AuthState {
-    /// Some accounts nest everything under `phoneNumberVerification`.
     fn inner(&self) -> &Self {
         match &self.phone_number_verification {
             Some(inner)

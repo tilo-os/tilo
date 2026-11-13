@@ -79,8 +79,6 @@ fn collaborated() -> AutoCommit {
     ada
 }
 
-/// A long single-actor history, one change per item, like a list filled
-/// item by item.
 fn appended(items: usize) -> AutoCommit {
     let mut doc = AutoCommit::new().with_actor(actor("list"));
     let map = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
@@ -105,7 +103,6 @@ fn load_known(bytes: &[u8], hashes: &[ChangeHash]) -> AutoCommit {
     AutoCommit::load_with_options(bytes, LoadOptions::new().known_change_hashes(hashes)).unwrap()
 }
 
-/// Everything history, sync and attribution read from a document's log.
 fn assert_same_log(known: &mut AutoCommit, full: &mut AutoCommit) {
     assert_eq!(hashes_of(known), hashes_of(full));
     assert_eq!(known.get_heads(), full.get_heads());
@@ -146,14 +143,10 @@ fn a_load_with_known_hashes_builds_the_document_a_full_load_builds() {
         let mut known = load_known(&bytes, &hashes);
         assert_same_log(&mut known, &mut full);
 
-        // The hashes were taken, not rebuilt: two early changes listed in
-        // swapped order (heads unchanged) load in that order.
         let mut swapped = hashes.clone();
         swapped.swap(0, 1);
         assert_eq!(hashes_of(&load_known(&bytes, &swapped)), swapped);
 
-        // Both continue the same way: a collaborator's next change merges
-        // into each, and each hands its own next change over the same.
         let mut peer = source.fork().with_actor(actor("peer"));
         peer.put(ROOT, "next", "from a peer").unwrap();
         peer.commit();

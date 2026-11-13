@@ -66,7 +66,7 @@ fn windows() -> &'static Mutex<BTreeMap<&'static str, Window>> {
                 loop {
                     std::thread::sleep(Duration::from_secs(1));
                     let taken = std::mem::take(&mut *windows().lock_recover());
-                    let second = std::time::SystemTime::now()
+                    let second = tilo_clock::wall()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |since| since.as_secs());
                     for (step, window) in taken {

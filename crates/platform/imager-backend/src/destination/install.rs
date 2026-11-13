@@ -1,76 +1,13 @@
-//! Backend invocation for the privileged install + power steps.
-//!
-//! ## Install contract (the backend ships separately, in `os/`)
+//! Runs the privileged installer and power helpers, which ship separately in `os/`.
 //!
 //! ```text
-//! /usr/libexec/tilo-install \
-//!     --disk <dev> --confirm-erase <dev> --user <name> \
-//!     --filesystem <btrfs|ext4|xfs> \
-//!     --hostname <name> [--timezone <tz>] \
-//!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
-//!     --encrypt --pin [--fido2] [--extension media-codecs] --yes
+//! /usr/libexec/tilo-install --disk <dev> --confirm-erase <dev> --user <name> \
+//!     --filesystem <fs> --hostname <name> [--timezone <tz>] [--keymap <layout>] \
+//!     [--keyvariant <variant>] --encrypt --pin [--fido2] [--extension media-codecs] --yes
 //! ```
 //!
-//! Native Tilo always uses full-disk encryption. The backend builds the LUKS2
-//! layout itself and installs `bootc ... to-filesystem` into the opened
-//! mapping, because `--block-setup tpm2-luks` can only produce a volume whose
-//! single keyslot is sealed to a TPM:
-//!
-//! * a **recovery key** is always generated and shown once during install.
-//!   It is the factor no hardware failure can take away, so every other one
-//!   is layered on top of it;
-//! * with `--pin` (a legacy transport flag name), the strong secret on the
-//!   **second stdin line** is enrolled as a TPM2 + PIN factor when the reviewed
-//!   target has an exact signed generation prediction and TPM2. Otherwise it
-//!   becomes an ordinary strong LUKS passphrase; a reviewed TPM path fails
-//!   closed rather than silently downgrading when those prerequisites change;
-//! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
-//!   present (its absence does not abort the install).
-//!
-//! A whole-disk install on a large enough disk also gets the room store: a
-//! second LUKS2 + Btrfs partition after the root, for the storage daemon's
-//! native data plane. It unlocks from a key file inside the encrypted root and
-//! the recovery key opens it too, so it adds no prompt and no new factor.
-//! Alongside installs get an image-backed store on first boot instead
-//! (`os/usr/libexec/tilo-store-volume`).
-//!
-//! Encryption does **not** require a TPM. The privileged backend independently
-//! enforces the mandatory encryption and strong-passphrase policy, so an older
-//! or malformed UI fails closed instead of installing plaintext or weakening
-//! the credential policy.
-//!
-//! `--yes` is required because the backend has no tty here; the installer's
-//! Review screen is the user's "are you sure" gate. The account password is
-//! supplied on **stdin** as the first line; when `--pin` is set the unlock
-//! secret follows as the second line. The backend runs the privileged
-//! `bootc install` + keyslot enrolment + account/hostname/timezone
-//! seeding, streams human-readable progress to **stdout**, and exits `0` on
-//! success / non-zero on failure. We do not implement it here — we only
-//! spawn it, feed the stdin lines, and relay its output.
-//!
-//! `--filesystem`, `--hostname`, `--timezone`, `--keymap` and
-//! `--keyvariant` are newer flags; the backend defaults them when absent,
-//! so an older UI/backend pair stays compatible.
-//!
-//! ## Power contract
-//!
-//! The Finish screen's Reboot / Power-off buttons shell out to:
-//!
-//! ```text
-//! /usr/libexec/tilo-power [--reboot|--poweroff]
-//! ```
-//!
-//! a tiny self-escalating script allowed by the same live-medium sudoers
-//! drop-in. On success it never returns (the machine reboots / powers off);
-//! a non-zero exit surfaces back as an error line.
-//!
-//! ## Threading
-//!
-//! [`run_install`] is synchronous and streams via the `on_line` callback.
-//! The installer drives it from a **worker thread**, handing each line back
-//! to the UI thread and waking it, so the window stays responsive and the
-//! status log updates live. [`stream_command`] is the
-//! reusable seam shared by the backend and test stubs.
+//! `--yes` is required because there is no tty. The account password arrives as stdin's first
+//! line, the disk secret as the second when `--pin` is set, so neither appears on argv.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt as _;
@@ -146,42 +83,32 @@ fn read_bounded_lines(
 use crate::destination::disks::PartitionExtent;
 use tilo_lock::MutexRecover as _;
 
-/// Path to the privileged install backend installed on the live medium.
 pub const INSTALL_BIN: &str = "/usr/libexec/tilo-install";
-/// Path to the privileged power backend (reboot / poweroff).
 pub const POWER_BIN: &str = "/usr/libexec/tilo-power";
 
-/// User-selected install options threaded through to the backend.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent backend policy flag, not a state combination"
 )]
 #[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
-    /// Discovery-time identity bound to the privileged target. Size and
-    /// kernel device number are mandatory; WWN/serial are enforced when the
-    /// hardware exposes them.
+    /// Size and kernel device number are mandatory; WWN and serial are checked when exposed.
     pub disk_size_bytes: u64,
     pub disk_major_minor: String,
     pub disk_wwn: String,
     pub disk_serial: String,
-    /// Empty for a whole-disk erase. Otherwise the pre-created, empty Linux
-    /// partition that becomes the Tilo root while every sibling partition is
-    /// preserved.
+    /// Empty for a whole-disk erase; otherwise the empty partition that becomes the Tilo root.
     pub alongside_root: String,
     pub alongside_root_partuuid: String,
     pub alongside_root_size_bytes: u64,
     pub alongside_boot: String,
     pub alongside_boot_partuuid: String,
     pub alongside_boot_size_bytes: u64,
-    /// Existing EFI System Partition reused by an alongside install. It is
-    /// mounted but never formatted.
+    /// Mounted, never formatted.
     pub alongside_efi: String,
     pub alongside_efi_partuuid: String,
     pub alongside_efi_size_bytes: u64,
-    /// Non-zero only for the guided path that appends three partitions inside a
-    /// reviewed unallocated GPT extent. Existing partitions are carried as a
-    /// complete identity/geometry snapshot for privileged revalidation.
+    /// Non-zero only for the guided path, which appends three partitions in reviewed free space.
     pub guided_free_start_bytes: u64,
     pub guided_free_size_bytes: u64,
     pub guided_efi_start_bytes: u64,
@@ -198,65 +125,44 @@ pub struct InstallOptions {
     pub expected_partitions: Vec<PartitionExtent>,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
-    /// Same installed OS; selects its availability defaults.
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
-    /// Public TPM-sealed sidecar for the exact prepared package above.
+    /// Public TPM-sealed sidecar for the prepared package above.
     pub tpm_handoff: Option<String>,
-    /// Hostname seeded into the installed system.
     pub hostname: String,
-    /// Optional human-readable account name (GECOS), never a credential.
+    /// Account name (GECOS); never a credential.
     pub full_name: String,
-    /// The first stdin line is already a canonical SHA-512 crypt hash, not a
-    /// plaintext password. Only the unattended recipe path sets this; the
-    /// privileged helper records the hash exactly as the interactive helper
-    /// would after hashing a typed password.
+    /// The first stdin line is already a SHA-512 crypt hash, not a password. Only the unattended
+    /// recipe path sets this.
     pub password_is_hash: bool,
-    /// Do not use the measured-boot TPM2 PIN policy even when the target
-    /// proves it. The supplied secret is enrolled as an independent strong
-    /// LUKS passphrase. Empty in the interactive flow, which keeps the
-    /// reviewed target's existing choice.
+    /// Enrol the secret as a plain strong LUKS passphrase instead of the measured-boot TPM2 PIN
+    /// policy; the interactive flow leaves the reviewed target's choice alone.
     pub force_startup_passphrase: bool,
     /// POSIX locale seeded into `/etc/locale.conf`.
     pub locale: String,
-    /// IANA time zone (e.g. `Europe/Amsterdam`). Empty ⇒ leave the
-    /// backend default (UTC); the flag is then omitted.
+    /// IANA time zone; empty omits the flag.
     pub timezone: String,
-    /// xkb keyboard layout (e.g. `us`, `de`). Empty ⇒ backend default
-    /// (`us`); the flag is then omitted.
+    /// xkb layout; empty omits the flag and the backend uses `us`.
     pub keymap: String,
-    /// Optional xkb variant (e.g. `dvorak`, `colemak`). Empty ⇒ no
-    /// variant; the flag is then omitted.
     pub keyvariant: String,
-    /// Mandatory startup secret, sent as the second stdin line rather than on
-    /// argv. Despite the legacy field name, it is a short PIN only for the
-    /// verified measured-boot TPM2 path and otherwise a strong disk passphrase.
-    /// The backend independently revalidates the choice and rejects emptiness.
+    /// The disk secret, sent on stdin and never on argv: a short PIN only on the measured-boot
+    /// TPM2 path. The backend rejects an empty one.
     pub pin: Zeroizing<String>,
-    /// Enroll a FIDO2 security key as an extra unlock factor. Only
-    /// meaningful alongside mandatory LUKS encryption; maps to `--fido2`. A token must
-    /// be present at install time; failure to enroll an explicitly requested
-    /// factor aborts the install while the temporary key still exists. Default `false`.
+    /// Enrol a FIDO2 key as an extra unlock factor; the token must be present, and failing to
+    /// enrol one that was asked for aborts the install.
     pub fido2: bool,
-    /// Staged (USB-free) installs only: the validated handoff copy that lets
-    /// the backend target the disk holding the running installer. It is sent
-    /// only with the guided plan; the backend re-derives every fact from the
-    /// booted ESP, firmware and partition table and refuses any other mode.
+    /// Staged (USB-free) installs only: the validated handoff copy names the installer's disk.
     pub internal_handoff: String,
-    /// The owner chose to play more video and audio formats; maps to
-    /// `--extension media-codecs`. The backend only records the opt-in on the
-    /// installed system, which downloads the media codecs extension from the
-    /// formats' publishers once it is online. Default `false`.
+    /// Install the media codecs extension, which downloads the formats from their publishers.
     pub codecs: bool,
-    /// Private live-session selection; never serialized into a prepared profile.
+    /// Never serialized into a prepared profile.
     pub online_accounts:
         Option<std::sync::Arc<tilo_install_helpers::account_handoff::InstallAccounts>>,
-    /// Fresh identity of the operation explicitly confirmed on Review.
+    /// Identity of the operation confirmed on Review.
     pub account_operation: String,
 }
 
-/// The catalogue id of the downloaded media codecs extension.
 pub const MEDIA_CODECS_EXTENSION: &str = "media-codecs";
 
 impl Default for InstallOptions {
@@ -312,7 +218,6 @@ impl Default for InstallOptions {
     }
 }
 
-/// A terminal power action requested from the Finish screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAction {
     Reboot,
@@ -369,8 +274,7 @@ fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOption
     }
 }
 
-/// Build the backend [`Command`] for `disk` + `user` + `opts`. stdin /
-/// stdout / stderr are wired up by [`stream_command`].
+/// Builds the backend command; [`stream_command`] wires stdin and output.
 #[expect(
     clippy::too_many_lines,
     reason = "the argv binding is one ordered contract and is easier to audit in place"
@@ -416,10 +320,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     if opts.guided_free_size_bytes > 0 {
         add_guided_alongside_args(&mut cmd, disk, opts);
     } else if opts.alongside_root.is_empty() {
-        // The graphical UI has already required the person to type this exact
-        // device name. Repeat that decision at the privileged boundary so an
-        // older or accidentally scripted caller cannot erase with `--yes`
-        // alone.
+        // The UI asked for this exact device name; repeat it so `--yes` alone cannot erase.
         cmd.arg("--confirm-erase").arg(disk);
     } else {
         cmd.arg("--alongside")
@@ -441,8 +342,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             .arg(&opts.alongside_efi_partuuid)
             .arg("--expect-efi-size-bytes")
             .arg(opts.alongside_efi_size_bytes.to_string())
-            // Repeat the exact reviewed root at the privileged boundary. The
-            // backend rejects alongside callers that omit or alter it.
+            // The backend rejects alongside callers that omit or alter the reviewed root.
             .arg("--confirm-root")
             .arg(&opts.alongside_root);
     }
@@ -470,13 +370,11 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if !opts.keymap.trim().is_empty() {
         cmd.arg("--keymap").arg(opts.keymap.trim());
-        // A variant is only meaningful alongside a layout.
         if !opts.keyvariant.trim().is_empty() {
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
     }
-    // Encryption is a native-Tilo invariant, not a user option. Keep the flag
-    // explicit as defense in depth even though the backend defaults to LUKS.
+    // Encryption is not a user option; pass the flag even though the backend defaults to LUKS.
     cmd.arg("--encrypt");
     if !opts.pin.is_empty() {
         cmd.arg("--pin");
@@ -497,16 +395,14 @@ pub fn power_command(action: PowerAction) -> Command {
     cmd
 }
 
-/// Build the backend's read-only prepared-storage preflight. The same reviewed
-/// disk and partition identities are passed to the final install command; the
-/// backend repeats every check before destructive work.
+/// The read-only storage preflight, with the same disk and partition identities as the install
+/// command; the backend repeats every check before destructive work.
 pub fn alongside_preflight_command(disk: &str, opts: &InstallOptions) -> Command {
     let mut cmd = Command::new(INSTALL_BIN);
     cmd.arg("--preflight-alongside")
         .arg("--disk")
         .arg(disk)
-        // Satisfy install-wide input validation with fixed non-secret values;
-        // preflight exits before stdin is read or account work begins.
+        // Fixed non-secret values: preflight exits before stdin is read.
         .arg("--user")
         .arg("preflight")
         .arg("--pin")
@@ -544,13 +440,8 @@ pub fn alongside_preflight_command(disk: &str, opts: &InstallOptions) -> Command
     cmd
 }
 
-/// Run the read-only prepared-storage preflight and stream its diagnostics.
-///
-/// # Errors
-///
-/// Returns an error when the preflight helper cannot be started, its streams
-/// cannot be read, or the process cannot be waited on. A completed preflight
-/// that rejects the storage plan is returned as `Ok(false)`.
+/// Runs the read-only preflight and streams its diagnostics. Returns `Ok(false)` when it
+/// rejects the storage plan.
 pub fn run_alongside_preflight<F: FnMut(String)>(
     disk: &str,
     opts: &InstallOptions,
@@ -559,14 +450,12 @@ pub fn run_alongside_preflight<F: FnMut(String)>(
     stream_command(alongside_preflight_command(disk, opts), "", &[], on_line)
 }
 
-/// Block until child `pid` has exited, leaving it unreaped.
+/// Blocks until child `pid` has exited, without reaping it.
 fn wait_exited_unreaped(pid: u32) -> std::io::Result<()> {
     let pid = libc::id_t::from(pid);
     loop {
-        // SAFETY: a zeroed siginfo_t is a valid out-buffer; `pid` is our
-        // own unreaped child.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        // SAFETY: as above; WNOWAIT leaves the child waitable.
+        // SAFETY: `info` is a valid out-buffer; WNOWAIT leaves the child waitable.
         let result = unsafe {
             libc::waitid(
                 libc::P_PID,
@@ -585,25 +474,9 @@ fn wait_exited_unreaped(pid: u32) -> std::io::Result<()> {
     }
 }
 
-/// Spawn `cmd`, write `password` (with a trailing newline) to its stdin —
-/// followed by `extra_stdin` lines, each newline-terminated, in order —
-/// then stream stdout line by line into `on_line`. On a non-zero exit any
-/// captured stderr is relayed too (prefixed `error:`). Returns `Ok(true)`
-/// iff the child exited `0`.
-///
-/// `extra_stdin` carries secrets the backend reads after the password (the
-/// disk passphrase, when requested) so they never touch
-/// the argv or a tty.
-///
-/// Separated from [`run_install`] so tests can drive it with a stub
-/// command (e.g. `sh -c`) without the backend present.
-///
-/// # Errors
-///
-/// Returns `Err` if `cmd` fails to spawn, if writing `password` /
-/// `extra_stdin` to its stdin fails for a reason other than a broken pipe
-/// (the child exiting before it finishes reading stdin is tolerated), if a
-/// stdout line can't be read, or if waiting on the child fails.
+/// Spawns `cmd`, writes `password` and then each of `extra_stdin` as newline-terminated stdin
+/// lines, and relays stdout line by line to `on_line`; on failure captured stderr follows.
+/// Returns whether the child exited `0`. A child that exits before reading stdin is tolerated.
 pub fn stream_command<F: FnMut(String)>(
     cmd: Command,
     password: &str,
@@ -653,20 +526,14 @@ fn stream_command_with_accounts<F: FnMut(String)>(
             .collect::<Vec<_>>(),
     );
 
-    // Drain stderr concurrently with stdout. Helpers such as bootc, podman,
-    // mkfs and cryptsetup do not share one output convention; a failure can
-    // legitimately fill stderr before closing stdout. Reading the pipes in
-    // sequence would then deadlock the installer and hide the actionable
-    // error from the UI. Preserve the existing contract by relaying captured
-    // stderr only when the command ultimately fails.
+    // Read stderr too: bootc, mkfs and cryptsetup may fill it before closing stdout, so reading
+    // in sequence would deadlock.
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
     let pid = child.id();
-    // `reaped` records that the waiter collected the child: until then its
-    // pid, and so its process group, cannot be reused.
+    // Until reaped, the child's pid and process group cannot be reused.
     let tree = std::sync::Arc::new(std::sync::Mutex::new((child, false)));
-    // The encrypted selection can exceed pipe capacity. Feed concurrently with
-    // draining diagnostics, including while the backend prepares the target.
+    // The disk secret can exceed pipe capacity; feed it while draining output.
     let writer_tree = std::sync::Arc::clone(&tree);
     let stdin_writer = std::thread::spawn(move || -> std::io::Result<()> {
         let result = write_install_input(stdin, &password, &extra_stdin, accounts.as_deref());
@@ -695,8 +562,7 @@ fn stream_command_with_accounts<F: FnMut(String)>(
                 }
             });
             if read.is_err() {
-                // The command may still hold stdout open: stop it so the
-                // stdout reader sees EOF.
+                // The command may still hold stdout: stop it so the reader sees EOF.
                 let mut tree = tree.lock_recover();
                 let (child, reaped) = &mut *tree;
                 if !*reaped {
@@ -717,16 +583,15 @@ fn stream_command_with_accounts<F: FnMut(String)>(
         let mut tree = tree.lock_recover();
         bounded_command::kill_tree(&mut tree.0);
     }
-    // Wait for the exit without reaping, so the stderr reader can still stop
-    // the tree meanwhile; then reap under the lock.
+    // Wait without reaping so the stderr reader can still stop the tree; then reap under the lock.
     let exited = wait_exited_unreaped(pid);
     let status = {
         let mut tree = tree.lock_recover();
         let (child, reaped) = &mut *tree;
         let status = exited.and_then(|()| child.wait());
         *reaped = true;
-        // A backend must not daemonize children which retain the install pipes.
-        // Close that escape before joining the concurrent stderr reader.
+        // Close the way for a backend to leave children holding the pipes, before joining the
+        // stderr reader.
         bounded_command::kill_tree(child);
         drop(tree);
         status
@@ -754,16 +619,8 @@ fn stream_command_with_accounts<F: FnMut(String)>(
     Ok(status.success())
 }
 
-/// Run the `tilo-install` backend for `disk` + `user` + `opts`, feeding
-/// `password` (and, when a disk startup secret is set, that secret as a second
-/// stdin line) and relaying every output line to `on_line`.
-///
-/// # Errors
-///
-/// Returns `Err` under the same conditions as [`stream_command`]: the
-/// backend fails to spawn, writing either secret to its stdin fails
-/// (other than a broken pipe), a stdout line can't be read, or waiting on
-/// the child fails.
+/// Runs the `tilo-install` backend, feeding the password and, when a disk secret is set, that
+/// secret as the next stdin line, and relaying every output line to `on_line`.
 pub fn run_install<F: FnMut(String)>(
     disk: &str,
     user: &str,
@@ -771,8 +628,7 @@ pub fn run_install<F: FnMut(String)>(
     opts: &InstallOptions,
     on_line: F,
 ) -> std::io::Result<bool> {
-    // The startup secret only travels on stdin; it mirrors the legacy `--pin`
-    // flag added by `install_command`.
+    // The disk secret travels on stdin, matching the `--pin` flag.
     let extra: Vec<&str> = if opts.pin.is_empty() {
         Vec::new()
     } else {
@@ -802,14 +658,8 @@ pub fn run_install<F: FnMut(String)>(
     )
 }
 
-/// Run the power backend. Returns `Ok(true)` on a clean spawn+exit — though
-/// on success the machine is already on its way down, so the UI typically
-/// never observes the return.
-///
-/// # Errors
-///
-/// Returns `Err` if the power backend fails to spawn or its exit status
-/// can't be retrieved.
+/// Runs the power backend. On success the machine is already going down, so the UI rarely sees
+/// the return.
 pub fn run_power(action: PowerAction) -> std::io::Result<bool> {
     let status = power_command(action).status()?;
     Ok(status.success())
@@ -875,8 +725,8 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("selected") || arg.contains("ssss"))
         );
-        // A sequential stdin writer deadlocks when progress fills stdout before
-        // the backend starts reading a selection larger than pipe capacity.
+        // A sequential writer deadlocks once progress fills stdout before the backend reads a
+        // selection larger than the pipe.
         let mut command = Command::new("timeout");
         command.args([
             "10s",
@@ -1069,8 +919,7 @@ mod tests {
                 ]));
             assert!(args.contains(&"--guided-alongside"));
 
-            // A whole-disk or prepared command never carries it, so the backend's
-            // live-disk refusal stays in force for those modes.
+            // A whole-disk command carries no handoff, so the live-disk refusal stays in force.
             let erase = InstallOptions {
                 internal_handoff: crate::destination::internal_handoff::HANDOFF_PATH.into(),
                 ..InstallOptions::default()
@@ -1217,7 +1066,6 @@ mod tests {
             assert!(!args.contains(&"--keyvariant"));
         }
         {
-            // A stray variant without a layout must not be emitted alone.
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
                 hostname: "tilo".to_string(),
@@ -1294,20 +1142,13 @@ mod tests {
                     "--yes",
                 ]
             );
-            // `--encrypt` is a bare flag (no value) and precedes `--yes`.
             let enc = args.iter().position(|a| *a == "--encrypt").unwrap();
             let yes = args.iter().position(|a| *a == "--yes").unwrap();
             assert!(enc < yes, "--encrypt must precede --yes");
-            // No PIN / FIDO2 requested → those flags are absent.
             assert!(!args.contains(&"--pin"));
             assert!(!args.contains(&"--fido2"));
         }
-        // Phase `install_command_appends_pin_and_fido2_with_encrypt`.
         {
-            // Encryption on with a PIN and FIDO2: the backend gets `--encrypt
-            // --pin --fido2` (in that order), all before `--yes`. The PIN value
-            // itself is NOT on the argv — it travels on stdin (see
-            // `stream_command_feeds_secrets_on_stdin_and_bounds_output`).
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
                 hostname: "tilo".to_string(),
@@ -1341,7 +1182,6 @@ mod tests {
                     "--yes",
                 ]
             );
-            // The PIN secret must never appear in the argv.
             assert!(
                 !args.contains(&"1234"),
                 "the PIN value must not leak onto the command line"
@@ -1364,9 +1204,7 @@ mod tests {
             assert!(args.contains(&"--pin"));
             assert!(args.contains(&"--fido2"));
         }
-        // Phase `install_command_omits_pin_flag_when_pin_empty_but_keeps_fido2`.
         {
-            // Encryption + FIDO2 but no PIN: `--fido2` is present, `--pin` is not.
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
                 hostname: "tilo".to_string(),
@@ -1471,7 +1309,7 @@ mod tests {
     #[test]
     fn stream_command_feeds_secrets_on_stdin_and_bounds_output() {
         {
-            // Stub backend: echo the password it received + a second line.
+            // Stub backend: echoes the password it read.
             let mut cmd = Command::new("sh");
             cmd.arg("-c").arg("read pw; echo \"pw=$pw\"; echo second");
             let mut lines = Vec::new();
@@ -1480,8 +1318,7 @@ mod tests {
             assert_eq!(lines, vec!["pw=s3cret".to_string(), "second".to_string()]);
         }
         {
-            // The PIN (and any other secret) is read AFTER the password, one
-            // line each, in order. Stub: read password then PIN, echo both.
+            // The secret is read after the password, one line each.
             let mut cmd = Command::new("sh");
             cmd.arg("-c")
                 .arg("read pw; read pin; echo \"pw=$pw\"; echo \"pin=$pin\"");
@@ -1491,10 +1328,8 @@ mod tests {
             assert_eq!(lines, vec!["pw=s3cret".to_string(), "pin=4242".to_string()]);
         }
         {
-            // End-to-end through run_install: with encryption + a PIN, the PIN
-            // must arrive as the second stdin line. We point INSTALL_BIN-style
-            // logic at a stub via stream_command indirectly by building the same
-            // extra-stdin vector run_install builds, then driving a stub command.
+            // End to end: with encryption and a disk secret, the secret arrives as the second
+            // stdin line.
             let opts = InstallOptions {
                 pin: "9182".to_string().into(),
                 ..InstallOptions::default()
@@ -1514,8 +1349,7 @@ mod tests {
             assert_eq!(lines, vec!["9182".to_string()]);
         }
         {
-            // Encryption on but no PIN ⇒ nothing extra on stdin (the backend
-            // doesn't read a PIN line when `--pin` wasn't passed).
+            // No disk secret, so nothing extra goes on stdin.
             let opts = InstallOptions {
                 pin: String::new().into(),
                 ..InstallOptions::default()
@@ -1561,11 +1395,6 @@ mod tests {
             );
         }
         {
-            // The stdout producer then stays alive holding its pipe: the call
-            // returns only because the overflow kills the command's tree.
-            // Likewise the stderr producers, whether they keep stdout open or
-            // closed it first: the call returns only if the stderr overflow
-            // kills the tree too.
             for script in [
                 "head -c 70000 /dev/zero; exec sleep 3600",
                 "head -c 70000 /dev/zero >&2; exec sleep 3600",

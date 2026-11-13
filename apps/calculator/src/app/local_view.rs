@@ -1,9 +1,6 @@
-//! What a Calculator window shows, kept as the window's own presentation
-//! ([`ui::application_view::ApplicationViewState`]): its mode, the graphs'
-//! views and which row each graph has selected. The calculations and the
-//! graphs' rows are the workspace's record; this is how one window looks at
-//! them. A reopened window shows what it showed, and History opens a past
-//! version as the window shows it, its graphs drawn by the same view.
+//! What a Calculator window shows, kept as the window's own presentation: its
+//! mode, the graphs' views and which row each graph has selected. The record
+//! holds the calculations and rows; a reopened window shows what it showed.
 
 use ui::application_view::{ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState};
 use ui::view::ThawError;
@@ -11,7 +8,6 @@ use ui::view::ThawError;
 use super::CalculatorApp;
 use crate::model::{Mode, View2d, View3d};
 
-/// The version of the payload this build writes and reads.
 const VERSION: u32 = 1;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -85,7 +81,7 @@ impl ApplicationViewState for CalculatorApp {
         let [yaw, pitch, zoom] = view.view3d;
         self.model.view2d = View2d { cx, cy, scale };
         self.model.view3d = View3d { yaw, pitch, zoom };
-        // Clamped to the rows the record has once they are presented.
+        // Presentation clamps it to the rows the record has.
         self.model.active_fn = view.active_fn;
         self.model.active_surface = view.active_surface;
         // The mode only: a window that shows a graph adds no starter row.

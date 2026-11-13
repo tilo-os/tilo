@@ -22,6 +22,7 @@ use crate::overview::{WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
+use ui::widget::DrawChild;
 
 /// A pictured window carried to another workspace is left this faint in its place.
 pub(super) const CARRIED_ALPHA: f32 = 0.35;
@@ -52,7 +53,7 @@ impl OverviewPanel {
     }
 
     /// The panel of workspaces, at `(alpha, dy, scale)` of its arrival: recorded once and replayed
-    /// while it shows the same thing.
+    /// while it shows the same thing, and posed by the host as it arrives.
     pub(super) fn paint_panel_at(
         &mut self,
         scene: &mut Scene,
@@ -61,9 +62,6 @@ impl OverviewPanel {
         theme: &Theme,
         (alpha, dy, scale): (f32, f64, f64),
     ) {
-        if alpha <= 0.0 {
-            return;
-        }
         if self
             .cache
             .as_ref()
@@ -78,31 +76,23 @@ impl OverviewPanel {
             return;
         };
         // The scale's pivot is the panel's centre, so it settles in place wherever the layout put
-        // it.
-        let pivot = self.panel_rect().center();
-        let placed = if (scale - 1.0).abs() > f64::EPSILON || dy.abs() > f64::EPSILON {
-            let scaled = Affine::translate((pivot.x, pivot.y + dy))
-                .pre_scale(scale)
-                .pre_translate((-pivot.x, -pivot.y).into());
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine * Affine is a panic-free float matrix multiply"
-            )]
-            {
-                transform * scaled
-            }
-        } else {
-            transform
+        // it; one clip covers every frame of its arrival.
+        let pose = ui::lift::Pose {
+            opacity: alpha,
+            scale,
+            pivot: self.panel_rect().center(),
+            offset: vello::kurbo::Vec2::new(0.0, dy),
         };
-        if alpha >= 0.999 {
-            scene.append(recorded, Some(placed));
-            return;
-        }
-        // The blend is the panel's own rectangle, never the whole display.
-        let clip = self.stable_clip(theme);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &clip);
-        scene.append(recorded, Some(placed));
-        scene.pop_layer();
+        ui::lift::lifted(
+            scene,
+            transform,
+            (
+                ui::scene_parts::PartKey::new("overview.panel", 0),
+                self.stable_clip(theme),
+            ),
+            pose,
+            |scene, transform| scene.append(recorded, Some(transform)),
+        );
     }
 
     /// The panel of workspaces: where you are, what is shared out of it,
@@ -123,6 +113,14 @@ impl OverviewPanel {
         let content = self.content_rect();
         let here_rect = self.here_rect();
         let whole = self.scrolls_whole_panel();
+        // Where the list stands, as the shared scrollbar reads it: what the fade below the band
+        // and the thumb both answer from.
+        let viewport_height = self.viewport_height();
+        let scrolled = ui::widget::ScrollMetrics::new(
+            viewport_height + self.max_scroll_y(),
+            viewport_height,
+            self.scroll_y,
+        );
         if whole {
             scene.push_layer(
                 Fill::NonZero,
@@ -179,7 +177,7 @@ impl OverviewPanel {
             &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             band,
         );
-        if self.scroll_y + 0.5 < self.max_scroll_y() {
+        if scrolled.max_scroll() - scrolled.offset > 0.5 {
             ui::surface::content_edge_fade(
                 scene,
                 transform,
@@ -198,6 +196,7 @@ impl OverviewPanel {
             theme,
             panel,
             if whole { content } else { band },
+            scrolled,
         );
     }
 
@@ -210,19 +209,18 @@ impl OverviewPanel {
         theme: &Theme,
         panel: Rect,
         viewport: Rect,
+        metrics: ui::widget::ScrollMetrics,
     ) {
-        let overflow = self.max_scroll_y();
-        if overflow <= 0.5 {
+        if !metrics.overflows() {
             return;
         }
         let lane = Rect::new(self.content_rect().x1, viewport.y0, panel.x1, viewport.y1);
         let bar = ui::widget::Scrollbar::vertical();
-        let height = self.viewport_height();
         bar.draw(
             scene,
             transform,
             bar.track_in(lane, theme),
-            ui::widget::ScrollMetrics::new(height + overflow, height, self.scroll_y),
+            metrics,
             theme,
             false,
         );
@@ -980,7 +978,7 @@ impl OverviewPanel {
         let input_theme = theme
             .clone()
             .with_text_scale(theme.text_scale * theme.ui_scale);
-        input.draw(
+        input.draw_child(
             scene,
             transform,
             &mut *ctx.text,

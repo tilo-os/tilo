@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{InvokeArgument, RemoteActionTarget};
+use crate::ActorKind;
 use crate::door::ActionAddress;
 
 /// The provider the session serves workspace activity under.
@@ -163,15 +164,27 @@ pub enum Relation {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Author {
+    /// The name it goes by: a person's, an agent's own — the reader's account
+    /// name too, since the line that names the author words the reader as
+    /// "You" from [`Relation`]. A name, never a sentence: a row that says whom
+    /// software acted for words that line once, from the facts beside it.
     pub name: String,
     /// The colour presence paints them in, `[r, g, b]`.
     pub rgb: [u8; 3],
     /// A short fragment of their key, telling apart two of the same name.
     pub identity: String,
     pub relation: Relation,
+    /// What acted: a person, an agent, a Shortcut, an app or a bot. The row's
+    /// face shows it; the line that names the author never words it.
+    pub kind: ActorKind,
     /// For software: who it acted for, as a sentence names them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
+    /// The person it acted for is the reader.
+    pub for_reader: bool,
+    /// The task that named it, as it was called then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// What kind of change an entry is.
@@ -774,6 +787,9 @@ pub enum DiffSide {
 pub struct RunAction {
     /// Its changes, which [`UNDO`] takes back on their own.
     pub range: Range,
+    /// How many changes `range` is: an action that wrote four paragraphs in one note is one
+    /// action of four changes.
+    pub changes: usize,
     pub at_ms: i64,
     /// What it did, as a sentence.
     pub summary: String,
@@ -819,8 +835,32 @@ pub struct AgentRun {
     pub now: Option<Now>,
 }
 
+impl AgentRun {
+    /// How many changes the run made to records and files, as a person counts what it changed:
+    /// each of its edits, not the commands it ran or the pages it read. What its card and the
+    /// notice that it finished both say.
+    #[must_use]
+    pub fn changes(&self) -> usize {
+        self.actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action.view,
+                    ActionView::File { .. } | ActionView::Record { .. }
+                )
+            })
+            .map(|action| action.changes.max(1))
+            .sum()
+    }
+}
+
 /// What a run is doing at the moment it is read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Written as derived; read through one `serde_json::Value` ([`Now::read`]),
+/// which takes the same JSON. A derived reader of an internally tagged enum
+/// buffers the value and is compiled again for every reader it meets: a
+/// large share of the code a page loads first, for a handful of fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Now {
     /// A command line it asked a shell to run, which has not ended.
@@ -838,6 +878,63 @@ pub enum Now {
     Changing { summary: String, at_ms: i64 },
     /// A command it ran last, which ended.
     Ran { command: String, at_ms: i64 },
+}
+
+impl<'de> Deserialize<'de> for Now {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <serde_json::Value as Deserialize>::deserialize(deserializer)?;
+        Self::read(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Now {
+    /// The moment `value` writes: `{"kind": .., ..fields}`.
+    #[inline(never)]
+    fn read(value: &serde_json::Value) -> Result<Self, String> {
+        let field = |name: &str| value.get(name);
+        let text = |name: &str| {
+            field(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("missing field `{name}`"))
+        };
+        let millis = |name: &str| {
+            field(name)
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| format!("missing field `{name}`"))
+        };
+        let kind = field("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing field `kind`")?;
+        Ok(match kind {
+            "running" => Self::Running {
+                command: text("command")?,
+                since_ms: millis("since_ms")?,
+            },
+            "editing" => Self::Editing {
+                path: text("path")?,
+                at_ms: millis("at_ms")?,
+            },
+            "browsing" => Self::Browsing {
+                url: text("url")?,
+                title: if field("title").is_some() {
+                    text("title")?
+                } else {
+                    String::new()
+                },
+                at_ms: millis("at_ms")?,
+            },
+            "changing" => Self::Changing {
+                summary: text("summary")?,
+                at_ms: millis("at_ms")?,
+            },
+            "ran" => Self::Ran {
+                command: text("command")?,
+                at_ms: millis("at_ms")?,
+            },
+            other => return Err(format!("unknown variant `{other}`")),
+        })
+    }
 }
 
 /// Where a command's run is recorded: the shell session's record and the run
@@ -983,6 +1080,59 @@ pub fn change_hex(change: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_moment_reads_back_as_written_and_a_bare_page_has_no_title() {
+        let moments = [
+            Now::Running {
+                command: "cargo test".into(),
+                since_ms: -3,
+            },
+            Now::Editing {
+                path: "src/lib.rs".into(),
+                at_ms: 4,
+            },
+            Now::Browsing {
+                url: "https://example.org".into(),
+                title: "Example".into(),
+                at_ms: 5,
+            },
+            Now::Browsing {
+                url: "https://example.org".into(),
+                title: String::new(),
+                at_ms: 6,
+            },
+            Now::Changing {
+                summary: "Renamed a note".into(),
+                at_ms: 7,
+            },
+            Now::Ran {
+                command: "ls".into(),
+                at_ms: 8,
+            },
+        ];
+        for now in moments {
+            let written = serde_json::to_string(&now).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Now>(&written).unwrap(),
+                now,
+                "{written}"
+            );
+            let value = serde_json::to_value(&now).unwrap();
+            assert_eq!(serde_json::from_value::<Now>(value).unwrap(), now);
+        }
+        assert!(serde_json::from_str::<Now>(r#"{"kind":"sleeping","at_ms":1}"#).is_err());
+        assert!(serde_json::from_str::<Now>(r#"{"kind":"ran","at_ms":1}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<Now>(r#"{"kind":"ran","command":"ls","at_ms":1,"more":0}"#)
+                .unwrap(),
+            Now::Ran {
+                command: "ls".into(),
+                at_ms: 1
+            },
+            "a field a newer writer adds is passed over"
+        );
+    }
 
     #[test]
     fn an_entry_id_reads_back_from_its_hex_and_nothing_else_does() {

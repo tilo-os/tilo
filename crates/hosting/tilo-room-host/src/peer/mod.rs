@@ -13,6 +13,8 @@ mod access_audit;
 mod actions;
 mod admin;
 mod admission;
+mod agent_run;
+mod arriving;
 mod checkpoint;
 mod commit;
 mod compaction;
@@ -21,7 +23,6 @@ mod dispatch;
 mod fanout;
 mod fetch;
 mod hello;
-mod here;
 mod live;
 mod records;
 mod replay;
@@ -34,6 +35,7 @@ mod test_hooks;
 pub use admission::enqueue_from_host;
 pub(crate) use admission::{HostAdmission, enqueue_host_state};
 use admission::{enqueue_state, enqueue_state_inner};
+pub(crate) use arriving::Arriving;
 #[cfg(test)]
 use checkpoint::buffered_retention_prefix_with_limits;
 use checkpoint::{
@@ -46,9 +48,10 @@ use delivery::{
     STATE_RUN, SessionCoding, delivery_room, encode_charged, write_presence, write_state_deliveries,
 };
 use fanout::{LiveFanout, LiveFrame, live_budget};
+pub(crate) use replay::GovernanceCertificates;
 use replay::{
-    ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
-    finish_replay_write, resume_record,
+    ReplayCatchup, ReplayWrite, ResumeLog, answered_as_replay, authorize_state_frame,
+    authorize_state_recipient, finish_replay_write, resume_record,
 };
 use session::inbound_bytes;
 #[cfg(test)]
@@ -56,8 +59,8 @@ use session::{finish_peer_outcome, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, PreparedRecipients, StateCommit, authorized_state_source, desktop_refusal,
-    file_refusal_of, gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix,
-    live_audience, unpublished,
+    file_refusal_of, gated_checkpoint_channel, governor_notice, governor_refusal, handle_delta,
+    handle_delta_prefix, live_audience, unpublished,
 };
 pub use state::{Lag, StateSource};
 pub(crate) use state::{StateDelivery, StateSession, tell_governor};
@@ -69,21 +72,24 @@ use access::{
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
-use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit, over_storage};
+use agent_run::handle_agent_run;
+use commit::{
+    change_standing, commit_run_key, handle_commit, handle_commit_run, over_change_limit,
+    over_storage,
+};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 pub use fetch::FetchGrants;
 use hello::handle_host_hello;
-pub use here::HereBoard;
-use here::handle_here;
 use live::{
-    handle_content_want, handle_live_join, handle_presence, handle_voice, route_record_content,
+    handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
+    route_record_content,
 };
 use records::handle_open_record;
 pub use subscribe::get_or_autobind_workspace;
-use subscribe::{Subscription, handle_subscribe, handle_unsubscribe};
+use subscribe::{Subscribed, Subscription, handle_subscribe, handle_unsubscribe, subscribe};
 use sync::handle_sync_request;
 
 use crate::store::bounded::Invariant;
@@ -192,6 +198,9 @@ pub struct PeerContext {
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
+    /// The devices this host certified for its browser environments, and the
+    /// one record each reaches ([`crate::environment`]).
+    pub environments: crate::environment::EnvironmentRegistry,
     /// Mints and checks resumable subscribers' positions; `None` refuses
     /// resumption, and a `SubscribeFrom` replays everything.
     pub positions: Option<crate::position::PositionIssuer>,
@@ -207,9 +216,6 @@ pub struct PeerContext {
     /// The governance a device administers its workspaces through, set once
     /// when the host governs them; `None` administers nothing.
     pub admin: Option<Arc<crate::workspaces::Workspaces>>,
-    /// What a device's session answers when it asks who is here; `None`
-    /// keeps no such account.
-    pub here: Option<Arc<dyn HereBoard>>,
     /// The token a session takes for the host's fetch proxy, and gives back
     /// when its connection ends; `None` serves no proxy.
     pub fetch: Option<Arc<dyn FetchGrants>>,
@@ -249,11 +255,27 @@ struct SessionCtx<'a> {
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     agents: &'a AgentRegistry,
+    environments: &'a crate::environment::EnvironmentRegistry,
     positions: Option<crate::position::PositionIssuer>,
     compactor: Option<&'a crate::compaction::Compactor>,
     member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
+    /// The agent this connection is a run of, once its device said so
+    /// ([`Envelope::AgentRun`]): every request the
+    /// connection makes from then on is that agent's, acting for the device's
+    /// person, as the session's caller. Said once, it stays: a session
+    /// handed to an agent is never handed back.
+    agent: &'a std::sync::OnceLock<String>,
+    /// The connection's device only follows its channel groups
+    /// ([`Envelope::ChannelReader`]): its replays carry no device's request
+    /// to be admitted to one. Said once, it stays.
+    channel_reader: &'a std::sync::atomic::AtomicBool,
+    /// The execution the host minted for this connection: an agent's or a
+    /// key's requests on it are one run, whatever the client says
+    /// ([`tilo_actions::remote::Caller::agent_run`]). Closed when the
+    /// connection ends.
+    execution: &'a tilo_actions::remote::ExecutionLease,
     /// Workspaces whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
     /// Where this connection's workspaces post the presence they fan out to it;
@@ -265,8 +287,6 @@ struct SessionCtx<'a> {
     /// What a device administers its workspaces through; `None` administers
     /// nothing.
     admin: Option<&'a crate::workspaces::Workspaces>,
-    /// Who is here, as the host accounts for it; `None` keeps no such account.
-    here: Option<&'a dyn HereBoard>,
     /// The host's fetch proxy, which this session takes a token from; `None`
     /// serves no proxy.
     fetch: Option<&'a dyn FetchGrants>,
@@ -280,7 +300,15 @@ impl SessionCtx<'_> {
             policy: self.trust_policy,
             own_user: self.own_user_public_key,
             agents: self.agents,
+            environments: self.environments,
         }
+    }
+
+    /// What `device` reaches when it is one of this host's browser
+    /// environments' devices ([`crate::environment`]): its one workspace and
+    /// the one record there. `None` for every other device.
+    fn environment(&self, device: &[u8; 32]) -> Option<crate::environment::EnvironmentScope> {
+        crate::environment::environment_of(self.environments, device)?.placed()
     }
 
     /// The workspace admission decision for `peer` on `op`.
@@ -328,6 +356,9 @@ mod retention_diagnostic_tests;
 
 #[cfg(test)]
 mod state_tests;
+
+#[cfg(all(test, feature = "agents"))]
+mod refused_change_tests;
 
 #[cfg(test)]
 mod state_delivery_tests;

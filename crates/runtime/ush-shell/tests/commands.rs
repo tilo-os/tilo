@@ -18,7 +18,6 @@ struct Ran {
     err: String,
 }
 
-/// Run `name args` in `/w` with `stdin`, its standard output captured.
 fn run_on(
     host: &dyn Host,
     env: &[(String, String)],
@@ -61,8 +60,6 @@ fn run_in(stdin: &str, name: &str, args: &[&str]) -> Ran {
     run_on(&MemoryHost::new(), &[], stdin.as_bytes(), name, args)
 }
 
-/// Standard output, after checking the command succeeded and said nothing
-/// on standard error.
 fn ok(r: Ran) -> String {
     assert_eq!((r.status, r.err.as_str()), (0, ""), "output: {}", r.out);
     r.out
@@ -79,8 +76,6 @@ fn files() -> MemoryHost {
     host
 }
 
-/// A [`MemoryHost`] that knows user and group names, an hour east of UTC,
-/// and a clock near the files' times, for `ls -l` and `stat`.
 struct Named(MemoryHost);
 
 impl Host for Named {
@@ -133,8 +128,6 @@ impl Host for Named {
     }
 }
 
-// cat
-
 #[test]
 fn cat_concatenates_and_reads_stdin_for_dash() {
     let host = files();
@@ -174,8 +167,6 @@ fn cat_reports_a_missing_file_and_goes_on() {
     assert_eq!(r.out, A_TXT);
 }
 
-/// A standard output whose reader has gone away, as `cmd | head -1` leaves
-/// it once `head` is done.
 fn broken_stdout() -> Output {
     let (reader, writer) = pipe();
     drop(reader);
@@ -266,8 +257,6 @@ fn yes_feeds_head_through_a_pipe_until_head_is_done() {
     assert_eq!(producer.join().unwrap(), 141);
 }
 
-// head and tail
-
 #[test]
 fn head_counts_lines_and_bytes_with_headers() {
     let host = files();
@@ -354,8 +343,6 @@ fn tail_refuses_to_follow() {
     assert_eq!(run(&host, "tail", &["--follow", "greek.txt"]).status, 2);
 }
 
-// wc
-
 #[test]
 fn wc_aligns_columns_like_gnu() {
     let host = files();
@@ -377,8 +364,6 @@ fn wc_aligns_columns_like_gnu() {
     assert_eq!(ok(run_in("héllo wörld\n", "wc", &["-m"])), "12\n");
     assert_eq!(ok(run_in("héllo wörld\n", "wc", &["-c"])), "14\n");
 }
-
-// grep
 
 #[test]
 fn grep_numbers_counts_and_lists() {
@@ -430,7 +415,6 @@ fn grep_status_says_match_no_match_or_trouble() {
     );
     let r = run(&host, "grep", &["-s", "x", "nosuch"]);
     assert_eq!((r.status, r.err.as_str()), (2, ""));
-    // A match elsewhere does not hide the trouble, except under -q.
     assert_eq!(
         run(&host, "grep", &["alpha", "greek.txt", "nosuch"]).status,
         2
@@ -560,8 +544,6 @@ fn grep_says_a_binary_file_matches() {
     assert_eq!(ok(run(&host, "grep", &["-a", "b", "bin"])), "a\0b\n");
 }
 
-// diff
-
 const LEFT: &str = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
 const RIGHT: &str = "a\nB\nc\nd\ne\nf\ng\nh\nI\nj\nk\n";
 
@@ -690,11 +672,8 @@ fn diff_finds_a_shortest_script_on_shuffled_lines() {
         .lines()
         .filter(|l| l.starts_with('<') || l.starts_with('>'))
         .count();
-    // The classic Myers example: five edits, no fewer.
     assert_eq!(changed, 5, "{}", r.out);
 }
-
-// sort and uniq
 
 const S: &str = "b 2\na 10\nc 1\nB 3\na 2\n";
 
@@ -750,8 +729,6 @@ fn uniq_counts_and_filters() {
         "      2 a\n      1 b\n"
     );
 }
-
-// cut and tr
 
 #[test]
 fn cut_fields_and_bytes() {
@@ -814,8 +791,6 @@ fn tr_translates_deletes_and_squeezes() {
     assert_eq!(run_in("x", "tr", &["z-a", "x"]).status, 2);
 }
 
-// seq, nl, rev, tee
-
 #[test]
 fn seq_counts_with_steps_widths_and_fractions() {
     assert_eq!(ok(run_in("", "seq", &["3"])), "1\n2\n3\n");
@@ -877,8 +852,6 @@ fn tee_copies_to_files_and_stdout() {
     assert_eq!((r.status, r.out.as_str()), (1, "z\n"));
 }
 
-// env, printenv, sleep, yes
-
 fn env() -> Vec<(String, String)> {
     vec![
         ("HOME".into(), "/home/x".into()),
@@ -909,13 +882,10 @@ fn printenv_and_env_print_the_environment() {
         ok(run_on(&host, &vars, b"", "env", &["-i", "A=b"])),
         "A=b\n"
     );
-    // A command goes back through dispatch: with none, it is unknown.
     let r = run_on(&host, &vars, b"", "env", &["ls"]);
     assert_eq!((r.status, r.err.as_str()), (127, "ls: command not found\n"));
 }
 
-/// A host whose clock moves only when the shell sleeps on it, and that can
-/// be told to interrupt after some sleeping.
 #[derive(Clone)]
 struct Clock {
     files: MemoryHost,
@@ -998,8 +968,6 @@ fn yes_stops_when_interrupted() {
     host.interrupted.store(true, Ordering::SeqCst);
     assert_eq!(run_on(&host, &[], b"", "yes", &["x"]).status, 130);
 }
-
-// ls
 
 fn tree_host() -> MemoryHost {
     let host = MemoryHost::new();
@@ -1099,7 +1067,6 @@ fn ls_lays_out_columns_on_the_terminal_like_gnu() {
         assert_eq!(lookup("ls").unwrap()(&ctx, &["c".into()]), 0);
         String::from_utf8(out.take()).unwrap()
     };
-    // What GNU ls 9.10 prints for these names (`COLUMNS=60 ls -C`).
     assert_eq!(
         columns("60"),
         "aaaaaaaaaaaa\t  eeeeeeeeeeeeeee     iiiiiiiiiiiiiii\n\
@@ -1115,8 +1082,6 @@ fn ls_lays_out_columns_on_the_terminal_like_gnu() {
     );
 }
 
-/// Forwards to a captured [`Output`], so a buffer can stand in for the
-/// host's own standard output.
 struct OutputSink(Output);
 
 impl io::Write for OutputSink {
@@ -1160,8 +1125,6 @@ fn ls_refuses_what_it_does_not_do() {
         "deep.rs\n"
     );
 }
-
-// stat
 
 #[test]
 fn stat_formats_and_default_layout() {
@@ -1216,8 +1179,6 @@ fn stat_formats_and_default_layout() {
         )
     );
 }
-
-// find
 
 #[test]
 fn find_walks_and_filters() {
@@ -1287,9 +1248,6 @@ fn find_walks_and_filters() {
 
 #[test]
 fn find_actions_go_back_through_dispatch() {
-    // With nowhere to dispatch to, every command is unknown: find says
-    // nothing itself, and its status is 1. `-ok` asks, and runs nothing
-    // without a yes.
     let host = tree_host();
     for action in ["-exec", "-execdir"] {
         let r = run(&host, "find", &["d", action, "rm", "{}", ";"]);
@@ -1310,8 +1268,6 @@ fn find_actions_go_back_through_dispatch() {
         );
     }
 }
-
-// tree
 
 #[test]
 fn tree_draws_like_tree() {
@@ -1340,8 +1296,6 @@ fn tree_draws_like_tree() {
         "{out}"
     );
 }
-
-// path commands
 
 #[test]
 fn basename_and_dirname_like_gnu() {
@@ -1384,8 +1338,6 @@ fn realpath_and_readlink_follow_links_through_the_host() {
     assert_eq!((r.status, r.out.as_str(), r.err.as_str()), (1, "", ""));
     assert_eq!(run(&host, "readlink", &["-e", "d/nope"]).status, 1);
 }
-
-// Everything refuses what it does not do, by name.
 
 #[test]
 fn unsupported_flags_are_refused_by_name() {
@@ -1446,10 +1398,6 @@ fn every_command_is_named() {
     assert!(lookup("cp").is_none());
 }
 
-// The options Tab completion offers
-
-/// What `name OPTION` is refused with when the parser does not take it, or
-/// takes it without the value it was given.
 const REFUSALS: &[&str] = &[
     "invalid option",
     "unrecognized option",
@@ -1458,8 +1406,6 @@ const REFUSALS: &[&str] = &[
     "requires an argument",
 ];
 
-/// The value an option that takes one is given, as words: what follows the
-/// option for it to be read.
 #[expect(
     clippy::match_same_arms,
     reason = "one arm per command's options, read as they are listed"
@@ -1518,8 +1464,6 @@ fn option_value(name: &str, bare: &str) -> Option<&'static str> {
     })
 }
 
-/// The operands `name` is run on after an option, so it has something to
-/// read.
 #[expect(
     clippy::match_same_arms,
     reason = "one arm per command's options, read as they are listed"
@@ -1547,8 +1491,6 @@ fn option_operands(name: &str, bare: &str) -> &'static [&'static str] {
     }
 }
 
-/// `name OPTION`, with the option's value and operands, as a script in `/w`
-/// with every word quoted.
 fn option_script(name: &str, spelling: &str) -> String {
     let bare = spelling.trim_end_matches('=');
     let value = option_value(name, bare);
@@ -1579,7 +1521,6 @@ fn option_script(name: &str, spelling: &str) -> String {
     format!("cd /w && {}", quoted.join(" "))
 }
 
-/// Standard error of `script` run through the shell on fresh files.
 fn shell_stderr(script: &str) -> String {
     let host = files();
     host.file("/w/b.txt", "one\nthree\n").dir("/w/d");

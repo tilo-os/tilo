@@ -169,8 +169,12 @@ impl Music {
         else {
             return;
         };
-        let resource = tilo_actions::ResourceSpec::new("music.library", "music.library", "Music")
-            .with_action(spec.clone());
+        let resource = tilo_actions::ResourceSpec::new(
+            "music.library",
+            "music.library",
+            crate::i18n::CATALOG.t("music-resource-library"),
+        )
+        .with_action(spec.clone());
         let arguments = effect.arguments();
         let Ok(binding) =
             tilo_actions::ActionBinding::new(&resource, &spec, move |()| arguments.clone())
@@ -208,10 +212,9 @@ impl Music {
             self.menu_actions.push(super::Action::Back);
         }
         for (playlist, (name, _)) in playlists {
-            let label =
-                crate::i18n::t_args("music-spotify-playlist-choice", &[("name", name.into())]);
-            self.push_menu(
-                label,
+            self.push_menu_with_detail(
+                name,
+                Some("Spotify".to_owned()),
                 super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd {
                     playlist,
                     track: track.into(),
@@ -1140,8 +1143,6 @@ mod tests {
                 &mut text,
                 &theme,
             );
-            // The refresh control is the app's one retained child: search
-            // and the other header buttons are the window bar's.
             assert_eq!(tree.children(root).unwrap().len(), 1);
             assert_eq!(app.children().len(), 1);
             let control = app

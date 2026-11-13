@@ -27,10 +27,8 @@ struct Stored {
     items: Vec<StoreItem>,
 }
 
-/// A catalogue read back from disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cached {
-    /// The language its localized fields are in.
     pub locale: String,
     /// When it was kept, Unix seconds.
     pub saved_unix: u64,
@@ -41,7 +39,6 @@ fn path() -> Option<PathBuf> {
     crate::config::cache_dir().map(|dir| dir.join(FILE))
 }
 
-/// The kept catalogue, if there is a readable one.
 #[must_use]
 pub fn load() -> Option<Cached> {
     let path = path()?;

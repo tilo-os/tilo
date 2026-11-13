@@ -1,16 +1,6 @@
-//! Library surface of `tilo-install`.
-//!
-//! Everything the CLI in `main.rs` does that is pure logic lives
-//! here so it is unit-testable without spawning a `.tapp`
-//! install. The installed-package registry, the content store and
-//! integrity records belong to the `package-store` crate, which the
-//! launcher, the shell and the app host share.
-//!
-//! - [`gc`]        — reclaiming payloads and runtimes nothing needs.
-//! - [`shim`]      — the PATH shims a `[cli]` package publishes.
-//! - [`runtime_blobs`] — runtime payload bytes already on this device.
-//! - [`state`]     — the user's per-workspace app data: what uninstalling
-//!   must ask about rather than assume.
+//! What `tilo-install` does that needs no running process, so it can be tested without spawning an
+//! install: reclaiming ([`gc`]), the PATH shims a package publishes ([`shim`]), runtime payload bytes
+//! already on the device ([`runtime_blobs`]) and the app data uninstalling must ask about ([`state`]).
 
 pub mod gc;
 pub mod runtime_blobs;

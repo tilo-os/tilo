@@ -142,8 +142,7 @@ case ${1:-} in
       # A publisher seals only runtimes built from the published snapshot.
       for arch in x86_64 aarch64; do require_published_snapshot "$trees/env-runtime-rpms-$arch.txt"; done
     else
-      [[ ${T_REF:-} != stable && ${T_REF:-} != tag:* ]] \
-        || die 'TAPP_PUBLISHER_IDENTITY is required to seal a release'
+      [[ ${T_REF:-} != tag:* ]] || die 'TAPP_PUBLISHER_IDENTITY is required to seal a release'
       echo 'sealing with a throwaway key: this proves the trees seal, and publishes nothing'
     fi
     unset TAPP_PUBLISHER_IDENTITY

@@ -471,7 +471,7 @@ impl HistoryHost {
     ) -> bool {
         let mut own = self.painting.take().unwrap_or_default();
         own.reset();
-        Widget::draw(self, &mut own, transform, text, theme, presence);
+        crate::widget::DrawChild::draw_child(self, &mut own, transform, text, theme, presence);
         scene.append(&own, None);
         let changed = self.painted.as_ref().map_or_else(
             || !own.encoding().draw_tags.is_empty(),
@@ -2133,7 +2133,10 @@ impl HistoryHost {
                 Row::new()
                     .with_gap(12.0)
                     .push(Box::new(
-                        Text::new(&newest.author.name).with_role(crate::tokens::TextRole::Caption),
+                        Text::new(&crate::history_source::sentence::author_line(
+                            &newest.author,
+                        ))
+                        .with_role(crate::tokens::TextRole::Caption),
                     ))
                     .push(Box::new(
                         Text::new(&when)

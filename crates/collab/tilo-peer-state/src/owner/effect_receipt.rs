@@ -7,7 +7,6 @@ use crate::StatePeer;
 use crate::owner::record::StoredWorkspace;
 use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use web_time::SystemTime;
 
@@ -128,7 +127,6 @@ fn archive_one(
     peer: &mut StatePeer,
     view: &mut StoredWorkspace,
     store: &dyn crate::owner::Store,
-    key: &SigningKey,
     now: SystemTime,
 ) -> Result<(), String> {
     let (id, stored) = view
@@ -152,7 +150,7 @@ fn archive_one(
     let root = crate::owner::effect_history::insert(store, view.effect_history_root, fact)?;
     let device = view.device.clone();
     peer.workspace_mut()
-        .set_workspace_effect_history_root(&device, root, key, now)?;
+        .set_workspace_effect_history_root(&device, root, now)?;
     view.effect_history_root = Some(root);
     // Older readers must refuse an archived owner record, not ignore the
     // index and mint a different original receipt for an already-known UUID.
@@ -182,13 +180,12 @@ mod tests;
 impl NativeWorkspaceOwner {
     /// Commit the broker's exact redacted terminal receipt, of an invocation
     /// this device served, before acknowledging it: written into this
-    /// device's person's slice of the workspace, signed by `key`, the device's
-    /// own, and published as any workspace change of its own. Original
+    /// device's person's slice of the workspace, as this device's own change,
+    /// and published as any workspace change of its own. Original
     /// arguments and results never enter the workspace.
     pub fn commit_effect_receipt(
         &self,
         request: &OwnerCommitRequest,
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
         let effect = decode(request)?;
@@ -197,9 +194,6 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let device = candidate.device().clone();
-        if key.verifying_key().to_bytes() != device.device_public_key {
-            return Err("an effect receipt is signed by this device's own key".into());
-        }
         let id = effect.invocation.0.to_string();
         // A signed root without this device's exact retained history is not
         // an empty index. No authority is inferred from an unknown UUID.
@@ -230,7 +224,6 @@ impl NativeWorkspaceOwner {
             return Ok(fact.receipt);
         }
         let governs = candidate.hosted_here();
-        let previous = candidate.peer.clone();
         let (receipt, record) = candidate.change(|live, record| {
             let before = live.workspace_heads().unwrap_or_default();
             // A publication that did not reach disk leaves the replica holding
@@ -238,29 +231,25 @@ impl NativeWorkspaceOwner {
             // behind instead of refusing a receipt the workspace has.
             let is_new = live
                 .workspace_mut()
-                .apply_own_effect_receipt(&device, &effect, key, now)?;
+                .apply_own_effect_receipt(&device, &effect, now)?;
             if record.effect_receipts.len() >= 128 {
-                archive_one(live, record, self.0.store.as_ref(), key, now)?;
+                archive_one(live, record, self.0.store.as_ref(), now)?;
             }
             let generation = record
                 .generation
                 .checked_add(1)
                 .ok_or("effect generation exhausted")?;
-            let written = if !is_new {
-                Vec::new()
-            } else if governs {
-                // The signed delta includes the root update as well as the new receipt.
-                live.publication_mut()
-                    .durable_mutation_messages(&previous, key, now, generation)?;
-                Vec::new()
-            } else {
+            // A governor's checkpoint carries the change; a member sends it to its host.
+            let written = if is_new && !governs {
                 live.workspace_changes_since(&before)
+            } else {
+                Vec::new()
             };
             record.generation = generation;
             let receipt = OwnerCommitReceipt {
                 binding: binding.clone(),
                 generation,
-                aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
+                aggregate_hash: live.durable_hash()?,
             };
             record.effect_receipts.insert(
                 id.clone(),

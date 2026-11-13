@@ -31,7 +31,6 @@ pub const SAMPLES: &[Sample] = &[
     },
 ];
 
-/// Index of the demo document shown first in `--shots` and the example gallery.
 pub const DEFAULT_INDEX: usize = 4;
 
 /// A document carrying exactly one **warning** (an unknown font family, on the

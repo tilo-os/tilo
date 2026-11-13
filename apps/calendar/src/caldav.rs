@@ -1,36 +1,4 @@
 //! `CalDAV` sync — the real protocol edge of the Calendar app.
-//!
-//! ## The offline / online split (important for `--shots`)
-//!
-//! `--shots` runs one headless frame with no event loop and no live account, so
-//! it cannot talk to a `CalDAV` server. To still render a fully populated client
-//! we bundle a representative remote calendar as a real iCalendar payload and
-//! **parse it through [`crate::ics::parse`]** here, exactly as a `calendar-data`
-//! REPORT response would be parsed in the live app. So the screenshot exercises
-//! the real import path, and the events that land in the model are
-//! indistinguishable from synced ones.
-//!
-//! ## What the live app does (network path)
-//!
-//! The live binary (no `--shots`) drives, on a
-//! background worker thread (mirroring the notes `Saver` pattern — the `ui`
-//! event loop is synchronous and must not block), a `CalDAV` read against each
-//! configured collection, built on the shared `tilo-dav` client:
-//!
-//! * **Pull** — bounded RFC 6578 `sync-collection` REPORTs use the durable token
-//!   for each collection. Unsupported/invalid tokens fall back to one bounded,
-//!   authoritative `calendar-query`, followed by `sync-token` discovery.
-//!   Href + `ETag` are retained as server identity/revision; XML is parsed rather
-//!   than scraped, and tokens commit only after reconciliation.
-//!
-//! * **Push/delete** — crash-safe outboxes drain with conditional `If-Match` or
-//!   create-only `If-None-Match: *`. A 412 preserves the local version, leaves
-//!   it queued, and surfaces an understandable conflict instead of overwriting.
-//!
-//! That HTTP + TLS stack is deliberately kept out of the headless build so it
-//! stays small and green; the seam is this module, and the data types
-//! ([`crate::account::CalDavConfig`], [`Event`], [`Task`]) are already the exact
-//! shapes a `CalDAV` client consumes and produces.
 
 use chrono::NaiveDate;
 
@@ -48,7 +16,6 @@ const MAX_HREF_BYTES: usize = 4096;
 #[cfg(any(feature = "live", test))]
 const MAX_ICAL_BYTES: usize = 2 * 1024 * 1024;
 
-/// Stable server-side identity and revision for a pulled calendar object.
 #[derive(Clone, Debug)]
 pub struct RemoteResource {
     pub calendar_id: String,
@@ -58,8 +25,6 @@ pub struct RemoteResource {
     pub tasks: Vec<Task>,
 }
 
-/// One server-confirmed removal, addressed by collection + href rather than
-/// an iCalendar title or a newly generated local UUID.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteDeletion {
     pub calendar_id: String,
@@ -78,8 +43,6 @@ pub struct CollectionCheckpoint {
     pub seen_hrefs: Vec<String>,
 }
 
-/// What a sync pass produced: the events and tasks parsed out of a calendar's
-/// `calendar-data`, tagged with the colour and id of their source calendar.
 #[derive(Clone, Debug, Default)]
 pub struct SyncResult {
     pub events: Vec<Event>,
@@ -95,38 +58,21 @@ impl SyncResult {
     }
 }
 
-/// Outcome of a sync attempt. The live worker returns the server's reply detail
-/// here; the offline path returns `Offline` so the UI can show "sample data".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncOutcome {
-    /// Synced `n` calendars; carries a short human summary for the status pill.
     Synced { calendars: usize, events: usize },
-    /// No live account/network — running on bundled sample + local data.
     Offline,
-    /// The server (or transport) failed; carries the reason.
     Failed(String),
 }
 
-/// The concrete `CalDAV` `PUT` a queued local event turns into: the resource URL
-/// under the target collection and the `text/calendar` body to upload. This is
-/// what "queue the event for the chosen `CalDAV` calendar" produces — a real
-/// request the `live` push path (or a test) can inspect and send. Building it
-/// runs the event through [`ics::export`], so the body is the exact iCalendar a
-/// server would store.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PutRequest {
-    /// Absolute URL of the event resource (`<collection>/<uid>.ics`).
     pub url: String,
-    /// `text/calendar` payload — a one-event `VCALENDAR`.
     pub body: String,
     pub if_match: Option<String>,
     pub if_none_match: bool,
 }
 
-/// Build the `CalDAV` `PUT` that uploads `event` to `calendar` under `config`.
-/// The resource name is the event's UID with a `.ics` suffix, joined onto the
-/// collection URL exactly as the pull path resolves it, and the body is a
-/// single-event `VCALENDAR` produced by the in-tree exporter.
 pub fn build_put_request(
     config: &CalDavConfig,
     calendar: &RemoteCalendar,
@@ -142,7 +88,6 @@ pub fn build_put_request(
     }
 }
 
-/// The one-event `VCALENDAR` `event` is uploaded as.
 pub fn event_body(event: &Event) -> String {
     ics::export(&Calendar {
         events: vec![event.clone()].into(),
@@ -184,19 +129,12 @@ pub struct RemoteRevision {
     pub etag: Option<String>,
 }
 
-/// The concrete `CalDAV` `DELETE` a queued deletion turns into: the URL of the
-/// event resource to remove from its collection. Mirrors [`PutRequest`] but
-/// carries no body — a `DELETE` is addressed by URL alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteRequest {
-    /// Absolute URL of the event resource (`<collection>/<uid>.ics`).
     pub url: String,
     pub if_match: Option<String>,
 }
 
-/// Build the `CalDAV` `DELETE` that removes `uid` from `calendar` under
-/// `config`. The resource name matches the one [`build_put_request`] uploads
-/// to, so a synced event round-trips to the same URL for create and delete.
 pub fn build_delete_request(
     config: &CalDavConfig,
     calendar: &RemoteCalendar,
@@ -234,9 +172,6 @@ pub fn remove_jobs(jobs: &[RemoveJob]) -> impl std::future::Future<Output = Muta
     }
 }
 
-/// Resolve a collection href (absolute or relative to the configured server)
-/// to an absolute URL. Shared by the pull and push paths so both address the
-/// same resource.
 fn collection_url_for(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
     if cal.id.starts_with("http://") || cal.id.starts_with("https://") {
         cal.id.clone()
@@ -249,9 +184,8 @@ fn collection_url_for(config: &CalDavConfig, cal: &RemoteCalendar) -> String {
     }
 }
 
-/// Compare DAV href spellings after discarding an optional scheme/authority.
-/// This keeps bindings stable across servers that alternate between `/dav/x`
-/// and `https://host/dav/x` in otherwise equivalent responses.
+/// Compare DAV href spellings after discarding an optional scheme and authority, so bindings stay
+/// stable across servers that alternate between `/dav/x` and `https://host/dav/x`.
 pub fn hrefs_equal(left: &str, right: &str) -> bool {
     fn absolute_path(value: &str) -> Option<&str> {
         value
@@ -262,22 +196,16 @@ pub fn hrefs_equal(left: &str, right: &str) -> bool {
         return true;
     }
     match (absolute_path(left), absolute_path(right)) {
-        // Servers commonly alternate between an origin-relative href and its
-        // absolute spelling. Two *absolute* hrefs from different origins are
-        // never equated merely because their paths match: that would let an
-        // unexpected redirect/cross-origin response alias an existing event.
+        // An origin-relative href and its absolute spelling are one target; two absolute hrefs from
+        // different origins never are, or a cross-origin response could alias an existing event.
         (Some(left_path), None) => left_path == right,
         (None, Some(right_path)) => left == right_path,
         _ => false,
     }
 }
 
-/// Sample pull for one remote calendar (demo / tests only).
-///
-/// Synthesises a representative `VCALENDAR` for the calendar and parses it
-/// through the real [`ics::parse`], so the events that come back travel the
-/// same path a live `calendar-data` REPORT response would. The live transport
-/// lives in the `live` module and does not call this.
+/// Sample pull for one remote calendar (demo and tests only): real iCalendar through [`ics::parse`],
+/// never the live transport.
 pub fn pull_calendar(
     _config: &CalDavConfig,
     calendar: &RemoteCalendar,
@@ -285,9 +213,6 @@ pub fn pull_calendar(
 ) -> SyncResult {
     let payload = sample_calendar_ics(calendar, today);
     let (mut events, tasks) = ics::parse(&payload);
-    // Tag each parsed event with its source calendar's colour AND id, exactly as
-    // the live REPORT path does. The id is what lets the sidebar's visibility
-    // toggle hide a synced calendar's events without a re-sync.
     let palette = calendar.palette();
     for e in &mut events {
         e.color = palette;
@@ -300,9 +225,6 @@ pub fn pull_calendar(
     }
 }
 
-/// Synchronise with durable per-collection checkpoints supplied by the caller.
-/// Keeping the checkpoint in the Automerge document (rather than a transport
-/// cache) makes restart and collaborative hand-off deterministic.
 pub fn sync_all_with_checkpoints(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
@@ -319,11 +241,6 @@ pub fn sync_all_with_checkpoints(
     }
 }
 
-/// The offline sample pull used by the hermetic `--shots` / demo build and by
-/// tests. It synthesises each calendar's events as real iCalendar and parses
-/// them back through [`ics::parse`], so the sample data travels the exact
-/// import path a live `calendar-data` REPORT response would — but it is never
-/// reached by the live app.
 pub fn sample_pull_all(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
@@ -351,24 +268,16 @@ pub fn sample_pull_all(
     )
 }
 
-/// A small, self-contained `.ics` payload representing what a given remote
-/// calendar would return, anchored near `today`. Distinct per calendar id so
-/// each synced calendar shows different events. Built by round-tripping a tiny
-/// model through [`ics::export`], so the parser is exercised end to end.
 fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
     use crate::model::Recurrence;
     use chrono::{Duration, NaiveDateTime, NaiveTime};
 
-    // Every call below passes a literal, always-valid (h, m) pair; the
-    // fallback to midnight only matters if that ever stops being true, and
-    // even then a wrong sample time beats panicking the whole sync.
+    // Every call passes a literal valid (h, m): a wrong sample time beats panicking the sync.
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
         date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
     };
     let d = |delta: i64| today + Duration::days(delta);
 
-    // Pick a couple of plausible entries keyed off the calendar's slug so the
-    // demo shows that different remote calendars carry different events.
     let events = match calendar.id.as_str() {
         "work/oncall" => vec![Event {
             id: uuid::Uuid::new_v4(),
@@ -399,7 +308,6 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             reminder_min: Some(30),
             ..Event::default()
         }],
-        // "work/default" and any other collection.
         _ => vec![Event {
             id: uuid::Uuid::new_v4(),
             title: "Synced standup".into(),
@@ -430,7 +338,6 @@ struct ParsedMultistatus {
 }
 
 #[cfg(any(feature = "live", test))]
-/// Caps for one calendar REPORT/PROPFIND answer.
 const LIMITS: tilo_dav::Limits = tilo_dav::Limits {
     max_bytes: MAX_XML_BYTES,
     max_responses: MAX_RESOURCES,
@@ -440,7 +347,6 @@ const LIMITS: tilo_dav::Limits = tilo_dav::Limits {
 };
 
 #[cfg(any(feature = "live", test))]
-/// Properties every calendar REPORT asks for.
 const REPORT_PROPS: [tilo_dav::PropName; 2] =
     [tilo_dav::props::GETETAG, tilo_dav::props::CALENDAR_DATA];
 
@@ -458,7 +364,6 @@ fn xml_error_message(error: &tilo_dav::XmlError) -> String {
     }
 }
 
-/// Parse a DAV multistatus without accepting an unbounded server document.
 #[cfg(test)]
 fn parse_multistatus(xml: &str) -> Result<ParsedMultistatus, String> {
     let parsed = tilo_dav::multistatus::parse(xml, &LIMITS).map_err(|e| xml_error_message(&e))?;
@@ -466,9 +371,6 @@ fn parse_multistatus(xml: &str) -> Result<ParsedMultistatus, String> {
 }
 
 #[cfg(any(feature = "live", test))]
-/// Split a multistatus into changed resources (href, `ETag`, calendar data)
-/// and removed hrefs. A whole-response 404 is a removal; a resource without
-/// a successful `calendar-data` is skipped.
 fn interpret_multistatus(parsed: tilo_dav::Multistatus) -> Result<ParsedMultistatus, String> {
     let mut changed = Vec::new();
     let mut deleted = Vec::new();
@@ -508,9 +410,8 @@ fn sync_collection_body(token: &str) -> String {
     tilo_dav::body::sync_collection_body(token, &REPORT_PROPS)
 }
 
-/// Real `CalDAV` transport, compiled only with the `live` feature. Kept behind a
-/// module so its HTTP stack never touches the default (headless) build. This
-/// talks HTTP to a configured server; there is no synthesised data here.
+/// Real `CalDAV` transport, compiled only with the `live` feature, so its HTTP stack never touches
+/// the default build.
 #[cfg(feature = "live")]
 mod live {
     use chrono::NaiveDate;
@@ -524,7 +425,6 @@ mod live {
 
     const CALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
 
-    /// Resolves canonical custody afresh for every request and fallback.
     pub(crate) struct CalDavClient {
         service: Service,
     }
@@ -635,10 +535,6 @@ mod live {
         }
     }
 
-    /// Pull one collection: an RFC 6578 `sync-collection` REPORT from the
-    /// stored token, falling back to an authoritative `calendar-query` when
-    /// the server refuses the token or the report. Each resource's
-    /// `calendar-data` is handed to [`ics::parse`].
     async fn pull_calendar_live(
         client: &CalDavClient,
         config: &CalDavConfig,
@@ -654,15 +550,12 @@ mod live {
             .report(url.as_str(), Depth::One, body)
             .await?;
 
-        // RFC 6578 uses 403 with a valid-sync-token precondition (some servers
-        // use 409). Reconcile from a bounded full listing before accepting a
-        // replacement token; never silently discard local mapping state.
+        // RFC 6578 says 403 with a valid-sync-token precondition, and some servers use 409: reconcile from a
+        // bounded full listing before accepting a replacement token, never discarding the mapping.
         let report_unsupported = matches!(response.status().as_u16(), 400 | 403 | 405 | 409 | 501);
         if report_unsupported {
             full = true;
-            // Full fallback must be authoritative: a time window cannot
-            // distinguish an old resource from a deletion. Response
-            // byte/resource caps bound it.
+            // The full fallback is authoritative: a time window cannot tell an old resource from a deletion.
             let query = tilo_dav::body::calendar_query_body(&super::REPORT_PROPS, None);
             response = authenticated(client, config, &url)
                 .await?
@@ -756,9 +649,6 @@ mod live {
         super::collection_url_for(config, cal)
     }
 
-    /// Normalize every REPORT href to the same absolute identity used by PUT
-    /// and DELETE responses. Servers freely alternate between absolute and
-    /// path hrefs, so retaining the wire spelling would duplicate resources.
     fn canonical_resource_url(collection_url: &str, href: &str) -> Result<String, String> {
         let base = tilo_dav::net::Url::parse(&format!("{}/", collection_url.trim_end_matches('/')))
             .map_err(|_| "calendar collection has an invalid URL".to_string())?;
@@ -785,9 +675,8 @@ mod live {
                 let mut request = super::build_put_request(&job.config, &job.calendar, &job.event);
                 if let Some(href) = &job.href {
                     request.url = absolute_resource_url(&job.config, href);
-                    // An existing binding is never overwritten unconditionally.
-                    // Exact ETags detect edits; `*` is the safe fallback for old
-                    // servers/documents where the binding predates ETag storage.
+                    // An existing binding is never overwritten unconditionally: exact ETags detect edits, and `*` is the
+                    // fallback where the binding predates ETag storage.
                     request.if_match = Some(job.etag.clone().unwrap_or_else(|| "*".into()));
                     request.if_none_match = false;
                 }
@@ -854,9 +743,6 @@ mod live {
                     || super::build_delete_request(&job.config, &job.calendar, job.id).url,
                     |href| absolute_resource_url(&job.config, href),
                 );
-                // Even when an older server omitted the revision, keep deletion
-                // conditional on the resource still existing. Known revisions use
-                // their exact ETag and therefore detect concurrent modification.
                 let authenticated = match authenticated(client, &job.config, &url).await {
                     Ok(client) => client,
                     Err(error) => {
@@ -1232,8 +1118,6 @@ mod tests {
             assert!(res.events.iter().all(|e| e.color == cal.palette()));
         }
         {
-            // The visibility toggle needs synced events to remember which calendar
-            // they came from; the pull path stamps every event with `cal.id`.
             let store = AccountStore::sample();
             let (account, cal) = store
                 .all_calendars()
@@ -1256,10 +1140,8 @@ mod tests {
                 .map(|a| (a.config.clone(), a.calendars.clone()))
                 .collect();
             let (res, outcome) = sample_pull_all(&accounts, today());
-            // Sample has 3 visible calendars; each yields at least one event.
             assert!(matches!(outcome, SyncOutcome::Synced { calendars: 3, .. }));
             assert!(!res.is_empty());
-            // The hidden "Holidays" calendar's event must not appear.
             assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
         }
         {
@@ -1268,15 +1150,11 @@ mod tests {
             assert_eq!(outcome, SyncOutcome::Offline);
         }
         {
-            // The real path never fabricates: with nothing configured it returns
-            // an empty Offline result (and, without the `live` feature, always).
             let (res, outcome) = sync_all(&[], today());
             assert!(res.is_empty());
             assert_eq!(outcome, SyncOutcome::Offline);
         }
         {
-            // Prove the payload travels ics::export -> ics::parse, not a struct
-            // shortcut: a recurring synced event keeps its RRULE round-trip.
             let store = AccountStore::sample();
             let (account, cal) = store
                 .all_calendars()
@@ -1341,8 +1219,6 @@ mod tests {
             assert!(del.url.ends_with(&format!("{uid}.ics")));
         }
         {
-            // Symmetric with push: the headless build has no transport, so delete is
-            // an honest no-op that keeps the queue rather than faking a success.
             let store = AccountStore::sample();
             let (account, cal) = store.all_calendars().next().unwrap();
             let jobs = vec![RemoveJob {
@@ -1357,8 +1233,6 @@ mod tests {
             let _ = jobs;
         }
         {
-            // The default headless build has no transport: push is an honest no-op
-            // that keeps the queue rather than fabricating a successful upload.
             let store = AccountStore::sample();
             let (account, cal) = store.all_calendars().next().unwrap();
             let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)

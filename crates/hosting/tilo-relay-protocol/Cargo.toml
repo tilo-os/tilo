@@ -15,6 +15,8 @@ homepage.workspace = true
 [dependencies]
 # Crash-safe replacement of the metrics snapshot.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# One rule for which language a locale names, shared with the packs.
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }

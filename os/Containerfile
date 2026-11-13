@@ -440,6 +440,10 @@ COPY keys/tpm2-pcr-signing.public.pem /build/keys/
 COPY crates /build/crates
 COPY apps /build/apps
 COPY examples /build/examples
+# The SDKs' native parts are workspace members, which every workspace build
+# needs the manifests of.
+COPY sdk/python/native /build/sdk/python/native
+COPY sdk/typescript/native /build/sdk/typescript/native
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
@@ -495,6 +499,13 @@ COPY os/app-runtime /build/os/app-runtime
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder-base
 
+# The same bytes from the same base and snapshot: t keys every check compiled in this image by
+# them. rpm dates what it installs by SOURCE_DATE_EPOCH (the build's clock) instead of the wall
+# clock, and the transaction leaves its database finalized and no diagnostic state (DNF's history
+# and log, ldconfig's aux-cache, fontconfig's caches, a machine ID), as the packages layer does.
+ARG SOURCE_DATE_EPOCH=0
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
@@ -527,7 +538,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         glib2-devel \
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
-    && dnf clean all
+    && dnf clean all \
+    && /usr/libexec/tilo/finalize-rpmdb
 
 # Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
 # full-feature static client as the canonical CI builder so the nested image
@@ -1218,10 +1230,9 @@ RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-
 # `rpm -qf` reporting that no package owns files it just installed.
 #
 # So this is not a workaround for the corruption; it is not shipping derived
-# state that was never valid to ship. Only this stage needs it: the builder
-# stages are thrown away and nothing in them reads the rpmdb after their one
-# transaction, and touching their dnf layers would invalidate their cached
-# toolchain for nothing.
+# state that was never valid to ship. The OS builder (builder-base) finalizes its
+# one transaction too, for its image's bytes rather than for a reader of its
+# rpmdb: every check compiled in it is keyed by them.
 #
 # What is established, and what is not — because the next person will need to
 # know which half to trust. Two earlier claims here were wrong and are corrected

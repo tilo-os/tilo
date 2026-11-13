@@ -16,6 +16,7 @@
 //! A composed row usually wants the shared [`Toolbar`](crate::widget::Toolbar) instead, which
 //! does its own overflow; this door is for the rows a painted app lays out by hand.
 
+use crate::i18n::widget_text;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -29,6 +30,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{AppModel, Button, ModelPath, TaffyTreeExt, Widget};
 
@@ -128,7 +130,7 @@ impl OverflowDoor {
     /// language like the rest of the chrome and the commands behind it.
     #[must_use]
     pub fn new(id: &str) -> Self {
-        Self::with_label(id, &crate::i18n!("window-toolbar-more"))
+        Self::with_label(id, &widget_text("window-toolbar-more"))
     }
 
     /// [`Self::new`] with the name assistive technology reads, and the
@@ -245,6 +247,11 @@ impl OverflowDoor {
 }
 
 impl Widget for OverflowDoor {
+    /// What it holds back, where it opens.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -277,7 +284,8 @@ impl Widget for OverflowDoor {
         if self.menu.is_open() {
             self.menu.layout_within(text, theme);
         }
-        self.button.draw(scene, transform, text, theme, presence);
+        self.button
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn draw_overlay(

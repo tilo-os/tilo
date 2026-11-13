@@ -1,13 +1,13 @@
 //! Where this person's windows are, for the workspace's presence: the windows of
 //! the strip shown, as the desktop surface laid them out, each named by its
 //! app and the short digest of its record only
-//! ([`tilo_relay_protocol::live::LiveLayout`], placed by the rule native
-//! shells use too). Others draw a mini view of this screen from what they
+//! ([`tilo_relay_protocol::live::LiveLayout`], placed by
+//! [`tilo_session::sync::layout::placed`], the rule every host places by). Others draw a mini view of this screen from what they
 //! hold themselves; a window on something not shared with them tells them
 //! only its app.
 
 use tilo_desktop_model::TabId;
-use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
+use tilo_relay_protocol::live::LiveRecord;
 use ui::kurbo::Rect;
 
 use super::Mount;
@@ -51,7 +51,7 @@ impl Mount {
         let (app, record) = focus.unwrap_or_else(|| {
             (
                 crate::desktop::DESKTOP_PACKAGE.to_owned(),
-                crate::replication::DESKTOP_RECORD.to_owned(),
+                crate::replicated::DESKTOP_RECORD.to_owned(),
             )
         });
         Some(serde_json::json!({
@@ -75,27 +75,17 @@ fn named(app: String, record: String) -> serde_json::Value {
 
 /// The layout's JSON as the page's presence carries it: `{size: [w, h],
 /// windows: [{app, record, rect, focused}]}`, `record` the 16-hex short
-/// digest, laid out in the content `area` (the strip's, under the bar) by
-/// [`LiveLayout::place`]. `record_of` names a tab's live record; a window
-/// without one is left out. `None` for an area of no size.
+/// digest, laid out in the content `area` (the strip's, under the bar) by the
+/// placement rule every host uses ([`tilo_session::sync::layout::placed`]).
+/// `record_of` names a tab's live record; a window without one is left out.
+/// `None` for an area of no size.
 pub(super) fn layout_value(
     area: Rect,
     shown: &[(TabId, Rect)],
     record_of: impl Fn(TabId) -> Option<(String, String)>,
     focused: Option<TabId>,
 ) -> Option<serde_json::Value> {
-    let windows: Vec<_> = shown
-        .iter()
-        .filter_map(|&(tab, rect)| {
-            let (app, record) = record_of(tab)?;
-            Some((
-                LiveRecord { app, record },
-                [rect.x0, rect.y0, rect.x1, rect.y1],
-                focused == Some(tab),
-            ))
-        })
-        .collect();
-    let layout = LiveLayout::place([area.x0, area.y0, area.x1, area.y1], &windows)?;
+    let layout = tilo_session::sync::layout::placed(Some(area), shown, record_of, focused)?;
     Some(serde_json::json!({
         "size": layout.size,
         "windows": layout.windows.iter().map(|window| serde_json::json!({

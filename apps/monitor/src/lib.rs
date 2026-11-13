@@ -1,29 +1,9 @@
-//! Monitor — a CRDT-native graphical activity monitor for Tilo, built on
-//! the `ui` toolkit.
-//!
-//! Two tabs (Processes / Resources) present live system stats as content:
-//! summary tiles over a process table with the selected process in the
-//! inspector, and a reflowing resource dashboard. On Linux the session's
-//! system information service drives the live window (the sandbox shows
-//! Monitor no other process); elsewhere the platform's own interfaces do. A
-//! representative [`model::MonitorModel::sample`] snapshot drives `--shots`
-//! so a capture is fully populated offline.
-//!
-//! Layers:
-//! - [`model`]    — pure data: rolling histories, process rows, formatting.
-//! - [`sampler`]  — live readings folded into the model.
-//! - [`tree`]     — pure parent→child process tree + subtree-sum roll-ups.
-//! - [`prefs`]    — the person's cadence and kernel-thread preferences (a
-//!   personal settings section, outside Automerge and collaborative
-//!   history) and the window's sampling switch.
-//! - [`view`]     — the panes and the inspector the window shell shows.
-//! - [`app`]      — the root [`app::MonitorApp`] widget.
-//! - [`resource`] — the [`Monitor`] resource, its effects and the
-//!   [`MonitorShell`] app every launch (window, `--shots`) runs.
+//! Monitor: a live activity monitor with a process table and a resource
+//! dashboard. The session's system information service drives a live window; a
+//! representative sample drives captures.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Panic-producing lints stay denied; shared crates keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

@@ -1,5 +1,3 @@
-//! What the shell shows of the song Music plays, and what it presses on it.
-
 use super::*;
 
 fn playing() -> Playing {

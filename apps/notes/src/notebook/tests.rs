@@ -85,6 +85,21 @@ fn uuid(id: &Id) -> PageId {
     page_of(id).expect("a note's id is a UUID")
 }
 
+/// A note nobody named is offered under the word for one, never under its own body's first line: a
+/// list and the tools that read it aloud then say the same name, and the record holds no title.
+#[test]
+fn an_unnamed_note_is_offered_under_the_word_for_one() {
+    let mut notebook = Replica::<Notebook>::new();
+    let made = note(&mut notebook, "", None);
+    write(
+        &mut notebook,
+        &made,
+        &[ui::widget::BlockContent::paragraph("", "Plan")],
+    );
+    let offered = notebook.state().unwrap().item_label("pages", &made);
+    assert_eq!(offered.as_deref(), Some("Untitled"));
+}
+
 /// Notes are made, placed, moved and deleted by verbs that keep the tree a
 /// tree: siblings keep their order, a move reorders within its group or
 /// files the note under another, and no note goes under itself.
@@ -97,7 +112,7 @@ fn verbs_make_move_and_delete_notes_and_keep_the_tree_a_tree() {
     assert_eq!(children(&notebook, None), [a.clone(), b.clone(), c.clone()]);
     assert!(page_of(&a).is_some(), "a note is kept under a UUID");
     assert_eq!(page(&notebook, &b).title, "B", "titles are trimmed");
-    assert_eq!(page(&notebook, &c).title, UNTITLED);
+    assert_eq!(page(&notebook, &c).title, NO_TITLE);
 
     for (verb, note_, want) in [
         (Notebook::MOVE_UP.with(c.clone()), &c, [&a, &c, &b]),
@@ -682,7 +697,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
         &mut notebook,
         Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
             page: page.clone(),
-            bytes: png.clone(),
+            bytes: Bytes::to_keep(png.clone()),
             alt: None,
         }),
     )
@@ -690,7 +705,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
     let digest = blake3::hash(&png).to_hex().to_string();
     let state = notebook.state().unwrap();
     assert_eq!(state.images.get(&digest), Some(&Bytes::of(&png)));
-    let snapshot = image_snapshot(&state.images, |_| None);
+    let snapshot = image_snapshot(&state.images, &tilo_content::ContentStore::memory());
     assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(&png));
     assert!(
         texts(&notebook, &page)
@@ -704,7 +719,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
             &mut notebook,
             Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
                 page,
-                bytes: b"not a picture".to_vec(),
+                bytes: Bytes::to_keep(b"not a picture".to_vec()),
                 alt: None,
             }),
         )

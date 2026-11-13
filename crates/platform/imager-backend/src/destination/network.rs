@@ -1,32 +1,25 @@
 //! Non-blocking `NetworkManager` operations for the installer wizard.
 //!
-//! The live installer must remain usable when `NetworkManager`, a Wi-Fi adapter,
-//! or internet access is absent. All potentially slow `nmcli` work therefore
-//! happens on worker threads. Results are returned through a small shared queue
-//! and the caller's waker is used only as a redraw wake-up.
+//! The installer stays usable without `NetworkManager`, a Wi-Fi adapter or internet access, so slow
+//! `nmcli` work runs on worker threads and reports through a small shared queue.
 
 use std::sync::{Arc, Mutex};
 
 pub use os_actions::{ConnectivityState, WifiNetworkInfo};
 use zeroize::Zeroizing;
 
-/// Wakes the installer after a network worker publishes into its shared
-/// result queue.
+/// Wakes the installer after a network worker publishes into its queue.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// Side-effect boundary for live `NetworkManager` calls. Keeping it narrow makes
-/// the installer's decision logic testable without a radio or system bus.
+/// Side-effect boundary for live `NetworkManager` calls, kept narrow so the decision logic is
+/// testable without a radio or system bus.
 pub trait NetworkBackend: Send + Sync {
-    /// Check the system's connectivity now.
     fn connectivity(&self) -> Result<ConnectivityState, String>;
 
-    /// Scan for currently visible Wi-Fi networks.
     fn wifi_networks(&self) -> Result<Vec<WifiNetworkInfo>, String>;
 
-    /// Obtain the sign-in URI for the current captive portal.
     fn captive_portal_uri(&self) -> Result<String, String>;
 
-    /// Connect to `ssid`, using `password` when the network is secured.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
 }
 
@@ -35,9 +28,8 @@ struct RealNetworkBackend;
 
 impl NetworkBackend for RealNetworkBackend {
     fn connectivity(&self) -> Result<ConnectivityState, String> {
-        // Every snapshot here is a deliberate look: the first scan, the
-        // person pressing refresh, or the result of joining a network. Ask
-        // NetworkManager to check again rather than repeat a stale verdict.
+        // Every snapshot here is a deliberate look: the first scan, the person pressing refresh, or
+        // a network just joined. Ask NetworkManager to check again rather than repeat a stale verdict.
         os_actions::check_connectivity_now()
     }
 
@@ -54,9 +46,8 @@ impl NetworkBackend for RealNetworkBackend {
     }
 }
 
-/// One best-effort view of networking. Connectivity and Wi-Fi discovery are
-/// independent: wired internet can be usable when Wi-Fi scanning fails, and a
-/// Wi-Fi list is useful even when `NetworkManager`'s internet check is disabled.
+/// Connectivity and Wi-Fi discovery are independent: wired internet can work while Wi-Fi scanning
+/// fails, and a Wi-Fi list is useful even when the internet check is disabled.
 #[derive(Clone, Debug)]
 pub struct NetworkSnapshot {
     pub connectivity: ConnectivityState,
@@ -98,7 +89,6 @@ impl NetworkSnapshot {
         }
     }
 
-    /// Truthful primary status for the current `NetworkManager` result.
     pub fn guidance(&self) -> &'static str {
         match self.connectivity {
             ConnectivityState::Full => {
@@ -120,6 +110,13 @@ impl NetworkSnapshot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Connection {
+    Via(String),
+    Available,
+    Partial(ConnectivityState),
+}
+
 fn sort_networks(networks: &mut [WifiNetworkInfo]) {
     networks.sort_by(|a, b| {
         b.connected
@@ -139,7 +136,6 @@ enum WorkerResult {
     },
 }
 
-/// Current lifecycle of a background network operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetworkPhase {
     Idle,
@@ -147,7 +143,6 @@ pub enum NetworkPhase {
     Connecting(String),
 }
 
-/// Network state owned by `InstallerApp`.
 pub struct InstallerNetwork {
     backend: Arc<dyn NetworkBackend>,
     results: Arc<Mutex<Vec<WorkerResult>>>,
@@ -196,7 +191,6 @@ impl InstallerNetwork {
             .find(|network| network.ssid == selected)
     }
 
-    /// Start the automatic first scan once the live installer can be woken.
     pub fn ensure_initial_scan(&mut self, wake: Option<Wake>) -> bool {
         if self.initial_scan_started {
             return false;
@@ -226,8 +220,7 @@ impl InstallerNetwork {
         true
     }
 
-    /// Validate and start a Wi-Fi connection. The password is moved into a
-    /// zeroizing buffer before the worker is launched and never appears in
+    /// The password is moved into a zeroizing buffer before the worker starts and never appears in
     /// argv or an external-event payload.
     pub fn start_connect(
         &mut self,
@@ -276,8 +269,7 @@ impl InstallerNetwork {
         Ok(())
     }
 
-    /// Fold all completed worker results into UI state. Returns true when a
-    /// result changed something visible.
+    /// Returns true when a result changed something visible.
     pub fn drain_results(&mut self) -> bool {
         let results = self
             .results
@@ -320,7 +312,8 @@ impl InstallerNetwork {
         true
     }
 
-    pub fn connection_summary(&self) -> String {
+    /// The connection this step has, for a surface to name.
+    pub fn connection(&self) -> Connection {
         if self.snapshot.connectivity == ConnectivityState::Full {
             if let Some(network) = self
                 .snapshot
@@ -328,14 +321,11 @@ impl InstallerNetwork {
                 .iter()
                 .find(|network| network.connected)
             {
-                return format!("Internet via {} (saved for first boot)", network.ssid);
+                return Connection::Via(network.ssid.clone());
             }
-            return "Internet available".to_string();
+            return Connection::Available;
         }
-        format!(
-            "{} — offline installation remains available",
-            self.snapshot.connectivity.label()
-        )
+        Connection::Partial(self.snapshot.connectivity)
     }
 }
 

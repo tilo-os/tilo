@@ -4,20 +4,10 @@
 //! the secret could not be tried. 3: the person asked for another way in.
 //! Anything but 0 leaves the existing prompts to open the volume.
 //!
-//! `tilo-boot-signin other-ways --device DEV --pid PID`
-//!
 //! Carries the questions of the systemd-cryptsetup `PID` to the boot screen
 //! in place of Plymouth's password agent (see [`tilo_boot_signin::relay`]).
 //! Exit 0: that program is done. 3: the person asked to go back to signing
 //! in. 2: Plymouth cannot ask; its own agent should.
-//!
-//! `tilo-boot-signin unlock-prompt --device DEV`
-//!
-//! Tells the boot screen what the volume's own prompt asks for: the
-//! password, a disk passphrase, the recovery key (see
-//! [`tilo_boot_signin::unlock_prompt`]). Exit 0: told. 2: the header could
-//! not be read or Plymouth is not running; the screen keeps its general
-//! wording.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -121,7 +111,6 @@ fn main() -> ExitCode {
     ExitCode::from(exit.code())
 }
 
-/// The greeter on the display, or the console when it cannot start there.
 fn start_greeter(device: &Path, fallback: ConsoleScreen) -> Result<GreeterScreen, ConsoleScreen> {
     let greeter = program("TILO_SIGNIN_GREETER", "/usr/libexec/tilo/tilo-greeter");
     if !greeter.exists() {

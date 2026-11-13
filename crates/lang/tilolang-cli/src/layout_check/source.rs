@@ -150,6 +150,21 @@ fn callee_view(
     }
 }
 
+/// The identifiers the call `expr` names as arguments, into `out`: a view an argument names is
+/// one the app draws (`open(x, view: task_page)`), whether the call stands in the view's body or
+/// in what one of its events does.
+fn named_arguments(expr: &ast::Expr, out: &mut Vec<String>) {
+    let args: &[ast::Arg] = match &expr.kind {
+        ast::ExprKind::Call { args, .. } => args,
+        ast::ExprKind::OptChain { args, .. } => args.as_deref().unwrap_or_default(),
+        _ => &[],
+    };
+    out.extend(args.iter().filter_map(|arg| match &arg.value.kind {
+        ast::ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    }));
+}
+
 fn collect(
     stmts: &[UiStmt],
     placed: &Placed,
@@ -169,15 +184,7 @@ fn collect(
                 // A view an argument names (`open(x, view: task_page)`) is one the app draws,
                 // as surely as one the view calls where it stands: the window shows it over
                 // what it opened.
-                let args: &[ast::Arg] = match &call.call.kind {
-                    ast::ExprKind::Call { args, .. } => args,
-                    ast::ExprKind::OptChain { args, .. } => args.as_deref().unwrap_or_default(),
-                    _ => &[],
-                };
-                argument_views.extend(args.iter().filter_map(|arg| match &arg.value.kind {
-                    ast::ExprKind::Ident(name) => Some(name.clone()),
-                    _ => None,
-                }));
+                named_arguments(&call.call, argument_views);
                 if let Some(block) = &call.block {
                     collect(block, placed, calls, argument_views);
                 }
@@ -213,7 +220,11 @@ fn collect(
                     },
                 );
             }
-            UiKind::Let { .. } | UiKind::State(_) | UiKind::On { .. } => {}
+            // What an event does names views as surely as what stands in the body does: a row's
+            // menu row opens its page (`on choose: open(t, view: task_page)`), and that page is
+            // one the window shows.
+            UiKind::On { action, .. } => named_arguments(action, argument_views),
+            UiKind::Let { .. } | UiKind::State(_) => {}
         }
     }
 }

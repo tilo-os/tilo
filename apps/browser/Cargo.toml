@@ -91,7 +91,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 hex.workspace = true
 # The import tests write the Chromium and Firefox databases they read.
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

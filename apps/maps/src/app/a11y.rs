@@ -1,12 +1,10 @@
-//! What assistive technology addresses on the map: the controls and rows the last paint recorded, under stable keys.
+//! What assistive technology addresses on the map: the controls and rows the last paint recorded,
+//! under stable keys.
 
 use super::{AccessibilityTarget, Hit, MapMenu, MapsApp, Rect, TransitTimeMode};
 use crate::failure;
 
 impl MapsApp {
-    /// Immediate-mode controls exported as one semantic list. Keeping this
-    /// derived from the same hit targets used by pointer routing prevents the
-    /// accessibility tree from advertising controls that are not on screen.
     #[allow(
         clippy::too_many_lines,
         reason = "the exhaustive mapping keeps each painted Maps command next to its stable semantic id, role, and derived state"

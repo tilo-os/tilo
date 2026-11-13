@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 const SETTINGS_PACKAGE: &str = "so.tilo.settings";
 
 fn key() -> StorageKey {
-    StorageKey::package(SETTINGS_PACKAGE)
+    StorageKey::app(SETTINGS_PACKAGE)
 }
 
 thread_local! {

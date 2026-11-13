@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// The window bar's sidebar button flips the places on every click, in a
-/// window wide enough to dock them and in one so narrow they are a screen
-/// of their own.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     let dir = tempfile::tempdir().unwrap();

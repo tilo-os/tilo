@@ -69,8 +69,6 @@ fn a_passage_found_opens_its_book_at_the_passage() {
         Some(TIDEGLASS)
     );
     assert_eq!(books.chapter, chapter, "at the passage's chapter");
-    // The paragraph is on the page shown, wherever on it; before the
-    // chapter is laid out, the page waits to be turned to it.
     match books
         .layout
         .as_ref()
@@ -136,6 +134,45 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
     );
 }
 
+/// The Book chip's × is the chip's published control: invoking it, as an
+/// agent, a script or a screen reader reaches it, clears the filter and
+/// widens the search to the library.
+#[test]
+fn the_book_chips_clear_control_widens_the_search() {
+    let mut app = TestApp::<EbookShell>::drive("search-in-book").unwrap();
+    let resources = app.harness().resources();
+    let address =
+        ui::tilo_actions::door::published(&resources, "tilo.control:view-chip:book", "remove")
+            .expect("the chip publishes its remove");
+    let inside = found(&mut app, PASSAGE);
+    assert!(!inside.is_empty(), "the book's words are found");
+
+    app.harness()
+        .invoke_action(
+            &address,
+            &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
+            true,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{address:?}: {error}"));
+    app.settle();
+    books(&mut app).settle_query();
+    assert!(
+        books(&mut app)
+            .query
+            .engine
+            .results()
+            .query
+            .chips
+            .is_empty(),
+        "the chip is cleared"
+    );
+    assert!(
+        found(&mut app, BOOK).len() + found(&mut app, PASSAGE).len() > inside.len(),
+        "the library answers"
+    );
+}
+
 #[test]
 fn closing_the_search_returns_to_the_page_it_began_on() {
     let mut app = TestApp::<EbookShell>::capture(Some("search-in-book")).unwrap();
@@ -163,7 +200,10 @@ fn the_store_answers_below_the_library_and_its_books_can_be_got() {
     let mut app = TestApp::<EbookShell>::capture(Some("search")).unwrap();
     let results = books(&mut app).query.engine.results().clone();
     let store = results.remote.first().expect("the store has its section");
-    assert_eq!(store.label, crate::store::STORE_LABEL);
+    assert_eq!(
+        store.label,
+        crate::resource::CATALOG.t(crate::store::STORE_LABEL)
+    );
     assert!(store.is_answered());
     let got: Vec<&str> = store
         .rows()
@@ -174,7 +214,6 @@ fn the_store_answers_below_the_library_and_its_books_can_be_got() {
         !results.local.is_empty(),
         "the library's results come first, in their own groups"
     );
-    // Its row offers to get it, under the store's name.
     let label = books(&mut app)
         .query
         .label_of("gutenberg:12")
@@ -201,32 +240,24 @@ fn place_of(book: &crate::model::Book, words: &str) -> (usize, usize) {
 
 #[test]
 fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_there() {
-    use crate::resource::{StoredContent, index_book, shelve};
+    use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
-    // Nothing reaches outside the process, and the work done off the UI
-    // thread runs when a frame pumps it.
     books(&mut app).query = super::query_view::BookQuery::hermetic();
     let content = app.content();
     let bytes = crate::test_epub::long_classic(24, 6);
     let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
     let (chapter, block) = place_of(&book, "Book 12, paragraph 4:");
-    // Another device indexed the book; its segment reached this one, its
-    // text has not.
     let segment = crate::library_index::Segment::build(&book).encode();
     let index = content.put(&segment).unwrap();
-    let text = tilo_content::hash_bytes(&bytes);
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content = crate::model::LibraryEntry::stored(&text, bytes.len() as u64).unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
     app.invoke(index_book(
         &book.id,
-        StoredContent {
-            hash: index,
-            size: segment.len() as u64,
-        },
+        ui::tilo_resource::Bytes::kept_as(&segment, &index),
     ))
     .unwrap();
     app.settle();
@@ -256,12 +287,9 @@ fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_t
         .cloned()
         .unwrap_or_else(|| panic!("the passage is found: {:?}", found(&mut app, PASSAGE)));
     assert_eq!(item.kind, PASSAGE);
-    // Its row names the chapter and the book; the words around the match
-    // are not kept in the index.
     assert_eq!(item.value("title"), Some("Book 12"));
     assert_eq!(item.value("place"), Some(book.title.as_str()));
 
-    // Opening it fetches the text, which arrives, and lands on the passage.
     content.put(&bytes).unwrap();
     books(&mut app).open_hit(&anchor);
     for _ in 0..3 {
@@ -331,11 +359,10 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
     let content = app.content();
     let bytes = crate::test_epub::long_classic(24, 6);
     let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
-    let text = tilo_content::hash_bytes(&bytes);
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content = crate::model::LibraryEntry::stored(&text, bytes.len() as u64).unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
     app.settle();
     let index_of = |app: &TestApp<EbookShell>| {
@@ -343,11 +370,10 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
             .entries
             .values()
             .find(|row| row.id == book.id)
-            .and_then(crate::model::LibraryEntry::index_hash)
+            .and_then(crate::model::LibraryEntry::index_reference)
     };
     assert_eq!(index_of(&app), None, "nobody has indexed it yet");
 
-    // Its text arrives as it is opened here: from the search's card.
     content.put(&bytes).unwrap();
     books(&mut app).query_opened();
     books(&mut app).open_hit(&crate::resource::book_place_resource(&book.id));
@@ -382,14 +408,10 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content =
-        crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(&bytes), bytes.len() as u64)
-            .unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
     app.settle();
 
-    // A guest who may only view opens the shelf; the text reaches their
-    // device as they open the book.
     app.set_role(ui::permissions::Role::Viewer);
     content.put(&bytes).unwrap();
     books(&mut app).query_opened();
@@ -419,18 +441,17 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
         .find(|row| row.id == book.id)
         .cloned()
         .unwrap();
-    assert_eq!(row.index_hash(), None, "the row names no index");
+    assert_eq!(row.index_reference(), None, "the row names no index");
 }
 
 #[test]
 fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     use ui::collaboration::record_content::{ContentLane, RecordContent};
 
-    use crate::resource::{StoredContent, index_book, shelve};
+    use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     books(&mut app).query = super::query_view::BookQuery::hermetic();
-    // This device's store reaches the record's other devices over its route.
     let lane = ContentLane::of("so.tilo.books-query-test", "arriving");
     books(&mut app).content = Some(RecordContent::store(
         tilo_content::ContentStore::memory(),
@@ -443,18 +464,9 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     let mut entry =
         crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
     entry.shared = false;
-    entry.content =
-        crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(&bytes), bytes.len() as u64)
-            .unwrap();
+    entry.content = named(&bytes);
     app.invoke(shelve(&entry)).unwrap();
-    app.invoke(index_book(
-        &book.id,
-        StoredContent {
-            hash: tilo_content::hash_bytes(&segment),
-            size: segment.len() as u64,
-        },
-    ))
-    .unwrap();
+    app.invoke(index_book(&book.id, named(&segment))).unwrap();
     app.settle();
 
     books(&mut app).query_opened();
@@ -540,4 +552,9 @@ fn a_store_book_that_did_not_arrive_carries_try_again() {
             "Try again fetched the book again ({width}, semantic: {semantic})"
         );
     }
+}
+
+/// `data` named as a content store keeps it, without its bytes here.
+fn named(data: &[u8]) -> ui::tilo_resource::Bytes {
+    crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(data), data.len() as u64).unwrap()
 }

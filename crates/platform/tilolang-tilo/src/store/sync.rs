@@ -6,15 +6,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tilo_automerge::ApplyIncoming as _;
-use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use super::{
     Chunks, Doc, Ends, Inner, ItemTouches, TiloStore, changed_by, collections_by_doc, everything,
-    mirror_of, name_version_changes, note_derived, note_versions, record_splices,
+    mirror_of, name_version_changes, note_derived, note_versions, record_splices, told_differently,
     write_as_a_known_actor,
 };
-use crate::action::DynEdit;
+use crate::action::{DynAction, DynEdit};
 use crate::chunk::{self, ChunkNo};
 use crate::index::derive::Reached;
 use crate::index::overlay::Overlay;
@@ -36,6 +36,7 @@ impl TiloStore {
     /// applies, and its write leaves the store with it. The chunks above the record go first:
     /// what they hold is already theirs when the record's own change derives over it.
     pub fn sync(&self, record: &Chunks) -> bool {
+        self.stop_waiting(record);
         let mut moved = false;
         for (chunk, doc) in record.docs() {
             if chunk != chunk::FIRST {
@@ -52,6 +53,7 @@ impl TiloStore {
     /// sent is left out, and is read from the chunk loader when a read or a write reaches it
     /// ([`TiloStore::set_chunk_loader`]). Returns whether any chunk had moved.
     pub fn sync_held(&self, record: &Chunks) -> bool {
+        self.stop_waiting(record);
         let held: Vec<ChunkNo> = self.held().chunks.numbers().collect();
         let mut moved = false;
         for chunk in held.into_iter().filter(|chunk| *chunk != chunk::FIRST) {
@@ -75,26 +77,40 @@ impl TiloStore {
         self.sync_document(chunk::FIRST, record)
     }
 
+    /// A chunk the store asked its source for and the source could not give is waited on
+    /// ([`Inner::waited`]): one the record now holds arrived through the sync, and whatever reads
+    /// the record reads it from here on. Nothing else about the chunk is done here: what reads it
+    /// reads it as any chunk the store was not sent ([`TiloStore::load_short`]).
+    fn stop_waiting(&self, record: &Chunks) {
+        if self
+            .held()
+            .waited
+            .iter()
+            .all(|chunk| record.mirror(*chunk).is_none())
+        {
+            return;
+        }
+        self.changing()
+            .waited
+            .retain(|chunk| record.mirror(*chunk).is_none());
+    }
+
     fn sync_document(&self, chunk: ChunkNo, doc: &Doc) -> bool {
         let mut inner = self.mutate();
         if inner.chunks.mirror(chunk).is_none() {
-            inner.attach_document(chunk, doc);
+            let moved = inner.attach_document(chunk, doc);
             drop(inner);
-            self.changing().notify_all();
-            return true;
+            if moved {
+                self.changing().notify_all();
+            }
+            return moved;
         }
         let heads = doc.committed_document().get_heads();
         if inner.chunks.seen(chunk) == heads.as_slice() {
             return false;
         }
-        let before = inner.index.clone();
         let from = inner.chunks.heads();
-        let old_snapshots: BTreeMap<AppId, Arc<idx::Snapshot>> = inner
-            .apps
-            .iter()
-            .filter(|(_, held)| held.ready())
-            .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
-            .collect();
+        let old_snapshots = inner.answering();
         // What the splices below are measured from is the listing as those who read the mirror
         // had it before this change: the store's own writes are the mirror's open transaction,
         // which every read holds, so an item one of them placed was already read at its place
@@ -106,30 +122,21 @@ impl TiloStore {
         // they do not hold stays — a change that came from elsewhere leaves the edits a person
         // has here — and is written onto the record's new copy again below, as the rollback took
         // the whole open transaction out.
-        let committed = committed_edits(doc, inner.chunks.seen(chunk));
-        let mut items = inner.drop_committed_local(chunk, &committed);
+        // The record's new changes, read once: what the store's writes are the record's by, and
+        // what the mirror takes in.
+        let arrived = doc
+            .committed_document()
+            .get_changes(inner.chunks.seen(chunk));
+        let (committed, every_one_an_action) = committed_edits(&arrived, &inner.sent);
+        let taken = inner.drop_committed_local(chunk, &committed);
+        inner.forget_sent();
+        let mut items = taken.items;
         inner.rollback(chunk);
-        let (changed, ends, placed) = inner.apply_new_changes(chunk, doc, &before);
+        let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
-            inner.versions = None;
-            inner.nested.clear();
-            inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
-            inner.chunks.insert(chunk, mirror_of(doc));
-            if chunk == chunk::FIRST {
-                inner.chunks.reread_placement();
-            }
-            inner.rescan();
-            // What the record did not take is not the record's: it is written onto the fresh
-            // copy, and derived again over the indexes the record's changes left, so reads keep
-            // the values and items it holds where they are.
-            inner.reapply_kept(chunk);
-            let reached = everything(&before, &inner.index);
-            inner.derive_all(&reached, None);
-            inner.rebuild_overlay();
-            inner.changed();
-            inner.notify_all();
+            inner.copy_record(chunk, doc);
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
@@ -145,17 +152,19 @@ impl TiloStore {
         for doc in &changed.nested {
             inner.nested.forget(doc);
         }
+        // What the index held before the change, when every resource it held and holds now is
+        // derived again: a change that writes fields of resources leaves it uncopied.
+        let before = (changed.unplaced || changed.layout).then(|| inner.index.clone());
         if changed.structure || changed.unplaced {
             inner.rescan();
         }
-        let reached = if changed.unplaced || changed.layout {
-            everything(&before, &inner.index)
-        } else {
-            Reached {
+        let reached = before.map_or_else(
+            || Reached {
                 docs: changed.docs.clone(),
                 placed: changed.placed.clone(),
-            }
-        };
+            },
+            |before| everything(&before, &inner.index),
+        );
         let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends, &placed)));
         // A write routed to a chunk above the record whose document this sync does not carry —
         // a record kept as one document that the store also routes by its manifest, or a caller
@@ -170,46 +179,107 @@ impl TiloStore {
         for (key, ids) in moved {
             items.entry(key).or_default().extend(ids);
         }
-        let makers = changed.by;
+        // The record's changes are the store's own writes and nothing else, and those who read
+        // the mirror were told what each changed when its action committed: the mirror and the
+        // overlay showed it as the record now has it. What they are told now is only what reads
+        // differently: the versions, which name the change that made them.
+        let told = taken.told
+            && every_one_an_action
+            && wholes.is_empty()
+            && !changed.unplaced
+            && !changed.layout;
         let docs = named(changed.docs, items.keys(), wholes, notified, &ends);
         if changed.unplaced || changed.layout {
             inner.changed();
         } else {
             inner.changed_within(&docs, &items);
         }
-        let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
-        let mut collections = collections_by_doc(items.keys());
+        let (docs, listings, collections) = if told {
+            (
+                told_differently(&ends, &taken.versions),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            )
+        } else {
+            (
+                docs,
+                inner.splices_since(&old_snapshots, &old_overlay, &items),
+                collections_by_doc(items.keys()),
+            )
+        };
         if changed.unplaced {
             inner.notify_all();
         } else {
-            for (doc, fields) in docs {
-                let listings = listings.remove(&doc).unwrap_or_default();
-                let collections = collections.remove(&doc).unwrap_or_default();
-                inner.notify(&ChangeSummary {
-                    doc: doc.clone(),
-                    fields,
-                    collections,
-                    listings,
-                    // Who the record's change names as its maker: a window tells its own
-                    // person's change by it, and keeps the rows it changed where they stand.
-                    by: makers.get(&doc).cloned().flatten(),
-                });
-            }
+            inner.tell_synced(docs, (listings, collections), &changed.by);
         }
         true
     }
 }
 
 impl Inner {
-    /// Apply the changes of `source` since the mirror's heads to the mirror of `chunk`, when it
-    /// holds no change of its own: what they changed, the versions they made of each resource
-    /// they changed ([`idx::reflect::ends_of`]), and where they placed the items they did.
-    /// `None` when the mirror must be copied anew.
+    /// Take a copy of the record `doc` as the mirror of `chunk`, and tell every reader.
+    fn copy_record(&mut self, chunk: ChunkNo, doc: &Doc) {
+        let before = self.index.clone();
+        self.versions.remove(&chunk);
+        self.nested.clear();
+        self.stats.full_syncs = self.stats.full_syncs.saturating_add(1);
+        self.chunks.insert(chunk, mirror_of(doc));
+        if chunk == chunk::FIRST {
+            self.chunks.reread_placement();
+        }
+        self.rescan();
+        // What the record did not take is not the record's: it is written onto the fresh copy,
+        // and derived again over the indexes the record's changes left, so reads keep the values
+        // and items it holds where they are.
+        self.reapply_kept(chunk);
+        let reached = everything(&before, &self.index);
+        self.derive_all(&reached, None);
+        self.rebuild_overlay();
+        self.changed();
+        self.notify_all();
+    }
+
+    /// The snapshot each index that answers reads now, by its app.
+    fn answering(&self) -> BTreeMap<AppId, Arc<idx::Snapshot>> {
+        self.apps
+            .iter()
+            .filter(|(_, held)| held.answers())
+            .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
+            .collect()
+    }
+
+    /// Tell those who read the mirror what a sync changed: per document, the fields `docs` names,
+    /// with how its collections' listings moved and which collections' items did, and who the
+    /// record's change names as its maker (`makers`): a window tells its own person's change by
+    /// it, and keeps the rows it changed where they stand.
+    fn tell_synced(
+        &mut self,
+        docs: BTreeMap<DocId, Vec<FieldKey>>,
+        (mut listings, mut collections): (
+            BTreeMap<DocId, Vec<ListingChange>>,
+            BTreeMap<DocId, Vec<FieldKey>>,
+        ),
+        makers: &crate::reads::By,
+    ) {
+        for (doc, fields) in docs {
+            self.notify(&ChangeSummary {
+                listings: listings.remove(&doc).unwrap_or_default(),
+                collections: collections.remove(&doc).unwrap_or_default(),
+                by: makers.get(&doc).cloned().flatten(),
+                doc,
+                fields,
+            });
+        }
+    }
+
+    /// Apply `changes`, the record's changes since the mirror's heads, to the mirror of `chunk`,
+    /// when it holds no change of its own: what they changed, the versions they made of each
+    /// resource they changed ([`idx::reflect::ends_of`]), and where they placed the items they
+    /// did. `None` when the mirror must be copied anew.
     fn apply_new_changes(
         &mut self,
         chunk: ChunkNo,
-        source: &Doc,
-        before: &BTreeMap<DocId, (AppId, TypeId)>,
+        changes: &[automerge::Change],
     ) -> (Option<Changed>, Ends, idx::reflect::Placed) {
         let seen = self.chunks.seen(chunk);
         let caught_up = self
@@ -219,7 +289,6 @@ impl Inner {
         if !caught_up {
             return (None, Ends::new(), idx::reflect::Placed::new());
         }
-        let changes = source.committed_document().get_changes(seen);
         let applied = self.chunks.mirror_mut(chunk).map(|mirror| {
             let applied = mirror.apply_incoming(changes.iter().cloned());
             write_as_a_known_actor(mirror);
@@ -228,19 +297,20 @@ impl Inner {
         // Once the mirror holds them: a change that is no action of a package (an undo) is
         // read for what it wrote, and the versions are the log's, which names the fields each
         // change wrote.
-        if let (Some(versions), Some(mirror)) = (self.versions.as_mut(), self.chunks.mirror(chunk))
+        if let (Some(versions), Some(mirror)) =
+            (self.versions.get_mut(&chunk), self.chunks.mirror(chunk))
         {
-            note_versions(versions, &changes, mirror, before);
+            note_versions(versions, changes, mirror, &self.index);
         }
         let what = match (applied, self.chunks.mirror(chunk)) {
-            (Some(Ok(())), Some(mirror)) => Some(changed_by(&changes, mirror, before)),
+            (Some(Ok(())), Some(mirror)) => Some(changed_by(changes, mirror, &self.index)),
             _ => None,
         };
         let ends = match self.chunks.mirror(chunk) {
-            Some(mirror) => idx::reflect::ends_of(&changes, mirror, before),
+            Some(mirror) => idx::reflect::ends_of(changes, mirror, &self.index),
             None => Ends::new(),
         };
-        (what, ends, idx::reflect::placed_by(&changes))
+        (what, ends, idx::reflect::placed_by(changes))
     }
     /// The steps each listed collection took from the indexes `before` (with the overlay
     /// `overlay` over them) to the indexes now, for the items `items`; per document.
@@ -271,17 +341,56 @@ impl Inner {
     }
 }
 
-/// The edits the changes of `source` since `seen` carry, in order: what the store's own writes
-/// are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang action
-/// records the action it made, and so the edits it wrote; a change that records none — the
-/// record's own genesis, a merge — took none of the store's writes.
-fn committed_edits(source: &Doc, seen: &[automerge::ChangeHash]) -> Vec<DynEdit> {
-    source
-        .committed_document()
-        .get_changes(seen)
-        .iter()
-        .flat_map(idx::reflect::edits_of)
-        .collect()
+/// The edits `changes` carry, in order, each with the change carrying it: what the store's own
+/// writes are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang
+/// action records the action it made, and so the edits it wrote; a change that records none —
+/// the record's own genesis, a merge — took none of the store's writes. A change whose action
+/// keeps its large parts as content carries references where the store wrote what they stand
+/// for, so it reads here as the action the store handed over ([`sent_as`]). Also whether every
+/// one of `changes` records some.
+pub(super) fn committed_edits(
+    changes: &[automerge::Change],
+    sent: &[DynAction],
+) -> (Vec<(automerge::ChangeHash, DynEdit)>, bool) {
+    let mut every = true;
+    let mut out = Vec::new();
+    for change in changes {
+        let hash = change.hash();
+        // The action the store handed over first: a recorded action that keeps its large parts
+        // as content reads differently from what the store wrote whether or not the rest of its
+        // payload decodes — a rich text's operations are JSON, so its action does decode, with a
+        // reference standing where the body was — and only the action as it ran names the write.
+        let edits = match sent_as(change, sent) {
+            Some(action) => action.edits.clone(),
+            None => idx::reflect::edits_of(change),
+        };
+        every &= !edits.is_empty();
+        out.extend(edits.into_iter().map(|edit| (hash, edit)));
+    }
+    (out, every)
+}
+
+/// The action of `sent` the change `change` records with its large parts kept as content: the
+/// recorded action does not read as the action that ran without that content, which may never
+/// reach this device, but it reads as the action this store handed over with those parts taken
+/// out. Without this the store would not know its own write in the record, and would write it
+/// again over every change that arrives after it: a pasted body, over a peer's edit of it.
+fn sent_as<'a>(change: &automerge::Change, sent: &'a [DynAction]) -> Option<&'a DynAction> {
+    if sent.is_empty() {
+        return None;
+    }
+    let context = change
+        .message()
+        .and_then(tilo_actions::ActionContext::from_change_message)?;
+    let recorded = context.action?;
+    if recorded.type_id != crate::action::ACTION_TYPE || recorded.content_parts().is_empty() {
+        return None;
+    }
+    sent.iter().find(|action| {
+        action
+            .encode()
+            .is_ok_and(|ran| recorded.recorded_parts_of(&ran).is_some())
+    })
 }
 
 /// The documents a sync tells those who read the mirror of, per document: the fields the

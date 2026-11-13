@@ -1,8 +1,8 @@
-//! tilolang, coloured by its own lexer (`tilolang::lexer`): what the compiler reads as a
+//! tilolang, coloured by its own lexer (`tilolang_lex::lexer`): what the compiler reads as a
 //! keyword, a string, a number, a reference literal (`@board.Card:c1`) or a comment is what the
 //! editor colours as one, so the colours never disagree with the language.
 
-use tilolang::lexer::{self, CONTEXTUAL, Tok};
+use tilolang_lex::lexer::{self, CONTEXTUAL, Tok};
 
 use super::{Highlighter, HlState, LineSpans, Span, TokenKind};
 

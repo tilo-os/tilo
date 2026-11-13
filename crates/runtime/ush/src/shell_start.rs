@@ -1,11 +1,6 @@
-//! How the Host's interactive shell starts (docs/app-model/ush.md). An
-//! environment session runs ush's own shell on the Tilo side
-//! ([`crate::tilo_side`]) instead.
-//!
-//! The shell is the session's interactive login shell. `bash` starts with
-//! one rc file ([`bash_rc`]): what `bash --login` reads, then the marks of
-//! [`crate::runs`] when Terminal asked for them. Any other shell starts with
-//! `-l`.
+//! How the Host's interactive shell starts: `bash` reads one rc file, [`bash_rc`], with
+//! what `bash --login` reads and then the marks of [`crate::runs`] when Terminal asked for
+//! them; any other shell starts with `-l`.
 
 use std::ffi::OsString;
 use std::path::Path;

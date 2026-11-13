@@ -1,13 +1,5 @@
-//! Compatibility for an OS prepared on another computer.
-//!
-//! The preparation computer can read its own hardware. It cannot inspect the
-//! destination's disks, firmware or protection, and the repository publishes
-//! no per-model qualification catalogue that could stand in for that check.
-//! This module therefore records only what the person can supply — a specific
-//! model, or a hardware report produced on the destination — and states what
-//! still has to be checked there. A model name is never component evidence,
-//! and neither a model nor a report authorizes a boot, partition or
-//! protection change.
+//! Compatibility for an OS prepared on another computer: its architecture, its
+//! report, and what the person said it is.
 
 use std::path::Path;
 use std::sync::mpsc::TryRecvError;
@@ -37,16 +29,12 @@ const FIELD_IDS: [(&str, &str); 5] = [
     ("sku", "installer.target.sku"),
 ];
 
-/// What the person supplied about the destination.
 pub(super) struct Target {
     manufacturer: ui::LocalState<String>,
     model: ui::LocalState<String>,
     variant: ui::LocalState<String>,
     board: ui::LocalState<String>,
     sku: ui::LocalState<String>,
-    /// The architecture the medium must start on. An imported report supplies
-    /// it; a named model starts from this computer's architecture and may
-    /// select the other one when the verified catalog offers it.
     architecture: String,
     report: Option<SupportReport>,
     picker: Option<ContentsChannel>,
@@ -72,8 +60,6 @@ impl Default for Target {
 }
 
 impl Target {
-    /// A specific model or an accepted report. An empty, architecture-only or
-    /// otherwise incomplete description is not ready.
     pub(super) fn ready(&self) -> bool {
         self.report
             .as_ref()
@@ -97,7 +83,6 @@ impl Target {
         .ok()
     }
 
-    /// The architecture the prepared medium must start on.
     pub(super) fn architecture(&self) -> &str {
         self.report
             .as_ref()
@@ -105,11 +90,6 @@ impl Target {
             .unwrap_or(&self.architecture)
     }
 
-    /// Select the other architecture for a named model. An imported report
-    /// keeps its own observation architecture; replacing the evidence is an
-    /// explicit choice, not an edit behind it. An architecture Tilo can never
-    /// run on is refused with the boundary that rules it out, before any
-    /// catalog lookup says merely that no image exists.
     pub(super) fn set_architecture(&mut self, architecture: String) -> Result<(), &'static str> {
         if let Some(boundary) = crate::release::unqualified_architecture(&architecture) {
             self.error = Some(t(boundary));
@@ -126,9 +106,6 @@ impl Target {
         Ok(())
     }
 
-    /// Whether the verified catalog offers a target payload for the selected
-    /// architecture. An empty selection is not replaced by this computer's
-    /// own architecture.
     pub(super) fn payload_available(&self) -> Result<bool, &'static str> {
         let architecture = self.architecture();
         let media = crate::release::bundled_releases_for_arch(architecture)
@@ -138,8 +115,6 @@ impl Target {
         Ok(!media.is_empty() || !internal.is_empty())
     }
 
-    /// The report whose facts are shown: the imported one, or the specific
-    /// model the person named. A declared report has no components.
     pub(super) fn effective_report(&self) -> Option<SupportReport> {
         self.report.clone().or_else(|| self.declared())
     }
@@ -150,7 +125,6 @@ impl Target {
             .is_some_and(SupportReport::blocks_install)
     }
 
-    /// Record one identity field from the page or a semantic caller.
     pub(super) fn set_field(&mut self, field: &str, value: String) -> Result<(), &'static str> {
         match field {
             "manufacturer" => self.manufacturer.set(value),
@@ -160,13 +134,10 @@ impl Target {
             "sku" => self.sku.set(value),
             _ => return Err("installer-preview-invalid-choice"),
         }
-        // Editing the identity starts a new declared description; an imported
-        // report remains the evidence until the person explicitly replaces it.
         self.error = None;
         Ok(())
     }
 
-    /// Start the system file chooser for a report produced elsewhere.
     pub(super) fn choose_report(&mut self) -> Result<(), &'static str> {
         if self.picker.is_some() {
             return Err("installer-preview-target-busy");
@@ -187,7 +158,6 @@ impl Target {
         Ok(())
     }
 
-    /// Read a report the person named by path through the semantic door.
     pub(super) fn import_file(&mut self, path: &Path) -> Result<(), &'static str> {
         if !path.is_file() {
             self.error = Some(t("installer-preview-target-report-unreadable"));
@@ -208,9 +178,6 @@ impl Target {
         }
     }
 
-    /// Validate an imported report. It must be produced by this probe on the
-    /// other computer, name a specific model and say what architecture it ran
-    /// on; the last is necessary, but not sufficient, for a usable medium.
     pub(super) fn import_bytes(
         &mut self,
         _name: Option<String>,
@@ -237,8 +204,6 @@ impl Target {
             self.error = Some(t("installer-preview-target-report-missing-architecture"));
             return Err("installer-preview-target-report-missing-architecture");
         };
-        // A report from a computer Tilo can never run on says why, rather
-        // than only that no build exists for it.
         if let Some(boundary) = crate::release::unqualified_architecture(architecture) {
             self.error = Some(t(boundary));
             return Err("installer-preview-target-report-unsupported-architecture");
@@ -253,10 +218,6 @@ impl Target {
         self.error = None;
     }
 
-    /// The other computer's description, kept in the same private restart
-    /// record as the rest of the choices. A report too large for that bounded
-    /// record is marked omitted, so a resume asks for it again instead of
-    /// looking as if it still had the evidence.
     pub(super) fn draft_choices(&self) -> super::draft::TargetDraft {
         let mut draft = super::draft::TargetDraft {
             manufacturer: self.manufacturer.get(),
@@ -277,9 +238,6 @@ impl Target {
         draft
     }
 
-    /// Put a saved description back. It is remembered evidence, not a new
-    /// grant: it still goes through the same review, and one whose report did
-    /// not fit the record asks to be imported again.
     pub(super) fn restore(&mut self, draft: Option<&super::draft::TargetDraft>) {
         let Some(draft) = draft else {
             return;
@@ -296,8 +254,6 @@ impl Target {
             .then(|| t("installer-preview-target-report-too-large-to-resume"));
     }
 
-    /// Check the current description again. This never probes this computer,
-    /// never inspects the destination's disks and grants nothing.
     pub(super) fn recheck(&mut self) -> Result<(), &'static str> {
         let Some(report) = self.report.clone() else {
             if self.declared().is_some() {
@@ -314,7 +270,6 @@ impl Target {
         self.accept(report)
     }
 
-    /// Drain the chooser without blocking the UI thread.
     pub(super) fn poll(&mut self) -> bool {
         let Some(picker) = &self.picker else {
             return false;
@@ -344,7 +299,6 @@ impl Target {
         self.picker.is_some()
     }
 
-    /// A refusal reveals the first field that needs a value.
     pub(super) fn mark_submitted(&mut self) {
         self.submitted = true;
     }
@@ -353,9 +307,6 @@ impl Target {
         match field {
             "manufacturer" => self.manufacturer.get().trim().is_empty(),
             "model" => self.model.get().trim().is_empty(),
-            // A board or SKU distinguishes an otherwise identical model just
-            // as a variant name does, so none of the three is individually
-            // mandatory.
             "variant" => {
                 self.variant.get().trim().is_empty()
                     && self.board.get().trim().is_empty()
@@ -433,8 +384,6 @@ impl Target {
         t("installer-preview-target-review-declared")
     }
 
-    /// The semantic projection. It always says the destination has to be
-    /// checked again, because this computer holds no authority over it.
     pub(super) fn projection(&self) -> serde_json::Value {
         let report = self.effective_report();
         serde_json::json!({
@@ -447,16 +396,11 @@ impl Target {
             "report": report.as_ref().map(crate::setup::actions::HardwareProjection::from_report),
             "architecture": self.architecture(),
             "blocks_preparation": self.blocking(),
-            // A model name and a report are preparation-time evidence only.
-            // Booting, partitioning and data protection are always checked on
-            // the actual destination before anything changes.
             "destination_check_required": true,
             "error": self.error.as_deref(),
         })
     }
 
-    /// The destination-compatibility page. Important limitations are expanded
-    /// by the shared report sections; working components stay compact.
     pub(super) fn page(
         &self,
         commands: &Commands,

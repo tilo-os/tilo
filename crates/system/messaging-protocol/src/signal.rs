@@ -49,7 +49,6 @@ pub struct Acknowledgment {
     pub timestamp: u64,
 }
 
-/// Decode one matching send response without interpreting it as delivery.
 pub fn acknowledgment(frame: &[u8], operation: &str) -> Result<Acknowledgment, Error> {
     let value = decode(frame)?;
     if value.get("id").and_then(Value::as_str) != Some(operation) {
@@ -67,7 +66,6 @@ pub fn acknowledgment(frame: &[u8], operation: &str) -> Result<Acknowledgment, E
     Ok(Acknowledgment { timestamp })
 }
 
-/// Account-scoped incoming identity. Do not deduplicate globally by timestamp.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IncomingId {
     pub account: String,
@@ -88,7 +86,6 @@ impl std::fmt::Debug for Incoming {
     }
 }
 
-/// Decode a direct text event bound to the broker's chosen account.
 pub fn incoming(frame: &[u8], account: &str) -> Result<Incoming, Error> {
     let value = decode(frame)?;
     if value.get("method").and_then(Value::as_str) != Some("receive") {

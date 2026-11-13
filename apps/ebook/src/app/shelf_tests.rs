@@ -70,7 +70,6 @@ fn sorting_and_hiding_finished_books_treat_books_elsewhere_as_books_here() {
     let mut app = fresh();
     let here = crate::test_epub::long_classic(3, 2);
     app.content().put(&here).unwrap();
-    // Its title is the one its text gives it.
     let local = row("The Test Odyssey", &here);
     let finished = row("Adam Bede", b"adam bede");
     let unread = row("Wuthering Heights", b"wuthering heights");
@@ -134,7 +133,6 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     app.invoke(Invoke::edit(&Ebook::paths().progress.set(progress)).unwrap())
         .unwrap();
     app.settle();
-    // The record's content arrives on its route from a device that has it.
     let lane = ContentLane::of("so.tilo.books-shelf-test", "arriving");
     books(&mut app).content = Some(RecordContent::store(
         tilo_content::ContentStore::memory(),
@@ -169,16 +167,12 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     assert!(books.arriving(&entry.id).is_none());
 }
 
-// When nothing this device can reach has a book's text, opening it says so
-// on the book's own tile, as information rather than a failure, and the
-// tile stays.
 #[test]
 fn a_book_nobody_reachable_has_says_so_on_open_and_keeps_its_tile() {
     let mut app = fresh();
     let entry = row("Lost Pages", b"nobody has these bytes");
     app.invoke(shelve(&entry)).unwrap();
     app.settle();
-    // A store that reaches nothing beyond this device.
     books(&mut app).content = Some(tilo_content::ContentStore::memory());
     books(&mut app).open_hit(&crate::resource::book_place_resource(&entry.id));
     for _ in 0..2 {
@@ -221,10 +215,6 @@ fn tile_status(app: &mut TestApp<EbookShell>, title: &str) -> Option<(String, Op
     find(&tree, title)
 }
 
-// A book whose holder is offline is not fetching: opening it shows on its
-// tile that it waits for a device that has it, still, with no loading bar;
-// the moment a holder connects its tile shows the loading bar, and it opens
-// where its reader left off once its text is here.
 #[test]
 fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
     use ui::collaboration::record_content::{ContentLane, RecordContent};
@@ -262,7 +252,6 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
 
     books(&mut app).open_hit(&crate::resource::book_place_resource(&entry.id));
     settle(&mut app);
-    // The host finds no device that has it connected.
     lane.stands(hash.clone(), tilo_content::ContentState::Waiting);
     settle(&mut app);
     {
@@ -289,7 +278,6 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
     }
     assert_eq!(shelf(&mut app), ["The Test Odyssey"], "its tile stays");
 
-    // A device that has it connects: it is on its way.
     lane.stands(hash.clone(), tilo_content::ContentState::Pending);
     settle(&mut app);
     {

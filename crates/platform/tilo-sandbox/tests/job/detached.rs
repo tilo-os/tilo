@@ -1,6 +1,6 @@
-//! Detached jobs: a job's init outlives the thread and process that started it, is its
-//! starter's parent's child, and writes its command's wait status to a file; a plain job dies
-//! with the thread that started it.
+//! Detached jobs: a job's init outlives the thread and process that started it, is its starter's
+//! parent's child, and writes its command's wait status to a file; a plain job dies with the thread
+//! that started it.
 
 use std::time::{Duration, Instant};
 
@@ -17,8 +17,8 @@ fn describe(dir: &std::path::Path, script: &str, cgroup: Option<&std::path::Path
     }
 }
 
-/// The fact detaching exists for: the parent-death signal follows the thread that started the
-/// job, not its process.
+/// The fact detaching exists for: the parent-death signal follows the thread that started the job,
+/// not its process.
 #[test]
 fn attached_init_dies_with_its_thread() {
     needs_sandbox!();

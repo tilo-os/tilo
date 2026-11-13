@@ -1,22 +1,10 @@
 //! Native preflight for the public TPM sidecar a prepared setup carries.
 //!
-//! The wire format itself lives in [`staging_handoff_model::prepared`], shared
-//! by the preparation side and the installed boot. This module adds the checks
-//! both the installer's extractor and the privileged first-boot helper run
-//! against it: the sidecar is a bounded, untampered regular file reached
-//! through a held parent directory without following any link, and it names
-//! the exact package bytes read under the same descriptor identity checks.
-//! It stays a platform leaf so both callers import one parser and one set of
-//! guards without either depending on the installer backend or carrying its
-//! peer transport.
-//!
-//! This is deliberately **not** an authentication boundary for the release
-//! authority. The shared wire model validates the sidecar's structure and its
-//! public binding digest; the signed target policy is verified only by the
-//! privileged unsealer against the release authority pinned into that helper,
-//! before it releases the package secret. The policy fields are public input
-//! from untrusted media, never authority to mutate the target. Callers that
-//! need the authenticated policy must unseal, not widen this preflight.
+//! The wire format lives in [`staging_handoff_model::prepared`], shared with the
+//! installed boot; this module holds the checks the installer's extractor and the
+//! privileged first-boot helper run: a bounded, untampered regular file reached
+//! through a held parent directory without following any link, naming the exact
+//! package bytes read under the same checks.
 
 use std::ffi::{CString, OsStr};
 use std::fs::{File, Metadata};
@@ -29,8 +17,8 @@ use std::path::{Component, Path};
 use sha2::{Digest as _, Sha256};
 use staging_handoff_model::prepared::{MAX_SIDECAR, SealedPreparation};
 
-/// The canonical prepared package is at most 32 MiB + 16 KiB. A preflight
-/// reads at most this much even when a caller names a larger file.
+// The canonical prepared package is at most 32 MiB + 16 KiB; a preflight reads at
+// most this much even when a caller names a larger file.
 const MAX_PACKAGE: u64 = 32 * 1024 * 1024 + 16 * 1024;
 const SIDECAR_NOT_BOUNDED: &str = "the prepared TPM handoff is not a bounded regular file";
 const SIDECAR_CHANGED: &str = "the prepared TPM handoff changed while it was read";
@@ -77,20 +65,17 @@ impl Stamp {
 /// Verify a sidecar and the exact package it names before first boot.
 ///
 /// The check is structural: it refuses a linked, edited, truncated, growing or
-/// oversized sidecar and a package whose bytes or identity change while they
-/// are read. It does not verify the signed target policy; the privileged
-/// unsealer does that against its pinned release authority before releasing
-/// any secret.
+/// oversized sidecar and a package whose bytes or identity change while they are
+/// read. The signed target policy is the privileged unsealer's to verify.
 pub fn preflight_handoff(sidecar_path: &Path, package_path: &Path) -> io::Result<()> {
     let _sealed = read_prepared_handoff(sidecar_path, package_path)?;
     Ok(())
 }
 
 /// Read the sidecar and verify that it names the exact package bytes beside it.
-///
-/// This returns the decoded sidecar a privileged caller should hand to unseal,
-/// so the policy that is authenticated is exactly the one this preflight read.
-/// It does not authenticate the policy signature.
+/// Returns the decoded sidecar a privileged caller hands to unseal, so the policy
+/// that is authenticated is the one this preflight read; the policy signature is
+/// still unverified here.
 pub fn read_prepared_handoff(
     sidecar_path: &Path,
     package_path: &Path,
@@ -206,8 +191,6 @@ fn digest_exact_bounded(
         }
         hasher.update(buffer.get(..count).ok_or_else(|| invalid(changed))?);
     }
-    // The reviewed length is a bound, not a hint: one byte beyond it is enough
-    // to refuse a source that grew after its metadata was observed.
     let mut extra = [0_u8; 1];
     if reader.read(&mut extra)? != 0 {
         return Err(invalid(changed));

@@ -16,8 +16,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use tilo_session::{Options, Session};
@@ -135,7 +133,7 @@ fn activating_a_button_through_the_export_performs_its_action() {
         session.a11y_perform(place, opener, &Action::Activate),
         "the desk took the press its window offers"
     );
-    common::wait_for(
+    crate::common::wait_for(
         &mut session,
         "the palette to open from the button",
         |session| {
@@ -181,7 +179,7 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
         "the app took the press on its button"
     );
     let mut asked = Vec::new();
-    let confirmed = common::wait_maybe(&mut session, |session| {
+    let confirmed = crate::common::wait_maybe(&mut session, |session| {
         session.step(REFRESH).expect("a turn of the session");
         asked.extend(seat.take_asked());
         asked

@@ -16,6 +16,8 @@ use ui::framework::LiveRow;
 use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 use crate::model::{Connection, ConnectionId, ConnectionKind};
+use crate::resource::CATALOG;
+use ui::i18n::ArgValue;
 
 /// What Remote does that is no edit of the saved connections: showing them,
 /// opening and closing live sessions, typing into one, and the SSH host-key
@@ -27,7 +29,7 @@ pub enum RemoteEffect {
     #[effect(view, idempotent)]
     ShowConnections,
     /// New connection.
-    #[effect(view)]
+    #[effect(view, label = "remote-new-connection")]
     New,
     /// Open connection settings.
     #[effect(view, row)]
@@ -36,13 +38,13 @@ pub enum RemoteEffect {
         connection: ConnectionId,
     },
     /// Connect.
-    #[effect(row, job, privileged, kind = "read")]
+    #[effect(row, job, privileged, kind = "read", label = "remote-connect-confirm")]
     Connect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
     /// Disconnect session.
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, label = "remote-disconnect")]
     Disconnect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
@@ -105,9 +107,12 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         connection: connection.id,
     }
     .bound()
-    .with_description(format!(
-        "Open a live session to this saved connection. {}",
-        readiness.detail(connection.kind)
+    .with_description(CATALOG.t_args(
+        "remote-action-open-session",
+        &[(
+            "detail",
+            ArgValue::Text(CATALOG.t(readiness.detail_message(connection.kind))),
+        )],
     ));
     spec.type_mut().contract.tags = vec!["network".into(), "session".into()];
     if readiness.can_connect() {
@@ -116,11 +121,11 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         spec.unavailable(
             readiness.code(),
             if readiness == crate::session::TransportReadiness::InvalidProfile {
-                connection
+                CATALOG.t(connection
                     .profile_issue()
-                    .unwrap_or_else(|| readiness.detail(connection.kind))
+                    .unwrap_or_else(|| readiness.detail_message(connection.kind)))
             } else {
-                readiness.detail(connection.kind)
+                CATALOG.t(readiness.detail_message(connection.kind))
             },
         )
     }
@@ -164,9 +169,7 @@ pub fn session_row(
                 remote_path: String::new(),
             }
             .bound_asking(&["local_path", "remote_path"])
-            .with_description(
-                "Send one local file to this SSH machine: name the local path and where to write it remotely.",
-            ),
+            .with_description(crate::resource::CATALOG.t("remote-describe-put-file")),
             &["network", "session", "files"],
         ))
         .operation(tagged(
@@ -176,9 +179,7 @@ pub fn session_row(
                 local_path: asked,
             }
             .bound_asking(&["remote_path", "local_path"])
-            .with_description(
-                "Fetch one file from this SSH machine: name the remote path and where to write it here.",
-            ),
+            .with_description(crate::resource::CATALOG.t("remote-describe-fetch-file")),
             &["network", "session", "files"],
         ))
     } else {
@@ -191,18 +192,19 @@ pub fn session_row(
                 observed: observed.clone(),
             }
             .bound()
-            .with_description(format!(
-                "Explicitly trust {} {} for this device only after out-of-band verification.",
-                observed.algorithm, observed.fingerprint
+            .with_description(CATALOG.t_args(
+                "remote-action-trust-host-key",
+                &[
+                    ("algorithm", ArgValue::Text(observed.algorithm.clone())),
+                    ("fingerprint", ArgValue::Text(observed.fingerprint.clone())),
+                ],
             )),
             HOST_KEY_TAGS,
         )),
         Some(crate::ssh::HostKeyIssue::Changed { .. }) => row.operation(tagged(
             RemoteEffect::ForgetHostKey { connection: id }
                 .bound()
-                .with_description(
-                    "Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.",
-                ),
+                .with_description(crate::resource::CATALOG.t("remote-describe-forget-host-key")),
             HOST_KEY_TAGS,
         )),
         _ => row,
@@ -273,7 +275,7 @@ mod tests {
                 &spec.contract.availability,
                 tilo_actions::Availability::Unavailable { code, reason }
                     if code == "invalid_connection_profile"
-                        && reason.contains("exact certified endpoint")
+                        && reason.contains("exact endpoint id")
             ));
         }
 

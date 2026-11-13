@@ -351,9 +351,7 @@ fn choices_below(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Vec<Element> 
         let mut players =
             Dropdown::from_state(Vec::new(), &LocalState::new(choices.player.clone()))
                 .with_id("qs-now-playing-player")
-                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                    "now-playing-choose-player",
-                ))
+                .with_accessible_name(t("now-playing-choose-player"))
                 .caption(t("qs-now-playing-player"))
                 .fill();
         players.set_value_options(choices.players.clone());
@@ -365,9 +363,7 @@ fn choices_below(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Vec<Element> 
         let mut outputs =
             Dropdown::from_state(Vec::new(), &LocalState::new(choices.output.clone()))
                 .with_id("qs-now-playing-output")
-                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                    "now-playing-choose-output",
-                ))
+                .with_accessible_name(t("now-playing-choose-output"))
                 .caption(t("qs-now-playing-output"))
                 .fill();
         outputs.set_value_options(choices.outputs.clone());

@@ -1,23 +1,15 @@
-//! Copying bytes out and pasting them back in, in the mode the grid is in.
+//! Copying bytes out and pasting them back in.
 //!
-//! The grid has one focus: the hex column or the ASCII column (`Tab`
-//! switches). Copy takes the selection in that mode — hexadecimal bytes
-//! (`de ad be ef`) from the hex column, characters from the ASCII one, with
-//! a byte that is not printable copied as the `.` the column shows. Paste
-//! reads the same way round, through [`crate::actions::parse_bytes`] for hex
-//! and the text's own UTF-8 bytes for ASCII, and lands where the selection
-//! is (or at the cursor when there is none) as **one undo step** — the same
-//! discipline a find-and-replace batch keeps.
-//!
-//! Overwrite mode keeps the file's length, so a paste that would change it is
-//! refused with the fix named, exactly as a replacement of another length is.
+//! The grid has one focus, the hex column or the ASCII column, and copy and paste
+//! work in that mode. A paste lands where the selection is, or at the cursor, as one
+//! undo step. Overwrite mode keeps the file's length, so a paste that would change it
+//! is refused with the fix named.
 
 use super::Editor;
 use crate::model::{ChangesLength, Column, EditMode};
 
 impl Editor {
-    /// The selection as the clipboard text of the focus mode, with how many
-    /// bytes it covers. `None` when nothing is selected.
+    /// The selection as the focus mode's clipboard text, with the bytes it covers.
     fn selection_as_text(&self) -> Option<(String, usize)> {
         let (lo, hi) = self.model.selection()?;
         let bytes = self.model.bytes().get(lo..=hi)?;
@@ -27,8 +19,7 @@ impl Editor {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<Vec<_>>()
                 .join(" "),
-            // The ASCII column shows a byte it cannot print as a dot; the
-            // copy says the same rather than pretending the bytes are text.
+            // A byte the ASCII column cannot print is copied as the dot it shows.
             Column::Ascii => bytes
                 .iter()
                 .map(|&byte| {
@@ -43,8 +34,7 @@ impl Editor {
         Some((text, bytes.len()))
     }
 
-    /// Copy the selection in the focus mode. Returns whether anything was
-    /// copied.
+    /// Copy the selection in the focus mode; whether anything was copied.
     pub(super) fn copy_selection(&mut self) -> bool {
         let Some((text, count)) = self.selection_as_text() else {
             self.notice("Nothing selected: hold Shift while moving to select bytes");
@@ -67,8 +57,8 @@ impl Editor {
         true
     }
 
-    /// Paste the clipboard at the selection (or at the cursor) in the focus
-    /// mode, as one undo step. Returns whether the buffer changed.
+    /// Paste at the selection, or at the cursor, in the focus mode, as one undo
+    /// step; whether the buffer changed.
     pub(super) fn paste_clipboard(&mut self) -> bool {
         let Some(text) = ui::clipboard_paste() else {
             self.notice("The clipboard holds no text");
@@ -88,8 +78,8 @@ impl Editor {
             self.notice("The clipboard holds no bytes");
             return false;
         }
-        // A selection is replaced; without one the bytes go in at the cursor,
-        // which overwrite mode can only do by replacing what is there.
+        // A selection is replaced; without one the bytes go in at the cursor, which
+        // overwrite mode can only do by replacing what is there.
         let span = self
             .model
             .selection()
@@ -121,8 +111,8 @@ impl Editor {
         }
     }
 
-    /// Replace `span` with `bytes` as one undo step, saying what went wrong
-    /// when overwrite mode cannot take it.
+    /// Replace `span` with `bytes` as one undo step, saying what went wrong when
+    /// overwrite mode cannot take it.
     fn replace_one_span(&mut self, span: (usize, usize), bytes: &[u8]) -> bool {
         match self.model.replace_spans(&[span], bytes) {
             Ok(0) => {
@@ -144,7 +134,7 @@ impl Editor {
         }
     }
 
-    /// How the focus mode is named in a notice.
+    /// The focus mode's name in a notice.
     fn mode_word(&self) -> &'static str {
         match self.model.column() {
             Column::Hex => "hexadecimal bytes",

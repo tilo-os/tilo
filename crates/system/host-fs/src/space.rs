@@ -6,16 +6,12 @@ use std::path::Path;
 /// The size of the filesystem holding a path, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Space {
-    /// Everything the filesystem holds.
     pub capacity: u64,
-    /// Free, including blocks reserved for the administrator.
     pub free: u64,
-    /// Free to an unprivileged user: what a person can still store.
     pub available: u64,
 }
 
 impl Space {
-    /// What is in use: capacity less everything free.
     #[must_use]
     pub const fn used(&self) -> u64 {
         self.capacity.saturating_sub(self.free)

@@ -1,9 +1,4 @@
 //! Device-owned, encrypted send journal, never a replicated room outbox.
-//!
-//! The broker supplies its secret-service key and certified device/account
-//! context. No keys are generated here and no local-key fallback is offered.
-//! One owner holds the lock for the journal's lifetime. Interrupted reservations
-//! become uncertain on restart; operation IDs are never evicted or reused.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -20,7 +15,6 @@ use crate::{Route, Service};
 const MAX_JOURNAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OPERATIONS: usize = 16_384;
 
-/// Stable persisted encryption domain; do not rename an existing format.
 pub const FORMAT: VaultFormat = VaultFormat {
     name: "tilo.messaging-send-journal.v1",
     magic: b"TMSJ",
@@ -32,11 +26,9 @@ pub const FORMAT: VaultFormat = VaultFormat {
     dpapi_entropy: b"tilo.messaging-send-journal.v1",
 };
 
-/// Authority is supplied and verified by the host, not inferred from contacts.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Owner {
-    /// Certified person root supplied by the authenticated host.
     pub principal: String,
     pub device: String,
     pub service: Service,
@@ -52,7 +44,6 @@ pub enum Status {
     Uncertain,
 }
 
-/// Durable recipient evidence is independent of submission/server acknowledgment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RecipientEvidence {
     Delivered,
@@ -195,7 +186,6 @@ impl EncryptedJournal {
         Ok(journal)
     }
 
-    /// Read protocol evidence; no status implies recipient delivery.
     pub fn status(&self, operation: &str) -> Option<Status> {
         self.ledger
             .operations
@@ -241,7 +231,6 @@ impl EncryptedJournal {
             .ok_or(JournalError::Unavailable)
     }
 
-    /// Recipient evidence is visible only after successful durable persistence.
     pub fn recipient_evidence(&self, operation: &str) -> Option<RecipientEvidence> {
         if !self.usable {
             return None;
@@ -249,7 +238,6 @@ impl EncryptedJournal {
         self.ledger.operations.get(operation)?.recipient_evidence
     }
 
-    /// Verify an observation against the original immutable journal route.
     pub fn check_observation(&self, operation: &str, route: &Route) -> Result<(), JournalError> {
         if !self.usable
             || self

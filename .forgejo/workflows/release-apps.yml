@@ -174,8 +174,8 @@ jobs:
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4094, 'f203b780f78a8c5a0c0cd8a443439f927e4012f6f5a2d85fe580e284ecde1afa'),
-              ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
-              ('tools/ci/images.toml', 1502, '1b3d9b534fdf4fde26d304726acf47411c12be11e5bb213c7028a75546ea39a7'),
+              ('tools/ci/resolve_builder.py', 8729, 'b1f1e38176b917e6f3ad8c35fdd34d4fa36c569b8deac80918d58698592236e6'),
+              ('tools/ci/images.toml', 1502, '7dd643eec920e35e950f8ac427e17167cf455b34837710dea4ec21181132237f'),
           )
 
           class NoRedirect(HTTPRedirectHandler):

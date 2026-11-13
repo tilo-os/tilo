@@ -22,6 +22,17 @@
 
 pub mod device;
 pub mod effects;
+/// What a resource of a kind this crate publishes from outside a document is
+/// called, in the person's language: the kind's entry in the catalogue beside
+/// this crate, read the way a declaration's words are.
+mod i18n {
+    tilo_resource::declared_catalogue!(CATALOGUE);
+
+    pub(crate) fn name(kind: &str, source: &str) -> String {
+        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
+    }
+}
+
 pub mod model;
 pub mod update;
 
@@ -259,8 +270,11 @@ pub fn power_surface() -> tilo_resource::surface::Surface {
 /// The `power` resource reading `power`.
 #[must_use]
 pub fn power_resource(power: &Power) -> ResourceSpec {
-    let mut resource =
-        offer::<PowerAction>(ResourceSpec::new(POWER, "so.tilo.system.power", "Power"));
+    let mut resource = offer::<PowerAction>(ResourceSpec::new(
+        POWER,
+        "so.tilo.system.power",
+        crate::i18n::name("so.tilo.system.power", "Power"),
+    ));
     if power.modes.is_empty() {
         unavailable(
             &mut resource,
@@ -286,7 +300,7 @@ pub fn update_resource(update: &Update) -> ResourceSpec {
     let mut resource = offer::<UpdateAction>(ResourceSpec::new(
         SYSTEM_UPDATE,
         "so.tilo.system.update",
-        "System update",
+        crate::i18n::name("so.tilo.system.update", "System update"),
     ));
     if update.updating {
         unavailable(
@@ -321,7 +335,7 @@ pub fn time_resource(time: &Time) -> ResourceSpec {
     let mut resource = offer::<TimeAction>(ResourceSpec::new(
         TIME_ZONE,
         "so.tilo.system.time",
-        "Time zone",
+        crate::i18n::name("so.tilo.system.time", "Time zone"),
     ));
     if time.network_time.is_none() {
         unavailable(
@@ -340,7 +354,7 @@ pub fn keyboard_light_resource(light: &KeyboardLight) -> ResourceSpec {
     let mut resource = offer::<KeyboardLightAction>(ResourceSpec::new(
         KEYBOARD_BACKLIGHT,
         "so.tilo.system.keyboard-backlight",
-        "Keyboard light",
+        crate::i18n::name("so.tilo.system.keyboard-backlight", "Keyboard light"),
     ));
     if light.level.is_none() {
         for action in ["brighter", "dimmer", "toggle", "set-level"] {

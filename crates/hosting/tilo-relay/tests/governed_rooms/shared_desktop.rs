@@ -59,6 +59,7 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
         tree,
         authors,
         records: Vec::new(),
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 

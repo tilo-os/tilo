@@ -1,8 +1,4 @@
 //! The socket loop: one connection at a time, one request per connection.
-//!
-//! Serving connections one by one keeps the service single-threaded, which
-//! is what lets it set up each confined helper between `fork` and `exec`
-//! without another thread holding a lock the child would inherit.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
@@ -13,7 +9,6 @@ use std::time::{Duration, Instant};
 use super::{Backend, Caller, Service};
 use crate::protocol::{Envelope, MAX_LINE_BYTES, PROTOCOL_VERSION, Response};
 
-/// How long one client may take to send its request or read the answer.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn answer(stream: &mut UnixStream, response: &Response) {
@@ -74,10 +69,8 @@ fn readable(listener: &UnixListener, timeout: Duration) -> bool {
     unsafe { libc::poll(&raw mut poll, 1, millis) > 0 }
 }
 
-/// How the loop paces itself and when it ends.
 #[derive(Clone, Copy, Debug)]
 pub struct Pacing {
-    /// How often open drives are checked (unplugged, owner gone).
     pub housekeeping: Duration,
     /// Return after this long without a request while no drive is open; the
     /// socket unit starts the service again on the next connection.

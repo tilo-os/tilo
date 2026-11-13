@@ -1,30 +1,17 @@
 //! Placeholder files and on-demand hydration through fanotify pre-content
 //! events.
 //!
-//! A placeholder is a real inode with the exact size, mode, owner and mtime
-//! of the version it stands for, and no data: a sparse file. `stat`,
-//! `readdir` and `ls -l` never involve the daemon. Each placeholder carries
-//! an inode mark for `FAN_PRE_ACCESS`, so the first read, write or `mmap` of
-//! a range that is not resident blocks that one caller until the range has
-//! been fetched and written in place. Resident files carry no mark, so their
-//! I/O never generates an event at all.
+//! A placeholder is a sparse inode with the exact size, mode, owner and mtime
+//! of the version it stands for, carrying an inode mark for `FAN_PRE_ACCESS`,
+//! so the first read, write or `mmap` of a range that is not resident blocks
+//! that one caller until the range has been fetched and written in place.
+//! Resident files carry no mark, so their I/O never generates an event.
 //!
-//! Writes into the file happen through the event's own descriptor, which
-//! the kernel opens with `FMODE_NONOTIFY`: filling a placeholder raises no
-//! further events and is invisible to the change journal.
-//!
-//! A blocked caller waits in the kernel, uninterruptibly, and so does anyone
-//! queued behind it on the same pages. No access ever waits longer
-//! than [`HydratorConfig::access_bound`]: past it the access fails with `EIO`,
-//! whether its range is being fetched from a peer that went quiet, waiting
-//! for another caller's fill, or still queued behind fills of other files.
-//! Answering it also [cancels](Cancel) the fill a worker is making for it,
-//! so the worker is free for the next access at once instead of waiting
-//! with the transfer layer, about 30 s per peer: an unrelated file opened
-//! meanwhile is not queued behind a dead peer. The content plane's fetcher
-//! lets the transfer itself go on without its worker, so a retry can find
-//! the range in the content store. Accesses to resident ranges are answered
-//! on the thread that reads the events and never queue behind a fill.
+//! Fills write through the event's own descriptor, which the kernel opens with
+//! `FMODE_NONOTIFY`, so they raise no further events and stay invisible to the
+//! change journal. No access waits longer than
+//! [`HydratorConfig::access_bound`]: past it the access fails with `EIO` and
+//! the fill made for it is cancelled, freeing its worker at once.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -44,41 +31,37 @@ use crate::fanotify::{self as fan, Group};
 use crate::ranges::RangeSet;
 use crate::sys;
 
-/// Residency marker of a placeholder or partially resident file. Present
-/// while any range is missing; removed once the file is fully resident.
-/// The value is `P <size> <content-id-hex> <resident ranges>`.
+/// Residency marker of a placeholder or partially resident file, present while
+/// any range is missing. The value is
+/// `P <size> <content-id-hex> <resident ranges>`.
 pub const RESIDENCY_XATTR: &str = "trusted.tilo.residency";
 
-/// Name prefix of files being prepared next to their final path. They are
-/// renamed into place once complete and are never captured.
+/// Name prefix of files being prepared next to their final path; they are
+/// renamed into place once complete and never captured.
 pub const STAGING_PREFIX: &str = ".tilo-staging-";
 
-/// How a gated file treats writes.
-///
-/// Every access is classified on its own ([`crate::access`]): a process
-/// that holds the file open read-write and reads it is a reader.
+/// How a gated file treats writes. Every access is classified on its own: a
+/// process that holds the file open read-write and reads it is a reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteGate {
-    /// Refuse writes with this errno (`EBUSY` while another device holds
-    /// the file's write lease), and refuse opening it for writing, so a
-    /// program that falls back to a read-only open when a read-write one
-    /// fails (`SQLite` does) reads normally and reports a read-only file
-    /// when it tries to write.
+    /// Refuse writes with this errno (`EBUSY` while another device holds the
+    /// file's write lease), and refuse opening it for writing, so a program that
+    /// falls back to a read-only open when a read-write one fails (`SQLite` does)
+    /// reads normally and reports a read-only file when it tries to write.
     Deny(i32),
-    /// Ask the [`WritePolicy`] at the first write, which may grant it
-    /// (acquiring a lease) or refuse it.
+    /// Ask the [`WritePolicy`] at the first write, which may grant it (acquiring a
+    /// lease) or refuse it.
     Ask,
 }
 
-/// Decides writes to files gated with [`WriteGate::Ask`].
 pub trait WritePolicy: Send + Sync + 'static {
-    /// Called on the first access by a writer of `file` (`(st_dev, st_ino)`)
-    /// while it is gated. `Err(errno)` refuses the access with that errno.
+    /// Called on the first access by a writer of `file` (`(st_dev, st_ino)`) while
+    /// it is gated. `Err(errno)` refuses the access with that errno.
     fn admit_writer(&self, file: (u64, u64)) -> Result<(), i32>;
 }
 
-/// Tells a fill that nobody waits for its bytes any more: the access it
-/// was made for has been answered. Clones share one state.
+/// Tells a fill that nobody waits for its bytes any more: the access it was
+/// made for has been answered. Clones share one state.
 #[derive(Clone, Default)]
 pub struct Cancel(Arc<Mutex<CancelState>>);
 
@@ -89,7 +72,6 @@ struct CancelState {
 }
 
 impl Cancel {
-    /// Whether the fill was cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         match self.0.lock() {
@@ -98,8 +80,8 @@ impl Cancel {
         }
     }
 
-    /// Runs `wake` once the fill is cancelled, at once when it already was.
-    /// A fill that never is drops `wake` with the last clone.
+    /// Runs `wake` once the fill is cancelled, at once when it already was. A fill
+    /// that never is drops `wake` with the last clone.
     pub fn on_cancel(&self, wake: impl FnOnce() + Send + 'static) {
         let Ok(mut state) = self.0.lock() else {
             wake();
@@ -113,7 +95,6 @@ impl Cancel {
         }
     }
 
-    /// Cancels the fill and wakes everything waiting on it.
     pub fn cancel(&self) {
         let wake = match self.0.lock() {
             Ok(mut state) if !state.cancelled => {
@@ -128,18 +109,15 @@ impl Cancel {
     }
 }
 
-/// Supplies content bytes for placeholders.
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
     fn fetch(&self, content: &[u8; 32], offset: u64, len: u64) -> io::Result<Vec<u8>>;
 
-    /// Writes bytes `range` of `content` into `dest` at the same offsets.
-    /// `ahead` marks read-ahead for a sequential reader rather than a
-    /// blocked access. `cancel` fires once nobody waits for the bytes: a
-    /// fetcher that returns then frees its worker for the next access,
-    /// while one that ignores it holds the worker until it returns. The
-    /// default fetches and writes; a fetcher whose content lives in files
-    /// can clone extents instead.
+    /// Writes bytes `range` of `content` into `dest` at the same offsets. `ahead`
+    /// marks read-ahead for a sequential reader rather than a blocked access.
+    /// `cancel` fires once nobody waits for the bytes: a fetcher that returns then
+    /// frees its worker for the next access. The default fetches and writes; a
+    /// fetcher whose content lives in files can clone extents instead.
     fn fill(
         &self,
         content: &[u8; 32],
@@ -161,8 +139,6 @@ pub trait Fetcher: Send + Sync + 'static {
     }
 }
 
-/// Everything a placeholder needs to be indistinguishable from the real file
-/// in `stat`.
 #[derive(Clone, Debug)]
 pub struct PlaceholderSpec {
     pub content: [u8; 32],
@@ -175,27 +151,23 @@ pub struct PlaceholderSpec {
 
 #[derive(Clone, Debug)]
 pub struct HydratorConfig {
-    /// Fills are rounded out to this alignment, so a sequential reader
-    /// raises one event per granule rather than per `read(2)`.
+    /// Fills are rounded out to this alignment, so a sequential reader raises one
+    /// event per granule rather than per `read(2)`.
     pub granule: u64,
-    /// Concurrent fills. A reader of one file never waits for a fill of
-    /// another as long as a worker is free.
+    /// Concurrent fills. A reader of one file never waits for a fill of another as
+    /// long as a worker is free.
     pub workers: usize,
-    /// Largest read-ahead window. A reader that continues where its last
-    /// fill ended gets the next window fetched in the background; the
-    /// window doubles on every sequential fill up to this size and resets
-    /// on a seek. `0` disables read-ahead.
+    /// Largest read-ahead window: a reader that continues where its last fill ended
+    /// gets the next window fetched in the background, doubling up to this size and
+    /// resetting on a seek. `0` disables read-ahead.
     pub readahead_max: u64,
-    /// Background read-ahead fills in flight at once.
     pub readahead_workers: usize,
-    /// Longest a caller is held blocked waiting for bytes. Past it the
-    /// access fails with `EIO`. Well inside the kernel's hung-task report
-    /// (two minutes by default), so nothing waiting on a quiet peer is ever
-    /// reported as hung.
+    /// Longest a caller is held blocked waiting for bytes; past it the access fails
+    /// with `EIO`. Well inside the kernel's hung-task report (two minutes by
+    /// default), so nothing waiting on a quiet peer is ever reported as hung.
     pub access_bound: Duration,
 }
 
-/// Default [`HydratorConfig::access_bound`].
 pub const DEFAULT_ACCESS_BOUND: Duration = Duration::from_secs(30);
 
 impl Default for HydratorConfig {
@@ -210,21 +182,15 @@ impl Default for HydratorConfig {
     }
 }
 
-/// Counters for observability and tests.
 #[derive(Default, Debug)]
 pub struct HydrationStats {
     pub events: AtomicU64,
     pub fills: AtomicU64,
     pub bytes_filled: AtomicU64,
     pub failures: AtomicU64,
-    /// Events that asked for ranges already resident (or unknown files).
     pub passthrough: AtomicU64,
-    /// Bytes fetched ahead of a sequential reader.
     pub readahead_bytes: AtomicU64,
-    /// Accesses denied because the file is gated against writers.
     pub gated_denials: AtomicU64,
-    /// Accesses failed with `EIO` because their bytes did not arrive within
-    /// [`HydratorConfig::access_bound`].
     pub timeouts: AtomicU64,
 }
 
@@ -240,16 +206,13 @@ struct FileState {
     size: u64,
     missing: RangeSet,
     inflight: RangeSet,
-    /// End of the last foreground fill, to recognise sequential readers.
     seq_end: u64,
-    /// Current read-ahead window; `0` until a reader proves sequential.
     window: u64,
-    /// Furthest offset read-ahead was already scheduled up to.
     ahead_end: u64,
-    /// The mtime the file should show. Filling writes bytes, which moves
-    /// the mtime; it is put back so a placeholder that becomes resident
-    /// looks exactly like the version it stands for (`ls -l`, `git status`,
-    /// make). A change made by someone else between fills is kept.
+    /// The mtime the file should show. Filling writes bytes, which moves the mtime;
+    /// it is put back so a placeholder that becomes resident looks exactly like the
+    /// version it stands for (`ls -l`, `git status`, make). A change made by someone
+    /// else between fills is kept.
     mtime: Option<libc::timespec>,
 }
 
@@ -274,10 +237,10 @@ struct ReadAhead {
     range: Range<u64>,
 }
 
-/// An access the kernel holds blocked until it is answered. The worker
-/// serving it and the watchdog at its deadline race to answer; the first
-/// answer is the only one sent. The event's descriptor stays open as long
-/// as either may still use it.
+/// An access the kernel holds blocked until it is answered. The worker serving
+/// it and the watchdog at its deadline race to answer; the first answer is the
+/// only one sent. The event's descriptor stays open as long as either may still
+/// use it.
 struct Blocked {
     mask: u64,
     pid: i32,
@@ -285,7 +248,6 @@ struct Blocked {
     fd: OwnedFd,
     deadline: Instant,
     answered: AtomicBool,
-    /// Cancelled once the access is answered: nobody waits for its fill.
     cancel: Cancel,
 }
 
@@ -295,14 +257,11 @@ impl Blocked {
     }
 }
 
-/// An access handed to a worker, with the fill it needs when that was
-/// decided on the reading thread.
 struct Job {
     access: Arc<Blocked>,
     fill: Option<((u64, u64), Range<u64>)>,
 }
 
-/// What an access needs, decided without waiting on anything remote.
 enum Plan {
     Answer(u32),
     Fill((u64, u64), Range<u64>),
@@ -312,23 +271,17 @@ struct Shared {
     group: Group,
     fetcher: Arc<dyn Fetcher>,
     files: Mutex<HashMap<(u64, u64), FileState>>,
-    /// Files whose writers are refused or must be admitted first.
     gates: Mutex<HashMap<(u64, u64), WriteGate>>,
     policy: Mutex<Option<Arc<dyn WritePolicy>>>,
-    /// Descriptors this process holds for events and read-ahead. They are
-    /// open read-write on the files they name and must not make this
-    /// process look like a writer.
     own_fds: Mutex<std::collections::HashSet<i32>>,
     changed: Condvar,
     stop: AtomicBool,
     cfg: HydratorConfig,
     stats: HydrationStats,
     readahead: Mutex<Option<mpsc::Sender<ReadAhead>>>,
-    /// Accesses not yet answered, by event descriptor.
     blocked: Mutex<HashMap<i32, Arc<Blocked>>>,
 }
 
-/// Serves pre-content events for the placeholders it created or adopted.
 pub struct Hydrator {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
@@ -373,7 +326,6 @@ fn decode_residency(raw: &[u8]) -> Option<([u8; 32], u64, RangeSet)> {
     Some((content, size, missing))
 }
 
-/// Whether `tid` is one of this process's threads.
 fn is_own_thread(tid: i32) -> bool {
     Path::new("/proc/self/task").join(tid.to_string()).exists()
 }
@@ -420,7 +372,6 @@ impl Shared {
         self.gates.lock().ok()?.get(&key).copied()
     }
 
-    /// The verdict for a writer of a gated file.
     fn admit(&self, gate: WriteGate, key: (u64, u64)) -> Result<(), i32> {
         match gate {
             WriteGate::Deny(errno) => Err(errno),
@@ -441,8 +392,8 @@ impl Shared {
         }
     }
 
-    /// Whether the access by thread `tid` writes `key`: from the call it
-    /// is blocked in, else from its descriptor table.
+    /// Whether the access by thread `tid` writes `key`: from the call it is blocked
+    /// in, else from its descriptor table.
     fn writes(&self, tid: i32, key: (u64, u64)) -> bool {
         match crate::access::classify(tid, key) {
             crate::access::Access::Write => true,
@@ -451,9 +402,9 @@ impl Shared {
         }
     }
 
-    /// The verdict on opening a gated file: a `Deny` gate refuses opening
-    /// it for writing. An open that cannot be classified is let through;
-    /// its first write is still refused.
+    /// The verdict on opening a gated file: a `Deny` gate refuses opening it for
+    /// writing. An open that cannot be classified is let through; its first write
+    /// is still refused.
     fn admit_open(&self, fd: BorrowedFd<'_>, tid: i32) -> u32 {
         let Ok(key) = key_of(fd) else {
             return fan::FAN_ALLOW;
@@ -470,9 +421,8 @@ impl Shared {
         }
     }
 
-    /// Whether the process of thread `pid` holds `key` open for writing:
-    /// the fallback when the call itself cannot be read. A writer is a
-    /// process with the file open `O_WRONLY` or `O_RDWR`.
+    /// Whether the process of thread `pid` holds `key` open for writing: the
+    /// fallback when the call itself cannot be read.
     fn process_writes(&self, pid: i32, key: (u64, u64)) -> bool {
         let own = is_own_thread(pid);
         let skip = if own {
@@ -518,8 +468,6 @@ impl Shared {
         false
     }
 
-    /// Handles one pre-content event a worker took and returns the response
-    /// to send.
     fn serve(&self, access: &Blocked) -> u32 {
         let fd = access.fd.as_fd();
         let Ok(key) = key_of(fd) else {
@@ -538,9 +486,9 @@ impl Shared {
         }
     }
 
-    /// The plan for an event, made on the thread that reads the events, for
-    /// a pre-content event of a file nobody gates. `None` hands the event to
-    /// a worker whole: a gated file's writer may need a lease from a peer.
+    /// The plan for an event, made on the thread that reads the events, for a
+    /// pre-content event of a file nobody gates. `None` hands the event to a worker
+    /// whole: a gated file's writer may need a lease from a peer.
     fn triage(&self, fd: BorrowedFd<'_>, mask: u64, range: Option<(u64, u64)>) -> Option<Plan> {
         if mask & fan::FAN_PRE_ACCESS == 0 {
             return None;
@@ -555,8 +503,8 @@ impl Shared {
     }
 
     /// What an access to `key` needs: an answer at once when its bytes are
-    /// resident, else a fill. Schedules read-ahead for a sequential reader
-    /// either way. Never waits on anything remote.
+    /// resident, else a fill. Schedules read-ahead for a sequential reader either
+    /// way. Never waits on anything remote.
     fn plan(&self, fd: BorrowedFd<'_>, key: (u64, u64), range: Option<(u64, u64)>) -> Plan {
         let (want, ahead, resident) = {
             let Ok(mut files) = self.files.lock() else {
@@ -605,7 +553,6 @@ impl Shared {
         }
     }
 
-    /// Fills `want` for a blocked access and returns its response.
     fn fill_for(&self, access: &Blocked, key: (u64, u64), want: &Range<u64>) -> u32 {
         match self.fill(key, access.fd.as_fd(), want, Some(access)) {
             Ok(_) => fan::FAN_ALLOW,
@@ -622,8 +569,8 @@ impl Shared {
         }
     }
 
-    /// Sends `response` for `access` unless it was already answered, and
-    /// cancels the fill made for it. Returns whether this call answered it.
+    /// Sends `response` for `access` unless it was already answered, and cancels
+    /// the fill made for it. Returns whether this call answered it.
     fn answer(&self, access: &Blocked, response: u32) -> bool {
         if access.answered.swap(true, Ordering::AcqRel) {
             return false;
@@ -637,7 +584,6 @@ impl Shared {
         true
     }
 
-    /// Answers `access` unless the watchdog already has, and forgets it.
     fn finish(&self, access: &Blocked, response: u32) {
         self.answer(access, response);
         let raw = access.fd.as_raw_fd();
@@ -647,8 +593,8 @@ impl Shared {
         self.own_fd(raw, false);
     }
 
-    /// Fails every access past its deadline with `EIO`. Returns the
-    /// earliest deadline still ahead.
+    /// Fails every access past its deadline with `EIO`. Returns the earliest
+    /// deadline still ahead.
     fn expire(&self) -> Option<Instant> {
         let now = Instant::now();
         let Ok(blocked) = self.blocked.lock() else {
@@ -677,8 +623,8 @@ impl Shared {
         next
     }
 
-    /// Takes one event off the group: answers it here when its bytes are
-    /// resident, else queues it for a worker with its deadline running.
+    /// Takes one event off the group: answers it here when its bytes are resident,
+    /// else queues it for a worker with its deadline running.
     fn dispatch(&self, ev: fan::Event, workers: &mpsc::Sender<Job>) -> Result<(), ()> {
         self.stats.events.fetch_add(1, Ordering::Relaxed);
         let range = ev.range();
@@ -715,8 +661,8 @@ impl Shared {
     }
 
     /// Fetches the claimed ranges and writes them in place, for the blocked
-    /// `reader` or, without one, ahead of a sequential reader. Returns the
-    /// ranges written, and the first error, which stops the rest.
+    /// `reader` or, without one, ahead of a sequential reader. Returns the ranges
+    /// written, and the first error, which stops the rest.
     fn fetch_claims(
         &self,
         content: &[u8; 32],
@@ -852,7 +798,6 @@ impl Shared {
     }
 }
 
-/// Starts the background fillers that fetch ahead of sequential readers.
 fn spawn_readahead(shared: &Arc<Shared>, workers: usize, threads: &mut Vec<JoinHandle<()>>) {
     if workers == 0 {
         return;
@@ -892,7 +837,6 @@ fn spawn_readahead(shared: &Arc<Shared>, workers: usize, threads: &mut Vec<JoinH
     }
 }
 
-/// Decides what to fetch ahead of a reader whose fill is `want`.
 fn plan_readahead(
     cfg: &HydratorConfig,
     st: &mut FileState,
@@ -1051,18 +995,16 @@ impl Hydrator {
         Ok(())
     }
 
-    /// Creates a placeholder at `path`, which must not exist.
-    ///
-    /// The file is prepared under a hidden name in the same directory, marked,
-    /// and only then renamed into place, so no reader can ever see it
-    /// without its mark.
+    /// Creates a placeholder at `path`, which must not exist. The file is prepared
+    /// under a hidden name in the same directory, marked, and only then renamed
+    /// into place, so no reader can ever see it without its mark.
     pub fn create_placeholder(&self, path: &Path, spec: &PlaceholderSpec) -> io::Result<()> {
         self.place(path, spec, false)
     }
 
-    /// Atomically replaces whatever is at `path` with a placeholder for a
-    /// new version. A process that has the old file open keeps reading the
-    /// old inode, as with any rename over an open file.
+    /// Atomically replaces whatever is at `path` with a placeholder for a new
+    /// version. A process that has the old file open keeps reading the old inode, as
+    /// with any rename over an open file.
     pub fn replace_with_placeholder(&self, path: &Path, spec: &PlaceholderSpec) -> io::Result<()> {
         self.place(path, spec, true)
     }
@@ -1115,8 +1057,6 @@ impl Hydrator {
         result
     }
 
-    /// Takes over a placeholder left by a previous run, from its residency
-    /// xattr. Returns `false` when the file is fully resident.
     pub fn adopt(&self, path: &Path) -> io::Result<bool> {
         let file = OpenOptions::new()
             .read(true)
@@ -1132,9 +1072,9 @@ impl Hydrator {
         Ok(true)
     }
 
-    /// Returns a resident file to placeholder state by punching out its data.
-    /// The caller guarantees that the content is durable elsewhere and that
-    /// nothing has the file open.
+    /// Returns a resident file to placeholder state by punching out its data. The
+    /// caller guarantees that the content is durable elsewhere and that nothing
+    /// has the file open.
     pub fn evict(&self, path: &Path, content: [u8; 32]) -> io::Result<()> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let size = file.metadata()?.len();
@@ -1145,33 +1085,30 @@ impl Hydrator {
     }
 
     /// Whether `path` is a placeholder or partially resident file, from its
-    /// residency xattr. Reading the xattr never hydrates anything.
+    /// residency xattr; reading it never hydrates anything.
     pub fn is_placeholder(path: &Path) -> bool {
         matches!(sys::get_xattr(path, RESIDENCY_XATTR), Ok(Some(_)))
     }
 
-    /// Refuses writers of the file at `path` with `errno` (for example
-    /// `EBUSY` while another device holds its write lease). Readers keep
-    /// reading; a process that has the file open for writing gets `errno`
-    /// from the access that needs the bytes, `mmap` included.
+    /// Refuses writers of the file at `path` with `errno` (for example `EBUSY`
+    /// while another device holds its write lease). Readers keep reading; a process
+    /// that has the file open for writing gets `errno` from the access that needs
+    /// the bytes, `mmap` included.
     pub fn gate_writes(&self, path: &Path, errno: i32) -> io::Result<()> {
         self.gate(path, WriteGate::Deny(errno)).map(|_| ())
     }
 
-    /// Installs the policy asked about files gated with [`WriteGate::Ask`].
     pub fn set_write_policy(&self, policy: Arc<dyn WritePolicy>) {
         if let Ok(mut slot) = self.shared.policy.lock() {
             *slot = Some(policy);
         }
     }
 
-    /// The `(st_dev, st_ino)` a [`WritePolicy`] is asked about for `path`.
     pub fn file_key(path: &Path) -> io::Result<(u64, u64)> {
         let meta = fs::symlink_metadata(path)?;
         Ok((meta.dev(), meta.ino()))
     }
 
-    /// Gates writers of the file at `path`. Returns its key.
     pub fn gate(&self, path: &Path, gate: WriteGate) -> io::Result<(u64, u64)> {
         let file = OpenOptions::new()
             .read(true)
@@ -1200,7 +1137,6 @@ impl Hydrator {
         Ok(key)
     }
 
-    /// Lets writers of `path` through again.
     pub fn ungate_writes(&self, path: &Path) -> io::Result<()> {
         let file = OpenOptions::new()
             .read(true)
@@ -1247,8 +1183,8 @@ impl Hydrator {
         })
     }
 
-    /// Stops serving. Pending and future accesses to placeholders are
-    /// answered by the kernel once the group is closed.
+    /// Stops serving. Pending and future accesses to placeholders are answered by
+    /// the kernel once the group is closed.
     pub fn stop(mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
         if let Ok(mut tx) = self.shared.readahead.lock() {
@@ -1302,14 +1238,11 @@ mod readahead_tests {
             ..HydratorConfig::default()
         };
         let mut st = FileState::new([0; 32], 1 << 20, RangeSet::full(1 << 20));
-        // First fill: nothing is known about the reader yet.
         assert_eq!(plan_readahead(&cfg, &mut st, &(0..1024)), None);
-        // Continues where it ended: fetch a window ahead.
         assert_eq!(
             plan_readahead(&cfg, &mut st, &(1024..2048)),
             Some(2048..6144)
         );
-        // Continues again: the window doubles, nothing is scheduled twice.
         assert_eq!(
             plan_readahead(&cfg, &mut st, &(2048..3072)),
             Some(6144..11264)
@@ -1318,8 +1251,6 @@ mod readahead_tests {
         let mut last = None;
         let mut at = 501_024;
         for _ in 0..10 {
-            // A read inside what is already ahead schedules nothing; keep the
-            // last window that was scheduled.
             if let Some(scheduled) = plan_readahead(&cfg, &mut st, &(at..at + 1024)) {
                 last = Some(scheduled);
             }

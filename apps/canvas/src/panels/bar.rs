@@ -20,9 +20,7 @@ pub(crate) const MENU: &str = "canvas.menu";
 /// Undo the last step, and bring back what the last undo took back.
 pub(crate) const UNDO: &str = "canvas.undo";
 pub(crate) const REDO: &str = "canvas.redo";
-/// Place a picture on the artwork.
 pub(crate) const ADD_PICTURE: &str = "canvas.add-picture";
-/// The export dialog.
 pub(crate) const EXPORT: &str = "canvas.export";
 /// The zoom controls, and the zoom the canvas is at in their name. Never
 /// sent: its items are.
@@ -31,7 +29,6 @@ pub(crate) const ZOOM_IN: &str = "canvas.zoom-in";
 pub(crate) const ZOOM_OUT: &str = "canvas.zoom-out";
 pub(crate) const ZOOM_FIT: &str = "canvas.zoom-fit";
 pub(crate) const ZOOM_ACTUAL: &str = "canvas.zoom-actual";
-/// Show the tools, or put them away.
 pub(crate) const TOOLS: &str = "canvas.tools";
 
 /// How the artwork menu's commands are told from the bar's own actions: the
@@ -52,7 +49,7 @@ const COMMANDS: [(&str, &str); 7] = [
 
 /// The window bar's slots for what the window shows now.
 fn toolbar(tools: &Tools, title: &str, open: bool) -> WindowToolbar {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let commands = COMMANDS
         .into_iter()
         .map(|(value, id)| {
@@ -93,7 +90,7 @@ fn toolbar(tools: &Tools, title: &str, open: bool) -> WindowToolbar {
             ToolbarAction::new(
                 ZOOM,
                 Icon::Search.name(),
-                ui::i18n::I18nManager::format("canvas-zoom-at", &[("percent", percent.into())]),
+                crate::locales::CATALOG.t_args("canvas-zoom-at", &[("percent", percent.into())]),
             )
             .with_items(vec![
                 ToolbarAction::new(ZOOM_IN, Icon::Plus.name(), lookup("canvas-zoom-in")),
@@ -202,8 +199,7 @@ impl WindowBar {
     }
 
     /// Say what the canvas is doing — finding a subject, a save that failed —
-    /// in the window's bar, where a transient notice belongs. It used to be
-    /// small text under the artwork's title, in the row this bar replaced.
+    /// in the window's bar, where a transient notice belongs.
     fn publish_notice(&self) {
         let notice = self.tools.notice.get();
         let mut published = self.notice.borrow_mut();

@@ -1,4 +1,4 @@
-//! Hex editor — standard Tilo application entry point.
+//! Hex editor's entry point.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 

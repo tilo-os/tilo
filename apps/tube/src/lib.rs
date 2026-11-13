@@ -1,29 +1,5 @@
-//! Tube — a privacy-respecting `YouTube` client for Tilo.
-//!
-//! No ads, no tracking, no Google player. Video search, metadata and streams
-//! come from `YouTube` through rustypipe; `SponsorBlock` marks and auto-skips sponsor /
-//! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
-//! for community-sourced factual ones. Everything is built on the CRDT-
-//! native `ui` toolkit. Likes, the watch queue, subscriptions, and comment
-//! likes and replies are the shared library, changed by actions; fetched
-//! catalogues, navigation and playback stay with the window, and the watch
-//! history and playback preferences follow the person to their own devices
-//! without reaching collaborators.
-//!
-//! The live (online) app starts with an EMPTY catalogue and populates only
-//! from live results. The bundled sample catalogue (`sample`, under the
-//! `samples` feature) exists solely for captures and tests, where a cold
-//! screenshot needs to be fully populated. Live fetch (`api`) runs on a
-//! worker thread that spawns on launch (online) or on the first real
-//! interaction.
+//! Tube — a privacy-respecting `YouTube` client for Tilo. No ads, no tracking, no Google player.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -41,8 +17,6 @@ pub mod captions;
 pub mod history;
 pub mod i18n;
 pub mod images;
-/// `YouTube`'s web API read through `tilo_net`: the source of a build
-/// without rustypipe, which cannot build for a browser page.
 #[cfg(any(not(feature = "live"), test))]
 pub mod innertube;
 pub mod model;
@@ -74,9 +48,6 @@ mod tests {
 
     #[test]
     fn an_empty_app_starts_without_a_catalogue() {
-        // An app without the network must not show the bundled sample
-        // catalogue (invented channels, subscriber and view counts) as
-        // though it were real.
         {
             let app = TubeApp::new();
             let m = app.model_for_test();

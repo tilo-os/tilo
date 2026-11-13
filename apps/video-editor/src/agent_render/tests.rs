@@ -150,7 +150,11 @@ fn placed_content_names_each_source_once_and_skips_unplaced_ones() {
         path: content("cd"),
         ..MediaItem::default()
     });
-    assert_eq!(placed_content(&project), vec!["ab".repeat(32)]);
+    assert_eq!(
+        placed_content(&project),
+        vec!["AB".repeat(32)],
+        "the reference the record names, once"
+    );
 }
 
 #[test]

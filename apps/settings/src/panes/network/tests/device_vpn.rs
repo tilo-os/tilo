@@ -1,5 +1,5 @@
-//! The person's devices as VPNs in the VPN list: what the session publishes
-//! is shown, and the switches write the person's choices.
+//! The person's devices as VPNs in the VPN list: what the session publishes is
+//! shown, and the switches write the person's choices.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -49,10 +49,6 @@ fn shown(app: &mut ui::framework::testing::TestApp<crate::SettingsShell>, id: &s
     rendered_enabled(app.harness().root_widget(), id) == Some(true)
 }
 
-/// Each device sharing its connection is a "Through" row whose switch
-/// writes the route; this device's own switch writes whether it shares;
-/// Stop asks the session to stop a device using it, each request after the
-/// last; and a change to the session's status is read again.
 #[test]
 fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     let fake = Arc::new(FakeNetwork::default());
@@ -102,7 +98,6 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
         .unwrap();
     assert_eq!(state, Some(ClientState::Connecting));
 
-    // Off again, by the row's action.
     app.call_on(
         &format!("vpn.device:{DESK}"),
         "set-device-vpn",
@@ -112,14 +107,12 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     app.settle();
     assert_eq!(THROUGH.from_section(&section(&document)), None);
 
-    // This device shares its connection.
     app.harness()
         .click_named("settings.network.vpn.exit")
         .unwrap();
     app.settle();
     assert!(EXIT.from_section(&section(&document)));
 
-    // Stop the phone, after a request made before.
     let mut earlier = serde_json::Map::new();
     earlier.insert(
         STOP.name().into(),
@@ -143,7 +136,6 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     );
     assert!(!shown(&mut app, &stop), "the stopped device's row goes");
 
-    // The session publishes the route up: it is read again and shown.
     let mut connected = status();
     connected.client = Some(device_vpn::ClientStatus {
         device: DESK.into(),
@@ -158,8 +150,6 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     });
 }
 
-/// Without a session publishing, the list offers none of this, and the
-/// effects refuse.
 #[test]
 fn without_a_session_the_vpn_list_offers_no_devices() {
     let fake = Arc::new(FakeNetwork::default());
@@ -209,7 +199,6 @@ fn tunnels(fake: &FakeNetwork) {
     ];
 }
 
-/// The window over `fake`, on the VPN list.
 fn on_the_vpn_list(
     fake: &Arc<FakeNetwork>,
 ) -> ui::framework::testing::TestApp<crate::SettingsShell> {
@@ -224,9 +213,6 @@ fn on_the_vpn_list(
     app
 }
 
-/// One tunnel carries everything at a time: turning one on turns off the
-/// other that does, and the route through a device; a tunnel carrying only
-/// its own networks stays.
 #[test]
 fn a_vpn_carrying_everything_turns_off_the_other_that_does() {
     let fake = Arc::new(FakeNetwork::default());
@@ -267,9 +253,6 @@ fn a_vpn_carrying_everything_turns_off_the_other_that_does() {
     );
 }
 
-/// Routing everything through one of the person's devices turns off the
-/// tunnel that carries everything; the kill switch then blocks traffic
-/// while the route is down.
 #[test]
 fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
     let fake = Arc::new(FakeNetwork::default());
@@ -283,7 +266,6 @@ fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
     settle_until(&mut app, |model| model.in_flight == 0);
     assert_eq!(fake.changes.lock().unwrap().as_slice(), ["vpn Home false"]);
 
-    // The session publishes the route it now keeps.
     if let Some(status) = fake.device_vpn.lock().unwrap().as_mut() {
         status.client = Some(device_vpn::ClientStatus {
             device: DESK.into(),

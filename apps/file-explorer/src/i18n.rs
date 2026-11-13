@@ -1,9 +1,4 @@
-//! Fluent localization for Files.
-//!
-//! The catalogs are embedded so standalone, sandboxed, headless and test runs
-//! resolve the same copy, through the toolkit's [`mod@ui::i18n`] manager. Locale
-//! selection is the desktop's one answer — the person's language, else the
-//! system locale — and falls back per-message to `en-US`.
+//! Files' Fluent catalogues, and the toolkit's date and size styles its rows show.
 
 use ui::i18n::ArgValue;
 
@@ -12,35 +7,24 @@ const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
 #[cfg(test)]
 const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
-// Region variants such as de-AT and de-CH negotiate to the complete German
-// catalog, while ICU and Fluent keep the requested locale for number,
-// plural and date rules.
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
-/// Change the Files locale without rebuilding the widget tree. The host can
-/// call this when the desktop locale changes; the next structural render
-/// resolves fresh strings. Unknown/invalid locales safely use `en-US`.
 pub fn set_locale(locale: &str) {
     CATALOG.set_locale(locale);
 }
 
-/// Active BCP-47 language identifier, for diagnostics and host integration.
 pub fn current_locale() -> String {
     CATALOG.current_locale()
 }
 
-/// A local modification time in the toolkit's date style (the time of day
-/// left out, for a narrow column).
 pub fn format_date(value: chrono::DateTime<chrono::Local>) -> String {
     ui::format::date(value.date_naive())
 }
 
-/// A local modification time in the toolkit's timestamp style.
 pub fn format_datetime(value: chrono::DateTime<chrono::Local>) -> String {
     ui::format::timestamp(&value)
 }
 
-/// A file size in the toolkit's size style (SI units).
 pub fn format_bytes(bytes: u64) -> String {
     ui::format::size(bytes)
 }
@@ -49,7 +33,6 @@ pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
     (name, value.into())
 }
 
-/// Resolve `key` under `locale` without leaving it selected.
 #[cfg(test)]
 fn t_args_for(locale: &str, key: &str, args: &[(&str, ArgValue)]) -> String {
     let previous = current_locale();
@@ -62,12 +45,10 @@ fn t_args_for(locale: &str, key: &str, args: &[(&str, ArgValue)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The German catalogue is complete and structurally matches the source, every key is registered, and negotiation falls back correctly.
     #[test]
     fn catalogs_are_complete_registered_and_negotiated() {
         tilo_copy_lint::catalog::check_translations(&[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)]);
 
-        // --- phase: catalog_negotiation_uses_german_regions_and_source_fallback ---
         {
             assert_eq!(t_args_for("de-DE", "files-menu-open", &[]), "Öffnen");
             assert_eq!(t_args_for("de-AT", "files-menu-open", &[]), "Öffnen");
@@ -84,10 +65,8 @@ mod tests {
         }
     }
 
-    /// Pseudolocale expansion, plural grammar, locale plural rules and CLDR date and byte formatting.
     #[test]
     fn localised_formatting_plurals_and_pseudolocale() {
-        // --- phase: pseudolocale_expands_copy_and_preserves_nonlinguistic_data ---
         {
             let rendered = t_args_for("qps-ploc", "files-share-failed", &[arg("reason", "Zoë 🔗")]);
             assert!(rendered.starts_with('⟦'));
@@ -99,7 +78,6 @@ mod tests {
             assert!(!rendered.contains("Making"));
         }
 
-        // --- phase: plural_messages_are_grammatical_and_interpolation_is_not_executable ---
         {
             assert_eq!(
                 t_args_for("en-US", "files-item-count", &[arg("count", 1)]),
@@ -116,7 +94,6 @@ mod tests {
             );
         }
 
-        // --- phase: plural_rules_follow_the_language_the_copy_is_written_in ---
         {
             assert_eq!(
                 t_args_for("en-US", "files-keeping-offline", &[arg("count", 21)]),
@@ -126,9 +103,6 @@ mod tests {
                 t_args_for("de-DE", "files-keeping-offline", &[arg("count", 21)]),
                 "21 Elemente werden offline verfügbar gehalten"
             );
-            // A window speaks one language (docs/designs/app-language/i18n.md):
-            // a language Files does not ship leaves it in its own copy, with
-            // that copy's count forms rather than the reader's.
             assert_eq!(
                 t_args_for("ru-RU", "files-keeping-offline", &[arg("count", 21)]),
                 "Keeping 21 items offline"
@@ -136,14 +110,12 @@ mod tests {
         }
     }
 
-    /// Collaboration and generic surfaces take labels from the catalogue and the pseudolocale preserves paths and hostile names.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn surfaces_use_catalog_labels_and_preserve_data() {
-        // --- phase: migrated_collaboration_surfaces_do_not_embed_source_labels ---
         {
             let sources = [
                 include_str!("files_app.rs"),
@@ -176,10 +148,6 @@ mod tests {
                 );
             }
 
-            // Cover every non-interpolated message, rather than relying only on a
-            // hand-picked phrase list. Matching the quoted literal avoids false
-            // positives from prose comments while still catching UI constructors,
-            // status assignments and accessibility values.
             for value in SOURCE_FTL
                 .split("## Application chrome")
                 .next()
@@ -202,8 +170,6 @@ mod tests {
                 );
             }
 
-            // Interpolated messages do not have one complete static catalog value,
-            // so guard their distinctive literal prefixes separately.
             for prefix in [
                 "\"Sharing with ",
                 "\"Shared with ",
@@ -220,7 +186,6 @@ mod tests {
             }
         }
 
-        // --- phase: generic_files_surfaces_do_not_embed_catalog_labels ---
         {
             let sources = [
                 include_str!("breadcrumbs.rs"),
@@ -299,7 +264,6 @@ mod tests {
             }
         }
 
-        // --- phase: generic_pseudolocale_preserves_paths_and_hostile_names ---
         {
             let path = "/home/Zoë/<script> & notes";
             let rendered = t_args_for(

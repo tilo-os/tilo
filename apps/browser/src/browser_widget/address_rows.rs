@@ -1,7 +1,6 @@
-//! The list under the address: the omnibox's rows for what is typed
-//! (pages saved as bookmarks, pages visited before, the engine's searches,
-//! an inline completion), or, after an extension's keyword and a space, the
-//! extension's own, and what choosing one does.
+//! The list under the address: the omnibox's rows for what is typed (saved pages, pages
+//! visited before, the engine's searches, an inline completion), or after an extension's
+//! keyword and a space the extension's own, and what choosing one does.
 
 use ui::widget::Widget;
 
@@ -9,7 +8,6 @@ use super::{BrowserWidget, URL_INPUT_ID, row_destination};
 use crate::omnibox;
 
 impl BrowserWidget {
-    /// Forget everything the omnibox derived from the text being typed.
     pub(super) fn reset_omnibox(&mut self) {
         self.suggestions.clear();
         self.bar_rows.clear();
@@ -21,17 +19,16 @@ impl BrowserWidget {
         self.select_completion = None;
     }
 
-    /// Refresh the address-bar suggestions while the address input is being
-    /// edited; hide them otherwise. Runs every frame, does bounded work, and
-    /// never waits on the network: the engine's suggestions arrive later
-    /// through `suggest_fetcher`.
+    /// Refresh the address-bar suggestions while the address is edited, and hide them
+    /// otherwise. Runs every frame, does bounded work, and never waits on the network: the
+    /// engine's suggestions arrive later through `suggest_fetcher`.
     pub(super) fn update_suggestions(&mut self) {
         if self.force_suggestions {
             return; // headless overlay render — keep the pinned list
         }
         let text = if ui::window_toolbar::is_hosted() {
-            // The address is edited in the window's bar: what the bar said
-            // is being typed there.
+            // The address is edited in the window's bar: what the bar said is being typed
+            // there.
             self.bar_query.clone().unwrap_or_default()
         } else if self.show_settings || !self.url_input_focused() {
             String::new()
@@ -46,9 +43,8 @@ impl BrowserWidget {
                 text
             }
         };
-        // After an extension's keyword and a space, what follows is the
-        // extension's: it hears of each change, and its rows stand for the
-        // omnibox's.
+        // After an extension's keyword and a space, what follows is the extension's: it
+        // hears of each change, and its rows stand for the omnibox's.
         if typed != self.keyword_typed {
             typed.clone_into(&mut self.keyword_typed);
             let addressed = self.extensions.omnibox_typed(&typed, &self.engine);
@@ -66,8 +62,8 @@ impl BrowserWidget {
             return;
         }
         let query = typed.trim();
-        // Only suggest while the user is editing a *query* — not when the
-        // bar merely shows the loaded page's URL, and not for an empty bar.
+        // Only suggest while the person edits a query, not when the bar merely shows the
+        // loaded page's address, and not for an empty bar.
         let editing = !query.is_empty() && query != self.current_uri.trim();
         if !editing {
             if self.last_query.is_some()
@@ -102,8 +98,8 @@ impl BrowserWidget {
         }
     }
 
-    /// The typed text changed: restart the quiet period for the engine's
-    /// suggestions and keep only the old ones that still fit.
+    /// The typed text changed: restart the quiet period for the engine's suggestions and
+    /// keep only the old ones that still fit.
     pub(super) fn on_query_changed(&mut self, query: &str) {
         let lower = query.to_lowercase();
         self.remote
@@ -116,8 +112,6 @@ impl BrowserWidget {
         }
     }
 
-    /// Select the untyped tail of an inline completion, once the address
-    /// field holds the completed text.
     pub(super) fn select_inline_completion(&mut self) {
         fn select(widget: &mut dyn Widget, state: &str) -> bool {
             if widget.test_id() == Some(URL_INPUT_ID) {
@@ -137,7 +131,6 @@ impl BrowserWidget {
         }
     }
 
-    /// Match, merge and complete for `query`; set the dropdown's rows.
     pub(super) fn rebuild_rows(&mut self, query: &str) {
         if self.omni_stale {
             self.omni_index.rebuild(self.history.entries());
@@ -156,8 +149,8 @@ impl BrowserWidget {
             &self.current_uri,
             omnibox::MAX_ROWS,
         );
-        // Complete inline only when the person is adding characters; after a
-        // deletion the text is theirs.
+        // Complete inline only when the person is adding characters; after a deletion the
+        // text is theirs.
         let growing = query.len() > self.last_typed.len() && query.starts_with(&self.last_typed);
         if growing
             && self.inline.is_none()
@@ -177,9 +170,8 @@ impl BrowserWidget {
         self.show_rows(rows);
     }
 
-    /// The rows of the extension typed to after its keyword: what Enter
-    /// sends it, then what it suggests. Each goes to the extension with its
-    /// keyword, whichever list shows it.
+    /// The rows of the extension typed to after its keyword: what Enter sends it, then what
+    /// it suggests.
     pub(super) fn show_keyword_rows(&mut self, query: &str) {
         let rows: Vec<omnibox::Row> = self
             .extensions
@@ -202,8 +194,8 @@ impl BrowserWidget {
         self.show_rows(rows);
     }
 
-    /// Show `rows` in the list under the address: the window's bar's while
-    /// it hosts the address, else the window's own.
+    /// Show `rows` in the list under the address: the bar's while it hosts the address, else
+    /// the window's own.
     pub(super) fn show_rows(&mut self, rows: Vec<omnibox::Row>) {
         if ui::window_toolbar::is_hosted() {
             // The bar lists them under its address; the window lists none.
@@ -219,7 +211,6 @@ impl BrowserWidget {
         }
     }
 
-    /// Open a chosen dropdown row.
     pub(super) fn choose_row(&mut self, row: &omnibox::Row) {
         self.suggestions.clear();
         self.last_query = None;
@@ -236,10 +227,8 @@ impl BrowserWidget {
     }
 }
 
-/// Every saved page this window suggests from, most personal first: the
-/// bookmarks of the person's own library, then the workspace's, which the Library
-/// lists beneath them. One address is one row there, whichever library saved
-/// it.
+/// Every saved page this window suggests from, most personal first: the person's own
+/// library, then the workspace's. One address is one row there, whichever library saved it.
 fn saved_pages<'a>(
     personal: &'a crate::continuity_library::Bookmarks,
     workspace: &'a crate::library::Bookmarks,

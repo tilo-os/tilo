@@ -6,7 +6,6 @@
 //! metadata, retrieve the provider-held secret, and immediately seal the
 //! complete legacy record.  No public API here returns that record or its
 //! secret bytes.
-
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
@@ -45,12 +44,9 @@ const V2_MAX_MEMORY_KIB: u32 = 1024 * 1024;
 const V2_MAX_ITERATIONS: u32 = 16;
 const V2_MAX_LANES: u32 = 8;
 const MIN_PASSPHRASE_BYTES: usize = 12;
-
-/// Non-secret facts about a successfully written, verified portable backup.
+/// Non-secret facts about a backup that was written and verified.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortableBackupInfo {
-    /// The root public key the backup restores. This is safe to display as a
-    /// fingerprint and lets a host confirm it backed up the intended identity.
     pub group_public_key: [u8; 32],
     /// Exact number of envelope bytes published at the destination.
     pub bytes_written: u64,
@@ -379,7 +375,6 @@ fn open_v2(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     let (prefix, sealed) = blob
         .split_at_checked(PREFIX_LEN)
         .ok_or_else(invalid_backup)?;
-    // Refuse oversized stored parameters before deriving anything.
     match Envelope::parse(sealed)
         .map_err(|_| invalid_backup())?
         .source

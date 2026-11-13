@@ -26,12 +26,6 @@
               lives until the mounts it serves are done"
 )]
 
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
-
-mod common;
-
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -44,7 +38,7 @@ use tilo_resource::Resource as _;
 use tilo_session::Session;
 use tilo_user_identity::IdentityPaths;
 
-use common::personal::{self, Other, Personal};
+use crate::common::personal::{self, Other, Personal};
 
 /// The app whose person record a workspace's tree is.
 const FILES: &str = "so.tilo.file-explorer";
@@ -63,17 +57,8 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     let cluster = laptop.cluster();
     tilo_action_broker::register_package_surface(FILES, SURFACE);
     let state = tempfile::tempdir().expect("a state for the session");
-    personal::hold_workspace(
-        state.path(),
-        &laptop.device,
-        &laptop.cert,
-        &cluster,
-        FILES,
-        KIND,
-    );
     let socket = laptop.socket().to_path_buf();
-    let mut session =
-        personal::session(&socket, &laptop, "Ada", &cluster, state.path(), FILES, true);
+    let mut session = personal::session(&socket, "Ada", &cluster, state.path(), FILES, true);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -118,7 +103,7 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     );
 
     // A device of someone else's is refused the person's own tree.
-    let someone = common::people::Person::new("Bob");
+    let someone = crate::common::people::Person::new("Bob");
     let stranger = Other::new(&someone, "Bob's laptop");
     let refused = joins(
         &mut session,
@@ -137,7 +122,7 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
 /// record route, as two real sessions of theirs serve them.
 #[test]
 fn a_tree_changed_on_one_device_reaches_the_persons_other_device() {
-    let (site, ada, laptop, phone) = common::people::two_devices_of_one_person_with_files();
+    let (site, ada, laptop, phone) = crate::common::people::two_devices_of_one_person_with_files();
     let installed = package_store::Catalog::at(laptop.store(), None);
     assert_eq!(
         app_catalogue::apps::signed_surface_of(&installed, FILES)
@@ -198,7 +183,7 @@ fn a_tree_changed_on_one_device_reaches_the_persons_other_device() {
 #[test]
 fn a_shared_workspaces_tree_reaches_each_member() {
     let (site, _ada, bob, ada_laptop, bob_laptop) =
-        common::people::two_people_at_a_site_with_files();
+        crate::common::people::two_people_at_a_site_with_files();
     let cluster = site.workspace.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -245,12 +230,12 @@ fn a_shared_workspaces_tree_reaches_each_member() {
     );
 
     // A person joining the workspace later is given the tree whole.
-    let cyd = common::people::Person::new("Cyd");
-    let cyd_laptop = common::people::joined_carrying(
+    let cyd = crate::common::people::Person::new("Cyd");
+    let cyd_laptop = crate::common::people::joined_carrying(
         &site,
         &cyd,
         "Cyd's laptop",
-        &common::people::Device::install_files,
+        &crate::common::people::Device::install_files,
     );
     site.wait_for_member(cyd.public);
     let later = namespace("cyd-laptop");
@@ -344,15 +329,15 @@ fn change_tree(here: &Mounted, mut held: impl FnMut(&[&str], &str)) {
 
 /// Wait until `namespace` holds exactly `expected`, naming what was waited for.
 fn wait_held(
-    site: &common::people::Site,
-    devices: &[&common::people::Device],
+    site: &crate::common::people::Site,
+    devices: &[&crate::common::people::Device],
     namespace: &Mounted,
     expected: &[&str],
     what: &str,
 ) {
     let mut expected: Vec<String> = expected.iter().map(|path| (*path).to_owned()).collect();
     expected.sort();
-    common::people::waited(what, site, devices, || {
+    crate::common::people::waited(what, site, devices, || {
         let held = contents(namespace);
         held == expected
     });
@@ -419,7 +404,7 @@ fn mount(namespace: &Mounted, cluster: &str, paths: &IdentityPaths) -> tokio::ta
 /// Publish `namespace` on `cluster` as `device`'s mount does: the daemon of
 /// that device, on the collaboration socket its session serves.
 fn mount_on(
-    device: &common::people::Device,
+    device: &crate::common::people::Device,
     namespace: &Mounted,
     cluster: &str,
 ) -> tokio::task::JoinHandle<()> {
@@ -454,7 +439,7 @@ fn mount_on(
 fn wait_for_tree(session: &mut Session, namespace: &Mounted, expected: &[&str], what: &str) {
     let mut expected: Vec<String> = expected.iter().map(|path| (*path).to_owned()).collect();
     expected.sort();
-    let held = common::wait_for(session, what, |session| {
+    let held = crate::common::wait_for(session, what, |session| {
         session.settle_services();
         session.step(Duration::from_millis(5)).expect("step");
         let held = contents(namespace);
@@ -485,7 +470,7 @@ fn joins(
                 .map_err(|error| error.to_string()),
         );
     });
-    common::wait_for(session, "the session to answer the join", |session| {
+    crate::common::wait_for(session, "the session to answer the join", |session| {
         session.settle_services();
         session.step(Duration::from_millis(5)).expect("step");
         told.try_recv().ok()

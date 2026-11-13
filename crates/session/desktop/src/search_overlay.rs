@@ -16,6 +16,7 @@ use ui::platform::PlatformConventions;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt as _, Widget};
 use vello::Scene;
 use vello::kurbo::{Point, Rect};
@@ -315,7 +316,7 @@ impl Widget for SearchOverlay {
             let search = self.handle.search_palette();
             let mut search = search.borrow_mut();
             if let Some(palette) = search.palette_mut() {
-                palette.draw(scene, transform, text, theme, presence);
+                palette.draw_child(scene, transform, text, theme, presence);
             }
             vec![
                 transform

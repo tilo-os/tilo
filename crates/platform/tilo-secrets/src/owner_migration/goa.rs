@@ -45,7 +45,6 @@ impl std::fmt::Debug for GoaCredentials {
         f.write_str("GoaCredentials { private selected credentials }")
     }
 }
-/// Retained selected original config grant; no arbitrary keychain search surface.
 pub struct GoaCredential {
     directory: File,
     witness: (u32, u64, u64),

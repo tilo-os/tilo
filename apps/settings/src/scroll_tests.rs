@@ -1,13 +1,11 @@
-//! A pane keeps where the person scrolled it while they change its
-//! controls, in the hosted window whose controls are bound to the
-//! settings document.
+//! A pane keeps where the person scrolled it while they change its controls, in
+//! the hosted window whose controls are bound to the settings document.
 
 use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
-/// The content pane's scroller (the right-most `Scrollable`): its offset.
 fn content_offset(root: &dyn Widget) -> f64 {
     fn collect<'a>(w: &'a dyn Widget, out: &mut Vec<&'a dyn Widget>) {
         if w.name() == "Scrollable" {
@@ -46,19 +44,11 @@ fn settle(app: &mut TestApp<SettingsShell>) {
     }
 }
 
-/// The person scrolls a pane down at the device's size and changes its
-/// toggles, choices and sliders: each change is applied through the
-/// settings document and the pane rebuilt, and the pane stays where it was
-/// scrolled instead of jumping back to the top.
 #[test]
 fn changing_a_control_keeps_the_pane_scrolled() {
     scroll_and_change_each_pane();
 }
 
-/// The same in a window that reads its areas as a live one does: the pane
-/// first stands in while its area is read off the UI thread, then fills in,
-/// and the reads of the other areas land while the person scrolls and
-/// changes controls. None of them may move the pane.
 #[test]
 fn changing_a_control_keeps_the_pane_scrolled_while_areas_are_read() {
     crate::effects::defer_area_reads_in_tests(true);

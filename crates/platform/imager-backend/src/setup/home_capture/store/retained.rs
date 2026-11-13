@@ -1,5 +1,4 @@
 //! Retained-source credential purpose. Serialized declarations are requests;
-//! only root-owned immutable source records and an owned RW lease confer authority.
 use super::super::OriginalCallerFacts;
 use super::*;
 #[cfg(all(test, feature = "native-capture-qualification"))]
@@ -122,15 +121,13 @@ impl RetainedRecord {
     }
 }
 impl RetainedCallerDeclaration {
-    /// Authenticated producer facts for declaration equality only. This accessor
-    /// neither registers groups nor grants source access.
+    /// For declaration equality only; this neither registers groups nor grants source access.
     pub fn requested_caller(&self) -> &OriginalCallerFacts {
         &self.original
     }
     pub fn operation(&self) -> &str {
         &self.operation
     }
-    /// Shape and encrypted-envelope binding only, never grants group authority.
     pub fn validate_binding(&self, plan: &Plan, setup: &str, person: &[u8; 32]) -> io::Result<()> {
         selected(plan)?;
         binding(setup, person)?;
@@ -153,8 +150,7 @@ impl RetainedCallerDeclaration {
     }
 }
 impl Store {
-    /// Finite original-OS root producer. The only source of caller groups is
-    /// the existing mutually authenticated kernel peer, never request fields.
+    /// Caller groups come only from the mutually authenticated kernel peer, never request fields.
     pub(in crate::setup::home_capture) fn register_retained_caller(
         &self,
         selection: (&Path, &RetainedHomeInput),
@@ -227,7 +223,6 @@ impl Store {
             }
             Err(error) => return Err(error),
         }
-        // Reopen the exact named inode and reattest source/kernel facts before ACK.
         read_record(
             held.open_read(OsStr::new(&name), Privacy::OwnerOnly)?,
             &bytes,
@@ -298,9 +293,8 @@ fn read_record(mut file: File, expected: &[u8]) -> io::Result<File> {
     }
     Ok(file)
 }
-/// Not deserializable and no public constructor. Minted only after the exact
-/// protected source record matches the authenticated prepared declaration.
-/// It permits the root controller to hold a RW mount; it NEVER changes IDs.
+/// Minted only after the exact protected source record matches the authenticated prepared
+/// declaration; it lets the root controller hold a RW mount and never changes IDs.
 pub struct RootRetainedPermit {
     plan: Plan,
 }
@@ -314,9 +308,8 @@ impl RootRetainedPermit {
         selected(plan)
     }
 }
-/// Root-only nonserializable source authority. No argv/JSON/CRDT can construct
-/// this witness. Increment B must retain this Arc until actual app quiescence;
-/// a cloned directory descriptor alone is explicitly insufficient.
+/// No argv, JSON or CRDT can construct this witness; a cloned directory descriptor alone is
+/// insufficient.
 static UNKNOWN_SOURCE_RETIREMENT: AtomicBool = AtomicBool::new(false);
 fn retire_physical_source(source: RetainedSource) -> io::Result<()> {
     let result = source.retire();
@@ -350,11 +343,11 @@ impl RetainedMountedEpoch {
         read_record(named, &self.bytes)?;
         source.validate()
     }
-    /// Retirement releases this actor's epoch reference. Only the last actor
-    /// obtains physical ownership and can positively observe the owned unmount.
+    /// Releases this actor's epoch reference; only the last actor gets physical ownership and can
+    /// observe the owned unmount.
     fn retire(self: Arc<Self>) -> io::Result<()> {
-        // Keep the state lock independent of physical ownership so last Arc
-        // consumption and abandoned actor Drop serialize without a race.
+        // Keep the state lock independent of physical ownership, so last Arc consumption and an
+        // abandoned actor's Drop serialize without a race.
         let state = Arc::clone(&self.retirement);
         let orphaned = state.lock().unwrap_or_else(|error| error.into_inner());
         if *orphaned {
@@ -389,8 +382,8 @@ impl Drop for RetainedMountedEpoch {
             return;
         };
         UNKNOWN_SOURCE_RETIREMENT.store(true, std::sync::atomic::Ordering::Release);
-        // Unexpected last-owner loss is not an observed retirement. Preserve
-        // exact mount/service/Home custody instead of implicit unmount in Drop.
+        // Unexpected last-owner loss is not observed retirement: keep exact mount, service and Home
+        // custody instead of unmounting in Drop.
         static UNKNOWN: std::sync::Mutex<Vec<RetainedSource>> = std::sync::Mutex::new(Vec::new());
         match UNKNOWN.lock() {
             Ok(mut held) if held.len() < 64 => held.push(source),
@@ -419,9 +412,8 @@ impl Drop for RetainedSourceAuthority {
     }
 }
 impl RetainedSourceAuthority {
-    /// Terminal process-owned custody observation, never access authority.
-    /// Constructors can fail before returning an actor; the root supervisor
-    /// must still remain alive while exact quarantined source custody is unknown.
+    /// Constructors can fail before returning an actor, so the supervisor must stay alive while exact
+    /// quarantined custody is unknown.
     pub fn unknown_retirement() -> bool {
         UNKNOWN_SOURCE_RETIREMENT.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -440,8 +432,6 @@ impl RetainedSourceAuthority {
             cancel,
         )
     }
-    /// Only the installed root actor may use this continuation. Its active
-    /// person still comes from the separately authenticated native session.
     pub(in crate::setup) fn review_installed(
         installed: Arc<AuthenticatedInstalledRetained>,
         active_person: &[u8; 32],
@@ -488,7 +478,6 @@ impl RetainedSourceAuthority {
             .transpose()?
             .unwrap_or_else(|| original.clone());
         // Read authenticated control data through an actual RO lease first;
-        // no root writable permit exists until this proof has been checked.
         let readonly =
             crate::setup::migration_handoff::mount_authenticated_read_only(effective.as_plan())?;
         if let Some(resize) = &manifest.planned_btrfs_resize {
@@ -587,9 +576,8 @@ impl RetainedSourceAuthority {
         }
         crate::setup::migration::check_cancel(cancel)
     }
-    /// Narrow handoff for the upcoming canonical source-only native launcher.
-    /// The callback MUST attach this exact Arc to process custody; this seam
-    /// deliberately does not launch, mint an app grant or advertise support.
+    /// The callback must attach this exact Arc to process custody; this seam does not launch, mint an
+    /// app grant or advertise support.
     pub fn projection(
         self: &Arc<Self>,
         cancel: &AtomicBool,
@@ -604,8 +592,8 @@ impl RetainedSourceAuthority {
     }
     pub fn native_owner_sha256(&self, cancel: &AtomicBool) -> io::Result<[u8; 32]> {
         self.revalidate(cancel)?;
-        // These canonical bytes came from the independently opened private root
-        // record, not the serialized caller declaration or transient launch PID.
+        // These canonical bytes came from the independently opened private root record, not the
+        // serialized declaration or a transient launch PID.
         let owner = Sha256::digest(&self.epoch.bytes).into();
         self.revalidate(cancel)?;
         Ok(owner)
@@ -628,13 +616,11 @@ impl RetainedSourceAuthority {
 }
 
 /// Native-only inseparable source descriptor/custody handoff for increment B.
-/// The launcher must retain this object until its namespace is actually stopped.
 pub struct RetainedSourceProjection {
     directory: File,
     custody: Arc<RetainedSourceAuthority>,
 }
 impl RetainedSourceProjection {
-    /// Stable authenticated source owner, never an editor/process identity.
     pub fn native_owner_sha256(&self, cancel: &AtomicBool) -> io::Result<[u8; 32]> {
         self.revalidate(cancel)?;
         let owner = self.custody.native_owner_sha256(cancel)?;
@@ -647,7 +633,6 @@ impl RetainedSourceProjection {
     pub fn revalidate(&self, cancel: &AtomicBool) -> io::Result<()> {
         self.custody.revalidate(cancel)
     }
-    /// Source custody only; caller must separately authenticate the new actor.
     /// No pathname, manifest DTO or directory FD can construct this derivative.
     pub fn derive_installed(
         &self,

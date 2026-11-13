@@ -20,8 +20,8 @@ pub struct Item {
 
 #[resource(
     kind = "test.checklist",
-    label = "Checklist",
-    app = "so.tilo.test-checklist"
+    app = "so.tilo.test-checklist",
+    catalogue = "tests/locales"
 )]
 impl Checklist {
     /// Rename the checklist.
@@ -538,26 +538,28 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
     let viewer = app.permissions();
     let mut standing = viewer.standing().clone();
     let workspace = TreePath::workspace(&standing.policy.workspace);
-    let person = Subject::person(standing.person.clone());
-    standing.policy.grants.extend([
-        Grant::new(
-            "asks",
-            person.clone(),
-            workspace.clone(),
-            KindSet::UNDOABLE,
-            Answer::Ask,
-            Subject::person("owner"),
-        ),
-        Grant::new(
-            "once",
-            person,
-            workspace.app(ChecklistApp::ID),
-            KindSet::UNDOABLE,
-            Answer::Allow,
-            Subject::person("owner"),
-        )
-        .with_lifetime(Lifetime::Once),
-    ]);
+    let person = Subject::person(standing.person_id().unwrap_or_default());
+    std::sync::Arc::make_mut(&mut standing.policy)
+        .grants
+        .extend([
+            Grant::new(
+                "asks",
+                person.clone(),
+                workspace.clone(),
+                KindSet::UNDOABLE,
+                Answer::Ask,
+                Subject::person("owner"),
+            ),
+            Grant::new(
+                "once",
+                person,
+                workspace.app(ChecklistApp::ID),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Subject::person("owner"),
+            )
+            .with_lifetime(Lifetime::Once),
+        ]);
     let granted = viewer.with_standing(standing);
 
     // Nothing here can revoke it: the grant given once is not relied on.

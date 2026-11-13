@@ -1,14 +1,5 @@
 //! CPU-cost budgets for the interactions a person feels in Settings: opening,
 //! switching pages, scrolling and typing.
-//!
-//! Every interaction runs through the production host path (`FrameHarness`
-//! sends the real winit events, then runs sync, layout and scene encoding), at
-//! the Yoga's logical viewport (2944x1840 physical at scale 2). Each budget
-//! holds the CPU time the test thread, the one running the UI, spent on the
-//! step ([`Step`]), so it reads the same on a busy machine. Budgets only
-//! apply to optimised builds; a debug build prints the numbers and skips the
-//! assertions. Run with:
-//! `cargo test -p settings --release --test it perf_budget -- --nocapture`.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -53,7 +44,6 @@ impl Step {
     }
 }
 
-/// Steps measured on both clocks, in microseconds.
 #[derive(Default)]
 struct Samples {
     cpu: Vec<u64>,
@@ -61,10 +51,8 @@ struct Samples {
 }
 
 impl Samples {
-    /// Add the step started at `t`, split over `per` events.
     fn push_per(&mut self, t: &Step, per: u64) {
         let wall = t.wall.elapsed();
-        // Wall time where the platform keeps no per-thread CPU clock.
         let cpu = t
             .cpu
             .zip(ui::rt::thread_cpu_time())
@@ -74,8 +62,6 @@ impl Samples {
     }
 }
 
-/// p50 / p99 / max of `samples`' CPU time in microseconds, with the wall
-/// time beside it; returns the CPU p50 and p99.
 fn summary(label: &str, samples: &mut Samples) -> (u64, u64) {
     let stats = |samples: &mut [u64]| {
         samples.sort_unstable();
@@ -91,7 +77,6 @@ fn summary(label: &str, samples: &mut Samples) -> (u64, u64) {
     (p50, p99)
 }
 
-/// Mean per-pass cost of the frames a profiled interaction produced.
 fn passes(label: &str, frames: &[ui::profiling::FrameTiming]) {
     let n = frames.len().max(1) as u64;
     let sum = |f: fn(&ui::profiling::FrameTiming) -> u64| frames.iter().map(f).sum::<u64>() / n;
@@ -124,8 +109,6 @@ fn mount_on(category: Category) -> crate::support::Window {
     crate::support::window_on(category, (W, H))
 }
 
-/// Switch to `category`'s page the way the open action does, and lay the
-/// window out again. The hosted click around it is measured in [`hosted`].
 fn switch(app: &mut crate::support::Window, category: Category) {
     app.effect(&settings::effects::open_pane(category))
         .expect("the pane opens");
@@ -158,7 +141,6 @@ fn page_switch() {
         Category::Bluetooth,
         Category::DeviceMesh,
     ];
-    // Warm the shaping caches like a person's second visit.
     for c in cats {
         switch(&mut app, c);
     }
@@ -181,8 +163,6 @@ fn page_switch() {
     budget("page switch", p50, 8_000);
 }
 
-/// The pages with drawn views (the globe, the charge chart, the theme
-/// tiles, the keyboard) switch as fast as the plain ones.
 #[test]
 fn drawn_pages_switch() {
     let mut app = mount();
@@ -215,8 +195,6 @@ fn drawn_pages_switch() {
     budget("drawn page switch", p50, 8_000);
 }
 
-/// Dragging the globe redraws it without rebuilding the page: each drag is
-/// a press, four moves and a release, reported per event.
 #[test]
 fn globe_drag_frame() {
     // Time & Date is view code over its sections, built only in the app's
@@ -226,10 +204,8 @@ fn globe_drag_frame() {
         crate::support::Window::capture_at(Some(Category::TimeDate.slug()), (W as u32, H as u32))
             .expect("settings opens on Time & date");
     let h = app.harness();
-    // The clock is read off the UI thread; the globe is drawn once it lands.
     let globe = tilo_test_env::wait_for("the globe is laid out", || {
         let _ = h.poll_frame();
-        // The globe is the page's one canvas.
         h.a11y_nodes()
             .into_iter()
             .find(|(_, node)| node.role() == ui::accesskit::Role::Canvas)
@@ -266,8 +242,6 @@ fn scroll_frame() {
     budget("scroll frame", p50, 4_000);
 }
 
-/// A keystroke in the window bar's search: the bar hands the query to
-/// Settings, which narrows its sidebar in place.
 #[test]
 fn keystroke_in_window_search() {
     let mut app = mount();
@@ -284,7 +258,6 @@ fn keystroke_in_window_search() {
     budget("keystroke", p50, 4_000);
 }
 
-/// Attribution only: where one page switch spends its time.
 #[test]
 fn page_switch_attribution() {
     let mut app = mount();
@@ -313,8 +286,6 @@ fn page_switch_attribution() {
     }
 }
 
-/// One drag step: the window changes width and height by a few pixels and the
-/// content must be laid out and drawn again.
 #[test]
 fn resize_step() {
     let mut app = mount_on(Category::Displays);
@@ -335,9 +306,6 @@ fn resize_step() {
     budget("resize step", p50, 8_000);
 }
 
-/// What a connected screen reader makes every frame cost: the live host builds
-/// the whole accessibility tree after each painted frame when an assistive
-/// technology is attached.
 #[test]
 fn accessibility_tree_per_frame() {
     let mut app = crate::support::window((W as u32, H as u32));
@@ -463,11 +431,6 @@ mod hosted {
         let _ = summary("hosted settings scroll step", &mut scroll);
     }
 
-    /// The action surface Settings publishes on a page, measured the way the
-    /// bridge sees it: the resource tree the host builds, surveyed into
-    /// actions, converted to the wire's exported form and serialised.
-    /// (The size is the serialised JSON length, the measure the Notes surface
-    /// volume test uses.) No budget: this reports what a publication costs.
     #[test]
     fn hosted_action_surface_cost() {
         let mut app = hosted();

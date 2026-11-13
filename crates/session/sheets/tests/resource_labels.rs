@@ -27,6 +27,9 @@ use tilo_sheets::uninstall::Uninstall;
 use tilo_sheets::workspace_settings::WorkspaceSettings;
 use ui::tilo_resource::{Resource, label};
 
+/// The catalogue every sheet's words are in: this crate's.
+const SHEETS: Option<&'static label::Catalogue> = Power::CATALOGUE;
+
 /// Each sheet's resource: its kind, the name it declares, what an English
 /// desktop reads it by, and what a German one does.
 type Sheet = (&'static str, &'static str, &'static str, &'static str);
@@ -106,8 +109,12 @@ fn a_sheet_names_its_resource_in_the_persons_language() {
     let _ = tilo_sheets::word("power-session");
     ui::i18n::I18nManager::set_locale("de-DE");
     for (kind, declared, english, german) in sheets() {
-        assert_eq!(label::localized(kind, declared), german, "{kind} in German");
-        assert_ne!(label::localized(kind, declared), english, "{kind}");
+        assert_eq!(
+            label::localized(kind, declared, SHEETS),
+            german,
+            "{kind} in German"
+        );
+        assert_ne!(label::localized(kind, declared, SHEETS), english, "{kind}");
     }
     // The same resolution a resource's own name goes through.
     assert_eq!(Power::label(), "Ein/Aus");
@@ -115,7 +122,7 @@ fn a_sheet_names_its_resource_in_the_persons_language() {
     ui::i18n::I18nManager::set_locale("en-US");
     for (kind, declared, english, _) in sheets() {
         assert_eq!(
-            label::localized(kind, declared),
+            label::localized(kind, declared, SHEETS),
             english,
             "{kind} in English"
         );
@@ -130,11 +137,11 @@ fn a_resource_a_sheet_names_itself_keeps_that_name() {
     // A publisher that names the resource itself (the app a question is
     // about, say) is not read through the kind's entry.
     assert_eq!(
-        label::published(Power::KIND, "Frogs, by name", Power::LABEL),
+        label::published(Power::KIND, "Frogs, by name", Power::LABEL, SHEETS),
         "Frogs, by name"
     );
     assert_eq!(
-        label::published(Power::KIND, Power::LABEL, Power::LABEL),
+        label::published(Power::KIND, Power::LABEL, Power::LABEL, SHEETS),
         "Ein/Aus"
     );
 }

@@ -45,14 +45,23 @@ mod pointed;
 #[path = "a11y_tree/walk.rs"]
 pub(crate) mod walk;
 use component_nodes::ComponentNodes;
+pub(crate) use component_nodes::component_record;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
-use walk::{A11yVisitor, Visit, walk, walk_synthetic};
+use walk::{A11yVisitor, Visit, walk, walk_synthetic, with_slot_words};
 
-/// A widget hosted inside its parent's synthetic tree, and the synthetic path
-/// below the child it hangs off ([`Widget::accessibility_child_path`]).
-pub(crate) type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
+/// A widget hosted inside its parent's synthetic tree: the synthetic path below the child it
+/// hangs off ([`Widget::accessibility_child_path`]), and whether that child *is* the widget's
+/// own node — the parent publishes the widget's semantics itself
+/// ([`Widget::accessibility_represents_child`]), so the walk attaches the widget's children to
+/// the synthetic node and exports no second node of the widget's own.
+pub(crate) struct HostedWidget<'a> {
+    pub path: Vec<usize>,
+    pub widget: &'a dyn Widget,
+    pub as_node: bool,
+}
+
 /// Hosted widgets by the index of the synthetic child they hang off.
 pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
@@ -63,7 +72,7 @@ pub(crate) struct ExportedChildren<'a> {
     pub direct: Vec<(usize, &'a dyn Widget)>,
     /// Walked under the synthetic child they hang off.
     pub hosted: HostedByIndex<'a>,
-    /// Not walked: the widget represents them in its own synthetic tree.
+    /// No node of their own: the widget represents them in its own synthetic tree.
     pub represented: Vec<&'a dyn Widget>,
 }
 
@@ -74,17 +83,28 @@ pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
         represented: Vec::new(),
     };
     for (index, child) in w.children().into_iter().enumerate() {
-        if w.accessibility_represents_child(index) {
-            children.represented.push(child);
-        } else if let Some(mut path) = w.accessibility_child_path(index)
+        let represented = w.accessibility_represents_child(index);
+        if let Some(mut path) = w.accessibility_child_path(index)
             && !path.is_empty()
         {
             let parent_index = path.remove(0);
+            // A represented child's own node is the synthetic one it hangs off, so what it
+            // holds is walked under it; it still names the child that holds keyboard focus, as
+            // an unhosted one does.
+            if represented {
+                children.represented.push(child);
+            }
             children
                 .hosted
                 .entry(parent_index)
                 .or_default()
-                .push((path, child));
+                .push(HostedWidget {
+                    path,
+                    widget: child,
+                    as_node: represented,
+                });
+        } else if represented {
+            children.represented.push(child);
         } else {
             children.direct.push((index, child));
         }
@@ -92,28 +112,29 @@ pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
     children
 }
 
-/// The widgets hosted in one synthetic child: walked as its own children
-/// when any hangs off it directly, else handed on to its synthetic children.
-pub(crate) enum HostedIn<'a> {
-    Direct(Vec<&'a dyn Widget>),
-    Nested(HostedByIndex<'a>),
+/// The widgets hosted in one synthetic child: those hanging off it directly, and those hanging
+/// off its own synthetic children. A synthetic child can hold both — the controls a widget
+/// describes in its own node, and the widgets whose tree it publishes as that node.
+pub(crate) struct HostedHere<'a> {
+    pub direct: Vec<HostedWidget<'a>>,
+    pub nested: HostedByIndex<'a>,
 }
 
-pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedIn<'_> {
-    let direct = hosted
-        .iter()
-        .filter(|(path, _)| path.is_empty())
-        .map(|(_, child)| *child)
-        .collect::<Vec<_>>();
-    if !direct.is_empty() {
-        return HostedIn::Direct(direct);
+pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedHere<'_> {
+    let mut here = HostedHere {
+        direct: Vec::new(),
+        nested: HostedByIndex::new(),
+    };
+    for hosted in hosted {
+        if hosted.path.is_empty() {
+            here.direct.push(hosted);
+        } else {
+            let mut hosted = hosted;
+            let child_index = hosted.path.remove(0);
+            here.nested.entry(child_index).or_default().push(hosted);
+        }
     }
-    let mut nested = HostedByIndex::new();
-    for (mut path, child) in hosted {
-        let child_index = path.remove(0);
-        nested.entry(child_index).or_default().push((path, child));
-    }
-    HostedIn::Nested(nested)
+    here
 }
 /// Ids are paths, as long as the tree is deep, and every node is hashed a few
 /// times a refresh: a fast hash, not a DoS-resistant one, for keys no peer
@@ -438,7 +459,7 @@ impl SemanticTree {
                 id: root.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some("Tilo application window".into()),
+                name: Some(crate::i18n::widget_format("window-root-name", &[])),
                 value: None,
                 description: None,
                 state: AccessState::default(),
@@ -686,7 +707,7 @@ impl SemanticTree {
                 id: root_id.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some("Tilo application window".into()),
+                name: Some(crate::i18n::widget_format("window-root-name", &[])),
                 value: None,
                 description: None,
                 state: AccessState::default(),
@@ -961,17 +982,31 @@ impl SemanticTree {
             .filter(|node| {
                 !node.id.0.starts_with("r:") && node.id.control_key() == Some(control_id)
             })
-            .filter_map(|node| {
-                let mut path = vec![node.id.clone()];
-                let mut cursor = node.id.clone();
-                while cursor != self.root {
-                    cursor = parents.get(&cursor)?.clone();
-                    path.push(cursor.clone());
-                }
-                path.reverse();
-                Some(path)
-            })
+            .filter_map(|node| self.path_from_root(&parents, &node.id))
             .collect::<Vec<_>>()
+    }
+
+    /// `id`'s ancestors from the root down, `id` last, as `parents` (each
+    /// node's parent by id) leads up to the root. An id two nodes share can
+    /// make that lead round in a circle (a node listed among the children of
+    /// one of its own descendants): no path is longer than the tree has
+    /// nodes, so a walk that would be is no path, never an endless one.
+    fn path_from_root(
+        &self,
+        parents: &HashMap<SemanticId, SemanticId>,
+        id: &SemanticId,
+    ) -> Option<Vec<SemanticId>> {
+        let mut path = vec![id.clone()];
+        let mut cursor = id;
+        while *cursor != self.root {
+            if path.len() > self.len() {
+                return None;
+            }
+            cursor = parents.get(cursor)?;
+            path.push(cursor.clone());
+        }
+        path.reverse();
+        Some(path)
     }
 
     pub fn action(&self, id: &SemanticId, name: &str) -> Option<&SemanticAction> {
@@ -1527,7 +1562,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
     fn open(
         &mut self,
         w: &dyn Widget,
-        _slot: Option<(&dyn Widget, usize)>,
+        slot: Option<(&dyn Widget, usize)>,
         parent: &mut Level,
     ) -> Visit<PendingWidget, Level> {
         // Under a parent without a durable identity nothing is durable, and
@@ -1544,9 +1579,10 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             Some(SharedAccessNode { node, children }) => (Some(node), children),
             None => (w.accessibility(), Vec::new()),
         };
-        let Some(access) = access else {
+        let Some(mut access) = access else {
             return Visit::Collapse;
         };
+        with_slot_words(&mut access, slot.as_ref());
         let id = if let Some(key) = &access.semantic_key {
             SemanticId::keyed(&parent.id, key)
         } else if let Some(t) = taffy_id {
@@ -2092,6 +2128,25 @@ mod tests {
         assert!(tree.control_paths("missing").is_empty());
         assert!(tree.control_paths_unranked("").is_empty());
         assert!(tree.control_paths("").is_empty());
+    }
+
+    /// Two nodes under one id can list each other as children: the walk up
+    /// from either finds no path to the root rather than climbing for ever.
+    #[test]
+    fn parents_that_go_round_in_a_circle_lead_to_no_path() {
+        let mut root = Column::new().push(Box::new(
+            crate::widget::Scrollable::new_vertical()
+                .with_semantic_key("advanced")
+                .with_child(Box::new(Button::new("save", "Save"))),
+        ));
+        let nodes = layout(&mut root);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&root, &nodes, None, &[]);
+        let save = tree.find_by_name("Save").unwrap().id.clone();
+        let [path] = tree.control_paths_unranked("save").try_into().unwrap();
+        let group = path[path.len() - 2].clone();
+        let parents = HashMap::from([(save.clone(), group.clone()), (group, save.clone())]);
+        assert_eq!(tree.path_from_root(&parents, &save), None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! Reopen the real guided resource; no host persona, pairing or installation starts.
+
 use super::*;
 use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
@@ -25,7 +26,6 @@ fn accept_compatibility(app: &mut App) {
     wait(app, |state| state["page"] == "migration");
 }
 fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-    // Identity preparation derives keys; a loaded test node can take longer than a fixed 30 s.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
@@ -105,9 +105,6 @@ fn prepare_with_migration(
     ] {
         app.effect(&effect).unwrap();
     }
-    // The password belongs to the retained checkpoint this test writes. The
-    // interactive route has no password stop, so return to Devices for the
-    // ordinary Continue and never re-mint the prepared identity.
     app.with_widget::<InstallerPreview, _>(|view| {
         view.journey.page = Page::Devices;
         view.dirty = true;
@@ -350,8 +347,6 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     assert_eq!(read(&mut resumed)["page"], "purpose");
     choose(&mut resumed, "computer");
     assert_eq!(read(&mut resumed)["page"], "belongings");
-    // Normal forward navigation rediscovers metadata without importing
-    // credentials or requiring the person to know about the recheck action.
     wait(&mut resumed, |state| state["belongings_checking"] == false);
     resumed
         .with_widget::<InstallerPreview, _>(|view| {
@@ -393,7 +388,6 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     assert_eq!(read(&mut resumed)["accounts"]["prepared_accounts"], 0);
     assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
 
-    // The actual footer opens review first, then imports the reviewed selection.
     resumed
         .effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
@@ -510,9 +504,6 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     drop(identity);
     go_to_accounts(&mut original);
     assert_eq!(read(&mut original)["page"], "accounts");
-    // The empty selection is checkpointed as soon as Accounts opens. Let it
-    // settle before replacing the live Accounts with the fixture; replacing
-    // the struct drops a worker still saving the previous selection.
     await_checkpoint(&mut original, 0);
     let accounts = accounts::checkpoint_fixture_for_journey(&root.join("account-fixture"));
     let ids = accounts.prepared_handle().unwrap().selected_ids();
@@ -523,9 +514,6 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     original
         .effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    // Continue saves the account checkpoint and prepares belongings first. A
-    // build without direct installation has no storage decision; Review offers
-    // the USB installer.
     let advanced = wait(&mut original, |state| {
         state["page"] != "accounts" || state["media_preparation"]["state"] == "failed"
     });
@@ -554,8 +542,6 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
         .unwrap();
     assert_restored_grants(&mut resumed, &ids);
     go_to_accounts(&mut resumed);
-    // Canonical Spotify removal has no OAuthCloud HTTP revocation branch;
-    // this fixture exercises actual local custody removal without a network adapter.
     for (index, id) in ids.iter().enumerate() {
         resumed
             .effect(&InstallerPreviewEffect::AccountStep {

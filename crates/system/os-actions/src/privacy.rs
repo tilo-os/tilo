@@ -7,10 +7,9 @@ use crate::rfkill::{self, RfkillState};
 
 pub use media::audio::capture::MediaKind;
 
-/// One actively-running `PipeWire` capture stream. `label` is derived from the
-/// executable behind `PipeWire`'s server-assigned security PID, never from the
-/// client-supplied `application.name`; an app cannot rename itself to another
-/// app in the indicator.
+/// One active `PipeWire` capture stream. `label` comes from the executable behind `PipeWire`'s
+/// server-assigned security PID, never from the client-supplied `application.name`, so an app cannot
+/// rename itself to another app in the indicator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveMediaUse {
     pub client_id: u32,
@@ -103,8 +102,8 @@ fn get_privacy_status_from(class: &Path, dev: &Path) -> PrivacyStatus {
         }),
         ..PrivacyStatus::default()
     };
-    // Every switch of a kind is folded in, so a machine with more than one
-    // (the card's own and the platform's) reports blocked when any of them is.
+    // Every switch of a kind is folded in, so a machine with more than one (the card's own and the
+    // platform's) reports blocked when any of them is.
     let mut radios: HashMap<String, RfkillState> = HashMap::new();
     for (kind, switch) in rfkill::switches(class) {
         let folded = radios.entry(kind).or_default();
@@ -114,15 +113,15 @@ fn get_privacy_status_from(class: &Path, dev: &Path) -> PrivacyStatus {
     status.wifi_kill = kill("wlan");
     status.bluetooth_kill = kill("bluetooth");
     status.mobile_kill = kill("wwan");
-    // Some platforms expose physical camera/mic shutters through rfkill even
-    // though these names are not mandated by Linux.
+    // Some platforms expose physical camera and microphone shutters through rfkill, though these names
+    // are not mandated by Linux.
     status.camera_kill = kill("camera");
     status.microphone_kill = kill("microphone");
     status
 }
 
-/// Snapshot active capture streams through `PipeWire`'s own graph, each
-/// attributed from `/proc`: see [`media::audio::capture`].
+/// Active capture streams from `PipeWire`'s own graph, each attributed from `/proc`; see
+/// [`media::audio::capture`].
 pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
     Ok(media::audio::capture::media_uses()?
         .into_iter()
@@ -130,9 +129,8 @@ pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
         .collect())
 }
 
-/// Immediately disconnect an offending `PipeWire` client. This is
-/// deliberately an ephemeral stop, not a pretend persistent permission:
-/// portal-managed grants remain owned by the portal permission store.
+/// Disconnects an offending client at once. Deliberately an ephemeral stop, not a pretend persistent
+/// permission: portal-managed grants stay owned by the portal permission store.
 pub fn revoke_media_client(client_id: u32) -> Result<(), String> {
     crate::process::run("pw-cli", &["destroy", &client_id.to_string()])
 }

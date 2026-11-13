@@ -12,6 +12,11 @@ use crate::{CRATE, doc_lines, humanize, is_action_cx, krate, last_ident, owned_t
 pub(crate) struct ResourceOptions {
     kind: String,
     label: String,
+    /// `label = "..."` as written: a key of the crate's catalogue.
+    named: Option<String>,
+    /// `catalogue = "dir"`: where the catalogue its words are keys of is,
+    /// relative to the crate.
+    catalogue: Option<String>,
     /// The app that publishes records of this kind, which its typed
     /// references name their actions by (`#[resource(app = "…")]`); the
     /// framework app's id where the record names none.
@@ -68,6 +73,8 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
     let mut options = ResourceOptions {
         kind: String::new(),
         label: String::new(),
+        named: None,
+        catalogue: None,
         app: None,
         params: None,
         search: None,
@@ -108,6 +115,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
                 "kind" => kind = Some(text),
                 "label" => label = Some(text),
                 "app" => options.app = Some(text),
+                "catalogue" => options.catalogue = Some(text),
                 _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
             }
             continue;
@@ -158,6 +166,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             "`version = N` and `migrate = path` go together: a new version needs a migration",
         ));
     }
+    options.named.clone_from(&label);
     options.label = label.unwrap_or_else(|| options.kind.clone());
     Ok(options)
 }
@@ -199,6 +208,9 @@ struct ActionOptions {
     prepare: Option<syn::Path>,
     /// `audience = "agents"` or `"people"`: who listings offer it to.
     audience: Option<syn::Ident>,
+    /// `step = "create"`: the kind of step it takes, as presence and the
+    /// activity card say it (`tilo_actions::StepKind`).
+    step: Option<syn::Ident>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -222,6 +234,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         writes: Vec::new(),
         prepare: None,
         audience: None,
+        step: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -282,9 +295,11 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else if meta.path.is_ident("audience") {
             options.audience = Some(crate::audience_option(&meta)?);
+        } else if meta.path.is_ident("step") {
+            options.step = Some(crate::step_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"`, `step = \"create\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -689,19 +704,19 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
     let content = param.role == Role::Content;
-    let schema = match (&param.picks, crate::byte_param(ty)) {
-        (Some(kind), _) => quote!(|| #krate::__private::picked_resource_schema(#kind)),
-        (None, Some((_, schema))) => schema,
-        (None, None) => quote!(<#ty as #krate::JsonSchema>::json_schema),
-    };
-    // A picked resource is a reference to one of its kind; bytes travel as
-    // content, which the vocabulary does not describe.
-    let field_type = match (&param.picks, crate::byte_param(ty)) {
-        (Some(kind), _) => quote!(|_: &mut #krate::TypeSet| {
-            #krate::FieldType::Resource(::std::string::String::from(#kind))
-        }),
-        (None, Some(_)) => quote!(|_: &mut #krate::TypeSet| #krate::FieldType::Any),
-        (None, None) => quote!(<#ty as #krate::JsonSchema>::field_type),
+    // A picked resource is a reference to one of its kind.
+    let (schema, field_type) = if let Some(kind) = &param.picks {
+        (
+            quote!(|| #krate::__private::picked_resource_schema(#kind)),
+            quote!(|_: &mut #krate::TypeSet| {
+                #krate::FieldType::Resource(::std::string::String::from(#kind))
+            }),
+        )
+    } else {
+        (
+            quote!(<#ty as #krate::JsonSchema>::json_schema),
+            quote!(<#ty as #krate::JsonSchema>::field_type),
+        )
     };
     quote! {
         #krate::__private::ParamDecl {
@@ -772,10 +787,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
                 ))
             },
         );
-        let schema = crate::byte_param(ty).map_or_else(
-            || quote!(<#ty as #krate::JsonSchema>::json_schema()),
-            |(_, schema)| quote!(#schema()),
-        );
+        let schema = quote!(<#ty as #krate::JsonSchema>::json_schema());
         quote! {(
             #public,
             #krate::__private::param_schema(
@@ -852,9 +864,6 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
             return quote!(#ident: #krate::__private::serde::Deserialize::deserialize(
                 #krate::__private::serde_json::Value::Object(args),
             )?);
-        }
-        if let Some((decode, _)) = crate::byte_param(&param.ty) {
-            return quote!(#ident: #krate::__private::bytes_arg(&mut args, #public, #decode)?);
         }
         let optional = last_ident(&param.ty).is_some_and(|(name, _)| name == "Option");
         quote!(#ident: #krate::__private::arg(&mut args, #public, #optional)?)
@@ -967,7 +976,26 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         .clone()
         .unwrap_or_else(|| format_ident!("{}", snake_case(&type_name)));
     let kind = &options.kind;
-    let label = &options.label;
+    let catalogue = crate::words::Catalogue::read(
+        options
+            .catalogue
+            .as_deref()
+            .unwrap_or(crate::words::LOCALES),
+    );
+    let (_, label) = catalogue.declared(
+        &krate,
+        Span::call_site(),
+        options.named.as_deref(),
+        &crate::words::key(kind, ""),
+        &options.label,
+    )?;
+    let label = &label;
+    let catalogue_of_kind = if catalogue.text(&crate::words::key(kind, "")).is_some() {
+        let reference = catalogue.reference(&krate);
+        quote!(::core::option::Option::Some(#reference))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     // The app whose `ActionKey`s its actions are published under. A record
     // that names none is the framework app's, whose id replaces the
     // placeholder at registration.
@@ -1042,7 +1070,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         let id = &verb.id;
         let variant = &verb.variant;
         let method = &verb.method;
-        let label_text = &verb.label;
+        let (label_word, label_text) = catalogue.declared(
+            &krate,
+            verb.method.span(),
+            verb.options.label.as_deref(),
+            &crate::words::key(kind, id),
+            &verb.label,
+        )?;
         structs.push(params_struct(verb, &self_ty, &type_name));
         variants.push(quote! {
             #[serde(rename = #id)]
@@ -1354,6 +1388,22 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
+        // What kind of step it takes: what its declaration names, else what
+        // its shape says — a verb that takes something away is a deletion, one
+        // that acts on an item of a collection changes that item.
+        let step_variant = verb.options.step.clone().or_else(|| {
+            if destructive {
+                Some(syn::Ident::new("Delete", proc_macro2::Span::call_site()))
+            } else if verb.options.item.is_some() {
+                Some(syn::Ident::new("Edit", proc_macro2::Span::call_site()))
+            } else {
+                None
+            }
+        });
+        let step = step_variant.as_ref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |kind| quote!(::core::option::Option::Some(#krate::__private::StepKind::#kind)),
+        );
         let irreversible = verb.options.irreversible;
         let housekeeping = verb.options.housekeeping;
         let answer = if verb.options.answers {
@@ -1444,7 +1494,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         let verb_decl = quote! {
             #krate::__private::VerbDecl {
                 id: #id,
-                label: #label_text,
+                label: #label_word,
                 keywords: &[#(#keywords),*],
                 icon: #icon,
                 description: #description,
@@ -1462,6 +1512,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 content: #content,
                 item_field: #item_field,
                 writes: &[#(#declared_writes),*],
+                step: #step,
                 shape: <#self_ty as #krate::Model>::SHAPE,
                 params: #params_mod::#variant::__PARAMS,
             }
@@ -1914,6 +1965,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         (quote!(record), quote!(cx))
     };
 
+    catalogue.missing()?;
     Ok(quote! {
         #item
 
@@ -2041,6 +2093,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         impl #krate::Resource for #self_ty {
             const KIND: &'static str = #kind;
             const LABEL: &'static str = #label;
+            const CATALOGUE: ::core::option::Option<&'static #krate::label::Catalogue> =
+                #catalogue_of_kind;
             const APP_ID: &'static str = #app_id;
             const RECORD_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
                 ::core::option::Option::Some(<Self as #krate::Model>::TABLE);

@@ -16,7 +16,7 @@ use ui::widget::modal_dialog::{self, ModalLayout, ModalSpec};
 
 const ROWS: &[(&str, &[&str])] = &[
     ("Open message", &["Enter"]),
-    ("Preview without marking read", &["P"]),
+    ("Preview", &["P"]),
     ("Next message", &["J"]),
     ("Previous message", &["K"]),
     ("Search this folder", &["/"]),
@@ -37,8 +37,6 @@ const ROWS: &[(&str, &[&str])] = &[
     ("Close this list", &["Esc"]),
 ];
 
-/// A small, local presentation overlay. It owns no mailbox state: every
-/// shortcut it lists runs through the app's normal action routes.
 pub struct MailShortcutsOverlay {
     visible: bool,
     viewport: Rect,
@@ -122,7 +120,8 @@ impl MailShortcutsOverlay {
             .as_ref()
             .and_then(|layout| layout.close)
             .is_some_and(|rect| rect.contains(self.last_cursor));
-        let spec = ModalSpec::new("Keyboard shortcuts")
+        let title = crate::i18n::t("mail-shortcuts-title");
+        let spec = ModalSpec::new(&title)
             .body_height(rows_per_column as f64 * row_h)
             .max_width(f64::from(spacing.s16) * 11.0)
             .close_hovered(close_hovered);
@@ -166,8 +165,6 @@ impl MailShortcutsOverlay {
         self.layout = Some(layout);
     }
 
-    /// Handle only while visible. The sheet is modal: an Escape or a key
-    /// meant to dismiss it never reaches Mail's actions underneath.
     pub fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         if !self.visible {
             return false;
@@ -238,7 +235,7 @@ impl MailShortcutsOverlay {
     pub fn accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Dialog)
-            .with_name("Keyboard shortcuts")
+            .with_name(crate::i18n::t("mail-shortcuts-title"))
             .with_bounds(self.card_rect().unwrap_or(Rect::ZERO))
             .with_state(AccessState::new().modal(true))
             .with_children(

@@ -1167,7 +1167,7 @@ mod tests {
 
         let hash = [7_u8; 32];
         let blobs = |_: &[u8; 32]| Some(Arc::new(TOP_PNG.to_vec()));
-        crate::image_decoders::defer_image_decoders(load);
+        crate::image_decoders::IMAGE_DECODERS.defer(load);
         let mut renderer = PageRenderer::new();
         assert_eq!(
             LOADS.load(Ordering::SeqCst),
@@ -1176,9 +1176,8 @@ mod tests {
         );
         assert!(renderer.image(&blobs, &hash).is_none());
         assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one fetch at a time");
-        crate::image_decoders::install_image_decoders(
-            crate::image_decoders::builtin_image_decoders,
-        );
+        crate::image_decoders::IMAGE_DECODERS
+            .install(crate::image_decoders::builtin_image_decoders());
         let image = renderer
             .image(&blobs, &hash)
             .expect("decoded once it is in");

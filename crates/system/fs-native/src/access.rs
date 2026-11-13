@@ -1,24 +1,20 @@
 //! Telling a read from a write when a permission event arrives.
 //!
-//! Pre-content events (`FAN_PRE_ACCESS`) do not say whether the access
-//! reads or writes, and `FAN_OPEN_PERM` does not say how the file is being
-//! opened. The accessing thread, however, is blocked inside the system call
-//! that raised the event until the listener answers, so its
-//! `/proc/<tid>/syscall` names that call and its arguments exactly: `read`
-//! or `pwrite64`, the descriptor it goes through, `openat`'s flags, `mmap`'s
-//! protection. With `FAN_REPORT_TID` the event carries that thread's id.
+//! Pre-content events (`FAN_PRE_ACCESS`) do not say whether the access reads
+//! or writes, and `FAN_OPEN_PERM` does not say how the file is opened. The
+//! accessing thread is blocked inside the system call that raised the event
+//! until the listener answers, so `/proc/<tid>/syscall` names that call and
+//! its arguments exactly.
 //!
-//! This decides per access, not per descriptor: a process that opened a
-//! file read-write and only reads it is a reader. When the call cannot be
-//! read (the thread is not blocked in a call, or `/proc` is not readable
-//! with the daemon's privileges) the answer is [`Access::Unknown`] and the
-//! caller falls back to looking at the process's open descriptors.
+//! This decides per access, not per descriptor: a process that opened a file
+//! read-write and only reads it is a reader. When the call cannot be read, the
+//! answer is [`Access::Unknown`] and the caller falls back to the process's
+//! open descriptors.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
-/// What an access does to the file it touches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
     Read,
@@ -26,8 +22,8 @@ pub enum Access {
     Unknown,
 }
 
-/// The system call a blocked thread is in, from `/proc/<tid>/syscall`:
-/// its number and its six arguments.
+/// The system call a blocked thread is in, from `/proc/<tid>/syscall`: its
+/// number and its six arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Syscall {
     pub nr: libc::c_long,
@@ -78,8 +74,8 @@ fn open_flags_write(flags: u64) -> bool {
 }
 
 /// Classifies one call against the gated file. `refers` says whether a
-/// descriptor of the calling thread is that file; `openat2_flags` reads
-/// the flags of an `openat2` call's `struct open_how`.
+/// descriptor of the calling thread is that file; `openat2_flags` reads the
+/// flags of an `openat2` call's `struct open_how`.
 pub fn classify_call(
     call: &Syscall,
     refers: &dyn Fn(u64) -> bool,
@@ -172,7 +168,6 @@ pub fn classify_call(
     Access::Unknown
 }
 
-/// What the access by blocked thread `tid` does to the file `key`.
 pub fn classify(tid: i32, key: (u64, u64)) -> Access {
     let Ok(text) = fs::read_to_string(proc_task(tid).join("syscall")) else {
         return Access::Unknown;

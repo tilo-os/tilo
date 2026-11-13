@@ -1,34 +1,15 @@
-//! GPU compositing for the timeline — one renderer for the preview and
-//! the export.
+//! GPU compositing for one frame: the layer stack, the grade, the effect chain,
+//! the fade envelope and the transitions, in a wgpu compute pipeline.
+//! [`crate::preview`] decides what the stack is; [`compositor::VideoCompositor`]
+//! draws it.
 //!
-//! Everything visual about a frame happens here: the layer stack (every
-//! visible clip on every visible video track, bottom to top), the colour
-//! grade, the stackable effect chain, the fade/opacity envelope, and the
-//! transitions, all in a wgpu compute pipeline. [`crate::preview`]
-//! decides *what* the stack is (pure, testable, no device);
-//! [`compositor::VideoCompositor`] draws it.
-//!
-//! ## Where pictures come from
-//!
-//! The compositor never decodes anything. It asks a [`FrameSource`] for
-//! `(media, source_time) -> texture` and, when the source has nothing,
-//! falls back to the clip's deterministic representative fill. That one
-//! seam covers every case:
-//!
-//!   * `--shots` / hermetic CI — [`NoSources`], so no decoder is needed
-//!     and the frame is reproducible.
-//!   * The live preview and export — `MediaFrameSource`, decoding the real
-//!     media through the media engine.
-//!   * Tests — [`CpuFrames`] wrapping a closure that hands over CPU pixels.
-//!   * A future zero-copy path — a `FrameSource` handing back an imported
-//!     dmabuf texture, with nothing else in this module changing.
+//! The compositor never decodes: it asks a [`FrameSource`] for a texture and
+//! falls back to the clip's representative fill when there is none, which covers
+//! a hermetic capture, the live preview and export, and tests alike.
 
 pub mod compositor;
-/// Decoded pictures from the real media engine — the source the editor uses.
 #[cfg(feature = "decode")]
 pub mod media_source;
-/// Decoded pictures from seekers that never wait — the source of a build
-/// without the `GStreamer` sessions, which is a browser page's.
 #[cfg(not(feature = "decode"))]
 pub mod seek_source;
 pub mod title;
@@ -46,9 +27,8 @@ pub use media_source::{Fetch, MediaFrameSource};
 #[cfg(not(feature = "decode"))]
 pub use seek_source::{Fetch, SeekFrameSource as MediaFrameSource};
 
-/// A cheap signature of the media a frame source indexes, so a caller can
-/// skip re-indexing when nothing changed: FNV-1a over each visual item's id
-/// and path, summed so the bin's order does not count.
+/// FNV-1a over each visual item's id and path, summed so the bin's order does not
+/// count: a caller skips re-indexing when it has not changed.
 pub fn media_signature(project: &crate::model::Project) -> u64 {
     let mut acc: u64 = 0;
     for item in &project.media {
@@ -63,26 +43,19 @@ pub fn media_signature(project: &crate::model::Project) -> u64 {
     acc
 }
 
-/// A picture the compositor can sample, plus the size it was decoded at
-/// (which drives the aspect fit into the project frame).
 #[derive(Clone)]
 pub struct SourceTexture {
-    /// Kept alive alongside the view for as long as the caller holds this.
     pub texture: Arc<wgpu::Texture>,
     pub view: Arc<wgpu::TextureView>,
     pub width: u32,
     pub height: u32,
 }
 
-/// Resolves a layer's picture. Returning `None` is normal, not an error:
-/// the compositor then draws the layer's representative fill, so an
+/// `None` is normal: the layer then draws its representative fill, so an
 /// un-hydrated reference or a build with no decoder still renders.
 pub trait FrameSource {
-    /// Called once before the layers of a composite are resolved.
-    ///
-    /// A source that hands out textures it reuses across frames needs to know
-    /// where a composite begins, so two layers in the same frame never get
-    /// handed the same reusable texture.
+    /// A source that reuses textures across frames needs to know where a
+    /// composite begins, so two layers never get the same reusable texture.
     fn begin_frame(&mut self) {}
 
     fn resolve(
@@ -94,8 +67,6 @@ pub trait FrameSource {
     ) -> Option<SourceTexture>;
 }
 
-/// No pictures at all — every layer draws its representative fill. The
-/// hermetic path: deterministic, and it needs no media pipeline.
 pub struct NoSources;
 
 impl FrameSource for NoSources {
@@ -110,25 +81,18 @@ impl FrameSource for NoSources {
     }
 }
 
-/// Adapts any producer of CPU RGBA frames into a [`FrameSource`],
-/// uploading each picture once and caching it by identity.
-///
-/// The closure returns `(width, height, rgba, identity)`. `identity` is
-/// whatever distinguishes one decoded picture from another for that media
-/// — a presentation timestamp is the natural choice — and is the cache
-/// key, so holding a paused playhead re-uploads nothing.
+/// Each picture is uploaded once and cached by identity, so a paused playhead
+/// re-uploads nothing. The closure returns `(width, height, rgba, identity)`; a
+/// presentation timestamp is the natural identity.
 pub struct CpuFrames<F> {
     produce: F,
     cache: HashMap<(MediaId, u64), SourceTexture>,
 }
 
-/// One decoded picture handed over by a [`CpuFrames`] producer.
 pub struct CpuFrame {
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<Vec<u8>>,
-    /// Cache key within this media — a presentation timestamp in
-    /// milliseconds is the usual choice.
     pub identity: u64,
 }
 
@@ -161,8 +125,8 @@ where
             return Some(hit.clone());
         }
         let tex = upload_rgba(device, queue, frame.width, frame.height, &frame.rgba)?;
-        // A handful of distinct pictures is all a frame ever needs; keep
-        // the map from growing across a long export.
+        // A handful of distinct pictures is all a frame needs; keep the map from
+        // growing across a long export.
         if self.cache.len() > 16 {
             self.cache.clear();
         }
@@ -171,19 +135,16 @@ where
     }
 }
 
-/// A compositor bound to the process-wide shared wgpu device.
-///
-/// Uses [`ui::offscreen::shared_gpu`] rather than building an Instance of
-/// its own — parallel `wgpu::Instance` creation races inside Mesa and has
-/// crashed this workspace's test suite before.
+/// Uses [`ui::offscreen::shared_gpu`] rather than an `Instance` of its own:
+/// parallel `wgpu::Instance` creation races inside Mesa.
 pub struct HeadlessCompositor {
     gpu: ui::offscreen::SharedGpu,
     compositor: VideoCompositor,
 }
 
 impl HeadlessCompositor {
-    /// Borrow the shared device. Fails (rather than panicking) on a box
-    /// with no usable adapter, so callers can report it honestly.
+    /// Fails rather than panicking on a box with no usable adapter, so callers
+    /// can report it honestly.
     pub fn new() -> Result<Self, String> {
         let gpu = ui::offscreen::shared_gpu().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -192,8 +153,6 @@ impl HeadlessCompositor {
         })
     }
 
-    /// Composite the timeline at `playhead` and hand back a tightly-packed
-    /// `width * height * 4` RGBA frame.
     pub fn frame(
         &mut self,
         project: &crate::model::Project,
@@ -213,9 +172,8 @@ impl HeadlessCompositor {
         )
     }
 
-    /// [`Self::frame`] without waiting for the GPU, for a thread that may
-    /// not (a browser page's): the pixels arrive through the
-    /// [`PendingFrame`].
+    /// [`Self::frame`] without waiting for the GPU, for a thread that may not
+    /// (a browser page's).
     pub fn frame_later(
         &mut self,
         project: &crate::model::Project,
@@ -254,9 +212,8 @@ mod tests {
         ));
     }
 
-    /// The compositor under test, or a skip when this box has no adapter.
-    /// A missing GPU is an environment fact, not a passing test — every
-    /// caller here reports it loudly rather than asserting nothing.
+    /// A missing GPU is an environment fact, not a passing test: every caller
+    /// reports it loudly rather than asserting nothing.
     fn compositor() -> HeadlessCompositor {
         match HeadlessCompositor::new() {
             Ok(c) => c,
@@ -306,9 +263,8 @@ mod tests {
         id
     }
 
-    /// A [`FrameSource`] handing every layer the same known picture, so a
-    /// test can assert on *where the picture landed* rather than on a
-    /// stand-in fill. `paint(u, v) -> (r, g, b, a)` in 0..255.
+    /// Hands every layer the same known picture, so a test asserts on *where the
+    /// picture landed*. `paint(u, v) -> (r, g, b, a)` in 0..255.
     #[expect(
         clippy::many_single_char_names,
         reason = "pixel maths: frame w/h, texel index i, its u/v, and the colour c"
@@ -339,8 +295,6 @@ mod tests {
         })
     }
 
-    /// A flat mid-green picture, square, so a transform's effect on it is
-    /// unambiguous: green means "the clip is here", black means "it is not".
     fn green() -> CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>> {
         painted(32, 32, |_u, _v| [40, 200, 90, 255])
     }
@@ -352,8 +306,6 @@ mod tests {
         c.luma() < 0.06
     }
 
-    /// A one-clip project whose media is square, so the identity transform
-    /// aspect-fits it to the full height of a square frame.
     fn square_clip() -> (Project, Uuid) {
         let mut p = Project::new("t");
         let mid = Uuid::new_v4();
@@ -377,10 +329,8 @@ mod tests {
 
     #[test]
     fn a_composite_read_back_later_is_the_one_read_back_at_once() {
-        // A page cannot wait for its GPU, so its preview and export take the
-        // composite's pixels when they come back. They must be the very
-        // pixels the waiting path reads, or the page would export something
-        // other than what a desktop does.
+        // They must be the very pixels the waiting path reads, or a page would
+        // export something other than a desktop does.
         let mut c = compositor();
         let (p, _) = square_clip();
         let at_once = c.frame(&p, 1.0, 40, 24, &mut green());
@@ -406,9 +356,7 @@ mod tests {
     )]
     fn layer_transforms_scale_move_rotate_and_crop() {
         {
-            // The whole geometry feature has to be free at rest: an untouched
-            // clip must composite exactly as it did before there was a
-            // transform at all.
+            // An untouched clip must composite as it did before the transform.
             let (p, _) = square_clip();
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut green());
@@ -429,8 +377,6 @@ mod tests {
             };
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut green());
-            // Half scale on a square source in a square frame: the picture
-            // occupies the middle half, x and y in 16..48.
             assert!(
                 is_green(px(&buf, 64, 32, 32)),
                 "the centre still has picture"
@@ -442,8 +388,6 @@ mod tests {
         }
         {
             let (mut p, cid) = square_clip();
-            // A quarter-size clip pushed a quarter of the frame to the right
-            // and a quarter up.
             p.clip_mut(cid).unwrap().transform = Transform {
                 scale_x: 0.25,
                 scale_y: 0.25,
@@ -453,8 +397,6 @@ mod tests {
             };
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut green());
-            // Centre of the clip: 0.5 + 0.25 = 0.75 across, 0.5 - 0.25 = 0.25
-            // down → pixel (48, 16).
             assert!(
                 is_green(px(&buf, 64, 48, 16)),
                 "the clip sits up and to the right; got {:?}",
@@ -471,8 +413,6 @@ mod tests {
             p.clip_mut(cid).unwrap().transform = Transform::pip(0.2, (-1.0, 1.0), 0.03);
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut green());
-            // pos = -(0.5 - 0.1 - 0.03) = -0.37 → centre at 0.13 across, 0.87
-            // down → pixel (8, 55).
             assert!(
                 is_green(px(&buf, 64, 8, 55)),
                 "the inset sits bottom-left; got {:?}",
@@ -487,8 +427,6 @@ mod tests {
             }
         }
         {
-            // Half red, half blue, split down the middle. A clockwise quarter
-            // turn must put the left (red) half on top.
             let (mut p, cid) = square_clip();
             let mut src = painted(32, 32, |u, _v| {
                 if u < 0.5 {
@@ -550,8 +488,7 @@ mod tests {
             );
         }
         {
-            // The point of geometry on a layer stack: an inset clip must reveal
-            // what is under it, not letterbox it away.
+            // An inset clip must reveal what is under it, not letterbox it away.
             let mut p = Project::new("t");
             let under = Uuid::new_v4();
             let over = Uuid::new_v4();
@@ -578,9 +515,8 @@ mod tests {
             p.clip_mut(upper).unwrap().transform = Transform::pip(0.3, (1.0, -1.0), 0.04);
 
             let mut c = compositor();
-            // No sources at all: both layers draw their representative fill, so
-            // this also proves the stand-in respects the transform — a
-            // picture-in-picture reads as one in a hermetic capture.
+            // Both layers draw their fill, which proves the stand-in respects the
+            // transform.
             let buf = c.frame(&p, 1.0, 64, 64, &mut NoSources);
             let centre = px(&buf, 64, 32, 40);
             let inset = px(&buf, 64, 51, 13);
@@ -600,10 +536,8 @@ mod tests {
             );
         }
         {
-            // An image's transparent margin must let the layer beneath through;
-            // a decoded video frame that happens to carry zero alpha must not
-            // vanish. (A title is not used here: its picture is rasterised by
-            // the compositor, so it never reaches the frame source at all.)
+            // An image's transparent margin lets the layer beneath through; a video
+            // frame carrying zero alpha must not vanish.
             let mut p = Project::new("t");
             let mid = Uuid::new_v4();
             p.media.push(MediaItem {
@@ -638,8 +572,6 @@ mod tests {
                 px(&buf, 64, 48, 32),
             );
 
-            // The same picture on a video source keeps its transparent half,
-            // because video alpha is not honoured.
             p.media[0].kind = MediaKind::Video;
             let buf = c.frame(&p, 1.0, 64, 64, &mut src);
             assert!(
@@ -650,7 +582,6 @@ mod tests {
         }
     }
 
-    /// Place a title over `p` on track index `index`, returning its clip.
     fn title_clip(p: &mut Project, index: u32, text: crate::model::TextSource) -> Uuid {
         let mid = Uuid::new_v4();
         p.media.push(MediaItem {
@@ -662,7 +593,6 @@ mod tests {
             height: 0,
             fps: 30.0,
             palette: 4,
-            // A title has no bytes: nothing to hydrate, nothing to decode.
             path: String::new(),
             text: Some(text),
             ..Default::default()
@@ -681,12 +611,10 @@ mod tests {
     fn titles_composite_as_placed_glyph_layers() {
         {
             let mut p = Project::new("t");
-            // A video bed on V1 …
             let bed = media(&mut p, 0);
             let v1 = track(&mut p, 1);
             let under = p.add_clip(v1, bed, 0.0).unwrap();
             p.clip_mut(under).unwrap().out_point = 6.0;
-            // … and a big white title over it on V2.
             title_clip(
                 &mut p,
                 2,
@@ -708,8 +636,6 @@ mod tests {
                 white > 40,
                 "the title's glyphs reach the composite as white pixels, got {white}",
             );
-            // And the bed is still visible where the glyphs are not: a title is
-            // a layer with alpha, not an opaque card.
             let bed_px = buf
                 .chunks_exact(4)
                 .filter(|q| {
@@ -726,9 +652,8 @@ mod tests {
             );
         }
         {
-            // The hermetic path: with `NoSources` every other layer falls back
-            // to a stand-in fill, but a title's picture comes from the document
-            // and must be really drawn.
+            // A title's picture comes from the document and is really drawn, even
+            // with no sources.
             let mut p = Project::new("t");
             title_clip(
                 &mut p,
@@ -750,8 +675,6 @@ mod tests {
                 red > 30,
                 "the title renders with no decoder, got {red} red pixels"
             );
-            // Nothing else is on the timeline, so the rest is letterbox black —
-            // not the two-band stand-in a source-less clip would otherwise draw.
             let black = buf
                 .chunks_exact(4)
                 .filter(|q| q[0] < 12 && q[1] < 12 && q[2] < 12)
@@ -1244,8 +1167,6 @@ mod tests {
         }
     }
 
-    /// Two abutting clips of very different colours on one track, with
-    /// `kind` as the incoming clip's transition.
     fn two_clip_project(kind: Transition) -> (Project, f64) {
         let mut p = Project::new("t");
         let a = media(&mut p, 2); // green
@@ -1299,18 +1220,13 @@ mod tests {
             }
         }
         {
-            // The whole point: mid-dissolve the frame carries the outgoing
-            // clip's colour AND the incoming one's, which a single-clip
-            // compositor can never produce.
             let (p, t) = two_clip_project(Transition::CrossDissolve);
             let mut c = compositor();
             let mid = px(&c.frame(&p, t, 32, 32, &mut NoSources), 32, 16, 20);
-            // Green outgoing, red incoming: halfway both channels are lit.
             assert!(
                 mid.r > 0.15 && mid.g > 0.15,
                 "mid-dissolve carries both the outgoing green and incoming red: {mid:?}",
             );
-            // ...and it is genuinely between the two ends.
             let start = px(&c.frame(&p, 5.001, 32, 32, &mut NoSources), 32, 16, 20);
             let end = px(
                 &c.frame(
@@ -1399,8 +1315,6 @@ mod tests {
             let (p, t) = two_clip_project(Transition::Wipe);
             let mut c = compositor();
             let buf = c.frame(&p, t, 64, 64, &mut NoSources);
-            // Halfway through a left-to-right wipe: the left side is the
-            // incoming clip, the right side is still the outgoing one.
             let left = px(&buf, 64, 6, 30);
             let right = px(&buf, 64, 57, 30);
             assert!(
@@ -1411,7 +1325,6 @@ mod tests {
                 right.g > right.r,
                 "the unreached side still shows the outgoing one: {right:?}"
             );
-            // A soft edge: somewhere near the middle the two are mixed.
             let edge = px(&buf, 64, 32, 30);
             assert!(
                 edge.r > 0.1 && edge.g > 0.1,
@@ -1423,9 +1336,8 @@ mod tests {
     #[test]
     fn frame_sources_replace_or_fall_back_to_the_representative_fill() {
         {
-            // Proof the injected source is what gets composited: a source that
-            // hands back a flat magenta picture must show up as magenta, not
-            // as the clip's palette colour.
+            // A source handing back flat magenta must show up as magenta, not as
+            // the clip's palette colour.
             let mut p = Project::new("t");
             let m = media(&mut p, 2); // green palette
             let t = track(&mut p, 1);
@@ -1441,8 +1353,6 @@ mod tests {
                     identity: 0,
                 })
             });
-            // A 4×4 (1:1) source in a 16:9-ish frame letterboxes, so sample
-            // the centre where the picture actually lands.
             let got = px(&c.frame(&p, 1.0, 32, 32, &mut src), 32, 16, 16);
             assert!(
                 got.r > 0.8 && got.b > 0.8 && got.g < 0.2,
@@ -1465,9 +1375,8 @@ mod tests {
             );
         }
         {
-            // Two clips of the same media at different in-points must ask the
-            // source for different instants — otherwise trimming would be
-            // invisible in the composite.
+            // Two clips of one media at different in-points must ask for different
+            // instants, or trimming would be invisible.
             let mut p = Project::new("t");
             let m = media(&mut p, 1);
             let v1 = track(&mut p, 1);
@@ -1494,17 +1403,13 @@ mod tests {
         }
     }
 
-    /// Deterministic moving footage encoded in-process for decode fidelity.
     #[cfg(feature = "decode")]
     fn demo_clip() -> std::path::PathBuf {
         generated_clip::encoded_video()
     }
 
-    /// Mean horizontal neighbour variation. The representative fill is
-    /// built from horizontal bands, so it is constant along every row and
-    /// this collapses to zero; a real decoded picture never does. It is
-    /// the one measurement that tells "showing the footage" apart from
-    /// "showing a coloured rectangle".
+    /// The representative fill is built from horizontal bands, so it is constant
+    /// along every row and this collapses to zero; a real picture never is.
     #[cfg(feature = "decode")]
     fn horizontal_detail(buf: &[u8], w: u32, h: u32) -> f64 {
         let mut total = 0.0;
@@ -1523,17 +1428,9 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn decoded_footage_reaches_the_canvas_through_the_gpu() {
-        // Case `the_apps_own_frame_source_puts_real_footage_on_the_canvas`:
-        // The canvas, through the source the app composites with: with a
-        // hydrated real source under the playhead, the canvas must show the
-        // decoded picture — not the representative fallback.
-        //
-        // This drives the real pair. It also pins the reason it broke: a capture
-        // renders exactly once, so it must ask for `Exact` and wait. `Responsive`
-        // is right for the live editor — a scrub must never stall the UI thread —
-        // but asking it for a picture that has not arrived yet and then rendering
-        // immediately is precisely how a stand-in gets captured as though it were
-        // the footage.
+        // A capture renders once, so it must ask for `Exact` and wait:
+        // `Responsive` is right for a scrub, and rendering immediately after asking
+        // it is how a stand-in gets captured as the footage.
         #[cfg(feature = "decode")]
         'case: {
             if !generated_clip::media_stack() {
@@ -1567,8 +1464,6 @@ mod tests {
 
             let (w, h) = (192u32, 108u32);
             let mut c = compositor();
-            // Strict, so a cold pipeline slower than one fetch is asked again
-            // rather than written off: render until the decoded picture lands.
             let mut sources = MediaFrameSource::new(&p, Fetch::Exact).strict();
             let live = tilo_test_env::wait_for("a decoded picture from the frame source", || {
                 let live = c.frame(&p, 2.0, w, h, &mut sources);
@@ -1582,23 +1477,15 @@ mod tests {
              served the representative fill, not the footage",
             );
         }
-        // Case `a_reused_readback_buffer_returns_the_same_picture`:
-        // Reusing the readback buffer must not change a single pixel, including
-        // across a change of output size.
-        //
-        // The buffer the finished frame is copied into is kept between frames
-        // rather than rebuilt, because an export allocates and frees 8 MB per
-        // frame otherwise. The risk that buys is staleness: a buffer sized for
-        // one output serving another would read back the wrong rows, or read
-        // somebody else's leftovers into the picture. So render the same frame
-        // at two sizes, alternating, and require each to be identical to what a
-        // compositor that had only ever seen that size produces.
+        // The readback buffer is kept between frames, since an export would
+        // otherwise allocate and free 8 MB per frame. Render the same frame at two
+        // sizes, alternating, and each must be identical to what a compositor that
+        // had only ever seen that size produces.
         {
             let p = crate::seed::sample_project();
             let small = (160u32, 90u32);
             let large = (320u32, 180u32);
 
-            // References, each from a compositor that has seen one size only.
             let want_small = compositor().frame(&p, 6.0, small.0, small.1, &mut NoSources);
             let want_large = compositor().frame(&p, 6.0, large.0, large.1, &mut NoSources);
             assert_eq!(want_small.len(), (small.0 * small.1 * 4) as usize);
@@ -1608,8 +1495,6 @@ mod tests {
                 "the reference frame is blank, so comparing against it proves nothing",
             );
 
-            // One compositor, alternating sizes, so the buffer is reused within a
-            // size and rebuilt across one.
             let mut c = compositor();
             for round in 0..3 {
                 let got_small = c.frame(&p, 6.0, small.0, small.1, &mut NoSources);
@@ -1624,27 +1509,18 @@ mod tests {
                 );
             }
         }
-        // Case `a_file_that_never_decodes_is_given_up_on`:
-        // A file the decoder can never read is given up on, rather than retried
-        // for the life of the editor.
+        // A file the decoder can never read is given up on rather than retried for
+        // the life of the editor. Import refuses such a file, but a document
+        // persisted before that guard, or replicated from a peer, carries it past:
+        // it reached the decoder every frame, paying the full timeout, so the editor
+        // stalled on a fixed cadence.
         //
-        // The media bin holds whatever the project says it holds. Import refuses
-        // a non-media file and says why, but that guard runs only at import: a
-        // document persisted before it existed, or one replicated from a peer,
-        // carries its items straight past it. Such an item reached the decoder on
-        // every frame, each attempt paying the full frame timeout, so an editor
-        // holding one stalled on a fixed cadence indefinitely, showing a frozen
-        // clip.
-        //
-        // The fixture is an HTML page named `.mp4`: a saved web page whose extension says video. It is deliberately *not*
-        // checked through `probe`, because probing is the guard that already
-        // works — this asserts the decode path gives up on its own.
+        // The fixture is an HTML page named `.mp4`, deliberately not checked through
+        // `probe`, which is the guard that already works.
         #[cfg(feature = "decode")]
         {
             use crate::model::{MediaItem, MediaKind, Track, TrackKind};
 
-            // A unique name under the OS temp dir rather than a `tempfile`
-            // dependency the crate does not otherwise carry; removed at the end.
             let path =
                 std::env::temp_dir().join(format!("tilo-ve-notmedia-{}.mp4", Uuid::new_v4()));
             std::fs::write(
@@ -1682,22 +1558,18 @@ mod tests {
 
             let (w, h) = (192u32, 108u32);
             let mut c = compositor();
-            // A short timeout so the give-up threshold is reached in test time
-            // rather than in the production frame budget; the policy under test
-            // is the count, not the wait.
             let mut sources = MediaFrameSource::new(&p, Fetch::Responsive)
                 .with_timeout(std::time::Duration::from_millis(50));
 
-            // Responsive misses are timed decode windows, not repaints.
-            // Keep polling a paused target until the real give-up deadline.
+            // Responsive misses are timed decode windows, not repaints, so keep
+            // polling a paused target until the real give-up deadline.
             tilo_test_env::wait_until("a source that never answers to be written off", || {
                 let _ = c.frame(&p, 0.5, w, h, &mut sources);
                 sources.is_undecodable(mid)
             });
 
-            // The real claim: it stopped *asking*. Written off but still opening a
-            // pipeline every frame would leave the stall exactly as it was, and
-            // `is_undecodable` alone cannot tell the two apart.
+            // It stopped *asking*: written off but still opening a pipeline every
+            // frame would leave the stall exactly as it was.
             let settled = sources.decode_attempts();
             for i in 0..5 {
                 let _ = c.frame(&p, f64::from(i) * 0.5, w, h, &mut sources);
@@ -1713,15 +1585,10 @@ mod tests {
             );
             std::fs::remove_file(&path).ok();
         }
-        // Case `the_media_source_paints_a_decoded_frame_through_the_gpu`:
-        // The compositor painting a real hardware-decoded frame.
-        //
-        // This is the whole point of the media seam: a decoder emits NV12, the
-        // planes go to the GPU untouched, and the YUV arithmetic happens in a
-        // shader. If the planar branch ever broke — or quietly fell back to a
-        // CPU RGBA convert — the picture would still appear and nothing else
-        // would complain, so assert on what reaches the canvas *and* on which
-        // payload carried it.
+        // A decoder emits NV12, the planes go to the GPU untouched and the YUV
+        // arithmetic happens in a shader. A quiet CPU RGBA fallback would still show
+        // a picture, so assert on what reaches the canvas and on which payload
+        // carried it.
         #[cfg(feature = "decode")]
         'case: {
             use crate::model::{MediaItem, MediaKind, Track, TrackKind};
@@ -1761,10 +1628,6 @@ mod tests {
             });
             p.add_clip(tid, mid, 0.0).unwrap();
 
-            // A generous deadline: this box shares its CPU with other builds,
-            // and a cold pipeline plus an accurate seek can outrun the 2s the
-            // engine defaults to. The assertions below are unchanged — only how
-            // long the decoder is given to answer.
             let mut src =
                 MediaFrameSource::new(&p, Fetch::Exact).with_timeout(tilo_test_env::hang_bound());
             assert_eq!(src.decodable(), 1, "the hydrated local file is decodable");
@@ -1785,9 +1648,8 @@ mod tests {
                 "the canvas is showing a flat fill ({live_detail:.3}), not decoded footage",
             );
 
-            // Which payload actually carried it. On a hardware decoder that is
-            // NV12 planes; software decode lands as RGBA. A Dmabuf would mean the
-            // source should have been demoted to a software session instead.
+            // Hardware decode lands as NV12 planes, software as RGBA; a Dmabuf
+            // would mean the source should have been demoted.
             let source = crate::media::engine_source(&p.media[0].source().abs_path);
             let mut pool = SessionPool::for_editor();
             let session = pool.session(&source);
@@ -1800,8 +1662,6 @@ mod tests {
             match &frame.payload {
                 FramePayload::Planar(img) => {
                     assert_eq!(img.planes.len(), 2, "NV12 is luma plus interleaved chroma");
-                    // The planes really are subsampled — a CPU-converted RGBA
-                    // frame masquerading as planar would not be.
                     let luma = &img.planes[0];
                     let chroma = &img.planes[1];
                     assert!(
@@ -1823,14 +1683,8 @@ mod tests {
                 ),
             }
         }
-        // Case `two_layers_of_one_source_get_their_own_textures`:
-        // Two clips of the same source at different instants must paint two
-        // different pictures in one composite.
-        //
-        // The converter reuses its output texture across frames, so a single
-        // shared converter would have the second layer overwrite the first and
-        // both would show the same picture — invisible in a still, and exactly
-        // the kind of thing a dissolve depends on.
+        // The converter reuses its output texture across frames, so a single shared
+        // converter would have the second layer overwrite the first.
         #[cfg(feature = "decode")]
         'case: {
             use crate::model::{MediaItem, MediaKind, Track, TrackKind};
@@ -1870,8 +1724,6 @@ mod tests {
             };
             let v1 = track(1);
             let v2 = track(2);
-            // Two instants far enough apart to be different pictures, and the
-            // upper layer inverted so a shared texture is unmistakable.
             let lower = p.add_clip(v1, mid, 0.0).unwrap();
             {
                 let c = p.clip_mut(lower).unwrap();
@@ -1897,8 +1749,6 @@ mod tests {
             let mut c = compositor();
             let both = c.frame(&p, 1.0, 96, 54, &mut src);
 
-            // With the upper layer half-transparent over the lower one, the
-            // result must be neither layer alone.
             let mut only_lower = p.clone();
             only_lower
                 .tracks
@@ -1931,17 +1781,6 @@ mod tests {
         }
     }
 
-    // ----------------------------------------------------------------------
-    // Colour key and shape mask, on the real compute pass.
-    //
-    // These are compositing features, so what has to be proved is not that a
-    // number reached a uniform but that the layer *underneath* becomes
-    // visible where the top layer was cut. Every test here stacks two clips
-    // with different pictures and reads back the frame.
-    // ----------------------------------------------------------------------
-
-    /// A [`FrameSource`] that paints each media its own picture, so a
-    /// two-layer stack can be told apart pixel by pixel.
     #[expect(
         clippy::many_single_char_names,
         reason = "pixel maths: frame w/h, texel index i, its u/v, and the colour c"
@@ -1975,8 +1814,6 @@ mod tests {
         })
     }
 
-    /// Two square clips stacked V1 under V2, both covering the playhead.
-    /// Returns `(project, under_clip, over_clip, under_media, over_media)`.
     fn stacked() -> (Project, Uuid, Uuid, Uuid, Uuid) {
         let mut p = Project::new("stack");
         let add_media = |p: &mut Project, name: &str| {
@@ -2006,18 +1843,14 @@ mod tests {
         (p, under, over, under_m, over_m)
     }
 
-    /// The key green the presets offer, as bytes, and the red beneath it.
     const PLATE: [u8; 4] = [15, 184, 51, 255];
     const BENEATH: [u8; 4] = [210, 40, 40, 255];
-    /// The "subject" standing on the plate: an orange bar down the middle.
     const SUBJECT: [u8; 4] = [235, 130, 30, 255];
 
     fn is_reddish(c: Rgb) -> bool {
         c.r > 0.5 && c.r > c.g + 0.2 && c.r > c.b + 0.2
     }
 
-    /// A stack whose lower layer is flat red and whose upper layer is the
-    /// key green with an orange bar across its middle third.
     fn plate_over_red() -> (
         Project,
         Uuid,
@@ -2043,8 +1876,7 @@ mod tests {
     )]
     fn gpu_keys_and_masks_composite_the_layer_beneath() {
         {
-            // The control the two keyed tests below are read against: with no
-            // key, the plate covers everything and nothing red survives.
+            // With no key the plate covers everything and nothing red survives.
             let (p, _over, mut src) = plate_over_red();
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut src);
@@ -2075,7 +1907,6 @@ mod tests {
             };
             let mut c = compositor();
             let buf = c.frame(&p, 1.0, 64, 64, &mut src);
-            // Above and below the bar the plate is gone, so V1's red shows.
             for y in [4, 60] {
                 let got = px(&buf, 64, 32, y);
                 assert!(
@@ -2083,24 +1914,17 @@ mod tests {
                     "the keyed plate must let the layer beneath through at y={y}: {got:?}",
                 );
             }
-            // Across the bar the subject is untouched — a key that ate the
-            // subject would pass the check above and still be useless.
+            // The subject is untouched: a key that ate the subject would pass the
+            // check above and still be useless.
             let bar = px(&buf, 64, 32, 32);
             assert!(
                 bar.r > 0.6 && bar.g > 0.3 && bar.g < 0.75 && bar.b < 0.3,
                 "the subject survives the key: {bar:?}",
             );
         }
-        // Case `an_unevenly_lit_plate_keys_top_to_bottom`:
-        // The exposure invariance, proved where it matters: on the composite.
-        // A plate lit unevenly — bright at the top, a fifth of that at the
-        // bottom — has to key all the way down, on **one** tolerance.
-        //
-        // The tolerance here is deliberately tight: it is what a clean plate
-        // needs and no more. A keyer measuring absolute Cb/Cr puts the dim
-        // rows several times that distance from the key and keeps them, so a
-        // slack tolerance would let one pass while looking like it had proved
-        // something.
+        // On the composite: a plate lit bright at the top and a fifth of that at the
+        // bottom has to key all the way down on **one** tolerance, and the tolerance
+        // is what a clean plate needs and no more.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
             let mut src = per_media(32, 32, move |media, _u, v| {
@@ -2155,7 +1979,6 @@ mod tests {
                     f64::from(PLATE[1]) / 255.0,
                     f64::from(PLATE[2]) / 255.0,
                 ],
-                // Wide enough to be keying, but nowhere near the tinted subject.
                 tolerance: 0.2,
                 softness: 0.05,
                 spill,
@@ -2245,10 +2068,7 @@ mod tests {
                 "and the corner keeps the upper layer"
             );
         }
-        // Case `a_rect_mask_is_not_the_same_composite_as_an_ellipse`:
-        // A rect and an ellipse of one size have to composite differently, or
-        // the shape control does nothing. They differ exactly at the corners
-        // of the box.
+        // The rect and the ellipse differ exactly at the corners of the box.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
             let mut src = per_media(32, 32, move |media, _u, _v| {
@@ -2266,7 +2086,6 @@ mod tests {
             };
             let mut c = compositor();
             let mut p = p;
-            // Just inside the corner of the 0.8-wide box.
             let (x, y) = (55, 55);
             p.clip_mut(over).unwrap().mask = crate::model::Mask {
                 shape: crate::model::MaskShape::Rect,
@@ -2298,11 +2117,9 @@ mod tests {
                 h: 2.0,
                 ..crate::model::Mask::default()
             };
-            // Recover the blend fraction column by column from the green
-            // channel, whose two endpoints are known, and count the columns
-            // that are genuinely part-way between the layers. Reading the mix
-            // itself rather than asking "which colour family is this" is what
-            // makes a one-pixel edge and a ten-pixel ramp distinguishable.
+            // Read the blend fraction column by column from the green channel, whose
+            // two endpoints are known, and count the columns part-way between the
+            // layers: that tells a one-pixel edge from a ten-pixel ramp.
             let (lo, hi) = (40.0 / 255.0, 200.0 / 255.0);
             let ramp = |buf: &[u8]| {
                 (0..64)
@@ -2331,9 +2148,7 @@ mod tests {
                 "feathering widens the ramp: {hard} → {soft} columns of blend",
             );
         }
-        // Case `a_keyframed_mask_is_in_a_different_place_in_each_second`:
-        // The reason both of these are parameters rather than plain fields: a
-        // mask has to be able to follow a subject across a shot.
+        // Why both are parameters: a mask has to follow a subject across a shot.
         {
             let (p, _under, over, under_m, _over_m) = stacked();
             let mut src = per_media(32, 32, move |media, _u, _v| {

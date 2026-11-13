@@ -1,12 +1,9 @@
 //! Cutting a subject out of a picture.
 //!
-//! A [`Matte`] says how much of each pixel belongs to the subject, `0..=1`.
-//! `SubjectModel` (with the `infer` feature) finds one with a local
-//! salient-object model; [`refine_edge`] pulls any matte's edge onto the
-//! picture's own edges, so fur and hair keep their wisps and a hard edge is
-//! not left a pixel out in the background; [`defringe`] takes the
-//! background's colour out of the pixels along the edge, so the subject
-//! keeps no halo of what it stood in front of.
+//! A [`Matte`] says how much of each pixel belongs to the subject, `0..=1`;
+//! `SubjectModel` (with the `infer` feature) finds one, [`refine_edge`] pulls
+//! its edge onto the picture's own, and [`defringe`] takes the background's
+//! colour out of the pixels along it.
 //!
 //! Pictures are straight (not premultiplied) RGBA, row by row, four bytes a
 //! pixel, as decoders and renderers hand them over.
@@ -21,7 +18,6 @@ pub use matte::{Matte, object_at};
 pub use model::{Family, SubjectModel};
 pub use refine::{defringe, refine_edge};
 
-/// Why a picture or matte cannot be worked on.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
     #[error("the picture is {width}x{height} but has {len} bytes; four a pixel are needed")]
@@ -40,7 +36,6 @@ pub enum Error {
     Run(String),
 }
 
-/// A picture to work on: straight RGBA, row by row.
 #[derive(Clone, Copy, Debug)]
 pub struct Picture<'a> {
     pub rgba: &'a [u8],
@@ -65,7 +60,6 @@ impl Picture<'_> {
         Ok(count)
     }
 
-    /// Each pixel's colour as `0..=1` floats, without alpha.
     fn colours(&self) -> Vec<[f32; 3]> {
         self.rgba
             .chunks_exact(4)

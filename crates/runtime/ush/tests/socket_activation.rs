@@ -16,7 +16,6 @@ fn consumes_systemd_listener_without_unlinking_or_rebinding() {
     // SAFETY: fcntl duplicates a live descriptor and returns independent ownership.
     let inherited = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
     assert!(inherited >= 10, "could not duplicate activation listener");
-    // SAFETY: `inherited` is a newly allocated descriptor owned by this test.
     let inherited = unsafe { OwnedFd::from_raw_fd(inherited) };
     let inherited_fd = inherited.as_raw_fd();
 

@@ -27,7 +27,7 @@ action post(c: Channel, body: Text) -> Message (icon: .send) {
 }
 
 /// Sends what was typed in the composer.
-action say(c: Channel, said: RichText) -> Message (icon: .send) {
+action send(c: Channel, said: RichText) -> Message (icon: .send) {
     c.messages.insert(Message(said: said))
 }
 
@@ -58,8 +58,8 @@ view channel(c: Channel) {
     std.transcript(c, c.messages, row: message) {
         composer: {
             row {
-                rich_input(bind: draft, placeholder: "Message {c.name}", fill)
-                button(say(c, draft).then(set(draft, RichText(""))), icon_only: true)
+                rich_input(bind: draft, placeholder: "Message {c.name}", speakers: speakers(c.messages), fill)
+                button(send(c, draft).then(set(draft, RichText(""))), icon_only: true)
             }
         }
     }

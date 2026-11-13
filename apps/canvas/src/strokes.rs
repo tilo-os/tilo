@@ -42,7 +42,6 @@ pub fn extend(points: &mut Vec<StrokePoint>, more: &[StrokePoint]) {
     }
 }
 
-/// The stroke a mark id names, or why it cannot be cut or joined.
 fn stroke<'a>(art: &'a Artwork, id: &str) -> Result<&'a Mark, Refusal> {
     let mark = art
         .mark(id)

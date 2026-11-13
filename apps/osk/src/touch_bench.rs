@@ -30,11 +30,8 @@ use crate::predict::Predictor;
 
 const PHRASES: &str = include_str!("../data/typing_phrases.txt");
 
-/// Downward bias of the touch point, in key heights.
 const BIAS_Y: f64 = 0.08;
 
-/// Deterministic xorshift64* with Box–Muller normals, so every run of the
-/// benchmark sees the same taps.
 struct Rng(u64);
 
 impl Rng {
@@ -60,7 +57,6 @@ struct Keyboard {
 
 fn phone_keyboard() -> Keyboard {
     let layout = KeyboardLayout::qwerty();
-    // A 390 pt wide phone with the widget's default 56 pt rows.
     let all = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 224.0), ShiftState::Off);
     let letters = all
         .iter()
@@ -140,7 +136,6 @@ fn run(
                             score.stolen += 1;
                         }
                     }
-                    // Later letters are predicted from what was really typed.
                     if let Some(k) = got_ch {
                         typed.push(k.ch);
                     }
@@ -249,7 +244,6 @@ fn sweep_resolution_parameters() {
                     fmt(&scores),
                     cost * 100.0
                 );
-                // The core zone is pinned at 60%; other sizes are for reference.
                 if (core - 0.6).abs() < 1e-9 && best.is_none_or(|(c, _)| cost < c) {
                     best = Some((cost, params));
                 }

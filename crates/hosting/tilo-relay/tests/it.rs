@@ -41,6 +41,9 @@ mod end_to_end_sync;
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
+#[cfg(feature = "agents")]
+#[path = "hosted_browser.rs"]
+mod hosted_browser;
 #[path = "hosting_cost.rs"]
 mod hosting_cost;
 #[path = "hosting_member.rs"]
@@ -59,6 +62,9 @@ mod out_of_band_join_modes;
 mod persistent_room;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[cfg(feature = "agents")]
+#[path = "placed_browser.rs"]
+mod placed_browser;
 #[cfg(feature = "agents")]
 #[path = "placed_shell.rs"]
 mod placed_shell;

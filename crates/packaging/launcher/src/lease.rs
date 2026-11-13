@@ -1,32 +1,7 @@
 //! What a launch holds from choosing its trees until its sandbox exits.
 //!
-//! An update of the app being opened retires the payload tree the launch
-//! chose, and the collection after it removes the runtime build that tree
-//! ran on. The mount table protects both once bwrap has bound them, but not
-//! between the choice and the bind. So before a launch looks at either it
-//! takes a shared lease on each: its payload tree
-//! ([`package_store::lease`]) and every per-user runtime build its manifest
-//! names ([`runtime_bundle::gc::BundleRoot::hold_launch`]). It keeps them
-//! until the sandbox exits; the kernel drops them with the launcher's
-//! descriptors however it ends, and they are close-on-exec, so the sandbox
-//! never sees them.
-//!
-//! A remover takes the same lease exclusively without waiting and keeps
-//! what is held. A launch that arrives while a remover holds a tree waits
-//! for that one removal and then finds the tree whole or gone: gone is a
-//! payload refused here as changed, or a runtime the lookup after this
-//! reports missing. Neither is a half-deleted tree in a sandbox.
-//!
-//! Cost: one `open` and one `flock` per tree, with nothing to wait for
-//! unless a removal of that very tree is under way.
-//!
-//! Releasing the leases records a use of the payload tree
-//! ([`package_store::lease::record_close`]), and of the tree an update
-//! replaced it with while the app was open: the app is closing, so the size
-//! sweep orders it by when it was last open, not by when it was opened. An
-//! app still open is never evicted, so nothing records while it runs; a
-//! timer for that would start a thread before the GPU probe, which forks
-//! only while the launcher is single-threaded.
+//! An update of the app being opened retires the payload tree the launch chose, and the
+//! collection after it removes the runtime build that tree ran on.
 
 use std::path::{Path, PathBuf};
 
@@ -36,8 +11,7 @@ use runtime_bundle::gc::BundleRoot;
 use crate::manifest::ManifestView;
 use crate::run::{RunError, RunOptions};
 
-/// Where `LaunchLeases::take_observed` has got to, for a test that
-/// interleaves an update with a launch.
+/// Where `LaunchLeases::take_observed` has got to, for a test that interleaves an update with a launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// The payload tree is held and still there; no runtime is held yet.
@@ -46,7 +20,7 @@ pub enum Stage {
     RuntimesHeld,
 }
 
-/// The leases of one launch. Dropping it releases them.
+/// The leases of one launch.
 #[derive(Debug)]
 #[must_use = "a launch holds its trees until its sandbox exits"]
 pub struct LaunchLeases {
@@ -70,15 +44,8 @@ impl Drop for LaunchLeases {
 }
 
 impl LaunchLeases {
-    /// Hold the payload tree at `payload_root` and every per-user runtime
-    /// build `manifest` (or an explicit `opts.runtime_root`) names. Call it
-    /// before the runtime is looked up and keep it until the sandbox exits.
-    ///
-    /// # Errors
-    ///
-    /// [`RunError::PackageChanged`] when an update removed the payload tree
-    /// before it could be held, [`RunError::LaunchLease`] when a lease file
-    /// cannot be created or locked.
+    /// Hold the payload tree at `payload_root` and every per-user runtime build `manifest` (or an
+    /// explicit `opts.runtime_root`) names.
     pub fn take(
         manifest: &ManifestView,
         payload_root: &Path,
@@ -125,12 +92,8 @@ impl LaunchLeases {
     }
 }
 
-/// Hold the payload tree at `payload_root` when it is one of the user's
-/// store; see [`package_store::lease::hold_payload`].
-///
-/// # Errors
-///
-/// [`RunError::LaunchLease`] when the lease cannot be created or locked.
+/// Hold the payload tree at `payload_root` when it is one of the user's store; see
+/// [`package_store::lease::hold_payload`].
 pub fn hold_payload(payload_root: &Path) -> Result<Option<FileLock>, RunError> {
     package_store::lease::hold_payload(payload_root).map_err(|source| RunError::LaunchLease {
         path: payload_root.to_path_buf(),
@@ -138,13 +101,10 @@ pub fn hold_payload(payload_root: &Path) -> Result<Option<FileLock>, RunError> {
     })
 }
 
-/// How many times [`find_installed_held`] looks again after an update
-/// removed the tree it found.
+/// How many times [`find_installed_held`] looks again after an update removed the tree it found.
 const RESELECTIONS: usize = 3;
 
-/// Look `package` up in the installed set and hold its payload tree. An
-/// update that removed the tree between the lookup and the hold makes it
-/// look again, so the launch opens the build that replaced it.
+/// Look `package` up in the installed set and hold its payload tree.
 pub fn find_installed_held(
     package: &str,
 ) -> Result<Option<(package_store::InstalledPackage, Option<FileLock>)>, String> {
@@ -163,8 +123,8 @@ pub fn find_installed_held(
     Ok(found)
 }
 
-/// The per-user runtime root, when it exists: builds elsewhere (the
-/// image's) are never removed, and a root that does not exist holds none.
+/// The per-user runtime root, when it exists: builds elsewhere (the image's) are never removed, and a
+/// root that does not exist holds none.
 fn per_user_bundles() -> Option<BundleRoot> {
     runtime_bundle::bundle_root_from(package_store::dev_env::dev_override(
         runtime_bundle::RUNTIME_DIR_ENV,
@@ -174,10 +134,8 @@ fn per_user_bundles() -> Option<BundleRoot> {
     .map(BundleRoot::new)
 }
 
-/// The runtime versions a launch of `manifest` may mount from `root`: an
-/// explicit runtime directory there, else the manifest's runtime, and its
-/// required runtimes. Malformed references are left to the lookup to
-/// refuse.
+/// The runtime versions a launch of `manifest` may mount from `root`: an explicit runtime directory
+/// there, else the manifest's runtime, and its required runtimes.
 fn runtime_versions(manifest: &ManifestView, opts: &RunOptions, root: &Path) -> Vec<String> {
     let version_of = |raw: &str| {
         raw.split_once('/')
@@ -212,11 +170,10 @@ fn runtime_versions(manifest: &ManifestView, opts: &RunOptions, root: &Path) -> 
 
 #[cfg(test)]
 mod tests {
-    //! An app opened while it is being updated, interleaved deterministically:
-    //! the update (a store install of v2 on another runtime build, then the
-    //! collection `tilo-install` runs after every change, with no grace) runs
-    //! at each point of the launch, and whatever the launch goes on to mount
-    //! must be whole.
+    //! An app opened while it is being updated, interleaved deterministically: the
+    //! update (a store install of v2 on another runtime build, then the collection
+    //! `tilo-install` runs after every change, with no grace) runs at each point of the
+    //! launch, and whatever the launch goes on to mount must be whole.
 
     use std::path::{Path, PathBuf};
 
@@ -252,8 +209,7 @@ mod tests {
             self.dir.path().join("runtimes")
         }
 
-        /// `tilo-install update`: v2 replaces v1, then the collection after
-        /// the change.
+        /// `tilo-install update`: v2 replaces v1, then the collection after the change.
         fn update(&self) {
             self.store
                 .install(
@@ -340,8 +296,8 @@ type = "gui"
         tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
     }
 
-    /// v1 on the old runtime installed, v2 on the new runtime ready to
-    /// replace it; both runtime builds installed.
+    /// v1 on the old runtime installed, v2 on the new runtime ready to replace it; both runtime builds
+    /// installed.
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -397,9 +353,8 @@ type = "gui"
         Changed,
     }
 
-    /// One launch as the launcher runs it: look the app up, hold its trees,
-    /// look the runtime up and verify it, then check what bwrap would bind
-    /// is whole. `update` runs once, at `at`.
+    /// One launch as the launcher runs it: look the app up, hold its trees, look the runtime up and
+    /// verify it, then check what bwrap would bind is whole.
     fn open(fx: &Fixture, at: Option<At>) -> Opened {
         let update_at = |point: At| {
             if at == Some(point) {
@@ -448,24 +403,20 @@ type = "gui"
     }
 
     /// One launch with the update landing at `at`, on a fixture of its own.
-    /// Each point is its own test: a fixture builds two signed runtimes and
-    /// two packages, and four of them one after another made one test take
-    /// minutes on a loaded machine.
     fn launch_and_update_interleave_at(at: At) {
         let fx = fixture();
         let opened = open(&fx, Some(at));
         if at == At::Selected {
-            // Nothing held the old build yet, so the update removed it
-            // whole; the launch refuses it rather than bind a gap, and
-            // the next look finds the new build.
+            // Nothing held the old build yet, so the update removed it whole; the launch refuses it
+            // rather than bind a gap, and the next look finds the new build.
             assert_eq!(opened, Opened::Changed, "{at:?}");
             let (row, held) = find_installed_held(APP).unwrap().unwrap();
             assert_eq!(row.version, "2.0.0");
             drop(held);
             assert_eq!(open(&fx, None), Opened::Mounted("2.0.0".into()));
         } else {
-            // Once the payload is held, the launch runs the build it
-            // chose, on that build's runtime, both whole.
+            // Once the payload is held, the launch runs the build it chose, on that build's runtime,
+            // both whole.
             assert_eq!(opened, Opened::Mounted("1.0.0".into()), "{at:?}");
         }
         fx.collect();
@@ -500,8 +451,8 @@ type = "gui"
         launch_and_update_interleave_at(At::Binding);
     }
 
-    /// An app opened weeks ago and closed now counts as used now: the size
-    /// sweep must not take it for one nobody opened since.
+    /// An app opened weeks ago and closed now counts as used now: the size sweep must not take it for
+    /// one nobody opened since.
     #[test]
     fn closing_an_app_records_its_use() {
         const OPENED: u64 = 1_000;
@@ -539,9 +490,8 @@ type = "gui"
         );
     }
 
-    /// An app opened weeks ago, updated while it stayed open and closed now
-    /// counts as used now too: the update replaced the tree its launch held,
-    /// and the replaced tree's lease leaves with that tree.
+    /// An app opened weeks ago, updated while it stayed open and closed now counts as used now too: the
+    /// update replaced the tree its launch held, and the replaced tree's lease leaves with that tree.
     #[test]
     fn closing_an_app_updated_while_open_records_its_use() {
         const OPENED: u64 = 1_000;
@@ -587,8 +537,7 @@ type = "gui"
         let fx = fixture();
         let row = package_store::find_installed(APP).unwrap().unwrap();
         let manifest = read_manifest(&row.manifest_path).unwrap();
-        // A tree outside the user's store (the image's) is never removed, so
-        // only the runtime is held.
+        // A tree outside the user's store (the image's) is never removed, so only the runtime is held.
         let elsewhere = fx.dir.path().join("work/payload-1.0.0");
         let leases = LaunchLeases::take(&manifest, &elsewhere, &fx.opts).unwrap();
         assert!(!fx.store.layout().root().join("leases").exists());

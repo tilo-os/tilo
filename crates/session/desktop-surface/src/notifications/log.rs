@@ -244,6 +244,12 @@ impl NotificationLog {
         self.history_dirty = had_session_entries;
     }
 
+    /// Something kept with the history changed (which rows the person has read): the next
+    /// [`Self::take_history_dirty`] says so.
+    pub fn history_changed(&mut self) {
+        self.history_dirty = true;
+    }
+
     /// Whether the history changed since the last call; clears the flag.
     pub fn take_history_dirty(&mut self) -> bool {
         std::mem::take(&mut self.history_dirty)

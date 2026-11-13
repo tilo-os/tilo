@@ -1,6 +1,5 @@
-//! The workspace on its own (verbs, field edits, the invariants, merging,
-//! the published tree and search) through the door the host uses, and an
-//! agent and history through the hosted app.
+//! The workspace on its own (verbs, field edits, invariants, merging, the published tree
+//! and search), and an agent and history through the hosted app.
 
 use super::*;
 use crate::model::BodyMode;
@@ -17,8 +16,8 @@ fn edit(workspace: &mut Replica<Workspace>, edit: &Edit<Workspace>) -> Result<()
         .map_err(|error| error.to_string())
 }
 
-/// A workspace with one collection holding one request and one environment
-/// holding one variable, built through the verbs.
+/// A workspace with one collection holding one request and one environment holding one
+/// variable, built through the verbs.
 fn seeded() -> Replica<Workspace> {
     let mut workspace = Replica::<Workspace>::new();
     workspace
@@ -85,8 +84,6 @@ fn offers(resource: &Published, id: &str) -> bool {
     resource.actions.iter().any(|spec| spec.id == id)
 }
 
-/// Collections, saved requests and environments are made, opened, saved
-/// and removed by verbs; names change by field edits.
 #[test]
 fn verbs_make_open_save_and_remove_records() {
     let mut workspace = seeded();
@@ -264,8 +261,6 @@ fn field_edits_change_the_builder_and_rows_in_place() {
     assert_eq!(renamed.value, "https://api.example.com");
 }
 
-/// What was sent is history, newest first, bounded, and opens again as a
-/// new request; only sending adds to it.
 #[test]
 fn sent_requests_are_history_that_opens_again() {
     let mut workspace = seeded();
@@ -311,9 +306,8 @@ fn sent_requests_are_history_that_opens_again() {
     );
 }
 
-/// A sent request is kept as a saved one with what it sent, without moving
-/// the builder; forgetting it is a deletion Undo takes back, so nobody is
-/// asked first (`APP-api-tester-04`).
+/// A sent request is kept as a saved one with what it sent, without moving the builder;
+/// forgetting it is a deletion Undo takes back.
 #[test]
 fn a_sent_request_saves_as_a_request_or_is_forgotten() {
     let mut workspace = seeded();
@@ -370,8 +364,7 @@ fn a_sent_request_saves_as_a_request_or_is_forgotten() {
     );
     drop(state);
 
-    // The history's own row offers both, and forgetting one is a deletion
-    // Undo takes back: nobody is asked first.
+    // The history's own row offers both, and forgetting one is a deletion Undo takes back.
     let tree = workspace.published().unwrap();
     let history = child(&tree, &item_resource_id::<Workspace>("history", &sent));
     for verb in ["open-sent", "delete-sent"] {
@@ -404,8 +397,8 @@ fn a_sent_request_saves_as_a_request_or_is_forgotten() {
     );
 }
 
-/// A credential never reaches the record: a request's auth keeps its scheme
-/// and public fields, a secret variable carries no value.
+/// A credential never reaches the record: a request's auth keeps its scheme and public
+/// fields, and a secret variable carries no value.
 #[test]
 fn credentials_never_enter_the_record() {
     let mut workspace = seeded();
@@ -475,8 +468,7 @@ fn the_active_environment_names_an_environment() {
     .unwrap();
 }
 
-/// Two people editing one workspace converge: the URL merges per
-/// character, rows per row.
+/// Two people editing one workspace converge: the URL merges per character, rows per row.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = seeded();
@@ -507,8 +499,8 @@ fn concurrent_edits_converge() {
     assert_eq!(state.request.params.len(), 1);
 }
 
-/// Each collection, environment and sent request is published with the
-/// verbs that act on it; search finds records by name, never a value.
+/// Each collection, environment and sent request is published with the verbs that act on
+/// it; search finds records by name, never a value.
 #[test]
 fn records_offer_their_verbs_and_search_names_them() {
     let mut workspace = seeded();
@@ -577,8 +569,8 @@ fn records_offer_their_verbs_and_search_names_them() {
     }));
 }
 
-/// An agent reaches the workspace through the one published tree: each
-/// change is one call, a verb on the record it acts on or a field edit.
+/// An agent reaches the workspace through the one published tree: each change is one call,
+/// a verb or a field edit.
 #[test]
 fn an_agent_builds_requests_one_call_each() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
@@ -621,8 +613,6 @@ fn an_agent_builds_requests_one_call_each() {
     );
 }
 
-/// What an agent does for a person is history the person reads: the app's
-/// sentence for each field and verb.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -700,8 +690,8 @@ fn history_entries_render_as_the_apps_sentences() {
     );
 }
 
-/// Deleting from the window asks nothing, of its own or through the host:
-/// Undo takes the deletion back, so it runs at once and is one undo step.
+/// Deleting from the window asks nothing: Undo takes the deletion back, so it runs at once
+/// and is one undo step.
 #[test]
 fn deleting_from_the_window_runs_at_once_and_undo_brings_it_back() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();

@@ -1,0 +1,55 @@
+[package]
+name = "tilo-api"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The Tilo API server: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants and API keys, and the agent surface served for each session over the grant's own session with the relay."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+hmac.workspace = true
+futures-util.workspace = true
+percent-encoding.workspace = true
+schemars = { version = "1.2", features = ["derive"] }
+http-body-util = "0.1.3"
+hyper = { version = "1.8.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+ed25519-dalek.workspace = true
+iroh-base.workspace = true
+iroh.workspace = true
+# The relays the grant's endpoint dials the person's devices through.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-session-client = { path = "../../session/client" }
+tilo-session-core = { path = "../../session/core" }
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+# HTTPS to the relay and the site, as every client of the relay makes its requests.
+tilo-relay-client = { path = "../tilo-relay-client" }
+tilo-relay-session = { path = "../tilo-relay-session" }
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The link an invitation is handed over as: sealed onto the site's shelf.
+tilo-workspace-directory = { path = "../../session/workspace-directory" }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url.workspace = true
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -1,10 +1,6 @@
 //! Windows time-zone names and the IANA zone each stands for: the Unicode
 //! CLDR `windowsZones.xml` table (territory `001`, as published in October
 //! 2026), sorted by the Windows name without ASCII case for a binary search.
-//!
-//! Outlook and Exchange name an invite's zone this way (`TZID:W. Europe
-//! Standard Time`). Regenerate from a newer CLDR release when Windows adds a
-//! zone; `windows_names_are_sorted_and_resolve` checks the table.
 
 pub(super) const WINDOWS_ZONES: &[(&str, &str)] = &[
     ("Afghanistan Standard Time", "Asia/Kabul"),

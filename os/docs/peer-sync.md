@@ -53,7 +53,7 @@ restore or deliberately re-enrol the device instead.
 
 ## Home peer replica
 
-Settings → Devices & Sync → Home server or NAS is the normal setup path. For
+Settings → Sync between devices → Home server or NAS is the normal setup path. For
 headless recovery or diagnostics, the equivalent workspace bundle can be
 exported manually:
 

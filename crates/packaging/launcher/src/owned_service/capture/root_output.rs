@@ -1,5 +1,4 @@
 //! Root-host original-source output custody. Never a live non-root broker proof.
-//! This module admits native custody; it does not complete or publish an export.
 use super::{contains, writable_directory};
 use crate::owned_service::ServiceAuthority;
 use std::{
@@ -13,7 +12,6 @@ use std::{
 };
 
 /// Immutable host facts, copied only from authenticated pending setup/custody.
-/// No serde or Debug: a caller-supplied JSON object is not an admission.
 #[derive(Clone, PartialEq, Eq)]
 pub struct OriginalOutputBinding {
     pub read_claim_digest: [u8; 32],
@@ -31,7 +29,6 @@ pub struct OriginalOutputBinding {
     pub reserve_bytes: u64,
 }
 /// Strong native custody, never inherited into the worker or serialized.
-/// The root controller owns the partition mount and operation Store lease.
 pub struct OriginalOutputFiles {
     pub source: File,
     pub output: File,
@@ -39,10 +36,7 @@ pub struct OriginalOutputFiles {
     pub partition: File,
     pub mount_root: File,
 }
-/// Trusted native root-controller boundary. Implementing this trait is not a
-/// cryptographic proof. Production implements it only after authenticated setup,
-/// protected source witness, exact GPT/partition ancestry, all-source physical
-/// disjointness, mount ownership/alias and operation lease checks.
+/// Trusted native root-controller boundary.
 pub trait OriginalOutputCustody: ServiceAuthority {
     /// Clone the controller's held source and output descriptors.
     fn held_files(&self) -> io::Result<OriginalOutputFiles>;
@@ -146,8 +140,7 @@ fn validate_files(files: &OriginalOutputFiles, binding: &OriginalOutputBinding) 
             "Original output overlaps its source or escapes medium",
         ));
     }
-    // Free bytes are rechecked at admission. The reservation is a writer budget,
-    // never a claim that these filesystem blocks have been allocated/reserved.
+    // Free bytes are rechecked at admission.
     Ok(())
 }
 impl OriginalOutputAdmission {
@@ -230,8 +223,8 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::os::unix::fs::OpenOptionsExt;
 
-    // Exercises the same descriptor ancestry boundary used by admission; no
-    // fake setup/GPT or successful output authority is manufactured.
+    // Exercises the same descriptor ancestry boundary used by admission; no fake setup/GPT or
+    // successful output authority is manufactured.
     #[test]
     fn original_output_real_held_ancestry_rejects_overlap_and_alias() {
         let root = tempfile::tempdir().unwrap();
@@ -250,8 +243,8 @@ mod tests {
         assert!(contains(&source, &output).unwrap());
         assert!(!contains(&output, &source).unwrap());
         assert!(contains(&output, &output.try_clone().unwrap()).unwrap());
-        // Holding the descriptor keeps the inode, rather than switching to an
-        // application-selected path replacement during rename.
+        // Holding the descriptor keeps the inode, rather than switching to an application-selected
+        // path replacement during rename.
         let held = identity(&output).unwrap();
         fs::rename(&nested, root.path().join("held")).unwrap();
         fs::create_dir(&nested).unwrap();
@@ -289,8 +282,7 @@ mod tests {
             panic!("Retired authority admitted");
         };
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        // Neither principal branch skips this production constructor. Nonroot
-        // callers refuse even before reaching the retired root controller.
+        // Neither principal branch skips this production constructor.
         let expected = if rustix::process::getuid().as_raw() == 0
             && rustix::process::geteuid().as_raw() == 0
             && unsafe { libc::setfsuid(u32::MAX) } == 0
@@ -313,8 +305,8 @@ mod tests {
         let directory = File::open(root.path()).unwrap();
         let facts = directory.metadata().unwrap();
         let partition = File::open(&partition_path).unwrap();
-        // A convincing ext4 header does NOT turn a regular file into the held
-        // kernel partition accepted by the actual admission validator.
+        // A convincing ext4 header does NOT turn a regular file into the held kernel partition
+        // accepted by the actual admission validator.
         assert_eq!(ext4_uuid(&partition).unwrap(), [7; 16]);
         let files = OriginalOutputFiles {
             source: directory.try_clone().unwrap(),

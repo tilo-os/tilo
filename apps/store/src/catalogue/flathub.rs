@@ -18,16 +18,13 @@ use crate::flathub_client::{
 };
 use crate::model::StoreItem;
 
-/// The file the catalogue is kept in under the Store's cache.
 const FILE: &str = "flathub-v2.json";
 /// The file earlier Stores kept it in: without the apps that have no build
 /// for this device's processor, so it is never read, only removed.
 const OLD_FILE: &str = "flathub-v1.json";
 /// A kept catalogue larger than this is not read.
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
-/// How long a kept catalogue stands before it is fetched again.
 pub const FRESH_FOR_SECONDS: u64 = 6 * 60 * 60;
-/// Apps per catalogue page.
 const PER_PAGE: usize = 250;
 /// The most catalogue pages read: Flathub lists a few thousand apps, so this
 /// bounds a server that answers an endless page count, not the catalogue.
@@ -38,7 +35,6 @@ const FEATURED: usize = 100;
 /// Flathub's catalogue as the Store keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlathubFeed {
-    /// The language the localized fields are in, as Flathub names it.
     pub locale: String,
     /// When it was fetched, Unix seconds.
     pub fetched_unix: u64,
@@ -46,14 +42,10 @@ pub struct FlathubFeed {
     /// its featured rank and last update. Install state is not part of it:
     /// the refresh applies this device's.
     pub items: Vec<StoreItem>,
-    /// Whether every catalogue page was read. A partial feed still lists
-    /// what it has and is fetched again at the next refresh.
     pub complete: bool,
 }
 
 impl FlathubFeed {
-    /// Whether the feed is recent enough, in `locale`, to stand without a
-    /// fetch.
     #[must_use]
     pub fn is_fresh(&self, locale: &str, now_unix: u64) -> bool {
         self.complete
@@ -61,8 +53,6 @@ impl FlathubFeed {
             && now_unix.saturating_sub(self.fetched_unix) < FRESH_FOR_SECONDS
     }
 
-    /// Build the feed from Flathub's popular collection and its catalogue
-    /// pages (either may be partial).
     #[must_use]
     pub fn from_records(
         locale: &str,
@@ -107,8 +97,6 @@ impl FlathubFeed {
     }
 }
 
-/// Fetch the whole catalogue from Flathub in `locale`. A failed catalogue
-/// page after the first ends the read with what it has.
 pub fn fetch(locale: &str, now_unix: u64) -> Result<FlathubFeed, String> {
     let popular = fetch_collection("popular", FEATURED, locale);
     let mut catalogue = Vec::new();
@@ -119,7 +107,6 @@ pub fn fetch(locale: &str, now_unix: u64) -> Result<FlathubFeed, String> {
         match fetch_catalogue_page(page, PER_PAGE, locale) {
             Ok((records, total)) => {
                 if records.is_empty() {
-                    // The catalogue ended before the page count it claimed.
                     pages = page.saturating_sub(1);
                     break;
                 }
@@ -154,7 +141,6 @@ fn path() -> Option<PathBuf> {
     crate::config::cache_dir().map(|dir| dir.join(FILE))
 }
 
-/// The kept catalogue, however old; `None` when there is none.
 #[must_use]
 pub fn load() -> Option<FlathubFeed> {
     let path = path()?;

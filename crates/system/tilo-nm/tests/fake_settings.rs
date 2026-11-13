@@ -47,18 +47,15 @@ fn value<'v>(value: impl Into<Value<'v>>) -> OwnedValue {
     OwnedValue::try_from(value.into()).unwrap()
 }
 
-/// What the fake `NetworkManager` holds, shared by its objects.
 #[derive(Default)]
 struct World {
     wifi_enabled: bool,
     wwan_enabled: bool,
-    /// Profile objects with their settings and secrets.
     profiles: Vec<(String, Map, Map)>,
     active: Vec<OwnedObjectPath>,
     activations: usize,
     /// The agent registered, by the caller's unique name.
     agent: Option<String>,
-    /// The password the "Work" network takes.
     work_password: String,
 }
 

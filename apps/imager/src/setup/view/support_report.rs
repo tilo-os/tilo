@@ -1,9 +1,4 @@
 //! The early hardware compatibility report on the native setup surface.
-//!
-//! The backend reports typed facts and outcomes. This view owns every sentence:
-//! component names, reasons, evidence and next steps are Fluent messages, while
-//! hardware names, driver names and versions are the values those messages
-//! carry.
 
 use super::*;
 use crate::setup::hardware_text::{
@@ -14,9 +9,6 @@ use imager_backend::support_report::{
     Applicability, ComponentSupport, ReportSource, SupportReport as HardwareReport, SupportState,
 };
 
-/// Which computer the report describes. The same component presentation is
-/// used for this computer and for one prepared elsewhere; only the identity
-/// title and the source wording differ.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Placement {
     ThisComputer,
@@ -36,9 +28,6 @@ impl SetupApp {
     }
 }
 
-/// The component report for either destination. Important limitations are
-/// expanded with their evidence and next step; working components stay a
-/// compact list so the page remains scannable.
 pub(super) fn sections(report: &HardwareReport, placement: Placement) -> Vec<Box<dyn Widget>> {
     let mut sections = vec![Box::new(identity_section(report, placement)) as Box<dyn Widget>];
     sections.push(Box::new(summary_section(report, placement)));
@@ -465,8 +454,6 @@ mod tests {
                 .iter()
                 .any(|widget| has_id(widget.as_ref(), "setup.hardware.model"))
         );
-        // The limited fingerprint reader is expanded with its evidence and
-        // remedy; the supported Wi-Fi adapter is a compact working row.
         assert!(
             sections
                 .iter()

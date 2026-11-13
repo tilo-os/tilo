@@ -1,27 +1,18 @@
 //! `tilo-staging-reclaim`: returns the temporary installer space to Tilo.
 //!
-//! A USB-free installation leaves two partitions behind the new Tilo root:
-//! the staging ESP and staging root the live installer booted from. The
-//! installer recorded their exact identities in
-//! `/var/lib/tilo/staging-reclaim.json`. Once the installed system has reached
-//! a real user session, this removes them and grows the Tilo root (GPT entry,
-//! LUKS mapping, filesystem) into the freed space.
+//! A USB-free installation leaves the staging ESP and the staging root behind the
+//! new Tilo root, recorded by their exact identities in
+//! `/var/lib/tilo/staging-reclaim.json`. Once the installed system reaches a real
+//! user session this removes them and grows the Tilo root (GPT entry, LUKS
+//! mapping, filesystem) into the freed space.
 //!
-//! Every step is decided from the disk as it is now, so a crash at any point
-//! is resumed by the next run: a staging partition is either still present
-//! with its exact recorded identity or absent with its extent unallocated; the
-//! root either still ends at its recorded end or already ends at the grown
-//! end. Anything else is a mismatch, and a mismatch leaves every partition
-//! untouched and says why.
+//! Every step is decided from the disk as it is now, so a crash at any point is
+//! resumed by the next run; anything that does not match the record leaves every
+//! partition untouched and says why.
 //!
-//! The lines `tilo-staging-reclaim: done` and `tilo-staging-reclaim: refused:
-//! …` are stable markers the unit mirrors to the console. Exit status 0 when
-//! done or when there is nothing to do yet, 1 otherwise.
-//!
-//! Everything it asks of the machine (the record's path, the physical root
-//! mount, the disk lock, the external tools, the log) goes through [`Host`],
-//! whose provided methods are the production behaviour; nothing is read from
-//! the environment.
+//! The lines `tilo-staging-reclaim: done` and `tilo-staging-reclaim: refused: …`
+//! are stable markers the unit mirrors to the console. Exit status 0 when done or
+//! when there is nothing to do yet, 1 otherwise.
 
 pub mod record;
 
@@ -43,15 +34,13 @@ pub const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 pub const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
 pub const TILO_ROOT_TYPE: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
 
-/// How a run stopped, by what the original raised.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// The disk does not look exactly like the record; nothing was touched.
     Mismatch(String),
     /// A step failed; the next run resumes from the disk as it is.
     Incomplete(String),
-    /// A tool answered in a shape the original did not expect (it stopped
-    /// with a traceback).
+    /// A tool answered in a shape the original did not expect.
     Crash(String),
 }
 
@@ -91,7 +80,6 @@ pub struct Outcome {
 
 /// The machine. Production uses every provided method.
 pub trait Host {
-    /// Where the installer's record is.
     fn record(&self) -> PathBuf {
         PathBuf::from(RECORD)
     }
@@ -164,7 +152,6 @@ pub trait Host {
     }
 }
 
-/// The machine itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -402,7 +389,6 @@ impl Partition {
     }
 }
 
-/// The disk's GPT, required to be the recorded one.
 pub fn partition_table(
     host: &dyn Host,
     disk: &str,
@@ -448,7 +434,6 @@ pub fn partition_table(
     Ok(parts)
 }
 
-/// The number at the end of a partition node (`/dev/vda6` is 6).
 pub fn partition_number(node: &str) -> Result<u32, Error> {
     let trimmed = node.strip_suffix('\n').unwrap_or(node);
     let digits: String = trimmed
@@ -503,7 +488,6 @@ fn holders_and_mounts(host: &dyn Host, node: &str) -> Result<(Vec<Value>, usize)
     Ok((children, points))
 }
 
-/// The present staging partition, or `None` when it is already gone.
 fn staged_state(
     host: &dyn Host,
     parts: &[Partition],
@@ -565,7 +549,6 @@ pub struct Plan {
     pub grow_to: Option<i128>,
 }
 
-/// Decides every step from the disk as it is now.
 pub fn plan(host: &dyn Host, record: &Record, parts: &[Partition]) -> Result<Plan, Error> {
     let esp = staged_state(host, parts, &record.staging_esp, ESP_TYPE, "staging ESP")?;
     let root = staged_state(
@@ -721,7 +704,6 @@ pub fn reclaim(host: &dyn Host, record: &Record) -> Result<(), Error> {
     grow_filesystem(host, &target.node)
 }
 
-/// Grows the LUKS mapping (if any) and the filesystem of the physical root.
 fn grow_filesystem(host: &dyn Host, node: &str) -> Result<(), Error> {
     let (children, _) = holders_and_mounts(host, node)?;
     let mut mappers = Vec::new();

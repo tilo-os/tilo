@@ -11,12 +11,10 @@ use crate::people::{Person, SecretKind};
 /// How the sign-in ended, as the process exit status the caller reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
-    /// The volume's key file is in place and the handoff to the session made.
     Unlocked,
     /// Nobody can sign in here, or their secret could not be tried: the
     /// existing prompts take over.
     NothingToTry,
-    /// The person asked for another way in.
     OtherWays,
 }
 
@@ -30,19 +28,15 @@ impl Exit {
     }
 }
 
-/// The person's choice on the screen listing everyone who may sign in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     Person(usize),
     OtherWays,
 }
 
-/// What came back from the secret field.
 pub enum Entry {
     Secret(Zeroizing<String>),
-    /// Enter on an empty field: back to the list, or another way in.
     Empty,
-    /// The field could not be shown or was cancelled.
     Unavailable,
 }
 
@@ -59,7 +53,6 @@ pub enum Unlock {
     CouldNotTry,
 }
 
-/// The line under the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Note {
@@ -133,26 +126,20 @@ fn wait(seconds: u64) -> String {
     format!("{hours} hours")
 }
 
-/// One ask of the secret field.
 pub struct Prompt<'a> {
     pub person: &'a Person,
     pub note: Note,
-    /// Several people may sign in, so an empty entry goes back to the list.
     pub several: bool,
 }
 
 pub trait Screen {
-    /// Let the person pick themselves, starting from `highlighted`.
     fn pick(&mut self, people: &[Person], highlighted: usize) -> Pick;
     fn ask(&mut self, prompt: &Prompt<'_>) -> Entry;
-    /// The secret is being checked.
     fn checking(&mut self, person: &Person);
-    /// The sign-in screen is done, opened or not.
     fn finish(&mut self, unlocked: bool);
 }
 
 pub trait Auth {
-    /// Everyone who may open the volume; empty when nobody can sign in here.
     fn people(&mut self) -> Vec<Person>;
     fn unlock(&mut self, person: &Person, secret: &str) -> Unlock;
 }

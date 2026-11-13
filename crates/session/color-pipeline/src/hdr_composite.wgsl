@@ -34,7 +34,7 @@ struct Layer {
 struct Params {
     sdr_white_nits: f32,
     layer_count: u32,
-    // `shell::render::orientation::shader_code` of the output's transform.
+    // `tilo_compositor::render::orientation::shader_code` of the output's transform.
     orientation: u32,
     _pad1: u32,
     layers: array<Layer, 4>,

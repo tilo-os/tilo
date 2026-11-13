@@ -197,18 +197,9 @@ pub fn request() {
     trimmer.wake.notify_one();
 }
 
-/// Windows closed so far in this process; see [`window_closed`].
-static WINDOWS_CLOSED: AtomicU64 = AtomicU64::new(0);
-
 /// A window closed: its frames are gone for good.
 pub fn window_closed() {
-    WINDOWS_CLOSED.fetch_add(1, Ordering::AcqRel);
     request();
-}
-
-/// Windows closed so far, for a caller to tell whether one closed since its last look.
-pub fn windows_closed() -> u64 {
-    WINDOWS_CLOSED.load(Ordering::Acquire)
 }
 
 /// Ask for one trim `delay` from now, whatever is requested meanwhile: work that frees its scratch

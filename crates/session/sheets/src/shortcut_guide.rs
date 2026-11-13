@@ -34,7 +34,7 @@ pub const APP_ID: &str = "so.tilo.shortcut-guide";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ShortcutGuide {}
 
-#[resource(kind = "shortcut-guide.guide", label = "Shortcut guide")]
+#[resource(kind = "shortcut-guide.guide")]
 impl ShortcutGuide {}
 
 /// What the guide asks of the shell.
@@ -56,7 +56,7 @@ pub enum GuideEffect {
         second: String,
     },
     /// Close the shortcut guide
-    #[effect(own_device, kind = "read")]
+    #[effect(label = "guide-done", own_device, kind = "read")]
     Done,
 }
 
@@ -994,19 +994,12 @@ fn unassigned() -> KeyboardBinding {
     KeyboardBinding::new([], KeyLegend::Character("—".to_owned()))
 }
 
-/// `chord` as the keycaps the guide draws.
+/// `chord` as the keycaps the guide draws: the keys the active layout
+/// presses for it.
 fn keycaps(chord: &KeyChord) -> KeyboardBinding {
-    let modifier = |name: &str| match name {
-        "Super" => Some(KeyboardModifier::System),
-        "Ctrl" => Some(KeyboardModifier::Control),
-        "Alt" => Some(KeyboardModifier::Alt),
-        "Shift" => Some(KeyboardModifier::Shift),
-        _ => None,
-    };
-    KeyboardBinding::new(
-        chord.modifiers.iter().filter_map(|name| modifier(name)),
-        KeyLegend::from_name(&chord.key),
-    )
+    let (modifiers, key) =
+        ui::keycaps::as_typed(chord.modifiers.iter().map(String::as_str), &chord.key);
+    KeyboardBinding::from_keys(modifiers.iter().map(String::as_str).chain([key.as_str()]))
 }
 
 /// What else the guide tells the person about the keys, in reading order.

@@ -1,6 +1,8 @@
 //! The one decision every door, host and receiver makes.
 
-use crate::{ActionKind, Answer, Context, Grant, GrantId, Lifetime, Subject, TreePath};
+use tilo_app_id::AppId;
+
+use crate::{ActionKind, Answer, Context, Grant, GrantId, Level, Lifetime, Subject, TreePath};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +138,13 @@ impl<'g> Party<'g> {
         self
     }
 
+    /// [`Self::also_as`] for each of `subjects`.
+    #[must_use]
+    pub fn with_also(mut self, subjects: impl IntoIterator<Item = Subject>) -> Self {
+        self.subjects.extend(subjects);
+        self
+    }
+
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         // A member's own record is that person's alone, whatever the workspace's
@@ -188,11 +197,19 @@ impl<'g> Party<'g> {
 }
 
 /// Who is acting: a person, and the delegations bounding them (an agent, a
-/// task, a Shortcut, an app, a foreign device).
+/// task, a Shortcut, a foreign device).
 #[derive(Clone, Debug, Default)]
 pub struct Authority<'g> {
     pub person: Party<'g>,
     pub bounds: Vec<Party<'g>>,
+    /// How many of `person` and `bounds`, in order, are people of the acting: a
+    /// privileged action needs each of them to allow it.
+    pub people: usize,
+    /// The app the change is made through.
+    pub app: Option<&'g AppId>,
+    /// The resource kinds the app declares: what it may reach in its own node.
+    /// `None` where the host deciding does not hold the app's manifest.
+    pub app_kinds: Option<&'g [String]>,
 }
 
 impl<'g> Authority<'g> {
@@ -201,7 +218,25 @@ impl<'g> Authority<'g> {
         Self {
             person,
             bounds: Vec::new(),
+            people: 1,
+            app: None,
+            app_kinds: None,
         }
+    }
+
+    /// The same authority, with `kinds` as what the app it acts through may
+    /// reach in its own node.
+    #[must_use]
+    pub fn in_app(mut self, kinds: &'g [String]) -> Self {
+        self.app_kinds = Some(kinds);
+        self
+    }
+
+    /// The same authority, bounded by `party` too.
+    #[must_use]
+    pub fn also_as(mut self, party: Party<'g>) -> Self {
+        self.bounds.push(party);
+        self
     }
 
     #[must_use]
@@ -217,16 +252,25 @@ impl<'g> Authority<'g> {
         let mut parts = Vec::with_capacity(self.bounds.len().saturating_add(1));
         parts.push(self.person.decide(node, kind, cx));
         parts.extend(self.bounds.iter().map(|bound| bound.decide(node, kind, cx)));
-        let answer = parts
+        let mut answer = parts
             .iter()
             .map(|part| part.answer)
             .min()
             .unwrap_or(Answer::Deny);
+        if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
+            && node.id_at(Level::App) == Some(app.as_str())
+            && !kinds
+                .iter()
+                .any(|kind| node.id_at(Level::Kind) == Some(kind.as_str()))
+        {
+            answer = Answer::Deny;
+        }
         Verdict {
             answer,
             node: node.clone(),
             kind,
             parts,
+            people: self.people,
         }
     }
 }
@@ -244,7 +288,16 @@ impl Authority<'_> {
         cx: &Context<'_>,
     ) -> Answer {
         let person = self.person.decide(node, kind, cx).answer;
-        if privileged && person == Answer::Ask {
+        if privileged && self.people <= 1 && person == Answer::Ask {
+            return Answer::Deny;
+        }
+        if privileged
+            && self
+                .bounds
+                .iter()
+                .take(self.people.saturating_sub(1))
+                .any(|bound| bound.decide(node, kind, cx).answer == Answer::Ask)
+        {
             return Answer::Deny;
         }
         self.bounds
@@ -262,19 +315,22 @@ pub struct Verdict<'g> {
     pub kind: ActionKind,
     /// The person's decision first, then each delegation's in order.
     pub parts: Vec<Decision<'g>>,
+    /// How many of `parts`, in order, are the acting's people.
+    pub people: usize,
 }
 
 impl<'g> Verdict<'g> {
     /// This verdict for a privileged action, one that exercises authority
-    /// over the workspace or others in it: the person's own grants must allow it.
-    /// Where they only ask, the person's confirmation is no authority they
+    /// over the workspace or others in it: every person's own grants must allow
+    /// it. Where one of them only asks, their confirmation is no authority they
     /// lack, so it is refused. A delegation's Ask still asks the person.
     #[must_use]
     pub fn privileged(mut self) -> Self {
         if self
             .parts
-            .first()
-            .is_some_and(|person| person.answer == Answer::Ask)
+            .iter()
+            .take(self.people.max(1))
+            .any(|person| person.answer == Answer::Ask)
         {
             self.answer = Answer::Deny;
         }
@@ -317,10 +373,10 @@ impl<'g> Verdict<'g> {
             Answer::Deny => "Not allowed",
         };
         let who = |index: usize| {
-            if index == 0 {
+            if index < self.people {
                 "the person's grants".to_owned()
             } else {
-                "the delegation's grants".to_owned()
+                "the grants of those acting for them".to_owned()
             }
         };
         let index = self

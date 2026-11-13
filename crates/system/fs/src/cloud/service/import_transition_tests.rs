@@ -68,7 +68,6 @@ fn expired_preparation_remounts_without_changing_pause_or_queued_data() {
         panic!("preparation did not finish")
     };
     assert!(launcher.volume("files-1").is_none());
-    // Advance only the hold's monotonic deadline, not the process clock.
     service.import_holds.get_mut("files-1").unwrap().deadline = Instant::now();
     service.expire_import_holds();
     let volume = launcher.volume("files-1").unwrap();
@@ -111,8 +110,6 @@ fn expired_preparation_remounts_without_changing_pause_or_queued_data() {
 }
 
 fn expire_before_freeze_reply(service: &mut CloudService) {
-    // Also expire before the service handles the child's freeze reply. The old
-    // mount must finish stopping before its replacement can open the cache.
     let (answer, answered) = mpsc::channel();
     service.control(
         CloudRequest::PrepareImport {

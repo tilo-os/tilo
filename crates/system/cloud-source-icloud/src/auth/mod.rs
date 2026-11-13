@@ -13,9 +13,6 @@
 //! Accounts with Advanced Data Protection keep Drive's keys off Apple's
 //! servers; the web API cannot read them. That is reported as
 //! [`AuthError::AdvancedDataProtection`], never as a generic failure.
-//!
-//! Nothing here logs; secrets are zeroized when dropped and redacted from
-//! `Debug`.
 
 use std::time::Duration;
 
@@ -36,18 +33,14 @@ pub const WIDGET_KEY: &str = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f
 /// Protection accounts.
 const PCS_DOCUMENTS_COOKIE: &str = "X-APPLE-WEBAUTH-PCS-Documents";
 
-/// Where the sign-in endpoints live.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoints {
-    /// `https://idmsa.apple.com/appleauth/auth`.
     pub auth: Url,
-    /// `https://setup.icloud.com/setup/ws/1`.
     pub setup: Url,
     pub widget_key: String,
 }
 
 impl Endpoints {
-    /// Apple's production endpoints.
     pub fn apple() -> Self {
         Self::parse(
             "https://idmsa.apple.com/appleauth/auth",
@@ -55,7 +48,6 @@ impl Endpoints {
         )
     }
 
-    /// `<base>/appleauth/auth` and `<base>/setup/ws/1`, for a fake server.
     pub fn at(base: &Url) -> Self {
         let base = base.as_str().trim_end_matches('/');
         Self::parse(
@@ -73,7 +65,6 @@ impl Endpoints {
         }
     }
 
-    /// The origin idmsa's web client claims (`Origin`, `Referer`).
     pub fn auth_origin(&self) -> String {
         self.auth.origin().ascii_serialization()
     }
@@ -88,7 +79,6 @@ pub enum AuthError {
     AccountLocked,
     #[error("the verification code is incorrect")]
     InvalidCode,
-    /// The pending sign-in is no longer valid on Apple's side.
     #[error("the sign-in timed out; start again")]
     SignInExpired,
     #[error("no trusted phone number can receive a code")]

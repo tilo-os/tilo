@@ -23,6 +23,7 @@ export const WORDS = {
   offline: 'You’re offline. Changes are kept on this device and sent once the connection is back.',
   admission: 'The workspace can’t take this browser’s changes right now. Changes are kept on this device.',
   saving: 'Your changes aren’t saved on this device yet. Keep this tab open and try again.',
+  files: 'This window keeps no files, so apps here can’t store files of their own. Open Tilo in a normal window to work with them.',
   renderer: 'The desktop stopped drawing. Try again to start it, or reload the page.',
 };
 
@@ -32,9 +33,9 @@ const presented = phase => phase === 'presented' || phase === 'gpu-pending';
 /**
  * The bar's reading of the session and the desktop: `{state, sentence,
  * detail}`, where `state` is `online`, `connecting` or the kind of trouble
- * (`offline`, `admission`, `saving`, `renderer`); `sentence` is what the person
- * reads (`null`: the bar stays empty) and `detail` the cause, for the
- * console.
+ * (`offline`, `admission`, `saving`, `files`, `renderer`); `sentence` is what
+ * the person reads (`null`: the bar stays empty) and `detail` the cause, for
+ * the console.
  *
  * `desktop` is the mount's last reported status, `mounted` marks that the
  * page mounted a desktop (its `phase` says whether one drew), `peer` the
@@ -42,6 +43,10 @@ const presented = phase => phase === 'presented' || phase === 'gpu-pending';
  * desktop, which has no session to be cut off from), and `saved` whether the
  * store last committed every change (the page's store reports it, above the
  * mount's own `persistence`: a mount reports on the console it draws in).
+ * A mount whose `files` is `unavailable` started without app files, because
+ * the browser keeps none for this page — the desktop draws, and the apps
+ * that save files of their own cannot, which the person is told once rather
+ * than on every save that fails.
  */
 export function connectionStatus({peer = null, desktop = null, mounted = false, saved = true, messages = null} = {}) {
   const failed = failureOf({peer, desktop, saved, messages});
@@ -96,6 +101,15 @@ function failureOf({peer, desktop, saved, messages}) {
       kind: 'renderer',
       detail: desktop?.error ? `the desktop stopped: ${desktop.error}` : 'the desktop stopped drawing',
       sentence: said('renderer'),
+    };
+  }
+  // A desktop that drew is the one this is said of: without files its apps
+  // keep nothing of their own, which is worth a line though nothing failed.
+  if (desktop?.files === 'unavailable') {
+    return {
+      kind: 'files',
+      detail: `the browser keeps no app files for this page: ${desktop.filesError ?? 'no cause given'}`,
+      sentence: said('files'),
     };
   }
   return null;

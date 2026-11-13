@@ -26,7 +26,6 @@ pub fn families() -> &'static [String] {
     })
 }
 
-/// The shipped family `font` names (a generic name or a family, any case).
 pub fn family(font: &str) -> Option<&'static str> {
     let font = font.trim();
     if let Some((_, family)) = GENERIC.iter().find(|(name, _)| *name == font) {
@@ -38,7 +37,6 @@ pub fn family(font: &str) -> Option<&'static str> {
         .map(String::as_str)
 }
 
-/// Whether `font` names a font text can use.
 pub fn known(font: &str) -> bool {
     family(font).is_some()
 }
@@ -69,7 +67,6 @@ pub fn nearest(font: &str) -> String {
     }
 }
 
-/// The fonts as `media` lists them.
 pub fn listing() -> serde_json::Value {
     serde_json::json!({
         "generic": GENERIC.iter().map(|(name, family)| (name.to_string(), serde_json::Value::from(*family))).collect::<serde_json::Map<_, _>>(),

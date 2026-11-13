@@ -1,0 +1,24 @@
+[package]
+name = "tilo-words"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's nouns (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "What a declared name is called in a sentence: its words, one of it and several."
+
+[lib]
+name = "tilo_words"
+path = "src/lib.rs"
+
+# A leaf with no dependencies: the compiler writes a package's catalogue with it, and the
+# action model reads a type's noun with it, so it pulls nothing into either.
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native workspace feature unification must never reach a web bundle.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -1,21 +1,5 @@
 //! `activity_timeline` example — the audit pane and the history scrubber over
 //! a **real** document's change graph.
-//!
-//! ```bash
-//! cargo run -p ui-examples --example ui-lab -- activity_timeline                  # interactive
-//! cargo run -p ui-examples --example ui-lab -- activity_timeline --shots o.png    # headless frame
-//! TILO_SHOTS_THEME=light cargo run -p ui-examples --example ui-lab -- activity_timeline --shots o.png
-//! ```
-//!
-//! `--shots` honours `TILO_SHOTS_THEME` (`dark` by default) and composites the
-//! frame on the theme's own base surface, so the PNG is what the pane looks
-//! like inside an app rather than over a hard-coded backdrop.
-//!
-//! Nothing here is hand-authored feed data. The example builds a document that
-//! two identities edit — one forks, edits under its own actor and merges back,
-//! the way a peer's sync arrives — and then asks [`tilo_ui::HistorySource`] what
-//! happened. Every row's author, timestamp, op class and summary is derived
-//! from the automerge changes those edits produced.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,6 +10,7 @@ use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::ActivityTimeline;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -233,7 +218,7 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    widget.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }

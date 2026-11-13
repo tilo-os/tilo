@@ -36,7 +36,7 @@ fn session_with_a_window() -> (
         .expect("a launched app's process");
     launches.started(app_process.id(), APP, "private", false);
     let _client = mapped(&mut session, APP);
-    let mut window = Window::open(&launches, APP, "private", app_process.id());
+    let mut window = Window::open(&launches, APP, app_process.id());
     window.hello();
     window.say(&FloatingSurfaceClientMessage::SelectionCapable);
     // The pass that takes the window's word answers its hello, so the box is asked for after the
@@ -111,7 +111,6 @@ fn tab_apps(session: &Session) -> Vec<String> {
             .map(|tab| match &tab.tile {
                 tilo_desktop_model::TileContent::Foreign { app_id, .. }
                 | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-                | tilo_desktop_model::TileContent::PeerWindow { app_id, .. }
                 | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => app_id.clone(),
                 tilo_desktop_model::TileContent::AppPlaceholder { label, .. }
                 | tilo_desktop_model::TileContent::Stub { label, .. } => label.clone(),

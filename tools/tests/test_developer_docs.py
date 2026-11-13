@@ -259,6 +259,109 @@ class DeveloperDocsTests(unittest.TestCase):
         self.assertEqual(index["commit"], "abc123")
         self.assertIn("/src/commit/abc123/", index["sections"][0]["pages"][0]["sourceUrl"])
 
+    def other_site(self, extra: str = "") -> None:
+        """A second site's book (tilo.sh) relating to this one (tilo.so)."""
+        self.write("docs/developers/pages.toml",
+                   MANIFEST.replace('base = "/docs/developers/"',
+                                    'base = "/docs/developers/"\norigin = "https://tilo.so"'))
+        self.write("docs/sh/pages.toml", """
+            base = "/docs/"
+            origin = "https://tilo.sh"
+            repository = "https://forge.example/tilo/tilo"
+            related_manifests = ["docs/developers/pages.toml"]
+            [examples]
+            languages = ["python", "typescript"]
+            [[page]]
+            slug = ""
+            source = "docs/sh/index.md"
+            section = "Start"
+            nav = "Overview"
+            description = "Start here."
+            [[page]]
+            slug = "guide"
+            source = "docs/guide.md"
+            section = "Guides"
+            nav = "Guide"
+            description = "The guide, on both sites."
+        """ + extra)
+
+    def export_book(self, manifest: str, *arguments: str) -> Path:
+        out = self.root / "book-out"
+        status = self.run_tool("--root", str(self.root), "--manifest", manifest, "export",
+                               "--out", str(out), "--commit", "abc123", *arguments)
+        self.assertEqual(status, 0)
+        return out
+
+    def test_a_page_both_sites_publish_is_each_sites_own_and_the_rest_links_across(self) -> None:
+        self.other_site()
+        self.start("Hello\n")
+        self.write("docs/sh/index.md",
+                   "# Overview\n\n[Guide](../guide.md#notes) and [building apps](../developers/start.md)\n")
+        out = self.export_book("docs/sh/pages.toml")
+        page = (out / "pages/index.md").read_text()
+        self.assertIn("[Guide](/docs/guide/#notes)", page)
+        self.assertIn("[building apps](https://tilo.so/docs/developers/)", page)
+        manifest = json.loads((out / "manifest.json").read_text())
+        self.assertEqual(manifest["origin"], "https://tilo.sh")
+        self.assertEqual(manifest["examples"], {"languages": ["python", "typescript"]})
+        self.assertEqual(self.check(), 0)
+
+    def generated_reference(self) -> None:
+        self.other_site("""
+            [[page]]
+            slug = "python-sdk"
+            source = "sdk/tilo/__init__.py"
+            generator = "tools/reference.py"
+            section = "Reference"
+            nav = "Python SDK"
+            description = "Every class and function."
+        """)
+        self.start("Hello\n")
+        self.write("sdk/tilo/__init__.py", '"""The SDK."""\n')
+        self.write("tools/reference.py", """
+            import argparse, pathlib
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--root")
+            parser.add_argument("--out")
+            args = parser.parse_args()
+            pathlib.Path(args.out).write_text("# Python SDK\\n\\n## Workspaces\\n")
+        """)
+        self.write("docs/sh/index.md", "# Overview\n\n[Workspaces](../../sdk/tilo/__init__.py#workspaces)\n")
+
+    def test_a_generated_page_is_checked_for_its_generator_and_linked_by_its_source(self) -> None:
+        self.generated_reference()
+        check = ("--root", str(self.root), "--manifest", "docs/sh/pages.toml", "check")
+        self.assertEqual(self.run_tool(*check), 0)
+        (self.root / "tools/reference.py").unlink()
+        self.assertEqual(self.run_tool(*check), 1)
+
+    def test_a_generated_page_is_published_from_what_its_generator_wrote(self) -> None:
+        self.generated_reference()
+        generated = self.root / "generated"
+        self.assertEqual(self.run_tool("--root", str(self.root), "--manifest", "docs/sh/pages.toml",
+                                       "generate", "--out", str(generated)), 0)
+        out = self.export_book("docs/sh/pages.toml", "--generated", str(generated))
+        self.assertIn("[Workspaces](/docs/python-sdk/#workspaces)", (out / "pages/index.md").read_text())
+        reference = (out / "pages/python-sdk.md").read_text()
+        self.assertIn('generator: "tools/reference.py"', reference)
+        self.assertIn("## Workspaces", reference)
+
+    def test_a_generated_page_nobody_generated_fails_the_export(self) -> None:
+        self.generated_reference()
+        status = self.run_tool("--root", str(self.root), "--manifest", "docs/sh/pages.toml", "export",
+                               "--out", str(self.root / "book-out"))
+        self.assertEqual(status, 1)
+
+    def test_a_link_to_a_missing_heading_of_a_generated_page_fails_the_export(self) -> None:
+        self.generated_reference()
+        self.write("docs/sh/index.md", "# Overview\n\n[Gone](../../sdk/tilo/__init__.py#gone)\n")
+        generated = self.root / "generated"
+        self.assertEqual(self.run_tool("--root", str(self.root), "--manifest", "docs/sh/pages.toml",
+                                       "generate", "--out", str(generated)), 0)
+        status = self.run_tool("--root", str(self.root), "--manifest", "docs/sh/pages.toml", "export",
+                               "--out", str(self.root / "book-out"), "--generated", str(generated))
+        self.assertEqual(status, 1)
+
     def test_the_published_pages_resolve(self) -> None:
         self.assertEqual(self.run_tool("check"), 0)
 

@@ -1,5 +1,5 @@
-//! Shared local operator workflow: verify the submitted bytes before staging
-//! the exact reviewed metadata and making approved uploads available.
+//! Shared local operator workflow: verify the submitted bytes before staging the exact reviewed
+//! metadata and making approved uploads available.
 
 use serde::Serialize;
 
@@ -8,7 +8,6 @@ use crate::{
     InspectedVersion, InspectionPolicy, ModerationService, PendingSubmission, ReviewRecord, Storage,
 };
 
-/// What review verified for one version: a package's bytes or a bot's program.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "artifact", rename_all = "kebab-case")]
 pub enum Inspection {
@@ -16,8 +15,7 @@ pub enum Inspection {
     Program(InspectedProgram),
 }
 
-/// Inspect the packages or programs behind a pending request. Deletion has
-/// no new bytes.
+/// Inspect the packages or programs behind a pending request. Deletion has no new bytes.
 pub fn inspect(
     storage: &Storage,
     pending: &PendingSubmission,
@@ -39,10 +37,9 @@ pub fn inspect(
     })
 }
 
-/// Reinspect bytes and approve the exact candidate using the existing locked
-/// moderation transition. Uploaded packages and programs become public only
-/// after approval. This stages metadata; publishing a signed snapshot
-/// remains a separate step.
+/// Reinspect bytes and approve the exact candidate using the existing locked moderation transition.
+/// Uploaded packages and programs become public only after approval; this stages metadata, and
+/// publishing a signed snapshot remains a separate step.
 pub fn approve(
     storage: &Storage,
     pending: &PendingSubmission,

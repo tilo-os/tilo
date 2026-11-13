@@ -1,7 +1,5 @@
-//! Attribution and licence information shown from the map overflow menu.
-//!
-//! The component owns its modal state and routes drawing, hit-testing, focus,
-//! keyboard dismissal, and accessibility through the shared `ModalDialog`.
+//! Attribution and licence information, shown from the map overflow menu: the shared `ModalDialog`
+//! carries its focus, keys and accessibility.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -60,7 +58,6 @@ impl MapInfoSheet {
         was_open
     }
 
-    /// Paint the sheet in the window's top layer, over the whole window.
     pub(crate) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -76,9 +73,6 @@ impl MapInfoSheet {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Route one event through the shared modal. Returns true while the sheet
-    /// is open, including for the event that dismisses it, so covered map
-    /// controls never receive the same press or key.
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,

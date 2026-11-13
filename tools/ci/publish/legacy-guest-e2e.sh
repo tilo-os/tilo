@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The Linux legacy VM guest end to end: boot the disk image-legacy-guest built through
-# `tilo-legacy` against a headless shell (os/dev/legacy-vm-e2e.sh): a window, typed text, a
+# `tilo-legacy` against a headless session (os/dev/legacy-vm-e2e.sh): a window, typed text, a
 # shared directory, suspend and resume.
 #
 #   legacy-guest-e2e.sh GUEST BINARIES
-#       GUEST holds image.oci.tar (legacy-guest.sh build), BINARIES the shell and
+#       GUEST holds image.oci.tar (legacy-guest.sh build), BINARIES the session and
 #       tilo-legacy (legacy-guest.sh binaries)
 #
 # t runs it as root in a micro-VM step (isolation = "vm") with a /dev/kvm of its own, whose
@@ -62,7 +62,7 @@ with tarfile.open(archive) as oci:
             sys.exit(f"{archive}: no disk.qcow2 in its layer")
 EOF
 test -s "$work/e2e/disk/disk.qcow2"
-cp "$binaries"/{shell,tilo-legacy} "$work/e2e/bin/"
+cp "$binaries"/{tilo-session,tilo-legacy} "$work/e2e/bin/"
 cp -a "$repo_root/." "$work/src"
 mv "$work/e2e" "$work/src/e2e"
 chmod -R a+rwX "$work/src/e2e"

@@ -76,8 +76,6 @@ fn marks() -> Vec<Painted> {
     ]
 }
 
-/// Every collaborator simulates the same marks into the same pixels, and
-/// painting a layer incrementally equals painting it from scratch.
 #[test]
 fn engines_are_deterministic_and_incremental_painting_equals_replay() {
     for (engine, texture) in [("oil", Texture::Linen), ("watercolour", Texture::ColdPress)] {
@@ -95,7 +93,6 @@ fn engines_are_deterministic_and_incremental_painting_equals_replay() {
         }
         assert_eq!(incremental.paint(&marks), whole.as_slice(), "{engine}");
 
-        // Editing a mark re-simulates from before it and matches a fresh run.
         let mut edited = marks.clone();
         edited[1] = Painted::new(
             "hill",
@@ -157,8 +154,6 @@ fn a_window_paints_what_the_whole_grid_paints_there() {
             differ * 1000 < size.0 * size.1,
             "{engine}: {differ} cells differ, worst by {worst}"
         );
-        // A small window inside the painting, cut through its marks, keeps
-        // its middle as the whole grid paints it there.
         let (origin, size) = ((50, 30), (60, 50));
         let part = window(origin, size);
         let margin = 16;
@@ -180,10 +175,6 @@ fn a_window_paints_what_the_whole_grid_paints_there() {
     }
 }
 
-/// Oil covers what it touches and leaves the rest bare; a thin dry brush
-/// over a coarse weave leaves broken coverage rather than a solid band.
-/// A stroke still being painted shows as it will once painted, and leaves
-/// the layer as it was.
 #[test]
 fn a_preview_shows_the_wet_stroke_without_keeping_it() {
     for (engine, texture) in [("oil", Texture::Linen), ("watercolour", Texture::ColdPress)] {
@@ -205,10 +196,6 @@ fn a_preview_shows_the_wet_stroke_without_keeping_it() {
     }
 }
 
-/// A stroke laid exactly as it was last previewed takes the preview's
-/// simulation, and paints what painting it afresh paints; a stroke laid
-/// differently from its preview is painted afresh. A formed stroke is
-/// previewed piece by piece, as it is laid.
 #[test]
 fn laying_the_previewed_stroke_equals_painting_it_afresh() {
     let mut grass = stroke(&[(30.0, 100.0), (120.0, 96.0)], 6.0, "#4f7a2a", true);
@@ -232,7 +219,6 @@ fn laying_the_previewed_stroke_equals_painting_it_afresh() {
         assert_eq!(layer.paint(&marks), fresh.as_slice(), "{engine}");
         assert_eq!(layer.applied(), marks.len(), "{engine}");
 
-        // Previewed shorter than it was laid: painted afresh all the same.
         let mut layer = painter(engine, texture);
         layer.preview(done, &wet[..1]);
         let mut other = marks.clone();
@@ -271,9 +257,6 @@ fn oil_covers_its_strokes_and_a_dry_brush_breaks_over_the_weave() {
     assert!(bare > 8, "a dry brush skips the low threads: {row:?}");
 }
 
-/// Watercolour is transparent glaze: painted cells darken (multiply alpha
-/// above zero) without hiding the paper, the paper elsewhere is untouched,
-/// and a dried wash is darker at its rim than in its middle.
 #[test]
 fn watercolour_glazes_and_dries_with_a_dark_edge() {
     let mut water = painter("watercolour", Texture::Paper);
@@ -330,7 +313,6 @@ fn band(colour: &str, x0: f32, x1: f32, wet: bool) -> Mark {
     Mark::Fill(band_fill(colour, x0, x1, wet))
 }
 
-/// The mean luminance-ish value of a column of the painted layer.
 fn column(pixels: &[u8], x: usize) -> f32 {
     (30..90)
         .map(|y| rgb(pixels, x, y).iter().map(|v| f32::from(*v)).sum::<f32>())
@@ -338,8 +320,6 @@ fn column(pixels: &[u8], x: usize) -> f32 {
         / 60.0
 }
 
-/// A graded fill lays its paint in to the colour the gradient wants where
-/// each stroke is, darker at one end and lighter at the other.
 #[test]
 fn an_oil_fill_follows_its_colour_field() {
     let mut fill = band_fill("#808080", 0.0, 160.0, false);
@@ -359,8 +339,6 @@ fn an_oil_fill_follows_its_colour_field() {
     assert!(left < 250.0 && right > 450.0, "left {left} right {right}");
 }
 
-/// A gradient that fades to clear thins its paint out evenly, however its
-/// strokes overlap: full cover at one end, bare at the other, half between.
 #[test]
 fn an_oil_fill_fades_out_where_its_field_is_clear() {
     let mut fill = band_fill("#f0d8a0", 0.0, 160.0, false);
@@ -404,7 +382,6 @@ fn a_blender_softens_wet_paint_however_much_is_laid_dry_elsewhere() {
         with(band("#000000", 0.0, 160.0, true), &[("blender", 1.0)]),
     ));
     let soft = painter("oil", Texture::Linen).paint(&softened).to_vec();
-    // The steepest change across the meeting.
     let step = |pixels: &[u8]| {
         (50..106)
             .map(|x| (column(pixels, x + 4) - column(pixels, x)).abs())
@@ -440,9 +417,6 @@ fn a_blender_softens_wet_paint_however_much_is_laid_dry_elsewhere() {
     );
 }
 
-/// Paint laid over without `wet` covers what is beneath as over dry paint:
-/// a light stroke across a wet dark band stays light, where the same stroke
-/// laid wet picks the dark up.
 #[test]
 fn a_stroke_laid_dry_covers_and_one_laid_wet_mixes() {
     let over = |wet: bool| {
@@ -476,9 +450,6 @@ fn a_stroke_laid_dry_covers_and_one_laid_wet_mixes() {
     );
 }
 
-/// A glaze tints dry paint beneath it without hiding its modelling: dark
-/// over light shows, one coat filters once however its strokes overlap,
-/// and a second coat deepens it.
 #[test]
 fn an_oil_glaze_filters_the_paint_beneath_once_per_coat() {
     let light = Painted::new("light", band("#e8e0d0", 0.0, 160.0, false));
@@ -522,8 +493,6 @@ fn an_oil_glaze_filters_the_paint_beneath_once_per_coat() {
     );
 }
 
-/// How unevenly the light falls across a stroke's middle, relative to its
-/// colour: the ridges the light picks out, whatever the paint's value.
 fn ridging(pixels: &[u8]) -> f32 {
     let values: Vec<f32> = (50..70)
         .flat_map(|y| (40..120).map(move |x| (x, y)))
@@ -534,8 +503,6 @@ fn ridging(pixels: &[u8]) -> f32 {
     spread / mean
 }
 
-/// Lights are mixed with body (lead white) and stand up in ridges; darks
-/// go on lean and lie flat, so the light finds less in them.
 #[test]
 fn oil_lights_stand_up_in_ridges_and_darks_lie_lean() {
     let ridges = |colour: &str| {
@@ -551,7 +518,6 @@ fn oil_lights_stand_up_in_ridges_and_darks_lie_lean() {
     assert!(light > dark * 1.3, "light {light} vs dark {dark}");
 }
 
-/// The row where a fill's top edge first covers, per column.
 fn top_edge(pixels: &[u8]) -> Vec<usize> {
     (30..130)
         .map(|x| (5..40).find(|y| alpha(pixels, x, *y) > 128).unwrap_or(40))
@@ -667,9 +633,6 @@ fn a_clipped_stroke_stays_inside_its_outline() {
     }
 }
 
-/// How much neighbouring cells of a patch differ, on average, in 8-bit
-/// steps of the summed channels: the fine grain a weave prints, not the
-/// broad variation of a stroke's bristles.
 fn grain_over(pixels: &[u8], xs: std::ops::Range<usize>, ys: std::ops::Range<usize>) -> f32 {
     let value = |x: usize, y: usize| rgb(pixels, x, y).iter().map(|v| f32::from(*v)).sum::<f32>();
     let mut total = 0.0;
@@ -683,9 +646,6 @@ fn grain_over(pixels: &[u8], xs: std::ops::Range<usize>, ys: std::ops::Range<usi
     total / count
 }
 
-/// A loaded brush floods the weave, so a light stroke over a dark passage is
-/// even paint, not the canvas grid printed in two colours; the same brush
-/// run dry catches the tooth and breaks.
 #[test]
 fn a_loaded_oil_brush_floods_the_weave_and_a_dry_one_breaks_on_it() {
     let paint_over = |load: f32| {
@@ -709,9 +669,6 @@ fn a_loaded_oil_brush_floods_the_weave_and_a_dry_one_breaks_on_it() {
     assert!(dry > loaded * 3.0, "a dry brush breaks: {dry} vs {loaded}");
 }
 
-/// A dry brush dragged over dark paint leaves broken light: some of the
-/// dark shows through all along the stroke rather than the bristles'
-/// overlapping touches building up to a solid patch.
 #[test]
 fn a_dry_brush_scumbles_broken_colour_instead_of_a_solid_patch() {
     let pixels = painter("oil", Texture::Linen)
@@ -744,8 +701,6 @@ fn a_dry_brush_scumbles_broken_colour_instead_of_a_solid_patch() {
     );
 }
 
-/// Fresh oil stays workable however thinly it went on: a blender dragged
-/// across a thin wet stroke spreads it as far as it spreads a loaded one.
 #[test]
 fn thin_fresh_oil_is_as_workable_as_loaded_oil() {
     let softened = |load: f32| {
@@ -797,9 +752,6 @@ fn eraser(points: &[(f32, f32)], size: f32, strength: f32) -> Erase {
     }
 }
 
-/// An eraser across the middle of a stroke clears it there and leaves its
-/// ends; half strength takes off about half; paint laid after the eraser
-/// shows where it cleared.
 #[test]
 fn an_eraser_lifts_the_paint_beneath_it_and_not_what_comes_after() {
     let line = stroke(&[(10.0, 60.0), (150.0, 60.0)], 20.0, "#7a4a8c", false);

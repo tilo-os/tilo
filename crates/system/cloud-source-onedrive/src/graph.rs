@@ -1,8 +1,5 @@
 //! The Microsoft Graph resources this provider reads, and their mapping to
 //! provider-neutral [`Item`]s.
-//!
-//! Only the properties used are modelled; everything else in a response is
-//! ignored, so new Graph properties never break parsing.
 
 use cloud_source::{
     ContentHash, HashAlgorithm, Item, ItemId, ItemKind, NativeDocument, Quota, Revision,
@@ -10,7 +7,6 @@ use cloud_source::{
 };
 use serde::Deserialize;
 
-/// A `driveItem`.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveItem {
@@ -33,14 +29,12 @@ pub struct DriveItem {
     pub download_url: Option<String>,
 }
 
-/// An `itemReference`: where an item lives.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemReference {
     pub id: Option<String>,
     pub drive_id: Option<String>,
     pub drive_type: Option<String>,
-    /// Absent in delta responses.
     pub path: Option<String>,
 }
 
@@ -70,7 +64,6 @@ pub struct PackageFacet {
     pub kind: Option<String>,
 }
 
-/// A page of a collection (`children`, `delta`, `versions`).
 #[derive(Debug, Deserialize)]
 pub struct Page<T> {
     #[serde(default = "Vec::new")]
@@ -98,7 +91,6 @@ pub struct QuotaFacet {
     pub deleted: Option<u64>,
 }
 
-/// An `uploadSession`, as created and as returned by each fragment.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadSessionInfo {
@@ -108,7 +100,6 @@ pub struct UploadSessionInfo {
     pub next_expected_ranges: Vec<String>,
 }
 
-/// A `driveItemVersion`.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {
@@ -130,7 +121,6 @@ pub struct Identity {
     pub display_name: Option<String>,
 }
 
-/// The `permission` `createLink` returns.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Permission {
     pub link: Option<SharingLink>,
@@ -181,7 +171,6 @@ impl DriveItem {
         self.folder.is_some() || self.root.is_some()
     }
 
-    /// The provider-neutral item, or `None` without an id or a name.
     pub fn to_item(&self) -> Option<Item> {
         if self.id.is_empty() {
             return None;
@@ -303,15 +292,11 @@ impl UploadSessionInfo {
     }
 }
 
-/// Graph drive types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DriveType {
-    /// Consumer `OneDrive`.
     Personal,
-    /// `OneDrive` for Business.
     Business,
-    /// A `SharePoint` document library.
     DocumentLibrary,
 }
 
@@ -384,7 +369,6 @@ mod tests {
         assert_eq!(page.next_link.as_deref(), Some("https://..."));
         assert!(page.value[0].file.is_some());
         assert!(page.value[1].is_folder());
-        // The sample omits ids; such entries are unusable, not fatal.
         assert!(page.value[0].to_item().is_none());
     }
 

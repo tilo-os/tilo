@@ -1,17 +1,12 @@
-//! The person's command history across every session (docs/app-model/ush.md,
-//! "Search and history"): each run a session records is also remembered in
-//! the person's own record, which follows them to their devices and never
-//! reaches a collaborator. Every remembered run is a search entry, so
-//! Terminal's search finds a command whichever session ran it.
+//! The person's command history across every session (docs/app-model/ush.md, "Search and
+//! history").
 
 use ui::tilo_resource::{
     self, ActionCx, Atom, Collection, Id, JsonSchema, Model, Refusal, resource,
 };
 
-/// The most runs the history keeps; the oldest go first.
 pub const MAX_REMEMBERED: usize = 10_000;
 
-/// The commands the person's sessions ran.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct CommandHistory {
     /// Runs, oldest first. Only the sessions that ran them add them.
@@ -19,7 +14,6 @@ pub struct CommandHistory {
     pub runs: Collection<Remembered>,
 }
 
-/// One run of one session, as the history keeps it.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Remembered {
     /// Command
@@ -41,7 +35,6 @@ pub struct Remembered {
     pub run: Id,
 }
 
-/// A run to remember, as the session that recorded it hands it in.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct Ran {
     pub command: String,
@@ -55,13 +48,20 @@ pub struct Ran {
     pub run: Id,
 }
 
-#[resource(kind = "terminal.history", label = "Command history")]
 impl CommandHistory {
-    /// Remember a run a session recorded.
-    ///
-    /// The terminal keeping the person's history, not an edit of theirs to
-    /// take back: this is housekeeping about the history, which the `record`
-    /// op of the same run carries out as what it is.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "terminal.history",
+    read_content = CommandHistory::read_document
+)]
+impl CommandHistory {
     #[action(housekeeping)]
     pub fn remember(
         &mut self,
@@ -75,7 +75,6 @@ impl CommandHistory {
         Ok(())
     }
 
-    /// The runs whose command line contains `text`, newest first.
     pub fn matching<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a Remembered> {
         self.runs
             .values()
@@ -83,8 +82,6 @@ impl CommandHistory {
             .filter(move |run| run.command.0.contains(text))
     }
 
-    /// Remember `ran` in the newest place, keeping [`MAX_REMEMBERED`]
-    /// entries; a run already remembered keeps its place.
     fn keep(&mut self, cx: &mut ActionCx, ran: Ran) {
         if self
             .runs

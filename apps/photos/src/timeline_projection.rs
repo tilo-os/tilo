@@ -15,9 +15,6 @@ pub(crate) struct TimelinePhoto {
     pub name: String,
     pub favorite: bool,
     pub day: String,
-    /// Portable capture value retained for newest-first ordering inside a
-    /// day. ISO timestamps sort lexically; malformed/legacy values remain
-    /// deterministic through the id tie-break rather than being invented.
     pub captured_at: String,
     pub aspect_ratio: f64,
 }
@@ -27,9 +24,7 @@ pub(crate) struct TimelineGeometry {
     pub width: f64,
     pub target_height: f64,
     pub gap: f64,
-    /// The day's heading above its rows, its gap to them included.
     pub header_height: f64,
-    /// The space after a day, before the next day's heading.
     pub day_gap: f64,
 }
 
@@ -104,9 +99,6 @@ impl TimelineProjection {
         self.rebuild_days();
     }
 
-    /// Reconcile a new filtered metadata generation without throwing away
-    /// every retained day. Sparse collaborative edits consequently repack
-    /// only the day buckets they actually change.
     pub fn reconcile(&mut self, photos: impl IntoIterator<Item = TimelinePhoto>) {
         let incoming: HashMap<_, _> = photos
             .into_iter()
@@ -132,9 +124,6 @@ impl TimelineProjection {
         }
     }
 
-    /// Apply one durable-record delta. Only the old and new capture days are
-    /// repacked; the prefix pass is proportional to the number of distinct
-    /// days rather than the number of photographs.
     pub fn upsert(&mut self, photo: TimelinePhoto) {
         let old_day = self.photos.get(&photo.id).map(|old| old.day.clone());
         let new_day = photo.day.clone();
@@ -163,8 +152,6 @@ impl TimelineProjection {
         true
     }
 
-    /// Every photograph's id in the chronology's own order: the order the
-    /// outline, the keyboard and a slide show move through.
     pub fn ordered_ids(&self) -> Vec<String> {
         self.days
             .iter()
@@ -190,8 +177,6 @@ impl TimelineProjection {
     }
 
     pub fn day_offset(&self, day: &str, viewport: f64) -> Option<f64> {
-        // Synced metadata has day buckets before its first layout. Their zero
-        // offsets are placeholders, so let semantic navigation build geometry.
         self.geometry?;
         self.days
             .iter()
@@ -201,9 +186,6 @@ impl TimelineProjection {
 
     pub fn date_markers(&self, viewport: f64) -> Vec<(String, f64, bool)> {
         let denominator = self.max_scroll(viewport);
-        // A year boundary is where one year gives way to the next: the
-        // newest day opens the timeline and stands at the top of the track,
-        // so it is no boundary and draws no mark.
         let mut previous_year = "";
         self.days
             .iter()
@@ -223,8 +205,6 @@ impl TimelineProjection {
             .collect()
     }
 
-    /// Preserve the first row intersecting the viewport at the same screen
-    /// coordinate through a density or width change.
     pub fn anchor_at(&self, scroll_y: f64) -> Option<TimelineAnchor> {
         let header = TimelineGeometry::header(self.geometry);
         self.days.iter().find_map(|day| {
@@ -412,10 +392,6 @@ impl TimelineProjection {
             }
         }
         if let Some(mut row) = current {
-            // A last row that does not fill the width keeps the target
-            // height, which is taller than the filled rows above it (they are
-            // scaled down to fit). Keep it at their height so a day does not
-            // end on one oversized photograph.
             if let Some(previous) = day.rows.last()
                 && row.height > previous.height
             {

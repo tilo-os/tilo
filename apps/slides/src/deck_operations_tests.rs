@@ -24,7 +24,6 @@ fn seeded() -> TestApp<SlidesShell> {
     app
 }
 
-/// The deck as the editor draws it.
 fn deck(app: &TestApp<SlidesShell>) -> crate::model::Deck {
     mirror(&app.state())
 }
@@ -346,7 +345,6 @@ fn apply_takes_any_deck_action_as_json() {
         deck(&app).slides[1].background,
         crate::model::Background::Deep
     );
-    // A destructive value through `apply` is undoable too: it applies.
     let element = deck(&app).slides[1].elements[0].id.clone();
     let delete = actions::delete_element_action(&slide, &element);
     app.call("apply", json!({ "action": delete }))
@@ -480,8 +478,6 @@ fn an_agents_changes_read_as_sentences() {
     assert_eq!(named, vec![(title.clone(), "Budget".to_owned()); 3]);
 }
 
-/// The deck's verbs answer their caller with the outline of the deck they
-/// left, so an agent sees what it changed without reading the deck again.
 #[test]
 fn deck_edits_answer_with_the_outline() {
     let mut app = seeded();

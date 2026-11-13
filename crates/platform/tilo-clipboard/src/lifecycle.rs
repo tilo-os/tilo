@@ -27,8 +27,6 @@ pub(crate) struct Session {
     cleanup: mpsc::Sender<Teardown>,
 }
 
-// Field order is intentional: release the backend reference before the lease
-// decrements active calls, allowing the reaper to perform the final drop.
 struct Call {
     backend: Arc<dyn ClipboardBackend>,
     _lease: AdmissionLease,
@@ -196,9 +194,6 @@ impl ClipboardBackend for Session {
         self.admit()?.image()
     }
     fn copy(&self, content: crate::CopyContent<'_>) -> crate::ClipboardCopy {
-        // The copy's worker settles it after this call's admission ends; a
-        // session closed meanwhile drops that worker, which settles it as
-        // failed.
         self.admit().map_or_else(
             || crate::ClipboardCopy::settled(false),
             |backend| backend.copy(content),

@@ -37,6 +37,27 @@ pub enum PasswordsEffect {
     ///
     /// Saves the item open in the editor to the vault.
     Save,
+    /// Save a login.
+    ///
+    /// Adds a login to the vault in one step: what it is called, the address
+    /// it signs in to, the username and the password. The password is a
+    /// secret parameter: it is never shown, logged or listed.
+    SaveLogin {
+        #[param("What the login is called")]
+        name: String,
+        #[param("The address it signs in to")]
+        origin: String,
+        #[param("The username")]
+        username: String,
+        #[param(secret, "The password")]
+        password: String,
+    },
+    /// List logins.
+    ///
+    /// The vault's logins by their opaque ids and names: no username,
+    /// address or password.
+    #[effect(returns, kind = "read", idempotent)]
+    ListLogins,
     /// Cancel editing.
     #[effect(kind = "read")]
     Cancel,

@@ -5,11 +5,11 @@
 //! disk whenever what the person's devices show changed, so a screen that appears on the tablet or
 //! the desktop appears in the arrangement without either device asking.
 
+use crate::platform::fabric::SharedLink;
 use settings_store::hardware::{DisplayHardwareSnapshot, DisplaySet};
 use settings_store::person_displays::{
     Arrangement, DeviceOutput, Layout, PersonDevice, PersonDisplays,
 };
-use tilo_device_fabric::link::SharedLink;
 use tilo_network_actor::fabric::{
     DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
 };
@@ -313,22 +313,23 @@ mod tests {
     }
 
     /// This session's fabric, as a device of the person's with one screen.
-    fn fabric() -> std::sync::Arc<crate::fabric::SessionFabric> {
+    fn fabric() -> std::sync::Arc<crate::platform::fabric::SessionFabric> {
         let (outgoing, _frames) = tokio::sync::mpsc::unbounded_channel();
-        let runtime = tilo_device_fabric::runtime::FabricRuntime::restored(
+        let runtime = crate::platform::fabric::FabricRuntime::restored(
             Some((
-                tilo_device_fabric::DeviceId::new("this-laptop").expect("a device id"),
+                crate::platform::fabric::DeviceId::new("this-laptop").expect("a device id"),
                 "Laptop".to_owned(),
             )),
             None,
         )
         .expect("a runtime");
-        crate::fabric::SessionFabric::new(
+        crate::platform::fabric::SessionFabric::new(
             runtime,
-            outgoing,
+            crate::sync::HostOutbox::of(outgoing),
             [7; 32],
             ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
-            crate::fabric::Continuity::default(),
+            crate::platform::fabric::Continuity::default(),
+            None,
         )
     }
 
@@ -338,7 +339,7 @@ mod tests {
     fn this_device_s_screens_are_published_for_the_arrangement() {
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let fabric = fabric();
-        let link: tilo_device_fabric::link::SharedLink = fabric;
+        let link: crate::platform::fabric::SharedLink = fabric;
         let hardware = snapshot(vec![output("eDP-1", "BOE", 0, 1.5, true)]);
         let mut publisher = Publisher::default();
         assert!(

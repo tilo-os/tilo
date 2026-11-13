@@ -1554,3 +1554,41 @@ fn a_probe_at_no_width_leaves_the_stack_the_host_applies() {
     );
     fixture.assert_focused_content_fits();
 }
+
+#[test]
+fn a_probe_at_another_width_keeps_the_rows_the_applied_one_needs() {
+    let mut fixture = RetainedEditor::with_compact_blocks(
+        216.0,
+        1.0,
+        vec![Block::paragraph(
+            "The new onboarding build is on the test machines.",
+        )],
+    );
+    let applied = fixture.editor.blocks[0].line.get_rect().height();
+    assert!(
+        applied > 30.0,
+        "the sentence wraps over two rows at 216: {applied}"
+    );
+    // A parent asks the stack what it takes at a width that is never applied, as a flex solve
+    // does when it probes a child's intrinsic size.
+    fixture.editor.measure_stack(
+        Size {
+            width: Some(400.0),
+            height: None,
+        },
+        Size {
+            width: taffy::AvailableSpace::Definite(400.0),
+            height: taffy::AvailableSpace::MinContent,
+        },
+        &mut fixture.text,
+    );
+    // The host then applies the layout it solved at 216, without a renderer to measure with.
+    fixture
+        .editor
+        .apply_layout(&fixture.tree, fixture.root, Point::ZERO);
+    assert_eq!(
+        fixture.editor.blocks[0].line.get_rect().height(),
+        applied,
+        "a probe at another width must not stack the paragraph at that width's height"
+    );
+}

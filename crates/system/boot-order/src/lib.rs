@@ -5,17 +5,11 @@
 //! tilo-boot-order enlist --esp-partuuid GUID --boot-id XXXX --loader PATH
 //! ```
 //!
-//! Run by hand, as root, after checking the first Tilo boot. The supplied
-//! identities come from the physical install readback and its armed-boot
-//! receipt, not discovery by label. This command never creates or replaces an
-//! EFI boot option: it appends the named, currently booted Tilo option to the
-//! end of `BootOrder` once every firmware fact matches, and reads the firmware
-//! back afterwards. Exit status 0 when done (or already done), 1 on a refusal,
-//! 2 on a usage error.
-//!
-//! Everything it asks of the machine (the EFI variables, `efibootmgr`, the
-//! effective user) goes through [`Host`], whose provided methods are the
-//! production behaviour; the tests stand in for the firmware with files.
+//! Run by hand, as root, after checking the first Tilo boot. It never creates or
+//! replaces an EFI boot option: it appends the named, currently booted Tilo
+//! option to the end of `BootOrder` once every firmware fact matches, and reads
+//! the firmware back afterwards. Exit status 0 when done (or already done), 1 on
+//! a refusal, 2 on a usage error.
 
 mod args;
 
@@ -41,7 +35,7 @@ pub const LOADERS: [&str; 2] = [
 pub const WINDOWS_LOADER: &str = r"\EFI\Microsoft\Boot\bootmgfw.efi";
 const VARIABLE_LIMIT: usize = 65536;
 
-/// Why the helper refused, or what the operating system refused.
+/// Why the command or the operating system refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal(pub String);
 
@@ -70,12 +64,11 @@ fn os_error(errno: Errno, path: &str) -> Refusal {
 
 /// The machine: EFI variables, `efibootmgr` and the effective user.
 pub trait Host {
-    /// Where the EFI variables are (efivarfs).
+    /// The efivarfs mount holding the EFI variables.
     fn efivars(&self) -> PathBuf {
         PathBuf::from("/sys/firmware/efi/efivars")
     }
 
-    /// Runs `efibootmgr` with `args` and returns what it did.
     fn efibootmgr(&self, args: &[&str]) -> Result<Output, Refusal> {
         Command::new("efibootmgr")
             .args(args)
@@ -94,13 +87,11 @@ pub trait Host {
             })
     }
 
-    /// The effective user id.
     fn euid(&self) -> u32 {
         rustix::process::geteuid().as_raw()
     }
 }
 
-/// The machine itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -166,7 +157,6 @@ pub fn ids(host: &dyn Host, name: &str) -> Result<Option<Vec<String>>, Refusal> 
     ))
 }
 
-/// One boot option: its description, its partition GUID and its loader path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootOption {
     pub description: String,
@@ -331,7 +321,7 @@ pub fn casefold(text: &str) -> String {
 type State = (Vec<String>, BTreeMap<String, Option<Vec<u8>>>);
 
 /// The firmware facts enlisting requires, and the original bytes of every
-/// option involved (to detect a change before and after the mutation).
+/// option involved, to detect a change between validation and the mutation.
 fn checked_state(
     host: &dyn Host,
     boot_id: &str,
@@ -412,7 +402,6 @@ pub fn enlist(host: &dyn Host, boot_id: &str, esp: &str, loader: &str) -> Result
             String::from_utf8_lossy(&result.stderr).trim()
         ));
     }
-    // In the original's order, stopping at the first difference.
     let differs = || -> Result<bool, Refusal> {
         if ids(host, "BootOrder")?.as_ref() != Some(&wanted)
             || ids(host, "BootNext")?.is_some()
@@ -444,7 +433,7 @@ fn is_guid(text: &str) -> bool {
             .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// The command line, without the program name; returns the exit status.
+/// The command line and the exit status.
 pub fn main(host: &dyn Host, args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let parsed = match parse(args) {
         Ok(Parsed::Run(parsed)) => parsed,

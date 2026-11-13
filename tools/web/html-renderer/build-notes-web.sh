@@ -9,7 +9,7 @@ cargo build --locked -p tilo-app-cli --bin tilo-app
 "$CARGO_TARGET_DIR/debug/tilo-app" build --target web --bundle app --release apps/notes
 rm -rf "$out/bundle"
 cp -r "$CARGO_TARGET_DIR/tilo-app/web/notes/bundle" "$out/bundle"
-cp tools/web/html-renderer/notes.html "$out/bundle/notes.html"
+cp tools/web/html-renderer/app.html "$out/bundle/app.html"
 cp tools/web/html-renderer/baseline.html "$out/bundle/baseline.html"
 ls -la "$out/bundle/pkg"
 if [[ ${ATTRIBUTE:-1} == 1 ]]; then

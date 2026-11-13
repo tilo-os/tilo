@@ -19,7 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_live::live::Namespace;
-use tilo_live::relay::{Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
+};
 use tilo_live::scope::Scope;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
@@ -38,6 +40,10 @@ struct Grant {
     namespace: String,
     /// The subtree every participant of the same scope publishes in.
     scope: String,
+    /// Whether this participant is a hosted browser environment's device: it
+    /// publishes its window's page and is offered nobody else's tracks, so no
+    /// call, camera, screen or other window of the workspace reaches it.
+    environment: bool,
     admitted: AtomicBool,
     /// Reports each change of `admitted`: the relay re-observes on it and cuts
     /// a session whose answer narrowed.
@@ -45,13 +51,19 @@ struct Grant {
 }
 
 impl Grant {
-    fn new(workspace: u64, workspace_name: &str, peer: AuthenticatedPeer) -> Self {
+    fn new(
+        workspace: u64,
+        workspace_name: &str,
+        peer: AuthenticatedPeer,
+        environment: bool,
+    ) -> Self {
         let namespace = Namespace::new(&Scope::workspace(workspace_name), peer.device_public_key);
         Self {
             workspace,
             peer,
             scope: namespace.scope_path(),
             namespace: namespace.path(),
+            environment,
             admitted: AtomicBool::new(true),
             changed: watch::channel(0_u64).0,
         }
@@ -81,16 +93,27 @@ impl SessionAuthorization for Grant {
     }
 
     fn subscription_prefix(&self) -> Option<&str> {
-        Some(&self.scope)
+        // A browser environment's device hears nobody: its session publishes
+        // its window's page, and a viewer's ask arrives as a demand on that
+        // track, not as a subscription of its own. So no track of the
+        // workspace — a call, a camera, a screen, another window's page — is
+        // offered to it, whatever its session asks for.
+        (!self.environment).then_some(self.scope.as_str())
     }
 
     fn current(&self, direction: Direction, namespace: &str) -> bool {
         self.admitted()
             && match direction {
                 Direction::Publish => namespace == self.namespace,
-                Direction::Subscribe => namespace
-                    .strip_prefix(&self.scope)
-                    .is_some_and(|rest| rest.starts_with("/participant/")),
+                // A browser environment's device is offered no track of the
+                // workspace, whoever asks: no call, camera, screen or other
+                // window reaches it.
+                Direction::Subscribe => {
+                    !self.environment
+                        && namespace
+                            .strip_prefix(&self.scope)
+                            .is_some_and(|rest| rest.starts_with("/participant/"))
+                }
             }
     }
 
@@ -115,13 +138,18 @@ type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 /// nobody here.
 pub(crate) struct Authority {
     relay: RelayProtocol,
+    /// The devices this host certified for its browser environments: they
+    /// publish their window's page and are offered nobody else's tracks.
+    environments: crate::environment::EnvironmentRegistry,
     members: Mutex<Members>,
 }
 
 impl Authority {
     pub(crate) fn new(relay: RelayProtocol) -> Self {
+        let environments = relay.environments.clone();
         Self {
             relay,
+            environments,
             members: Mutex::new(Members::new()),
         }
     }
@@ -146,28 +174,6 @@ impl Authority {
     /// Every grant the plane carries, as the one account of who is here.
     fn carried(&self) -> Vec<Arc<Grant>> {
         self.members.lock_recover().values().cloned().collect()
-    }
-
-    /// The devices the plane carries in `workspace` now, each with the person
-    /// it is certified as: who a page there pairs with before anyone speaks.
-    pub(crate) fn persons_in(&self, workspace: u64) -> Vec<([u8; 32], [u8; 32])> {
-        let mut persons: Vec<([u8; 32], [u8; 32])> = self
-            .carried()
-            .into_iter()
-            .filter(|grant| grant.admitted() && grant.workspace == workspace)
-            .map(|grant| (grant.peer.device_public_key, grant.peer.user_public_key))
-            .collect();
-        persons.sort_unstable();
-        persons.dedup();
-        persons
-    }
-
-    /// Whether the workspace lets `peer`s device be a page in its plane now: a
-    /// page asks who is here over its session, which no session token names, so
-    /// the answer comes from the workspace itself.
-    pub(crate) async fn admits_page(&self, peer: &AuthenticatedPeer, workspace: u64) -> bool {
-        self.admits_as(peer, workspace, WorkspaceOperation::Live)
-            .await
     }
 
     /// Re-answer every participant: does its workspace admit its device now?
@@ -200,26 +206,9 @@ impl Authority {
         workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
     }
 
-    /// [`Self::admits_as`] for the carrier's own admission, which the relay
-    /// runs on a task that cannot wait for the workspace: a busy lock admits
-    /// nobody, and the device redials once the workspace has answered.
-    fn admits_now(&self, peer: &AuthenticatedPeer, workspace: u64, op: WorkspaceOperation) -> bool {
-        let Ok(workspaces) = self.relay.workspaces.try_lock() else {
-            return false;
-        };
-        let Some(workspace) = workspaces.get(&workspace).cloned() else {
-            return false;
-        };
-        drop(workspaces);
-        let Ok(runtime) = workspace.try_lock() else {
-            return false;
-        };
-        workspace_access::decide(&runtime, &self.relay.trust(), peer, op).admitted()
-    }
-
     /// Admit the device that reached an iroh connection, which proves itself
     /// with the certificate its grant carries.
-    fn admit_member(
+    async fn admit_member(
         &self,
         endpoint: [u8; 32],
         proof: &[u8],
@@ -256,7 +245,10 @@ impl Authority {
             device_public_key: device,
             cert: certificate,
         };
-        if !self.admits_now(&peer, id, WorkspaceOperation::Publish) {
+        // A device dials the plane as it enters, while the workspace is still
+        // taking it in: the admission waits for the workspace and decides on
+        // it, so a newcomer is not refused for arriving at a busy moment.
+        if !self.admits_as(&peer, id, WorkspaceOperation::Publish).await {
             return Err(Denied);
         }
         let key = DeviceKey {
@@ -268,7 +260,9 @@ impl Authority {
             member.set(true);
             member
         } else {
-            let member = Arc::new(Grant::new(id, &workspace, peer));
+            let environment =
+                crate::environment::environment_of(&self.environments, &device).is_some();
+            let member = Arc::new(Grant::new(id, &workspace, peer, environment));
             self.members.lock_recover().insert(key, member.clone());
             member
         };
@@ -277,13 +271,11 @@ impl Authority {
 }
 
 impl RelayAuthority for Authority {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
         // Every participant reaches this plane over iroh, a page included: it
         // proves itself with the certificate its grant carries.
-        let Peer::Native(device) = peer else {
-            return Err(Denied);
-        };
-        self.admit_member(device, proof)
+        let Peer(device) = peer;
+        Box::pin(self.admit_member(device, proof))
     }
 }
 
@@ -324,13 +316,16 @@ impl Plane {
         let handler = tilo_live::native::handler(move |session: tilo_live::native::Session| {
             let relay = relay.clone();
             async move {
-                let peer = Peer::Native(session.remote());
-                relay
-                    .serve_session(tilo_live::relay::VoiceRoute::negotiated(), session, peer)
-                    .await;
+                let peer = Peer(session.remote());
+                relay.serve_session(session, peer).await;
             }
         });
         (tilo_live::native::ALPN.to_vec(), Box::new(handler))
+    }
+
+    /// The plane's origin, which every carrier's sessions are served into.
+    pub(crate) fn origin(&self) -> Relay {
+        self.relay.clone()
     }
 
     /// Who the plane carries: the one account of who is here.
@@ -342,5 +337,87 @@ impl Plane {
     /// the plane does.
     pub(crate) fn tasks(&mut self) -> Vec<tokio::task::JoinHandle<()>> {
         std::mem::take(&mut self.tasks)
+    }
+}
+
+/// Serve one WebTransport session at the plane's path: the device proves
+/// itself with the relay handshake on the session's first stream (the
+/// transport does not say who dialled it, as iroh's does), then the
+/// session is the plane's, admitted by the device's grant as any other
+/// carrier's.
+pub(crate) async fn serve_web(
+    origin: &Relay,
+    protocol: &RelayProtocol,
+    session: tilo_net::webtransport::Session,
+) {
+    let link = tilo_relay_client::link::Link::web(session.clone());
+    let Ok((mut send, mut recv)) = link.accept_bi().await else {
+        return;
+    };
+    let Ok(device) = protocol.authenticate_member(&mut recv, &mut send).await else {
+        link.close("the device did not prove itself");
+        return;
+    };
+    send.finish();
+    origin
+        .serve_session(session, Peer(device.device_public_key))
+        .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device of the person who owns the workspace, as the plane admits one.
+    fn peer(device: [u8; 32]) -> AuthenticatedPeer {
+        AuthenticatedPeer {
+            user_public_key: [0xA1; 32],
+            device_public_key: device,
+            cert: tilo_user_identity::DeviceCert {
+                user_public_key: [0xA1; 32],
+                device_public_key: device,
+                device_label: "Browser".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: 0,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            },
+        }
+    }
+
+    fn names(device: [u8; 32]) -> Namespace {
+        Namespace::new(&Scope::workspace("ws-1"), device)
+    }
+
+    #[test]
+    fn a_member_hears_every_participant_of_its_workspace() {
+        let grant = Grant::new(7, "ws-1", peer([1; 32]), false);
+        assert_eq!(grant.subscription_prefix(), Some(grant.scope.as_str()));
+        assert!(grant.current(Direction::Subscribe, &names([2; 32]).path()));
+        assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
+        assert!(
+            !grant.current(Direction::Publish, &names([2; 32]).path()),
+            "nobody publishes in another participant's name"
+        );
+    }
+
+    #[test]
+    fn a_browser_environment_publishes_its_window_and_hears_nobody() {
+        let grant = Grant::new(7, "ws-1", peer([1; 32]), true);
+        assert_eq!(
+            grant.publication(),
+            Some(names([1; 32]).path().as_str()),
+            "it publishes its own window's page"
+        );
+        assert!(grant.subscriptions().is_empty());
+        assert_eq!(
+            grant.subscription_prefix(),
+            None,
+            "no track of the workspace is offered to it: no call, camera, screen or other window"
+        );
+        assert!(!grant.current(Direction::Subscribe, &names([2; 32]).path()));
+        assert!(!grant.current(Direction::Subscribe, &names([1; 32]).path()));
+        assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
     }
 }

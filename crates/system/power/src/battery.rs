@@ -1,17 +1,11 @@
-//! Battery state + the **threshold monitor** — the pure logic that turns a
-//! stream of battery readings into low-battery warnings and a critical
-//! auto-suspend, with hysteresis so a battery hovering at the threshold does
-//! not spam the user.
-//!
-//! The readings themselves come from `UPower`'s composite *display device*
-//! (see [`super::upower`]); this module never touches the bus. Feeding it
-//! Feeding fixture snapshots through the same monitor logic keeps the tests
-//! aligned with the service.
+//! Battery state and the threshold monitor: the pure logic that turns a stream of
+//! readings into a low-battery warning and a critical action, with hysteresis so
+//! a battery hovering at a threshold does not repeat itself. The readings come
+//! from `UPower`'s display device; this module never touches the bus.
 
 use crate::policy::{PowerAction, PowerPolicy};
 
-/// The battery's charge/discharge state, mirroring the `UPower`
-/// `org.freedesktop.UPower.Device.State` enumeration.
+/// The battery's charge and discharge state, mirroring `UPower`'s `Device.State`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "service", serde(rename_all = "kebab-case"))]
@@ -26,8 +20,8 @@ pub enum BatteryState {
 }
 
 impl BatteryState {
-    /// Map a raw `UPower` state code (`1..=6`) to a [`BatteryState`].
-    /// Anything out of range is [`BatteryState::Unknown`].
+    /// Maps a raw `UPower` state code (`1..=6`) to a [`BatteryState`]; anything out
+    /// of range is [`BatteryState::Unknown`].
     pub fn from_upower(code: u32) -> Self {
         match code {
             1 => BatteryState::Charging,
@@ -40,9 +34,9 @@ impl BatteryState {
         }
     }
 
-    /// Whether the battery is actively draining. Only a discharging battery
-    /// can trip the low / critical thresholds — a charging or full one is
-    /// gaining runtime, so any prior warning is stale.
+    /// Whether the battery is actively draining. Only a discharging battery can
+    /// trip the low and critical thresholds; a charging or full one is gaining
+    /// runtime, so any prior warning is stale.
     pub fn is_discharging(self) -> bool {
         matches!(
             self,
@@ -51,20 +45,18 @@ impl BatteryState {
     }
 }
 
-/// A single reading of the machine's composite battery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatterySnapshot {
     /// Whether a battery is present at all (a desktop has none).
     pub present: bool,
     /// Charge percentage, `0..=100`.
     pub percent: u8,
-    /// Charge/discharge state.
     pub state: BatteryState,
 }
 
 impl BatterySnapshot {
-    /// Whether the machine runs on its battery: one is there and it is
-    /// draining, not charging, full or held by the charger.
+    /// Whether the machine runs on its battery: one is there and it is draining,
+    /// not charging, full or held by the charger.
     pub fn runs_on_battery(&self) -> bool {
         self.present
             && matches!(
@@ -83,23 +75,19 @@ impl BatterySnapshot {
     }
 }
 
-/// A decision emitted by [`BatteryMonitor::evaluate`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatteryEvent {
-    /// Battery crossed the low threshold while discharging — warn the user.
     Low(u8),
-    /// Battery crossed the critical threshold — take the critical action
-    /// (usually suspend before the machine dies uncleanly).
+    /// The battery crossed the critical threshold: take the critical action,
+    /// usually suspending before the machine dies uncleanly.
     Critical(u8),
-    /// Battery recovered (plugged in / charging) after a prior warning —
-    /// clear the warning UI.
+    /// The battery recovered (plugged in, charging) after a prior warning: clear
+    /// the warning.
     Recovered,
 }
 
-/// Tracks whether the low / critical warnings have already fired so each
-/// fires **once** per discharge episode. Plugging in (any non-discharging
-/// state) re-arms both. Being a plain latch — no timers — it is driven
-/// entirely by the readings handed to [`Self::evaluate`].
+/// Tracks whether the low and critical warnings have already fired, so each
+/// fires once per discharge episode; plugging in re-arms both.
 #[derive(Debug, Default)]
 pub struct BatteryMonitor {
     warned_low: bool,
@@ -111,30 +99,23 @@ impl BatteryMonitor {
         Self::default()
     }
 
-    /// Whether a low/critical warning is currently latched (for tests and
-    /// for the UI to reflect a persistent "battery low" state).
+    /// Whether a warning is currently latched.
     pub fn is_warning(&self) -> bool {
         self.warned_low || self.warned_critical
     }
 
-    /// Feed one reading and get the events it triggers.
+    /// Feeds one reading and returns the events it triggers.
     ///
-    /// Contract:
-    /// * A battery that is absent, or not discharging, re-arms the latches
-    ///   and emits [`BatteryEvent::Recovered`] exactly once if a warning was
-    ///   outstanding.
-    /// * While discharging, crossing `<= critical` emits
-    ///   [`BatteryEvent::Critical`] once (and latches low too, so we do not
-    ///   also emit a redundant Low on the same reading).
-    /// * Crossing `<= low` (but above critical) emits [`BatteryEvent::Low`]
-    ///   once.
-    /// * Staying below a threshold that already fired emits nothing.
+    /// A battery that is absent or not discharging re-arms the latches and emits
+    /// [`BatteryEvent::Recovered`] once if a warning was outstanding. While it
+    /// discharges, `<= critical` emits [`BatteryEvent::Critical`] once and latches
+    /// low too, and `<= low` above it emits [`BatteryEvent::Low`] once.
     pub fn evaluate(&mut self, snap: &BatterySnapshot, policy: &PowerPolicy) -> Vec<BatteryEvent> {
         let mut out = Vec::new();
 
-        // Not draining (or no battery): the charge is safe. Re-arm so the
-        // next discharge episode can warn again, and surface a one-shot
-        // Recovered so the UI can drop any "low battery" chrome.
+        // Not draining (or no battery): the charge is safe. Re-arm so the next
+        // discharge episode can warn again, and surface a one-shot Recovered so the UI
+        // can drop any "battery low" chrome.
         if !snap.present || !snap.state.is_discharging() {
             if self.warned_low || self.warned_critical {
                 out.push(BatteryEvent::Recovered);
@@ -148,8 +129,8 @@ impl BatteryMonitor {
         if snap.percent <= policy.critical_battery_percent {
             if !self.warned_critical {
                 self.warned_critical = true;
-                // Latch low too: at/below critical we are also at/below low,
-                // and a single Critical is the right one-shot signal.
+                // Latch low too: at or below critical we are also at or below low, and a single
+                // Critical is the right one-shot signal.
                 self.warned_low = true;
                 out.push(BatteryEvent::Critical(snap.percent));
             }
@@ -162,8 +143,8 @@ impl BatteryMonitor {
     }
 }
 
-/// Convenience: does a [`BatteryEvent::Critical`] mean the machine should
-/// suspend, given the policy? Keeps the compositor's mapping in one place.
+/// Whether a [`BatteryEvent::Critical`] means the machine should suspend,
+/// given the policy.
 pub fn critical_leads_to_suspend(policy: &PowerPolicy) -> bool {
     policy.critical_action == PowerAction::Suspend
 }
@@ -258,7 +239,7 @@ mod tests {
         {
             let mut m = BatteryMonitor::new();
             let p = policy();
-            let _ = m.evaluate(&snap(10, BatteryState::Discharging), &p); // Low
+            let _ = m.evaluate(&snap(10, BatteryState::Discharging), &p);
             assert!(m.is_warning());
             // Plug in: one Recovered, latches cleared.
             assert_eq!(

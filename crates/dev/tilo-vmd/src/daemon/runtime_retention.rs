@@ -93,8 +93,8 @@ fn prior_trust(root: &Path, manifest: &BundleManifest) -> Result<bool, DaemonErr
     Ok(trusted)
 }
 
-/// Build a runtime-only snapshot from the canonical selections. Each byte is
-/// reverified after copying; user-owned input cannot change an admitted closure.
+/// Build a runtime-only snapshot from the canonical selections; each byte is reverified after
+/// copying, since user-owned input cannot change an admitted closure.
 pub(super) fn prepare(
     staging: &Path,
     prior: &Path,
@@ -188,8 +188,8 @@ fn prepare_into(
             let target = stage.join(&relative);
             fs::create_dir_all(&target).map_err(invalid)?;
             crate::fsutil::copy_tree(&old, &target).map_err(invalid)?;
-            // Signed file bytes become immutable system data; mutable user
-            // permission bits are not carried into the root-owned namespace.
+            // Signed file bytes become immutable system data: mutable user permission bits are not
+            // carried into the root-owned namespace.
             let mut paths = Vec::new();
             tilo_vm_protocol::layer_hash::walk(&target, Path::new(""), &mut paths)
                 .map_err(invalid)?;
@@ -239,8 +239,8 @@ fn prepare_into(
     Ok(!records.is_empty())
 }
 
-/// Revalidate actual post-selection references in the admitted combined view.
-/// An intervening runtime replacement cannot borrow an earlier exact proof.
+/// Revalidate the actual post-selection references in the admitted combined view: an intervening
+/// runtime replacement cannot borrow an earlier exact proof.
 pub(super) fn validate_current(
     view: &Path,
     selected: &crate::SelectedApps,

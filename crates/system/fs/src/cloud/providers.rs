@@ -1,16 +1,7 @@
-//! Which provider serves an account.
-//!
-//! This is the one table that maps a Settings account to a
-//! [`CloudSource`]. A new provider adds an arm to [`is_file_account`] and
-//! [`spec_for`] (its account type and non-secret configuration) and to
-//! [`open`]. Credentials never come from here: the service reads each
-//! account's short-lived credential from the handoff store.
-//!
-//! Settings resolves an `OAuth` account's storage once at sign-in (the
-//! `OneDrive` drive and root ids, a Dropbox team space root) and stores the
-//! provider crate's own serde configuration in the account's non-secret
-//! `config` under [`MOUNT_CONFIG_KEY`]. Without one, the provider's default
-//! applies (and `OneDrive` resolves its drive when the mount starts).
+//! Which provider serves an account: the one table that maps a Settings account to
+//! a [`CloudSource`]. A new provider adds an arm to [`is_file_account`],
+//! [`spec_for`] and [`open`]. Credentials never come from here; the service reads
+//! each account's short-lived credential from the handoff store.
 
 use std::sync::Arc;
 
@@ -21,12 +12,9 @@ use cloud_source::{CloudSource, CredentialSource, Error, is_secure_endpoint};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-/// Default resident bytes a mounted account may cache.
 pub const DEFAULT_CACHE_BUDGET: u64 = 4 << 30;
 
-/// Provider keys of a [`MountSpec`].
 pub mod provider {
-    /// Plain `WebDAV` and Nextcloud.
     pub const WEBDAV: &str = "webdav";
     pub const GOOGLE_DRIVE: &str = "google-drive";
     pub const ONEDRIVE: &str = "onedrive";
@@ -34,22 +22,19 @@ pub mod provider {
     pub const ICLOUD_DRIVE: &str = "icloud-drive";
 }
 
-/// Everything a mount process needs besides its credential. Contains no
-/// secret, so it may be logged and compared.
+/// Contains no secret, so it may be logged and compared.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MountSpec {
     pub account_id: String,
     pub provider: String,
-    /// Provider-specific, non-secret configuration.
     pub config: serde_json::Value,
     pub cache_budget: u64,
-    /// Start with background sync and uploads paused (the person paused
-    /// the account); the service sets it when it starts the mount.
+    /// Start with background sync and uploads paused (the person paused the
+    /// account); the service sets it when it starts the mount.
     #[serde(default)]
     pub paused: bool,
 }
 
-/// A `OneDrive` mount: resolved at sign-in, or still to be resolved.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 enum OneDriveSpec {
@@ -57,9 +42,8 @@ enum OneDriveSpec {
     Unresolved(cloud_source_onedrive::OneDriveConfig),
 }
 
-/// Whether `account` is a file account, enabled or not. Folder names are
-/// assigned over this set (Files names them the same way), so disabling an
-/// account never renames another account's folder.
+/// Whether `account` is a file account, enabled or not. Folder names are assigned
+/// over this set, so disabling an account never renames another account's folder.
 pub fn is_file_account(account: &accounts::Account) -> bool {
     let text = |key: &str| account.config.get(key).and_then(serde_json::Value::as_str);
     match account.type_id.as_str() {
@@ -77,8 +61,6 @@ pub fn is_file_account(account: &accounts::Account) -> bool {
     }
 }
 
-/// The stored mount configuration of `account`, or `default` when Settings
-/// stored none. `None` when the stored one is unusable.
 fn stored<T: DeserializeOwned>(account: &accounts::Account, default: T) -> Option<T> {
     match account.config.get(MOUNT_CONFIG_KEY) {
         None | Some(serde_json::Value::Null) => Some(default),
@@ -86,7 +68,6 @@ fn stored<T: DeserializeOwned>(account: &accounts::Account, default: T) -> Optio
     }
 }
 
-/// Only endpoints credentials may be sent to.
 fn secure<'a>(endpoints: impl IntoIterator<Item = &'a str>) -> Option<()> {
     endpoints.into_iter().all(is_secure_endpoint).then_some(())
 }
@@ -95,7 +76,6 @@ fn json(config: &impl Serialize) -> Option<serde_json::Value> {
     serde_json::to_value(config).ok()
 }
 
-/// The provider key and configuration of a file account.
 fn provider_config(account: &accounts::Account) -> Option<(&'static str, serde_json::Value)> {
     match account.type_id.as_str() {
         WEBDAV | NEXTCLOUD => {
@@ -140,8 +120,6 @@ fn provider_config(account: &accounts::Account) -> Option<(&'static str, serde_j
     }
 }
 
-/// The mount specification of a Settings account, or `None` when it is
-/// not a file account this build can mount (or is disabled).
 pub fn spec_for(account: &accounts::Account) -> Option<MountSpec> {
     if accounts::cloud_types::files_mode(account) != Some(accounts::cloud_types::FilesMode::Sync) {
         return None;
@@ -172,7 +150,6 @@ fn config<T: DeserializeOwned>(spec: &MountSpec) -> Result<T, Error> {
         .map_err(|_| Error::InvalidResponse("mount configuration"))
 }
 
-/// Connect a provider for `spec`.
 pub fn open(
     spec: &MountSpec,
     credentials: Arc<dyn CredentialSource>,

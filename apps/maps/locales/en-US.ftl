@@ -81,7 +81,7 @@ maps-offline-done-failed = Downloaded { $total } tiles, { $failed } failed
 maps-offline-done = Downloaded { $total } tiles
 maps-offline-estimate = About { $size } to download
 maps-offline-stored = { $size } on this device
-maps-offline-refused = Places you've looked at stay on this device, so they still show offline.
+maps-offline-refused = This map source can't save areas ahead of time. Places you open stay on this device.
 
 ## The map's own interface: labels a person reads or a screen reader
 ## announces, and the words the turn instructions are built from.
@@ -103,7 +103,7 @@ maps-hide-places = Hide places
 maps-show-places = Show places
 maps-directions = Directions
 maps-transit = Transit
-maps-save-or-unsave = Save or unsave place
+maps-save-or-unsave = Save place
 maps-save = Save
 maps-saved = Saved
 maps-clear-route-button = Clear route
@@ -133,7 +133,7 @@ maps-website = Website
 maps-close = Close
 maps-done = Done
 maps-place-unavailable = Map place is no longer available
-maps-poi-unavailable = Map point of interest is no longer in this viewport
+maps-poi-unavailable = That place is no longer in view
 maps-panel-empty = Search for a place or an address to see it here.
 maps-panel-places = Places
 maps-results = Results
@@ -141,16 +141,15 @@ maps-nearby = Nearby
 maps-saved-places = Saved places
 maps-recent-searches = Recent searches
 maps-clear = Clear
-maps-location-service-offline = The location service is unavailable in this session
+maps-location-service-offline = Location is unavailable right now
 maps-location-request-in-progress = A location request is already in progress
 maps-hide-traffic = Hide traffic
 maps-loading-places = Loading places…
 maps-nearby-count = { $count } places nearby
-maps-location-disconnected = The location service disconnected before returning a fix
+maps-location-disconnected = Location stopped before it was found. Try again.
 maps-current-location = Current location
 maps-located = Located
 maps-map-centre = Map centre
-maps-leave-now = Leave now
 maps-routing = Routing…
 maps-finding-departures = Finding departures…
 maps-arrive-at = Arrive at { $time }
@@ -258,3 +257,30 @@ maps-what-nearby = loading nearby places
 maps-route-estimate = { $reason } The offline estimate is shown.
 
 maps-addresses-places = Addresses and places
+
+## Actions
+
+maps-offline-areas = Offline areas
+maps-offline-areas-record = Record a downloaded area
+maps-offline-areas-forget = Forget a deleted area
+maps-offline-areas-clear = Record deleted offline maps
+maps-effect-search = Search places
+maps-effect-locate = Use my location
+maps-effect-toggle-traffic = Show traffic
+maps-effect-open-place = Open place
+maps-effect-directions = Get directions
+maps-effect-open-poi = Open place of interest
+maps-effect-poi-directions = Directions to place of interest
+maps-effect-delete-offline-area = Delete offline area
+maps-effect-clear-offline-areas = Clear offline areas
+maps-workspace = Maps
+maps-workspace-accept-places = Accept places
+maps-workspace-commit-search = Search places
+maps-workspace-clear-recents = Clear recent searches
+maps-workspace-accept-route = Accept a route
+maps-workspace-clear-route = Clear route
+maps-workspace-accept-transit = Accept transit routes
+maps-workspace-clear-transit = Clear transit routes
+
+## What the app is called in a window and in the launcher
+maps-app-title = Maps

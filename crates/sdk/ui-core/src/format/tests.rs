@@ -88,7 +88,7 @@ fn the_timestamp_and_date_styles_follow_the_date_and_clock_settings() {
     for style in DateStyle::ALL {
         assert_eq!(
             formats(style, TimeStyle::H24).date(day(2023, 3, 15)),
-            style.example(),
+            style.example(super::words()),
             "the date style reads as Settings' example"
         );
     }
@@ -99,7 +99,7 @@ fn the_timestamp_and_date_styles_follow_the_date_and_clock_settings() {
         (DateStyle::Long, "15 Mar 2023"),
         (DateStyle::Language, "Mar 15, 2023"),
     ] {
-        assert_eq!(style.example(), want);
+        assert_eq!(style.example(super::words()), want);
     }
 
     speak("de-DE");
@@ -137,7 +137,7 @@ fn without_a_chosen_format_dates_and_clocks_follow_the_language() {
     speak("en-US");
     assert_eq!(unchosen.timestamp(moment), "Jun 30, 2026, 1:42 PM");
     assert_eq!(unchosen.time(&moment), "1:42 PM");
-    assert!(!TimeStyle::Language.is_24_hour());
+    assert!(!TimeStyle::Language.is_24_hour(super::words()));
     assert_eq!(chosen24.timestamp(moment), "Jun 30, 2026, 13:42");
     assert_eq!(unchosen.date(day(2026, 6, 30)), "Jun 30, 2026");
     assert_eq!(unchosen.date(day(2026, 1, 3)), "Jan 3, 2026");
@@ -146,8 +146,8 @@ fn without_a_chosen_format_dates_and_clocks_follow_the_language() {
     assert_eq!(unchosen.timestamp(moment), "30.06.2026, 13:42");
     assert_eq!(unchosen.date(day(2026, 1, 3)), "03.01.2026");
     assert_eq!(unchosen.time(&moment), "13:42");
-    assert!(TimeStyle::Language.is_24_hour());
-    assert_eq!(TimeStyle::Language.example(), "14:05");
+    assert!(TimeStyle::Language.is_24_hour(super::words()));
+    assert_eq!(TimeStyle::Language.example(super::words()), "14:05");
     assert_eq!(
         Formats::with(RegionFormats {
             time: TimeStyle::H12,
@@ -157,7 +157,7 @@ fn without_a_chosen_format_dates_and_clocks_follow_the_language() {
         "1:42 PM",
         "a chosen 12-hour clock holds in German"
     );
-    assert_eq!(DateStyle::Language.example(), "15.03.2023");
+    assert_eq!(DateStyle::Language.example(super::words()), "15.03.2023");
     // ISO stays an explicit choice, the same in every language.
     assert_eq!(
         formats(DateStyle::Iso, TimeStyle::H24).timestamp(moment),
@@ -655,5 +655,30 @@ fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
             german,
             "{when:?}"
         );
+    }
+}
+
+#[test]
+fn a_list_joins_with_its_languages_own_separator() {
+    let facts = |items: &[&str]| {
+        items
+            .iter()
+            .map(|item| String::from(*item))
+            .collect::<Vec<_>>()
+    };
+    for locale in ["en-US", "de-DE"] {
+        speak(locale);
+        assert_eq!(list(&facts(&["Home folders"])), "Home folders", "{locale}");
+        assert_eq!(
+            list(&facts(&["Home folders", "encrypted"])),
+            "Home folders, encrypted",
+            "{locale}"
+        );
+        assert_eq!(
+            list(&facts(&["Home folders", "encrypted", "134 GB free"])),
+            "Home folders, encrypted, 134 GB free",
+            "{locale}"
+        );
+        assert_eq!(list(&[]), "", "{locale}");
     }
 }

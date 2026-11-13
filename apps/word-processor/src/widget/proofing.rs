@@ -43,7 +43,6 @@ impl SettingsSchema for WriterLayout {
 }
 
 impl PersonalDictionary {
-    /// The dictionary `built_in` with these words added.
     pub(super) fn over(&self, built_in: &spellcheck::Dictionary) -> spellcheck::Dictionary {
         let mut dictionary = built_in.clone();
         for word in &self.dictionary_words {
@@ -52,7 +51,6 @@ impl PersonalDictionary {
         dictionary
     }
 
-    /// Add `word`; `false` when it is already there.
     pub(super) fn add(&mut self, word: &str) -> bool {
         if self.dictionary_words.iter().any(|known| known == word) {
             return false;

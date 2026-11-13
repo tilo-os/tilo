@@ -1,10 +1,5 @@
-//! Pure data model for the weather app.
-//!
-//! Everything here is plain data with no IO and no rendering. What is
-//! shared is the [`Weather`] record: the saved places, in order, and the
-//! default one. Provider responses and presentation state stay local. The
-//! other structs are the in-memory projection the widgets render from and
-//! the shape the network layer (`api.rs`) deserialises into.
+//! The app's data: the saved places the record shares, and the in-memory
+//! projection the widgets render from.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
@@ -12,33 +7,26 @@ use uuid::Uuid;
 
 use crate::units::Units;
 
-/// Stable id for a saved location.
 pub type LocationId = Uuid;
 
-/// A saved place as the document shares it. Its item id is the place's
-/// uuid and its position in [`Weather::places`] is its place in the list.
+/// A saved place as the record shares it: the item id is the place's uuid, and
+/// its position in [`Weather::places`] is its position in the list.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 #[model(check = Place::valid)]
 pub struct Place {
-    /// Name
     #[model(label)]
     pub name: String,
-    /// Region
     pub region: String,
-    /// Country
     pub country: String,
     /// ISO country code
     pub country_code: Atom,
-    /// Latitude
     pub latitude: f64,
-    /// Longitude
     pub longitude: f64,
     /// IANA timezone, or `auto`.
     pub timezone: Atom,
 }
 
 impl Place {
-    /// The shared part of `location`.
     pub fn of(location: &SavedLocation) -> Self {
         Self {
             name: location.name.clone(),
@@ -51,7 +39,6 @@ impl Place {
         }
     }
 
-    /// A place has a name and coordinates on the globe.
     fn valid(&self) -> Result<(), Refusal> {
         if self.name.trim().is_empty() {
             return Err(Refusal::new("a place has a name"));
@@ -64,7 +51,7 @@ impl Place {
         Ok(())
     }
 
-    /// Whether `other` is the same place: within about five kilometres.
+    /// Within 0.05° of the coordinates: about five kilometres.
     pub fn near(&self, latitude: f64, longitude: f64) -> bool {
         (self.latitude - latitude).abs() < 0.05 && (self.longitude - longitude).abs() < 0.05
     }
@@ -79,12 +66,10 @@ pub struct Weather {
 }
 
 impl Weather {
-    /// The item id of the place with uuid `id`.
     pub fn item(id: LocationId) -> Id {
         Id::from_raw(id.to_string())
     }
 
-    /// The places as the window shows them, the default one selected.
     pub fn model(&self) -> WeatherModel {
         let locations: Vec<SavedLocation> = self
             .places
@@ -116,24 +101,18 @@ impl Weather {
     }
 }
 
-/// A place the user has pinned. Coordinates + timezone drive fetches; the
-/// label fields are for display.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedLocation {
     pub id: LocationId,
-    /// Sparse, absolute ordering rank persisted with this stable location.
-    /// It is deliberately independent per entry so concurrent moves of
-    /// different locations merge instead of replacing one shared list.
+    /// Sparse rank, kept per entry so concurrent moves of different places merge.
     #[serde(default)]
     pub order_rank: f64,
     pub name: String,
-    /// Region / admin area (e.g. "California", "Bavaria"). May be empty.
     pub region: String,
     pub country: String,
     pub country_code: String,
     pub latitude: f64,
     pub longitude: f64,
-    /// IANA timezone string ("auto" when unknown — resolved server-side).
     pub timezone: String,
 }
 
@@ -160,7 +139,6 @@ impl SavedLocation {
         }
     }
 
-    /// "Name, Region" or "Name, Country" subtitle for the header.
     pub fn subtitle(&self) -> String {
         if !self.region.is_empty() && self.region != self.name {
             format!("{}, {}", self.region, self.country)
@@ -170,7 +148,6 @@ impl SavedLocation {
     }
 }
 
-/// Present-moment conditions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurrentConditions {
     pub temperature: f64,
@@ -187,7 +164,6 @@ pub struct CurrentConditions {
     pub time: String,
 }
 
-/// One point on the 24h hourly strip.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HourPoint {
     /// ISO8601 "YYYY-MM-DDTHH:MM".
@@ -199,8 +175,7 @@ pub struct HourPoint {
 }
 
 impl HourPoint {
-    /// The hour this point is for, in the person's clock ("14:00" or
-    /// "2:00 PM"), parsed from the ISO time "YYYY-MM-DDTHH:MM".
+    /// The hour in the person's clock ("14:00", "2:00 PM"), from the ISO time.
     pub fn hour_label(&self) -> String {
         self.time
             .get(11..13)
@@ -211,7 +186,6 @@ impl HourPoint {
     }
 }
 
-/// One day of the 7-day forecast.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DayForecast {
     /// ISO8601 date "YYYY-MM-DD".
@@ -227,10 +201,8 @@ pub struct DayForecast {
     pub sunset: String,
 }
 
-/// An air-quality reading for one location, from Open-Meteo's air-quality
-/// API. AQI values are unitless indices; the pollutant concentrations are in
-/// µg/m³. Every field is optional so a partial or missing response degrades to
-/// an honest "unavailable" rather than a fabricated zero.
+/// An air-quality reading: unitless AQI indices, pollutants in µg/m³. A value
+/// the provider omits stays `None`, never a fabricated zero.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AirQuality {
     pub location_id: LocationId,
@@ -238,13 +210,9 @@ pub struct AirQuality {
     pub european_aqi: Option<f64>,
     /// US AQI (0–500).
     pub us_aqi: Option<f64>,
-    /// Fine particulate matter, µg/m³.
     pub pm2_5: Option<f64>,
-    /// Coarse particulate matter, µg/m³.
     pub pm10: Option<f64>,
-    /// Nitrogen dioxide, µg/m³.
     pub nitrogen_dioxide: Option<f64>,
-    /// Ground-level ozone, µg/m³.
     pub ozone: Option<f64>,
     /// Local time of the reading, ISO8601 "YYYY-MM-DDTHH:MM".
     pub time: String,
@@ -253,8 +221,6 @@ pub struct AirQuality {
 }
 
 impl AirQuality {
-    /// Whether any index or pollutant value is present — false means the
-    /// section shows its honest "unavailable" state rather than empty tiles.
     pub fn has_any(&self) -> bool {
         self.european_aqi.is_some()
             || self.us_aqi.is_some()
@@ -265,23 +231,20 @@ impl AirQuality {
     }
 }
 
-/// A complete fetched snapshot for one location.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WeatherSnapshot {
     pub location_id: LocationId,
     pub current: CurrentConditions,
     pub hourly: Vec<HourPoint>,
     pub daily: Vec<DayForecast>,
-    /// Units the numeric values in THIS snapshot are expressed in. The UI
-    /// converts to the user's preference at render time so a units toggle
-    /// is instant and never needs a refetch.
+    /// The units the values are in; the UI converts at render time, so a toggle
+    /// never refetches.
     pub source_units: Units,
     /// Wall-clock epoch seconds when this snapshot was fetched (0 = sample).
     pub fetched_at: u64,
 }
 
 impl WeatherSnapshot {
-    /// Temperature value converted into the user's preferred unit.
     pub fn temp_in(&self, value: f64, units: Units) -> f64 {
         crate::units::convert_temp(value, self.source_units.temp, units.temp)
     }
@@ -290,24 +253,18 @@ impl WeatherSnapshot {
         crate::units::convert_wind(value, self.source_units.wind, units.wind)
     }
 
-    /// The precipitation depth as a reading in the person's unit, with that
-    /// unit's decimals (`2.4` millimetres, `0.09` inches).
+    /// The reading with that unit's decimals: `2.4` millimetres, `0.09` inches.
     pub fn precip_reading(&self, value: f64, units: Units) -> String {
         units.precip_reading(value, self.source_units.precip)
     }
 }
 
-/// The top-level application model: the saved locations, which one is
-/// selected, the unit preferences, and the device-local snapshots keyed by
-/// location id. Only saved-location decisions are mirrored by `doc.rs`.
 #[derive(Clone, Debug, Default)]
 pub struct WeatherModel {
     pub locations: Vec<SavedLocation>,
     pub selected: usize,
     pub units: Units,
     pub snapshots: std::collections::HashMap<LocationId, WeatherSnapshot>,
-    /// Latest air-quality reading per place (fetched from a separate endpoint,
-    /// so it never races the forecast snapshot).
     pub air_quality: std::collections::HashMap<LocationId, AirQuality>,
 }
 
@@ -334,7 +291,7 @@ impl WeatherModel {
         self.air_quality.get(&loc.id)
     }
 
-    /// Move selection by `delta`, clamped to the location list.
+    /// Move the selection by `delta`, wrapping round the ends.
     pub fn select_relative(&mut self, delta: i64) {
         if self.locations.is_empty() {
             return;
@@ -350,9 +307,8 @@ impl WeatherModel {
         }
     }
 
-    /// Add a location if it isn't already pinned (matched by rounded
-    /// coordinates). Returns the index of the (existing or new) entry and
-    /// selects it.
+    /// Add `loc` unless a place sits within 0.05° of it, and select it. Returns its
+    /// index.
     pub fn add_location(&mut self, mut loc: SavedLocation) -> usize {
         if let Some(idx) = self.locations.iter().position(|l| {
             (l.latitude - loc.latitude).abs() < 0.05 && (l.longitude - loc.longitude).abs() < 0.05
@@ -370,10 +326,7 @@ impl WeatherModel {
         idx
     }
 
-    /// Remove the location at `idx` (and its cached snapshot). Keeps the
-    /// selection valid by tracking the *identity* of the selected place,
-    /// not its index — so deleting an entry above the selection doesn't
-    /// silently shift which place is in view.
+    /// Remove the place and its cached readings; the selection stays on its place.
     pub fn remove_location(&mut self, idx: usize) {
         if idx >= self.locations.len() {
             return;
@@ -385,10 +338,8 @@ impl WeatherModel {
         self.reselect_by_id(selected_id);
     }
 
-    /// Move the location at `from` to sit at `to`, shifting the rest. The
-    /// selection follows the *place* it was on, not the slot index, so a
-    /// reorder never changes which forecast is shown. No-op for invalid or
-    /// equal indices. Returns true if the order actually changed.
+    /// Move the place at `from` to `to`; the selection follows its place, so a
+    /// reorder never changes which forecast is shown.
     pub fn move_location(&mut self, from: usize, to: usize) -> bool {
         let n = self.locations.len();
         if from >= n || to >= n || from == to {
@@ -418,8 +369,6 @@ impl WeatherModel {
         true
     }
 
-    /// Restore `selected` to point at the place with `id` after the list
-    /// was mutated, clamping if it's gone.
     fn reselect_by_id(&mut self, id: Option<LocationId>) {
         if let Some(id) = id
             && let Some(pos) = self.locations.iter().position(|l| l.id == id)
@@ -485,8 +434,8 @@ mod tests {
             let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
             let c_id = c.id;
             m.locations = vec![a, b, c];
-            m.selected = 2; // "C" is in view.
-            m.remove_location(0); // delete "A" above it.
+            m.selected = 2;
+            m.remove_location(0);
             assert_eq!(
                 m.selected_location().unwrap().id,
                 c_id,
@@ -500,8 +449,7 @@ mod tests {
             let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
             let (a_id, b_id, c_id) = (a.id, b.id, c.id);
             m.locations = vec![a, b, c];
-            m.selected = 0; // "A" in view.
-            // Drag "A" (idx 0) to the end (idx 2): order becomes B, C, A.
+            m.selected = 0;
             assert!(m.move_location(0, 2));
             assert_eq!(m.locations[0].id, b_id, "B shifted to the front");
             assert_eq!(m.locations[1].id, c_id, "C shifted into the middle");

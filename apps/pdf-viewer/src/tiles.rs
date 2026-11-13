@@ -3,7 +3,6 @@
 
 pub use tilo_page_raster::tiles::*;
 
-/// The engine's name for a tile's pixel region.
 pub fn engine_rect(region: PixelRect) -> tilo_pdf::PixelRect {
     tilo_pdf::PixelRect {
         x: region.x,

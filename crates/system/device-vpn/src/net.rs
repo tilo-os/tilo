@@ -6,9 +6,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// The client's tunnel interface.
 pub const CLIENT_INTERFACE: &str = "tilovpn0";
-/// The exit's tunnel interface.
 pub const EXIT_INTERFACE: &str = "tiloexit0";
 
 /// The tunnel network every exit serves: the exit is [`GATEWAY`], its
@@ -21,7 +19,6 @@ pub const TUNNEL_NETWORK: Ipv4Net = Ipv4Net {
 /// that resolve through the exit ask.
 pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(100, 100, 64, 1);
 
-/// The smallest MTU an IPv4 link may have.
 pub const MIN_MTU: u16 = 576;
 /// The largest MTU either side asks for: a QUIC datagram never carries more.
 pub const MAX_MTU: u16 = 1500;
@@ -50,7 +47,6 @@ impl Ipv4Net {
         (prefix <= 32 && u32::from(address) & !net.mask() == 0).then_some(net)
     }
 
-    /// The network `address` lies in with `prefix`.
     #[must_use]
     pub fn containing(address: Ipv4Addr, prefix: u8) -> Option<Self> {
         let mask = Self {
@@ -83,7 +79,6 @@ impl Ipv4Net {
         u32::from(address) & self.mask() == u32::from(self.address)
     }
 
-    /// Whether the two networks share any address.
     #[must_use]
     pub fn overlaps(self, other: Self) -> bool {
         self.contains(other.address) || other.contains(self.address)

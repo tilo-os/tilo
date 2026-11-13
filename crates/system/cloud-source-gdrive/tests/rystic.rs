@@ -318,7 +318,6 @@ fn changes_after_cursor_paginate_and_resume_without_loss() {
             expected.insert(item.id.clone(), Some(moved));
         }
     }
-    // A fresh adapter has no in-memory folder cache or cursor state.
     let restarted = GDrive::new(
         DriveConfig {
             trash: false,

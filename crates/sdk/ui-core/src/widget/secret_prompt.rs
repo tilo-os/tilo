@@ -40,6 +40,7 @@
 //! prompt.reject("Wrong password");
 //! ```
 
+use crate::i18n::{widget_format, widget_text};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -62,6 +63,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::control_size::ControlSize;
 use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use crate::widget::{
@@ -148,7 +150,7 @@ pub enum FieldRole {
 
 impl FieldRole {
     fn default_label(self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             Self::Username | Self::Text => "secret-prompt-username",
             Self::Secret => "secret-prompt-password",
             Self::Pin => "secret-prompt-pin",
@@ -447,8 +449,8 @@ impl SecretPrompt {
             icon: Some(Icon::Lock),
             title: String::new(),
             resource: String::new(),
-            primary_label: crate::i18n!("secret-prompt-continue"),
-            cancel_label: crate::i18n!("secret-prompt-cancel"),
+            primary_label: widget_text("secret-prompt-continue"),
+            cancel_label: widget_text("secret-prompt-cancel"),
             fields: Vec::new(),
             choices: Vec::new(),
             choice_label: String::new(),
@@ -907,8 +909,8 @@ impl SecretPrompt {
     /// it does.
     fn key_name(&self, key: PasscodeKey) -> String {
         match key {
-            PasscodeKey::Backspace => crate::i18n!("secret-prompt-keypad-delete"),
-            PasscodeKey::Enter => crate::i18n!("secret-prompt-keypad-enter"),
+            PasscodeKey::Backspace => widget_text("secret-prompt-keypad-delete"),
+            PasscodeKey::Enter => widget_text("secret-prompt-keypad-enter"),
             other => self.keyboard.character(other).unwrap_or_default(),
         }
     }
@@ -938,7 +940,7 @@ impl SecretPrompt {
             ));
         }
         if self.caps_lock_on() {
-            return Some((crate::i18n!("secret-prompt-caps-lock"), NoticeTone::Warning));
+            return Some((widget_text("secret-prompt-caps-lock"), NoticeTone::Warning));
         }
         if let Some(notice) = &self.notice {
             return Some((notice.clone(), NoticeTone::Quiet));
@@ -950,16 +952,19 @@ impl SecretPrompt {
                 NoticeTone::Quiet
             };
             return Some((
-                crate::i18n!("secret-prompt-attempts-left", "count" => count),
+                widget_format("secret-prompt-attempts-left", &[("count", count.into())]),
                 tone,
             ));
         }
         if self.kind.is_pin() {
             let (min, max) = self.kind.pin_range();
             let text = if min == max {
-                crate::i18n!("secret-prompt-pin-length-exact", "count" => min)
+                widget_format("secret-prompt-pin-length-exact", &[("count", min.into())])
             } else {
-                crate::i18n!("secret-prompt-pin-length", "min" => min, "max" => max)
+                widget_format(
+                    "secret-prompt-pin-length",
+                    &[("min", min.into()), ("max", max.into())],
+                )
             };
             return Some((text, NoticeTone::Quiet));
         }
@@ -1122,16 +1127,22 @@ impl SecretPrompt {
             match field.role {
                 FieldRole::Pin | FieldRole::NewPin if length < min || length > max => {
                     let text = if min == max {
-                        crate::i18n!("secret-prompt-pin-length-exact", "count" => min)
+                        widget_format("secret-prompt-pin-length-exact", &[("count", min.into())])
                     } else {
-                        crate::i18n!("secret-prompt-pin-length", "min" => min, "max" => max)
+                        widget_format(
+                            "secret-prompt-pin-length",
+                            &[("min", min.into()), ("max", max.into())],
+                        )
                     };
                     return Some((index, text, false));
                 }
                 FieldRole::Puk if length != PUK_DIGITS => {
                     return Some((
                         index,
-                        crate::i18n!("secret-prompt-pin-length-exact", "count" => PUK_DIGITS),
+                        widget_format(
+                            "secret-prompt-pin-length-exact",
+                            &[("count", PUK_DIGITS.into())],
+                        ),
                         false,
                     ));
                 }
@@ -1140,7 +1151,7 @@ impl SecretPrompt {
                         .field(FieldRole::NewPin)
                         .is_some_and(|new_pin| new_pin.value() != field.input.value()) =>
                 {
-                    return Some((index, crate::i18n!("secret-prompt-pins-differ"), true));
+                    return Some((index, widget_text("secret-prompt-pins-differ"), true));
                 }
                 _ => {}
             }
@@ -2145,7 +2156,9 @@ impl SecretPrompt {
                 None,
                 &label_style,
             );
-            field.input.draw(scene, transform, text, theme, &presence);
+            field
+                .input
+                .draw_child(scene, transform, text, theme, &presence);
         }
         if self.busy.is_some() {
             for rect in &self.layout.fields {
@@ -2289,7 +2302,7 @@ impl SecretPrompt {
                 let revealed = field.input.is_revealed();
                 node.children = vec![
                     AccessNode::new(Role::ToggleButton)
-                        .with_name(crate::i18n!(if revealed {
+                        .with_name(widget_text(if revealed {
                             "text-input-hide-password"
                         } else {
                             "text-input-show-password"

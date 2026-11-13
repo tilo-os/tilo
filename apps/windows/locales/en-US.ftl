@@ -18,7 +18,7 @@ windows-shared-session-trust = Apps in the Windows appliance share one Windows u
 windows-appliance = Windows appliance
 windows-shared-access = Shared access
 windows-shared-with = Used by
-windows-no-redirects = Nothing right now
+windows-no-redirects = None
 windows-route-wine = Wine
 windows-route-proton = Proton
 windows-route-vm = Windows VM
@@ -115,7 +115,6 @@ windows-temporary-connection-starting = Connecting Windows temporarily and openi
 ## The Windows appliance: how it stands, what it says and what it refuses.
 ## Each of these is a sentence a person reads, never a literal in the code.
 
-windows-appliance-checking-status = Checking the Windows appliance…
 
 windows-power-running = Running
 windows-power-suspended = Suspended
@@ -237,3 +236,31 @@ windows-windows-routes = { $op ->
        *[vm] in the Windows VM
     }
 }
+
+## Actions
+
+windows-effect-show = Show in Windows manager
+windows-effect-read-app = Read application
+windows-effect-install = Install Windows application
+windows-effect-import-iso = Import Windows ISO
+windows-effect-recovery = Open recovery desktop
+windows-effect-start = Start Windows
+windows-effect-restart = Restart Windows
+windows-effect-suspend = Suspend Windows
+windows-effect-resume = Resume Windows
+windows-effect-shutdown = Shut down Windows
+windows-effect-temporary-network = Connect for activation
+windows-effect-update-network = Connect for Windows Update
+windows-effect-revoke-network = End temporary network access
+windows-effect-install-private-capsule = Install in a private capsule
+windows-effect-install-windows-appliance = Install in the Windows appliance
+windows-effect-launch = Launch
+windows-effect-launch-vm-fallback = Open in Windows appliance
+windows-effect-open-file = Open file in Windows
+windows-effect-publish = Publish launcher
+windows-effect-retry-install = Retry installation
+windows-effect-escalate-install = Install in Windows appliance
+windows-effect-remove-launcher = Remove launcher
+windows-effect-uninstall = Uninstall
+windows-effect-delete-data = Delete application data
+windows-manager = Windows manager

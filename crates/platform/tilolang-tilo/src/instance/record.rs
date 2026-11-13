@@ -15,12 +15,8 @@ use std::rc::Rc;
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
-use collaboration::history_source::authors::{
-    HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, short_id, stable_hue,
-};
 use collaboration::history_source::steps::{self, Scope};
-use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit};
-use collaboration::history_source::words::HistoryWords;
+use collaboration::history_source::verbs::{self, HistoryEdit};
 use collaboration::record::save::{open_stored, record_document};
 use collaboration::record::{RecordId, RecordSaveStatus};
 use collaboration::{
@@ -29,13 +25,14 @@ use collaboration::{
 use durable_store::DurableStore;
 
 use serde_json::Value as Json;
-use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, EncodedAction, InvocationId};
+use tilo_actions::{ActionContext, ActionInvoker, EncodedAction, InvocationId};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::Doc;
 
 use super::Instance;
-use crate::action::{ACTION_TYPE, DynAction, DynEdit};
+use crate::action::{DynAction, DynEdit};
 use crate::chunk::{self, ChunkNo, Chunks, FIRST, Stamps};
+pub use crate::history::{HostHistoryEdit, HostWords, register};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 
 /// Why a change did not reach the workspace.
@@ -97,6 +94,9 @@ pub struct InstanceRecord {
     /// refused them for good (a change above its size limit). They are kept in the record and
     /// its on-disk copy, never dropped.
     unshared: Option<String>,
+    /// Why the workspace's copy of the record could not be read here, waiting for the window to
+    /// say it: the route went on with the record this device holds, and nothing says it twice.
+    unreadable: Option<String>,
     /// The words its history verbs speak in.
     words: HostWords,
     /// The on-disk copies of the chunks this replica holds, each a document of its own written
@@ -105,10 +105,6 @@ pub struct InstanceRecord {
     /// Whether this device governs the workspace: the record's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
-    /// The person's gesture open now, and its last action: the next action of theirs that goes
-    /// on from it ([`DynAction::continues`]) is a change of the same gesture, which undo takes
-    /// back with it as one step. Any other step, an undo or a redo closes it.
-    gesture: Option<(tilo_actions::ActionId, DynAction)>,
 }
 
 /// The on-disk copies of the record's chunks: the store the record was opened from, and the
@@ -226,10 +222,10 @@ impl InstanceRecord {
             sent,
             joined: BTreeSet::new(),
             unshared: None,
+            unreadable: None,
             words: HostWords::new("en-US"),
             writers,
             governs: true,
-            gesture: None,
         }
     }
 
@@ -244,8 +240,13 @@ impl InstanceRecord {
     /// The record, its history verbs speaking `locale` (`en-US`, `de-DE`).
     #[must_use]
     pub fn speaking(mut self, locale: impl Into<String>) -> Self {
-        self.words = HostWords::new(locale);
+        self.speak(locale);
         self
+    }
+
+    /// The record's history verbs speak `locale` from now on.
+    pub fn speak(&mut self, locale: impl Into<String>) {
+        self.words = HostWords::new(locale);
     }
 
     /// The words the record's history verbs speak in.
@@ -874,17 +875,8 @@ impl InstanceRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Option<Json>, RecordError> {
-        // An undo or redo ends the gesture: what is typed after it is a step of its own.
-        self.gesture = None;
-        let action = HostHistoryEdit {
-            edit: edit.clone(),
-            words: self.words.clone(),
-        };
-        let encoded = EncodedAction {
-            type_id: EDIT_TYPE.to_owned(),
-            payload: serde_json::to_vec(edit)
-                .map_err(|error| RecordError::Refused(error.to_string()))?,
-        };
+        let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
+        let encoded = action.encoded().map_err(RecordError::Refused)?;
         let before = self.open_chunk(chunk).get_heads();
         // The verb's change is a step of its own, or a part of the one action an undo or redo
         // across chunks is (`ambient`'s invocation).
@@ -925,22 +917,24 @@ impl InstanceRecord {
     /// What this unit holds past what the workspace was handed, as its parts: one per chunk,
     /// each the part of an action its caller sends with every other unit of the action
     /// ([`Self::share_under`]). Empty when the workspace holds all of it.
+    ///
+    /// A chunk the workspace was handed nothing of goes whole (a snapshot): the workspace founds a
+    /// record it holds nothing of only from the whole of it, and a change alone builds on nothing
+    /// there.
     pub fn unsent_parts(&self) -> Vec<(ChunkNo, DocumentMutation)> {
         self.chunks
             .docs()
             .filter_map(|(chunk, doc)| {
                 let sent = self.sent.get(&chunk).map_or(&[][..], Vec::as_slice);
+                if sent.is_empty() {
+                    let document = doc.committed_document();
+                    return (!document.get_heads().is_empty())
+                        .then(|| (chunk, DocumentMutation::Snapshot(document.save())));
+                }
                 let change = doc.committed_document().save_after(sent);
                 (!change.is_empty()).then_some((chunk, DocumentMutation::Incremental(change)))
             })
             .collect()
-    }
-
-    /// What the record holds past what the workspace was handed, as one change: the record's
-    /// own. Empty when the workspace holds all of it.
-    pub fn unsent_change(&mut self) -> DocumentMutation {
-        let sent = self.sent.get(&FIRST).map_or(&[][..], Vec::as_slice);
-        DocumentMutation::Incremental(self.doc().committed_document().save_after(sent))
     }
 
     /// [`Self::share`] as this unit's part of `commit`, the one action across every unit it
@@ -970,19 +964,18 @@ impl InstanceRecord {
             None => self.commits_of(&parts),
         };
         for ((chunk, mutation), commit) in parts.into_iter().zip(commits) {
-            let DocumentMutation::Incremental(change) = mutation else {
-                continue;
-            };
-            if change.is_empty() {
-                // The workspace holds all of it already, by heads named apart.
-                self.note_sent(chunk);
-                continue;
-            }
-            let request = match commit {
-                Some(commit) => {
-                    CollabRequest::document_action(DocumentMutation::Incremental(change), commit)
+            let request = match (mutation, commit) {
+                // The chunk's first write founds it: the whole of it, which no commit names.
+                (DocumentMutation::Snapshot(whole), _) => CollabRequest::document_snapshot(whole),
+                (DocumentMutation::Incremental(change), _) if change.is_empty() => {
+                    // The workspace holds all of it already, by heads named apart.
+                    self.note_sent(chunk);
+                    continue;
                 }
-                None => CollabRequest::document_incremental(change),
+                (change, Some(commit)) => CollabRequest::document_action(change, commit),
+                (DocumentMutation::Incremental(change), None) => {
+                    CollabRequest::document_incremental(change)
+                }
             };
             let sent = match self.send_on(chunk, request) {
                 Ok(()) => true,
@@ -1022,6 +1015,7 @@ impl InstanceRecord {
                 app: &self.route.app_id,
                 record,
                 mutation,
+                document: None,
             })
             .collect();
         let workspace = self.route.cluster_id.to_string();
@@ -1116,14 +1110,7 @@ impl InstanceRecord {
     /// chunk's record's above it ([`chunk::record_id`]).
     #[must_use]
     pub fn chunk_route(&self, chunk: ChunkNo) -> RouteSpec {
-        if chunk == FIRST {
-            return self.route.clone();
-        }
-        RouteSpec::record(
-            self.route.app_id.clone(),
-            self.route.cluster_id,
-            chunk::record_id(self.route.record.as_deref().unwrap_or(""), chunk),
-        )
+        chunk_route(&self.route, chunk)
     }
 
     /// Join the route of every chunk the record's manifest names: a chunk's changes reach only
@@ -1148,14 +1135,9 @@ impl InstanceRecord {
             return;
         };
         let request = CollabRequest::document_snapshot(doc.committed_document().save());
-        let sent = match self.send_on(chunk, request) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
-                false
-            }
-        };
-        let _ = sent;
+        if let Err(error) = self.send_on(chunk, request) {
+            tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
+        }
     }
 
     /// Commit every change `instance` queued for the workspace, in order, as a step each, and send
@@ -1215,12 +1197,13 @@ impl InstanceRecord {
             .committed(ticket)
             .ok_or(RecordError::NoAction(ticket))?;
         let invoker = ActionInvoker::actor(self.person.clone());
-        let gesture = match self.gesture.take() {
-            Some((gesture, last)) if last.continues(&action) => gesture,
-            _ => tilo_actions::ActionId::new(),
-        };
+        // The stage of the person's the change is one of, when it is one of a burst of typing;
+        // every other change is a step of its own.
+        let gesture = action
+            .authorship
+            .gesture
+            .unwrap_or_else(tilo_actions::ActionId::new);
         self.apply_in_gesture(&action, &invoker, None, Some(gesture))?;
-        self.gesture = Some((gesture, action));
         Ok(())
     }
 
@@ -1248,8 +1231,6 @@ impl InstanceRecord {
         invoker: &ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(), RecordError> {
-        // A step of its own ends the gesture open before it.
-        self.gesture = None;
         self.apply_in_gesture(action, invoker, ambient, None)
     }
 
@@ -1469,6 +1450,9 @@ impl InstanceRecord {
     /// presence, the route's state) to `other`, in the order they came.
     pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
         let changed = self.take_in(other);
+        if let Some(why) = self.unreadable.take() {
+            instance.unshared(why);
+        }
         if changed {
             instance.sync_chunks(&self.chunks);
         }
@@ -1498,9 +1482,11 @@ impl InstanceRecord {
 
     /// Take in what the record's route brought, with no instance to bring up to date: a record
     /// held only to apply changes at its origin. Events that are no change of the record are
-    /// dropped. Whether the record changed.
+    /// dropped, and so is what a window would have said about them. Whether the record changed.
     pub fn take_in_record(&mut self) -> bool {
-        self.take_in(|_| {})
+        let changed = self.take_in(|_| {});
+        self.unreadable = None;
+        changed
     }
 
     /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
@@ -1524,12 +1510,54 @@ impl InstanceRecord {
         let mut record_changed = false;
         let mut routes = self.taken_routes();
         for event in self.manager.poll() {
-            let (envelope, decrypted_payload) = match event {
+            let (chunk, before, applied) = match event {
                 CollabEvent::Document {
-                    envelope,
-                    decrypted_payload,
+                    ref envelope,
+                    ref decrypted_payload,
                     ..
-                } => (envelope, decrypted_payload),
+                } => match self.take_document(&routes, envelope, decrypted_payload.as_deref()) {
+                    Taken::Change(taken) => taken,
+                    Taken::Nothing => continue,
+                    // Another record this connection joined (another app's, which the
+                    // instance reads): its reader takes it.
+                    Taken::OtherRoute => {
+                        other(event);
+                        continue;
+                    }
+                },
+                CollabEvent::CommittedDocument { route, read } => {
+                    // What the workspace committed of a route this replica holds, read for it
+                    // by the broker: another replica's changes, or the whole record once this one
+                    // was handed nothing of it. It is merged with what this replica made
+                    // meanwhile, as a change arriving on the route is, and acknowledged then.
+                    let Some(&(_, chunk)) = routes.iter().find(|(held, _)| *held == route) else {
+                        // Another record this connection joined: its reader takes it.
+                        other(CollabEvent::CommittedDocument { route, read });
+                        continue;
+                    };
+                    let before = self
+                        .chunks
+                        .mirror(chunk)
+                        .map(Doc::committed_heads)
+                        .unwrap_or_default();
+                    let Some(applied) = read.take_into(self.open_chunk(chunk), load_mutation)
+                    else {
+                        if read.was_refused() && read.is_whole() {
+                            // The workspace's copy of the record cannot be read
+                            // here. The reader goes on from the revision it read
+                            // and the record keeps what this device holds; the
+                            // window says once that it is the copy on this
+                            // device the person is looking at.
+                            self.unreadable = Some(
+                                "The shared copy of this record couldn't be read here. \
+                                 Your changes stay on this device."
+                                    .to_owned(),
+                            );
+                        }
+                        continue;
+                    };
+                    (chunk, before, applied)
+                }
                 CollabEvent::DocumentSnapshotRequested { route } => {
                     // The broker chose this connection as the one that answers a late joiner of
                     // the record or of one of its chunks: nobody else does, so it is answered
@@ -1543,51 +1571,6 @@ impl InstanceRecord {
                     other(event);
                     continue;
                 }
-            };
-            // The envelope names the route it was sealed for: the record's, or the route of the
-            // chunk its content belongs to.
-            let mut taken = None;
-            for (route, chunk) in routes.clone() {
-                let Some(payload) =
-                    validated_route_payload_with(&route, &envelope, decrypted_payload.as_deref())
-                else {
-                    continue;
-                };
-                let mutation =
-                    match decode_routed_mutation(&route, payload, decrypted_payload.as_deref()) {
-                        Ok(mutation) => mutation,
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                "workspace: a change that does not decode was not taken in"
-                            );
-                            break;
-                        }
-                    };
-                let before = self
-                    .chunks
-                    .mirror(chunk)
-                    .map(Doc::committed_heads)
-                    .unwrap_or_default();
-                let loaded = match &mutation {
-                    DocumentMutation::Incremental(bytes) => {
-                        self.open_chunk(chunk).load_incoming(bytes)
-                    }
-                    DocumentMutation::Snapshot(bytes) => {
-                        self.open_chunk(chunk).load_incoming_whole(bytes)
-                    }
-                };
-                match loaded {
-                    Ok(applied) => taken = Some((chunk, before, applied)),
-                    Err(error) => {
-                        tracing::warn!(%error, chunk, "workspace: a change was not taken in");
-                    }
-                }
-                break;
-            }
-            let Some((chunk, before, applied)) = taken else {
-                tracing::warn!("workspace: a change for another route was not taken in");
-                continue;
             };
             // What is taken in counts as a change only when the chunk gained one: a change this
             // replica made comes back on its own route (the broker hands every holder what a
@@ -1608,42 +1591,189 @@ impl InstanceRecord {
         }
         changed
     }
+
+    /// Take in a change that arrived on one of `routes` as the signed `envelope` the broker
+    /// relays: the chunk it was of, its heads before, and how many changes it gained.
+    fn take_document(
+        &mut self,
+        routes: &[(RouteSpec, ChunkNo)],
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> Taken {
+        // The envelope names the route it was sealed for: the record's, or the route of the
+        // chunk its content belongs to.
+        for (route, chunk) in routes {
+            let Some(payload) = validated_route_payload_with(route, envelope, decrypted_payload)
+            else {
+                continue;
+            };
+            let mutation = match decode_routed_mutation(route, payload, decrypted_payload) {
+                Ok(mutation) => mutation,
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "workspace: a change that does not decode was not taken in"
+                    );
+                    return Taken::Nothing;
+                }
+            };
+            let before = self
+                .chunks
+                .mirror(*chunk)
+                .map(Doc::committed_heads)
+                .unwrap_or_default();
+            return match load_mutation(self.open_chunk(*chunk), &mutation) {
+                Ok(applied) => Taken::Change((*chunk, before, applied)),
+                Err(error) => {
+                    tracing::warn!(%error, chunk, "workspace: a change was not taken in");
+                    Taken::Nothing
+                }
+            };
+        }
+        Taken::OtherRoute
+    }
+}
+
+/// The route chunk `chunk` of the record on `route` travels on: `route` itself for [`FIRST`], the
+/// chunk's record's above it ([`chunk::record_id`]).
+fn chunk_route(route: &RouteSpec, chunk: ChunkNo) -> RouteSpec {
+    if chunk == FIRST {
+        return route.clone();
+    }
+    RouteSpec::record(
+        route.app_id.clone(),
+        route.cluster_id,
+        chunk::record_id(route.record.as_deref().unwrap_or(""), chunk),
+    )
+}
+
+/// Another app's record an instance reads and never writes: the record of a package its app uses
+/// that is installed as an app of its own (Today reading Tasks'). It is joined on the instance's
+/// connection, read-only as the broker admits an app's declared read, with every chunk its
+/// manifest names, and what the workspace committed of it is taken in as it arrives.
+pub struct ReadRecord {
+    route: RouteSpec,
+    chunks: Chunks,
+    joined: BTreeSet<ChunkNo>,
+}
+
+impl ReadRecord {
+    /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
+    pub fn join(route: RouteSpec, manager: &mut CollaborationManager) -> Self {
+        manager.join_route(
+            route.clone(),
+            collaboration::record::RecordKind::new(crate::RECORD_KIND),
+        );
+        Self {
+            route,
+            chunks: Chunks::of(Doc::new()),
+            joined: BTreeSet::from([FIRST]),
+        }
+    }
+
+    /// The route the record travels on.
+    #[must_use]
+    pub fn route(&self) -> &RouteSpec {
+        &self.route
+    }
+
+    /// The record and the chunks above it held here.
+    #[must_use]
+    pub fn chunks(&self) -> &Chunks {
+        &self.chunks
+    }
+
+    /// Take in `event` when it is a change of this record or one of its chunks, joining the
+    /// chunks its manifest names from then on. `None` for an event of anything else; else
+    /// whether the record gained a change.
+    pub fn take(
+        &mut self,
+        event: &CollabEvent,
+        manager: &mut CollaborationManager,
+    ) -> Option<bool> {
+        let routes: Vec<(RouteSpec, ChunkNo)> = self
+            .joined
+            .iter()
+            .copied()
+            .map(|chunk| (chunk_route(&self.route, chunk), chunk))
+            .collect();
+        let (chunk, applied) = match event {
+            CollabEvent::Document {
+                envelope,
+                decrypted_payload,
+                ..
+            } => routes.iter().find_map(|(route, chunk)| {
+                let payload = validated_route_payload_with(
+                    route,
+                    envelope,
+                    decrypted_payload.as_deref(),
+                )?;
+                let applied = decode_routed_mutation(route, payload, decrypted_payload.as_deref())
+                    .map_err(|error| format!("{error:?}"))
+                    .and_then(|mutation| {
+                        load_mutation(self.chunks.open(*chunk), &mutation)
+                            .map_err(|error| error.to_string())
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, app = route.app_id, "a read record's change was not taken in");
+                        0
+                    });
+                Some((*chunk, applied))
+            })?,
+            CollabEvent::CommittedDocument { route, read } => {
+                let &(_, chunk) = routes.iter().find(|(held, _)| held == route)?;
+                let applied = read
+                    .take_into(self.chunks.open(chunk), load_mutation)
+                    .unwrap_or(0);
+                (chunk, applied)
+            }
+            _ => return None,
+        };
+        if chunk == FIRST && applied > 0 {
+            self.chunks.reread_placement();
+            self.join_chunks(manager);
+        }
+        Some(applied > 0)
+    }
+
+    /// Join the route of every chunk the record's manifest names that is not joined yet.
+    fn join_chunks(&mut self, manager: &mut CollaborationManager) {
+        for chunk in self.chunks.placement().chunks() {
+            if !self.joined.insert(chunk) {
+                continue;
+            }
+            manager.join_route(
+                chunk_route(&self.route, chunk),
+                collaboration::record::RecordKind::new(crate::RECORD_KIND),
+            );
+        }
+    }
+}
+
+/// What became of a change that arrived on the connection.
+enum Taken {
+    /// It was of the chunk named, whose heads were these before, and it gained so many changes.
+    Change((ChunkNo, Vec<ChangeHash>, usize)),
+    /// It was of this record, and could not be taken in.
+    Nothing,
+    /// It was of no route of this record.
+    OtherRoute,
+}
+
+/// Take `mutation` into `doc`, merged with what `doc` holds: the number of changes it gained.
+fn load_mutation(
+    doc: &mut Doc,
+    mutation: &DocumentMutation,
+) -> Result<usize, automerge::AutomergeError> {
+    match mutation {
+        DocumentMutation::Incremental(bytes) => doc.load_incoming(bytes),
+        DocumentMutation::Snapshot(bytes) => doc.load_incoming_whole(bytes),
+    }
 }
 
 /// Whether `a` and `b` name the same heads, in whatever order.
 fn heads_equal(a: &[ChangeHash], b: &[ChangeHash]) -> bool {
     a.len() == b.len() && a.iter().all(|head| b.contains(head))
-}
-
-/// What a tilolang host's history verbs say, without the toolkit: a step as the platform's
-/// history sentence in `locale`, a person by the handle their changes carry. The UI half renders
-/// History in the reader's own words.
-#[derive(Clone, Debug)]
-pub struct HostWords {
-    locale: String,
-}
-
-impl HostWords {
-    /// The words of `locale` (`en-US`, `de-DE`).
-    #[must_use]
-    pub fn new(locale: impl Into<String>) -> Self {
-        Self {
-            locale: locale.into(),
-        }
-    }
-}
-
-impl ResolveAuthor for HostWords {
-    fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
-        let name = actor_handle(actor_hex).unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned());
-        HistoryAuthor::new(name, stable_hue(actor_hex), short_id(actor_hex))
-    }
-}
-
-impl HistoryWords for HostWords {
-    fn sentence(&self, entry: &ActionContext) -> String {
-        tilo_history::Reader::new(&self.locale).sentence(entry)
-    }
 }
 
 impl crate::instance::HistoryAsk {
@@ -1664,44 +1794,4 @@ impl crate::instance::HistoryAsk {
             Self::UndoRun(run) => undo(Some(run), None),
         }
     }
-}
-
-/// A history verb applied to a workspace record: the edit [`verbs`] applies, decoding the record's
-/// recorded actions with the workspace's registry ([`register`]) and speaking the record's words.
-#[derive(Debug)]
-pub struct HostHistoryEdit {
-    edit: HistoryEdit,
-    words: HostWords,
-}
-
-impl<'de> serde::Deserialize<'de> for HostHistoryEdit {
-    /// A history verb a peer recorded, replayed here: what it says is never shown, so it speaks
-    /// the platform's source language.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self {
-            edit: HistoryEdit::deserialize(deserializer)?,
-            words: HostWords::new("en-US"),
-        })
-    }
-}
-
-impl tilo_actions::Action for HostHistoryEdit {
-    fn change_kind(&self) -> tilo_actions::ChangeKind {
-        self.edit.change_kind()
-    }
-
-    fn describe(&self, doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
-        Some(self.edit.described(doc))
-    }
-
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        self.edit.apply_registered(doc, register, &self.words)
-    }
-}
-
-/// Register what a workspace record's changes record: the runtime's planned actions and the history
-/// verbs.
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<DynAction>(ACTION_TYPE);
-    registry.register::<HostHistoryEdit>(EDIT_TYPE);
 }

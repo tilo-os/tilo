@@ -11,6 +11,11 @@ compiles, the manifest as shipped minus its example and bench targets, the
 license and README. Examples, benches, anvil, CI files and the changelog stay
 upstream.
 
+The backends no Tilo crate builds are left out too: the X11 backend
+(`backend_x11`), Vulkan (`backend_vulkan`, its allocator included) and the
+glow renderer (`renderer_glow`), with their features and the `ash` and `glow`
+dependencies only they used.
+
 ## Warning-free on the workspace toolchain
 
 A path dependency's warnings are not capped like a registry crate's, and CI
@@ -103,6 +108,24 @@ whether it changed since it was looked at.
 Remove this once a smithay release keeps committed text-input state,
 including the cursor rectangle, or exposes what the focused field declared
 and where its caret is.
+
+## A focused field is entered without an input method (`text-input-v3`)
+
+smithay entered a client's text-input only while an input method ran and
+discarded every text-input request otherwise, so on a machine with no IME or
+on-screen keyboard no field ever reported its caret or content type, and
+nothing the compositor places at the caret could find it.
+
+- `src/wayland/seat/keyboard.rs`: keyboard `enter`/`leave` always send
+  `enter`/`leave` to the surface's text-inputs.
+- `src/wayland/text_input/mod.rs`: a text-input made while its client has the
+  keyboard is entered on its own, not by re-entering the client's others.
+- `src/wayland/text_input/text_input_handle.rs`: requests are tracked whether
+  or not an input method runs; what goes to the method still needs one.
+- `src/wayland/input_method/input_method_handle.rs`: an input method that
+  goes away leaves the focused field entered.
+
+Remove this once smithay enters text-inputs on keyboard focus alone.
 
 ## A toplevel icon outlives the objects that carried it (`xdg_toplevel_icon_v1`)
 
@@ -249,21 +272,60 @@ Remove these once upstream separates binding a display from spawning its
 server, with a backlog deep enough for the clients waiting on one, and ends
 its server when the Wayland connection does.
 
-## Shared memory in the opaque 10-bit format
+## Shared memory in every 10-bit and half-float format
 
-`Xrgb2101010` had no way in: its format table entry has no transparent
-counterpart to look up, so `fourcc_to_gl_formats` answered `None` and a GLES
-renderer refused the buffer, leaving a client that sent one with no window.
-Its bytes also lie the other way round from the formats the table maps: DRM
-keeps blue in the low bits where GL's `RGBA` reading of
-`UNSIGNED_INT_2_10_10_10_REV` finds red, so uploading it as `Abgr2101010`
-would paint it with two channels swapped.
+`Xrgb2101010`, `Argb2101010`, `Xrgb16161616f` and `Argb16161616f` had no way
+in: the format table has no entry for them (the opaque 10-bit one has no
+transparent counterpart to look up, the others are blue first), so a GLES
+renderer refused the buffer and a client that sent one had no window. Their
+bytes lie the other way round from the formats the table maps: DRM keeps blue
+in the low bits (or the first half float) where GL's `RGBA` reading finds red,
+so uploading them as their `Abgr` counterparts would paint them with two
+channels swapped. Mesa's software rasterizer hands its 10-bit GL configs'
+frames over as `Argb2101010` shared memory, and EGL offers those configs
+first, so a GL app in a session without a GPU drew nothing.
+
+A surface's texture was also reused for its next buffer whenever the size
+matched, whatever its format: after a 10-bit buffer an 8-bit one showed with
+red and blue swapped (the swizzle stayed on the texture), one of another
+internal format did not upload at all (an update cannot change it), and one
+with alpha after an opaque one (or the reverse) was drawn with the old one's
+alpha.
 
 - `src/backend/renderer/gles/format.rs`: `Xrgb2101010` maps to `RGB10_A2`,
   read as `RGBA` with `UNSIGNED_INT_2_10_10_10_REV`, and the shader's opaque
   variant supplies alpha 1, so the format's unused high bits are not read.
-- `src/backend/renderer/gles/mod.rs`: it joins the shared-memory formats a
-  GLES 3 renderer imports, and `swizzle_blue_first` swaps red and blue on the
-  texture that carries it, in both import paths.
+- `src/backend/renderer/gles/mod.rs`: `mem_upload_formats` reads
+  `Argb2101010` as `RGB10_A2` and the two blue-first half-float formats as
+  `RGBA16F`, for the memory import paths only (render targets and exports keep
+  the table); all four join the shared-memory formats a GLES 3 renderer
+  imports; `swizzle_blue_first` sets the texture's swizzle on every upload,
+  red and blue swapped for the four blue-first formats (alpha 1 for the opaque
+  ones) and as read for every other; and a cached shared-memory texture is
+  reused only for a buffer of the same size, internal format and alpha.
 
-Remove this once upstream maps the opaque 10-bit RGB formats.
+Remove this once upstream maps the blue-first 10-bit and half-float formats
+and keys its shared-memory texture cache by format.
+
+## A copy made just before the keyboard left is kept (`wl_data_device`, primary selection)
+
+smithay took a selection only from the client holding the keyboard. The
+compositor takes the keys from a client while a surface of its own is typed
+into, so a copy whose request arrived after that (Ctrl+C, then a key that
+opens such a surface at once) was dropped. `src/input/keyboard/mod.rs`
+remembers the focus the keyboard last left for no one and that leave's serial;
+`src/wayland/seat/keyboard.rs` `client_of_object_may_set_selection` also takes
+a selection from that client for an event serial before the leave, and both
+`SetSelection` requests ask it.
+
+## A read-back frees the read-backs dropped before it (GLES)
+
+A dropped `GlesMapping` only queues its pixel buffer for deletion, and the
+queue was drained when a frame finished. A compositor that reads its display
+back while it draws nothing (a capture, a screenshot of a still desktop) kept
+every read-back's buffer, a whole display of pixels each.
+`src/backend/renderer/gles/mod.rs` `copy_framebuffer` and `copy_texture` drain
+the queue (`cleanup`) before they read, so at most the mappings still held
+stand.
+
+Remove this once upstream frees dropped mappings outside a frame.

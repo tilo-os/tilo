@@ -1,12 +1,14 @@
-//! One person's own identity, workspace and session, as a person record's test
-//! needs them: the device this machine is, another of their devices certified
-//! under their root, the workspace they hold with a record declared in it, a
-//! session that serves the person's own store, and a client that speaks on
-//! that session's plane as an app does.
+//! One person's own identity and session, as a person record's test needs
+//! them: the device this machine is, another of their devices certified under
+//! their root, a session that serves the person's own store, and a client that
+//! speaks on that session's plane as an app does.
 //!
-//! A person's own workspace is the cluster their store's records route on
-//! ([`collab_types::personal_cluster`]), and an app they launch joins a record
-//! of theirs there by the kind its surface declares.
+//! A person's own records route on the cluster their store derives from their
+//! root ([`collab_types::personal_cluster`]), and an app they launch joins a
+//! record of theirs there by the kind its surface declares. That cluster is
+//! the person's store and no workspace: no device holds or governs one under
+//! its id, so a session seals nothing an app writes there, as it would in a
+//! workspace it holds.
 
 #![allow(
     dead_code,
@@ -21,10 +23,7 @@ use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::CollabClient;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::FILE_SECRETS_ENV;
-use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
@@ -141,87 +140,6 @@ impl Other {
     }
 }
 
-/// The person `root` certifies, as a workspace names its owner.
-pub fn principal(root: &[u8; 32]) -> String {
-    match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(*root),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("{other:?} is not a person"),
-    }
-}
-
-/// A desk showing the person's own workspace, known by its id and owned by
-/// them.
-pub fn desk(root: &[u8; 32], cluster: &str) -> DesktopTree {
-    let workspace = WorkspaceId::parse(cluster).expect("a workspace id");
-    let slot = WorkspaceSlot::of_workspace(workspace);
-    let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
-    workspace.set_owner(principal(root));
-    DesktopTree {
-        workspaces: vec![workspace.clone()],
-        active: workspace.slot,
-        ..DesktopTree::default()
-    }
-}
-
-/// The person's own workspace, held in `state` with `device` the one governing
-/// it, and `kind` declared as the record `app` keeps there: what the session
-/// opens when it starts, so the person's records reach their store as any
-/// workspace's records do.
-pub fn hold_workspace(
-    state: &Path,
-    device: &SigningKey,
-    cert: &DeviceCert,
-    cluster: &str,
-    app: &str,
-    kind: &str,
-) {
-    let store_file = state.join("tilo").join("rooms.json");
-    std::fs::create_dir_all(
-        store_file
-            .parent()
-            .expect("the state's workspace directory"),
-    )
-    .expect("this device's state directory");
-    let owner = owner::open_file(&owner::owner_file_of(&store_file))
-        .expect("an owner for this device's workspace");
-    let workspace = WorkspaceId::parse(cluster).expect("a workspace id");
-    let governor = testing::enroll_interactive_governor_in(&owner, device, cert, cluster)
-        .expect("this device governs the workspace it hosts");
-    // The governor's checkpoint now names this device: the host admits it as the publication a
-    // host's own workspace makes.
-    let host = governor.workspace_host().device_public_key;
-    let frames: Vec<Vec<u8>> = governor
-        .outgoing()
-        .map(|(bytes, _)| bytes.to_vec())
-        .collect();
-    for frame in frames {
-        owner
-            .receive(
-                workspace,
-                TransportOrigin::RetainedRelayDelta(host),
-                postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
-                std::time::SystemTime::now(),
-            )
-            .expect("the host admits the workspace's people");
-    }
-    // The record the app keeps, started empty as this device's own, before any
-    // app joins it: a fixture stands in for a workspace whose records the
-    // owner commits as documents. A workspace that seals its records starts
-    // none this way: the app's first write founds it, sealed.
-    let record = collab_types::person_record_id(kind);
-    owner::testing::start_record(
-        &owner,
-        workspace,
-        app,
-        &record,
-        device,
-        std::time::SystemTime::now(),
-    );
-}
-
 /// What an app presents to join `cluster`'s channel: the certificate, and the
 /// device's proof that it is the certificate's.
 pub fn presentation(device: &SigningKey, cert: &DeviceCert, cluster: &str) -> Vec<u8> {
@@ -238,12 +156,11 @@ pub fn presentation(device: &SigningKey, cert: &DeviceCert, cluster: &str) -> Ve
 }
 
 /// A session serving `app` on `socket`, on this computer's certified device,
-/// with the person's own workspace on its desk and its state at `state`.
-/// `windowless` records the app's process as an endpoint no window serves, as
-/// the files daemon's is.
+/// with its state at `state`: the desk is the session's own, and the person's
+/// records are in no workspace on it. `windowless` records the app's process
+/// as an endpoint no window serves, as the files daemon's is.
 pub fn session(
     socket: &Path,
-    machine: &Personal,
     who: &str,
     cluster: &str,
     state: &Path,
@@ -254,7 +171,7 @@ pub fn session(
     // would have recorded for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     if windowless {
-        launches.windowless(std::process::id(), app, cluster);
+        launches.endpoint(std::process::id(), app, cluster);
     } else {
         launches.started(std::process::id(), app, cluster, true);
     }
@@ -267,9 +184,6 @@ pub fn session(
         state: Some(state.to_path_buf()),
         ..Options::default()
     });
-    session
-        .handle()
-        .replace_tree(desk(&machine.cert.user_public_key, cluster));
     for _ in 0..4 {
         session
             .step(std::time::Duration::from_millis(1))

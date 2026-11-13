@@ -1,6 +1,5 @@
 use super::*;
 
-// Cloud import stages through descriptor-relative paths only Linux provides.
 #[cfg(target_os = "linux")]
 #[test]
 #[allow(
@@ -409,8 +408,6 @@ fn legacy_cloud_links_do_not_offer_document_import() {
     );
 }
 
-/// A cloud folder is named by the window's bar as the account and the folder in
-/// it, and the window draws no header of its own while the bar hosts it.
 #[test]
 fn the_window_bar_names_the_cloud_folder() {
     let root = tempfile::tempdir().unwrap();
@@ -438,9 +435,6 @@ fn the_window_bar_names_the_cloud_folder() {
     assert!(!location.editable, "a cloud folder has no path to type");
 }
 
-/// A cloud folder the window named itself before the bar hosted it moves
-/// into the bar: the bar is told the account and the folder, and the window
-/// stops drawing its own title for it.
 #[test]
 fn a_cloud_folder_named_before_the_bar_hosts_the_window_moves_into_the_bar() {
     let root = tempfile::tempdir().unwrap();
@@ -475,10 +469,6 @@ fn a_cloud_folder_named_before_the_bar_hosts_the_window_moves_into_the_bar() {
     );
 }
 
-/// The cloud folder as a window shows it, its place in the window's bar,
-/// in dark and light, for a person to look at: each picture is printed as
-/// hex between `capture <name>` and `end capture` lines. Run on request
-/// (`--ignored --nocapture`).
 #[test]
 #[ignore = "prints captures for review"]
 fn a_cloud_folder_capture_shows_its_place_in_the_bar() {

@@ -17,7 +17,6 @@ use crate::image;
 use crate::index::Catalog;
 use crate::key::CacheKey;
 
-/// The package store, and the identity tools built here are signed with.
 pub struct PackageStoreTools {
     store: Store,
     identity: SigningIdentity,
@@ -40,8 +39,6 @@ impl PackageStoreTools {
     }
 }
 
-/// `store`, also trusting images `identity` signs: what a reader of this
-/// device's tools (the `ush` supervisor) needs to stack them.
 pub fn trust_builder(store: Store, identity: &SigningIdentity) -> Store {
     let trust = store
         .trust()
@@ -96,14 +93,10 @@ impl ToolStore for PackageStoreTools {
     }
 }
 
-/// Where a device's builder keeps its index, dnf caches and scratch:
-/// `$XDG_CACHE_HOME/tilo/env-tools` (all of it can be rebuilt).
 pub fn default_state_dir() -> Option<PathBuf> {
     tilo_paths::xdg::cache_home().map(|cache| cache.join("tilo/env-tools"))
 }
 
-/// The catalog a device consults: the document at `TILO_TOOL_CATALOG`, or
-/// none.
 pub fn default_catalog() -> Option<Catalog> {
     let path = std::env::var_os("TILO_TOOL_CATALOG").filter(|v| !v.is_empty())?;
     match Catalog::load(Path::new(&path)) {
@@ -115,13 +108,6 @@ pub fn default_catalog() -> Option<Catalog> {
     }
 }
 
-/// This device's tool builder: the package store from the environment, the
-/// device key, the default catalog and state directory. What `pkg install`
-/// calls on a device, and what a relay's compute worker runs for a member.
-///
-/// # Errors
-///
-/// No user store, no device key, or no state directory.
 pub fn device_builder() -> anyhow::Result<Builder<PackageStoreTools, Option<Catalog>>> {
     let store = Store::from_env()?;
     let identity = crate::signing::device_identity()?;
@@ -155,9 +141,6 @@ pub struct DirImageTools {
 }
 
 impl DirImageTools {
-    /// # Errors
-    ///
-    /// On an architecture images aren't built for.
     pub fn at(root: impl Into<PathBuf>) -> anyhow::Result<Self> {
         Ok(Self {
             root: root.into(),
@@ -224,8 +207,6 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The tool builder over [`DirImageTools`] at `root`, its state in
-/// `TILO_ENV_TOOLS_STATE` or `<root>/.env-tools`.
 pub fn dir_tool_builder(root: &Path) -> std::sync::Arc<dyn tilo_environment::ToolBuilder> {
     let state = std::env::var_os("TILO_ENV_TOOLS_STATE")
         .filter(|v| !v.is_empty())

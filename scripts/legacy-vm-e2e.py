@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end proof of a legacy VM against a real headless Tilo shell.
+"""End-to-end proof of a legacy VM against a real headless Tilo session.
 
 Boots the Linux legacy guest disk under KVM through `tilo-legacy` (an
-unprivileged libvirt session), with a headless `shell` as the compositor, and
-checks, in order:
+unprivileged libvirt session), with a headless `tilo-session` as the compositor,
+and checks, in order:
 
 1. CLI stdio and exit status relay: `run -- sh -c 'echo hi; exit 3'`.
 2. A granted host directory is visible in the guest at the same path.
-3. A GUI app (foot) launched in the guest maps as the foreign toplevel
+3. A GUI app (foot) launched in the guest maps as the window
    `legacy.linux.foot`, and its first frames are not flat.
 4. Text typed through the compositor reaches the app in the guest.
 5. With a short idle limit the idle VM goes to sleep and the next launch
@@ -100,13 +100,33 @@ def complete_onboarding(control: Control) -> None:
                lambda: "onboarding.finish.button" not in control.target_names())
 
 
+def wayland_display(log: Path) -> str | None:
+    """The display the session bound: the `WAYLAND_DISPLAY=wayland-N` line it prints."""
+    if not log.exists():
+        return None
+    for line in log.read_text(errors="replace").splitlines():
+        if line.startswith("WAYLAND_DISPLAY="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def windows(control: Control) -> dict:
+    """The desk's open windows, each with `rect` (`[x, y, width, height]`, null while no window
+    of the tab is mapped) and `frames`, the frames its client committed."""
+    return control.send({"op": "windows"})
+
+
 def frame_for(control: Control, app_id: str) -> dict | None:
-    envelope = control.send({"op": "foreign_frames"})
-    for frame in envelope.get("foreign_frames", {}).get("frames", []):
-        if frame.get("app_id") == app_id and frame.get("frame_seq", 0) > 0:
-            rect = frame.get("rect") or {}
-            if frame.get("presented") and rect.get("w", 0) > 100 and rect.get("h", 0) > 100:
-                return frame
+    for row in windows(control).get("answer", {}).get("windows", []):
+        rect = row.get("rect")
+        if (
+            row.get("app_id") == app_id
+            and row.get("frames", 0) > 0
+            and rect is not None
+            and rect[2] > 100
+            and rect[3] > 100
+        ):
+            return row
     return None
 
 
@@ -158,12 +178,12 @@ def read_png(path: Path) -> tuple[int, int, int, bytes]:
     return width, height, bpp, bytes(out)
 
 
-def distinct_colours(png: Path, rect: dict) -> int:
+def distinct_colours(png: Path, rect: list) -> int:
     width, height, bpp, pixels = read_png(png)
     colours = set()
-    x0, y0 = max(0, int(rect["x"])), max(0, int(rect["y"]))
-    x1 = min(width, int(rect["x"] + rect["w"]))
-    y1 = min(height, int(rect["y"] + rect["h"]))
+    x0, y0 = max(0, int(rect[0])), max(0, int(rect[1]))
+    x1 = min(width, int(rect[0] + rect[2]))
+    y1 = min(height, int(rect[1] + rect[3]))
     for y in range(y0, y1, 2):
         for x in range(x0, x1, 2):
             offset = (y * width + x) * bpp
@@ -236,7 +256,6 @@ def run(args: argparse.Namespace) -> None:
         "TILO_IDENTITY_ROOT": str(root / "identity"),
         "TILO_WORKSPACE_ROOTS": "",
         "TILO_TEST_CONTROL": str(control_path),
-        "TILO_HEADLESS_SIZE": f"{SCREEN[0]}x{SCREEN[1]}",
         "RUST_LOG": "warn",
     })
     (root / "home").mkdir()
@@ -249,15 +268,14 @@ def run(args: argparse.Namespace) -> None:
     control = Control(control_path)
     try:
         compositor = subprocess.Popen(
-            [str(args.shell), "--mode", "native", "--backend", "headless"],
+            [str(args.session), "--backend", "headless", "--size", f"{SCREEN[0]}x{SCREEN[1]}"],
             env=env, stdout=compositor_log, stderr=subprocess.STDOUT, start_new_session=True,
         )
         wait_until("test-control socket", control_path.exists, 120)
         wait_until("initial workspace", lambda: control.send({"op": "state_dump"}), 120)
         complete_onboarding(control)
-        display_file = runtime / "tilo-session" / "wayland-display"
-        wait_until("published Wayland display",
-                   lambda: display_file.exists() and display_file.read_text().strip())
+        env["WAYLAND_DISPLAY"] = wait_until(
+            "published Wayland display", lambda: wayland_display(args.artifacts / "compositor.log"))
 
         # 1. stdio and exit status, which also wakes (creates and boots) the VM.
         started = time.monotonic()
@@ -302,7 +320,7 @@ def run(args: argparse.Namespace) -> None:
 
         # 4. typed text reaches the app in the guest.
         rect = frame["rect"]
-        control.send({"op": "click_at", "x": rect["x"] + rect["w"] / 2, "y": rect["y"] + rect["h"] / 2})
+        control.send({"op": "click_at", "x": rect[0] + rect[2] / 2, "y": rect[1] + rect[3] / 2})
         time.sleep(0.5)
         for character in TYPED:
             control.send({"op": "type", "text": character})
@@ -332,8 +350,8 @@ def run(args: argparse.Namespace) -> None:
                   f"the VM booted again on launch ({time.monotonic() - started:.0f}s)")
     except Exception:
         try:
-            (artifacts / "foreign-frames.json").write_text(
-                json.dumps(control.send({"op": "foreign_frames"}), indent=2) + "\n")
+            (artifacts / "windows.json").write_text(
+                json.dumps(windows(control), indent=2) + "\n")
             control.send({"op": "snapshot", "path": str(artifacts / "failed.png")})
         except Exception:
             pass
@@ -354,7 +372,7 @@ def run(args: argparse.Namespace) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--shell", type=Path, required=True)
+    parser.add_argument("--session", type=Path, required=True)
     parser.add_argument("--tilo-legacy", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)

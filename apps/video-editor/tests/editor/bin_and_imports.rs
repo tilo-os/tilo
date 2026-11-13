@@ -118,7 +118,7 @@ fn a_launch_naming_a_file_places_it_under_the_playhead() {
         .harness()
         .a11y_nodes()
         .into_iter()
-        .find(|(_, n)| n.label() == Some("Transport"))
+        .find(|(_, n)| n.label() == Some("Playback"))
         .and_then(|(_, n)| n.value().map(ToString::to_string))
         .unwrap();
     assert_ne!(

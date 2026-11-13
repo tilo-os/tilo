@@ -129,8 +129,6 @@ description = "Arrange clips, sound, and stories in a native video editor."
 description = "Watch local video with simple, dependable playback."
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
-[apps.web-search]
-description = "Search the web and read pages from your device, for your agents and shortcuts. No account or API key."
 [apps.windows]
 description = "Run supported Windows applications in a contained Tilo experience."
 [apps.word-processor]

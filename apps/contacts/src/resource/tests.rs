@@ -38,8 +38,6 @@ fn name(text: &str) -> ui::tilo_resource::NonBlank {
     text.parse().unwrap()
 }
 
-/// A typed name becomes a contact; a whole card is added under its own id,
-/// once; a deleted contact's id never names a contact again.
 #[test]
 fn contacts_are_added_once_and_a_deleted_id_stays_deleted() {
     let mut book = Replica::<Contacts>::new();
@@ -72,8 +70,6 @@ fn contacts_are_added_once_and_a_deleted_id_stays_deleted() {
     );
 }
 
-/// A card that is too large, has a row without an id or a birthday no
-/// calendar has is refused, whole and as an edit.
 #[test]
 fn malformed_and_oversized_contacts_are_refused() {
     let mut book = Replica::<Contacts>::new();
@@ -106,10 +102,6 @@ fn malformed_and_oversized_contacts_are_refused() {
     assert_eq!(contact(&book, ada.id).unwrap(), ada);
 }
 
-/// A saved form writes only what it changed: two people saving different
-/// fields and rows of one contact both keep their edit, a row edited on
-/// one side and removed on the other keeps its id, and the order the
-/// saves arrive in does not matter.
 #[test]
 fn saved_forms_merge_field_by_field_and_row_by_row() {
     let mut ada = person("Ada", "Lovelace");
@@ -142,8 +134,6 @@ fn saved_forms_merge_field_by_field_and_row_by_row() {
     );
 }
 
-/// A form saved over a row someone removed meanwhile is refused whole: no
-/// field it changed is written.
 #[test]
 fn a_save_over_a_removed_row_is_refused_whole() {
     let ada = person("Ada", "Lovelace");
@@ -160,8 +150,6 @@ fn a_save_over_a_removed_row_is_refused_whole() {
     assert_eq!(contact(&book, ada.id).unwrap(), ada, "nothing is written");
 }
 
-/// Deleting a contact wins over a save of it that arrives later, in either
-/// order.
 #[test]
 fn a_deletion_wins_over_a_concurrent_save() {
     let ada = person("Ada", "Lovelace");
@@ -176,9 +164,6 @@ fn a_deletion_wins_over_a_concurrent_save() {
     assert!(contact(&b, ada.id).is_none());
 }
 
-/// Merging keeps every row of both contacts, fills what the survivor lacks,
-/// takes the fields named from the other, and deletes the other; a peer
-/// that merges with the book agrees.
 #[test]
 fn merging_unions_rows_and_takes_the_chosen_fields() {
     let mut survivor = person("Ada", "Lovelace");
@@ -231,8 +216,6 @@ fn merging_unions_rows_and_takes_the_chosen_fields() {
     assert_eq!(peer.state().unwrap(), book.state().unwrap());
 }
 
-/// Reviewed merges must not erase dial strings whose significant symbols or
-/// vanity letters differ, even when their decimal digits happen to match.
 #[test]
 fn regression_merge_preserves_distinct_dial_strings() {
     let mut survivor = person("Ada", "Lovelace");
@@ -272,9 +255,6 @@ fn regression_merge_preserves_distinct_dial_strings() {
     );
 }
 
-/// The book publishes the favorites, every group and its likely duplicates
-/// as places; each contact is an item carrying its delete and merge;
-/// search finds contacts by what they hold and groups by name.
 #[test]
 fn the_book_publishes_places_items_and_search() {
     let mut contacts = sample_book();
@@ -401,8 +381,6 @@ fn a_published_merge_merges_and_one_undo_restores_both() {
     assert_eq!(app.state().contacts.len(), 2);
 }
 
-/// Contacts project into the person's contact directory under their ids,
-/// never with an inferred endpoint, and a deleted contact is removed there.
 #[test]
 fn stable_contacts_project_without_inferred_endpoints_and_deletions_disable_identity() {
     use tilo_contact_directory::ContactDirectory;
@@ -463,9 +441,6 @@ fn has_control(app: &mut TestApp<ContactsShell>, label: &str) -> bool {
         .any(|(_, node)| node.label() == Some(label))
 }
 
-/// A vCard file the app is opened with is imported into the book, as
-/// an import the person picked: created through the door, undone in one
-/// step.
 #[test]
 fn a_vcard_file_the_app_is_opened_with_is_imported() {
     let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEND:VCARD\r\n\
@@ -487,8 +462,6 @@ fn a_vcard_file_the_app_is_opened_with_is_imported() {
     assert!(app.state().contacts.is_empty(), "one import, one undo step");
 }
 
-/// A new window starts on an empty book; captures stage the sample book
-/// through verbs and their view state through `stage`.
 #[test]
 fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
     let live = TestApp::<ContactsShell>::new().unwrap();
@@ -538,9 +511,6 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
     assert_eq!(detail.harness().inspection().viewport, [390, 844]);
 }
 
-/// The window's own controls edit the book through its door: opening a
-/// contact as an agent does shows it, its star toggled in the detail pane
-/// is the book's field edit, and one undo takes it back.
 #[test]
 fn the_window_edits_the_book_through_its_door() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
@@ -613,8 +583,6 @@ fn history_says_what_each_change_did() {
     );
 }
 
-/// Merging from the review lands at once, since Undo takes it back: the
-/// host asks nothing, and Undo brings the merged contact back.
 #[test]
 fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
@@ -651,8 +619,6 @@ fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     assert_eq!(app.state().contacts.len(), 2, "Undo brings the copy back");
 }
 
-/// An agent keeps the address book, or one card it names, as vCards in
-/// the workspace's content, without the confirmation a file export asks.
 #[test]
 fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
@@ -702,8 +668,6 @@ fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(|| {

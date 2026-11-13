@@ -53,7 +53,9 @@ pub mod host;
 pub mod identifier;
 pub mod ids;
 pub mod ir;
-pub mod lexer;
+// The lexer lives in `tilolang-lex`, where the toolkit's editor reads it too; the tokens, their
+// spans and the reference literal a token holds are the same ones the parser here reads.
+pub use tilolang_lex::lexer;
 pub mod messages;
 pub mod meta;
 pub mod natural;

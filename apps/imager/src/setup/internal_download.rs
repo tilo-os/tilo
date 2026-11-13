@@ -1,6 +1,4 @@
-//! Authenticated selection and bounded HTTP transfer through caller-owned handles.
-//! This module neither owns cache paths nor publishes files. Authentication depends
-//! on the embedded catalog belonging to a genuinely signed application.
+//! Authenticating a release and downloading it in bounded pieces.
 
 use super::internal_bundle::{ComponentView, InternalBundle, MAX_MANIFEST_BYTES};
 use super::internal_cache::{self as cache, PreparedPrefix};
@@ -18,7 +16,6 @@ use std::{
 const BUFFER: usize = 64 * 1024;
 const MAX_COMPONENT: u64 = 1 << 40;
 
-/// Exact selected bytes and validated metadata, not stable-file/install authority.
 #[derive(Debug)]
 pub struct SelectedManifest {
     bytes: Vec<u8>,
@@ -106,10 +103,6 @@ fn io_error(error: std::io::Error) -> String {
     format!("Internal working-file/stream error: {error}")
 }
 
-/// A reusable client with fixed trust policy; production has no origin override.
-/// Network acquisition and each blocking read time out after 30 seconds (connect:
-/// 10 seconds). This is not a whole-component deadline. Filesystem cancellation
-/// is cooperative around blocking operations, with no latency guarantee.
 pub struct InternalTransport {
     client: Client,
     origin: Url,
@@ -127,8 +120,6 @@ impl InternalTransport {
             .no_deflate()
             .no_zstd()
             .retry(reqwest::retry::never())
-            // Handle redirects explicitly: reqwest strips Location fragments before
-            // its redirect policy callback, too late for our stricter URL contract.
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
@@ -190,7 +181,6 @@ impl InternalTransport {
             }
             let response = request.send();
             cancelled(cancel).map_err(RequestError::Fatal)?;
-            // Stop before interpreting errors, redirects, status or framing.
             if pause.is_some_and(|p| p.load(Ordering::Acquire)) {
                 return Err(RequestError::Paused);
             }
@@ -236,9 +226,6 @@ impl InternalTransport {
         if !same_origin(response.url(), &self.origin) {
             return Err("Untrusted response origin".into());
         }
-        // Hyper can decode unknown transfer codings as close-delimited and
-        // prefer chunked over Content-Length. Enforce our narrower policy while
-        // the original response fields remain visible, before any redirect/reset.
         let mut framing = response.headers().get_all(header::TRANSFER_ENCODING).iter();
         if let Some(value) = framing.next() {
             if framing.next().is_some()
@@ -297,8 +284,6 @@ impl InternalTransport {
         }
         result
     }
-    /// Private provider seam. A successful result is still only invocation byte
-    /// proof; native final publication and coordinator readiness remain separate.
     pub(super) fn transfer_persistent(
         &self,
         prepared: PreparedPrefix<'_>,
@@ -531,8 +516,6 @@ impl InternalTransport {
                 }
                 BodyEnd::Interrupted(error) => last_error = error,
             }
-            // A full byte counter after a failed EOF is not a successful response.
-            // Demand a fresh complete response within this invocation.
             if length == component.byte_size {
                 if let Some(d) = durable.as_deref_mut() {
                     d.before_reset(file, component.byte_size, cancel)?;
@@ -631,7 +614,6 @@ fn read_body_stoppable(
         let limit = ((expected - received + 1).min(BUFFER as u64)) as usize;
         let read = reader.read(&mut buffer[..limit]);
         cancelled(cancel)?;
-        // A stop requested while this read was in flight precedes EOF/error.
         if pause() {
             return Ok(BodyEnd::Paused);
         }
@@ -655,7 +637,6 @@ fn read_body_stoppable(
     }
 }
 
-/// Untrusted checkpoint data. Validation rehashes the entire held prefix.
 #[derive(Clone, Debug)]
 pub struct ResumeCheckpoint {
     pub manifest_sha256: String,
@@ -678,9 +659,6 @@ pub enum Phase {
     Failed,
     Cancelled,
 }
-/// Progress is advisory. `verified` stays zero until the complete authenticated
-/// digest matches; prefix hashes only validate checkpoint consistency. A later
-/// coordinator must match the operation ID and successful result before readiness.
 #[derive(Clone, Copy, Debug)]
 pub struct Progress {
     pub operation: u64,
@@ -689,8 +667,6 @@ pub struct Progress {
     pub received: u64,
     pub verified: u64,
 }
-/// Observed exact bytes during this invocation only. Later publication/staging must
-/// retain/reacquire its own file identities and reverify these bytes.
 #[derive(Debug)]
 pub struct CompletedComponent {
     byte_size: u64,
@@ -876,8 +852,6 @@ fn write_chunk(
 ) -> Result<(), String> {
     #[cfg(test)]
     let mut file = tests::FaultWriter(file);
-    // Each successful write advances a finite (at most 64-KiB) slice. Bound
-    // Interrupted results cumulatively per chunk, including across partial writes.
     let mut remaining = chunk;
     let mut interrupted = 0_u8;
     while !remaining.is_empty() {
@@ -949,7 +923,6 @@ fn finish(
 #[cfg(test)]
 pub(super) mod tests;
 
-/// Last synchronously acknowledged prefix, never an inferred complete byte count.
 #[derive(Debug)]
 pub(super) enum PersistentOutcome {
     Complete(CompletedComponent),
@@ -1060,7 +1033,6 @@ impl DurableTransfer<'_> {
         if !self.pause.load(Ordering::Acquire) {
             return Ok(false);
         }
-        // Full bytes without successful response EOF must never become a candidate.
         if self.hashes.pending() > 0 && self.hashes.length < full {
             self.commit(file, cancel, cache::Kind::Prefix)?;
         }

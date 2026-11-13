@@ -1,9 +1,6 @@
-//! Thunderbird profiles, accounts, local mail and personal data inside an
-//! already granted home. `prefs.js` is parsed as data and never executed.
-//! Folder counts and flags come from the actual mbox/maildir files, so a
-//! directory scan is never reported as a verified complete mailbox. A folder
-//! is read in fixed chunks with one bound per message, so a mailbox larger
-//! than memory is still counted without holding it.
+//! Thunderbird profiles, accounts, local mail and personal data inside an already granted home.
+//! `prefs.js` is parsed as data and never executed, folder counts and flags come from the actual
+//! mbox/maildir files, and a folder is read in fixed chunks with one bound per message.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,15 +24,13 @@ pub(crate) use mbox::{MboxMessages, MessageTooLarge};
 
 const MAX_PROFILE_INDEX: u64 = 64 * 1024;
 const MAX_PREFERENCE_BYTES: u64 = 2 * 1024 * 1024;
-/// The per-message bound inspection and the streamed import share. A larger
-/// message is reported, never buffered without limit or silently skipped.
+/// A larger message is reported, never buffered without limit or silently skipped.
 pub(crate) const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MESSAGES: u64 = 100_000;
 const MAX_FOLDERS: usize = 4096;
 const MAX_PROFILES: usize = 128;
 const MAX_DEPTH: usize = 8;
 
-/// One profile found under a granted Thunderbird root.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThunderbirdProfile {
     pub source_id: String,
@@ -52,10 +47,8 @@ pub struct ThunderbirdAccount {
     pub email: Option<String>,
     pub display_name: String,
     pub kind: String,
-    /// This account's mail exists on this computer. An IMAP cache is still a
-    /// local copy, not proof that the server holds every message.
+    /// An IMAP cache is still a local copy, not proof that the server holds every message.
     pub local_mail: bool,
-    /// The account can be configured only after signing in again.
     pub needs_reconnect: bool,
     pub folders: Vec<ThunderbirdFolder>,
 }
@@ -63,7 +56,6 @@ pub struct ThunderbirdAccount {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThunderbirdFolder {
     pub source_id: String,
-    /// The folder's path below its account, as Thunderbird names it.
     pub hierarchy: Vec<String>,
     pub format: String,
     pub messages: Option<u64>,
@@ -71,10 +63,9 @@ pub struct ThunderbirdFolder {
     pub flagged: Option<u64>,
     pub attachments: Option<u64>,
     pub bytes: u64,
-    /// Every message counted here is a local copy. `false` means the source
-    /// changed or exceeded the inspection bound; the count is then unknown.
+    /// Every message counted here is a local copy; `false` means the source changed or exceeded the
+    /// inspection bound, so the count is unknown.
     pub counted: bool,
-    /// A local-only account (POP or Local Folders), not an IMAP cache.
     pub local_only: bool,
 }
 
@@ -100,8 +91,7 @@ pub struct ThunderbirdCalendar {
     pub present: bool,
 }
 
-/// A reviewed profile retains the exact pinned directories and file names
-/// used by capture. It is not serialized into public status records.
+/// It is not serialized into public status records.
 #[derive(Clone)]
 pub struct ReviewedThunderbird {
     pub profile: ThunderbirdProfile,
@@ -133,7 +123,6 @@ pub struct ReviewedAccount {
 #[derive(Clone, Debug)]
 pub struct ReviewedFolder {
     pub inventory: ThunderbirdFolder,
-    /// Relative to the profile root.
     pub relative: Vec<String>,
     pub kind: FolderKind,
     pub local_only: bool,
@@ -149,15 +138,13 @@ pub enum FolderKind {
 pub struct ReviewedFile {
     pub source_id: String,
     pub name: String,
-    /// Relative to the profile root, when the file is present.
     pub relative: Option<Vec<String>>,
     pub present: bool,
     pub local: bool,
 }
 
-/// Discover native and Flatpak Thunderbird profiles beneath the granted home.
-/// The returned `Inventory` carries only serializable metadata; capture uses
-/// the separately retained reviewed profiles.
+/// The returned `Inventory` carries only serializable metadata; capture uses the separately retained
+/// reviewed profiles.
 pub fn discover(home: &Path, inventory: &mut Inventory) {
     for (relative, label) in [
         (".thunderbird", "Thunderbird"),
@@ -738,8 +725,7 @@ fn mbox_facts(
     Ok((before.len(), counted.then_some(facts)))
 }
 
-/// What inspection learned about one folder. Every message was read, so the
-/// counts describe the local copies that are actually there.
+/// Every message was read, so the counts describe the local copies that are actually there.
 #[derive(Default)]
 struct MailFacts {
     messages: u64,
@@ -806,8 +792,7 @@ pub(crate) fn maildir_read_flags(name: &str) -> (bool, bool) {
     maildir_flags(name).unwrap_or((false, false))
 }
 
-/// A file larger than a caller's bound, so discovery can report the folder as
-/// not fully counted and the import can refuse it by name.
+/// Discovery reports the folder as not fully counted and the import can refuse it by name.
 pub(crate) fn too_large(limit: usize) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, MessageTooLarge { limit })
 }

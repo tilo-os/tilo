@@ -1,9 +1,7 @@
-//! On-disk state for a registry — one JSON file per entry, plus a
-//! separate `publishers.toml` for the owner-controlled
-//! allowlist.
+//! On-disk state for a registry — one JSON file per entry, plus a separate `publishers.toml` for
+//! the owner-controlled allowlist.
 //!
-//! Layout under the data dir (`--data-dir` or
-//! `$XDG_STATE_HOME/tilo-registry`):
+//! Layout under the data dir (`--data-dir` or `$XDG_STATE_HOME/tilo-registry`):
 //!
 //! ```text
 //! data-dir/
@@ -46,11 +44,11 @@
 //!         <blake3>.program           # bot programs awaiting review; private
 //! ```
 //!
-//! Writes go through atomic rename (`.tmp` → target path) so a
-//! crash mid-write cannot leave a torn file.
+//! Writes go through atomic rename (`.tmp` → target path) so a crash mid-write cannot leave a torn
+//! file.
 //!
-//! Every call here is blocking std I/O; the HTTP layer runs them off
-//! the async workers. Mutations serialize through [`SnapshotLock`].
+//! Every call here is blocking std I/O; the HTTP layer runs them off the async workers. Mutations
+//! serialize through [`SnapshotLock`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -76,35 +74,29 @@ pub(crate) use checked::FileStamp;
 pub use payload_objects::IncomingObject;
 pub use twins::TwinReport;
 
-/// Signed snapshots kept on disk, newest first. Older members are pruned
-/// behind a [`HistoryCompaction`] record; the oldest retained member's signed
-/// predecessor hash commits to everything pruned.
+/// Signed snapshots kept on disk, newest first. Older members are pruned behind a
+/// [`HistoryCompaction`] record; the oldest retained member's signed predecessor hash commits to
+/// everything pruned.
 pub const SNAPSHOT_HISTORY_RETAINED: usize = 16;
 
-/// The pruned prefix of the snapshot history: every sequence up to and
-/// including `through_sequence` was removed, and `through_snapshot_hash_hex`
-/// is that member's hash, which the next retained snapshot signs as its
-/// predecessor. No sequence at or below it may be published or archived again.
+/// The pruned prefix of the snapshot history: every sequence up to and including `through_sequence`
+/// was removed, and `through_snapshot_hash_hex` is that member's hash, which the next retained
+/// snapshot signs as its predecessor. No sequence at or below it may be published or archived
+/// again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryCompaction {
     pub through_sequence: u64,
     pub through_snapshot_hash_hex: String,
 }
 
-/// What [`SnapshotLock::compact_history`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct HistoryCompactionReport {
-    /// Members removed by this run.
     pub pruned: usize,
-    /// Members left on disk.
     pub retained: usize,
-    /// Highest pruned sequence so far, 0 when nothing was ever pruned.
     pub through_sequence: u64,
-    /// Bytes of retained members.
     pub retained_bytes: u64,
 }
 
-/// Directory + on-disk file layout for one registry.
 #[derive(Clone)]
 pub struct Storage {
     root: PathBuf,
@@ -114,10 +106,6 @@ pub struct Storage {
 
 impl Storage {
     /// Open (creating on first use) the store rooted at `root`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Io`] if the state directories can't be created.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
         for name in [
@@ -147,29 +135,26 @@ impl Storage {
         })
     }
 
-    /// How many times a served object's content has been checked against
-    /// its name: once per stored file, however often it is downloaded.
+    /// How many times a served object's content has been checked against its name: once per stored
+    /// file, however often it is downloaded.
     pub fn object_checks(&self) -> u64 {
         self.checked.checks()
     }
 
-    /// The `handshake.toml` path.
     pub fn handshake_path(&self) -> PathBuf {
         self.root.join("handshake.toml")
     }
 
-    /// The `publishers.toml` path.
     pub fn publishers_path(&self) -> PathBuf {
         self.root.join("publishers.toml")
     }
 
-    /// Public snapshot served to clients. It is written only by the offline
-    /// signing command, never by the HTTP serving process.
+    /// Public snapshot served to clients. It is written only by the offline signing command, never
+    /// by the HTTP serving process.
     pub fn snapshot_path(&self) -> PathBuf {
         self.root.join("published-snapshot.json")
     }
 
-    /// Compact form of the public snapshot, signed with the same key.
     pub fn compact_snapshot_path(&self) -> PathBuf {
         self.root.join("published-compact-snapshot.json")
     }
@@ -182,8 +167,8 @@ impl Storage {
         })
     }
 
-    /// The compact snapshot last published, if any. It may lag the full
-    /// snapshot; callers compare its `snapshot_hash_hex`.
+    /// The compact snapshot last published, if any. It may lag the full snapshot; callers compare
+    /// its `snapshot_hash_hex`.
     pub fn load_compact_snapshot(&self) -> Result<Option<CompactRegistrySnapshot>, StorageError> {
         let path = self.compact_snapshot_path();
         if path
@@ -197,11 +182,8 @@ impl Storage {
         load_json(&path, "published compact snapshot")
     }
 
-    /// The version index named `blake3_hex`, re-checked against its name.
-    ///
-    /// # Errors
-    /// Returns an error when a stored index cannot be read or no longer
-    /// matches its name.
+    /// The version index named `blake3_hex`, re-checked against its name. # Errors Returns an error
+    /// when a stored index cannot be read or no longer matches its name.
     pub fn load_version_index(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         self.read_served(
             self.version_index_path(blake3_hex),
@@ -217,9 +199,8 @@ impl Storage {
 
     #[cfg(unix)]
     fn snapshot_lock_path(&self) -> PathBuf {
-        // Keep the established filename so mixed-version rolling deployments
-        // still share one kernel lock while its scope expands to all registry
-        // mutations.
+        // The established filename, so mixed-version rolling deployments share one kernel lock
+        // while its scope grows to all registry mutations.
         self.root.join("snapshot.lock")
     }
 
@@ -235,12 +216,10 @@ impl Storage {
         self.root.join("channel-authorization.json")
     }
 
-    /// A whole staged package.
     fn staged_artifact_path(&self, blake3_hex: &str) -> Result<PathBuf, StorageError> {
         self.staged_path(blake3_hex, "tapp")
     }
 
-    /// The package root of a staged package kept as blobs and a thin form.
     fn staged_root_path(&self, blake3_hex: &str) -> Result<PathBuf, StorageError> {
         self.staged_path(blake3_hex, "root")
     }
@@ -257,12 +236,10 @@ impl Storage {
             .join(format!("{}.{extension}", blake3_hex.to_ascii_lowercase())))
     }
 
-    /// Load the active root-signed channel authorization.
     pub fn load_channel_authorization(&self) -> Result<Option<ChannelAuthorization>, StorageError> {
         load_json(&self.channel_authorization_path(), "channel authorization")
     }
 
-    /// Atomically install the active root-signed channel authorization.
     pub fn save_channel_authorization(
         &self,
         authorization: &ChannelAuthorization,
@@ -270,7 +247,6 @@ impl Storage {
         save_json(&self.channel_authorization_path(), authorization)
     }
 
-    /// Load the collector's untrusted staged batch manifest.
     pub fn load_staged_promotion(&self) -> Result<Option<StagedPromotion>, StorageError> {
         load_json(
             &self.staged_promotion_path(),
@@ -278,12 +254,10 @@ impl Storage {
         )
     }
 
-    /// Atomically replace the collector's staged batch manifest.
     pub fn save_staged_promotion(&self, staged: &StagedPromotion) -> Result<(), StorageError> {
         save_json(&self.staged_promotion_path(), staged)
     }
 
-    /// Remove a consumed or empty staged batch manifest.
     pub fn delete_staged_promotion(&self) -> Result<bool, StorageError> {
         delete_if_exists(&self.staged_promotion_path())
     }
@@ -312,12 +286,11 @@ impl Storage {
         })
     }
 
-    /// Keep every payload blob a full package carries, each at its BLAKE3
-    /// path, and the package's thin form at its package root, so a client
-    /// installing the thin form can fetch just the blobs it lacks from this
-    /// registry. Only reviewed artifacts pass through here, so the registry
-    /// serves no bytes it has not inspected. Bytes that do not decode as a
-    /// package carry no payload to serve.
+    /// Keep every payload blob a full package carries, each at its BLAKE3 path, and the package's
+    /// thin form at its package root, so a client installing the thin form can fetch just the blobs
+    /// it lacks from this registry. Only reviewed artifacts pass through here, so the registry
+    /// serves no bytes it has not inspected. Bytes that do not decode as a package carry no payload
+    /// to serve.
     pub fn save_payload_blobs(&self, tapp_bytes: &[u8]) -> Result<usize, StorageError> {
         let _lock = self.lock_snapshot()?;
         Ok(self
@@ -325,9 +298,9 @@ impl Storage {
             .map_or(0, |stored| stored.blobs.len()))
     }
 
-    /// Write a package's payload blobs and thin form, returning what was
-    /// decoded, or `None` for bytes that are not a package. Callers hold the
-    /// registry lock, so pruning never sees blobs without their thin package.
+    /// Write a package's payload blobs and thin form, returning what was decoded, or `None` for
+    /// bytes that are not a package. Callers hold the registry lock, so pruning never sees blobs
+    /// without their thin package.
     fn store_package(&self, tapp_bytes: &[u8]) -> Result<Option<StoredPackage>, StorageError> {
         let mut blobs = std::collections::BTreeMap::new();
         let Ok(decoded) = tilo_app_package::tapp::read(tapp_bytes, &mut blobs) else {
@@ -352,13 +325,9 @@ impl Storage {
         }))
     }
 
-    /// The thin form of the reviewed package whose signed root hashes to
-    /// `root_hex`, re-checked against that root, or `None` when this
-    /// registry holds no such package.
-    ///
-    /// # Errors
-    /// Returns an error when a stored package cannot be read or no longer
-    /// matches its name.
+    /// The thin form of the reviewed package whose signed root hashes to `root_hex`, re-checked
+    /// against that root, or `None` when this registry holds no such package. # Errors Returns an
+    /// error when a stored package cannot be read or no longer matches its name.
     pub fn load_thin_package(&self, root_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let Some(path) = self.thin_package_path(root_hex) else {
             return Ok(None);
@@ -384,9 +353,8 @@ impl Storage {
     }
 
     /// Store a full package under its BLAKE3 so this registry can host it at
-    /// `/artifacts/<blake3>.tapp`, returning the digest. Nothing is published
-    /// by importing: a version still binds these exact bytes, and review
-    /// still verifies them.
+    /// `/artifacts/<blake3>.tapp`, returning the digest. Nothing is published by importing: a
+    /// version still binds these exact bytes, and review still verifies them.
     pub fn import_artifact(&self, tapp_bytes: &[u8]) -> Result<String, StorageError> {
         tilo_app_package::tapp::read(tapp_bytes, &mut tilo_app_package::DiscardBlobs)
             .map_err(|error| StorageError::Parse(format!("artifact: {error}")))?;
@@ -407,9 +375,8 @@ impl Storage {
         })
     }
 
-    /// Keep a publisher's bot program, which the caller authenticated and
-    /// checked, under its BLAKE3. Like package uploads it stays private until
-    /// review approves a version that binds it.
+    /// Keep a publisher's bot program, which the caller authenticated and checked, under its
+    /// BLAKE3. Like package uploads it stays private until review approves a version that binds it.
     pub fn save_program_upload(&self, bytes: &[u8]) -> Result<String, StorageError> {
         let digest = blake3::hash(bytes).to_hex().to_string();
         let path = self
@@ -419,7 +386,6 @@ impl Storage {
         Ok(digest)
     }
 
-    /// The uploaded program named `blake3_hex`, re-checked against its name.
     pub fn load_program_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         read_named(
             self.program_upload_path(blake3_hex),
@@ -428,10 +394,9 @@ impl Storage {
         )
     }
 
-    /// Publish an approved program as a payload blob, served at
-    /// `/blobs/<blake3>` with its compressed twin like any package blob.
-    /// Holding the registry lock keeps a concurrent prune from seeing the
-    /// blob before the entry that binds it.
+    /// Publish an approved program as a payload blob, served at `/blobs/<blake3>` with its
+    /// compressed twin like any package blob. Holding the registry lock keeps a concurrent prune
+    /// from seeing the blob before the entry that binds it.
     pub fn save_program_blob(&self, bytes: &[u8]) -> Result<String, StorageError> {
         let _lock = self.lock_snapshot()?;
         let hash = tilo_app_package::BlobHash::of(bytes);
@@ -452,9 +417,8 @@ impl Storage {
         })
     }
 
-    /// Keep a publisher's upload, which the caller has authenticated, under
-    /// its BLAKE3. Uploads are never served; review reads them, and approval
-    /// imports the ones a version binds as artifacts.
+    /// Keep a publisher's upload, which the caller has authenticated, under its BLAKE3. Uploads are
+    /// never served; review reads them, and approval imports the ones a version binds as artifacts.
     pub fn save_upload(&self, tapp_bytes: &[u8]) -> Result<String, StorageError> {
         let digest = blake3::hash(tapp_bytes).to_hex().to_string();
         let path = self
@@ -465,29 +429,17 @@ impl Storage {
     }
 
     /// A publisher upload, re-checked against its digest, or `None`.
-    ///
-    /// # Errors
-    /// Returns an error when a stored upload cannot be read or no longer
-    /// matches its name.
     pub fn load_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         read_named(self.upload_path(blake3_hex), "upload", blake3_hex)
     }
 
     /// An imported artifact, re-checked against its digest.
-    ///
-    /// # Errors
-    /// Returns an error when a stored artifact cannot be read or no longer
-    /// matches its name.
     pub fn load_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         self.read_served(self.artifact_path(blake3_hex), "artifact", blake3_hex, None)
     }
 
-    /// The payload blob named `blake3_hex`, re-checked against its name, or
-    /// `None` when this registry holds no such blob.
-    ///
-    /// # Errors
-    /// Returns an error when a stored blob cannot be read or no longer matches
-    /// its name.
+    /// The payload blob named `blake3_hex`, re-checked against its name, or `None` when this
+    /// registry holds no such blob.
     pub fn load_payload_blob(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let Some(path) = self.payload_blob_path(blake3_hex) else {
             return Ok(None);
@@ -500,11 +452,10 @@ impl Storage {
         )
     }
 
-    /// Stage exact package bytes under their BLAKE3. A package is kept once:
-    /// as its payload blobs plus its thin form, which every reviewed package
-    /// keeps anyway for thin installs, with only its package root recorded
-    /// here. Bytes that cannot be rebuilt exactly from those parts are kept
-    /// whole.
+    /// Stage exact package bytes under their BLAKE3. A package is kept once: as its payload blobs
+    /// plus its thin form, which every reviewed package keeps anyway for thin installs, with only
+    /// its package root recorded here. Bytes that cannot be rebuilt exactly from those parts are
+    /// kept whole.
     pub fn save_staged_artifact(&self, blake3_hex: &str, bytes: &[u8]) -> Result<(), StorageError> {
         let actual = blake3::hash(bytes).to_hex().to_string();
         if !actual.eq_ignore_ascii_case(blake3_hex) {
@@ -524,7 +475,6 @@ impl Storage {
         self.stage(blake3_hex, bytes)
     }
 
-    /// Write staged bytes in their smallest exact form.
     fn stage(&self, blake3_hex: &str, bytes: &[u8]) -> Result<(), StorageError> {
         if self.stage_root(blake3_hex, bytes)? {
             return Ok(());
@@ -532,15 +482,14 @@ impl Storage {
         atomic_write(&self.staged_artifact_path(blake3_hex)?, bytes)
     }
 
-    /// Record just the package root when the stored blobs and thin form
-    /// rebuild `bytes` exactly. The blobs and thin package land before the
-    /// root that names them.
+    /// Record just the package root when the stored blobs and thin form rebuild `bytes` exactly.
+    /// The blobs and thin package land before the root that names them.
     fn stage_root(&self, blake3_hex: &str, bytes: &[u8]) -> Result<bool, StorageError> {
         let Some(stored) = self.store_package(bytes)? else {
             return Ok(false);
         };
-        // A thin package is small and kept whole; its payload is fetched
-        // into the blob store separately.
+        // A thin package is small and kept whole; its payload is fetched into the blob store
+        // separately.
         if stored
             .meta
             .payload_hashes()
@@ -559,16 +508,14 @@ impl Storage {
         Ok(true)
     }
 
-    /// Load package bytes and re-check their content-addressed path.
     pub fn load_staged_artifact(&self, blake3_hex: &str) -> Result<Vec<u8>, StorageError> {
         self.find_staged_artifact(blake3_hex)?
             .ok_or_else(|| StorageError::Io(format!("staged artifact {blake3_hex} is missing")))
     }
 
-    /// Load package bytes previously staged under `blake3_hex`, if any.
     pub fn find_staged_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        // Compaction writes the root before it removes the whole package,
-        // so reading in this order always finds one of them.
+        // Compaction writes the root before it removes the whole package, so reading in this order
+        // always finds one of them.
         let bytes = if let Some(bytes) =
             read_if_exists(&self.staged_artifact_path(blake3_hex)?, "staged artifact")?
         {
@@ -591,8 +538,6 @@ impl Storage {
         Ok(Some(bytes))
     }
 
-    /// The full package whose thin form is stored under `root`, with every
-    /// payload blob read back from this registry.
     fn rebuild_staged(&self, root: &[u8]) -> Result<Vec<u8>, StorageError> {
         let root = std::str::from_utf8(root)
             .map_err(|_| StorageError::Parse("staged package root is not text".into()))?;
@@ -606,10 +551,9 @@ impl Storage {
             .map_err(|error| StorageError::Parse(format!("rebuild staged package {root}: {error}")))
     }
 
-    /// Store every whole staged package that its blobs and thin form rebuild
-    /// exactly as just its package root, and return how many were
-    /// compacted. Each package is converted under the registry lock on its
-    /// own, so serving and publishing interleave with a long compaction.
+    /// Store every whole staged package that its blobs and thin form rebuild exactly as just its
+    /// package root, and return how many were compacted. Each package is converted under the
+    /// registry lock on its own, so serving and publishing interleave with a long compaction.
     pub fn compact_staged_artifacts(&self) -> Result<usize, StorageError> {
         let mut compacted: usize = 0;
         for digest in list_digests(&self.root.join("staged-artifacts"), ".tapp")? {
@@ -631,16 +575,14 @@ impl Storage {
         Ok(compacted)
     }
 
-    /// Acquire the registry-wide mutation lock. Promotion selection, pending
-    /// changes, moderation, and snapshot publication all use this one lock in
-    /// that order. The retained lock file and kernel `flock` make this safe
-    /// across `CronJobs`, the HTTP server, and CLI processes; the in-process
-    /// mutex also covers independently opened [`Storage`]s.
+    /// Acquire the registry-wide mutation lock. Promotion selection, pending changes, moderation,
+    /// and snapshot publication all use this one lock in that order. The retained lock file and
+    /// kernel `flock` make this safe across `CronJobs`, the HTTP server, and CLI processes; the
+    /// in-process mutex also covers independently opened [`Storage`]s.
     pub fn lock_snapshot(&self) -> Result<SnapshotLock<'_>, StorageError> {
         SnapshotLock::acquire(self)
     }
 
-    /// Load a crash-recovery record for the first-party batch promoter.
     pub fn load_promotion_transaction(&self) -> Result<Option<PromotionJournal>, StorageError> {
         load_json(
             &self.promotion_transaction_path(),
@@ -648,7 +590,6 @@ impl Storage {
         )
     }
 
-    /// Persist the exact batch and candidate snapshot before applying reviews.
     pub fn save_promotion_transaction(
         &self,
         journal: &PromotionJournal,
@@ -656,12 +597,10 @@ impl Storage {
         save_json(&self.promotion_transaction_path(), journal)
     }
 
-    /// Remove a completed promotion transaction.
     pub fn delete_promotion_transaction(&self) -> Result<bool, StorageError> {
         delete_if_exists(&self.promotion_transaction_path())
     }
 
-    /// Loads the currently published owner-signed snapshot, if present.
     pub fn load_snapshot(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         let path = self.snapshot_path();
         if path
@@ -675,7 +614,6 @@ impl Storage {
         load_json(&path, "published registry snapshot")
     }
 
-    /// Atomically publishes an owner-signed snapshot.
     pub fn save_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         let guard = self.lock_snapshot()?;
         guard.publish(snapshot)
@@ -707,11 +645,9 @@ impl Storage {
         atomic_write(&archive, &body)
     }
 
-    /// Load an immutable historical snapshot by its monotonic sequence.
-    ///
-    /// Exactly one archive member must match. The hash remains in the filename
-    /// so operators can compare backup/object-store listings without parsing
-    /// JSON, while sequence is the stable rollback handle.
+    /// Load an immutable historical snapshot by its monotonic sequence. Exactly one archive member
+    /// must match. The hash stays in the filename so operators can compare backup and object-store
+    /// listings without parsing JSON, while sequence is the stable rollback handle.
     pub fn load_snapshot_sequence(
         &self,
         sequence: u64,
@@ -772,7 +708,6 @@ impl Storage {
         self.root.join("snapshots").join("compacted.json")
     }
 
-    /// The record of the pruned history prefix, if any was pruned.
     pub fn history_compaction(&self) -> Result<Option<HistoryCompaction>, StorageError> {
         load_json(
             &self.history_compaction_path(),
@@ -780,7 +715,6 @@ impl Storage {
         )
     }
 
-    /// Archived members by sequence, from their filenames only.
     fn history_members(&self) -> Result<BTreeMap<u64, (PathBuf, u64)>, StorageError> {
         let mut members = BTreeMap::new();
         for item in std::fs::read_dir(self.root.join("snapshots"))
@@ -826,13 +760,8 @@ impl Storage {
             .join(format!("{sequence:020}-{}.json", hash.to_ascii_lowercase())))
     }
 
-    /// Verified current moderation head for inclusion in an owner-signed
-    /// snapshot. Refuses a corrupt or non-contiguous log.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transparency log or registry identity cannot
-    /// be read, or if the log's chain, signatures, or role authorization fail.
+    /// Verified current moderation head for inclusion in an owner-signed snapshot. Refuses a
+    /// corrupt or non-contiguous log.
     pub fn moderation_head(&self) -> Result<String, StorageError> {
         let mut events = self.load_transparency::<ModerationEvent>()?;
         events.sort_by_key(|event| event.sequence);
@@ -844,13 +773,8 @@ impl Storage {
         Ok(head)
     }
 
-    /// Load the server-identity file. Missing → default-empty
-    /// (used on first-run before `serve` writes one).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Io`] if the file exists but can't be
-    /// read, or [`StorageError::Parse`] if it isn't valid TOML.
+    /// Load the server-identity file. Missing → default-empty (used on first-run before `serve`
+    /// writes one).
     pub fn load_identity(&self) -> Result<ServerIdentity, StorageError> {
         let path = self.handshake_path();
         if !path.exists() {
@@ -862,11 +786,6 @@ impl Storage {
     }
 
     /// Atomic-rename write of the server-identity file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Encode`] if `ident` fails to encode as
-    /// TOML, or [`StorageError::Io`] if the write fails.
     pub fn save_identity(&self, ident: &ServerIdentity) -> Result<(), StorageError> {
         let path = self.handshake_path();
         let body =
@@ -874,13 +793,7 @@ impl Storage {
         atomic_write(&path, body.as_bytes())
     }
 
-    /// Load the publisher allowlist. Missing → empty (nobody can
-    /// post).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Io`] if the file exists but can't be
-    /// read, or [`StorageError::Parse`] if it isn't valid TOML.
+    /// Load the publisher allowlist. Missing → empty (nobody can post).
     pub fn load_allowlist(&self) -> Result<PublisherAllowlist, StorageError> {
         let path = self.publishers_path();
         if !path.exists() {
@@ -892,11 +805,6 @@ impl Storage {
     }
 
     /// Atomic-rename write of the allowlist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Encode`] if `allow` fails to encode as
-    /// TOML, or [`StorageError::Io`] if the write fails.
     pub fn save_allowlist(&self, allow: &PublisherAllowlist) -> Result<(), StorageError> {
         let path = self.publishers_path();
         let body = allow
@@ -905,8 +813,6 @@ impl Storage {
         atomic_write(&path, body.as_bytes())
     }
 
-    /// One entry's file path — a filesystem-safe rendering of the
-    /// package id.
     fn entry_path(&self, package_id: &str) -> PathBuf {
         self.root
             .join("entries")
@@ -931,7 +837,6 @@ impl Storage {
             .join(format!("{}.json", filename_encode(submission_id)))
     }
 
-    /// One review record's file path.
     fn review_path(&self, review_id: &str) -> PathBuf {
         self.root
             .join("reviews")
@@ -956,13 +861,6 @@ impl Storage {
             .join(format!("{sequence:020}.json"))
     }
 
-    /// Load every entry from disk. Order is not defined.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Io`] if the `entries/` directory or any
-    /// `.json` file in it can't be read, or [`StorageError::Parse`] if
-    /// one fails to decode as a [`RegistryEntry`].
     pub fn load_entries(&self) -> Result<Vec<RegistryEntry>, StorageError> {
         let dir = self.root.join("entries");
         if !dir.exists() {
@@ -984,23 +882,10 @@ impl Storage {
         Ok(out)
     }
 
-    /// Load one entry by id, or `Ok(None)` if it isn't on disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Io`] if the file exists but can't be
-    /// read, or [`StorageError::Parse`] if it fails to decode as a
-    /// [`RegistryEntry`].
     pub fn load_entry(&self, package_id: &str) -> Result<Option<RegistryEntry>, StorageError> {
         load_json(&self.entry_path(package_id), "entry")
     }
 
-    /// Atomic-rename write of one entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Encode`] if `entry` fails to encode as
-    /// JSON, or [`StorageError::Io`] if the write fails.
     pub fn save_entry(&self, entry: &RegistryEntry) -> Result<(), StorageError> {
         let path = self.entry_path(&entry.package_id);
         let body =
@@ -1008,16 +893,10 @@ impl Storage {
         atomic_write(&path, &body)
     }
 
-    /// Remove an entry from disk. `Ok(false)` if it wasn't there.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Io`] if the file exists but can't be removed.
     pub fn delete_entry(&self, package_id: &str) -> Result<bool, StorageError> {
         delete_if_exists(&self.entry_path(package_id))
     }
 
-    /// Load an entry that moderation has removed from public visibility.
     pub fn load_quarantined_entry(
         &self,
         package_id: &str,
@@ -1028,17 +907,14 @@ impl Storage {
         )
     }
 
-    /// Atomically persist an entry outside the public index.
     pub fn save_quarantined_entry(&self, entry: &RegistryEntry) -> Result<(), StorageError> {
         save_json(&self.quarantined_entry_path(&entry.package_id), entry)
     }
 
-    /// Remove an entry from quarantine after it has been restored.
     pub fn delete_quarantined_entry(&self, package_id: &str) -> Result<bool, StorageError> {
         delete_if_exists(&self.quarantined_entry_path(package_id))
     }
 
-    /// Load one pending publisher submission.
     pub fn load_pending(
         &self,
         submission_id: &str,
@@ -1046,17 +922,14 @@ impl Storage {
         load_json(&self.pending_path(submission_id), "pending submission")
     }
 
-    /// Load all pending submissions. Ordering is not defined.
     pub fn load_pending_submissions(&self) -> Result<Vec<PendingSubmission>, StorageError> {
         load_json_dir(&self.root.join("pending"), "pending submission")
     }
 
-    /// Atomically create or replace a pending submission.
     pub fn save_pending(&self, submission: &PendingSubmission) -> Result<(), StorageError> {
         save_json(&self.pending_path(&submission.submission_id), submission)
     }
 
-    /// The publisher application from `pubkey_hex`, if any.
     pub fn load_publisher_application(
         &self,
         pubkey_hex: &str,
@@ -1067,7 +940,6 @@ impl Storage {
         )
     }
 
-    /// Every publisher application, in no particular order.
     pub fn load_publisher_applications(
         &self,
     ) -> Result<Vec<crate::applications::StoredApplication>, StorageError> {
@@ -1077,7 +949,6 @@ impl Storage {
         )
     }
 
-    /// Atomically create or replace a publisher application.
     pub fn save_publisher_application(
         &self,
         application: &crate::applications::StoredApplication,
@@ -1105,11 +976,6 @@ impl Storage {
         delete_if_exists(&self.pending_path(submission_id))
     }
 
-    /// Load a newer revision held behind an active promotion journal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the deferred revision cannot be read or decoded.
     pub(crate) fn load_deferred_pending(
         &self,
         submission_id: &str,
@@ -1120,7 +986,6 @@ impl Storage {
         )
     }
 
-    /// Durably retain a newer revision without replacing a journal reservation.
     pub(crate) fn save_deferred_pending(
         &self,
         submission: &PendingSubmission,
@@ -1131,11 +996,6 @@ impl Storage {
         )
     }
 
-    /// Remove a deferred revision after it has been restored to `pending/`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the deferred file exists but cannot be removed.
     pub(crate) fn delete_deferred_pending(
         &self,
         submission_id: &str,
@@ -1143,21 +1003,14 @@ impl Storage {
         delete_if_exists(&self.deferred_pending_path(submission_id))
     }
 
-    /// Load one durable moderator review/audit record.
     pub fn load_review(&self, review_id: &str) -> Result<Option<ReviewRecord>, StorageError> {
         load_json(&self.review_path(review_id), "review")
     }
 
-    /// Load all moderator review/audit records. Ordering is not defined.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the review log cannot be read or decoded.
     pub fn load_reviews(&self) -> Result<Vec<ReviewRecord>, StorageError> {
         load_json_dir(&self.root.join("reviews"), "review")
     }
 
-    /// Atomically persist a review/audit record.
     pub fn save_review(&self, review: &ReviewRecord) -> Result<(), StorageError> {
         save_json(&self.review_path(&review.review_id), review)
     }
@@ -1212,10 +1065,9 @@ impl Storage {
 
 static REGISTRY_TRANSACTION_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
-/// Exclusive registry mutation transaction. A signed snapshot is first
-/// recorded as an exact durable intent, then archived, then installed as the
-/// public pointer. Pending submissions and moderation use the same guard, so
-/// their state cannot change between promotion selection and publication.
+/// Exclusive registry mutation transaction. A signed snapshot is first recorded as an exact durable
+/// intent, then archived, then installed as the public pointer. Pending submissions and moderation
+/// use the same guard, so their state cannot change between promotion selection and publication.
 pub struct SnapshotLock<'a> {
     storage: &'a Storage,
     _process_mutex: std::sync::MutexGuard<'static, ()>,
@@ -1259,23 +1111,20 @@ impl<'a> SnapshotLock<'a> {
         }
     }
 
-    /// Current published snapshot while the writer lock is held.
     pub fn current(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         self.storage.load_snapshot()
     }
 
-    /// Load an immutable historical member while the writer lock is held.
     pub fn sequence(&self, sequence: u64) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         self.storage.load_snapshot_sequence(sequence)
     }
 
-    /// Archive a legacy current pointer without changing the live pointer.
     pub fn archive_current(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         self.storage.archive_snapshot(snapshot)
     }
 
-    /// Exact signed transaction left by a crashed writer, if any. Callers
-    /// verify its owner signature before invoking [`Self::recover`].
+    /// Exact signed transaction left by a crashed writer, if any. Callers verify its owner
+    /// signature before invoking [`Self::recover`].
     pub fn pending_transaction(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         load_json(
             &self.storage.snapshot_transaction_path(),
@@ -1283,7 +1132,6 @@ impl<'a> SnapshotLock<'a> {
         )
     }
 
-    /// Finish the existing exact transaction after the caller authenticates it.
     pub fn recover(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
         let Some(snapshot) = self.pending_transaction()? else {
             return Ok(None);
@@ -1292,7 +1140,6 @@ impl<'a> SnapshotLock<'a> {
         Ok(Some(snapshot))
     }
 
-    /// Durably publish one already signed snapshot.
     pub fn publish(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         if let Some(pending) = self.pending_transaction()? {
             if pending != *snapshot {
@@ -1301,9 +1148,8 @@ impl<'a> SnapshotLock<'a> {
                 ));
             }
         } else {
-            // Refuse a stale candidate before making it durable. Leaving a
-            // journal that can never be a child of the current pointer would
-            // wedge every later writer.
+            // Refuse a stale candidate before making it durable: a journal that can never be a
+            // child of the current pointer would wedge every later writer.
             self.validate_transition(snapshot)?;
             let body = serde_json::to_vec_pretty(snapshot)
                 .map_err(|error| StorageError::Encode(error.to_string()))?;
@@ -1312,11 +1158,10 @@ impl<'a> SnapshotLock<'a> {
         self.complete(snapshot)
     }
 
-    /// Publish the compact form of the current snapshot: first the version
-    /// indexes it names, then the pointer. Index files neither it nor the
-    /// compact snapshot it replaces names are removed, so a client one
-    /// snapshot behind can still fetch the indexes it was given. The caller
-    /// signs `compact` with the key that signed the current snapshot.
+    /// Publish the compact form of the current snapshot: first the version indexes it names, then
+    /// the pointer. Index files that neither it nor the compact snapshot it replaces names are
+    /// removed, so a client one snapshot behind can still fetch the indexes it was given. The
+    /// caller signs `compact` with the key that signed the current snapshot.
     pub fn publish_compact(
         &self,
         compact: &CompactRegistrySnapshot,
@@ -1375,13 +1220,12 @@ impl<'a> SnapshotLock<'a> {
         Ok(())
     }
 
-    /// Delete the staged packages that no entry this registry holds or may
-    /// still publish references, then the thin packages and payload blobs
-    /// only they used. An entry counts while it is published, live,
-    /// quarantined, pending, deferred, staged, journalled for promotion, in a
-    /// retained history snapshot, or in a version index still served, so a
-    /// client one snapshot behind can still fetch what it was offered.
-    /// Holding the lock keeps every writer of staged bytes out meanwhile.
+    /// Delete the staged packages that no entry this registry holds or may still publish
+    /// references, then the thin packages and payload blobs only they used. An entry counts while
+    /// it is published, live, quarantined, pending, deferred, staged, journalled for promotion, in
+    /// a retained history snapshot, or in a version index still served, so a client one snapshot
+    /// behind can still fetch what it was offered. Holding the lock keeps every writer of staged
+    /// bytes out meanwhile.
     pub fn prune_unreferenced(&self) -> Result<PruneReport, StorageError> {
         let plan = self.plan_prune(&self.referenced_entries()?)?;
         let report = plan.report();
@@ -1401,10 +1245,9 @@ impl<'a> SnapshotLock<'a> {
         Ok(report)
     }
 
-    /// What [`Self::prune_unreferenced`] would delete now, and, under
-    /// `retention`, which versions publishers applying it would drop from
-    /// the published entries and what pruning would then delete. Nothing is
-    /// changed.
+    /// What [`Self::prune_unreferenced`] would delete now, and, under `retention`, which versions
+    /// publishers applying it would drop from the published entries and what pruning would then
+    /// delete. Nothing is changed.
     pub fn preview_prune(
         &self,
         retention: Option<&registry_types::retention::RetentionPolicy>,
@@ -1458,7 +1301,6 @@ impl<'a> SnapshotLock<'a> {
         })
     }
 
-    /// Every entry whose versions must stay downloadable.
     fn referenced_entries(&self) -> Result<Vec<RegistryEntry>, StorageError> {
         let storage = self.storage;
         let mut entries = storage.load_entries()?;
@@ -1501,8 +1343,6 @@ impl<'a> SnapshotLock<'a> {
         Ok(entries)
     }
 
-    /// The staged packages, thin packages and payload blobs that none of
-    /// `entries` reaches.
     fn plan_prune(&self, entries: &[RegistryEntry]) -> Result<PrunePlan, StorageError> {
         let storage = self.storage;
         let mut digests = BTreeSet::new();
@@ -1594,12 +1434,11 @@ impl<'a> SnapshotLock<'a> {
         Ok(plan)
     }
 
-    /// Bound the snapshot history to the newest [`SNAPSHOT_HISTORY_RETAINED`]
-    /// members. Before anything is removed, the pruned members and the oldest
-    /// retained one must form one contiguous hash chain from the previous
-    /// compaction record (or the first archived member), so the signed
-    /// predecessor hash of the oldest retained snapshot commits to all of it.
-    /// The new record is written before any file is removed.
+    /// Bound the snapshot history to the newest [`SNAPSHOT_HISTORY_RETAINED`] members. Before
+    /// anything is removed, the pruned members and the oldest retained one must form one contiguous
+    /// hash chain from the previous compaction record (or the first archived member), so the signed
+    /// predecessor hash of the oldest retained snapshot commits to all of it. The new record is
+    /// written before any file is removed.
     pub fn compact_history(&self) -> Result<HistoryCompactionReport, StorageError> {
         let storage = self.storage;
         let previous = storage.history_compaction()?;
@@ -1752,8 +1591,8 @@ impl<'a> SnapshotLock<'a> {
     }
 }
 
-/// Names in `dir` that are a lowercase BLAKE3 hex digest followed by
-/// `extension`, as the digests. Temporary and foreign files are skipped.
+/// Names in `dir` that are a lowercase BLAKE3 hex digest followed by `extension`, as the digests.
+/// Temporary and foreign files are skipped.
 fn list_digests(dir: &Path, extension: &str) -> Result<Vec<String>, StorageError> {
     let mut digests = Vec::new();
     for entry in std::fs::read_dir(dir)
@@ -1788,14 +1627,13 @@ fn remove_file(path: &Path) -> Result<(), StorageError> {
     }
 }
 
-/// A package written as payload blobs and a thin form.
 struct StoredPackage {
     meta: tilo_app_package::PackageMeta,
     blobs: BTreeMap<tilo_app_package::BlobHash, Vec<u8>>,
 }
 
-/// The registry's payload blobs as a source for rebuilding full packages.
-/// Readers verify every blob against its hash.
+/// The registry's payload blobs as a source for rebuilding full packages. Readers verify every blob
+/// against its hash.
 struct StoredBlobs<'a>(&'a Storage);
 
 impl tilo_app_package::BlobSource for StoredBlobs<'_> {
@@ -1810,19 +1648,15 @@ impl tilo_app_package::BlobSource for StoredBlobs<'_> {
     }
 }
 
-/// What [`SnapshotLock::prune_unreferenced`] removed, or would remove.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PruneReport {
     pub staged_artifacts: usize,
     pub thin_packages: usize,
     pub payload_blobs: usize,
-    /// Compressed twins of the payload blobs removed.
     pub payload_twins: usize,
-    /// Apparent size of everything removed.
     pub bytes: u64,
 }
 
-/// Files pruning removes, with their sizes.
 #[derive(Default)]
 struct PrunePlan {
     staged_artifacts: Vec<(PathBuf, u64)>,
@@ -1861,28 +1695,20 @@ fn sized(path: PathBuf) -> Result<(PathBuf, u64), StorageError> {
     }
 }
 
-/// What [`SnapshotLock::preview_prune`] found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PrunePreview {
-    /// What pruning would delete now.
     pub now: PruneReport,
-    /// What a retention policy would drop, when one was given.
     pub retention: Option<RetentionPreview>,
 }
 
-/// The effect of a retention policy on the published entries.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RetentionPreview {
-    /// Versions kept per target among releases and pre-releases.
     pub releases: usize,
     pub prereleases: usize,
-    /// Published versions the policy drops.
     pub dropped_versions: Vec<DroppedVersion>,
-    /// What pruning deletes once no snapshot or index still lists them.
     pub prune: PruneReport,
 }
 
-/// One published version a retention policy drops.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DroppedVersion {
     pub package_id: String,
@@ -1936,9 +1762,9 @@ fn delete_if_exists(path: &Path) -> Result<bool, StorageError> {
         return Ok(false);
     }
     std::fs::remove_file(path).map_err(|e| StorageError::Io(e.to_string()))?;
-    // Match `tilo_files::native::atomic`'s durability property for the transition's delete
-    // side: a successful return should not resurrect this state after power
-    // loss because the containing directory entry was never flushed.
+    // Match `tilo_files::native::atomic`'s durability property for the transition's delete side: a
+    // successful return should not resurrect this state after power loss because the containing
+    // directory entry was never flushed.
     if let Some(parent) = path.parent()
         && let Ok(directory) = std::fs::File::open(parent)
     {
@@ -1947,25 +1773,19 @@ fn delete_if_exists(path: &Path) -> Result<bool, StorageError> {
     Ok(true)
 }
 
-/// A publisher request awaiting a moderator's decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingSubmission {
-    /// The package id. There is at most one pending revision for a package,
-    /// so a newer revision can atomically replace its predecessor.
+    /// The package id. There is at most one pending revision for a package, so a newer revision can
+    /// atomically replace its predecessor.
     pub submission_id: String,
-    /// Time the registry accepted this pending revision.
     pub submitted_at_unix: u64,
-    /// The publisher-signed request that will be re-verified at approval.
     pub change: EntryChangeRequest,
 }
 
 impl PendingSubmission {
-    /// Identify the exact queued request an operator inspected, including
-    /// both signatures and the receipt timestamp. This is a snapshot id,
-    /// not an authorization token. Localized maps serialize in sorted order.
-    ///
-    /// # Errors
-    /// Returns an error if the stored request cannot be serialized.
+    /// Identify the exact queued request an operator inspected, including both signatures and the
+    /// receipt timestamp. This is a snapshot id, not an authorization token. Localized maps
+    /// serialize in sorted order.
     pub fn review_id(&self) -> Result<String, serde_json::Error> {
         serde_json::to_vec(self).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
     }
@@ -1975,17 +1795,17 @@ impl PendingSubmission {
 pub struct StagedArtifact {
     pub submission_id: String,
     pub version: String,
-    /// Signed execution target for this exact artifact. Older single-target
-    /// staged manifests omit it; promotion accepts those only when the
-    /// version string identifies exactly one artifact in the signed entry.
+    /// Signed execution target for this exact artifact. Older single-target staged manifests omit
+    /// it; promotion accepts those only when the version string identifies exactly one artifact in
+    /// the signed entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<RegistryTarget>,
     pub blake3_hex: String,
 }
 
-/// Untrusted collector output. The networkless signer treats this only as an
-/// index into content-addressed bytes and independently re-verifies every
-/// request, policy constraint, digest, and tapp signature.
+/// Untrusted collector output. The networkless signer treats this only as an index into
+/// content-addressed bytes and independently re-verifies every request, policy constraint, digest,
+/// and tapp signature.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedPromotion {
     pub publisher_pubkey_hex: String,
@@ -1994,9 +1814,9 @@ pub struct StagedPromotion {
     pub artifacts: Vec<StagedArtifact>,
 }
 
-/// Durable intent for one bounded automated promotion. The selected signed
-/// requests and exact owner-signed candidate make partially applied approval
-/// work distinguishable and retryable after a crash.
+/// Durable intent for one bounded automated promotion. The selected signed requests and exact
+/// owner-signed candidate make partially applied approval work distinguishable and retryable after
+/// a crash.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PromotionJournal {
     pub publisher_pubkey_hex: String,
@@ -2006,7 +1826,6 @@ pub struct PromotionJournal {
     pub candidate_snapshot: SignedRegistrySnapshot,
 }
 
-/// The terminal effect recorded for a moderator action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewDecision {
@@ -2016,8 +1835,8 @@ pub enum ReviewDecision {
     Restored,
 }
 
-/// What an audit record reviewed. Publisher submissions retain the complete
-/// signed request; operational quarantine/restore records retain the entry.
+/// What an audit record reviewed. Publisher submissions retain the complete signed request;
+/// operational quarantine and restore records retain the entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReviewSubject {
@@ -2028,36 +1847,26 @@ pub enum ReviewSubject {
     },
 }
 
-/// Durable audit record for every terminal moderation decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRecord {
-    /// Globally unique ID for this decision.
     pub review_id: String,
-    /// Result of the moderation action.
     pub decision: ReviewDecision,
-    /// Moderator identity, supplied by the caller.
     pub reviewer: String,
-    /// Operator-supplied explanation; an empty string is allowed.
     pub reason: String,
-    /// Time this terminal decision was made.
     pub reviewed_at_unix: u64,
-    /// The exact data reviewed.
     pub subject: ReviewSubject,
 }
 
-/// The server's own greeting: name, description, `base_url` plus
-/// the owner pubkey pinned by clients. Sits in `handshake.toml`
-/// so operators can edit it with a text editor.
+/// The server's own greeting: name, description, `base_url` plus the owner pubkey pinned by
+/// clients. Sits in `handshake.toml` so operators can edit it with a text editor.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerIdentity {
-    /// Owner Ed25519 pubkey (32 bytes, hex).
     pub owner_pubkey_hex: String,
     pub name: String,
-    /// Human-readable registry description.
     pub description: String,
-    /// Public base URL the registry advertises for itself. Moderation v2
-    /// destinations must match this exact configured string, including any path
-    /// or trailing slash; proxy headers and the listen address do not override it.
+    /// Public base URL the registry advertises for itself. Moderation v2 destinations must match
+    /// this exact configured string, including any path or trailing slash; proxy headers and the
+    /// listen address do not override it.
     pub base_url: String,
 }
 
@@ -2065,8 +1874,8 @@ fn is_hex_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Write content-addressed `bytes` to `path` unless they are already there:
-/// a file named by its digest never changes.
+/// Write content-addressed `bytes` to `path` unless they are already there: a file named by its
+/// digest never changes.
 fn write_once(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     if path.exists() {
         return Ok(());
@@ -2074,13 +1883,11 @@ fn write_once(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     atomic_write(path, bytes)
 }
 
-/// The bytes at `path`, which is named by their BLAKE3 `blake3_hex`, or
-/// `None` without a valid name or a file. Stored bytes that no longer match
-/// their name are an error, never served.
+/// The bytes at `path`, which is named by their BLAKE3 `blake3_hex`, or `None` without a valid name
+/// or a file. Stored bytes that no longer match their name are an error, never served.
 impl Storage {
-    /// [`read_named`] for objects served to clients: the name check runs once
-    /// per stored file rather than on every request. `max_len` refuses files
-    /// larger than that before reading them.
+    /// [`read_named`] for objects served to clients: the name check runs once per stored file
+    /// rather than on every request. `max_len` refuses files larger than that before reading them.
     fn read_served(
         &self,
         path: Option<PathBuf>,
@@ -2146,23 +1953,15 @@ fn read_if_exists(path: &Path, what: &str) -> Result<Option<Vec<u8>>, StorageErr
     }
 }
 
-/// Replace `path` with `bytes` atomically and durably, creating its
-/// directory first.
-///
-/// # Errors
-///
-/// Returns [`StorageError::Io`] if `path`'s parent can't be created
-/// or the write/rename fails.
+/// Replace `path` with `bytes` atomically and durably, creating its directory first.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     tilo_files::native::atomic::write_creating_parent(path, bytes)
         .map_err(|e| StorageError::Io(e.to_string()))
 }
 
-/// Percent-encode-ish rendering of a package id so it round-trips
-/// through the filesystem on macOS + Linux + a case-preserving
-/// fallback. Reverse-DNS ids ("so.tilo.editor") already only
-/// contain safe characters, but we lower-case them and swap `/`
-/// for `_` defensively against future publishers.
+/// A percent-encoding of a package id, so it round-trips through the filesystem on macOS, Linux and
+/// a case-preserving fallback. Reverse-DNS ids ("so.tilo.editor") already only contain safe
+/// characters, but they are lower-cased and `/` becomes `_`.
 fn filename_encode(pkg_id: &str) -> String {
     let mut out = String::with_capacity(pkg_id.len());
     for ch in pkg_id.chars() {
@@ -2177,7 +1976,6 @@ fn filename_encode(pkg_id: &str) -> String {
     out
 }
 
-/// Errors surfaced by disk I/O + serde encode/decode.
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("I/O: {0}")]
@@ -2215,9 +2013,8 @@ mod tests {
         }
     }
 
-    /// A payload blob and its compressed twin are checked against their
-    /// name the first time they are served, not on every download, and a
-    /// missing one costs no check at all.
+    /// A payload blob and its compressed twin are checked against their name the first time they
+    /// are served, not on every download, and a missing one costs no check at all.
     #[test]
     fn served_objects_are_checked_once_per_stored_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -2269,7 +2066,6 @@ mod tests {
 
     #[test]
     fn entries_and_identity_round_trip_through_the_storage_layout() {
-        // phase: open_creates_layout
         {
             let dir = tempfile::tempdir().unwrap();
             let s = Storage::open(dir.path()).unwrap();
@@ -2280,7 +2076,6 @@ mod tests {
             assert!(s.root.join("quarantined").is_dir());
             assert!(s.root.join("snapshots").is_dir());
         }
-        // phase: save_and_load_entry_roundtrip
         {
             let dir = tempfile::tempdir().unwrap();
             let s = Storage::open(dir.path()).unwrap();
@@ -2289,13 +2084,11 @@ mod tests {
             let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
             assert_eq!(back, e);
         }
-        // phase: load_entry_missing_returns_none
         {
             let dir = tempfile::tempdir().unwrap();
             let s = Storage::open(dir.path()).unwrap();
             assert!(s.load_entry("nope").unwrap().is_none());
         }
-        // phase: load_entries_lists_all
         {
             let dir = tempfile::tempdir().unwrap();
             let s = Storage::open(dir.path()).unwrap();
@@ -2310,7 +2103,6 @@ mod tests {
             ids.sort();
             assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
         }
-        // phase: delete_entry_removes_file
         {
             let dir = tempfile::tempdir().unwrap();
             let s = Storage::open(dir.path()).unwrap();
@@ -2319,14 +2111,11 @@ mod tests {
             assert!(!s.delete_entry("so.tilo.a").unwrap());
             assert!(s.load_entry("so.tilo.a").unwrap().is_none());
         }
-        // phase: filename_encode_escapes_unsafe_chars
         {
             assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
-            // A slash gets escaped so it can't escape the entries/
-            // directory.
+            // A slash gets escaped so it can't escape the entries/ directory.
             assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
         }
-        // phase: identity_roundtrip
         {
             let dir = tempfile::tempdir().unwrap();
             let s = Storage::open(dir.path()).unwrap();
@@ -2348,7 +2137,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn staged_packages_stay_readable_for_thin_installs() {
-        // phase: staging_a_package_keeps_its_payload_blobs_for_thin_installs
         {
             let dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(dir.path()).unwrap();
@@ -2404,7 +2192,6 @@ mod tests {
             assert!(storage.import_artifact(b"not a package").is_err());
             assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
 
-            // phase: whole_staged_packages_compact_to_their_root
             let staged = dir.path().join("staged-artifacts");
             let root_file = staged.join(format!("{digest}.root"));
             assert_eq!(std::fs::read_to_string(&root_file).unwrap(), root);
@@ -2426,14 +2213,12 @@ mod tests {
             storage.save_staged_artifact(&digest, &bytes).unwrap();
             assert!(storage.save_staged_artifact(&digest, &opaque).is_err());
 
-            // phase: a_staged_package_missing_a_blob_fails_closed
             let blob_file = dir.path().join("payload-blobs").join(&blob);
             let aside = dir.path().join("blob-aside");
             std::fs::rename(&blob_file, &aside).unwrap();
             assert!(storage.load_staged_artifact(&digest).is_err());
             std::fs::rename(&aside, &blob_file).unwrap();
 
-            // phase: unreferenced_staged_packages_are_pruned_with_their_parts
             let report = storage
                 .lock_snapshot()
                 .unwrap()
@@ -2460,7 +2245,6 @@ mod tests {
             );
             assert_eq!(storage.load_thin_package(&root).unwrap(), None);
         }
-        // phase: targetless_single_architecture_staging_remains_readable
         {
             let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
                 "submission_id": "so.tilo.editor",
@@ -2474,7 +2258,6 @@ mod tests {
 
     #[test]
     fn snapshot_chain_transactions_are_crash_safe_and_monotonic() {
-        // phase: snapshot_transaction_recovers_each_crash_boundary
         {
             for crash_point in ["intent", "archive", "pointer"] {
                 let dir = tempfile::tempdir().unwrap();
@@ -2497,7 +2280,6 @@ mod tests {
                 assert!(!storage.snapshot_transaction_path().exists());
             }
         }
-        // phase: concurrent_snapshot_writers_form_one_chain_without_sequence_forks
         {
             let dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(dir.path()).unwrap();
@@ -2534,7 +2316,6 @@ mod tests {
             );
             assert_eq!(storage.load_snapshot().unwrap(), Some(second));
         }
-        // phase: history_filename_sequence_must_match_signed_body_sequence
         {
             let dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(dir.path()).unwrap();
@@ -2547,7 +2328,6 @@ mod tests {
                 Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
             ));
         }
-        // phase: stale_candidate_is_rejected_without_leaving_a_transaction
         {
             let dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(dir.path()).unwrap();
@@ -2562,7 +2342,6 @@ mod tests {
             assert_eq!(writer.current().unwrap(), Some(second));
             drop(writer);
         }
-        // phase: archiving_a_stale_pointer_never_rewinds_the_live_pointer
         {
             let dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(dir.path()).unwrap();

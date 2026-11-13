@@ -18,15 +18,13 @@ snippets-section-tags = Tags
 snippets-folder-all = All snippets
 snippets-folder-favorites = Favorites
 snippets-folder-most-used = Most used
-snippets-folder-named = Folder { $name }
-snippets-tag-named = Tag { $name }
 
 ## List and snippet
 
 snippets-untitled = Untitled snippet
 snippets-new = New snippet
 snippets-empty-library = No snippets yet
-snippets-empty-library-message = Keep the text you paste again and again: commands, replies, code. Copy one in a click, with blanks to fill in when it has variables.
+snippets-empty-library-message = Keep the text you paste again and again: commands, replies, code. A snippet with variables asks for them when you copy it.
 snippets-empty-favorites = No favorites yet
 snippets-empty-most-used = Nothing copied yet
 snippets-empty-place = No snippets here
@@ -41,9 +39,7 @@ snippets-add-tag = Add a tag
 snippets-copied-clears = Copied; it leaves the clipboard in a minute
 snippets-copy-failed = Could not copy to the clipboard
 snippets-add-tag-placeholder = Add a tag
-snippets-copy-only = Copying is how a snippet leaves this library: paste it where you need it.
 snippets-language-plain-text = Plain text
-snippets-set-language = Set language to { $language }
 snippets-copy = Copy
 snippets-fill-and-copy = Fill in and copy
 snippets-add-favorite = Add to favorites
@@ -98,3 +94,26 @@ snippets-record-use = Copied { $item }
 snippets-rename-folder = Renamed the folder { $folder } to { $to }
 snippets-rename-tag = Renamed the tag { $tag } to { $to }
 snippets-remove-tag = Removed the tag { $tag } from every snippet
+
+## Facts, property labels and section titles
+snippets-a11y-tag = Tag: { $tag }
+snippets-a11y-folder = Folder: { $folder }
+
+## What the window shows
+
+## Actions
+
+snippets-view-reveal = Show snippets
+snippets-view-reveal-folder = Show folder
+snippets-view-search = Search snippets
+snippets-view-read-tag = Read a tag
+snippets-view-read-folder = Read a folder
+snippets-library-duplicate = Duplicate snippet
+snippets-library-delete = Delete snippet
+snippets-library-record-use = Record use
+snippets-library-rename-folder = Rename folder
+snippets-library-rename-tag = Rename tag
+snippets-library-remove-tag = Remove tag
+
+## What the app is called in a window and in the launcher
+snippets-app-title = Snippets

@@ -31,7 +31,7 @@ impl PresenceCtx {
     /// `placed` as the frame draws it: in the colour and under the name
     /// this presence knows the person by, so a pointer always matches their
     /// avatar. Someone presence has no name for yet goes by the one their
-    /// own presence gives, else the start of their id, never the whole key.
+    /// own presence gives, else a guest: never their key.
     #[must_use]
     pub fn placed_cursor(&self, placed: PlacedPointer) -> PeerCursor {
         let is_agent = placed.agent || self.is_agent(&placed.user);
@@ -47,10 +47,11 @@ impl PresenceCtx {
             .or_else(|| {
                 placed
                     .name
-                    .map(|name| name.trim().to_owned())
-                    .filter(|name| !name.is_empty())
+                    .as_deref()
+                    .and_then(super::shown_name)
+                    .map(str::to_owned)
             })
-            .unwrap_or_else(|| placed.user.0.chars().take(8).collect());
+            .unwrap_or_else(super::guest_label);
         let label = match placed.activity.as_deref().map(str::trim) {
             Some(activity) if is_agent && !activity.is_empty() => format!("{name} · {activity}"),
             _ => name,
@@ -115,7 +116,12 @@ mod tests {
 
         let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let stranger = presence.placed_cursor(placed(key));
-        assert_eq!(stranger.label, "01234567");
+        assert_eq!(stranger.label, "Guest", "a person nobody named is a guest");
+        let keyed = presence.placed_cursor(PlacedPointer {
+            name: Some(key.into()),
+            ..placed(key)
+        });
+        assert_eq!(keyed.label, "Guest", "a key their presence says is no name");
         let named = presence.placed_cursor(PlacedPointer {
             name: Some("Ada".into()),
             agent: true,
@@ -133,6 +139,12 @@ mod tests {
                 Color::from_rgb8(r, g, b)
             },
             "without a colour from the workspace, the identity's own"
+        );
+        presence.set_display_name(UserId(key.into()), key);
+        assert_eq!(
+            presence.display_name(&UserId(key.into())),
+            "Guest",
+            "nor is a key the roster says"
         );
     }
 }

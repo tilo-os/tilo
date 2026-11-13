@@ -28,6 +28,7 @@ fn a_hosts_answer_follows_its_plans_file_as_a_card_is_added() {
     let door = HostAccountDoor::of(Source::Hosted(HostedAccount {
         account: "acct-1".into(),
         plans: plans.clone(),
+        ledger: None,
         socket: None,
         name: "unused".into(),
     }));

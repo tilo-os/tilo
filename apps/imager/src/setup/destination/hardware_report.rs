@@ -1,21 +1,4 @@
-//! The component-by-component hardware report the installer shows before it
-//! writes anything.
-//!
-//! The probe and its report schema are `imager_backend::support_report`,
-//! shared with Tilo Imager, so both doors observe a machine the same way and
-//! name the same components in the same words. This module owns only what the
-//! installer draws: the sentence above the rows (`summary_text`) and
-//! the rows themselves (`component_rows`), plus
-//! the same facts as data (`component_facts`) for a caller with no screen.
-//!
-//! The report never decides the install and grants nothing. It is read once,
-//! before the plan is written, and shown on Review where the person is
-//! already reading what this computer will become. What a running system can
-//! establish is narrow: it shows which devices exist and which drivers it
-//! bound. It cannot show that the selected Tilo release ships the same
-//! kernel, firmware and userspace service for them, so an observed component
-//! is never reported as supported — only `imager-backend` marks a component
-//! `Supported`, and only with evidence checked against that release.
+//! This computer's components, as read once for the compatibility report.
 
 use imager_backend::support_report::{
     Applicability, ComponentKind, ComponentSupport, ReportSource, SupportReport, SupportState,
@@ -29,12 +12,8 @@ use crate::setup::hardware_text::{
 };
 use crate::setup::strings::{t, t_args};
 
-/// What the installer knows about this computer's components: `Checking`
-/// until the probe returns, `Unavailable` when the machine cannot be
-/// identified specifically enough for the shared report to validate.
 #[derive(Clone, Debug, Default)]
 pub(crate) enum HardwareReport {
-    /// The probe has not returned yet.
     #[default]
     Checking,
     Ready(Box<SupportReport>),
@@ -42,15 +21,10 @@ pub(crate) enum HardwareReport {
 }
 
 impl HardwareReport {
-    /// Read this computer. Runs on the caller's thread and touches nothing:
-    /// the probe reads sysfs and `/proc`, never mounts, opens a block device
-    /// for writing or asks the firmware to change anything.
     pub(crate) fn probe() -> Self {
         Self::from_report(SupportReport::probe())
     }
 
-    /// Hold a report read elsewhere, under the same checks the probe's own
-    /// reading passes.
     pub(crate) fn from_report(report: SupportReport) -> Self {
         if report.validate().is_err() || report.components.is_empty() {
             return Self::Unavailable;
@@ -65,8 +39,6 @@ impl HardwareReport {
         }
     }
 
-    /// The summary a caller without a screen reads, or `None` before the
-    /// probe has returned.
     pub(crate) fn to_json(&self) -> serde_json::Value {
         let Some(report) = self.report() else {
             return serde_json::json!({
@@ -103,8 +75,6 @@ impl HardwareReport {
     }
 }
 
-/// The report's headline: what the probe established, in one sentence, and
-/// what it does not.
 pub(crate) fn summary_text(report: &SupportReport) -> String {
     let summary = report.summary();
     let counts: &[(&str, ui::i18n::ArgValue)] = &[
@@ -129,7 +99,6 @@ pub(crate) fn summary_text(report: &SupportReport) -> String {
     text
 }
 
-/// The headline row: the sentence above, or the state the probe is still in.
 pub(crate) fn summary_row(report: &HardwareReport) -> Box<dyn Widget> {
     match report {
         HardwareReport::Checking => Box::new(
@@ -152,17 +121,12 @@ pub(crate) fn summary_row(report: &HardwareReport) -> Box<dyn Widget> {
     }
 }
 
-/// Every component the probe covered, essential classes first: a person
-/// reads what the desktop needs (graphics, display, startup, storage) before
-/// what is nice to have (a fingerprint reader).
 pub(crate) fn component_rows(report: &SupportReport) -> Vec<Box<dyn Widget>> {
     let mut components = report.components.iter().collect::<Vec<_>>();
     components.sort_by_key(|component| (order(component.kind), component.kind.key()));
     components.into_iter().map(component_row).collect()
 }
 
-/// The order rows appear in: the four classes a usable desktop needs, then
-/// the rest in the order the report names them.
 fn order(kind: ComponentKind) -> u8 {
     match kind {
         ComponentKind::Boot => 0,
@@ -230,8 +194,6 @@ fn component_row(component: &ComponentSupport) -> Box<dyn Widget> {
     Box::new(detail)
 }
 
-/// One component as data: the same class, state, reason, evidence and next
-/// step the row draws, in the words the row shows.
 pub(crate) fn component_facts(component: &ComponentSupport) -> serde_json::Value {
     serde_json::json!({
         "component": component.kind.key(),

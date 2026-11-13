@@ -1,14 +1,5 @@
 //! Code — Tilo native code editor / lightweight IDE.
 //!
-//! A file-tree sidebar, one file per window, a syntax-highlighted code pane with line
-//! numbers and a gutter, a command palette, a status bar, and a bottom panel
-//! for problems/terminal. Buffer text lives in the shared Automerge document,
-//! so edits are collaborative and undoable; colours come entirely from the OS
-//! theme.
-//!
-//! [`CodeEditorShell`] is the framework app: `code-editor FOLDER` and
-//! `code-editor FILE` open a project of their own, and `--shots` captures its
-//! scenarios over the bundled sample project.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -42,9 +33,6 @@ mod explorer;
 mod find;
 mod highlight;
 mod lint;
-/// The Language Server Protocol client. Public so the end-to-end test in
-/// `tests/language_server.rs` can drive a real `rust-analyzer` through the same
-/// entry points the app uses, rather than a copy of them.
 pub mod lsp;
 pub mod model;
 pub mod native_fixture;
@@ -71,7 +59,6 @@ pub use effects::CodeEditorEffect;
 pub use project::Project;
 pub use resource::CodeEditorShell;
 
-/// Read the authoritative buffer for benchmark correctness checks outside the measured edit.
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 #[must_use]
@@ -79,15 +66,11 @@ pub fn benchmark_buffer_text(doc: &automerge::AutoCommit, key: &str) -> Option<S
     doc::EditorDoc::read_buffer_key(doc, key)
 }
 
-/// The app's toolkit definition, which every host that mounts the editor
-/// (the shell's Editor tabs, a desktop test) instantiates.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(CodeEditorShell)
 }
 
-/// The record a launch naming `path` opens: the project of that folder, or
-/// of that file on its own.
 #[must_use]
 pub fn launch_record(path: &std::path::Path) -> Option<ui::record::RecordId> {
     use ui::framework::{LaunchInput, ResourceApp as _};

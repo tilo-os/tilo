@@ -71,7 +71,7 @@ impl Default for Board {
     }
 }
 
-#[resource(kind = "test.board", label = "Board")]
+#[resource(kind = "test.board", catalogue = "tests/locales")]
 impl Board {
     /// Remove every card.
     #[action(destructive)]
@@ -115,7 +115,10 @@ impl Board {
         self.author = format!(
             "{:?} for {}",
             cx.actor_kind().unwrap_or_default(),
-            cx.for_person().unwrap_or_default()
+            cx.acting()
+                .and_then(|acting| acting.person)
+                .unwrap_or_default()
+                .0
         );
     }
 
@@ -310,7 +313,7 @@ pub struct Lock {
     pub label: String,
 }
 
-#[resource(kind = "test.lock", label = "Lock")]
+#[resource(kind = "test.lock", catalogue = "tests/locales")]
 impl Lock {}
 
 /// A field's trust decides its every edit, in the app and at any door that
@@ -475,7 +478,7 @@ pub struct Screen {
     pub guard: String,
 }
 
-#[resource(kind = "test.screen", label = "Screen")]
+#[resource(kind = "test.screen", catalogue = "tests/locales")]
 impl Screen {}
 
 /// A field that weakens one way asks, and needs the person's own grant,
@@ -872,7 +875,7 @@ pub struct LookAt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "test.board.view")]
+#[effect(operation = "test.board.view", catalogue = "tests/locales")]
 pub enum BoardView {
     /// Look at part of the board.
     #[effect(view)]
@@ -938,7 +941,10 @@ fn an_optional_parameter_bound_to_nothing_is_left_out() {
     let decl = Board::RETITLE
         .bind(board::Retitle::paths().title, "Sprint".to_owned())
         .and(board::Retitle::paths().suffix, None)
-        .declaration("retitle-sprint", "Call it Sprint")
+        .declaration(
+            "retitle-sprint",
+            tilo_resource::word!("test-board-retitle-sprint", catalogue = "tests/locales"),
+        )
         .unwrap();
     let action = decl
         .build_action(&tilo_actions::ActionArgs::default(), 0)
@@ -965,7 +971,7 @@ impl Pair {
     }
 }
 
-#[resource(kind = "test.pair", label = "Pair")]
+#[resource(kind = "test.pair", catalogue = "tests/locales")]
 impl Pair {
     /// Move the left side.
     #[action]
@@ -1065,7 +1071,7 @@ pub struct Deck {
     pub slides: Collection<Slide>,
 }
 
-#[resource(kind = "test.deck", label = "Deck")]
+#[resource(kind = "test.deck", catalogue = "tests/locales")]
 impl Deck {
     /// Nudge an element along.
     #[action(item = slides.elements)]
@@ -1281,7 +1287,7 @@ impl Default for Comfort {
     }
 }
 
-#[resource(kind = "test.comfort", label = "Comfort")]
+#[resource(kind = "test.comfort", catalogue = "tests/locales")]
 impl Comfort {
     /// Draw text at `scale`.
     #[action]
@@ -1381,7 +1387,7 @@ pub enum Glyph {
     },
 }
 
-#[resource(kind = "test.swatch", label = "Swatch")]
+#[resource(kind = "test.swatch", catalogue = "tests/locales")]
 impl Swatch {
     /// Clear the colour.
     #[action]
@@ -1513,7 +1519,7 @@ pub struct Look {
     pub caption: String,
 }
 
-#[resource(kind = "test.frame", label = "Frame")]
+#[resource(kind = "test.frame", catalogue = "tests/locales")]
 impl Frame {
     /// Clear the title.
     #[action]

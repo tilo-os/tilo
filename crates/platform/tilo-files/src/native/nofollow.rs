@@ -1,36 +1,25 @@
-//! Opening a path without following a symbolic link anywhere along it, for
-//! inputs another user or process may have planted links in.
-//!
-//! Linux resolves the whole path in one `openat2` call. Where that call is
-//! missing (kernels before 5.6, or seccomp filters such as systemd's
-//! `RestrictSUIDSGID=` that answer it with `ENOSYS`) and on other Unixes, the
-//! path is walked one component at a time with `O_NOFOLLOW`, which refuses a
-//! link at every step the same way. Other targets have no such open and fail.
+//! Opening a path without following a symbolic link anywhere along it, for inputs
+//! another user or process may have planted links in. Linux resolves the whole path in
+//! one `openat2` call; where that is missing (kernels before 5.6, or seccomp filters
+//! such as systemd's `RestrictSUIDSGID=`) and on other Unixes, the path is walked one
+//! component at a time with `O_NOFOLLOW`, which refuses a link at every step the same
+//! way. Other targets have no such open and fail.
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
 
-/// Open `path` read-only and non-blocking, refusing a symbolic link at any
-/// component, the file itself included. The file may be of any type; callers
-/// expecting a regular file check its metadata.
-///
-/// # Errors
-/// `ELOOP` or `ENOTDIR` for a link along the path, and the open's error
-/// otherwise. Targets without `O_NOFOLLOW` return
-/// [`io::ErrorKind::Unsupported`].
+/// Opens `path` read-only and non-blocking, refusing a symbolic link at any component, the file itself
+/// included. The file may be of any type; callers expecting a regular file check its metadata. `ELOOP`
+/// or `ENOTDIR` come back for a link, and [`io::ErrorKind::Unsupported`] where `O_NOFOLLOW` does not
+/// exist.
 pub fn open_read(path: &Path) -> io::Result<File> {
     imp::open_read(path)
 }
 
-/// Open `relative` beneath the directory `root`, refusing a symbolic link at
-/// any component and any path that is empty, absolute or contains `.` or
-/// `..`. Opens a directory when `directory` is set, else the file read-only.
-///
-/// # Errors
-/// [`io::ErrorKind::InvalidInput`] for an unsafe path, `ELOOP` or `ENOTDIR`
-/// for a link along it, and the open's error otherwise. Targets without
-/// `O_NOFOLLOW` return [`io::ErrorKind::Unsupported`].
+/// Opens `relative` beneath the directory `root`, refusing a symbolic link at any component and any
+/// path that is empty, absolute or contains `.` or `..`; [`io::ErrorKind::InvalidInput`] for such a
+/// path.
 pub fn open_beneath(root: &File, relative: &Path, directory: bool) -> io::Result<File> {
     use std::path::Component;
     if relative.as_os_str().is_empty()
@@ -55,8 +44,7 @@ mod imp {
     use std::os::unix::ffi::OsStrExt as _;
     use std::path::Path;
 
-    /// What a directory along a walked path is opened with: only enough to
-    /// resolve the next component.
+    /// What a directory along a walked path is opened with: only enough to resolve the next component.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     const WALK: OFlags = OFlags::PATH;
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -110,10 +98,6 @@ mod imp {
         Ok(rustix::fs::openat2(dir, path, final_flags(directory), Mode::empty(), resolve)?.into())
     }
 
-    /// `openat` each component from `start` (the working directory when
-    /// `None`): directories with `O_NOFOLLOW | O_DIRECTORY`, where a link
-    /// fails with `ENOTDIR`, and the last with `O_NOFOLLOW`, where it fails
-    /// with `ELOOP`.
     pub(super) fn walk(start: Option<OwnedFd>, path: &[u8], directory: bool) -> io::Result<File> {
         let mut components = path
             .split(|byte| *byte == b'/')
@@ -170,8 +154,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    /// `real/file` holding "bytes", `linked` linking to `real` and
-    /// `real/alias` linking to `real/file`.
+    /// `real/file` holding "bytes", `linked` linking to `real` and `real/alias` linking to `real/file`.
     fn tree() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();

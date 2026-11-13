@@ -18,7 +18,11 @@ python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 `--bundle runtime` (the default) builds this crate; `--bundle desktop` builds
 `crates/browser/tilo-web-desktop`, the same runtime with every web-capable
 app registered from its manifest, under the same module name, plus
-`apps.json`. The output holds `pkg/` (wasm-bindgen `--target web`), the page
+`apps.json`. `--bundle app` builds an app's own bundle instead: the crate
+`tilo-app build --platform web` generates for it (`--manifest-path`, built
+with the target directory in `$CARGO_TARGET_DIR`) and its one-application
+`apps.json` (`--apps-json`, which also names the app `build.json` records).
+The output holds `pkg/` (wasm-bindgen `--target web`), the page
 host modules and `index.html`, `fonts/` and `fonts.json`, `data/` and
 `data.json` (application data fetched on request) and `build.json`
 (revision, tools, profile and output hashes). `--profile release` compiles
@@ -30,6 +34,20 @@ bundle that drops the qualification checks is faster for the wrong reason.
 Tools: the pinned Rust toolchain with
 `wasm32-unknown-unknown`, a wasm-bindgen CLI matching the crate's pinned
 wasm-bindgen, binaryen, Node.js.
+
+`--wasm-steps` (or `$TILO_BUNDLE_WASM_STEPS`) says where the steps that turn
+the linked module into `pkg/` run: wasm-bindgen wants several gigabytes and
+wasm-opt over the start module alone wants more, which is the build's memory
+rather than the compile's. `auto` runs them on the builder when `$CARGO` is a
+drop-in that runs a program there and brings a directory of the target dir
+back (`$CARGO exec --fetch`, as the local stack's `os/containers/tilo-sh/cargo.sh`
+does when a cargo that runs programs is named in `$TILO_SH_CARGO`), and beside
+the compile otherwise, so a machine that only asked for the build needs no
+wasm-bindgen or binaryen of its own; `builder` refuses to run them here, `local`
+never sends them away. Only the finished directory comes back (`pkg/`, `data/`,
+`apps.json`, `wasm.json`), the one a local run writes, so both make the same
+`pkg/` and record the same `build.json`; a fetch that brings back too little,
+or an earlier run's, stops the build and names what it looked for.
 
 ## Cargo features of `tilo-browser-runtime`
 
@@ -46,7 +64,10 @@ so the runtime and the app are one module. A small generated crate under
 the app, registers the app's `definition()` at start, and builds into the app
 workspace's target directory as its own Cargo workspace (with that
 workspace's `[patch]`, profiles and lock file), so an app anywhere builds
-against the SDK checkout it names. The bundle lands in
+against the SDK checkout it names. The generated crate is what `build.sh`
+compiles (`--bundle app`): the module, the pages, the fonts and the compute
+worker are the same build the site bundle is, so an app's bundle and the
+site's never differ in how they were made. The bundle lands in
 `<target>/tilo-app/web/<package>/bundle` in `build.sh`'s layout and opens at
 `app/#/me/<id>`; `--output` copies it. `--release` with `--assertions` asks
 for the same release optimisation with `debug_assertions` and overflow
@@ -71,7 +92,10 @@ canonical desktop (`src/desktop.rs`: `tilo-desktop-surface` over a
 `tilo-desktop-model` tree, every tab an in-process application). The tree
 and each tab's record are kept per workspace in the profile's storage and
 committed with the records themselves, so a reload restores the same
-windows on the same documents. With `peer`, a started certified peer, the
+windows on the same documents. Who is here is the session's own: a started
+peer runs `tilo_session::sync::Client` over the page's live plane, so the
+board, its schedule and the certificates, waves and calls on it are the
+desktop's (`src/peer_sync.rs`). With `peer`, a started certified peer, the
 mount's records and desktop replicate through that peer's workspace, and
 `invokeAction` also takes the workspace's own membership actions on its
 governance resource, which the host decides:
@@ -163,14 +187,25 @@ where the workspace has one. It shoots the person's workspace just after the
 agent connected (the agent followed, its card open), who is here with the agent
 pinned on screen, and the follow while an edit lands, at a laptop's and a
 phone's width in light and dark, and records the follow through a few of the
-agent's actions. Everything lands under `--out` (`shots/`, `video/`, and the
-run's log), and it exits non-zero naming the step that broke.
+agent's actions. Each shot's tone says which theme the shell drew: a first
+visit has chosen none, so it is the light or dark its browser is in, and the
+run flips the emulated scheme to see the shell follow it. Everything lands
+under `--out` (`shots/`, `video/`, and the run's log), and it exits non-zero
+naming the step that broke.
 
 ```sh
-rcargo --fetch look/agent-shell exec bash -lc \
-  'CHROME=/usr/lib64/chromium-browser/chromium-browser \
-   node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build'
+# on a build machine; fetch the run's `--out` directory back after
+CHROME=/usr/lib64/chromium-browser/chromium-browser \
+  node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build
 ```
+
+On a machine with a GPU, headless Chrome still draws WebGPU with SwiftShader
+unless told otherwise: `TILO_CHROME_ARGS="--enable-gpu --use-angle=vulkan
+--enable-features=Vulkan --ignore-gpu-blocklist"` gives it the GPU (on a laptop
+with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A relay built on another
+machine finds no font catalog of its own; `TILO_FONT_CATALOG` names one
+(`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope
+fixtures` prints it).
 
 `--build` builds the relay (features `web,agents`), the CLI and the bundle;
 the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
@@ -186,3 +221,30 @@ node --test crates/browser/tilo-browser-runtime/web/*.test.mjs
 # (CARGO=<any cargo drop-in> runs it through a remote builder or container)
 tools/ci/check-wasm.sh
 ```
+
+The page reaches the module as `import * as runtime from
+'./pkg/tilo_browser_runtime.js'`, and nothing on either side of that boundary
+sees the other's names: the `pkg/*.d.ts` exists only after a build, and a test
+that fakes the module answers under whatever name it was given. So a page and
+its fake can agree on a name the module never exported, and the call throws
+only in a browser, in the build that reached a person.
+
+`web/runtime-surface.test.mjs` closes that: it reads the crate's
+`#[wasm_bindgen]` items out of the Rust sources and fails, naming the file and
+the call, for every `runtime.name(…)` that names something the module does not
+export. It reads Rust rather than the generated `.d.ts` because this suite runs
+in the CI image, where nothing has been built.
+
+A test that fakes the runtime builds it with the same reading, so an invented
+name fails there too:
+
+```js
+import {runtimeFake} from './runtime-surface.mjs';
+
+const runtime = runtimeFake({channel_vault: async () => new Uint8Array(32)},
+  {calls, get peer() { return peer; }});
+```
+
+The first argument is the module's surface, held to the real exports; the
+second is the test's own scaffolding, which the module knows nothing about and
+which is therefore left alone.

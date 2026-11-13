@@ -16,6 +16,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+use tilo_image_codec::DecodedImage;
 
 use image::{DynamicImage, GrayImage, ImageFormat, Luma, imageops};
 use serde::{Deserialize, Serialize};
@@ -307,18 +308,21 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Recognise an in-memory image with Tesseract's TSV output. `language` is
-/// restricted to data identifiers, preventing it from becoming an argv option
-/// or filesystem path.
-pub fn recognize(image: &DynamicImage, language: &str) -> Result<Document, Error> {
+/// Recognise decoded pixels (the toolkit codec's) with Tesseract's TSV
+/// output. `language` is restricted to data identifiers, preventing it from
+/// becoming an argv option or filesystem path.
+pub fn recognize(image: &DecodedImage, language: &str) -> Result<Document, Error> {
     recognize_detailed(image, language).map(|result| result.document)
 }
 
-/// Recognise an image and report any automatic page straightening applied
-/// before the engine saw it.
-pub fn recognize_detailed(image: &DynamicImage, language: &str) -> Result<Recognition, Error> {
+/// Recognise decoded pixels and report any automatic page straightening
+/// applied before the engine saw it.
+pub fn recognize_detailed(image: &DecodedImage, language: &str) -> Result<Recognition, Error> {
     validate_language(language)?;
-    let (prepared, deskew_degrees) = prepare(image)?;
+    let image = image::RgbaImage::from_raw(image.width, image.height, image.rgba.clone())
+        .map(DynamicImage::ImageRgba8)
+        .ok_or(Error::TooLarge)?;
+    let (prepared, deskew_degrees) = prepare(&image)?;
     // The engine is a process reading a file; the page has neither, and
     // `tempfile` would panic there looking for a temp dir.
     let scratch = tilo_paths::temp_dir().ok_or(Error::Unavailable)?;

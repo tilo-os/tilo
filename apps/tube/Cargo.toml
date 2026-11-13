@@ -26,8 +26,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# The records the app draws: their types, verbs and typed action arguments, and the module the
-# session's document host runs.
+# The records the app draws: their types, verbs and typed action arguments.
 tube-model = { path = "../tube-model" }
 # A channel's page as a described-components view, drawn by the shell like any app's
 # (one-app-model.md §2).
@@ -83,10 +82,6 @@ vello_encoding.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-# The session's document host and its door, for the test that opens Tube over the library the
-# session serves (docs/architecture/apps.md §8 step 2).
-tilo-model-host = { path = "../../crates/sdk/tilo-model-host" }
-tilo-service = { path = "../../crates/session/service" }
 tube-model = { path = "../tube-model" }
 
 [features]

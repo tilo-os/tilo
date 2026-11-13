@@ -8,7 +8,6 @@ use crate::{
     parse_paint, presets,
 };
 
-/// The side of the square each medium paints in [`self_check`].
 const SIDE: usize = 48;
 
 /// Paint one stroke with every built-in medium and report what each left.

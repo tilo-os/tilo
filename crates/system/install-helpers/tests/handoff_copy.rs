@@ -1,5 +1,5 @@
 //! The setup handoff copy keeps installed directory metadata, starts new files
-//! private and refuses every link (formerly `os/tests/test_install_handoff_copy.py`).
+//! private and refuses every link.
 
 #![allow(
     clippy::unwrap_used,
@@ -118,8 +118,8 @@ fn new_structural_directories_are_traversable_and_files_private() {
     mkdir(&source.join("tilo"), 0o700);
     mkdir(&target, 0o755);
     fs::write(source.join("tilo/request"), "fixture").unwrap();
-    // The installer runs with a private umask; new directories still open up.
-    // The umask is the process's, so the copy runs in its own.
+    // The installer runs with a private umask; new directories still open up. The
+    // umask is the process's, so the copy runs in its own.
     let status = Command::new("sh")
         .arg("-c")
         .arg("umask 077 && exec \"$0\" \"$@\"")

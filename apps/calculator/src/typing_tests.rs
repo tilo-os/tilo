@@ -1,10 +1,8 @@
-// Typing reaches the calculator through the framework's live input path:
-// included into `app::tests`.
+// Included into `app::tests`; typing goes through the framework's live path.
 
-/// A person who switches to Graph 2D and types (no Tab first) writes the
-/// function they type, on the framework's live path: the mode press in the
-/// window's bar, the press on the formula and the keystrokes all go
-/// through the host.
+/// Switching to Graph 2D and typing without a Tab first writes the function:
+/// the mode press, the press on the formula and the keystrokes all go through
+/// the host.
 #[test]
 fn typing_in_the_2d_graph_mode_enters_the_function() {
     // phase typing_after_switching_to_graph_2d
@@ -63,8 +61,7 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
         app.harness().type_text("+1");
         app.settle();
         let typed = surface(&mut app).expect("the surface stays");
-        // The field writes its formula in its own spelling (`x^(2)` for
-        // `x^2`): the same function, one higher everywhere.
+        // The field rewrites `x^2` as `x^(2)`.
         let (before, after) = (
             engine::compile(&starter, false, true).expect("the starter plots"),
             engine::compile(&typed, false, true).expect("what was typed plots"),

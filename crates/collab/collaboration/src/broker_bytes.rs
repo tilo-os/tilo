@@ -5,10 +5,7 @@
 
 use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
-use super::{
-    BrokerActionSurface, CollabEvent, CollabRequest, Collaborator, ExportedAction, ExportedInput,
-    PresencePayload, SdkCommand, SignedOp,
-};
+use super::{CollabEvent, CollabRequest, Collaborator, PresencePayload, SdkCommand, SignedOp};
 
 #[derive(Default)]
 pub(crate) struct ByteMeter(Option<usize>);
@@ -77,32 +74,6 @@ pub(super) fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteM
     }
 }
 
-fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
-    meter.string_capacity(&action.resource);
-    if let Some(identity) = &action.semantic_identity {
-        meter.string_capacity(&identity.kind);
-        meter.string_capacity(&identity.key);
-    }
-    meter.string_capacity(&action.action);
-    meter.string_capacity(&action.resource_kind);
-    meter.string_capacity(&action.resource_label);
-    meter.string_capacity(&action.action_label);
-    if let Some(description) = &action.description {
-        meter.string_capacity(description);
-    }
-    serialized_bytes(&action.params, meter);
-    serialized_bytes(&action.contract, meter);
-    if let ExportedInput::Text {
-        prompt,
-        placeholder,
-        ..
-    } = &action.input
-    {
-        meter.string_capacity(prompt);
-        meter.string_capacity(placeholder);
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive request meter must account for every bounded queue variant without a permissive fallback"
@@ -165,9 +136,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
-        CollabRequest::SelectedDiscovery { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::OpenSelected { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::OpenSelectedV2 { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
@@ -175,42 +143,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(bytes);
         }
         CollabRequest::WantContent { hash } => meter.string_capacity(hash),
-        CollabRequest::PublishActions { actions } => {
-            meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
-            for action in actions {
-                exported_action_bytes(action, &mut meter);
-            }
-        }
-        CollabRequest::PublishActionSurface { delta } => {
-            meter.add_product(
-                delta.shapes.capacity(),
-                std::mem::size_of::<(runtime_collab::ShapeId, ExportedAction)>(),
-            );
-            for (_, shape) in &delta.shapes {
-                exported_action_bytes(shape, &mut meter);
-            }
-            meter.add_product(
-                delta.templates.capacity(),
-                std::mem::size_of::<(runtime_collab::ShapeId, Vec<runtime_collab::ShapeId>)>(),
-            );
-            for (_, members) in &delta.templates {
-                meter.add_product(members.capacity(), runtime_collab::SHAPE_ID_BYTES);
-            }
-            meter.add_product(
-                delta.resources.capacity(),
-                std::mem::size_of::<runtime_collab::SurfaceResource>(),
-            );
-            for resource in &delta.resources {
-                meter.string_capacity(&resource.resource);
-                meter.string_capacity(&resource.fields.resource_kind);
-                meter.string_capacity(&resource.fields.resource_label);
-                serialized_bytes(&resource.fields.semantic_identity, &mut meter);
-            }
-            meter.add_product(delta.removed.capacity(), std::mem::size_of::<String>());
-            for resource in &delta.removed {
-                meter.string_capacity(resource);
-            }
-        }
+        CollabRequest::PublishActionSurface { delta } => serialized_bytes(delta, &mut meter),
         CollabRequest::ReportContinuation { metadata, .. } => {
             meter.bytes(metadata);
         }
@@ -285,21 +218,6 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
             meter.finish()
         }
 
-        SdkCommand::Initialize { route, request, .. } => {
-            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
-            meter.string_capacity(&route.app_id);
-            if let Some(record) = &route.record {
-                meter.string_capacity(record);
-            }
-            if let runtime_collab::committed_document::Request::Initialize {
-                kind, document, ..
-            } = request
-            {
-                meter.string_capacity(kind);
-                meter.add(document.capacity());
-            }
-            meter.finish()
-        }
         SdkCommand::Hello(hello) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&hello.route.app_id);
@@ -432,6 +350,7 @@ fn context_event_bytes(
     collaborator_capacity: usize,
     permissions: &[String],
     permission_capacity: usize,
+    apps: &[collab_types::history::NamedApp],
     meter: &mut ByteMeter,
 ) {
     meter.add_product(collaborator_capacity, std::mem::size_of::<Collaborator>());
@@ -442,6 +361,18 @@ fn context_event_bytes(
     meter.add_product(permission_capacity, std::mem::size_of::<String>());
     for permission in permissions {
         meter.string_capacity(permission);
+    }
+    meter.add_product(
+        apps.len(),
+        std::mem::size_of::<collab_types::history::NamedApp>(),
+    );
+    for app in apps {
+        meter.string_capacity(&app.id);
+        meter.string_capacity(&app.name);
+        for (tag, name) in &app.names {
+            meter.string_capacity(tag);
+            meter.string_capacity(name);
+        }
     }
 }
 
@@ -479,65 +410,6 @@ pub(super) async fn remote_action_round_trip(
         )
         .unwrap_or(message)
     })
-}
-
-fn action_catalogue_bytes(
-    surfaces: &[BrokerActionSurface],
-    surface_capacity: usize,
-    meter: &mut ByteMeter,
-) {
-    meter.add_product(surface_capacity, std::mem::size_of::<BrokerActionSurface>());
-    for surface in surfaces {
-        meter.string_capacity(&surface.app_id);
-        meter.string_capacity(&surface.cluster_id);
-        meter.string_capacity(&surface.record_id);
-        meter.add_product(
-            surface.actions.capacity(),
-            std::mem::size_of::<ExportedAction>(),
-        );
-        for action in &surface.actions {
-            exported_action_bytes(action, meter);
-        }
-    }
-}
-
-/// `surfaces` trimmed until their retained size fits `limit`, and the apps of
-/// the surfaces dropped. Inert surfaces (an app only offered to open) go
-/// before live ones, the last listed first, so the operations of the open
-/// windows survive longest.
-pub(super) fn fit_catalogue(
-    mut surfaces: Vec<BrokerActionSurface>,
-    limit: usize,
-) -> (Vec<BrokerActionSurface>, Vec<String>) {
-    let size = |surfaces: &[BrokerActionSurface]| {
-        let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
-        action_catalogue_bytes(surfaces, surfaces.len(), &mut meter);
-        meter.0.unwrap_or(usize::MAX)
-    };
-    // Measured as kept: a decoded list may hold spare capacity.
-    for surface in &mut surfaces {
-        surface.actions.shrink_to_fit();
-    }
-    let empty = size(&[]);
-    let mut total = size(&surfaces);
-    if total <= limit {
-        return (surfaces, Vec::new());
-    }
-    let mut dropped = Vec::new();
-    while total > limit {
-        let Some(at) = surfaces
-            .iter()
-            .rposition(|surface| !surface.live)
-            .or_else(|| surfaces.len().checked_sub(1))
-        else {
-            break;
-        };
-        let surface = surfaces.remove(at);
-        total = total.saturating_sub(size(std::slice::from_ref(&surface)).saturating_sub(empty));
-        dropped.push(surface.app_id);
-    }
-    surfaces.shrink_to_fit();
-    (surfaces, dropped)
 }
 
 fn scrollback_batch_bytes(
@@ -582,12 +454,14 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         CollabEvent::Context {
             collaborators,
             permissions,
+            apps,
         } => {
             context_event_bytes(
                 collaborators,
                 collaborators.capacity(),
                 permissions,
                 permissions.capacity(),
+                apps,
                 &mut meter,
             );
             "Context"
@@ -707,8 +581,8 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(message, &mut meter);
             "RemoteAction"
         }
-        CollabEvent::ActionCatalogue { surfaces } => {
-            action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
+        CollabEvent::ActionCatalogue { change } => {
+            serialized_bytes(change, &mut meter);
             "ActionCatalogue"
         }
         CollabEvent::LocalDocumentActionReported { result, .. } => {
@@ -799,27 +673,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 Err(error) => meter.string_capacity(error),
             }
             "RealtimeCommandResult"
-        }
-        CollabEvent::SelectedDiscoveryResult { result, .. } => {
-            match result {
-                Ok(value) => serialized_bytes(value, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "SelectedDiscoveryResult"
-        }
-        CollabEvent::OpenSelectedV2Result { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "OpenSelectedV2Result"
-        }
-        CollabEvent::OpenSelectedResult { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "OpenSelectedResult"
         }
         CollabEvent::LocalFileClipboardResult { result, .. } => {
             match result {

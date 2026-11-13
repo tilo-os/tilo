@@ -75,7 +75,6 @@ pub struct Project {
 
 #[resource(
     kind = "chip_design.project",
-    label = "Chip Design",
     children = Project::places,
     search = Project::search,
     read_content = Project::read_content,

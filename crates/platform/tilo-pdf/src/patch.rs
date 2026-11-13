@@ -62,7 +62,6 @@ struct Found {
     dict: Vec<u8>,
 }
 
-/// Apply `plan` to `out` (pdfium's saved bytes).
 pub(crate) fn apply(out: &[u8], plan: PatchPlan) -> Result<Vec<u8>, Declined> {
     let PatchPlan {
         patches,
@@ -131,7 +130,6 @@ pub(crate) fn apply(out: &[u8], plan: PatchPlan) -> Result<Vec<u8>, Declined> {
     ))
 }
 
-/// The form `XObject` of `appearance`, with its fonts as resources.
 fn appearance_object(r: Ref, appearance: &Appearance, fonts: &BTreeMap<usize, Ref>) -> Vec<u8> {
     let mut chunk = Chunk::new();
     {

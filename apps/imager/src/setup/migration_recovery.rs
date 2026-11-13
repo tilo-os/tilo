@@ -1,6 +1,6 @@
-//! Conservative low-space review and recovery using the existing planner and
-//! verified journaled copier. A copy is never permission to erase its source.
-//! Remote account access and sync labels are not independent recovery evidence.
+//! Conservative low-space review and recovery over the planner and the journaled
+//! copier: a copy is never permission to erase its source.
+
 mod destination;
 mod flow;
 mod write_guard;
@@ -14,13 +14,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-/// Re-run the real placement checker, including filesystem shrink floors and
-/// retained headroom. A hand-edited geometry or stale size cannot waive it.
-/// This admits only the existing alongside path, never full-disk replacement.
 pub use imager_backend::recovery::admit_retained;
 
-/// Required local recovery space. No remote content-verification API is wired
-/// here: even entries labelled synced remain unverified and retain their source.
 #[derive(Debug, Default, Serialize)]
 pub struct RecoveryBudget {
     pub local_bytes: u64,
@@ -59,10 +54,6 @@ impl RecoveryBudget {
     }
 }
 
-/// An exact, user-selected local/media destination. Remote URLs are not offered
-/// as writable backups: there is no remote write-and-independent-verify adapter.
-/// Destination durability and source containment are checked by the real copier.
-/// Completed output still confers no disk-write or source-deletion authority.
 pub struct RecoveryCopy {
     source: PathBuf,
     destination: PathBuf,
@@ -106,9 +97,6 @@ impl RecoveryCopy {
                 ));
             }
             let inventory = super::migration_review::SourceInventory::capture(&root)?;
-            // A resumed output may already occupy the required capacity.
-            // Existence never establishes verification: the journal engine must
-            // rehash it, and any remaining space failure leaves the source intact.
             let needed = if destination.try_exists()? {
                 0
             } else {
@@ -142,9 +130,6 @@ impl RecoveryCopy {
             .map_err(|e| e.to_string())
     }
 
-    /// Resume only on explicit request. The engine independently checks saved
-    /// source/output identities, hashes and durable receipts, not file existence.
-    /// Partial verified output is retained on cancellation; the source is untouched.
     pub fn copy(
         &self,
         resume: bool,
@@ -249,7 +234,6 @@ mod tests {
                     std::fs::read(output.join(name)).unwrap()
                 );
             }
-            // A receipt is not an exemption from output hash verification.
             std::fs::write(output.join("save"), b"corrupt").unwrap();
             let report = copy.copy(true, &cancelled, |_| {}).unwrap();
             assert!(!report.complete());

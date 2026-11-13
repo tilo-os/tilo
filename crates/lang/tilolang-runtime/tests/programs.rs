@@ -2,18 +2,14 @@
 //! between programs, asks where the agent's code is not trusted, and teaches on errors.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::program::{ProgramOutcome, ProgramReply, Session};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
-    const TODO: &str = super::common::TASKS_SOURCE;
+    const TODO: &str = crate::common::TASKS_SOURCE;
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 

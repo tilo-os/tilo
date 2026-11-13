@@ -1,13 +1,9 @@
-//! `GET /metrics`: when the published catalogue and the authority behind it
-//! expire, in the Prometheus text format.
-//!
-//! The owner authorizes the online signing channel for at most 31 days, and
-//! renewing it is a deliberate offline operation; once it lapses, nothing can
-//! be signed and the 24-hour snapshot runs out a day later. On 2026-10-21 that
-//! happened unnoticed and every device lost the catalogue. These gauges let
-//! alerts ask for the renewal days ahead, and for the signer well before the
-//! snapshot expires. They are read from the catalogue the server already
-//! verified for `/entries`, so a scrape costs no extra file reads.
+//! `GET /metrics`: when the published catalogue and the authority behind it expire, in the
+//! Prometheus text format. The owner authorizes the online signing channel for at most 31 days, and
+//! renewing it is a deliberate offline operation; once it lapses, nothing can be signed and the
+//! 24-hour snapshot runs out a day later. These gauges let alerts ask for the renewal days ahead,
+//! and for the signer well before the snapshot expires. They are read from the catalogue the server
+//! already verified for `/entries`, so a scrape costs no extra file reads.
 
 use std::fmt::Write as _;
 
@@ -17,7 +13,6 @@ use hyper::{Response, header};
 
 use crate::catalogue::{ChannelTerm, FullSnapshot, Published};
 
-/// The `/metrics` response for `published`.
 pub(crate) fn response(published: &Published) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from(render(published))));
     let headers = response.headers_mut();
@@ -43,7 +38,6 @@ pub(crate) fn render(published: &Published) -> String {
     render_parts(published.channel, snapshot)
 }
 
-/// What `/metrics` reports about the published snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SnapshotState {
     Missing,
@@ -95,7 +89,6 @@ fn gauge(out: &mut String, name: &str, help: &str, value: u64) {
 mod tests {
     use super::*;
 
-    /// The value of the one sample named `name`, if the body has it.
     fn sample(body: &str, name: &str) -> Option<u64> {
         body.lines()
             .filter(|line| !line.starts_with('#'))
@@ -145,8 +138,8 @@ mod tests {
 
     #[test]
     fn the_authorization_is_reported_even_when_no_snapshot_verifies() {
-        // When the channel lapsed and nothing verifies, the renewal is what
-        // the operator needs to see.
+        // When the channel lapsed and nothing verifies, the renewal is what the operator needs to
+        // see.
         let body = render_parts(
             Some(ChannelTerm {
                 generation: 1,

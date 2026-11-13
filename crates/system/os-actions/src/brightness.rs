@@ -1,13 +1,6 @@
-//! Brightness per monitor: the laptop panel through its backlight, every
-//! external monitor that speaks DDC/CI through its I²C bus, and every other
-//! monitor dimmed by the compositor in software.
-//!
-//! A monitor is known by its DRM connector (`eDP-1`, `DP-2`), the same
-//! name the compositor advertises through `wl_output` and publishes to
-//! Settings, so UI can put the monitor's EDID name on each slider. What is
-//! learnt about a monitor (whether it answers DDC/CI, its brightness scale,
-//! its last level) is remembered by its EDID identity, so a monitor that
-//! moves to another port keeps it.
+//! Brightness per monitor: the panel through its backlight, an external monitor over
+//! DDC/CI, and any other dimmed by the compositor in software. A monitor is known by
+//! its DRM connector and remembered by its EDID identity.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -25,16 +18,13 @@ const DRM: &str = "/sys/class/drm";
 const BACKLIGHT: &str = "/sys/class/backlight";
 const DEV: &str = "/dev";
 
-/// How a monitor's brightness is driven.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BrightnessTarget {
     /// A `/sys/class/backlight/<device>` directory.
     Backlight(PathBuf),
     /// An `i2c-dev` node, e.g. `/dev/i2c-5`, carrying DDC/CI.
     Ddc(PathBuf),
-    /// No hardware control: the compositor darkens what the monitor shows.
-    /// It saves no power and the monitor's own brightness stays as it is,
-    /// so UI says "dimmed by Tilo" next to it.
+    /// No hardware control: the compositor darkens what the monitor shows, which saves no power.
     Software,
 }
 
@@ -43,14 +33,11 @@ pub struct MonitorBrightness {
     /// Raw DRM connector label, e.g. `DP-2`.
     pub connector: String,
     pub target: BrightnessTarget,
-    /// The monitor's EDID identity ([`edid_key`]), when it has a readable
-    /// EDID: what its capability and level are remembered by.
+    /// The monitor's EDID identity ([`edid_key`]), which its capability and level are remembered by.
     pub edid: Option<String>,
 }
 
 impl MonitorBrightness {
-    /// The key this monitor is remembered by: its EDID identity, else its
-    /// connector.
     fn memory_key(&self) -> String {
         self.edid
             .clone()
@@ -58,24 +45,19 @@ impl MonitorBrightness {
     }
 }
 
-/// Every connected monitor, built-in panel first, each with how its
-/// brightness is driven. A monitor on a DDC bus that turns out not to
-/// implement DDC/CI is listed as DDC here; the service's probe moves it to
-/// software dimming.
+/// Every connected monitor, built-in panel first; a DDC bus that turns out not to speak DDC/CI is moved
+/// to software dimming by the service's probe.
 pub fn monitors() -> Vec<MonitorBrightness> {
     monitors_in(Path::new(DRM), Path::new(BACKLIGHT), Path::new(DEV))
 }
 
-/// Whether a connector drives a built-in panel rather than a port.
 pub fn is_builtin_connector(connector: &str) -> bool {
     let upper = connector.to_ascii_uppercase();
     upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI")
 }
 
-/// A monitor's identity from its EDID: manufacturer, product code and
-/// serial number (bytes 8 to 15), which survive a port change and tell two
-/// monitors of one model apart when the maker filled the serial in. `None`
-/// for anything that is not an EDID base block.
+/// A monitor's identity from its EDID: manufacturer, product code and serial number (bytes 8 to 15),
+/// which survive a port change.
 pub fn edid_key(edid: &[u8]) -> Option<String> {
     const HEADER: [u8; 8] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
     if edid.get(..8)? != HEADER {
@@ -117,9 +99,8 @@ fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightnes
         .into_iter()
         .map(|(connector, path)| {
             let target = if is_builtin_connector(&connector) {
-                // One backlight drives one panel; a second built-in
-                // connector (a detachable keyboard dock's) is dimmed in
-                // software.
+                // One backlight drives one panel; a second built-in connector (a detachable keyboard
+                // dock's) is dimmed in software.
                 panel_backlight
                     .take()
                     .map_or(BrightnessTarget::Software, BrightnessTarget::Backlight)
@@ -140,17 +121,15 @@ fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightnes
         .collect()
 }
 
-/// Whether a connector belongs to a software-only card on the faux bus
-/// (`vkms`, as a development VM's seat sets up): it reports "connected" but
-/// no person looks at it. A VM's own virtio GPU sits on its virtio bus and
-/// is not one of these.
+/// Whether a connector belongs to a software-only card on the faux bus (`vkms`), which reports
+/// "connected" though no person looks at it.
 fn on_virtual_card(connector: &Path) -> bool {
     fs::canonicalize(connector.join("device/device"))
         .is_ok_and(|card| card.components().any(|part| part.as_os_str() == "faux"))
 }
 
-/// The I²C adapter a connector carries: the `ddc` link most drivers set,
-/// else a DP AUX adapter registered beneath the connector.
+/// The I²C adapter a connector carries: the `ddc` link most drivers set, else a DP AUX adapter
+/// registered beneath the connector.
 fn ddc_bus(connector: &Path) -> Option<String> {
     if let Ok(link) = fs::read_link(connector.join("ddc"))
         && let Some(name) = link.file_name().and_then(|n| n.to_str())
@@ -171,13 +150,11 @@ fn ddc_bus(connector: &Path) -> Option<String> {
     adapters.into_iter().next()
 }
 
-/// A monitor's brightness as read from its hardware.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reading {
     /// `0.0..=1.0`.
     pub level: f32,
-    /// The top of a DDC/CI monitor's own scale, so a write need not read it
-    /// again first.
+    /// The top of a DDC/CI monitor's own scale, so a write need not read it again first.
     pub maximum: Option<u16>,
 }
 
@@ -208,15 +185,12 @@ impl BrightnessTarget {
         }
     }
 
-    /// Current brightness as a `0.0..=1.0` fraction.
     pub fn get(&self) -> Result<f32, String> {
         self.read().map(|reading| reading.level)
     }
 
-    /// Set brightness to `pct` percent, clamped to `[0, 100]`. A DDC/CI
-    /// monitor whose `maximum` is known is written without reading it
-    /// first. Software dimming is the compositor's to apply, so it is a
-    /// no-op here.
+    /// Set brightness to `pct` percent, clamped to `[0, 100]`; a DDC/CI monitor whose `maximum` is
+    /// known is written without reading it first.
     pub fn set_with_maximum(&self, pct: f32, maximum: Option<u16>) -> Result<(), String> {
         let pct = pct.clamp(0.0, 100.0);
         match self {
@@ -232,13 +206,11 @@ impl BrightnessTarget {
         }
     }
 
-    /// Set brightness to `pct` percent, clamped to `[0, 100]`.
     pub fn set(&self, pct: f32) -> Result<(), String> {
         self.set_with_maximum(pct, None)
     }
 }
 
-/// Percent → the monitor's raw scale, rounding to the nearest step.
 fn ddc_raw(pct: f32, maximum: u16) -> u16 {
     let raw = (pct / 100.0 * f32::from(maximum)).round();
     #[allow(
@@ -272,20 +244,19 @@ fn write_ddc(_node: &Path, _value: u16) -> Result<(), String> {
     Err("DDC/CI needs Linux i2c-dev".into())
 }
 
-/// The minimum gap between two writes to one DDC/CI monitor. Faster than
-/// this and many monitors drop commands or lock up their OSD.
+/// The minimum gap between two writes to one DDC/CI monitor. Faster than this and many monitors drop
+/// commands or lock up their OSD.
 const DDC_MIN_INTERVAL: Duration = Duration::from_millis(120);
 
-/// The least light software dimming leaves, in linear light: white at a
-/// fifth of the monitor's own white. On an LCD the backlight keeps blacks
-/// where they were, so text stays readable at the bottom of the slider.
+/// The least light software dimming leaves, in linear light: white at a fifth of the monitor's own
+/// white. On an LCD the backlight keeps blacks where they were, so text stays readable at the bottom of
+/// the slider.
 pub const SOFTWARE_DIM_FLOOR: f32 = 0.2;
 
-/// The share of linear light software dimming lets through at slider
-/// position `level` (`0.0..=1.0`). The slider is perceptual, as a
-/// backlight's feels: light falls with the position raised to 2.2, so
-/// each step looks like the same change, and the bottom of the slider is
-/// [`SOFTWARE_DIM_FLOOR`], never black.
+/// The share of linear light software dimming lets through at slider position `level` (`0.0..=1.0`).
+/// The slider is perceptual, as a backlight's feels: light falls with the position raised to 2.2, so
+/// each step looks like the same change, and the bottom of the slider is [`SOFTWARE_DIM_FLOOR`], never
+/// black.
 pub fn software_luminance(level: f32) -> f32 {
     let level = if level.is_finite() {
         level.clamp(0.0, 1.0)
@@ -295,11 +266,10 @@ pub fn software_luminance(level: f32) -> f32 {
     SOFTWARE_DIM_FLOOR + (1.0 - SOFTWARE_DIM_FLOOR) * level.powf(2.2)
 }
 
-/// Every monitor's next level when all of them move together by `delta`
-/// (a fraction of full scale): the brightest moves by `delta` and the rest
-/// keep their share of its level, so a monitor set at half the panel's
-/// brightness stays at half. Monitors that all sit at zero rise together.
-/// Clamped to `0.0..=1.0`.
+/// Every monitor's next level when all of them move together by `delta` (a fraction of full scale): the
+/// brightest moves by `delta` and the rest keep their share of its level, so a monitor set at half the
+/// panel's brightness stays at half. Monitors that all sit at zero rise together. Clamped to
+/// `0.0..=1.0`.
 pub fn step_together(levels: &[f32], delta: f32) -> Vec<f32> {
     let brightest = levels
         .iter()
@@ -323,12 +293,9 @@ pub fn step_together(levels: &[f32], delta: f32) -> Vec<f32> {
 /// How a monitor's level is set, for UI that labels it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum BrightnessKind {
-    /// The panel's own backlight.
     #[default]
     Backlight,
-    /// The monitor's own brightness, over DDC/CI.
     Ddc,
-    /// Darkened by the compositor.
     Software,
 }
 
@@ -342,7 +309,6 @@ impl BrightnessTarget {
     }
 }
 
-/// One monitor's brightness as last read or set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorLevel {
     pub connector: String,
@@ -355,16 +321,12 @@ pub struct MonitorLevel {
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Remembered {
-    /// Whether it answered DDC/CI when last probed.
     pub ddc: Option<bool>,
-    /// The top of its DDC/CI brightness scale.
     pub maximum: Option<u16>,
-    /// Its last level, `0.0..=1.0`. For a software-dimmed monitor this is
-    /// the level, restored when it comes back.
+    /// Its last level, `0.0..=1.0`; a software-dimmed monitor is restored to it when it comes back.
     pub level: Option<f32>,
 }
 
-/// Every remembered monitor, as stored on disk.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Memory {
@@ -387,8 +349,7 @@ impl Memory {
             .parent()
             .map_or(Ok(()), fs::create_dir_all)
             .and_then(|()| {
-                // Written aside and renamed, so a reader in another process
-                // never sees half a file.
+                // Written aside and renamed, so a reader in another process never sees half a file.
                 let partial = path.with_extension("json.partial");
                 fs::write(&partial, bytes)?;
                 fs::rename(&partial, path)
@@ -404,8 +365,6 @@ impl Memory {
     }
 }
 
-/// Where the brightness memory is kept: `$XDG_STATE_HOME/tilo`, else
-/// `~/.local/state/tilo`.
 pub fn default_memory_path() -> Option<PathBuf> {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -421,13 +380,11 @@ pub fn default_memory_path() -> Option<PathBuf> {
 
 enum Request {
     Rescan,
-    /// Write the memory to disk.
     Remember,
     /// Call once every request sent before it is done.
     Then(Box<dyn FnOnce() + Send>),
 }
 
-/// One controllable monitor.
 #[derive(Clone, Debug)]
 struct Entry {
     monitor: MonitorBrightness,
@@ -437,25 +394,18 @@ struct Entry {
 
 #[derive(Default)]
 struct Shared {
-    /// Every controllable monitor with its last known level.
     monitors: Vec<Entry>,
     memory: Memory,
-    /// What the session's compositor shows, once it has said so.
     session: Option<SessionDisplays>,
 }
 
-/// The displays the session shows, as its compositor declares them
-/// ([`BrightnessService::show_only`]). A connector the kernel reports as
-/// connected is not necessarily one of them: a virtual card set up for
-/// another seat (a development VM's `Virtual-1`) or a second GPU's port
-/// shows nothing of this session, so it gets no brightness control.
+/// The displays the compositor says it shows: a connector the kernel reports as connected may belong to
+/// another seat's card.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionDisplays {
-    /// DRM connector labels (`eDP-1`, `DP-2`) of the displays shown.
     pub connectors: Vec<String>,
-    /// Whether the compositor can dim a display in software. Without it, a
-    /// display with neither a backlight nor DDC/CI has no brightness
-    /// control at all.
+    /// Whether the compositor can dim in software; without it a display with neither backlight nor
+    /// DDC/CI has no brightness control.
     pub software_dim: bool,
 }
 
@@ -479,8 +429,8 @@ impl Shared {
                 slot.maximum = entry.maximum.or(slot.maximum);
             }
             BrightnessTarget::Software if entry.monitor.edid.is_some() => {
-                // Only a monitor on a bus is said not to answer; a port
-                // with no bus at all says nothing about the monitor.
+                // Only a monitor on a bus is said not to answer; a port with no bus at all says
+                // nothing about the monitor.
                 if slot.ddc.is_none() {
                     slot.ddc = Some(false);
                 }
@@ -495,7 +445,6 @@ type ReadLevel = dyn Fn(&BrightnessTarget) -> Result<Reading, String> + Send + S
 type Apply = dyn Fn(&BrightnessTarget, f32, Option<u16>) -> Result<(), String> + Send + Sync;
 type OnChange = Arc<dyn Fn() + Send + Sync>;
 
-/// A pending hardware write and whether one is being made.
 #[derive(Default)]
 struct WriterState {
     pending: Option<(BrightnessTarget, f32, Option<u16>)>,
@@ -503,9 +452,8 @@ struct WriterState {
     closed: bool,
 }
 
-/// The one thread writing one monitor: at most one write in flight, and
-/// every value asked for while it is busy collapses into the newest. A
-/// slow monitor never holds up another one.
+/// The one thread writing one monitor: at most one write in flight, and every value asked for while it
+/// is busy collapses into the newest.
 struct Writer {
     state: Arc<(Mutex<WriterState>, Condvar)>,
 }
@@ -531,7 +479,6 @@ impl Writer {
         wake.notify_all();
     }
 
-    /// Wait until nothing is pending or being written.
     #[cfg(test)]
     fn wait_idle(&self) {
         wait_idle(&self.state);
@@ -599,12 +546,9 @@ fn write_loop(
     }
 }
 
-/// Brightness for every monitor. Hardware writes run on a thread per
-/// monitor, so a slider drag or a held brightness key never waits on a
-/// monitor and a slow one never holds up another. Levels are cached: reads
-/// are instant and reflect the last value set. Software-dimmed monitors
-/// are the compositor's to darken: it follows [`Self::software_levels`],
-/// told of each change by [`Self::on_change`].
+/// Brightness for every monitor. Writes run on a thread per monitor, so a slider drag or a held key
+/// never waits on a slow one; levels are cached, so reads are instant. A software-dimmed monitor is the
+/// compositor's to darken, told of each change by [`Self::on_change`].
 pub struct BrightnessService {
     shared: Arc<Mutex<Shared>>,
     writers: Mutex<BTreeMap<String, Writer>>,
@@ -615,15 +559,13 @@ pub struct BrightnessService {
     sleep: fn(Duration),
     /// Serialises probes: two threads must not talk to one bus at once.
     probing: Arc<Mutex<()>>,
-    /// Bumped whenever a software-dimmed level or the monitor list changes.
     generation: Arc<AtomicU64>,
     on_change: Arc<Mutex<Option<OnChange>>>,
     memory_path: Option<PathBuf>,
 }
 
 impl BrightnessService {
-    /// The process-wide service, started (and its monitors scanned) on
-    /// first use.
+    /// The process-wide service, started (and its monitors scanned) on first use.
     pub fn global() -> &'static Self {
         static SERVICE: OnceLock<BrightnessService> = OnceLock::new();
         SERVICE.get_or_init(|| {
@@ -686,9 +628,8 @@ impl BrightnessService {
         }
     }
 
-    /// [`Self::rescan`] on the calling thread, returning once the levels
-    /// are fresh. Probing a monitor that just appeared over DDC/CI takes
-    /// tens of milliseconds, so only a worker thread may call this.
+    /// Like [`Self::rescan`], but returns once the levels are fresh; probing takes tens of
+    /// milliseconds, so only a worker thread may call it.
     pub fn rescan_blocking(&self) -> Vec<MonitorLevel> {
         let changed = probe(&self.shared, &*self.discover, &*self.read, &self.probing);
         if changed {
@@ -697,39 +638,36 @@ impl BrightnessService {
         self.levels()
     }
 
-    /// Re-discover monitors after a hotplug, or when a panel that shows
-    /// them opens. Monitors already known keep their cached level and are
-    /// not asked again; a monitor that just appeared is probed once.
+    /// Re-discover monitors after a hotplug, or when a panel that shows them opens. Monitors already
+    /// known keep their cached level and are not asked again; a monitor that just appeared is probed
+    /// once.
     pub fn rescan(&self) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(Request::Rescan);
         }
     }
 
-    /// Limit the monitors to the displays the session shows, and re-discover
-    /// them. The compositor calls this whenever its outputs change; until it
-    /// has, every connected monitor is listed.
+    /// Limits the monitors to the displays the compositor shows and re-discovers them; until it has
+    /// said, every connected monitor is listed.
     pub fn show_only(&self, displays: SessionDisplays) {
         self.lock().session = Some(displays);
         self.rescan();
     }
 
-    /// Call `on_change` (from any thread) whenever a software-dimmed level
-    /// or the set of monitors changes: the compositor's wake.
+    /// Call `on_change` (from any thread) whenever a software-dimmed level or the set of monitors
+    /// changes: the compositor's wake.
     pub fn on_change(&self, on_change: Arc<dyn Fn() + Send + Sync>) {
         *self.on_change.lock_recover() = Some(on_change);
     }
 
-    /// Bumped on every change [`Self::on_change`] reports; equal values
-    /// mean nothing changed.
+    /// Bumped on every change [`Self::on_change`] reports; equal values mean nothing changed.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Call `done` once every rescan and write asked for before it has
-    /// finished, so a reader of [`Self::levels`] learns when they are fresh
-    /// instead of reading them on a timer. Without a worker it is called at
-    /// once.
+    /// Call `done` once every rescan and write asked for before it has finished, so a reader of
+    /// [`Self::levels`] learns when they are fresh instead of reading them on a timer. Without a worker
+    /// it is called at once.
     pub fn when_idle(&self, done: Box<dyn FnOnce() + Send>) {
         let idle: Vec<Arc<(Mutex<WriterState>, Condvar)>> = self
             .writers
@@ -755,7 +693,6 @@ impl BrightnessService {
         }
     }
 
-    /// The controllable monitors, built-in panel first.
     pub fn levels(&self) -> Vec<MonitorLevel> {
         self.lock()
             .monitors
@@ -768,8 +705,8 @@ impl BrightnessService {
             .collect()
     }
 
-    /// Every software-dimmed monitor and its slider level (`0.0..=1.0`);
-    /// [`software_luminance`] is the light it lets through.
+    /// Every software-dimmed monitor and its slider level (`0.0..=1.0`); [`software_luminance`] is the
+    /// light it lets through.
     pub fn software_levels(&self) -> Vec<(String, f32)> {
         self.lock()
             .monitors
@@ -779,8 +716,7 @@ impl BrightnessService {
             .collect()
     }
 
-    /// Set `connector` to `pct` percent. Never blocks; `false` when no such
-    /// monitor is controllable.
+    /// Set `connector` to `pct` percent. Never blocks; `false` when no such monitor is controllable.
     pub fn set(&self, connector: &str, pct: f32) -> bool {
         let pct = pct.clamp(0.0, 100.0);
         let entry = {
@@ -821,9 +757,8 @@ impl BrightnessService {
         true
     }
 
-    /// Move one monitor's brightness by `delta` (a fraction): the one on
-    /// `connector` when it is controllable, else the first. Returns the
-    /// monitor and its new level.
+    /// Move one monitor's brightness by `delta` (a fraction): the one on `connector` when it is
+    /// controllable, else the first. Returns the monitor and its new level.
     pub fn step(&self, connector: Option<&str>, delta: f32) -> Option<MonitorLevel> {
         let levels = self.levels();
         let current = connector
@@ -837,9 +772,7 @@ impl BrightnessService {
             })
     }
 
-    /// Re-read the memory another process wrote (Settings setting a
-    /// software-dimmed monitor), taking its software levels. Returns
-    /// whether a level changed.
+    /// Re-reads the memory another process wrote, taking its software levels; whether a level changed.
     pub fn reload_memory(&self) -> bool {
         let Some(path) = self.memory_path.as_deref() else {
             return false;
@@ -872,10 +805,9 @@ impl BrightnessService {
         changed
     }
 
-    /// Follow the memory file for writes from other processes, for the life
-    /// of the process, on a thread that sleeps in `inotify` until one
-    /// happens. The compositor calls this once, so a level Settings sets
-    /// reaches the screen.
+    /// Follow the memory file for writes from other processes, for the life of the process, on a thread
+    /// that sleeps in `inotify` until one happens. The compositor calls this once, so a level Settings
+    /// sets reaches the screen.
     pub fn follow_memory(&'static self) {
         static FOLLOWING: Mutex<Option<tilo_files::native::ChangeWatch>> = Mutex::new(None);
         let Some(path) = self.memory_path.as_deref() else {
@@ -891,10 +823,8 @@ impl BrightnessService {
         }
     }
 
-    /// Take what the kernel holds for every backlit panel whose writer is
-    /// idle: another program, a firmware hotkey or a light sensor moved it.
-    /// A level set here while the panel was being read wins. Returns whether
-    /// a level changed.
+    /// Takes what the kernel holds for every backlit panel whose writer is idle: another program, a
+    /// firmware hotkey or a light sensor moved it.
     pub fn reload_backlights(&self) -> bool {
         let backlights: Vec<(String, BrightnessTarget, f32)> = self
             .lock()
@@ -935,9 +865,8 @@ impl BrightnessService {
         changed
     }
 
-    /// Follow the kernel's backlight events on a thread that sleeps on the
-    /// uevent socket: a level change is read back, a backlight that comes or
-    /// goes rescans. The compositor calls this once.
+    /// Follow the kernel's backlight events on a thread that sleeps on the uevent socket: a level
+    /// change is read back, a backlight that comes or goes rescans. The compositor calls this once.
     pub fn follow_backlight(&'static self) {
         let spawned = std::thread::Builder::new()
             .name("tilo-backlight-events".into())
@@ -972,8 +901,8 @@ impl BrightnessService {
     }
 }
 
-/// Watch `path`'s directory and call `changed` whenever `path` is written
-/// there (by a rename into place, which is how [`Memory::save`] writes).
+/// Watch `path`'s directory and call `changed` whenever `path` is written there (by a rename into
+/// place, which is how [`Memory::save`] writes).
 fn follow(
     path: &Path,
     changed: impl Fn() + Send + 'static,
@@ -1001,7 +930,6 @@ fn notify(generation: &AtomicU64, on_change: &Mutex<Option<OnChange>>) {
     }
 }
 
-/// The background half of [`BrightnessService`]: rescans and memory writes.
 struct Worker {
     shared: Arc<Mutex<Shared>>,
     discover: Arc<Discover>,
@@ -1040,11 +968,8 @@ impl Worker {
     }
 }
 
-/// Bring the monitor list in line with what is connected. A monitor
-/// already known on the same connector keeps its entry and is not asked
-/// again: probing is once per appearance. A new one is read, and one on a
-/// DDC bus that does not answer DDC/CI is dimmed in software. Returns
-/// whether the list changed.
+/// Brings the monitor list in line with what is connected; a monitor already known on the same
+/// connector is not asked again.
 fn probe(
     shared: &Mutex<Shared>,
     discover: &Discover,
@@ -1060,8 +985,8 @@ fn probe(
             shared.session.clone(),
         )
     };
-    // Only what the session shows is controllable: a connector of another
-    // seat's card, though connected, is nobody's display here.
+    // Only what the session shows is controllable: a connector of another seat's card, though
+    // connected, is nobody's display here.
     let discovered: Vec<MonitorBrightness> = discover()
         .into_iter()
         .filter(|monitor| {
@@ -1113,8 +1038,8 @@ fn probe(
         };
         next.push(entry);
     }
-    // Software dimming needs a compositor that can do it; without one such a
-    // display has no brightness control, so no slider.
+    // Software dimming needs a compositor that can do it; without one such a display has no brightness
+    // control, so no slider.
     if session
         .as_ref()
         .is_some_and(|session| !session.software_dim)
@@ -1122,9 +1047,8 @@ fn probe(
         next.retain(|entry| entry.monitor.target != BrightnessTarget::Software);
     }
     let mut shared = shared.lock_recover();
-    // A monitor known before the probe keeps its live entry: a level set
-    // while the probe read the bus (outside the lock) is newer than the
-    // snapshot this probe started from, and must not be put back.
+    // A monitor known before the probe keeps its live entry: a level set while the probe read the bus
+    // must not be put back.
     for entry in &mut next {
         if let Some(live) = shared.monitors.iter().find(|live| {
             live.monitor.connector == entry.monitor.connector
@@ -1179,8 +1103,6 @@ mod tests {
             fs::write(dir.join("brightness"), "10\n").unwrap();
             fs::write(dir.join("max_brightness"), "100\n").unwrap();
         }
-        /// A vkms card on the faux bus, as a development VM's seat sets
-        /// up, with its connectors reporting "connected".
         fn faux_card(&self, card: &str, connectors: &[&str]) {
             let device = self.path("devices/faux/seat-apps-fast-3");
             fs::create_dir_all(&device).unwrap();
@@ -1437,8 +1359,7 @@ mod tests {
         assert_eq!(level(&service), 0.8);
         assert_eq!(told.load(Ordering::SeqCst), 1);
 
-        // A level set here is announced too, and its own event reads back
-        // what was written.
+        // A level set here is announced too, and its own event reads back what was written.
         assert!(service.set("eDP-1", 30.0));
         assert_eq!(told.load(Ordering::SeqCst), 2);
         idle(&service);
@@ -1469,8 +1390,7 @@ mod tests {
         assert_eq!(connectors(service.rescan_blocking()), ["eDP-1", "DP-2"]);
         assert_eq!(service.software_levels().len(), 1, "only DP-2 is dimmed");
 
-        // A compositor that cannot dim in software leaves DP-2 without a
-        // control of any kind.
+        // A compositor that cannot dim in software leaves DP-2 without a control of any kind.
         service.show_only(SessionDisplays {
             connectors: vec!["eDP-1".into(), "DP-2".into()],
             software_dim: false,
@@ -1493,15 +1413,12 @@ mod tests {
         assert_eq!(connectors, ["eDP-1", "DP-2"]);
     }
 
-    /// A level set while a rescan reads the bus survives the rescan: the
-    /// probe works from a snapshot outside the lock and must not put a known
-    /// monitor's older level back when it commits.
+    /// A level set while a rescan reads the bus survives it: the probe works from a snapshot outside
+    /// the lock.
     #[test]
     fn a_level_set_during_a_rescan_is_not_reverted() {
         let mut software = ddc_monitor("DP-9");
         software.target = BrightnessTarget::Software;
-        // The second discovery (the rescan) waits until the test has set a
-        // level, as a slow bus would hold it.
         let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (entered_tx, released) = (Mutex::new(entered_tx), Mutex::new(released));
@@ -1652,8 +1569,8 @@ mod tests {
         }
     }
 
-    /// The fake I²C bus: a monitor whose writes wait at its gate, if it
-    /// has one, and that records every frame on the wire.
+    /// A monitor's fake I²C bus: writes wait at its gate, if it has one, and every frame on the wire is
+    /// recorded.
     struct SlowBus {
         frames: Arc<Mutex<Vec<Vec<u8>>>>,
         gate: Option<Arc<Gate>>,
@@ -1673,13 +1590,10 @@ mod tests {
         fn pause(&mut self, _duration: Duration) {}
     }
 
-    /// A held brightness key on a DDC/CI monitor whose bus is stuck mid-write:
-    /// the cache moves at once, the bus sees a handful of writes rather than
-    /// one per press, never two at a time, and ends on the last value; a
-    /// second monitor's write is not held up behind the first's queue.
+    /// A held brightness key on a monitor whose bus is stuck mid-write: the cache moves at once, the
+    /// bus sees a few writes, never two at once, and ends on the last value.
     #[test]
     fn ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor() {
-        /// The writes one monitor's bus received, in order.
         type BusWrites = Arc<Mutex<Vec<Vec<u8>>>>;
         let buses: Arc<Mutex<BTreeMap<String, BusWrites>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
@@ -1736,8 +1650,8 @@ mod tests {
             None,
         );
         service.rescan_blocking();
-        // Every press returns while DP-1's bus is held: a press that waited
-        // on the bus would never return.
+        // Every press returns while DP-1's bus is held: a press that waited on the bus would never
+        // return.
         for press in 1..=20u8 {
             assert!(service.set("DP-1", f32::from(press) * 5.0));
             let level = service.levels()[0].level;
@@ -1784,11 +1698,8 @@ mod tests {
 
     #[test]
     fn writes_to_one_ddc_monitor_are_spaced_out() {
-        // When each write reached the monitor, and how long the writer had
-        // slept before it: the slept time is recorded, not spent, so the
-        // gap the monitor gets is the time that really passed between the
-        // writes plus the sleep the writer asked for. However long a loaded
-        // machine takes between the two, together they cover the settle gap.
+        // When each write reached the monitor, and how long the writer had slept before it: the slept
+        // time is recorded, not spent.
         let applied: Arc<Mutex<Vec<(f32, Instant, u64)>>> = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&applied);
         let writer = Writer::spawn(
@@ -1814,8 +1725,8 @@ mod tests {
         let (_, first_at, slept_before_first) = applied[0];
         let (_, second_at, slept_before_second) = applied[1];
         let slept = Duration::from_millis(slept_before_second - slept_before_first);
-        // The recorded sleep is whole milliseconds, cut down from the asked
-        // duration: allow the one it can lose.
+        // The recorded sleep is whole milliseconds, cut down from the asked duration: allow the one it
+        // can lose.
         assert!(
             second_at.duration_since(first_at) + slept + Duration::from_millis(1)
                 >= DDC_MIN_INTERVAL,

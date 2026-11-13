@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-peer-state"
 version = "0.1.0"
 edition = "2024"
@@ -15,6 +17,8 @@ test-support = ["dep:iroh-base", "tilo-workspace-join/test-support"]
 ignored = ["serde_bytes"]
 
 [dependencies]
+# Validity, expiry and deadlines read one clock on every target, the page's included.
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-actions = { path = "../actions" }
 fnv.workspace = true
@@ -54,30 +58,27 @@ tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
+# The person's own documents between two of their devices: the link every host
+# dials, a page included.
+# One length-prefixed record per link exchange, the same framing its peers read.
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 # The device's own transports and files: its enrollment and relay sessions,
 # its calls, the owner record on disk and the process's authorization
 # watchers. A page holds its workspaces through the same owner over its own
 # storage and link, so the engine builds for wasm32 without them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh.workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 # Writes the file-backed store: owner-only, crash-safe replacement.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../../system/content" }
-# The endpoint a relay session dials its pinned host from.
-iroh.workspace = true
 # The random id of each enrollment challenge request.
 getrandom.workspace = true
 rand_core.workspace = true
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-# The join client an enrollment redeems its invitation over, and the relay
-# session a joined workspace syncs through.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
-tilo-clock = { path = "../../platform/tilo-clock" }
-# One length-prefixed record per join exchange, the same framing its peers read.
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [dev-dependencies]
 # The closure-built action host a test dispatcher is.
@@ -99,15 +100,20 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+futures = { workspace = true, default-features = true }
 # Membership replay is a property over operation sets, not one fixture.
 proptest.workspace = true
+# The desk a received workspace desktop is drawn on: the surface every host
+# shows another device's windows through, reconciled from the tree that
+# arrived, not read as a document.
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
 
+# The workspace engine's integration tests: one binary, its files included as
+# modules by `tests/it.rs` (a file per binary linked the whole crate once
+# each), gated on the fixtures its joins are answered with.
 [[test]]
-name = "renewed_membership"
-required-features = ["test-support"]
-
-[[test]]
-name = "three_devices"
+name = "it"
+path = "tests/it.rs"
 required-features = ["test-support"]
 
 [lints]

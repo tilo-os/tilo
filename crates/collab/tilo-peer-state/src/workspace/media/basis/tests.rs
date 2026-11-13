@@ -40,8 +40,16 @@ fn revocation(root: &SigningKey, time: u64) -> RevocationEntry {
     tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
     entry
 }
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: asserts the two readings agree before returning the basis"
+)]
 fn basis(doc: &AutoCommit, extra: &[RevocationEntry]) -> Result<[u8; 32], MediaPolicyError> {
-    legacy(doc, extra)
+    let basis = legacy(doc, extra);
+    // A governance state reading its once-decoded rows has the same basis.
+    let state = crate::cached_document::CachedDocument::from(doc.clone());
+    assert_eq!(super::decoded(&state, extra), basis);
+    basis
 }
 #[test]
 fn media_basis_matches_original_signed_workspace() {
@@ -59,12 +67,12 @@ fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() 
     let (mut doc, root, device) = fixture();
     let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let original = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-    let mut row: crate::state::GovernedIdentity = serde_json::from_slice(&original).unwrap();
+    let mut row = crate::state::GovernedIdentity::decode(&original).unwrap();
     row.revocations = vec![revocation(&root, 20), revocation(&root, 10)];
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -92,7 +100,7 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
                 doc.put(ROOT, "owner", "wrong key").unwrap();
             }
             1 => {
-                doc.put_object(ROOT, "grants", ObjType::List).unwrap();
+                doc.put_object(ROOT, "peers", ObjType::List).unwrap();
             }
             2 => {
                 doc.put(ROOT, "peers", "wrong shape").unwrap();
@@ -113,15 +121,10 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
             _ => {
                 let ids = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
                 let bytes = super::super::strict_bytes(&doc, &ids, &device).unwrap();
-                let mut row: crate::state::GovernedIdentity =
-                    serde_json::from_slice(&bytes).unwrap();
+                let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
                 row.device_cert.signature[0] ^= 1;
-                doc.put(
-                    &ids,
-                    &device,
-                    ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
-                )
-                .unwrap();
+                doc.put(&ids, &device, ScalarValue::Bytes(row.encode().unwrap()))
+                    .unwrap();
             }
         }
         doc.commit();
@@ -134,7 +137,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     let (mut doc, root, device) = fixture();
     let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-    let mut row: crate::state::GovernedIdentity = serde_json::from_slice(&bytes).unwrap();
+    let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
     row.device_cert.device_label = "escaped \" \\ \n".repeat(1024);
     tilo_user_identity::sign_device_cert(&mut row.device_cert, &root).unwrap();
     let proof = crate::state::RedemptionReceipt {
@@ -143,7 +146,6 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
         device_public_key: row.device_cert.device_public_key,
         request_id: [2; 32],
         role: crate::join::MemberRole::Editor,
-        invitation: None,
     };
     row.admission = Some(proof.clone());
     row.admissions = vec![proof.clone(), proof];
@@ -156,7 +158,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -167,7 +169,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -201,25 +203,15 @@ fn historical_basis(
 ) -> Result<[u8; 32], MediaPolicyError> {
     let owner = strict_string(doc, &ROOT, "owner")?;
     let owner_key = canonical_key(&owner)?;
-    let grant_map = strict_map(doc, &ROOT, "grants")?;
+    let membership = crate::members::replay_declared(doc);
     let mut grants = BTreeMap::new();
-    for key in doc.keys(&grant_map) {
-        let bytes = strict_bytes(doc, &grant_map, &key)?;
-        let value: tilo_action_policy::Grant =
-            serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
+    for grant in &membership.grants {
         grants.insert(
-            key,
-            canonical_bytes(&value).map_err(|_| MediaPolicyError::Malformed)?,
+            grant.id.as_str().to_owned(),
+            canonical_bytes(grant).map_err(|_| MediaPolicyError::Malformed)?,
         );
     }
-    let member_map = strict_map(doc, &ROOT, "members")?;
-    let mut members = BTreeMap::new();
-    for key in doc.keys(&member_map) {
-        let bytes = strict_bytes(doc, &member_map, &key)?;
-        let role: tilo_action_policy::Role =
-            serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
-        members.insert(key, role);
-    }
+    let members: BTreeMap<String, tilo_action_policy::Role> = membership.members;
     let peers = strict_map(doc, &ROOT, "peers")?;
     let mut roster = BTreeSet::new();
     for key in doc.keys(&peers) {
@@ -232,8 +224,8 @@ fn historical_basis(
     let mut revocations = Vec::new();
     for key in doc.keys(&identities) {
         let bytes = strict_bytes(doc, &identities, &key)?;
-        let row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&bytes).map_err(|_| MediaPolicyError::Malformed)?;
+        let row = crate::state::GovernedIdentity::decode(&bytes)
+            .map_err(|_| MediaPolicyError::Malformed)?;
         let device = canonical_key(&key)?;
         if device != row.device_cert.device_public_key {
             return Err(MediaPolicyError::Binding);
@@ -318,7 +310,7 @@ fn media_basis_hashes_the_delegation_an_older_row_carries() {
     let (mut doc, root, device) = fixture();
     let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
-    let mut row: crate::state::GovernedIdentity = serde_json::from_slice(&bytes).unwrap();
+    let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
     row.workspace_delegations = vec![WorkspaceDelegation {
         version: 1,
         room: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
@@ -336,7 +328,7 @@ fn media_basis_hashes_the_delegation_an_older_row_carries() {
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();

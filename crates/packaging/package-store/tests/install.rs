@@ -45,7 +45,6 @@ fn v1_files() -> BTreeMap<&'static str, Vec<u8>> {
 }
 
 fn v2_files() -> BTreeMap<&'static str, Vec<u8>> {
-    // The icon and strings are unchanged; the binary changed; a file was added.
     BTreeMap::from([
         ("bin/app", bytes(3, 310_000)),
         ("share/icon.png", bytes(2, 120_000)),
@@ -80,7 +79,6 @@ impl BlobFetcher for CountingFetcher<'_> {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn installs_materialise_the_tree_and_share_unchanged_blobs() {
-    // phase: an_install_materialises_exactly_the_package_tree
     {
         let identity = SigningIdentity::generate();
         let files = v1_files();
@@ -132,7 +130,6 @@ fn installs_materialise_the_tree_and_share_unchanged_blobs() {
             "no second unpacked copy is kept"
         );
     }
-    // phase: an_upgrade_stores_only_changed_blobs_and_reflinks_shared_ones
     {
         let identity = SigningIdentity::generate();
         let (_p1, v1) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
@@ -186,7 +183,6 @@ fn installs_materialise_the_tree_and_share_unchanged_blobs() {
             );
         }
     }
-    // phase: reinstalling_the_same_package_repairs_a_damaged_tree
     {
         let identity = SigningIdentity::generate();
         let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
@@ -208,7 +204,6 @@ fn installs_materialise_the_tree_and_share_unchanged_blobs() {
 
 #[test]
 fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
-    // phase: a_thin_update_fetches_only_the_blobs_the_store_lacks
     {
         let identity = SigningIdentity::generate();
         let (_p1, v1) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
@@ -245,7 +240,6 @@ fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
                 .unwrap();
         assert!(report.is_intact(), "{report:?}");
     }
-    // phase: a_thin_package_without_a_source_for_its_bytes_is_refused
     {
         let identity = SigningIdentity::generate();
         let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
@@ -260,7 +254,6 @@ fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
         );
         assert!(store.registry().unwrap().is_empty());
     }
-    // phase: a_fetcher_that_serves_wrong_bytes_is_caught
     {
         struct Liar;
         impl BlobFetcher for Liar {
@@ -282,7 +275,6 @@ fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
         );
         assert!(store.registry().unwrap().is_empty());
     }
-    // phase: a_refused_package_stores_nothing
     {
         let identity = SigningIdentity::generate();
         let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
@@ -306,7 +298,6 @@ fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
 
 #[test]
 fn removal_evicts_unreferenced_blobs_and_honours_pins() {
-    // phase: removal_evicts_only_blobs_no_other_package_references
     {
         let identity = SigningIdentity::generate();
         let shared = bytes(7, 200_000);
@@ -351,7 +342,6 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
         store.remove("so.tilo.b", false).unwrap();
         assert!(content_files(root.path()).is_empty());
     }
-    // phase: a_pinned_package_is_removed_only_when_forced_and_survives_a_sweep
     {
         let identity = SigningIdentity::generate();
         let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
@@ -427,7 +417,6 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
             .is_intact(),
         "an installed package is untouched"
     );
-    // Once the app closed, the next collection takes it.
     let collected = store
         .collect_orphans(&package_store::mounts::InUse::known(
             package_store::mounts::Mounts::default(),
@@ -469,7 +458,6 @@ fn a_leased_payload_outlives_its_update_and_goes_after_release() {
     let collected = store.collect_orphans(&nothing_mounted()).unwrap();
     assert_eq!(collected.kept_in_use, vec![old.payload_root.clone()]);
     assert!(old.payload_root.exists());
-    // A launcher that ends, however it ends, releases the tree.
     drop(launch);
     let collected = store.collect_orphans(&nothing_mounted()).unwrap();
     assert!(!old.payload_root.exists(), "{collected:?}");
@@ -505,7 +493,6 @@ fn an_unheld_update_retires_the_old_tree_at_once() {
     let store = PackageStore::at(root.path());
     install(&store, &v1);
     let old = installed(&store, "so.tilo.a");
-    // A launch that came and went leaves its lease file behind.
     drop(package_store::lease::hold_payload_in(store.layout(), &old.payload_root).unwrap());
     install(&store, &v2);
     assert!(!old.payload_root.exists());
@@ -665,7 +652,6 @@ fn sweep_removes_lru_until_under_cap_in_one_gc() {
             .update_row(&installed.package.id, |row| row.last_used = last_used)
             .unwrap();
     }
-    // The pinned package is the least recently used of all.
     store
         .update_row("so.tilo.p", |row| row.last_used = 0)
         .unwrap();
@@ -705,7 +691,6 @@ fn sweep_removes_lru_until_under_cap_in_one_gc() {
                 .is_intact()
         );
     }
-    // Under the cap already: nothing more goes, pinned or not.
     assert!(store.sweep(200_000).unwrap().is_empty());
 }
 
@@ -780,7 +765,6 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
     assert!(registry.find("so.tilo.todo").is_some());
     assert!(registry.find("so.tilo.tasks").is_none());
 
-    // The same publisher's renamed app takes its place: one app, under the new id.
     let (_tasks, tasks) = renamed(&publisher, "so.tilo.tasks", "so.tilo.todo");
     install(&store, &tasks);
     let registry = store.registry().unwrap();
@@ -794,13 +778,11 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
         Some("so.tilo.tasks")
     );
 
-    // The earlier id is not installed again beside the app that took its place.
     let again = store
         .install(full_tapp(&todo).as_slice(), admit_all, None)
         .unwrap_err();
     assert!(matches!(again, StoreError::Refused(_)), "{again:?}");
     assert!(store.registry().unwrap().find("so.tilo.todo").is_none());
-    // An update of the renamed app keeps what it took over.
     install(&store, &tasks);
     assert_eq!(
         store.registry().unwrap().taken_over_by("so.tilo.todo"),
@@ -842,13 +824,11 @@ fn disk_usage_does_not_verify_signatures() {
 
     // Accounting reads the collection; it never replays the signature.
     assert_eq!(store.disk_usage().unwrap(), before);
-    // Verification, the explicit operation, still sees the damage.
     let row = installed(&store, "so.tilo.a");
     assert!(matches!(
         package_store::integrity::verify(&row, &row.payload_root),
         Err(package_store::integrity::IntegrityError::RootIdMismatch)
     ));
-    // And a sweep under pressure still measures and evicts it.
     assert_eq!(store.sweep(1).unwrap(), vec!["so.tilo.a".to_string()]);
     assert!(content_files(root.path()).is_empty());
 }
@@ -907,7 +887,6 @@ fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit()
     )
     .unwrap();
     let refused = |result: Result<package_store::Installed, StoreError>| matches!(result, Err(StoreError::Payload(reason)) if reason.contains("materializes"));
-    // phase: without_a_publisher_list_the_distribution_limit_holds
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove(DEVELOPER_PUBLISHERS_FILE_ENV);
@@ -918,7 +897,6 @@ fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit()
             None
         )));
     }
-    // phase: another_publishers_package_keeps_the_distribution_limit
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
@@ -929,7 +907,6 @@ fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit()
             None
         )));
     }
-    // phase: the_sessions_own_build_installs_under_the_local_build_ceiling
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
@@ -937,7 +914,6 @@ fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit()
         let installed = install(&store, &own);
         assert_eq!(installed.package.id, "so.tilo.big");
     }
-    // phase: a_shipped_build_reads_no_publisher_list
     {
         let shipped = developer_publishers_from(package_store::dev_env::dev_override_from(
             false,

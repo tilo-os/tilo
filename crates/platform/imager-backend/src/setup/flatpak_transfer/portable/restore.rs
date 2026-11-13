@@ -16,8 +16,8 @@ use std::{
     sync::Arc,
 };
 use zeroize::Zeroizing;
-/// Authenticated private app subset. Call only after genuine Home adoption;
-/// restoration changes the writable target repo, never the archived source home.
+/// Call only after genuine Home adoption; restoration changes the writable target repository, never
+/// the archived source home.
 pub struct ApplicationImport {
     pub(super) review: ImportReview,
     pub(super) root: PathBuf,
@@ -25,9 +25,8 @@ pub struct ApplicationImport {
     pub(super) expectation: super::Expectation,
 }
 impl ApplicationImport {
-    /// # Errors
-    /// Refuses undeclared packages, changed ciphertext/binding/manifests and
-    /// nonprivate or existing extraction destinations.
+    /// Refuses undeclared packages, changed ciphertext, bindings or manifests, and non-private or
+    /// existing extraction destinations.
     pub fn review(
         setup: &PreparedSetupReview,
         package: &Path,
@@ -83,8 +82,8 @@ impl ApplicationImport {
         }
         Self::review_authenticated(expected, review, password, quarantine, cancel)
     }
-    /// Review received bytes without reopening a sender-controlled path. The
-    /// caller must bind `expected` to its authenticated operation grant.
+    /// The caller must bind `expected` to its authenticated operation grant, so no sender-controlled
+    /// path is reopened.
     pub fn review_received(
         expected: &super::Expectation,
         file: std::fs::File,
@@ -175,9 +174,8 @@ impl ApplicationImport {
     pub fn manifest(&self) -> &ApplicationsManifest {
         &self.manifest
     }
-    /// Independently re-attest package, staged bytes, exact deployed commits,
-    /// original approved signature keys and target repository bindings.
-    /// Existing user refs are preserved; conflicting refs require a new review.
+    /// Independently re-attests package, staged bytes, exact deployed commits, approved signature keys
+    /// and target repository bindings; user refs are preserved and a conflict needs a new review.
     pub fn restore(
         &mut self,
         runner: &impl OfflineRunner,
@@ -192,8 +190,7 @@ impl ApplicationImport {
         self.review.verify_existing_tree(&self.root, cancel)?;
         Ok(restored)
     }
-    /// Independently verify exact target deployments and already adopted user
-    /// state. This cannot install a missing ref or repair a partial copy.
+    /// This cannot install a missing ref or repair a partial copy.
     pub fn verify_received_completion(
         &mut self,
         runner: &impl OfflineRunner,
@@ -240,8 +237,7 @@ impl ApplicationImport {
         self.review.verify_existing_tree(&self.root, cancel)?;
         target.validate_destination()
     }
-    /// The copied user state travels with every sealed deployment; the applier
-    /// keeps the ones the copied user installation already has.
+    /// The applier keeps the state the copied user installation already has.
     fn user_state_request(
         &self,
         workspace: &Path,
@@ -261,11 +257,8 @@ impl ApplicationImport {
                 .collect(),
         }
     }
-    /// Explicitly adopt only authenticated user Flatpak state when the person
-    /// deselected their documents. The state travels as a sealed Home unit and
-    /// the promotion engine preserves collisions and private Tilo custody.
-    /// # Errors
-    /// Refuses incomplete copies, changed receipts, collisions or cancellation.
+    /// The state travels as a sealed Home unit and the promotion engine preserves collisions and
+    /// private Tilo custody.
     pub fn adopt_user_state(
         &mut self,
         runner: &impl OfflineRunner,
@@ -365,8 +358,6 @@ impl ApplicationImport {
         self.review.verify_existing_tree(&self.root, cancel)
     }
 }
-/// Deploy every sealed deployment in `manifest` from `root` into the user
-/// installation at `home`, keeping the ones it already has at the same commit.
 /// `check` re-attests the unit between steps.
 pub(super) fn apply(
     runner: &impl OfflineRunner,
@@ -407,8 +398,7 @@ pub(super) fn apply(
     Ok(manifest.deployments.len())
 }
 
-/// The sealed deployments the user installation at `home` already has, each
-/// at exactly the sealed commit. A different installed commit is refused.
+/// A different installed commit is refused.
 fn present(
     runner: &impl OfflineRunner,
     manifest: &ApplicationsManifest,
@@ -442,7 +432,6 @@ fn present(
     Ok(present)
 }
 
-/// The extra-data bytes the sealed deployments will write into the target.
 fn extra_data(
     runner: &impl OfflineRunner,
     root: &Path,
@@ -461,8 +450,6 @@ fn extra_data(
     })
 }
 
-/// Trust each authenticated original signing authority in the target user
-/// installation before deploying from the sealed repositories.
 fn add_remotes(
     runner: &impl OfflineRunner,
     root: &Path,
@@ -638,11 +625,9 @@ fn extra_capacity(target: &PinnedDirectory, required: u64) -> io::Result<()> {
         .checked_add(16 * 1024 * 1024)
         .ok_or_else(|| changed("Extra-data target allowance overflows"))?;
     let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: held target descriptor and initialized bounded native output storage.
     if unsafe { libc::fstatvfs(target.file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful fstatvfs initialized every native field.
     let status = unsafe { status.assume_init() };
     let available = u128::from(status.f_bavail) * u128::from(status.f_frsize);
     target.validate_destination()?;
@@ -668,12 +653,10 @@ mod extra_capacity_tests {
         fs::write(root.path().join("sentinel"), b"original target").unwrap();
         let pin = PinnedDirectory::open_absolute(root.path()).unwrap();
         let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: held private fixture descriptor and complete native output buffer.
         assert_eq!(
             unsafe { libc::fstatvfs(pin.file.as_raw_fd(), status.as_mut_ptr()) },
             0
         );
-        // SAFETY: successful fstatvfs initialized the native structure.
         let status = unsafe { status.assume_init() };
         let free =
             u64::try_from(u128::from(status.f_bavail) * u128::from(status.f_frsize)).unwrap();

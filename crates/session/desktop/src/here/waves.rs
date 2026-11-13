@@ -192,7 +192,7 @@ impl HereState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{HostLine, LiveMember};
+    use super::super::LiveMember;
     use super::*;
 
     fn member(publisher: &str, label: &str, wave: Option<(u32, &str)>) -> LiveMember {
@@ -265,21 +265,15 @@ mod tests {
         let mut here = HereState::default();
         let mut own = member("me", "Kim", None);
         own.user = Some("kim-root".into());
+        let mut phone = member("me-phone", "Kim", None);
+        phone.user = Some("kim-root".into());
         here.set_members(
             Some(own.clone()),
-            Some(vec![member("ada", "Ada", Some((1, "x")))]),
-        );
-        here.set_lines(
-            vec![HostLine {
-                device: "me-phone".into(),
-                user: "kim-root".into(),
-                ..HostLine::default()
-            }],
-            0,
+            Some(vec![phone.clone(), member("ada", "Ada", Some((1, "x")))]),
         );
         here.set_members(
             Some(own),
-            Some(vec![member("ada", "Ada", Some((2, "me-phone")))]),
+            Some(vec![phone, member("ada", "Ada", Some((2, "me-phone")))]),
         );
         assert_eq!(here.take_waves().len(), 1);
     }

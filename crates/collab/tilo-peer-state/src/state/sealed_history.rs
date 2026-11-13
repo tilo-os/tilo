@@ -1,17 +1,26 @@
 //! Stored-envelope validation for restore.
 use super::backend::PeerCore;
-use super::{DocumentAdmission, MAX_SEALED_BYTES, MAX_SEALED_OPS, err, sealed_compaction};
+use super::{DocumentAdmission, err, sealed_compaction, sealed_within_bounds};
 
 pub(super) fn restore(
     core: &mut PeerCore,
     route: &super::Route,
     ops: Vec<collab_types::SignedOp>,
 ) -> Result<(), String> {
-    let held = ops.iter().try_fold(0usize, |held, op| {
-        held.checked_add(op.payload.len())
-            .filter(|held| *held <= MAX_SEALED_BYTES)
-    });
-    if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held.is_none() {
+    // The compaction set leads the history; the writes after it have their own bound.
+    let set = ops
+        .iter()
+        .take_while(|op| op.kind == collab_types::OpKind::Compaction)
+        .count();
+    let (leading, writes) = ops.split_at(set);
+    let held = |ops: &[collab_types::SignedOp]| {
+        (
+            ops.len(),
+            ops.iter()
+                .fold(0usize, |held, op| held.saturating_add(op.payload.len())),
+        )
+    };
+    if ops.is_empty() || !sealed_within_bounds(held(leading), held(writes)) {
         return Err("sealed record history outside its bounds".into());
     }
     let document = core
@@ -36,9 +45,13 @@ pub(super) fn restore(
         ) {
             return Err("sealed history holds a cleartext write".into());
         }
+        // A compaction's segment is admitted as part of it: the compaction
+        // names it ([`sealed_compaction::check_stored`]).
         let admitted = DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op)
             .map_err(err)?;
-        if core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
+        if !collab_types::is_compaction_segment(op)
+            && core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id)
+        {
             return Err("sealed history lacks exact admission evidence".into());
         }
         if document

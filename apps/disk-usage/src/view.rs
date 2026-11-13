@@ -23,6 +23,7 @@ use ui::widget::{
 };
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
+use crate::locales::CATALOG;
 use crate::resource::{
     DiskUsage, DiskUsageEffect, Folders, RecentFolders, analyze, folder_row, recent_row,
 };
@@ -30,6 +31,7 @@ use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
 use ui::framework::PersonRecord;
 use ui::tilo_resource::AbsolutePath;
+use ui::widget::DrawChild;
 
 /// The app, as the surfaces name it when it asks for attention.
 pub(crate) const OWNER_NAME: &str = "Disk Usage Analyzer";
@@ -250,8 +252,8 @@ impl Nav {
 
     fn title(&self) -> String {
         self.page.with(|page| match page {
-            Page::Home => "Analyze storage".to_owned(),
-            Page::Needs => "Needs you".to_owned(),
+            Page::Home => CATALOG.t("disk-usage-analyze-storage"),
+            Page::Needs => CATALOG.t("disk-usage-needs-you"),
             Page::Analysis { result, .. } => folder_title(&self.places, &result.path),
             Page::Error(path, _) => folder_title(&self.places, path),
         })
@@ -583,12 +585,12 @@ impl Pages {
         let mut page = Column::new()
             .with_intrinsic_height()
             .push(Box::new(Section::titled(
-                "Places",
+                CATALOG.t("disk-usage-places"),
                 places.iter().map(|p| self.place_row(p)).collect(),
             )));
         if !recent.is_empty() {
             page = page.push(Box::new(Section::titled(
-                "Recent",
+                CATALOG.t("disk-usage-recent"),
                 recent.iter().map(|p| self.place_row(p)).collect(),
             )));
         }
@@ -635,7 +637,7 @@ impl Pages {
     ) -> Element {
         let rows = slice_rows(&result.entries);
         let folders = Section::titled(
-            "Folders",
+            CATALOG.t("disk-usage-folders"),
             rows.iter().map(|row| self.folder_row(row)).collect(),
         );
         let chart = SliceChart::new(result, rows, inspected, analyze);
@@ -696,11 +698,19 @@ impl Window {
             ..ToolbarLocation::default()
         });
         let mut actions = vec![
-            ToolbarAction::new(CHOOSE_FOLDER, Icon::FolderOpen.name(), "Choose folder")
-                .enabled(self.live),
-            ToolbarAction::new(OPEN_DISKS, Icon::HardDrive.name(), "Disks")
-                .enabled(self.live)
-                .in_menu(),
+            ToolbarAction::new(
+                CHOOSE_FOLDER,
+                Icon::FolderOpen.name(),
+                CATALOG.t("disk-usage-choose-folder"),
+            )
+            .enabled(self.live),
+            ToolbarAction::new(
+                OPEN_DISKS,
+                Icon::HardDrive.name(),
+                CATALOG.t("disk-usage-open-disks"),
+            )
+            .enabled(self.live)
+            .in_menu(),
         ];
         if let Some(label) = ui::attention::pill() {
             actions.push(ToolbarAction::new(NEEDS_YOU, Icon::Bell.name(), label).labelled());
@@ -765,20 +775,22 @@ impl ui::widget::Decorator for Window {
     }
 }
 
-fn files_text(n: u64) -> String {
+/// A count in the reader's language, singular or plural: the digits keep the
+/// separators the rest of the window writes them with.
+fn counted(n: u64, one: &str, many: &str) -> String {
     if n == 1 {
-        "1 file".into()
+        CATALOG.t(one)
     } else {
-        format!("{} files", count(n))
+        CATALOG.t_args(many, &[("count", count(n).into())])
     }
 }
 
+fn files_text(n: u64) -> String {
+    counted(n, "disk-usage-files-one", "disk-usage-files")
+}
+
 fn unreadable_text(n: u64) -> String {
-    if n == 1 {
-        "1 item couldn’t be read".into()
-    } else {
-        format!("{} items couldn’t be read", count(n))
-    }
+    counted(n, "disk-usage-unreadable-one", "disk-usage-unreadable")
 }
 
 struct SliceRow {
@@ -938,7 +950,8 @@ impl ui::widget::Decorator for SliceChart {
         presence: &PresenceCtx,
     ) {
         self.prepare(theme);
-        self.chart.draw(scene, transform, text, theme, presence);
+        self.chart
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

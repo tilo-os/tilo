@@ -1,9 +1,7 @@
-//! Pure geometry for arranging displays by dragging: edge snapping, overlap
-//! resolution and keeping the desktop one connected area. Everything is in
-//! desktop coordinates (the units `OutputConfig::x`/`y` are stored in), so
-//! the rules are testable without a canvas.
+//! Pure geometry for arranging displays by dragging: edge snapping, overlap resolution and keeping
+//! the desktop one connected area. Everything is in desktop coordinates (the units
+//! `OutputConfig::x`/`y` are stored in).
 
-/// One display's rectangle on the shared desktop plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placement {
     pub x: i32,
@@ -44,8 +42,6 @@ impl Placement {
             && other.y < self.bottom()
     }
 
-    /// Whether the two share a stretch of edge, so the pointer can cross
-    /// from one to the other.
     pub fn touches(self, other: Self) -> bool {
         let vertical_run = self.y < other.bottom() && other.y < self.bottom();
         let horizontal_run = self.x < other.right() && other.x < self.right();
@@ -53,7 +49,6 @@ impl Placement {
             || (horizontal_run && (self.bottom() == other.y || other.bottom() == self.y))
     }
 
-    /// Gap between the two along each axis; zero when their spans overlap.
     fn gaps(self, other: Self) -> (i32, i32) {
         let dx = other
             .x
@@ -69,7 +64,6 @@ impl Placement {
     }
 }
 
-/// The lines a display offers along one axis: its two edges and its centre.
 fn lines(start: i32, length: i32) -> [i32; 3] {
     [
         start,
@@ -87,8 +81,6 @@ const fn lines_meet(edge: usize, target: usize) -> bool {
     (edge == 1) == (target == 1)
 }
 
-/// The closest offset within `threshold` that lines one of `edges` up with
-/// a line of `targets` it may meet ([`lines_meet`]).
 fn nearest_offset(
     edges: [i32; 3],
     targets: impl Iterator<Item = [i32; 3]>,
@@ -113,7 +105,6 @@ fn nearest_offset(
     best
 }
 
-/// Whether line `index` of a display, at `at`, meets one of `theirs` there.
 fn shares(at: i32, index: usize, theirs: [i32; 3]) -> bool {
     theirs
         .into_iter()
@@ -125,34 +116,22 @@ fn shares(at: i32, index: usize, theirs: [i32; 3]) -> bool {
 /// desktop units. The canvas draws it as an alignment guide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guide {
-    /// A vertical line at `x == at`, else a horizontal one at `y == at`.
     pub vertical: bool,
     pub at: i32,
-    /// Where the line starts and ends along its own direction: it spans
-    /// both displays it joins.
     pub from: i32,
     pub to: i32,
 }
 
-/// Where a dragged display stands under the pointer, and what it lines up
-/// with there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapped {
     pub placement: Placement,
     pub guides: Vec<Guide>,
 }
 
-/// Pull `moving` magnetically onto nearby lines of `others`: its left or
-/// right edge onto either of their edges, its centre onto their centre, and
-/// likewise top, middle and bottom. Each axis snaps on its own to the
-/// closest line within `threshold`; beyond it the display stays exactly
-/// where it was put.
 pub fn snap(moving: Placement, others: &[Placement], threshold: i32) -> Placement {
     snap_with_guides(moving, others, threshold).placement
 }
 
-/// [`snap`], with the guides along every line the snapped display now
-/// shares with another.
 pub fn snap_with_guides(moving: Placement, others: &[Placement], threshold: i32) -> Snapped {
     let dx = nearest_offset(
         lines(moving.x, moving.width),
@@ -213,12 +192,8 @@ pub fn is_valid(moving: Placement, others: &[Placement]) -> bool {
         && (others.is_empty() || others.iter().any(|other| moving.touches(*other)))
 }
 
-/// Move `moving` out of every display it overlaps, each time along the
-/// shortest way out that does not land on another display.
 pub fn resolve_collisions(moving: Placement, others: &[Placement]) -> Placement {
     let mut current = moving;
-    // Each step clears one overlap for good or moves strictly outward, so
-    // a few passes per display always settle.
     for _ in 0..others.len().saturating_mul(4).max(1) {
         let Some(hit) = others
             .iter()
@@ -307,9 +282,6 @@ pub fn settle(moving: Placement, others: &[Placement], threshold: i32) -> Placem
     nearest_valid(snapped, others).unwrap_or(resolved)
 }
 
-/// The valid place nearest `moving`, among every place flush against a side
-/// of another display. The outermost display's outer side is always free,
-/// so there is one whenever there are others.
 fn nearest_valid(moving: Placement, others: &[Placement]) -> Option<Placement> {
     let clamp = |value: i32, low: i32, high: i32| value.max(low).min(high.max(low));
     let distance = |candidate: &Placement| {
@@ -320,7 +292,6 @@ fn nearest_valid(moving: Placement, others: &[Placement]) -> Option<Placement> {
     others
         .iter()
         .flat_map(|other| {
-            // Along a side, stay as near the drop as still shares a run.
             let y = clamp(
                 moving.y,
                 other.y.saturating_sub(moving.height).saturating_add(1),
@@ -342,7 +313,6 @@ fn nearest_valid(moving: Placement, others: &[Placement]) -> Option<Placement> {
         .min_by_key(distance)
 }
 
-/// A way an arrow key moves a display on the arrangement canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Left,
@@ -351,10 +321,6 @@ pub enum Step {
     Down,
 }
 
-/// Where an arrow key moves `moving`: the next valid place that way among
-/// the places flush against a side of another display and aligned with its
-/// start, centre or end. Of those, the one that stays most in line across
-/// the step, then the nearest. `None` when nothing lies that way.
 pub fn step(moving: Placement, others: &[Placement], way: Step) -> Option<Placement> {
     let across = |start: i32, length: i32, own: i32| {
         let slack = length.saturating_sub(own);
@@ -518,8 +484,6 @@ mod tests {
 
     #[test]
     fn centres_snap_too_and_each_shared_line_has_a_guide() {
-        // A 1280-wide monitor dropped under the panel, its centre 10 px off
-        // the panel's centre: it centres, flush below.
         let monitor = Placement::new(330, 1090, 1280, 720);
         let snapped = snap_with_guides(monitor, &[PANEL], 24);
         assert_eq!(snapped.placement, Placement::new(320, 1080, 1280, 720));
@@ -545,8 +509,6 @@ mod tests {
 
     #[test]
     fn every_drop_settles_touching_and_clear_of_every_display() {
-        // A row of three and a fourth display dropped all over the desk:
-        // wherever it lands, it rests touching one and covering none.
         let others = [
             PANEL,
             Placement::new(1920, 0, 2560, 1440),
@@ -568,11 +530,8 @@ mod tests {
 
     #[test]
     fn an_edge_never_pulls_to_a_centre() {
-        // The monitor's top 10 px below the panel's middle line: no pull,
-        // a top edge lines up with edges only.
         let monitor = Placement::new(1920, 550, 2560, 1440);
         assert_eq!(snap(monitor, &[PANEL], 24), monitor);
-        // Its middle 10 px off the panel's middle: centred.
         let monitor = Placement::new(1920, -170, 2560, 1440);
         assert_eq!(snap(monitor, &[PANEL], 24).y, -180);
     }

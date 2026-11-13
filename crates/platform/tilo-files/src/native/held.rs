@@ -1,18 +1,13 @@
-//! A file its writer stands behind for as long as it lives: published with
-//! the writer's lock on it, and read as current only while that lock is held.
-//!
-//! The writer keeps the [`Held`] it got from [`publish`]. When the writer
-//! exits, crashes or lets go (a failed replacement drops it), the kernel
-//! releases the lock with it, so a reader learns that the contents are no
-//! longer vouched for at once: nobody renews anything on a clock.
-//!
-//! The lock is an exclusive `flock(2)` on the published file, taken before
-//! the file is renamed into place, so the name never names a file of a live
-//! writer that is not locked yet. A reader tries a *shared* lock: refused
-//! means the writer holds it. Granted means nobody does, unless the name has
-//! meanwhile been replaced by a newer file, which the reader then reads.
-//! Readers never conflict with one another, and a reader can neither take
-//! the writer's place nor block it: every publication locks a new file.
+//! A file its writer stands behind for as long as it lives: published with the writer's
+//! lock on it, and read as current only while that lock is held. The writer keeps the
+//! [`Held`] it got from [`publish`]. When it exits, crashes or lets go, the kernel
+//! releases the lock with it, so a reader learns that the contents are no longer
+//! vouched for at once: nothing is renewed on a clock. The lock is an exclusive
+//! `flock(2)` taken before the file is renamed into place, so the name never names a
+//! live writer's file before it is locked. A reader tries a shared lock: refused means
+//! the writer holds it, granted means nobody does unless the name was replaced
+//! meanwhile by a newer file, which the reader then reads. Readers never conflict with
+//! one another and can neither take the writer's place nor block it.
 
 use std::fs::File;
 use std::io;
@@ -20,27 +15,18 @@ use std::path::Path;
 
 use super::lock::{FileLock, LockMode, TryLockError};
 
-/// How many times [`read`] follows a replacement before giving up. A writer
-/// replaces the file only when its contents change.
+/// A writer replaces the file only when its contents change, so following replacements ends.
 const MAX_REPLACEMENTS_FOLLOWED: usize = 8;
 
-/// The writer's hold on a file it published with [`publish`]; dropping it
-/// withdraws the file's contents from readers.
+/// Dropping it withdraws the file's contents from readers.
 #[derive(Debug)]
 #[must_use = "the published file is current only while this is held"]
 pub struct Held {
     _lock: FileLock,
 }
 
-/// Replace `path` with `bytes` (owner and `mode` on Unix) and hold it.
-///
-/// Like [`super::atomic::write_regenerable_with_mode`], the file is neither
-/// synced nor its directory: this is for a runtime directory, which a crash
-/// discards along with the writer.
-///
-/// # Errors
-/// Returns the creation, lock, write or rename error; `path` then still
-/// names what it did before, and that file's own [`Held`] decides it.
+/// Like [`super::atomic::write_regenerable_with_mode`], the file and its directory are not synced: this
+/// is for a runtime directory, which a crash discards along with the writer.
 pub fn publish(path: &Path, bytes: &[u8], mode: u32) -> io::Result<Held> {
     let mut held = None;
     super::atomic::publish(
@@ -57,8 +43,8 @@ pub fn publish(path: &Path, bytes: &[u8], mode: u32) -> io::Result<Held> {
             let locked = file
                 .try_clone()
                 .and_then(|lock| FileLock::lock(lock, LockMode::Exclusive))
-                // On failure the file closes with this unused closure,
-                // before the temporary is removed.
+                // On failure the file closes with this unused closure, before the temporary is
+                // removed.
                 .map(move |lock| (file, lock));
             match locked {
                 Ok((file, lock)) => {
@@ -76,15 +62,9 @@ pub fn publish(path: &Path, bytes: &[u8], mode: u32) -> io::Result<Held> {
     held.ok_or_else(|| io::Error::other("published file was never opened"))
 }
 
-/// Read at most `max_bytes` of `path` while its writer holds it.
-///
-/// `None` when the file is missing or no writer holds it any more: its
-/// contents are then nobody's, which is no better than absent.
-///
-/// # Errors
-/// Returns an I/O error, an invalid bound, refusal when the file exceeds
-/// the bound (its bytes are never returned), or an error when the file kept
-/// being replaced while it was read.
+/// `None` when the file is missing or no writer holds it any more: its contents are then nobody's,
+/// which is no better than absent. Refused when the file exceeds the bound, whose bytes are never
+/// returned.
 pub fn read(path: &Path, max_bytes: impl TryInto<u64>) -> io::Result<Option<Vec<u8>>> {
     let max_bytes: u64 = max_bytes
         .try_into()
@@ -100,9 +80,8 @@ pub fn read(path: &Path, max_bytes: impl TryInto<u64>) -> io::Result<Option<Vec<
             Err(TryLockError::WouldBlock) => return Ok(Some(bytes)),
             Err(TryLockError::Error(error)) => return Err(error),
             Ok(unheld) => {
-                // The writer let this file go: it is gone, or it replaced
-                // the file (and then let the old one go). Only the latter
-                // leaves a newer file at `path` to read.
+                // The writer let this file go: it is gone, or it replaced the file and then let the
+                // old one go. Only the latter leaves a newer file at `path` to read.
                 if !replaced(unheld.file(), path)? {
                     return Ok(None);
                 }
@@ -154,15 +133,15 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
 
-        // A replacement is read from the moment it is in place, even after
-        // the old file's hold is gone.
+        // A replacement is read from the moment it is in place, even after the old file's hold is
+        // gone.
         let second = publish(&path, b"second", 0o600).unwrap();
         drop(first);
         assert_eq!(read(&path, 64).unwrap().as_deref(), Some(&b"second"[..]));
         assert!(read(&path, 3).is_err(), "the bound still applies");
 
-        // The writer lets go (it exited, or a replacement failed): the file
-        // is still there, and is no one's.
+        // The writer lets go (it exited, or a replacement failed): the file is still there, and is no
+        // one's.
         drop(second);
         assert!(path.exists());
         assert_eq!(read(&path, 64).unwrap(), None);

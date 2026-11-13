@@ -13,6 +13,7 @@
 use crate::num::f64_of_u64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
+use std::borrow::Cow;
 use std::sync::Arc;
 use tilo_sort::CompactSort as _;
 
@@ -160,18 +161,25 @@ pub enum PlayerSettingEvent {
 
 fn setting_value(setting: &PlayerSetting) -> String {
     match &setting.control {
-        PlayerSettingControl::Toggle { on } => {
+        PlayerSettingControl::Toggle { on } => crate::i18n::widget_format(
             if *on {
-                "On".into()
+                "media-toggle-on"
             } else {
-                "Off".into()
-            }
-        }
+                "media-toggle-off"
+            },
+            &[],
+        ),
         PlayerSettingControl::Choice { options, selected } => {
             options.get(*selected).cloned().unwrap_or_default()
         }
         PlayerSettingControl::Button => String::new(),
     }
+}
+
+/// A control word in the desktop's language: the toolkit's own media words
+/// ([`crate::i18n`]), so a German desktop plays, mutes and seeks in German.
+fn said(key: &str) -> Cow<'static, str> {
+    Cow::Owned(crate::i18n::widget_format(key, &[]))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2213,19 +2221,7 @@ impl VideoPlayer {
             None,
             &label_style,
         );
-        let value: String = match &s.control {
-            PlayerSettingControl::Toggle { on } => {
-                if *on {
-                    "On".into()
-                } else {
-                    "Off".into()
-                }
-            }
-            PlayerSettingControl::Choice { options, selected } => {
-                options.get(*selected).cloned().unwrap_or_default()
-            }
-            PlayerSettingControl::Button => String::new(),
-        };
+        let value = setting_value(&s);
         if !value.is_empty() {
             let (vw, vh) = text_renderer.measure_style(&value, None, &label_style);
             let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
@@ -2700,12 +2696,15 @@ impl Widget for VideoPlayer {
             .collect();
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Video player")
-                .with_description(if self.has_media() {
-                    "Space plays or pauses; Left and Right Arrow seek; Up and Down Arrow change volume; M mutes; F toggles fullscreen"
-                } else {
-                    "No video loaded"
-                })
+                .with_name(crate::i18n::widget_format("media-player", &[]))
+                .with_description(crate::i18n::widget_format(
+                    if self.has_media() {
+                        "media-player-hint"
+                    } else {
+                        "media-no-video"
+                    },
+                    &[],
+                ))
                 .with_state(AccessState {
                     busy: self.is_playing(),
                     focusable: true,
@@ -2751,30 +2750,38 @@ impl Widget for VideoPlayer {
         self.activate_semantic_target(target, action)
     }
 
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<Cow<'_, str>> {
         let point = self.last_cursor;
         if self.play_button_rect.contains(point) {
-            Some(if self.is_playing() { "Pause" } else { "Play" })
-        } else if self.scrub_track_rect.contains(point) {
-            Some("Seek")
-        } else if self.mute_button_rect.contains(point) {
-            Some(if self.muted { "Unmute" } else { "Mute" })
-        } else if self.volume_track_rect.contains(point) {
-            Some("Volume")
-        } else if self.fullscreen_button_rect.contains(point) {
-            Some(if self.fullscreen {
-                "Exit fullscreen"
+            Some(said(if self.is_playing() {
+                "media-pause"
             } else {
-                "Enter fullscreen"
-            })
+                "media-play"
+            }))
+        } else if self.scrub_track_rect.contains(point) {
+            Some(said("now-playing-seek"))
+        } else if self.mute_button_rect.contains(point) {
+            Some(said(if self.muted {
+                "media-unmute"
+            } else {
+                "media-mute"
+            }))
+        } else if self.volume_track_rect.contains(point) {
+            Some(said("media-volume"))
+        } else if self.fullscreen_button_rect.contains(point) {
+            Some(said(if self.fullscreen {
+                "media-fullscreen-exit"
+            } else {
+                "media-fullscreen-enter"
+            }))
         } else if self.gear_button_rect.contains(point) {
-            Some("Playback settings")
+            Some(said("media-playback-settings"))
         } else {
             self.setting_icon_rects
                 .iter()
                 .find(|(_, rect)| rect.contains(point))
                 .and_then(|(index, _)| self.settings.get(*index))
-                .map(|setting| setting.name.as_str())
+                .map(|setting| Cow::Borrowed(setting.name.as_str()))
         }
     }
 

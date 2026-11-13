@@ -21,7 +21,7 @@ use crate::surface::StudioSurface;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Capture {}
 
-#[resource(kind = "desktop.capture-studio", label = "Capture studio")]
+#[resource(kind = "desktop.capture-studio")]
 impl Capture {}
 
 /// What anyone can do with the capture studio. Captures run on this device:

@@ -2,12 +2,8 @@
 //! with, run by the events of the nodes it makes.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
 
     const SOURCE: &str = r#"app so.tilo.talk "Talk"

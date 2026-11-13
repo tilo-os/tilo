@@ -1,11 +1,4 @@
-//! A channel's page, as a view of a resource: who it is, and its videos, built from the same
-//! described components a tilolang view builds (one-app-model.md §2).
-//!
-//! Tube declares `Channel` as a resource and this page as its default view: a place that shows a
-//! channel — "youtube videos of mkbhd" typed on the canvas, or the channel a video's byline names
-//! — draws this page, with its name, its avatar, its subscribe action and its videos. Pressing a
-//! video places it. Nothing here knows about windows, places or themes: the page is drawn by the
-//! same host, in the person's own theme, as Mail's inbox or a Notes notebook.
+//! A channel's page as a view of a resource: who it is, and its videos.
 
 use crate::i18n::{arg, t_args};
 #[cfg(test)]
@@ -14,64 +7,43 @@ use tilo_view::ui::{self, Gap};
 use tilo_view::{Node, ResourceRef, ViewCx, ViewResource};
 use tilo_view_macros::view;
 
-/// A creator's channel: who they are, and the videos they made, as a place shows them.
-///
-/// A channel is a resource: a place names it by its id (`tube.channel:ch_lowlevel`), the
-/// session publishes its reading, and this view draws it. Its videos are the channel's, read
-/// with it, so the page needs nothing else.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Channel {
-    /// Its id, after `tube.channel:`.
     #[serde(default)]
     pub id: String,
-    /// What the creator is called.
     #[serde(default)]
     pub name: String,
-    /// Their handle (`@mkbhd`).
     #[serde(default)]
     pub handle: String,
-    /// How many people follow them.
     #[serde(default)]
     pub subscribers: u64,
-    /// Whether the platform verified them.
     #[serde(default)]
     pub verified: bool,
-    /// What the channel is about, as the creator wrote it.
     #[serde(default)]
     pub description: String,
-    /// A seed for the avatar's colour, before a real picture loads.
     #[serde(default)]
     pub seed: String,
-    /// A picture of the creator, by its address, when one is known.
     #[serde(default)]
     pub avatar_url: String,
-    /// The videos the channel published, newest first.
     #[serde(default)]
     pub videos: Vec<ChannelVideo>,
-    /// Whether the person follows this channel.
     #[serde(default)]
     pub subscribed: bool,
 }
 
-/// A video as a channel's page lists it: what its row shows, and what a press opens.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ChannelVideo {
-    /// Its id, after `tube.video:`.
     #[serde(default)]
     pub id: String,
-    /// Its title.
     #[serde(default)]
     pub title: String,
-    /// How many people watched it, as the page says it ("1.2M views").
     #[serde(default)]
     pub views: String,
-    /// When it was published, as the page says it ("3 days ago").
     #[serde(default)]
     pub published: String,
 }
 
 impl Channel {
-    /// The resource a place names for this channel: `tube.channel:<id>`.
     #[must_use]
     pub fn resource(&self) -> ResourceRef {
         ResourceRef {
@@ -80,7 +52,6 @@ impl Channel {
         }
     }
 
-    /// The channel whose name it is, as the sample catalogue holds it, or the fixtures' first.
     #[must_use]
     pub fn from_model(model: &crate::model::TubeModel, id: &str) -> Option<Self> {
         let channel = model.channels.iter().find(|c| c.id == id)?;
@@ -115,7 +86,6 @@ impl ViewResource for Channel {
     const APP: &'static str = "tube";
 }
 
-/// How a count of views reads: "1.2M views", "742K views", "1,204 views".
 fn views_label(views: u64) -> String {
     if views >= 1_000_000 {
         format!("{:.1}M views", views as f64 / 1_000_000.0)
@@ -126,7 +96,6 @@ fn views_label(views: u64) -> String {
     }
 }
 
-/// How many followers a channel has, as a page says it ("742K subscribers").
 fn subscribers_label(subscribers: u64) -> String {
     if subscribers >= 1_000_000 {
         format!("{:.1}M subscribers", subscribers as f64 / 1_000_000.0)
@@ -137,8 +106,6 @@ fn subscribers_label(subscribers: u64) -> String {
     }
 }
 
-/// The channel's page: who it is, then its videos, newest first. Its name follows the resource
-/// the place named, so a channel with no reading yet still says which one it is.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
     let mut children = vec![header(c, cx)];
@@ -153,8 +120,6 @@ fn page(c: &Channel, cx: &ViewCx) -> Node {
     ui::stack(&cx.key("page"), Gap::Sibling, children)
 }
 
-/// Who the channel is: its avatar, its name, its handle and following, and the action that
-/// follows or unfollows it.
 fn header(c: &Channel, cx: &ViewCx) -> Node {
     let avatar = ui::AvatarBuilder::new(&cx.key("avatar"))
         .name(&c.name)
@@ -187,8 +152,6 @@ fn header(c: &Channel, cx: &ViewCx) -> Node {
     }
     let facts = ui::stack(&cx.key("facts"), Gap::Tight, facts);
 
-    // The action that follows or unfollows the creator, as the type's own action: a toggled
-    // button the person presses.
     let subscribe = ui::ButtonBuilder::new(
         &cx.key("subscribe"),
         if c.subscribed {
@@ -211,7 +174,6 @@ fn header(c: &Channel, cx: &ViewCx) -> Node {
     ui::stack(&cx.key("header"), Gap::Related, vec![head, subscribe])
 }
 
-/// The channel's videos, each a row that opens the video when pressed.
 fn videos(c: &Channel, cx: &ViewCx) -> Node {
     if c.videos.is_empty() {
         return ui::EmptyStateBuilder::new(&cx.key("empty"), "No videos yet").into();
@@ -240,8 +202,6 @@ fn videos(c: &Channel, cx: &ViewCx) -> Node {
                     ty: "tube.video".to_owned(),
                 })
                 .into();
-            // Pressing the row opens the video it shows: its activate runs `open` on that
-            // video, and the place the session arranges is the video's, beside the page.
             let target = ResourceRef {
                 id: format!("tube.video:{}", video.id),
                 ty: "tube.video".to_owned(),
@@ -289,8 +249,6 @@ mod tests {
         assert_tree(&tree, &cx);
     }
 
-    /// Every text the tree shows holds `text`, and the subscribe button carries the type's
-    /// `subscribe` action.
     fn assert_tree(tree: &Node, cx: &ViewCx) {
         let mut texts = Vec::new();
         collect(tree, &mut texts);
@@ -300,7 +258,6 @@ mod tests {
                 "{expected} shows: {texts:?}"
             );
         }
-        // The subscribe action is the resource's own.
         let effects = cx.recorded();
         assert!(
             effects.values().any(|effect| matches!(

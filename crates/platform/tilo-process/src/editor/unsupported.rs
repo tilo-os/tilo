@@ -17,7 +17,6 @@ impl Socket {
 }
 pub struct Client;
 impl Client {
-    /// Refuse worker construction on an unsupported host.
     pub fn new(_socket: Socket, _wake: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

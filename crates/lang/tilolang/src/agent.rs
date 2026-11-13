@@ -134,6 +134,7 @@ pub fn meta() -> &'static PackageMeta {
                         default: None,
                         place: false,
                         entry: false,
+                        label: None,
                     })
                     .collect(),
                 result: f.result.to_owned(),

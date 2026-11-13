@@ -49,12 +49,12 @@ pub enum OnboardingEffect {
     /// Continue
     ///
     /// Takes the page's main way forward.
-    #[effect(own_device)]
+    #[effect(label = "onboarding-continue", own_device)]
     Continue,
     /// Back
     ///
     /// Goes back a step.
-    #[effect(own_device, idempotent)]
+    #[effect(label = "onboarding-back", own_device, idempotent)]
     Back,
     /// Choose
     ///
@@ -117,10 +117,10 @@ pub enum OnboardingEffect {
     /// Cancel
     ///
     /// Stops the work under way.
-    #[effect(own_device)]
+    #[effect(label = "onboarding-cancel", own_device)]
     Cancel,
     /// Enter the desktop
-    #[effect(own_device)]
+    #[effect(label = "onboarding-finish", own_device)]
     Finish,
 }
 

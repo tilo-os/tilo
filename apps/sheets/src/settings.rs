@@ -1,13 +1,6 @@
-//! The person's locale defaults and the per-document overrides layered on
-//! them.
-//!
-//! Every app follows one `locale` section of the person's settings: the
-//! currency to assume for money, how to render dates and times, and which
-//! measurement system to use. Sheets reads it as a shared [`Locale`]
-//! setting, kept current while the app runs. A workbook may override the
-//! currency and the date and time styles for everyone editing it
-//! ([`DocSettings`], stored in the document); [`EffectiveLocale`] is the two
-//! layered.
+//! The person's locale defaults and the per-document overrides layered on them: money, dates,
+//! times and measurement. A workbook may override them for everyone editing it;
+//! [`EffectiveLocale`] is the two layered.
 
 // `#[derive(Model)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Model};
@@ -15,9 +8,8 @@ use ui::tilo_resource::{self, Model};
 use tilo_locale::{Currency, DateStyle, Locale};
 use ui::clock::TimeStyle;
 
-/// Per-document locale overrides. `None` on a field means "inherit the
-/// global default". Stored in the workbook so collaborators share the
-/// document's conventions.
+/// Per-document locale overrides, stored in the workbook so collaborators share them; `None`
+/// inherits the global default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Model)]
 pub struct DocSettings {
     /// Currency
@@ -28,9 +20,7 @@ pub struct DocSettings {
     pub time_format: Option<TimeStyle>,
 }
 
-/// The effective locale a document renders with: per-document overrides
-/// layered on top of the global defaults. This is the single value the
-/// grid and inference consult — neither layer is read in isolation.
+/// The locale a document renders with, the one value the grid and inference consult.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectiveLocale {
     pub currency: Currency,
@@ -39,8 +29,7 @@ pub struct EffectiveLocale {
 }
 
 impl EffectiveLocale {
-    /// Resolve overrides over globals. A `Some` in `doc` wins; otherwise
-    /// the global value is used.
+    /// The overrides over the globals: a `Some` in `doc` wins.
     pub fn resolve(global: &Locale, doc: &DocSettings) -> Self {
         Self {
             currency: doc.currency.unwrap_or(global.currency),
@@ -61,7 +50,6 @@ mod tests {
     use super::*;
     use tilo_locale::Measurement;
 
-    /// The locale section reads forgivingly and layers under the document.
     #[test]
     fn locale_reads_and_layers_under_the_document() {
         {
@@ -89,7 +77,6 @@ mod tests {
                 measurement: Measurement::Metric,
                 ..Locale::default()
             };
-            // Document overrides only the currency.
             let doc = DocSettings {
                 currency: Some(Currency::EUR),
                 ..Default::default()

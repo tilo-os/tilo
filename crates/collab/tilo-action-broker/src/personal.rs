@@ -242,7 +242,7 @@ pub fn admit_fleet(sync: &PersonalSync, person: &Person) -> Vec<[u8; 32]> {
     if let Err(error) = admitted {
         tracing::warn!(%error, "the person's devices were not taken");
     }
-    let now = std::time::SystemTime::now()
+    let now = tilo_clock::wall()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
             u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)

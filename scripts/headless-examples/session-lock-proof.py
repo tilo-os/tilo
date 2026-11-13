@@ -33,6 +33,8 @@ import tempfile
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+# The one place that picks a session's private runtime directory.
+SESSION = REPO / "dist" / "dev" / "nested-session.sh"
 # The nightly step points this at the binary Cargo built for the run.
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 PASSWORD = "correct horse battery staple"
@@ -48,17 +50,36 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
+def runtime_directory(state: pathlib.Path) -> pathlib.Path:
+    """The private runtime directory a session on `state` uses.
+
+    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
+    seat, or a short directory of its own) and prints it, so no second copy of
+    that rule lives here."""
+    printed = subprocess.run(
+        [str(SESSION), "--print-runtime", "--state", str(state)],
+        capture_output=True, text=True, check=True,
+    )
+    runtime = printed.stdout.strip()
+    if not runtime:
+        raise SystemExit("the session launcher named no runtime directory")
+    return pathlib.Path(runtime)
+
+
 class Desk:
     """A headless session on a scratch home of its own, driven at its socket."""
 
     def __init__(self) -> None:
         self.dir = pathlib.Path(tempfile.mkdtemp(prefix="tilo-lock-proof-"))
-        self.runtime = self.dir / "run"
         self.home = self.dir / "home"
         self.identity = self.dir / "identity"
-        for path in (self.runtime, self.home, self.identity):
+        for path in (self.home, self.identity):
             path.mkdir(parents=True, exist_ok=True)
         self.identity.chmod(0o700)
+        # The desk's state is this scratch directory, as a launcher's state is
+        # a session's: the runtime directory it answers in comes from there.
+        self.runtime = runtime_directory(self.dir)
+        self.runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.socket = self.runtime / "test-control.sock"
         self.attempts = self.dir / "attempts"
         self.helper = self.dir / "unlock-helper"
@@ -222,6 +243,7 @@ def main() -> int:
               ", ".join(str(workspace.get("name", "")) for workspace in workspaces))
     finally:
         desk.stop()
+        shutil.rmtree(desk.runtime, ignore_errors=True)
         shutil.rmtree(desk.dir, ignore_errors=True)
 
     print()

@@ -148,8 +148,11 @@ fn a_large_action_is_recorded_with_its_parts_as_content() {
     );
     let mut with = ActionRegistry::new();
     with.register::<Paste>("test.paste");
-    let kept: std::collections::BTreeMap<String, Vec<u8>> = content.into_iter().collect();
-    with.set_content(move |hash| kept.get(hash).cloned());
+    let kept = tilo_content::ContentStore::memory();
+    for (reference, bytes) in content {
+        kept.put_as(&reference, &bytes).unwrap();
+    }
+    with.connect_content(kept);
     assert_eq!(
         verify_change(&mut origin, hash, &with).unwrap(),
         Verified::Reproduced

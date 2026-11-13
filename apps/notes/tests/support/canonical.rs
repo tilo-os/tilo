@@ -33,6 +33,16 @@ pub struct NotebookFixture {
     _temp: tempfile::TempDir,
 }
 impl NotebookFixture {
+    /// A notebook with nothing in it yet: what a workspace's Notes window
+    /// opens on before the person has made a note. `root`, `child` and `empty`
+    /// name no note this notebook holds.
+    pub fn empty() -> Self {
+        let mut fixture = Self::rich();
+        fixture.workspace = Workspace::default();
+        fixture.bodies.borrow_mut().clear();
+        fixture
+    }
+
     pub fn rich() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let state_root = temp.path().join("state");

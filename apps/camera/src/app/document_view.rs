@@ -9,7 +9,7 @@ use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, Dropdown, DropdownFace, EmptyState,
-    EmptyStateContent, Image, ImageFit, Widget,
+    EmptyStateContent, Image, ImageFit,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -21,8 +21,8 @@ use crate::record::Record;
 use ui::framework::Actions;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 
-/// The visible choices of one document setting, in index order.
 pub(super) fn choice_labels(choice: DocumentChoice) -> &'static [&'static str] {
     match choice {
         // Until a scanner answers the field says so, never its raw index.
@@ -34,7 +34,6 @@ pub(super) fn choice_labels(choice: DocumentChoice) -> &'static [&'static str] {
     }
 }
 
-/// The scanner field while no scanner is found.
 const NO_SCANNER: &str = "No scanner found";
 
 const CHOICES: [DocumentChoice; 5] = [
@@ -45,14 +44,15 @@ const CHOICES: [DocumentChoice; 5] = [
     DocumentChoice::Language,
 ];
 
-fn caption(choice: DocumentChoice) -> &'static str {
-    match choice {
-        DocumentChoice::Scanner => "Scanner",
-        DocumentChoice::Resolution => "Resolution",
-        DocumentChoice::Color => "Color",
-        DocumentChoice::Source => "Paper source",
-        DocumentChoice::Language => "Text language",
-    }
+fn caption(choice: DocumentChoice) -> String {
+    let message = match choice {
+        DocumentChoice::Scanner => "camera-scan-scanner",
+        DocumentChoice::Resolution => "camera-scan-resolution",
+        DocumentChoice::Color => "camera-scan-color",
+        DocumentChoice::Source => "camera-scan-paper-source",
+        DocumentChoice::Language => "camera-scan-text-language",
+    };
+    crate::CATALOG.t(message)
 }
 
 fn indexed(labels: impl IntoIterator<Item = String>) -> Vec<(String, String)> {
@@ -120,7 +120,6 @@ pub(super) struct DocumentLayout {
 }
 
 impl CameraApp {
-    /// Show the current scanners and settings in the dropdowns.
     pub(super) fn present_document_controls(&mut self) {
         let scanners: Vec<String> = self
             .scanner_devices
@@ -188,7 +187,6 @@ impl CameraApp {
         }
     }
 
-    /// Place the settings, the scan button and the page for `full`.
     pub(super) fn document_layout(full: Rect, theme: &Theme) -> DocumentLayout {
         let m = HudMetrics::of(theme);
         let spacing = &theme.tokens.spacing;
@@ -196,8 +194,9 @@ impl CameraApp {
         let gutter = f64::from(spacing.s6);
         let gap = f64::from(spacing.s4);
         // A captioned dropdown, its caption stacked above its field.
+        let first_caption = caption(CHOICES[0]);
         let field_h = DropdownFace::new(Rect::ZERO, "")
-            .caption(caption(CHOICES[0]))
+            .caption(&first_caption)
             .outer_height(theme);
         let control = ControlSize::Regular.height(theme);
         let content = Rect::new(
@@ -267,16 +266,18 @@ impl CameraApp {
         let layout = Self::document_layout(full, theme);
         for (field, rect) in self.document_controls.fields.iter_mut().zip(layout.fields) {
             field.apply_layout_external(rect);
-            field.draw(scene, t, tr, theme, presence);
+            field.draw_child(scene, t, tr, theme, presence);
         }
         let busy = self.document_job.is_some();
         let can_scan = self.selected_scanner.is_some() && !busy;
-        let label = if self.document_job_kind == Some(DocumentJobKind::Capture) {
-            "Scanning…"
-        } else {
-            "Scan page"
-        };
-        let scan = ButtonFace::new(layout.scan, label).role(ButtonRole::Primary);
+        let label = crate::CATALOG.t(
+            if self.document_job_kind == Some(DocumentJobKind::Capture) {
+                "camera-scanning"
+            } else {
+                "camera-scan-page"
+            },
+        );
+        let scan = ButtonFace::new(layout.scan, &label).role(ButtonRole::Primary);
         let hit = scan.hit_rect(theme);
         let hovered = scan.contains(theme, self.last_mouse);
         Button::paint(
@@ -420,7 +421,6 @@ impl CameraApp {
         top
     }
 
-    /// The page, as large as `room` allows, or the crop editor over it.
     fn draw_page_image(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, room: Rect) {
         let colors = theme.tokens.colors.clone();
         if let Some(editor) = self.document_crop_editor.as_mut() {
@@ -440,13 +440,13 @@ impl CameraApp {
                     *index == selected && Some((*crop, *rotation)) == key
                 });
         if !current && let Some(page) = self.document_scan.pages.get(selected) {
-            let rendered = page.rendered().to_rgba8();
-            let (width, height) = rendered.dimensions();
+            let rendered = page.rendered();
+            let (width, height) = (rendered.width, rendered.height);
             self.document_preview = Some((
                 selected,
                 page.crop,
                 page.rotation,
-                Image::from_rgba(std::sync::Arc::from(rendered.into_raw()), width, height)
+                Image::from_rgba(std::sync::Arc::from(rendered.rgba), width, height)
                     .with_fit(ImageFit::Contain),
                 (width, height),
             ));
@@ -475,8 +475,6 @@ impl CameraApp {
 mod tests {
     use super::*;
 
-    /// A staged page was scanned with the sample's scanner, and the
-    /// settings name that scanner.
     #[test]
     fn a_staged_page_names_the_scanner_it_came_from() {
         let mut app = CameraApp::sample();

@@ -1,32 +1,23 @@
-//! Unit preferences and conversions.
+//! Display units and conversions.
 //!
-//! Open-Meteo can return data directly in the requested units (we pass
-//! `temperature_unit` / `wind_speed_unit` on every request), but the
-//! bundled sample snapshot is stored in **metric** (°C, km/h, mm) and the
-//! CRDT caches whatever the last fetch produced. To keep rendering
-//! honest regardless of how a snapshot was sourced, snapshots always
-//! carry a `source_units` tag and the UI converts on the fly via the
-//! helpers here. That makes the °C/°F and km/h vs mph toggle instant —
-//! no refetch required. Precipitation has no request parameter, so it is
-//! always converted here.
+//! A snapshot records the units it was fetched in and the UI converts at draw
+//! time, so the °C/°F and km/h/mph toggle is instant and never refetches. Rain
+//! has no request parameter, so it is always converted here.
 
 use serde::{Deserialize, Serialize};
 
-/// Temperature display unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TempUnit {
     Celsius,
     Fahrenheit,
 }
 
-/// Wind-speed display unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindUnit {
     Kmh,
     Mph,
 }
 
-/// Precipitation display unit: what a rainfall reading is measured in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrecipUnit {
     Millimetres,
@@ -34,9 +25,7 @@ pub enum PrecipUnit {
 }
 
 impl PrecipUnit {
-    /// The fractional digits a reading in this unit shows: tenths of a
-    /// millimetre, hundredths of an inch — the same precision, so a light
-    /// shower does not round to zero in either.
+    /// The digits a reading shows: tenths of a millimetre, hundredths of an inch.
     pub fn decimals(self) -> usize {
         match self {
             Self::Millimetres => 1,
@@ -45,7 +34,6 @@ impl PrecipUnit {
     }
 }
 
-/// The combined unit preference, persisted in the CRDT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Units {
     pub temp: TempUnit,
@@ -64,20 +52,18 @@ impl Default for Units {
 }
 
 impl Units {
-    /// Metric preset (°C, km/h, mm) — what the sample data is stored in.
+    /// °C, km/h, mm: what the sample data is stored in.
     pub const METRIC: Units = Units {
         temp: TempUnit::Celsius,
         wind: WindUnit::Kmh,
         precip: PrecipUnit::Millimetres,
     };
-    /// Imperial preset (°F, mph, in).
     pub const IMPERIAL: Units = Units {
         temp: TempUnit::Fahrenheit,
         wind: WindUnit::Mph,
         precip: PrecipUnit::Inches,
     };
 
-    /// Open-Meteo `temperature_unit` query value.
     pub fn temp_api(&self) -> &'static str {
         match self.temp {
             TempUnit::Celsius => "celsius",
@@ -85,7 +71,6 @@ impl Units {
         }
     }
 
-    /// Open-Meteo `wind_speed_unit` query value.
     pub fn wind_api(&self) -> &'static str {
         match self.wind {
             WindUnit::Kmh => "kmh",
@@ -107,16 +92,13 @@ impl Units {
         }
     }
 
-    /// The precipitation reading's number in the display unit, with that
-    /// unit's decimals: `2.4` (millimetres), `0.09` (inches).
+    /// The reading in this unit: `2.4` millimetres, `0.09` inches.
     pub fn precip_reading(&self, value: f64, from: PrecipUnit) -> String {
         let converted = convert_precip(value, from, self.precip);
         format!("{:.*}", self.precip.decimals(), converted)
     }
 }
 
-/// Convert a temperature between display units. Stored values are
-/// tagged with their source unit on the snapshot.
 pub fn convert_temp(value: f64, from: TempUnit, to: TempUnit) -> f64 {
     if from == to {
         return value;
@@ -128,7 +110,6 @@ pub fn convert_temp(value: f64, from: TempUnit, to: TempUnit) -> f64 {
     }
 }
 
-/// Convert a wind speed between display units.
 pub fn convert_wind(value: f64, from: WindUnit, to: WindUnit) -> f64 {
     if from == to {
         return value;
@@ -140,11 +121,8 @@ pub fn convert_wind(value: f64, from: WindUnit, to: WindUnit) -> f64 {
     }
 }
 
-/// Millimetres in an inch: the exact definition, so a reading converts the
-/// way a person's own ruler does.
 pub const MM_PER_INCH: f64 = 25.4;
 
-/// Convert a precipitation depth between display units.
 pub fn convert_precip(value: f64, from: PrecipUnit, to: PrecipUnit) -> f64 {
     if from == to {
         return value;
@@ -156,7 +134,6 @@ pub fn convert_precip(value: f64, from: PrecipUnit, to: PrecipUnit) -> f64 {
     }
 }
 
-/// Map a wind bearing in degrees to a compass abbreviation.
 pub fn compass(deg: f64) -> &'static str {
     const DIRS: [&str; 16] = [
         "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
@@ -189,15 +166,11 @@ mod tests {
                 (convert_precip(1.0, PrecipUnit::Inches, PrecipUnit::Millimetres) - 25.4).abs()
                     < 1e-9
             );
-            // The same unit is left alone, not run through a conversion.
             assert!(
                 (convert_precip(3.0, PrecipUnit::Inches, PrecipUnit::Inches) - 3.0).abs() < 1e-12
             );
         }
         {
-            // Millimetres stay millimetres, one decimal, including zero and a
-            // downpour; the same readings in inches keep two, so a trace
-            // amount never rounds away.
             assert_eq!(
                 Units::METRIC.precip_reading(0.0, PrecipUnit::Millimetres),
                 "0.0"
@@ -222,7 +195,6 @@ mod tests {
                 Units::IMPERIAL.precip_reading(187.6, PrecipUnit::Millimetres),
                 "7.39"
             );
-            // A snapshot already in inches is not converted twice.
             assert_eq!(
                 Units::IMPERIAL.precip_reading(1.25, PrecipUnit::Inches),
                 "1.25"

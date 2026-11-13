@@ -12,15 +12,12 @@ use crate::engines::google::{self, Token};
 use crate::engines::{Engine, EngineError, EngineRequest, EngineResult, SafeMode};
 use crate::merge::{SearchResult, merge};
 
-/// Bounds on one search.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchLimits {
-    /// The longest one engine may take, from request to parsed page.
     pub engine_timeout: Duration,
     /// The most bytes of one engine's page read; the rest is ignored, since
     /// results come first.
     pub max_page_bytes: usize,
-    /// The most redirects one engine request follows.
     pub max_redirects: u8,
 }
 
@@ -34,23 +31,18 @@ impl Default for SearchLimits {
     }
 }
 
-/// The longest query sent, in characters.
 pub const MAX_QUERY_CHARS: usize = 400;
 
-/// How one engine fared.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineStatus {
-    /// Answered, with this many results.
     Ok,
     /// Showed a challenge instead of results.
     Blocked,
     /// Said it is getting too many requests, now or recently, so it was
     /// left alone; it is asked again once its backoff ends.
     RateLimited,
-    /// Could not be reached, timed out, or answered something unreadable.
     Failed,
-    /// Does not take this kind of query.
     Skipped,
 }
 
@@ -63,7 +55,6 @@ pub struct EngineReport {
     pub detail: Option<String>,
 }
 
-/// A finished search: merged results, best first, and how each engine fared.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SearchResponse {
     pub results: Vec<SearchResult>,
@@ -73,11 +64,8 @@ pub struct SearchResponse {
 /// Why a search produced nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SearchError {
-    /// The query is empty or only whitespace.
     EmptyQuery,
-    /// The query is longer than [`MAX_QUERY_CHARS`].
     QueryTooLong,
-    /// No engine was asked: none named, or none takes this query.
     NoEngines,
     /// Every engine asked failed or was blocked; each one's report says why.
     AllFailed(Vec<EngineReport>),
@@ -112,15 +100,9 @@ impl fmt::Display for SearchError {
 
 impl std::error::Error for SearchError {}
 
-/// How long an engine is left alone after its first rate limit. Each further
-/// one in a row doubles it, up to [`MAX_BACKOFF`].
 pub const FIRST_BACKOFF: Duration = Duration::from_secs(5 * 60);
-/// The longest an engine is left alone.
 pub const MAX_BACKOFF: Duration = Duration::from_secs(60 * 60);
-/// How long a Google token is used before a fresh one is fetched. Tokens
-/// last longer, and a refused one is dropped at once anyway.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 60);
-/// The most bytes of Google's loader script read for its token.
 const MAX_TOKEN_SCRIPT_BYTES: usize = 256 * 1024;
 
 /// What searches remember from one to the next: which engines are backing
@@ -135,12 +117,10 @@ pub struct SearchState {
 #[derive(Clone, Copy, Debug)]
 struct Backoff {
     until: Instant,
-    /// How long the next rate limit in a row backs off for.
     next: Duration,
 }
 
 impl SearchState {
-    /// How much longer `engine` is left alone, if it is backing off at `now`.
     pub fn backing_off(&self, engine: Engine, now: Instant) -> Option<Duration> {
         let backoff = self.backoff.lock().unwrap_or_else(PoisonError::into_inner);
         backoff
@@ -149,8 +129,6 @@ impl SearchState {
             .filter(|left| !left.is_zero())
     }
 
-    /// Record that `engine` was rate-limited at `now`, and return how long it
-    /// is now left alone.
     pub fn rate_limited(&self, engine: Engine, now: Instant) -> Duration {
         let mut backoff = self.backoff.lock().unwrap_or_else(PoisonError::into_inner);
         let wait = backoff.get(&engine).map_or(FIRST_BACKOFF, |b| b.next);
@@ -164,8 +142,6 @@ impl SearchState {
         wait
     }
 
-    /// Record that `engine` answered: its next rate limit starts the backoff
-    /// over.
     pub fn answered(&self, engine: Engine) {
         self.backoff
             .lock()
@@ -215,6 +191,39 @@ pub async fn search(
     safe: SafeMode,
     limits: &SearchLimits,
 ) -> Result<SearchResponse, SearchError> {
+    let query = checked_query(query)?;
+    let (asked, reports) = requests_of(state, query, engines, safe);
+    answer(client, state, asked, reports, false, safe, limits).await
+}
+
+/// [`search`] against a server on this machine, which [`search`] would ask
+/// instead of the engine: `routes` names, per engine, the address its request
+/// goes to, with the query and filter it would send the engine itself.
+/// Google's token handshake is left out, so a recorded answer of its search
+/// element can be served as it is. For tests of what a search makes of the
+/// engines' answers, never for a service.
+///
+/// # Errors
+///
+/// As [`search`].
+#[cfg(feature = "fixture-servers")]
+pub async fn search_fixture(
+    client: &tilo_net::Client,
+    state: &SearchState,
+    query: &str,
+    routes: &[(Engine, String)],
+    safe: SafeMode,
+    limits: &SearchLimits,
+) -> Result<SearchResponse, SearchError> {
+    let query = checked_query(query)?;
+    let engines: Vec<Engine> = routes.iter().map(|(engine, _)| *engine).collect();
+    let (asked, reports) = requests_of(state, query, &engines, safe);
+    let (asked, reports) = pointing_at(asked, reports, routes);
+    answer(client, state, asked, reports, true, safe, limits).await
+}
+
+/// `query` trimmed of the space around it, or why it cannot be asked.
+fn checked_query(query: &str) -> Result<&str, SearchError> {
     let query = query.trim();
     if query.is_empty() {
         return Err(SearchError::EmptyQuery);
@@ -222,50 +231,46 @@ pub async fn search(
     if query.chars().count() > MAX_QUERY_CHARS {
         return Err(SearchError::QueryTooLong);
     }
-    let mut asked = Vec::new();
-    let mut reports: Vec<EngineReport> = Vec::new();
-    let now = Instant::now();
-    for &engine in engines {
-        if asked.iter().any(|(e, _)| *e == engine) || reports.iter().any(|r| r.engine == engine) {
-            continue;
-        }
-        if let Some(left) = state.backing_off(engine, now) {
-            reports.push(EngineReport {
-                engine,
-                status: EngineStatus::RateLimited,
-                results: 0,
-                detail: Some(format!(
-                    "rate-limited; asked again in {} s",
-                    left.as_secs().max(1)
-                )),
-            });
-            continue;
-        }
-        if safe == SafeMode::Strict && !engine.filters() {
-            reports.push(EngineReport {
-                engine,
-                status: EngineStatus::Skipped,
-                results: 0,
-                detail: Some("cannot filter results; not asked".into()),
-            });
-            continue;
-        }
-        match engine.request(query, safe) {
-            Some(request) => asked.push((engine, request)),
+    Ok(query)
+}
+
+#[cfg(feature = "fixture-servers")]
+fn pointing_at(
+    asked: Vec<(Engine, EngineRequest)>,
+    mut reports: Vec<EngineReport>,
+    routes: &[(Engine, String)],
+) -> (Vec<(Engine, EngineRequest)>, Vec<EngineReport>) {
+    let mut pointed = Vec::with_capacity(asked.len());
+    for (engine, mut request) in asked {
+        match routes.iter().find(|(route, _)| *route == engine) {
+            Some((_, base)) => {
+                request.point_at(base);
+                pointed.push((engine, request));
+            }
             None => reports.push(EngineReport {
                 engine,
-                status: EngineStatus::Skipped,
+                status: EngineStatus::Failed,
                 results: 0,
-                detail: Some("does not take this kind of query".into()),
+                detail: Some("asked no fixture server".into()),
             }),
         }
     }
+    (pointed, reports)
+}
+
+async fn answer(
+    client: &tilo_net::Client,
+    state: &SearchState,
+    asked: Vec<(Engine, EngineRequest)>,
+    mut reports: Vec<EngineReport>,
+    fixtures: bool,
+    safe: SafeMode,
+    limits: &SearchLimits,
+) -> Result<SearchResponse, SearchError> {
     if asked.is_empty() {
         if reports.iter().any(|r| r.status != EngineStatus::Skipped) {
             return Err(SearchError::AllFailed(reports));
         }
-        // Every named engine was skipped: in a filtered search say which
-        // ones could not filter, rather than answering as if none were named.
         if safe == SafeMode::Strict {
             return Err(SearchError::AllFailed(reports));
         }
@@ -274,7 +279,7 @@ pub async fn search(
     let answers = join_all(asked.into_iter().map(|(engine, request)| async move {
         let answer = tokio::time::timeout(
             limits.engine_timeout,
-            ask(client, state, engine, request, limits),
+            ask(client, state, engine, request, limits, fixtures),
         )
         .await
         .unwrap_or_else(|_| Err(Failure::Failed("timed out".into())));
@@ -310,7 +315,58 @@ pub async fn search(
     })
 }
 
-/// What `answer` says about how `engine` fared.
+/// The requests one search sends: each engine asked, and, for one it does
+/// not ask, why not.
+fn requests_of(
+    state: &SearchState,
+    query: &str,
+    engines: &[Engine],
+    safe: SafeMode,
+) -> (Vec<(Engine, EngineRequest)>, Vec<EngineReport>) {
+    let mut asked = Vec::new();
+    let mut reports: Vec<EngineReport> = Vec::new();
+    let now = Instant::now();
+    for &engine in engines {
+        if asked.iter().any(|(asked, _)| *asked == engine)
+            || reports.iter().any(|report| report.engine == engine)
+        {
+            continue;
+        }
+        if let Some(left) = state.backing_off(engine, now) {
+            reports.push(EngineReport {
+                engine,
+                status: EngineStatus::RateLimited,
+                results: 0,
+                detail: Some(format!(
+                    "rate-limited; asked again in {} s",
+                    left.as_secs().max(1)
+                )),
+            });
+            continue;
+        }
+        if safe == SafeMode::Strict && !engine.filters() {
+            reports.push(EngineReport {
+                engine,
+                status: EngineStatus::Skipped,
+                results: 0,
+                detail: Some("cannot filter results; not asked".into()),
+            });
+            continue;
+        }
+        let Some(request) = engine.request(query, safe) else {
+            reports.push(EngineReport {
+                engine,
+                status: EngineStatus::Skipped,
+                results: 0,
+                detail: Some("does not take this kind of query".into()),
+            });
+            continue;
+        };
+        asked.push((engine, request));
+    }
+    (asked, reports)
+}
+
 fn report(engine: Engine, answer: &Result<Vec<EngineResult>, Failure>) -> EngineReport {
     match answer {
         Ok(results) => EngineReport {
@@ -362,8 +418,9 @@ async fn ask(
     engine: Engine,
     mut request: EngineRequest,
     limits: &SearchLimits,
+    fixture: bool,
 ) -> Result<Vec<EngineResult>, Failure> {
-    if engine != Engine::Google {
+    if engine != Engine::Google || fixture {
         return send(client, engine, request, limits).await;
     }
     let token = if let Some(token) = state.fresh_google_token(Instant::now()) {
@@ -376,13 +433,11 @@ async fn ask(
     google::authorize(&mut request.url, &token);
     let answer = send(client, engine, request, limits).await;
     if answer.is_err() {
-        // The token may be what was refused; the next search fetches another.
         state.keep_google_token(None);
     }
     answer
 }
 
-/// A fresh token from Google's search element loader.
 async fn google_token(client: &tilo_net::Client, limits: &SearchLimits) -> Result<Token, Failure> {
     let request =
         google::token_request().ok_or_else(|| Failure::Failed("no token address".into()))?;
@@ -409,7 +464,6 @@ async fn google_token(client: &tilo_net::Client, limits: &SearchLimits) -> Resul
     })
 }
 
-/// Send one engine request, following its redirects, and read the answer.
 async fn send(
     client: &tilo_net::Client,
     engine: Engine,
