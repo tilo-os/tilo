@@ -118,6 +118,21 @@ def until(what: str, check, deadline: float = 60.0, step: float = 0.25):
     raise Failed(f"timed out waiting for {what}")
 
 
+def search_answer_shown(answer: dict, query: str, wanted=()) -> bool:
+    """Whether a `search_rows` answer is the one a capture waits for: the query
+    shown is the one typed, the palette is no longer filling in, and every name
+    in `wanted` is listed.
+
+    The palette publishes its rows a frame or two after the keys are typed, and
+    a source that answers on a worker can join a moment after the palette stops
+    saying it is filling in (`search_expecting`), so a capture taken on the keys
+    alone shows "Searching…" or a row short of what the query finds."""
+    if answer.get("query") != query or answer.get("searching"):
+        return False
+    titles = [row.get("title") or "" for row in answer.get("rows") or []]
+    return all(any(name in title for title in titles) for name in wanted)
+
+
 def control_binary() -> Path:
     """`tilo-control` of the build the session runs from."""
     return BUILD / "bin/tilo-control"
@@ -619,6 +634,27 @@ class Session:
             cursor = answer.get("next_cursor")
             if not cursor:
                 return found
+
+    def search_rows(self) -> dict:
+        """The open search's query, the rows it shows and whether it is still
+        filling in, as of the last frame the desk drew (`search_rows`)."""
+        return self.control({"op": "search_rows"})["answer"]
+
+    def wait_search_rows(self, query: str, wanted=(), deadline: float = 30.0) -> dict:
+        """The search's rows once they are the answer to `query`: the palette is
+        no longer filling in and every row whose title holds a name in `wanted`
+        is listed (see [`search_answer_shown`]). Shoot what a person sees only
+        after this answers."""
+        def shown():
+            answer = self.search_rows()
+            return answer if search_answer_shown(answer, query, wanted) else None
+
+        return until(
+            f"the search for {query!r} to show {list(wanted) or 'its rows'}",
+            shown,
+            deadline,
+            step=0.01,
+        )
 
     def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
         """Invoke an action by its address and answer its settled receipt."""

@@ -66,5 +66,37 @@ class ControlSocketFromArgv(unittest.TestCase):
             real_apps.control_socket_from_argv(["script.py"])
 
 
+class SearchRowsAreTheAnswer(unittest.TestCase):
+    """What a capture waits for: the query it typed, a palette that has stopped
+    filling in, and the rows it asks of it. A shot taken on the keys alone shows
+    "Searching…", which is what these decide against."""
+
+    @staticmethod
+    def answer(query="chromium", searching=False, titles=("Chromium Web Browser",)):
+        return {"query": query, "searching": searching,
+                "rows": [{"title": title} for title in titles]}
+
+    def test_the_typed_querys_rows_are_the_answer(self):
+        self.assertTrue(real_apps.search_answer_shown(
+            self.answer(), "chromium", ("Chromium",)))
+
+    def test_rows_of_the_query_before_it_are_not_an_answer(self):
+        self.assertFalse(real_apps.search_answer_shown(
+            self.answer(query=""), "chromium", ()))
+
+    def test_a_palette_still_filling_in_is_not_an_answer(self):
+        self.assertFalse(real_apps.search_answer_shown(
+            self.answer(searching=True), "chromium", ()))
+
+    def test_a_row_still_out_is_not_an_answer(self):
+        self.assertFalse(real_apps.search_answer_shown(
+            self.answer(titles=("Search the web for chromium",)), "chromium", ("Chromium",)))
+
+    def test_a_name_is_found_inside_a_rows_title(self):
+        self.assertTrue(real_apps.search_answer_shown(
+            self.answer(titles=("Send to Assistant: chromium", "Chromium Web Browser")),
+            "chromium", ("chromium",)))
+
+
 if __name__ == "__main__":
     unittest.main()
