@@ -1920,9 +1920,8 @@ impl Inner {
         Ok((listings, reached))
     }
 
-    /// One of the edits of a write, into the chunk it is addressed to: the run's manifest into
-    /// the record itself, and an item into the chunk the run it joins is in, so one write reaches
-    /// one document. Returns the fields it reached, derivation included.
+    /// One of the edits of a write, into the chunk it is written in ([`Chunks::chunk_of`]), so
+    /// one write reaches one document. Returns the fields it reached, derivation included.
     fn write_one(
         &mut self,
         app: &str,
@@ -1932,9 +1931,7 @@ impl Inner {
         (items, placed): Moves,
     ) -> Result<Vec<FieldKey>, StoreError> {
         let derived = unsaved::writes_derived(self, edit.resource(), touched, &items);
-        let chunk = edit
-            .chunk()
-            .unwrap_or_else(|| self.chunks.chunk(edit.resource()));
+        let chunk = self.chunks.chunk_of(&edit);
         if chunk == chunk::FIRST && !self.chunks.has_record() {
             return Err(StoreError::Backend(
                 "the workspace record is not loaded".into(),

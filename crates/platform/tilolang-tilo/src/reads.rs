@@ -52,18 +52,19 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
     })
 }
 
-/// Every resource object of the document `doc`, under every copy of the levels above them a
-/// replica made.
+/// Every `$items` map of the document `doc`, under every resource of every app it holds, under
+/// every copy of the levels above them a replica made.
 #[must_use]
-pub fn resource_objects(doc: &Doc) -> Vec<ObjId> {
+pub fn item_maps(doc: &Doc) -> Vec<ObjId> {
     let mut out = Vec::new();
     for records in crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY]) {
         for stored in doc.keys(&records) {
             for app in crate::containers::maps(doc, &records, &stored) {
                 for id in doc.keys(&app) {
-                    if let Ok(Some((automerge::Value::Object(_), obj))) = doc.get(&app, id.as_str())
+                    if let Ok(Some((automerge::Value::Object(_), resource))) =
+                        doc.get(&app, id.as_str())
                     {
-                        out.push(obj);
+                        out.extend(crate::containers::maps(doc, &resource, ITEMS_KEY));
                     }
                 }
             }

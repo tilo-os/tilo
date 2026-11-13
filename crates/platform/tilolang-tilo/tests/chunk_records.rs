@@ -1439,9 +1439,13 @@ fn a_direct_edit_of_a_card_in_a_chunk_is_written_in_that_chunk() {
         "the edit names no chunk: the record routes it"
     );
     assert_eq!(
-        ada.workspace.chunks().chunk_of_item(&card),
-        2,
-        "the card is in chunk 2, where its run put it"
+        action
+            .edits
+            .iter()
+            .map(|edit| ada.workspace.chunks().chunk_of(edit))
+            .collect::<Vec<_>>(),
+        [2],
+        "the edit is written where the card is, which is where the store writes it too"
     );
     ada.workspace
         .apply_invoked(

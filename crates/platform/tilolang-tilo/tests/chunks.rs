@@ -255,17 +255,12 @@ impl Docs {
         self.0.open(chunk)
     }
 
-    /// Apply `action` as its edits are addressed: an edit that names no chunk is written where
-    /// the resource it writes is, as the instance routes it.
+    /// Apply `action` as its edits are written: an edit names its chunk, or goes where the
+    /// record routes it ([`Chunks::chunk_of`]).
     pub(crate) fn apply(&mut self, action: &DynAction) {
         let mut edits: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
         for edit in &action.edits {
-            let chunk = edit.chunk().unwrap_or_else(|| {
-                edit.item().map_or_else(
-                    || self.0.placement().chunk(edit.resource()),
-                    |item| self.0.chunk_of_item(item),
-                )
-            });
+            let chunk = self.0.chunk_of(edit);
             edits
                 .entry(chunk)
                 .or_default()

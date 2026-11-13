@@ -48,6 +48,7 @@ use automerge::{ReadDoc, Value as AmValue};
 
 use tilo_actions::ActionError;
 
+use crate::action::DynEdit;
 use crate::reads::map_at;
 
 type Doc = tilo_resource::Doc;
@@ -371,25 +372,34 @@ impl Chunks {
         self.docs().map(|(chunk, _)| chunk)
     }
 
-    /// The chunks the store holds, the record first and the rest by number.
+    /// The chunk an edit is written in: the one it names, else the chunk holding the item it
+    /// writes, else the one the record's manifest places its resource in. What the workspace
+    /// routes an action's edits by, and the store its own writes: a write reaches one document.
+    #[must_use]
+    pub fn chunk_of(&self, edit: &DynEdit) -> ChunkNo {
+        edit.chunk().unwrap_or_else(|| {
+            edit.item().map_or_else(
+                || self.placement().chunk(edit.resource()),
+                |item| self.chunk_of_item(item),
+            )
+        })
+    }
+
     /// The chunk holding the item `item`, by the `$items` map its id is kept in: chunk [`FIRST`]
     /// when no chunk holds it (an item an action is about to make).
     #[must_use]
     pub fn chunk_of_item(&self, item: &str) -> ChunkNo {
         for (chunk, held) in self.docs() {
-            for record in crate::reads::resource_objects(held) {
-                for items in
-                    crate::containers::maps(held, &record, tilolang_runtime::place::ITEMS_KEY)
-                {
-                    if held.get(&items, item).is_ok_and(|held| held.is_some()) {
-                        return chunk;
-                    }
+            for items in crate::reads::item_maps(held) {
+                if held.get(&items, item).is_ok_and(|held| held.is_some()) {
+                    return chunk;
                 }
             }
         }
         FIRST
     }
 
+    /// The chunks the store holds, the record first and the rest by number.
     pub fn docs(&self) -> impl Iterator<Item = (ChunkNo, &Doc)> {
         let first = self.first.as_deref().map(|doc| (FIRST, doc));
         first

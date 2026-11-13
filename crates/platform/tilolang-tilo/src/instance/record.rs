@@ -1349,20 +1349,14 @@ impl InstanceRecord {
         self.chunks.reread_placement();
     }
 
-    /// The edits of `action` by the chunk they are written in: the chunk an edit names, else the
-    /// one the record's manifest places its resource in.
+    /// The edits of `action` by the chunk they are written in ([`Chunks::chunk_of`]).
     fn parts_of(&self, action: &DynAction) -> BTreeMap<ChunkNo, Vec<DynEdit>> {
         let mut parts: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
         for edit in &action.edits {
-            // An edit that names no chunk is applied where the resource it writes is: an item's,
-            // which its run's chunk holds, else where the manifest places the record.
-            let chunk = edit.chunk().unwrap_or_else(|| {
-                edit.item().map_or_else(
-                    || self.chunks.placement().chunk(edit.resource()),
-                    |item| self.chunks.chunk_of_item(item),
-                )
-            });
-            parts.entry(chunk).or_default().push(edit.clone());
+            parts
+                .entry(self.chunks.chunk_of(edit))
+                .or_default()
+                .push(edit.clone());
         }
         parts
     }
