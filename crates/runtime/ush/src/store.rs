@@ -161,9 +161,10 @@ impl Store {
     /// Where every workspace's records are, when they are where Terminal
     /// keeps its own (`<data home>/tilo-workspaces`): never seen in a guest, so
     /// no environment reaches another workspace's records.
-    pub fn rooms_dir(&self) -> Option<PathBuf> {
-        let rooms = self.records.ancestors().nth(4)?;
-        (rooms.file_name()? == crate::records::ROOMS_DIR).then(|| rooms.to_path_buf())
+    pub fn workspaces_dir(&self) -> Option<PathBuf> {
+        let workspaces = self.records.ancestors().nth(4)?;
+        (workspaces.file_name()? == crate::records::WORKSPACES_DIR)
+            .then(|| workspaces.to_path_buf())
     }
 
     /// Where granted directories' contents are, when not at their own paths.
@@ -312,7 +313,7 @@ mod tests {
             data.join("ush/workspaces/w1/environments/default/var")
         );
         assert_eq!(store.sessions_dir(), base.sessions_dir());
-        assert_eq!(store.rooms_dir(), Some(data.join("tilo-workspaces")));
+        assert_eq!(store.workspaces_dir(), Some(data.join("tilo-workspaces")));
         assert!(store.confinement().is_some());
 
         let primary = store.for_workspace(&WorkspaceId::primary());
@@ -331,6 +332,6 @@ mod tests {
         let moved = Store::at("/tmp/ush").for_workspace(&w1);
         assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
         assert_eq!(moved.workspace(), None, "no files, no home folder");
-        assert_eq!(moved.rooms_dir(), None);
+        assert_eq!(moved.workspaces_dir(), None);
     }
 }

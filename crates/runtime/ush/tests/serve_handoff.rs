@@ -818,7 +818,8 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
             records.record_dir(&keys[0]).unwrap().starts_with(
                 store
                     .records_root()
-                    .join("so.tilo.terminal/rooms")
+                    .join("so.tilo.terminal")
+                    .join(app_state::WORKSPACES_DIR)
                     .join(workspace)
             )
         );

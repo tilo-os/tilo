@@ -1,7 +1,7 @@
 //! The workspace an environment belongs to.
 //!
 //! A Terminal is opened in a workspace, and the environments it lists are that workspace's:
-//! their records in its room, their home the workspace's own files
+//! their records kept with it, their home the workspace's own files
 //! ([`tilo_paths::workspace_tree`]), and no grant into another workspace's files. Who says
 //! which workspace a request is for ([`scope_of`]): an app the launcher started names the
 //! one it was launched in, written in the connection's handoff before the app holds it,
@@ -117,9 +117,8 @@ impl std::fmt::Display for EnvironmentId {
 /// environment's id ([`ENVIRONMENT_ENV`]) and must know its workspace.
 /// `store` is the runtime's store ([`Store::discover`]).
 ///
-/// The record is read in the room of the workspace the id names, and a
-/// record there that names another workspace is refused, so the answer is
-/// the record's and the id's at once.
+/// The record is read with the workspace the id names, and one there that names
+/// another workspace is refused, so the answer is the record's and the id's at once.
 pub fn environment_workspace(
     store: &Store,
     environment: &EnvironmentId,

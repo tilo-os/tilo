@@ -6,9 +6,9 @@
 //! shared writers there and applies actions through the record layer, so every change
 //! carries history and an author.
 //!
-//! Each workspace's environments are in its own room ([`crate::workspace`]). An app names
-//! a record by key only ([`tilo_environment::is_record_key`]); the room and the owning app
-//! are fixed here, never taken from a request.
+//! Each workspace has its own environments ([`crate::workspace`]). An app names a record by key
+//! only ([`tilo_environment::is_record_key`]); the workspace and the owning app are fixed here,
+//! never taken from a request.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -22,16 +22,16 @@ use tilo_resource::{Invoke, Replica, Resource};
 use crate::images::Images;
 use crate::workspace::Confinement;
 
-pub const ROOM: &str = crate::workspace::PRIMARY;
+pub const PRIMARY_WORKSPACE: &str = crate::workspace::PRIMARY;
 
-pub const ROOMS_DIR: &str = "tilo-workspaces";
+pub const WORKSPACES_DIR: &str = "tilo-workspaces";
 
 pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
 
-pub fn terminal_data_home(data_home: &Path, room: &str) -> PathBuf {
+pub fn terminal_data_home(data_home: &Path, workspace: &str) -> PathBuf {
     data_home
-        .join(ROOMS_DIR)
-        .join(room)
+        .join(WORKSPACES_DIR)
+        .join(workspace)
         .join(OWNER_APP_ID)
         .join(".local/share")
 }
@@ -56,7 +56,7 @@ pub enum RecordError {
 #[derive(Debug, Clone)]
 pub struct Records {
     root: PathBuf,
-    room: String,
+    workspace: String,
     confinement: Option<Confinement>,
 }
 
@@ -64,7 +64,7 @@ impl Records {
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            room: ROOM.to_owned(),
+            workspace: PRIMARY_WORKSPACE.to_owned(),
             confinement: None,
         }
     }
@@ -76,7 +76,7 @@ impl Records {
     pub fn of(store: &crate::store::Store) -> Self {
         Self {
             root: store.records_root().to_path_buf(),
-            room: store.workspace_id().as_str().to_owned(),
+            workspace: store.workspace_id().as_str().to_owned(),
             confinement: store.confinement(),
         }
     }
@@ -85,8 +85,8 @@ impl Records {
         &self.root
     }
 
-    pub fn room(&self) -> &str {
-        &self.room
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     /// Refuse what `after` was granted that `before` was not and the
@@ -117,7 +117,7 @@ impl Records {
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
     pub fn record_dir(&self, key: &str) -> Result<PathBuf, RecordError> {
         check_key(key)?;
-        DocStore::workspace_document_dir_at(&self.root, OWNER_APP_ID, &self.room, key)
+        DocStore::workspace_document_dir_at(&self.root, OWNER_APP_ID, &self.workspace, key)
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 
@@ -125,8 +125,11 @@ impl Records {
         check_key(key)?;
         std::fs::create_dir_all(&self.root).map_err(|e| RecordError::Store(e.to_string()))?;
         let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(self.root.clone()));
-        DocStore::shared(store, StorageKey::document(OWNER_APP_ID, &self.room, key))
-            .map_err(|e| RecordError::Store(e.to_string()))
+        DocStore::shared(
+            store,
+            StorageKey::document(OWNER_APP_ID, &self.workspace, key),
+        )
+        .map_err(|e| RecordError::Store(e.to_string()))
     }
 
     fn load_current(store: &mut DocStore) -> Result<Option<tilo_resource::Doc>, RecordError> {
@@ -153,37 +156,35 @@ impl Records {
         };
         let mut environment =
             Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()))?;
-        self.check_room(key, &environment)?;
-        // A grant this room may not hold — written by a Tilo that did not
-        // refuse it — is not read, so no session is built with it.
+        self.check_workspace(key, &environment)?;
+        // A grant this workspace may not hold, written by a Tilo that did not refuse it,
+        // is not read, so no session is built with it.
         if let Some(confinement) = &self.confinement {
             environment.grants.retain(|grant| confinement.admits(grant));
         }
         Ok(Some(environment))
     }
 
-    /// A record kept in this room that names another workspace is not this
-    /// room's to open. One that names none was made before environments
-    /// belonged to a workspace, and is the room's.
-    fn check_room(&self, key: &str, environment: &Environment) -> Result<(), RecordError> {
+    /// A record here that names another workspace is not this one's to open.
+    /// One that names none was made before environments belonged to a workspace.
+    fn check_workspace(&self, key: &str, environment: &Environment) -> Result<(), RecordError> {
         let named =
             crate::workspace::WorkspaceId::of_record(environment).map_err(RecordError::Model)?;
-        if environment.workspace.is_empty() || named.as_str() == self.room {
+        if environment.workspace.is_empty() || named.as_str() == self.workspace {
             Ok(())
         } else {
             Err(RecordError::Refused(format!(
                 "the environment {key:?} kept with workspace {}'s belongs to workspace {named}",
-                self.room
+                self.workspace
             )))
         }
     }
 
     /// Make the record `key` holding `env`, unless one exists; returns what
-    /// the record holds afterwards. The record is made as this room's: it
-    /// names the room's workspace.
+    /// the record holds afterwards. The record is made as this workspace's.
     ///
     /// # Errors
-    /// Returns an error for a bad key, a grant the room may not hold, or a
+    /// Returns an error for a bad key, a grant the workspace may not hold, or a
     /// store that refuses the write.
     pub fn create(&self, key: &str, env: &Environment) -> Result<Environment, RecordError> {
         let mut store = self.open(key)?;
@@ -194,7 +195,7 @@ impl Records {
                 .ok_or_else(|| RecordError::Missing(key.to_owned()));
         }
         let env = Environment {
-            workspace: self.room.clone(),
+            workspace: self.workspace.clone(),
             ..env.clone()
         };
         self.confined(&[], &env.grants)?;
@@ -208,10 +209,10 @@ impl Records {
         Ok(env)
     }
 
-    /// Make the environment `key` of these records one of `into`'s, as a branch of this room's
-    /// workspace is made: the record's whole history, forked under a writer of its own, with one
-    /// more change naming `into`'s workspace as its own and its home and grants of this workspace's
-    /// files as the same places in `into`'s. `rehome` names the path a path of this workspace's
+    /// Make the environment `key` of these records one of `into`'s: the record's whole
+    /// history, forked under a writer of its own, with one more change naming `into`'s
+    /// workspace as its own and its home and grants of this workspace's files as the same
+    /// places in `into`'s. `rehome` names the path a path of this workspace's
     /// files takes in `into`'s, `None` for one outside them. File actions not carried out yet stay
     /// with the record they were asked of. Answers whether there was a record to branch.
     ///
@@ -237,14 +238,14 @@ impl Records {
         {
             return Err(RecordError::Refused(format!(
                 "workspace {} has an environment {key:?} already",
-                into.room
+                into.workspace
             )));
         }
         let mut doc = held.fork();
         let mut environment =
             Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()))?;
-        self.check_room(key, &environment)?;
-        environment.workspace.clone_from(&into.room);
+        self.check_workspace(key, &environment)?;
+        environment.workspace.clone_from(&into.workspace);
         if let Some(home) = rehome(&environment.home_dir) {
             environment.home_dir = home;
         }
@@ -275,10 +276,10 @@ impl Records {
 
     pub fn keys(&self) -> Result<Vec<String>, RecordError> {
         let dir = self.record_dir(DEFAULT_RECORD)?;
-        let Some(room) = dir.parent() else {
+        let Some(documents) = dir.parent() else {
             return Ok(Vec::new());
         };
-        let entries = match std::fs::read_dir(room) {
+        let entries = match std::fs::read_dir(documents) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(RecordError::Store(e.to_string())),
@@ -353,7 +354,7 @@ impl Records {
         let before = replica
             .state()
             .map_err(|e| RecordError::Model(e.to_string()))?;
-        self.check_room(key, &before)?;
+        self.check_workspace(key, &before)?;
         replica
             .apply_confirmed(invoke)
             .map_err(|e| RecordError::Refused(e.to_string()))?;
@@ -417,7 +418,7 @@ impl Records {
         let before = replica
             .state()
             .map_err(|e| RecordError::Model(e.to_string()))?;
-        self.check_room(key, &before)?;
+        self.check_workspace(key, &before)?;
         let answer = act(&mut replica)?;
         if self.confinement.is_some() {
             let after = replica
@@ -496,10 +497,12 @@ mod tests {
             "the record is a Terminal record document"
         );
         assert!(
-            records
-                .record_dir(DEFAULT_RECORD)
-                .unwrap()
-                .starts_with(dir.path().join(OWNER_APP_ID).join("rooms").join(ROOM)),
+            records.record_dir(DEFAULT_RECORD).unwrap().starts_with(
+                dir.path()
+                    .join(OWNER_APP_ID)
+                    .join(app_state::WORKSPACES_DIR)
+                    .join(PRIMARY_WORKSPACE)
+            ),
         );
 
         // A second resolve reads the record, not the current runtime.
@@ -599,26 +602,29 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_keeps_its_environments_in_its_own_room() {
+    fn a_workspace_keeps_its_own_environments() {
         let dir = tempfile::tempdir().unwrap();
         let files = dir.path().join("files");
         let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
         let w2 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W2));
-        assert_eq!(w1.room(), W1);
+        assert_eq!(w1.workspace(), W1);
 
         let (key, env) = w1.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
         assert_eq!(env.workspace, W1, "the record names its workspace");
         assert!(
-            w1.record_dir(&key)
-                .unwrap()
-                .starts_with(w1.root().join(OWNER_APP_ID).join("rooms").join(W1)),
-            "in the workspace's room"
+            w1.record_dir(&key).unwrap().starts_with(
+                w1.root()
+                    .join(OWNER_APP_ID)
+                    .join(app_state::WORKSPACES_DIR)
+                    .join(W1)
+            ),
+            "under the workspace"
         );
         w1.create("env-only-w1", &env).unwrap();
         assert_eq!(w1.keys().unwrap(), vec!["default", "env-only-w1"]);
         assert!(
             w2.keys().unwrap().is_empty(),
-            "another room lists none of them"
+            "another workspace lists none of them"
         );
         assert!(w2.load("env-only-w1").unwrap().is_none());
         assert!(
@@ -626,7 +632,7 @@ mod tests {
             "nor does the primary workspace's"
         );
 
-        // A record moved into another workspace's room is not its to open.
+        // A record moved into another workspace is not its to open.
         let w1_dir = w1.record_dir("env-only-w1").unwrap();
         let w2_dir = w2.record_dir("env-only-w1").unwrap();
         std::fs::remove_dir_all(&w2_dir).unwrap();

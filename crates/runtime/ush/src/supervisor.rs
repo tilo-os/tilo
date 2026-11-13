@@ -285,7 +285,7 @@ impl Session {
             masked: [
                 Some(canonical(self.store.root())),
                 Some(canonical(self.store.records_root())),
-                self.store.rooms_dir().map(|rooms| canonical(&rooms)),
+                self.store.workspaces_dir().map(|dir| canonical(&dir)),
             ]
             .into_iter()
             .flatten()
