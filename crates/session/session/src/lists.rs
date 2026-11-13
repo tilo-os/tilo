@@ -10,8 +10,8 @@ use std::sync::Arc;
 use tilo_broker_core::services::LaunchableApplication;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::catalogue::StoreCatalogue;
-use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_desktop_search::providers::host_apps::HostApps;
+use tilo_desktop_search::providers::host_apps::{HostAppEntry, HostAppKind};
 use tilo_files::native::Watched;
 
 use runtime_portal::tools::{
@@ -101,16 +101,7 @@ impl AppLists {
         // The entries Tilo keeps for the person's downloaded programs are search's own source
         // (`providers::downloaded`): it lists them with what the registry knows of them (their
         // kind, and a file that went away), which a host app row says nothing of.
-        let host_apps = machine_apps(&scan.entries, &tilo_apps)
-            .into_iter()
-            .map(|entry| HostAppEntry {
-                desktop_id: entry.id.clone(),
-                name: entry.name.clone(),
-                generic_name: entry.generic_name.clone(),
-                comment: entry.comment.clone(),
-                keywords: entry.keywords.clone(),
-            })
-            .collect();
+        let host_apps = machine_search_apps(&scan.entries, &tilo_apps);
         let candidates: Vec<desktop_policy::AppCandidate> = installed
             .iter()
             .map(|app| desktop_policy::AppCandidate {
@@ -394,6 +385,27 @@ fn machine_apps<'a>(
         .iter()
         .copied()
         .filter(|entry| !entries.iter().any(|app| variant_of(entry, app)))
+        .collect()
+}
+
+/// The machine's own apps, as search lists them, each saying where the machine got it.
+fn machine_search_apps(
+    entries: &[desktop_entry::DesktopEntry],
+    tilo_apps: &app_catalogue::Installed,
+) -> Vec<HostAppEntry> {
+    machine_apps(entries, tilo_apps)
+        .into_iter()
+        .map(|entry| HostAppEntry {
+            desktop_id: entry.id.clone(),
+            name: entry.name.clone(),
+            generic_name: entry.generic_name.clone(),
+            comment: entry.comment.clone(),
+            keywords: entry.keywords.clone(),
+            kind: match entry.source {
+                desktop_entry::EntrySource::Flatpak { .. } => HostAppKind::Flatpak,
+                desktop_entry::EntrySource::Host => HostAppKind::System,
+            },
+        })
         .collect()
 }
 

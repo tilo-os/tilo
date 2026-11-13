@@ -42,17 +42,15 @@ impl Vocabulary {
     }
 
     /// The words within `distance` edits of `query` (a transposition is one
-    /// edit) or, with `prefix`, that begin with such a word: what tantivy's
-    /// fuzzy term query, and its prefix form, accept.
+    /// edit).
     pub(crate) fn near<'a>(
         &'a self,
         query: &'a [char],
         distance: usize,
-        prefix: bool,
     ) -> impl Iterator<Item = &'a str> + 'a {
         self.words
             .iter()
-            .filter(move |(_, (_, word))| within(query, word, distance, prefix))
+            .filter(move |(_, (_, word))| within(query, word, distance))
             .map(|(text, _)| text.as_str())
     }
 }
@@ -99,32 +97,26 @@ impl Typos {
 /// while "nots" is still "notes" with a letter dropped.
 const SUBSTITUTION_SCALARS: usize = 5;
 
-/// Whether `word`, or with `prefix` some prefix of it, is within `distance`
-/// optimal-string-alignment edits of `query`. A query shorter than
+/// Whether `word` is within `distance` optimal-string-alignment edits of
+/// `query`: the same word, mistyped. A query shorter than
 /// [`SUBSTITUTION_SCALARS`] pays two edits for a wrong letter.
+///
+/// A typo is a whole word, never a word merely beginning alike: a prefix of
+/// a longer word is what the ranking's prefix tier is for, and letting one
+/// edit stand in for it answers every word that starts the same — "hello"
+/// would land on "helligkeit" (brightness) and on "hellmodus" (light mode),
+/// which are different words, not mistyped ones. For the same reason a word
+/// shorter than the query is only a typo of it when it is long enough for a
+/// mistyped letter to be a slip at all ("hell" is not "hello" with its last
+/// letter left off).
 ///
 /// The table runs over `word` one scalar per row; a row whose every cell,
 /// and the row before it (a transposition reaches back two), exceeds
 /// `distance` ends the comparison, since no later row can come back under.
-pub(crate) fn within(query: &[char], word: &[char], distance: usize, prefix: bool) -> bool {
+pub(crate) fn within(query: &[char], word: &[char], distance: usize) -> bool {
     let (n, m) = (query.len(), word.len());
-    if prefix {
-        // A prefix match is a word beginning what was typed, and the typed
-        // word may carry one letter too many. Only a word long enough to be
-        // that typo reads as unfinished: one letter past a short word is
-        // usually another word ("hell" is not the start of "hello"), while
-        // "termin" starts "terminl".
-        if m < n && m < SUBSTITUTION_SCALARS {
-            return false;
-        }
-        if m.saturating_add(distance) < n {
-            return false;
-        }
-    } else if n.abs_diff(m) > distance {
+    if n.abs_diff(m) > distance || (m < n && m < SUBSTITUTION_SCALARS) {
         return false;
-    }
-    if prefix && n <= distance {
-        return true;
     }
     let substitution = if n < SUBSTITUTION_SCALARS { 2 } else { 1 };
     let width = n.saturating_add(1);
@@ -163,71 +155,64 @@ pub(crate) fn within(query: &[char], word: &[char], distance: usize, prefix: boo
             }
             lowest = lowest.min(cell);
         }
-        if prefix && current.get(n).is_some_and(|&last| last <= distance) {
-            return true;
-        }
-        let previous_lowest = previous.iter().copied().min().unwrap_or(usize::MAX);
-        if lowest > distance && previous_lowest > distance {
+        if lowest > distance && previous.iter().copied().min().unwrap_or(usize::MAX) > distance {
             return false;
         }
         std::mem::swap(&mut before, &mut previous);
         std::mem::swap(&mut previous, &mut current);
     }
-    !prefix && previous.get(n).is_some_and(|&last| last <= distance)
+    previous.get(n).is_some_and(|&last| last <= distance)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn near(query: &str, word: &str, distance: usize, prefix: bool) -> bool {
+    fn near(query: &str, word: &str, distance: usize) -> bool {
         let query: Vec<char> = query.chars().collect();
         let word: Vec<char> = word.chars().collect();
-        within(&query, &word, distance, prefix)
+        within(&query, &word, distance)
     }
 
     #[test]
     fn edits_and_transpositions_count_one_each() {
-        assert!(near("terminl", "terminal", 1, false));
-        assert!(near("emial", "email", 1, false), "a swap is one edit");
-        assert!(near("calender", "calendar", 1, false));
-        assert!(!near("calender", "calendar", 0, false));
-        assert!(near("kalendar", "calendar", 1, false));
-        assert!(!near("netflix", "network", 2, false));
-        assert!(near("einstelungen", "einstellungen", 1, false));
-        assert!(!near("abcdef", "uvwxyz", 2, false));
+        assert!(near("terminl", "terminal", 1));
+        assert!(near("emial", "email", 1), "a swap is one edit");
+        assert!(near("calender", "calendar", 1));
+        assert!(!near("calender", "calendar", 0));
+        assert!(near("kalendar", "calendar", 1));
+        assert!(!near("netflix", "network", 2));
+        assert!(near("einstelungen", "einstellungen", 1));
+        assert!(!near("abcdef", "uvwxyz", 2));
     }
 
     #[test]
     fn a_short_word_is_not_another_short_word_with_one_letter_changed() {
-        assert!(!near("cats", "cuts", 1, false));
-        assert!(!near("cats", "cuts", 1, true));
-        assert!(!near("cats", "hats", 1, false));
-        assert!(near("cats", "cast", 1, false), "a swap is still one edit");
-        assert!(near("nots", "notes", 1, false), "a dropped letter too");
-        assert!(near("catz", "cats", 2, false));
-        assert!(near("kittem", "kitten", 1, false), "longer words keep it");
+        assert!(!near("cats", "cuts", 1));
+        assert!(!near("cats", "hats", 1));
+        assert!(near("cats", "cast", 1), "a swap is still one edit");
+        assert!(near("nots", "notes", 1), "a dropped letter too");
+        assert!(near("catz", "cats", 2));
+        assert!(near("kittem", "kitten", 1), "longer words keep it");
     }
 
     #[test]
-    fn a_prefix_match_accepts_a_word_that_begins_near_the_query() {
-        assert!(near("setin", "settings", 1, true));
-        assert!(near("yotub", "youtube", 1, true));
-        assert!(!near("yotub", "youtube", 1, false));
-        assert!(near("posteingnag", "posteingang", 2, true));
-        assert!(!near("screenshot", "scr", 2, true));
-    }
-
-    #[test]
-    fn a_short_word_does_not_start_a_longer_typed_word() {
-        // One letter past a short word is another word, not a typo.
-        assert!(!near("hello", "hell", 1, true));
-        // A long word may still begin the typed word, one letter too many.
-        assert!(near("terminl", "termin", 1, true));
-        assert!(!near("terminals", "termin", 1, true));
-        // The other way round is a word beginning what was typed.
-        assert!(near("hell", "hello", 1, true));
-        assert!(near("termin", "terminal", 1, true));
+    fn a_typo_is_a_whole_word_never_one_merely_beginning_alike() {
+        // "hello" is a word of its own, not a mistyping of "helligkeit"
+        // (brightness) or of "hellmodus" (light mode).
+        assert!(!near("hello", "helligkeit", 1));
+        assert!(!near("hello", "hellmodus", 1));
+        assert!(!near("yotub", "youtube", 1), "still typing, not a typo");
+        // A short word is not a longer word with its last letters left off.
+        assert!(!near("hello", "hell", 1));
+        assert!(!near("helo", "hell", 1));
+        // Mistyped words are found however the letters slipped.
+        assert!(near("helo", "hello", 1), "a letter dropped");
+        assert!(near("helloo", "hello", 1), "a letter doubled");
+        assert!(near("terminl", "termin", 1), "one letter too many");
+        assert!(near("setings", "settings", 1));
+        assert!(near("posteingnag", "posteingang", 2));
+        assert!(!near("screenshot", "scr", 2));
     }
 
     /// The table against a plain recursion over every alignment.
@@ -282,26 +267,12 @@ mod tests {
                 let q: Vec<char> = query.chars().collect();
                 let w: Vec<char> = word.chars().collect();
                 for distance in 0..=2 {
-                    let whole = osa(&q, &w) <= distance;
+                    let typo = w.len().abs_diff(q.len()) <= distance
+                        && (w.len() >= q.len() || w.len() >= SUBSTITUTION_SCALARS);
                     assert_eq!(
-                        within(&q, &w, distance, false),
-                        whole,
+                        within(&q, &w, distance),
+                        osa(&q, &w) <= distance && typo,
                         "{query} {word} {distance}"
-                    );
-                    let prefixed = if w.len() < q.len()
-                        && (w.len() < SUBSTITUTION_SCALARS
-                            || w.len().saturating_add(distance) < q.len())
-                    {
-                        false
-                    } else if q.len() <= distance {
-                        true
-                    } else {
-                        (0..=w.len()).any(|end| osa(&q, &w[..end]) <= distance)
-                    };
-                    assert_eq!(
-                        within(&q, &w, distance, true),
-                        prefixed,
-                        "{query} {word} {distance} prefix"
                     );
                 }
             }

@@ -306,14 +306,17 @@ fn loose_matching_finds_spread_words_and_typos_below_substrings() {
     assert!(keys(&strict, "fierfox").is_empty());
     assert_eq!(keys(&loose, "fierfox"), [2]);
     assert_eq!(rank(&loose, "fierfox"), Some(FUZZY_RANK));
-    // As-you-type: the last word may be an unfinished, misspelt prefix.
+    // As-you-type: a word begun is found from its start, and a typo is a
+    // whole word, so it needs every letter of it.
     assert_eq!(keys(&loose, "calcul"), [1]);
-    assert_eq!(keys(&loose, "calcuk"), [1]);
+    assert_eq!(keys(&loose, "calculatr"), [1]);
+    assert!(keys(&loose, "calcuk").is_empty());
     // A substring match always outranks a looser one.
     assert!(rank(&loose, "spreadsheet").unwrap() > SPANNING_RANK);
-    // Short words never match by typo; four letters take one.
+    // A word begun is found from its own start, and short words never match
+    // by typo: "clc" and "fier" are not beginnings to mistype.
     assert!(keys(&loose, "clc").is_empty());
-    assert_eq!(keys(&loose, "fier"), [2]);
+    assert!(keys(&loose, "fier").is_empty());
 }
 
 #[test]
@@ -323,15 +326,16 @@ fn a_four_letter_typo_and_typos_among_spread_words_still_find_it() {
             .field("Notes", FieldWeight::TITLE)
             .field("notizen", FieldWeight::KEYWORD),
         Document::new(1)
-            .field("New note", FieldWeight::TITLE)
-            .field("Start an empty note", FieldWeight::SUBTITLE),
+            .field("Fresh page", FieldWeight::TITLE)
+            .field("Start an empty page", FieldWeight::SUBTITLE),
     ];
     let loose = committed(Matching::LOOSE, documents);
-    assert_eq!(keys(&loose, "nots"), [0, 1]);
+    // "nots" is "notes" with a letter dropped.
+    assert_eq!(keys(&loose, "nots"), [0]);
     assert!(rank(&loose, "nots").unwrap() <= FUZZY_RANK);
-    // "empty" spans into the subtitle, "nots" is a typo of the title word.
-    assert_eq!(keys(&loose, "empty nots"), [1]);
-    assert!(rank(&loose, "empty nots").unwrap() < SPANNING_RANK);
+    // "empty" spans into the subtitle, "pgae" is a typo of the title word.
+    assert_eq!(keys(&loose, "empty pgae"), [1]);
+    assert!(rank(&loose, "empty pgae").unwrap() < SPANNING_RANK);
 }
 
 #[test]
@@ -781,15 +785,23 @@ fn a_highlight_marks_exactly_what_the_index_matched() {
 
 #[test]
 fn a_word_ending_inside_the_query_does_not_find_it() {
-    // "hell" is the German word for light, a keyword of the light-mode
-    // setting: typing more than the whole word must not land on it.
+    // "hell" and "hellmodus" are German words for light, keywords of the
+    // light-mode setting: typing a word that only begins alike ("hello")
+    // must not land on them, while the words themselves are found.
     let index = committed(
         Matching::LOOSE,
         [Document::new(1)
             .field("Light mode", FieldWeight::TITLE)
-            .field("hell", FieldWeight::KEYWORD)],
+            .field("hell", FieldWeight::KEYWORD)
+            .field("hellmodus", FieldWeight::KEYWORD)],
     );
     assert!(keys(&index, "hello").is_empty());
+    assert!(keys(&index, "helo").is_empty());
     assert_eq!(keys(&index, "hell"), [1]);
-    assert_eq!(keys(&index, "helo"), [1], "a swap is still a typo");
+    assert_eq!(keys(&index, "hellmodus"), [1]);
+    assert_eq!(
+        keys(&index, "hellomodus"),
+        [1],
+        "a dropped letter is a typo"
+    );
 }

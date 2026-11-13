@@ -87,6 +87,9 @@ search-source-app-content = What apps hold
 search-source-recent = Recent
 search-source-store = Store
 search-source-host-apps = Apps on this device
+# Where a machine's own app came from, said on its row.
+search-host-app-flatpak = Flatpak
+search-host-app-system = System
 search-source-files = Files
 search-source-records = Records
 search-source-jobs = Running tasks

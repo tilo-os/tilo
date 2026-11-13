@@ -1573,9 +1573,7 @@ mod tests {
                     .map(|name| HostAppEntry {
                         desktop_id: format!("org.example.{name}.desktop"),
                         name: format!("{name} Viewer"),
-                        generic_name: None,
-                        comment: None,
-                        keywords: Vec::new(),
+                        ..HostAppEntry::default()
                     })
                     .collect(),
                 catalogue: Vec::new(),

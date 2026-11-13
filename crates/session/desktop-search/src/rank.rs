@@ -177,4 +177,61 @@ mod tests {
         )[0];
         assert!(begun.is_some(), "a name begun is: Note for Notepad");
     }
+
+    /// Words of the appearance setting's rows, as the settings service
+    /// publishes them: its name and its options' names in both languages.
+    const APPEARANCE_STYLE: [&str; 7] = [
+        "theme",
+        "light mode",
+        "dark mode",
+        "thema",
+        "hell",
+        "hellmodus",
+        "helligkeit",
+    ];
+
+    /// Typing a word that merely begins like another finds neither the theme
+    /// rows nor Brightness, though each holds a word of that beginning: a
+    /// typo is a whole word mistyped, and a word begun is the row's own name
+    /// from its start.
+    #[test]
+    fn a_word_merely_beginning_alike_does_not_find_the_setting_rows() {
+        let words: Vec<String> = APPEARANCE_STYLE.map(str::to_owned).to_vec();
+        let rows = [
+            ("Light mode", words.as_slice(), "Theme"),
+            ("Dark mode", words.as_slice(), "Theme"),
+            ("Brightness", words.as_slice(), "Display"),
+        ];
+        let scores = |needle: &str| {
+            action_match_scores(
+                needle,
+                rows.iter().map(|(label, words, on)| (*label, *words, *on)),
+            )
+        };
+        assert_eq!(scores("hello"), [None, None, None]);
+        assert!(scores("hellmodus")[0].is_some(), "the German name of it");
+        assert!(scores("theme")[0].is_some() && scores("theme")[1].is_some());
+    }
+
+    /// A row found by a prefix of its name outranks one found only by a
+    /// typo of its name: what a person is typing leads what they remember
+    /// wrongly.
+    #[test]
+    fn a_prefix_match_outranks_a_typo() {
+        let rows = [
+            ("Bookends", Vec::new(), "Desktop"),
+            ("Books", Vec::new(), "Desktop"),
+        ];
+        let scores = action_match_scores(
+            "booke",
+            rows.iter()
+                .map(|(label, words, on)| (*label, words.as_slice(), *on)),
+        );
+        let (prefix, typo) = (
+            scores[0].expect("Bookends begun"),
+            scores[1].expect("Books mistyped"),
+        );
+        assert!(prefix > typo, "{prefix} > {typo}");
+        assert_eq!(prefix, MAX_PROVIDER_SCORE, "a name begun is a perfect hit");
+    }
 }

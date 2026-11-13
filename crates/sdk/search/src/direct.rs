@@ -108,23 +108,19 @@ impl Direct {
     }
 
     /// For each typed word, which words of the index it matches as the
-    /// typo tier matches a word: exactly, or as a prefix when it is the last
-    /// one, while it is too short for typos; otherwise within its typos.
+    /// typo tier matches a word: itself while it is too short for typos,
+    /// otherwise any word within its typos.
     fn typo_words(&self, typed: &[String]) -> Vec<Vec<bool>> {
-        let last = typed.len().saturating_sub(1);
         typed
             .iter()
-            .enumerate()
-            .map(|(at, word)| {
+            .map(|word| {
                 let scalars: Vec<char> = word.chars().collect();
                 let distance = typo_distance(&scalars);
-                let prefix = at == last;
                 self.words
                     .iter()
-                    .map(|(text, held)| match (distance, prefix) {
-                        (0, false) => text == word,
-                        (0, true) => text.starts_with(word.as_str()),
-                        (distance, prefix) => within(&scalars, held, distance, prefix),
+                    .map(|(text, held)| match distance {
+                        0 => text == word,
+                        distance => within(&scalars, held, distance),
                     })
                     .collect()
             })
