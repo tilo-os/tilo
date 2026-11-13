@@ -65,11 +65,12 @@ pub enum ImportCmd {
     /// Set up the company's mail accounts in Mail.
     #[command(
         after_help = "Example:\n  tilo import mail --imap-host imap.example --smtp-host smtp.example \
-                      --user ops@example --password-file ops.password -w company\n\n\
+                      --user ops@example --password-file ops.password\n\n\
                       The account is added through Mail's own save-account action on this \
-                      computer, so Mail syncs its mail into the workspace, where agents read it. \
-                      Gmail and Outlook need an app password or OAuth: pass --auth oauth and finish \
-                      the sign-in in Mail."
+                      computer, so Mail syncs its mail into the workspace it opens in, where agents \
+                      read it. Accounts are the person's: they reach every device, and no -w names \
+                      one. Gmail and Outlook need an app password or OAuth: pass --auth oauth and \
+                      finish the sign-in in Mail."
     )]
     Mail(MailArgs),
 }
@@ -159,6 +160,11 @@ pub struct MailArgs {
 
 /// `tilo import`: the source `cmd` read and written into `workspace`.
 pub fn run(reach: Reach<'_>, workspace: Option<String>, cmd: ImportCmd) -> Result<ExitCode> {
+    // Mail's accounts are the person's, not a workspace's: they reach every
+    // device, and Mail syncs their mail into whichever workspace it opens in.
+    if let ImportCmd::Mail(args) = cmd {
+        return mail(args);
+    }
     let Some(workspace) = workspace else {
         bail!("name the workspace to import into: -w <name or id>");
     };
@@ -166,19 +172,14 @@ pub fn run(reach: Reach<'_>, workspace: Option<String>, cmd: ImportCmd) -> Resul
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        let client = Client::open(reach)?;
+        let workspace = crate::hosted::workspace_id(&client, &workspace).await?;
         match cmd {
-            ImportCmd::Mail(args) => mail(args),
-            other => {
-                let client = Client::open(reach)?;
-                let workspace = crate::hosted::workspace_id(&client, &workspace).await?;
-                match other {
-                    ImportCmd::Outline(args) => outline(&client, &workspace, args).await,
-                    ImportCmd::Linear(args) => linear(&client, &workspace, args).await,
-                    ImportCmd::Forgejo(args) => forgejo(&client, &workspace, args).await,
-                    ImportCmd::Files(args) => files(&client, &workspace, args).await,
-                    ImportCmd::Mail(_) => unreachable!("mail is answered above"),
-                }
-            }
+            ImportCmd::Outline(args) => outline(&client, &workspace, args).await,
+            ImportCmd::Linear(args) => linear(&client, &workspace, args).await,
+            ImportCmd::Forgejo(args) => forgejo(&client, &workspace, args).await,
+            ImportCmd::Files(args) => files(&client, &workspace, args).await,
+            ImportCmd::Mail(_) => unreachable!("mail is answered above"),
         }
     })
 }
