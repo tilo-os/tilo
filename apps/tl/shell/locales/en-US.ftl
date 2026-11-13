@@ -777,14 +777,14 @@ d-rfgelicn = Showing
 
 d-p4owlmpg = Always
 
-d-sscc6gs3 = Shown while no window overlaps it; it hides when a window would cover it
-    .doc = Shown while no window overlaps it; it hides when a window would cover it.
+d-sscc6gs3 = While no window covers it; it hides when a window would cover it
+    .doc = While no window covers it; it hides when a window would cover it.
 
-d-v2eyzsgr = Hidden until the pointer bumps the screen edge it rides
-    .doc = Hidden until the pointer bumps the screen edge it rides.
+d-v2eyzsgr = At the screen's edge: hidden until the pointer bumps the edge it rides
+    .doc = At the screen's edge: hidden until the pointer bumps the edge it rides.
 
-d-62fazfo4 = Hidden after the pointer has not been over it for a moment, shown when it returns
-    .doc = Hidden after the pointer has not been over it for a moment, shown when it returns.
+d-62fazfo4 = After a moment: hidden once the pointer has not been over it for a while
+    .doc = After a moment: hidden once the pointer has not been over it for a while.
 
 d-v3z2zasp = Size
     .doc = How large the parts are.
@@ -1479,11 +1479,20 @@ d-pjkvdmwk = Show style settings~present
 d-vseev2rl = Style panel
     .w-settings-for = Settings for { $style_title }
     .w-close = Close
+
+d-gncm64rz = Style sheet
+    .w-settings-for = Settings for { $style_title }
+    .w-close = Close
+
+d-mmqndkio = Style settings body
     .w-comes-from-and-its-settings-are = { $style_label } comes from { $package }, and its settings are its package's own.
 
 d-g476xvac = Desktop style settings
     .w-show-the-top-bar = Show the top bar
     .w-show-the-dock = Show the dock
+    .w-dock-edge = Dock edge
+    .w-dock-size = Dock size
+    .w-dock-when-it-shows = Dock, when it shows
 
 d-e3tczbcu = Strips style settings
     .w-show-the-tabs-of-a-strip = Show the tabs of a strip

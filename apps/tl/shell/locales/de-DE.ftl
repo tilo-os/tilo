@@ -1294,6 +1294,13 @@ d-bmd7xmln-text = Text
 d-yd725hjw = Die installierten Apps
     .doc = Die auf diesem Gerät installierten Anwendungen, wie der Launcher sie auflistet: die, die die Aufnahmen und die Layouts des Schreibtischs zeigen.
 
+d-gncm64rz = Stileinstellungen als Blatt
+    .w-settings-for = Einstellungen für { $style_title }
+    .w-close = Schließen
+
+d-mmqndkio = Einstellungen eines Stils
+    .w-comes-from-and-its-settings-are = { $style_label } kommt aus { $package }, und seine Einstellungen gehören seinem Paket.
+
 d-5o2gn6hf = Einstellungen eines Stils
     .doc = Ein Schreibtisch mit einer Notiz im genannten Stil, dieser Platz vorn, und die eigenen Einstellungen des Stils darüber geöffnet: was eine Person sieht, die sie aus dem Stilmenü der Leiste öffnet.
 
@@ -1512,11 +1519,13 @@ d-pjkvdmwk = Stileinstellungen zeigen~present
 d-vseev2rl = Stilbereich
     .w-settings-for = Einstellungen für { $style_title }
     .w-close = Schließen
-    .w-comes-from-and-its-settings-are = { $style_label } stammt aus { $package }, und seine Einstellungen gehören zu seinem Paket.
 
 d-g476xvac = Einstellungen des Desktopstils
     .w-show-the-top-bar = Obere Leiste zeigen
     .w-show-the-dock = Dock zeigen
+    .w-dock-edge = Dock-Kante
+    .w-dock-size = Dock-Größe
+    .w-dock-when-it-shows = Dock, wenn er zeigt
 
 d-e3tczbcu = Einstellungen des Reihenstils
     .w-show-the-tabs-of-a-strip = Tabs einer Reihe zeigen
