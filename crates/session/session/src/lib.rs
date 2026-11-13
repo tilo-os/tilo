@@ -39,7 +39,9 @@ pub use error::Error;
         reason = "the roles that read this state land with their batches"
     )
 )]
-pub(crate) use assembly::{BoxAsk, Shared};
+#[cfg(target_os = "linux")]
+pub(crate) use assembly::BoxAsk;
+pub(crate) use assembly::Shared;
 
 mod activity_provider;
 mod continuations;

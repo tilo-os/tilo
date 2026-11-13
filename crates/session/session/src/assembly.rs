@@ -18,6 +18,7 @@ use tilo_desktop_surface::DesktopHandle;
 
 /// What the shell's send keys asked of the window in front: the box it opens,
 /// and whom the box starts addressed to.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BoxAsk {
     /// Ask an agent about what the window has picked: a box addressed to the
@@ -81,6 +82,7 @@ pub(crate) struct Shared {
     /// the window in front to open its box. A key can arrive while the desk is
     /// between two of its own frames, so the window it was over is named then,
     /// by the desk, and never at the keypress.
+    #[cfg(target_os = "linux")]
     pub(crate) box_ask: Cell<Option<BoxAsk>>,
     #[cfg(target_os = "linux")]
     pub(crate) feedback: Option<crate::feedback::Destination>,
