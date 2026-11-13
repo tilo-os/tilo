@@ -681,6 +681,12 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     }
     const made = at.made;
     const text = prompts[kind](made.code, {site});
+    // Followed before it is handed over: the host keeps a code from its tab's
+    // first follow, and the clipboard holds this prompt the moment the click
+    // returns — an agent handed it that fast is told a code the host does not
+    // know yet. What the screen says of the code still waits for the copy's
+    // answer, which only the click can give.
+    follow(made, mode, ++attempt);
     let writing;
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
     return writing.then(() => true, error => { console.warn('first run: copy', error); return false; }).then(copied => {
