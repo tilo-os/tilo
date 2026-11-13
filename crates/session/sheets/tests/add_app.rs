@@ -118,6 +118,17 @@ fn adding_asks_the_shell_for_the_program_and_no_move_unless_switched_on() {
             move_to_applications: Some(true)
         }]
     );
+
+    let (mut app, seat) = seated(appimage());
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [AddAppEffect::Add {
+            move_to_applications: None
+        }],
+        "adding can't break anything, so it is the default and Enter gives it"
+    );
 }
 
 #[test]
