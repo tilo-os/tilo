@@ -659,402 +659,406 @@ mod tests {
         grant_answer(grant, &node, ActionKind::Undoable).answer
     }
 
-    #[test]
-    fn a_shortcut_grant_reaches_its_resource_or_exactly_its_kind() {
-        // One resource's action: not the same action on another resource.
-        let exact = [action_rule(
-            NOTES,
-            "tilo.rich-text",
-            Some("notes.notebook/page/1/body"),
-            "apply",
-            KindSet::ALL,
-            Answer::Allow,
-        )];
-        assert_eq!(
-            answer(
-                &exact,
-                "notes.notebook/page/1/body",
-                "tilo.rich-text",
-                "apply"
-            ),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(&exact, "notes.notebook", "notes.notebook", "apply"),
-            Answer::Deny
-        );
-        assert_eq!(
-            answer(
-                &exact,
-                "notes.notebook/page/2/body",
-                "tilo.rich-text",
-                "apply"
-            ),
-            Answer::Deny
-        );
+    tilo_test_env::scenario! {
+        fn a_shortcut_grant_reaches_exactly_what_its_steps_and_triggers_need;
 
-        // Every resource of one kind: that kind exactly, in that app, for that
-        // action. Neither a sub-kind nor a kind sharing a prefix.
-        let kind = [action_rule(
-            NOTES,
-            "notes.page",
-            None,
-            "apply",
-            KindSet::ALL,
-            Answer::Allow,
-        )];
-        assert_eq!(
-            answer(&kind, "notes.page:1", "notes.page", "apply"),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(&kind, "notes.page:2", "notes.page", "apply"),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(&kind, "notes.page:1/x", "notes.page.special", "apply"),
-            Answer::Deny
-        );
-        assert_eq!(
-            answer(&kind, "notes.pages:1", "notes.pages", "apply"),
-            Answer::Deny
-        );
-        assert_eq!(
-            answer(&kind, "notes.page:1", "notes.page", "delete"),
-            Answer::Deny
-        );
-        let chat = step_node(
-            Some("ws"),
-            "so.tilo.chat",
-            "notes.page",
-            &ActionAddress::new("notes.page:1", "apply"),
-        );
-        assert_eq!(
-            grant_answer(&kind, &chat, ActionKind::Undoable).answer,
-            Answer::Deny
-        );
-
-        let mut restricted = kind.to_vec();
-        restricted.push(action_rule(
-            NOTES,
-            "notes.page",
-            Some("notes.page:1"),
-            "apply",
-            KindSet::UNDOABLE,
-            Answer::Deny,
-        ));
-        assert_eq!(
-            answer(&restricted, "notes.page:1", "notes.page", "apply"),
-            Answer::Deny
-        );
-        assert_eq!(
-            answer(&restricted, "notes.page:2", "notes.page", "apply"),
-            Answer::Allow
-        );
-    }
-
-    #[test]
-    fn only_a_rule_naming_the_action_is_an_advance_consent() {
-        let node = step_node(
-            None,
-            NOTES,
-            "notes.note",
-            &ActionAddress::new("notes.note:1", "delete"),
-        );
-        let app = [Rule::new(
-            TreePath::root().any(Level::Workspace).app(NOTES),
-            KindSet::ALL,
-            Answer::Allow,
-        )];
-        let decided = grant_answer(&app, &node, ActionKind::Undoable);
-        assert_eq!(decided.answer, Answer::Allow);
-        assert!(!decided.names_action);
-        let consent = [action_rule(
-            NOTES,
-            "notes.note",
-            Some("notes.note:1"),
-            "delete",
-            KindSet::ALL,
-            Answer::Allow,
-        )];
-        assert!(grant_answer(&consent, &node, ActionKind::Undoable).names_action);
-    }
-
-    #[test]
-    fn triggers_read_what_they_watch() {
-        use crate::{ActorFilter, TriggerSpec};
-        let rules = trigger_rules(&[
-            TriggerSpec::RecordChanged {
-                kind: "chat.workspace".into(),
-                actions: vec!["post".into()],
-                fields: vec![],
-                by: ActorFilter::NotBots,
-            },
-            TriggerSpec::Connector {
-                app_id: "so.tilo.discord".into(),
-                source: "message-created".into(),
-                filter: serde_json::Map::new(),
-            },
-        ]);
-        let any = TreePath::root().any(Level::Workspace);
-        assert_eq!(
-            rules,
-            vec![
-                Rule::new(
-                    any.clone().any(Level::App).kind("chat.workspace"),
-                    KindSet::READ,
-                    Answer::Allow
-                ),
-                Rule::new(any.app("so.tilo.discord"), KindSet::READ, Answer::Allow),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_rule_no_step_or_trigger_uses_is_unused() {
-        let post = action_rule(
-            "so.tilo.chat",
-            "chat.workspace",
-            None,
-            "post",
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-        );
-        let delete = action_rule(
-            "so.tilo.chat",
-            "chat.workspace",
-            None,
-            "delete",
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-        );
-        let shortcut = crate::Shortcut {
-            id: "bridge".into(),
-            name: "Bridge".into(),
-            inputs: vec![],
-            steps: vec![crate::Step::new(
-                "post",
-                crate::StepKind::Invoke {
-                    action: ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
-                    resource: crate::Selector::FirstOfKind("chat.workspace".into()),
-                    args: std::collections::BTreeMap::default(),
-                    appearance: None,
-                },
-            )],
-            step_timeout_secs: None,
-            output: None,
-            grant: vec![post, delete.clone()],
-            triggers: vec![],
-            saved_by: None,
-            saved_proof: None,
-        };
-        assert_eq!(unused_rules(&shortcut), vec![delete]);
-    }
-
-    #[test]
-    fn an_action_reaching_outside_lets_its_performer_settle_it() {
-        let permission = |action: &str, kind| Permission {
-            app_id: "so.tilo.discord".into(),
-            reach: Reach::Kind("discord.guild".into()),
-            action: action.into(),
-            kind,
-            label: String::new(),
-        };
-        let settles = settle_rules(&[
-            permission("send", ActionKind::Outside),
-            permission("map", ActionKind::Undoable),
-        ]);
-        assert_eq!(settles.len(), 1, "only what is queued outside is settled");
-        // It reaches an entry of a guild's outbox, as the workspace decides
-        // a settle (an item of the record), and none of the guild's own
-        // fields.
-        let guild = TreePath::workspace("r")
-            .app("so.tilo.discord")
-            .kind("discord.guild")
-            .resource("g");
-        let rule = &settles[0];
-        assert!(
-            rule.node
-                .covers(&guild.clone().item("e1").action(SETTLE_ACTION))
-        );
-        assert!(!rule.node.covers(&guild.clone().action(SETTLE_ACTION)));
-        assert!(
-            !rule
-                .node
-                .covers(&guild.field("ownership").action(SETTLE_ACTION))
-        );
-        let shortcut = crate::Shortcut {
-            id: "bridge".into(),
-            name: "Bridge".into(),
-            inputs: vec![],
-            steps: vec![crate::Step::new(
-                "send",
-                crate::StepKind::Invoke {
-                    action: ActionKey::new("so.tilo.discord", "discord.guild", "send"),
-                    resource: crate::Selector::FirstOfKind("discord.guild".into()),
-                    args: std::collections::BTreeMap::default(),
-                    appearance: None,
-                },
-            )],
-            step_timeout_secs: None,
-            output: None,
-            grant: settles,
-            triggers: vec![],
-            saved_by: None,
-            saved_proof: None,
-        };
-        assert!(unused_rules(&shortcut).is_empty());
-    }
-
-    #[test]
-    fn whoever_changes_a_resource_may_migrate_it_as_far_as_its_steps_reach() {
-        let permission = |app: &str, kind: &str, action: &str, of| Permission {
-            app_id: app.into(),
-            reach: Reach::Kind(kind.into()),
-            action: action.into(),
-            kind: of,
-            label: String::new(),
-        };
-        let migrates = migrate_rules(&[
-            permission(
-                "so.tilo.discord",
-                "discord.guild",
-                "map",
-                ActionKind::Undoable,
-            ),
-            permission(
-                "so.tilo.discord",
-                "discord.guild",
-                "send",
-                ActionKind::Outside,
-            ),
-            permission(
-                "so.tilo.chat",
-                "chat.messages",
-                "post",
-                ActionKind::Undoable,
-            ),
-            permission(
-                "so.tilo.discord",
-                "discord.guild",
-                "plan-event",
-                ActionKind::Read,
-            ),
-        ]);
-        assert_eq!(
-            migrates.len(),
-            2,
-            "one rule per kind changed, none for a read"
-        );
-        // The guild's migration is decided at the record, the way the
-        // workspace claims it, and rewriting its outbox reaches outside as
-        // `send` does.
-        let guild = TreePath::workspace("r")
-            .app("so.tilo.discord")
-            .kind("discord.guild")
-            .resource("");
-        assert!(migrates[0].node.covers(&guild.action(MIGRATE_ACTION)));
-        assert_eq!(migrates[0].kinds, KindSet::ALL);
-        assert_eq!(migrates[1].kinds, KindSet::READ_UNDOABLE);
-        let shortcut = crate::Shortcut {
-            id: "bridge".into(),
-            name: "Bridge".into(),
-            inputs: vec![],
-            steps: vec![crate::Step::new(
-                "send",
-                crate::StepKind::Invoke {
-                    action: ActionKey::new("so.tilo.discord", "discord.guild", "send"),
-                    resource: crate::Selector::FirstOfKind("discord.guild".into()),
-                    args: std::collections::BTreeMap::default(),
-                    appearance: None,
-                },
-            )],
-            step_timeout_secs: None,
-            output: None,
-            grant: vec![migrates[0].clone()],
-            triggers: vec![],
-            saved_by: None,
-            saved_proof: None,
-        };
-        assert!(unused_rules(&shortcut).is_empty());
-    }
-
-    /// A field edit whose program names the field it changes is granted
-    /// that field of any item, and decided where the workspace decides it.
-    #[test]
-    fn a_field_edit_is_granted_where_the_doors_decide_it() {
-        use std::collections::BTreeMap;
-
-        let literal = Binding::Literal;
-        let one = |kind: &str, binding: Binding| {
-            Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
-        };
-        let react = Binding::Object(BTreeMap::from([
-            (
-                "path".to_owned(),
-                Binding::List(vec![
-                    one("field", literal("messages".into())),
-                    one("item", Binding::Var("item/message".into())),
-                    one("field", literal("reactions".into())),
-                ]),
-            ),
-            ("op".to_owned(), literal("react".into())),
-            ("emoji".to_owned(), Binding::Var("item/emoji".into())),
-        ]));
-        let step = |edit: Binding| {
-            crate::Step::new(
-                "edit",
-                crate::StepKind::Invoke {
-                    action: ActionKey::new(NOTES, "notes.chat", FIELD_EDIT),
-                    resource: crate::Selector::FirstOfKind("notes.chat".into()),
-                    args: BTreeMap::from([(EDIT_PARAM.to_owned(), edit)]),
-                    appearance: None,
-                },
-            )
-        };
-        let catalog = ActionCatalog::new(Vec::new());
-        let grant = rules(&least_privilege(&[step(react)], &catalog));
-        assert_eq!(
-            grant
-                .iter()
-                .map(|rule| rule.node.readable())
-                .collect::<Vec<_>>(),
-            ["workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
-        );
-
-        // The workspace decides a run's edit at its concrete path.
-        let decided = |path: serde_json::Value| {
-            let at = edit_reach(&literal(serde_json::json!({"path": path, "op": "react"})))
-                .expect("a literal path names its fields");
-            let node = step_node_at(
-                Some("ws"),
+        phase a_shortcut_grant_reaches_its_resource_or_exactly_its_kind;
+        {
+            // One resource's action: not the same action on another resource.
+            let exact = [action_rule(
                 NOTES,
-                "notes.chat",
-                &ActionAddress::new("chat", FIELD_EDIT),
-                &at,
+                "tilo.rich-text",
+                Some("notes.notebook/page/1/body"),
+                "apply",
+                KindSet::ALL,
+                Answer::Allow,
+            )];
+            assert_eq!(
+                answer(
+                    &exact,
+                    "notes.notebook/page/1/body",
+                    "tilo.rich-text",
+                    "apply"
+                ),
+                Answer::Allow
             );
-            grant_answer(&grant, &node, ActionKind::Undoable).answer
-        };
-        assert_eq!(
-            decided(
-                serde_json::json!([{"field": "messages"}, {"item": "m1"}, {"field": "reactions"}])
-            ),
-            Answer::Allow
-        );
-        // An edit bound whole when it runs is granted the same.
-        let whole = rules(&least_privilege(
-            &[step(Binding::Var("item/edit".into()))],
-            &catalog,
-        ));
-        assert_eq!(
-            whole[0].node.readable(),
-            "workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
-        );
-        // So does one whose field is chosen when it runs.
-        let bound_field = Binding::Object(BTreeMap::from([(
-            "path".to_owned(),
-            Binding::List(vec![one("field", Binding::Var("item/field".into()))]),
-        )]));
-        assert_eq!(edit_reach(&bound_field), None);
+            assert_eq!(
+                answer(&exact, "notes.notebook", "notes.notebook", "apply"),
+                Answer::Deny
+            );
+            assert_eq!(
+                answer(
+                    &exact,
+                    "notes.notebook/page/2/body",
+                    "tilo.rich-text",
+                    "apply"
+                ),
+                Answer::Deny
+            );
+
+            // Every resource of one kind: that kind exactly, in that app, for that
+            // action. Neither a sub-kind nor a kind sharing a prefix.
+            let kind = [action_rule(
+                NOTES,
+                "notes.page",
+                None,
+                "apply",
+                KindSet::ALL,
+                Answer::Allow,
+            )];
+            assert_eq!(
+                answer(&kind, "notes.page:1", "notes.page", "apply"),
+                Answer::Allow
+            );
+            assert_eq!(
+                answer(&kind, "notes.page:2", "notes.page", "apply"),
+                Answer::Allow
+            );
+            assert_eq!(
+                answer(&kind, "notes.page:1/x", "notes.page.special", "apply"),
+                Answer::Deny
+            );
+            assert_eq!(
+                answer(&kind, "notes.pages:1", "notes.pages", "apply"),
+                Answer::Deny
+            );
+            assert_eq!(
+                answer(&kind, "notes.page:1", "notes.page", "delete"),
+                Answer::Deny
+            );
+            let chat = step_node(
+                Some("ws"),
+                "so.tilo.chat",
+                "notes.page",
+                &ActionAddress::new("notes.page:1", "apply"),
+            );
+            assert_eq!(
+                grant_answer(&kind, &chat, ActionKind::Undoable).answer,
+                Answer::Deny
+            );
+
+            let mut restricted = kind.to_vec();
+            restricted.push(action_rule(
+                NOTES,
+                "notes.page",
+                Some("notes.page:1"),
+                "apply",
+                KindSet::UNDOABLE,
+                Answer::Deny,
+            ));
+            assert_eq!(
+                answer(&restricted, "notes.page:1", "notes.page", "apply"),
+                Answer::Deny
+            );
+            assert_eq!(
+                answer(&restricted, "notes.page:2", "notes.page", "apply"),
+                Answer::Allow
+            );
+        }
+
+        phase only_a_rule_naming_the_action_is_an_advance_consent;
+        {
+            let node = step_node(
+                None,
+                NOTES,
+                "notes.note",
+                &ActionAddress::new("notes.note:1", "delete"),
+            );
+            let app = [Rule::new(
+                TreePath::root().any(Level::Workspace).app(NOTES),
+                KindSet::ALL,
+                Answer::Allow,
+            )];
+            let decided = grant_answer(&app, &node, ActionKind::Undoable);
+            assert_eq!(decided.answer, Answer::Allow);
+            assert!(!decided.names_action);
+            let consent = [action_rule(
+                NOTES,
+                "notes.note",
+                Some("notes.note:1"),
+                "delete",
+                KindSet::ALL,
+                Answer::Allow,
+            )];
+            assert!(grant_answer(&consent, &node, ActionKind::Undoable).names_action);
+        }
+
+        phase triggers_read_what_they_watch;
+        {
+            use crate::{ActorFilter, TriggerSpec};
+            let rules = trigger_rules(&[
+                TriggerSpec::RecordChanged {
+                    kind: "chat.workspace".into(),
+                    actions: vec!["post".into()],
+                    fields: vec![],
+                    by: ActorFilter::NotBots,
+                },
+                TriggerSpec::Connector {
+                    app_id: "so.tilo.discord".into(),
+                    source: "message-created".into(),
+                    filter: serde_json::Map::new(),
+                },
+            ]);
+            let any = TreePath::root().any(Level::Workspace);
+            assert_eq!(
+                rules,
+                vec![
+                    Rule::new(
+                        any.clone().any(Level::App).kind("chat.workspace"),
+                        KindSet::READ,
+                        Answer::Allow
+                    ),
+                    Rule::new(any.app("so.tilo.discord"), KindSet::READ, Answer::Allow),
+                ]
+            );
+        }
+
+        phase a_rule_no_step_or_trigger_uses_is_unused;
+        {
+            let post = action_rule(
+                "so.tilo.chat",
+                "chat.workspace",
+                None,
+                "post",
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+            );
+            let delete = action_rule(
+                "so.tilo.chat",
+                "chat.workspace",
+                None,
+                "delete",
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+            );
+            let shortcut = crate::Shortcut {
+                id: "bridge".into(),
+                name: "Bridge".into(),
+                inputs: vec![],
+                steps: vec![crate::Step::new(
+                    "post",
+                    crate::StepKind::Invoke {
+                        action: ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                        resource: crate::Selector::FirstOfKind("chat.workspace".into()),
+                        args: std::collections::BTreeMap::default(),
+                        appearance: None,
+                    },
+                )],
+                step_timeout_secs: None,
+                output: None,
+                grant: vec![post, delete.clone()],
+                triggers: vec![],
+                saved_by: None,
+                saved_proof: None,
+            };
+            assert_eq!(unused_rules(&shortcut), vec![delete]);
+        }
+
+        phase an_action_reaching_outside_lets_its_performer_settle_it;
+        {
+            let permission = |action: &str, kind| Permission {
+                app_id: "so.tilo.discord".into(),
+                reach: Reach::Kind("discord.guild".into()),
+                action: action.into(),
+                kind,
+                label: String::new(),
+            };
+            let settles = settle_rules(&[
+                permission("send", ActionKind::Outside),
+                permission("map", ActionKind::Undoable),
+            ]);
+            assert_eq!(settles.len(), 1, "only what is queued outside is settled");
+            // It reaches an entry of a guild's outbox, as the workspace decides
+            // a settle (an item of the record), and none of the guild's own
+            // fields.
+            let guild = TreePath::workspace("r")
+                .app("so.tilo.discord")
+                .kind("discord.guild")
+                .resource("g");
+            let rule = &settles[0];
+            assert!(
+                rule.node
+                    .covers(&guild.clone().item("e1").action(SETTLE_ACTION))
+            );
+            assert!(!rule.node.covers(&guild.clone().action(SETTLE_ACTION)));
+            assert!(
+                !rule
+                    .node
+                    .covers(&guild.field("ownership").action(SETTLE_ACTION))
+            );
+            let shortcut = crate::Shortcut {
+                id: "bridge".into(),
+                name: "Bridge".into(),
+                inputs: vec![],
+                steps: vec![crate::Step::new(
+                    "send",
+                    crate::StepKind::Invoke {
+                        action: ActionKey::new("so.tilo.discord", "discord.guild", "send"),
+                        resource: crate::Selector::FirstOfKind("discord.guild".into()),
+                        args: std::collections::BTreeMap::default(),
+                        appearance: None,
+                    },
+                )],
+                step_timeout_secs: None,
+                output: None,
+                grant: settles,
+                triggers: vec![],
+                saved_by: None,
+                saved_proof: None,
+            };
+            assert!(unused_rules(&shortcut).is_empty());
+        }
+
+        phase whoever_changes_a_resource_may_migrate_it_as_far_as_its_steps_reach;
+        {
+            let permission = |app: &str, kind: &str, action: &str, of| Permission {
+                app_id: app.into(),
+                reach: Reach::Kind(kind.into()),
+                action: action.into(),
+                kind: of,
+                label: String::new(),
+            };
+            let migrates = migrate_rules(&[
+                permission(
+                    "so.tilo.discord",
+                    "discord.guild",
+                    "map",
+                    ActionKind::Undoable,
+                ),
+                permission(
+                    "so.tilo.discord",
+                    "discord.guild",
+                    "send",
+                    ActionKind::Outside,
+                ),
+                permission(
+                    "so.tilo.chat",
+                    "chat.messages",
+                    "post",
+                    ActionKind::Undoable,
+                ),
+                permission(
+                    "so.tilo.discord",
+                    "discord.guild",
+                    "plan-event",
+                    ActionKind::Read,
+                ),
+            ]);
+            assert_eq!(
+                migrates.len(),
+                2,
+                "one rule per kind changed, none for a read"
+            );
+            // The guild's migration is decided at the record, the way the
+            // workspace claims it, and rewriting its outbox reaches outside as
+            // `send` does.
+            let guild = TreePath::workspace("r")
+                .app("so.tilo.discord")
+                .kind("discord.guild")
+                .resource("");
+            assert!(migrates[0].node.covers(&guild.action(MIGRATE_ACTION)));
+            assert_eq!(migrates[0].kinds, KindSet::ALL);
+            assert_eq!(migrates[1].kinds, KindSet::READ_UNDOABLE);
+            let shortcut = crate::Shortcut {
+                id: "bridge".into(),
+                name: "Bridge".into(),
+                inputs: vec![],
+                steps: vec![crate::Step::new(
+                    "send",
+                    crate::StepKind::Invoke {
+                        action: ActionKey::new("so.tilo.discord", "discord.guild", "send"),
+                        resource: crate::Selector::FirstOfKind("discord.guild".into()),
+                        args: std::collections::BTreeMap::default(),
+                        appearance: None,
+                    },
+                )],
+                step_timeout_secs: None,
+                output: None,
+                grant: vec![migrates[0].clone()],
+                triggers: vec![],
+                saved_by: None,
+                saved_proof: None,
+            };
+            assert!(unused_rules(&shortcut).is_empty());
+        }
+
+        phase a_field_edit_is_granted_where_the_doors_decide_it;
+        // A field edit whose program names the field it changes is granted
+        // that field of any item, and decided where the workspace decides it.
+        {
+            use std::collections::BTreeMap;
+
+            let literal = Binding::Literal;
+            let one = |kind: &str, binding: Binding| {
+                Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
+            };
+            let react = Binding::Object(BTreeMap::from([
+                (
+                    "path".to_owned(),
+                    Binding::List(vec![
+                        one("field", literal("messages".into())),
+                        one("item", Binding::Var("item/message".into())),
+                        one("field", literal("reactions".into())),
+                    ]),
+                ),
+                ("op".to_owned(), literal("react".into())),
+                ("emoji".to_owned(), Binding::Var("item/emoji".into())),
+            ]));
+            let step = |edit: Binding| {
+                crate::Step::new(
+                    "edit",
+                    crate::StepKind::Invoke {
+                        action: ActionKey::new(NOTES, "notes.chat", FIELD_EDIT),
+                        resource: crate::Selector::FirstOfKind("notes.chat".into()),
+                        args: BTreeMap::from([(EDIT_PARAM.to_owned(), edit)]),
+                        appearance: None,
+                    },
+                )
+            };
+            let catalog = ActionCatalog::new(Vec::new());
+            let grant = rules(&least_privilege(&[step(react)], &catalog));
+            assert_eq!(
+                grant
+                    .iter()
+                    .map(|rule| rule.node.readable())
+                    .collect::<Vec<_>>(),
+                ["workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
+            );
+
+            // The workspace decides a run's edit at its concrete path.
+            let decided = |path: serde_json::Value| {
+                let at = edit_reach(&literal(serde_json::json!({"path": path, "op": "react"})))
+                    .expect("a literal path names its fields");
+                let node = step_node_at(
+                    Some("ws"),
+                    NOTES,
+                    "notes.chat",
+                    &ActionAddress::new("chat", FIELD_EDIT),
+                    &at,
+                );
+                grant_answer(&grant, &node, ActionKind::Undoable).answer
+            };
+            assert_eq!(
+                decided(
+                    serde_json::json!([{"field": "messages"}, {"item": "m1"}, {"field": "reactions"}])
+                ),
+                Answer::Allow
+            );
+            // An edit bound whole when it runs is granted the same.
+            let whole = rules(&least_privilege(
+                &[step(Binding::Var("item/edit".into()))],
+                &catalog,
+            ));
+            assert_eq!(
+                whole[0].node.readable(),
+                "workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
+            );
+            // So does one whose field is chosen when it runs.
+            let bound_field = Binding::Object(BTreeMap::from([(
+                "path".to_owned(),
+                Binding::List(vec![one("field", Binding::Var("item/field".into()))]),
+            )]));
+            assert_eq!(edit_reach(&bound_field), None);
+        }
     }
 }

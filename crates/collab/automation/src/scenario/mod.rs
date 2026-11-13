@@ -579,191 +579,195 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_scenario_round_trips_through_canonical_text() {
-        let scenario = scenario();
-        let text = scenario.to_json().unwrap();
-        assert_eq!(Scenario::from_json(&text).unwrap(), scenario);
-        assert!(
-            !text.contains(": ") && !text.contains('\n'),
-            "no insignificant whitespace: {text}"
-        );
-        // Every step is one tagged object, so a diff names the step that
-        // changed rather than rewriting an array of anonymous values.
-        assert!(
-            text.contains(
-                r#"{"expect":"resource","holds":{"fields":{"title":"Trip"}},"kind":"expect","present":null,"resource":"notes.note:1"}"#
-            ),
-            "what it holds is a property of the resource asserted: {text}"
-        );
-        assert!(text.contains(r#""kind":"act""#), "{text}");
-        assert!(text.contains(r#""format":1"#), "{text}");
-    }
+    tilo_test_env::scenario! {
+        fn scenarios_read_from_canonical_text_and_from_saved_shortcuts;
 
-    #[test]
-    fn the_codes_a_step_may_expect_are_the_door_s_own() {
-        // Every refusal a scenario can expect is one the door answers with,
-        // and every code the door answers with is expectable: a shorter list
-        // would make a real refusal unwritable, a longer one would let a step
-        // expect something that never happens.
-        let address = tilo_actions::ActionAddress::new("r", "a");
-        let door = [
-            tilo_actions::DoorError::Unknown(address.clone()),
-            tilo_actions::DoorError::MissingArgument(address.clone()),
-            tilo_actions::DoorError::UnexpectedArgument(address),
-            tilo_actions::DoorError::InvalidArguments("x".into()),
-            tilo_actions::DoorError::Unavailable {
-                code: "x".into(),
-                reason: "x".into(),
-            },
-            tilo_actions::DoorError::ConfirmationRequired,
-            tilo_actions::DoorError::UnregisteredType("x".into()),
-            tilo_actions::DoorError::Failed("x".into()),
-        ];
-        for error in &door {
+        phase a_scenario_round_trips_through_canonical_text;
+        {
+            let scenario = scenario();
+            let text = scenario.to_json().unwrap();
+            assert_eq!(Scenario::from_json(&text).unwrap(), scenario);
             assert!(
-                is_door_code(error.code()),
-                "the door answers `{}`, and a step cannot expect it",
-                error.code()
+                !text.contains(": ") && !text.contains('\n'),
+                "no insignificant whitespace: {text}"
             );
+            // Every step is one tagged object, so a diff names the step that
+            // changed rather than rewriting an array of anonymous values.
+            assert!(
+                text.contains(
+                    r#"{"expect":"resource","holds":{"fields":{"title":"Trip"}},"kind":"expect","present":null,"resource":"notes.note:1"}"#
+                ),
+                "what it holds is a property of the resource asserted: {text}"
+            );
+            assert!(text.contains(r#""kind":"act""#), "{text}");
+            assert!(text.contains(r#""format":1"#), "{text}");
         }
-        assert!(!is_door_code("ok"));
-        assert!(!is_door_code(""));
-    }
 
-    #[test]
-    fn text_that_is_not_the_canonical_spelling_is_refused() {
-        let text = scenario().to_json().unwrap();
-        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let pretty = serde_json::to_string_pretty(&value).unwrap();
-        assert_eq!(
-            Scenario::from_json(&pretty),
-            Err(FormatError::NotCanonical),
-            "a golden file is one spelling"
-        );
-        let mut newer = value.clone();
-        newer["format"] = serde_json::json!(SCENARIO_FORMAT_VERSION + 1);
-        let newer = String::from_utf8(crate::program::canonical_json(&newer)).unwrap();
-        assert_eq!(
-            Scenario::from_json(&newer),
-            Err(FormatError::UnsupportedVersion(SCENARIO_FORMAT_VERSION + 1))
-        );
-        let mut unknown = value;
-        unknown["extra"] = serde_json::json!(1);
-        let unknown = String::from_utf8(crate::program::canonical_json(&unknown)).unwrap();
-        assert!(matches!(
-            Scenario::from_json(&unknown),
-            Err(FormatError::Malformed(_))
-        ));
-        assert!(matches!(
-            Scenario::from_json("{"),
-            Err(FormatError::Malformed(_))
-        ));
-    }
-
-    #[test]
-    fn a_step_expecting_a_refusal_the_door_cannot_make_is_refused_when_read() {
-        let mut scenario = scenario();
-        scenario.steps.push(ScenarioStep::Expect(Assert::Error {
-            code: "not_our_verb".into(),
-        }));
-        let text = serde_json::to_value(&scenario).unwrap();
-        let text = String::from_utf8(crate::program::canonical_json(&text)).unwrap();
-        assert_eq!(
-            Scenario::from_json(&text),
-            Err(FormatError::UnknownDoorCode {
-                step: 4,
-                code: "not_our_verb".into(),
-            }),
-            "a refusal the door cannot answer would make the step unreachable"
-        );
-        // A code the door does answer is a scenario like any other.
-        scenario.steps[4] = ScenarioStep::Expect(Assert::Error {
-            code: "action_unavailable".into(),
-        });
-        let text = scenario.to_json().unwrap();
-        assert_eq!(Scenario::from_json(&text).unwrap(), scenario);
-    }
-
-    #[test]
-    fn a_saved_shortcut_runs_as_a_scenario_of_its_action_steps() {
-        let shortcut = Shortcut {
-            id: "tidy".into(),
-            name: "Tidy".into(),
-            inputs: Vec::new(),
-            steps: vec![Step::new(
-                "rename",
-                StepKind::Invoke {
-                    action: ActionKey::new("so.tilo.notes", "notes.note", "rename"),
-                    resource: Selector::Fixed("notes.note:1".into()),
-                    args: BTreeMap::from([("title".into(), Binding::Literal("Trip".into()))]),
-                    appearance: None,
+        phase the_codes_a_step_may_expect_are_the_door_s_own;
+        {
+            // Every refusal a scenario can expect is one the door answers with,
+            // and every code the door answers with is expectable: a shorter list
+            // would make a real refusal unwritable, a longer one would let a step
+            // expect something that never happens.
+            let address = tilo_actions::ActionAddress::new("r", "a");
+            let door = [
+                tilo_actions::DoorError::Unknown(address.clone()),
+                tilo_actions::DoorError::MissingArgument(address.clone()),
+                tilo_actions::DoorError::UnexpectedArgument(address),
+                tilo_actions::DoorError::InvalidArguments("x".into()),
+                tilo_actions::DoorError::Unavailable {
+                    code: "x".into(),
+                    reason: "x".into(),
                 },
-            )],
-            step_timeout_secs: None,
-            output: None,
-            grant: Vec::new(),
-            triggers: Vec::new(),
-            saved_by: None,
-            saved_proof: None,
-        };
-        let scenario = Scenario::from_shortcut(&shortcut).unwrap();
-        assert_eq!(scenario.id, "tidy");
-        assert_eq!(scenario.steps.len(), 1);
-        let ScenarioStep::Act(invocation) = &scenario.steps[0] else {
-            panic!("an invoked action step is a scenario step");
-        };
-        assert_eq!(invocation.step, "rename");
-        assert_eq!(invocation.resource, Selector::Fixed("notes.note:1".into()));
+                tilo_actions::DoorError::ConfirmationRequired,
+                tilo_actions::DoorError::UnregisteredType("x".into()),
+                tilo_actions::DoorError::Failed("x".into()),
+            ];
+            for error in &door {
+                assert!(
+                    is_door_code(error.code()),
+                    "the door answers `{}`, and a step cannot expect it",
+                    error.code()
+                );
+            }
+            assert!(!is_door_code("ok"));
+            assert!(!is_door_code(""));
+        }
 
-        // The scenario's step is the Shortcut's step: one definition, so the
-        // scenario's own text reads back with the same action step.
-        let text = scenario.to_json().unwrap();
-        assert!(
-            text.contains(r#""action":{"action":"rename","app":"so.tilo.notes""#),
-            "{text}"
-        );
-        assert_eq!(Scenario::from_json(&text).unwrap(), scenario);
-    }
+        phase text_that_is_not_the_canonical_spelling_is_refused;
+        {
+            let text = scenario().to_json().unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let pretty = serde_json::to_string_pretty(&value).unwrap();
+            assert_eq!(
+                Scenario::from_json(&pretty),
+                Err(FormatError::NotCanonical),
+                "a golden file is one spelling"
+            );
+            let mut newer = value.clone();
+            newer["format"] = serde_json::json!(SCENARIO_FORMAT_VERSION + 1);
+            let newer = String::from_utf8(crate::program::canonical_json(&newer)).unwrap();
+            assert_eq!(
+                Scenario::from_json(&newer),
+                Err(FormatError::UnsupportedVersion(SCENARIO_FORMAT_VERSION + 1))
+            );
+            let mut unknown = value;
+            unknown["extra"] = serde_json::json!(1);
+            let unknown = String::from_utf8(crate::program::canonical_json(&unknown)).unwrap();
+            assert!(matches!(
+                Scenario::from_json(&unknown),
+                Err(FormatError::Malformed(_))
+            ));
+            assert!(matches!(
+                Scenario::from_json("{"),
+                Err(FormatError::Malformed(_))
+            ));
+        }
 
-    #[test]
-    fn a_shortcut_with_a_branch_is_not_a_scenario_and_says_where() {
-        let shortcut = Shortcut {
-            id: "branchy".into(),
-            name: "Branchy".into(),
-            inputs: Vec::new(),
-            steps: vec![
-                Step::new(
-                    "note",
-                    StepKind::SetVar {
-                        name: "note".into(),
-                        value: Binding::Literal("notes.note:1".into()),
+        phase a_step_expecting_a_refusal_the_door_cannot_make_is_refused_when_read;
+        {
+            let mut scenario = scenario();
+            scenario.steps.push(ScenarioStep::Expect(Assert::Error {
+                code: "not_our_verb".into(),
+            }));
+            let text = serde_json::to_value(&scenario).unwrap();
+            let text = String::from_utf8(crate::program::canonical_json(&text)).unwrap();
+            assert_eq!(
+                Scenario::from_json(&text),
+                Err(FormatError::UnknownDoorCode {
+                    step: 4,
+                    code: "not_our_verb".into(),
+                }),
+                "a refusal the door cannot answer would make the step unreachable"
+            );
+            // A code the door does answer is a scenario like any other.
+            scenario.steps[4] = ScenarioStep::Expect(Assert::Error {
+                code: "action_unavailable".into(),
+            });
+            let text = scenario.to_json().unwrap();
+            assert_eq!(Scenario::from_json(&text).unwrap(), scenario);
+        }
+
+        phase a_saved_shortcut_runs_as_a_scenario_of_its_action_steps;
+        {
+            let shortcut = Shortcut {
+                id: "tidy".into(),
+                name: "Tidy".into(),
+                inputs: Vec::new(),
+                steps: vec![Step::new(
+                    "rename",
+                    StepKind::Invoke {
+                        action: ActionKey::new("so.tilo.notes", "notes.note", "rename"),
+                        resource: Selector::Fixed("notes.note:1".into()),
+                        args: BTreeMap::from([("title".into(), Binding::Literal("Trip".into()))]),
+                        appearance: None,
                     },
-                ),
-                Step::new(
-                    "choose",
-                    StepKind::If {
-                        cond: crate::Condition::Truthy(Binding::Literal(serde_json::json!(true))),
-                        then: Vec::new(),
-                        otherwise: Vec::new(),
-                    },
-                ),
-            ],
-            step_timeout_secs: None,
-            output: None,
-            grant: Vec::new(),
-            triggers: Vec::new(),
-            saved_by: None,
-            saved_proof: None,
-        };
-        let refused = Scenario::from_shortcut(&shortcut).unwrap_err();
-        assert_eq!(refused.path, "0");
-        assert_eq!(refused.kind, "set_var");
+                )],
+                step_timeout_secs: None,
+                output: None,
+                grant: Vec::new(),
+                triggers: Vec::new(),
+                saved_by: None,
+                saved_proof: None,
+            };
+            let scenario = Scenario::from_shortcut(&shortcut).unwrap();
+            assert_eq!(scenario.id, "tidy");
+            assert_eq!(scenario.steps.len(), 1);
+            let ScenarioStep::Act(invocation) = &scenario.steps[0] else {
+                panic!("an invoked action step is a scenario step");
+            };
+            assert_eq!(invocation.step, "rename");
+            assert_eq!(invocation.resource, Selector::Fixed("notes.note:1".into()));
 
-        // Flattening the same program names both steps, and the nested
-        // blocks none of them hold.
-        let flattened = Scenario::of_shortcut_program(&shortcut);
-        assert_eq!(flattened.id, "branchy");
-        assert!(flattened.steps.is_empty());
+            // The scenario's step is the Shortcut's step: one definition, so the
+            // scenario's own text reads back with the same action step.
+            let text = scenario.to_json().unwrap();
+            assert!(
+                text.contains(r#""action":{"action":"rename","app":"so.tilo.notes""#),
+                "{text}"
+            );
+            assert_eq!(Scenario::from_json(&text).unwrap(), scenario);
+        }
+
+        phase a_shortcut_with_a_branch_is_not_a_scenario_and_says_where;
+        {
+            let shortcut = Shortcut {
+                id: "branchy".into(),
+                name: "Branchy".into(),
+                inputs: Vec::new(),
+                steps: vec![
+                    Step::new(
+                        "note",
+                        StepKind::SetVar {
+                            name: "note".into(),
+                            value: Binding::Literal("notes.note:1".into()),
+                        },
+                    ),
+                    Step::new(
+                        "choose",
+                        StepKind::If {
+                            cond: crate::Condition::Truthy(Binding::Literal(serde_json::json!(true))),
+                            then: Vec::new(),
+                            otherwise: Vec::new(),
+                        },
+                    ),
+                ],
+                step_timeout_secs: None,
+                output: None,
+                grant: Vec::new(),
+                triggers: Vec::new(),
+                saved_by: None,
+                saved_proof: None,
+            };
+            let refused = Scenario::from_shortcut(&shortcut).unwrap_err();
+            assert_eq!(refused.path, "0");
+            assert_eq!(refused.kind, "set_var");
+
+            // Flattening the same program names both steps, and the nested
+            // blocks none of them hold.
+            let flattened = Scenario::of_shortcut_program(&shortcut);
+            assert_eq!(flattened.id, "branchy");
+            assert!(flattened.steps.is_empty());
+        }
     }
 }

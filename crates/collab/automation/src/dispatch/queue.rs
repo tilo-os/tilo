@@ -270,220 +270,225 @@ mod tests {
         }
     }
 
-    #[test]
-    fn firings_run_one_at_a_time_in_order() {
-        let mut queue = FiringQueue::default();
-        for n in 1..=3 {
-            assert!(queue.push(firing(n), 0).is_none());
-        }
-        assert_eq!(queue.next_due(0).unwrap().firing.event, "e1");
-        assert!(matches!(
-            queue.finished(&report(firing(1).run, RunOutcome::Completed), 0),
-            Finished::Done
-        ));
-        assert_eq!(queue.next_due(0).unwrap().firing.event, "e2");
-    }
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn the_firing_queue_orders_bounds_retries_and_dead_letters;
 
-    #[test]
-    fn a_firing_the_host_cannot_run_backs_off_then_is_dead_lettered() {
-        let mut queue = FiringQueue::default();
-        queue.push(firing(1), 0);
-        queue.push(firing(2), 0);
-        for _ in 1..MAX_ATTEMPTS {
-            assert!(matches!(
-                queue.not_run("publish failed", 0),
-                Finished::Retry { .. }
-            ));
-            assert!(queue.next_due(0).is_none(), "it waits before the next try");
-        }
-        let Finished::DeadLettered(dead) = queue.not_run("publish failed", 0) else {
-            panic!("dead-lettered once its attempts are spent");
-        };
-        assert_eq!(
-            (dead.firing.event.as_str(), dead.reason.as_str()),
-            ("e1", "publish failed")
-        );
-        assert_eq!(queue.next_due(0).unwrap().firing.event, "e2");
-    }
-
-    #[test]
-    fn the_same_run_queued_twice_is_kept_once() {
-        let mut queue = FiringQueue::default();
-        queue.push(firing(1), 0);
-        queue.push(firing(1), 0);
-        assert_eq!(queue.len(), 1);
-    }
-
-    #[test]
-    fn overflow_drops_the_oldest_into_dead_letters() {
-        let mut queue = FiringQueue::default();
-        let mut dropped = Vec::new();
-        for n in 0..=u8::try_from(MAX_QUEUED_FIRINGS).unwrap() {
-            dropped.extend(queue.push(firing(n), 7));
-        }
-        assert_eq!(queue.len(), MAX_QUEUED_FIRINGS);
-        assert_eq!(dropped.len(), 1);
-        assert_eq!(dropped[0].firing.event, "e0");
-        assert_eq!(dropped[0].reason, FELL_BEHIND);
-        assert_eq!(queue.next_due(7).unwrap().firing.event, "e1");
-    }
-
-    #[test]
-    fn a_transient_failure_retries_with_backoff_and_holds_later_firings() {
-        let mut queue = FiringQueue::default();
-        queue.push(firing(1), 0);
-        queue.push(firing(2), 0);
-        let unavailable = failed(StepFailure::Host {
-            error: Box::new(ActionHostError::Unavailable {
-                reason: "down".into(),
-            }),
-        });
-        let Finished::Retry { at_ms } =
-            queue.finished(&report(firing(1).run, unavailable.clone()), 1_000)
-        else {
-            panic!("retried");
-        };
-        assert_eq!(at_ms, 2_000);
-        assert!(
-            queue.next_due(1_500).is_none(),
-            "later firings wait for the retry"
-        );
-        assert_eq!(queue.next_due(2_000).unwrap().firing.event, "e1");
-        let mut now = 2_000;
-        let mut last = Finished::Done;
-        for _ in 2..=MAX_ATTEMPTS {
-            last = queue.finished(&report(firing(1).run, unavailable.clone()), now);
-            if let Finished::Retry { at_ms } = last {
-                now = at_ms;
+        phase firings_run_one_at_a_time_in_order;
+        {
+            let mut queue = FiringQueue::default();
+            for n in 1..=3 {
+                assert!(queue.push(firing(n), 0).is_none());
             }
+            assert_eq!(queue.next_due(0).unwrap().firing.event, "e1");
+            assert!(matches!(
+                queue.finished(&report(firing(1).run, RunOutcome::Completed), 0),
+                Finished::Done
+            ));
+            assert_eq!(queue.next_due(0).unwrap().firing.event, "e2");
         }
-        let Finished::DeadLettered(letter) = last else {
-            panic!("a poison event is dead-lettered");
-        };
-        assert_eq!(letter.firing.event, "e1");
-        assert_eq!(queue.next_due(now).unwrap().firing.event, "e2");
-    }
 
-    #[test]
-    fn a_refusal_is_dead_lettered_at_once_with_its_step() {
-        let mut queue = FiringQueue::default();
-        queue.push(firing(1), 0);
-        let outside = || StepFailure::OutsideGrant {
-            app_id: "a".into(),
-            action: "b".into(),
-        };
-        let mut denied = report(firing(1).run, failed(outside()));
-        denied.steps.push(crate::run::StepRecord {
-            path: StepPath::root().child(0),
-            step: "post".into(),
-            invocation: None,
-            attempts: Vec::new(),
-            degraded: crate::StepOutcome::None,
-            status: StepStatus::Failed {
-                failure: outside(),
-                attempt: 1,
-                recovered: crate::Recovered::Stopped,
-            },
-        });
-        let Finished::DeadLettered(letter) = queue.finished(&denied, 5) else {
-            panic!("dead-lettered");
-        };
-        assert_eq!(letter.step.as_deref(), Some("post"));
-        assert!(letter.reason.contains("grant"));
-        assert!(queue.is_empty());
-    }
-
-    #[test]
-    fn backoff_doubles_from_one_second_to_ten_minutes() {
-        assert_eq!(backoff(1), Duration::from_secs(1));
-        assert_eq!(backoff(2), Duration::from_secs(2));
-        assert_eq!(backoff(4), Duration::from_secs(8));
-        assert_eq!(backoff(20), Duration::from_secs(600));
-    }
-
-    #[test]
-    fn failures_are_classified_as_the_spec_says() {
-        let host = |error| StepFailure::Host {
-            error: Box::new(error),
-        };
-        assert_eq!(
-            classify(&host(ActionHostError::Unavailable {
-                reason: String::new()
-            })),
-            FailureClass::Transient
-        );
-        assert_eq!(
-            classify(&StepFailure::Unavailable {
-                code: "x".into(),
-                reason: String::new()
-            }),
-            FailureClass::Transient
-        );
-        assert_eq!(classify(&StepFailure::Abandoned), FailureClass::Transient);
-        assert_eq!(
-            classify(&StepFailure::OutsideGrant {
-                app_id: String::new(),
-                action: String::new()
-            }),
-            FailureClass::Refusal
-        );
-        assert_eq!(
-            classify(&StepFailure::AsksFirst {
-                app_id: String::new(),
-                action: String::new()
-            }),
-            FailureClass::Refusal
-        );
-        assert_eq!(
-            classify(&StepFailure::Arguments {
-                reason: String::new()
-            }),
-            FailureClass::Refusal
-        );
-        assert_eq!(
-            classify(&host(ActionHostError::NotPermitted)),
-            FailureClass::Refusal
-        );
-    }
-
-    #[test]
-    fn the_queue_survives_serialisation() {
-        let mut queue = FiringQueue::default();
-        queue.push(firing(1), 0);
-        let text = serde_json::to_string(&queue).unwrap();
-        let back: FiringQueue = serde_json::from_str(&text).unwrap();
-        assert_eq!(back.next_due(0).unwrap().firing, firing(1));
-    }
-
-    #[test]
-    fn a_refused_run_goes_again_with_backoff_then_is_dead_lettered() {
-        let mut queue = FiringQueue::default();
-        queue.push(firing(1), 0);
-        queue.push(firing(2), 0);
-        let mut at = 0;
-        for attempt in 1..MAX_REFUSED_ATTEMPTS {
-            let Finished::Retry { at_ms } = queue.refused("refused", at) else {
-                panic!("attempt {attempt} goes again");
+        phase a_firing_the_host_cannot_run_backs_off_then_is_dead_lettered;
+        {
+            let mut queue = FiringQueue::default();
+            queue.push(firing(1), 0);
+            queue.push(firing(2), 0);
+            for _ in 1..MAX_ATTEMPTS {
+                assert!(matches!(
+                    queue.not_run("publish failed", 0),
+                    Finished::Retry { .. }
+                ));
+                assert!(queue.next_due(0).is_none(), "it waits before the next try");
+            }
+            let Finished::DeadLettered(dead) = queue.not_run("publish failed", 0) else {
+                panic!("dead-lettered once its attempts are spent");
             };
             assert_eq!(
-                at_ms - at,
-                i64::try_from(backoff(attempt).as_millis()).unwrap()
+                (dead.firing.event.as_str(), dead.reason.as_str()),
+                ("e1", "publish failed")
             );
-            assert!(
-                queue.next_due(at_ms - 1).is_none(),
-                "not before its backoff"
-            );
-            assert_eq!(queue.next_due(at_ms).unwrap().firing, firing(1));
-            at = at_ms;
+            assert_eq!(queue.next_due(0).unwrap().firing.event, "e2");
         }
-        let Finished::DeadLettered(dead) = queue.refused("refused", at) else {
-            panic!("its runs are spent");
-        };
-        assert_eq!((dead.firing, dead.reason.as_str()), (firing(1), "refused"));
-        assert_eq!(
-            queue.next_due(at).unwrap().firing,
-            firing(2),
-            "the next firing runs"
-        );
+
+        phase the_same_run_queued_twice_is_kept_once;
+        {
+            let mut queue = FiringQueue::default();
+            queue.push(firing(1), 0);
+            queue.push(firing(1), 0);
+            assert_eq!(queue.len(), 1);
+        }
+
+        phase overflow_drops_the_oldest_into_dead_letters;
+        {
+            let mut queue = FiringQueue::default();
+            let mut dropped = Vec::new();
+            for n in 0..=u8::try_from(MAX_QUEUED_FIRINGS).unwrap() {
+                dropped.extend(queue.push(firing(n), 7));
+            }
+            assert_eq!(queue.len(), MAX_QUEUED_FIRINGS);
+            assert_eq!(dropped.len(), 1);
+            assert_eq!(dropped[0].firing.event, "e0");
+            assert_eq!(dropped[0].reason, FELL_BEHIND);
+            assert_eq!(queue.next_due(7).unwrap().firing.event, "e1");
+        }
+
+        phase a_transient_failure_retries_with_backoff_and_holds_later_firings;
+        {
+            let mut queue = FiringQueue::default();
+            queue.push(firing(1), 0);
+            queue.push(firing(2), 0);
+            let unavailable = failed(StepFailure::Host {
+                error: Box::new(ActionHostError::Unavailable {
+                    reason: "down".into(),
+                }),
+            });
+            let Finished::Retry { at_ms } =
+                queue.finished(&report(firing(1).run, unavailable.clone()), 1_000)
+            else {
+                panic!("retried");
+            };
+            assert_eq!(at_ms, 2_000);
+            assert!(
+                queue.next_due(1_500).is_none(),
+                "later firings wait for the retry"
+            );
+            assert_eq!(queue.next_due(2_000).unwrap().firing.event, "e1");
+            let mut now = 2_000;
+            let mut last = Finished::Done;
+            for _ in 2..=MAX_ATTEMPTS {
+                last = queue.finished(&report(firing(1).run, unavailable.clone()), now);
+                if let Finished::Retry { at_ms } = last {
+                    now = at_ms;
+                }
+            }
+            let Finished::DeadLettered(letter) = last else {
+                panic!("a poison event is dead-lettered");
+            };
+            assert_eq!(letter.firing.event, "e1");
+            assert_eq!(queue.next_due(now).unwrap().firing.event, "e2");
+        }
+
+        phase a_refusal_is_dead_lettered_at_once_with_its_step;
+        {
+            let mut queue = FiringQueue::default();
+            queue.push(firing(1), 0);
+            let outside = || StepFailure::OutsideGrant {
+                app_id: "a".into(),
+                action: "b".into(),
+            };
+            let mut denied = report(firing(1).run, failed(outside()));
+            denied.steps.push(crate::run::StepRecord {
+                path: StepPath::root().child(0),
+                step: "post".into(),
+                invocation: None,
+                attempts: Vec::new(),
+                degraded: crate::StepOutcome::None,
+                status: StepStatus::Failed {
+                    failure: outside(),
+                    attempt: 1,
+                    recovered: crate::Recovered::Stopped,
+                },
+            });
+            let Finished::DeadLettered(letter) = queue.finished(&denied, 5) else {
+                panic!("dead-lettered");
+            };
+            assert_eq!(letter.step.as_deref(), Some("post"));
+            assert!(letter.reason.contains("grant"));
+            assert!(queue.is_empty());
+        }
+
+        phase backoff_doubles_from_one_second_to_ten_minutes;
+        {
+            assert_eq!(backoff(1), Duration::from_secs(1));
+            assert_eq!(backoff(2), Duration::from_secs(2));
+            assert_eq!(backoff(4), Duration::from_secs(8));
+            assert_eq!(backoff(20), Duration::from_secs(600));
+        }
+
+        phase failures_are_classified_as_the_spec_says;
+        {
+            let host = |error| StepFailure::Host {
+                error: Box::new(error),
+            };
+            assert_eq!(
+                classify(&host(ActionHostError::Unavailable {
+                    reason: String::new()
+                })),
+                FailureClass::Transient
+            );
+            assert_eq!(
+                classify(&StepFailure::Unavailable {
+                    code: "x".into(),
+                    reason: String::new()
+                }),
+                FailureClass::Transient
+            );
+            assert_eq!(classify(&StepFailure::Abandoned), FailureClass::Transient);
+            assert_eq!(
+                classify(&StepFailure::OutsideGrant {
+                    app_id: String::new(),
+                    action: String::new()
+                }),
+                FailureClass::Refusal
+            );
+            assert_eq!(
+                classify(&StepFailure::AsksFirst {
+                    app_id: String::new(),
+                    action: String::new()
+                }),
+                FailureClass::Refusal
+            );
+            assert_eq!(
+                classify(&StepFailure::Arguments {
+                    reason: String::new()
+                }),
+                FailureClass::Refusal
+            );
+            assert_eq!(
+                classify(&host(ActionHostError::NotPermitted)),
+                FailureClass::Refusal
+            );
+        }
+
+        phase the_queue_survives_serialisation;
+        {
+            let mut queue = FiringQueue::default();
+            queue.push(firing(1), 0);
+            let text = serde_json::to_string(&queue).unwrap();
+            let back: FiringQueue = serde_json::from_str(&text).unwrap();
+            assert_eq!(back.next_due(0).unwrap().firing, firing(1));
+        }
+
+        phase a_refused_run_goes_again_with_backoff_then_is_dead_lettered;
+        {
+            let mut queue = FiringQueue::default();
+            queue.push(firing(1), 0);
+            queue.push(firing(2), 0);
+            let mut at = 0;
+            for attempt in 1..MAX_REFUSED_ATTEMPTS {
+                let Finished::Retry { at_ms } = queue.refused("refused", at) else {
+                    panic!("attempt {attempt} goes again");
+                };
+                assert_eq!(
+                    at_ms - at,
+                    i64::try_from(backoff(attempt).as_millis()).unwrap()
+                );
+                assert!(
+                    queue.next_due(at_ms - 1).is_none(),
+                    "not before its backoff"
+                );
+                assert_eq!(queue.next_due(at_ms).unwrap().firing, firing(1));
+                at = at_ms;
+            }
+            let Finished::DeadLettered(dead) = queue.refused("refused", at) else {
+                panic!("its runs are spent");
+            };
+            assert_eq!((dead.firing, dead.reason.as_str()), (firing(1), "refused"));
+            assert_eq!(
+                queue.next_due(at).unwrap().firing,
+                firing(2),
+                "the next firing runs"
+            );
+        }
     }
 }

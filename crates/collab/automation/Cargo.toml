@@ -34,5 +34,8 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 [features]
 model = ["dep:tilo-resource"]
 
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
 [lints]
 workspace = true

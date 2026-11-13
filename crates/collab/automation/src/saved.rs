@@ -135,27 +135,31 @@ mod tests {
         serde_json::from_value(serde_json::json!({"id": id, "name": "Water", "steps": []})).unwrap()
     }
 
-    #[test]
-    fn a_saved_shortcut_reads_and_writes_as_the_shortcut() {
-        let water = shortcut("water");
-        let stored = serde_json::to_value(&water).unwrap();
-        let saved: SavedShortcut = serde_json::from_value(stored.clone()).unwrap();
-        assert_eq!(saved.id(), "water");
-        assert_eq!(serde_json::to_value(&saved).unwrap(), stored);
-        assert_eq!(saved.decode().unwrap(), water);
-        assert_eq!(SavedShortcut::encode(&water), saved);
-    }
+    tilo_test_env::scenario! {
+        fn a_saved_shortcut_is_the_shortcut_with_an_id;
 
-    #[test]
-    fn only_an_object_with_an_id_is_saved() {
-        assert!(SavedShortcut::parse("[]").is_err());
-        assert!(SavedShortcut::parse(r#"{"id": "  ", "steps": []}"#).is_err());
-        assert!(SavedShortcut::parse("{").is_err());
-        let odd = SavedShortcut::parse(r#"{"id": "odd", "steps": 3}"#).unwrap();
-        assert!(
-            odd.decode().is_err(),
-            "the rest is checked where it is decoded"
-        );
-        assert!(decode_saved([&odd]).is_empty());
+        phase a_saved_shortcut_reads_and_writes_as_the_shortcut;
+        {
+            let water = shortcut("water");
+            let stored = serde_json::to_value(&water).unwrap();
+            let saved: SavedShortcut = serde_json::from_value(stored.clone()).unwrap();
+            assert_eq!(saved.id(), "water");
+            assert_eq!(serde_json::to_value(&saved).unwrap(), stored);
+            assert_eq!(saved.decode().unwrap(), water);
+            assert_eq!(SavedShortcut::encode(&water), saved);
+        }
+
+        phase only_an_object_with_an_id_is_saved;
+        {
+            assert!(SavedShortcut::parse("[]").is_err());
+            assert!(SavedShortcut::parse(r#"{"id": "  ", "steps": []}"#).is_err());
+            assert!(SavedShortcut::parse("{").is_err());
+            let odd = SavedShortcut::parse(r#"{"id": "odd", "steps": 3}"#).unwrap();
+            assert!(
+                odd.decode().is_err(),
+                "the rest is checked where it is decoded"
+            );
+            assert!(decode_saved([&odd]).is_empty());
+        }
     }
 }
