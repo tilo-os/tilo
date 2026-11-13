@@ -27,6 +27,10 @@ use common::{Repl, on_screen, until};
 /// The menu of the window's own actions, as the shell's bar carries it.
 const WINDOW_ACTIONS: &str = "Window actions";
 
+/// The pill at the trailing end of a strip's window bar: the window's own width, focus and pin
+/// commands.
+const WINDOW_MENU: &str = "This window";
+
 /// The session with the shell as the whole screen and the seeded apps: the framed canvas is in
 /// front of it, and the seeded notes stand on the desk as its windows.
 fn session(root: &std::path::Path) -> (Session, Vec<String>) {
@@ -161,6 +165,164 @@ fn press_shown(session: &mut Session, name: &str) {
     session
         .step(std::time::Duration::from_millis(16))
         .expect("a frame");
+}
+
+/// Close the menu the last press opened without choosing a row: Escape, as a person leaves a menu
+/// they did not mean.
+fn dismiss_menu(session: &mut Session) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(tilo_compositor::InputEvent::Key {
+                keycode: KEY_ESCAPE,
+                pressed,
+            })
+            .expect("the key");
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("a frame");
+    }
+}
+
+/// The evdev code of Escape.
+const KEY_ESCAPE: u32 = 1;
+
+/// The strip holding the place that shows `record`.
+fn strip_of(session: &Session, record: &str) -> String {
+    common::places(session)
+        .into_iter()
+        .find(|place| place.record == record)
+        .map_or_else(
+            || panic!("the desk holds a place for {record}"),
+            |place| place.strip,
+        )
+}
+
+/// Show the strip `strip` as the one in front, as a press on its window's "Bring to front" does:
+/// the shell's own `focus_strip`, through the agent door.
+fn focus_strip(session: &mut Session, root: &std::path::Path, strip: &str) {
+    let mut repl = Repl::connect(&root.join("agent.sock"));
+    repl.opened(session);
+    let (answer, failed) = repl.run(
+        session,
+        &format!(r#"shell.focus_strip(shell.viewing, strip: "{strip}")"#),
+    );
+    assert!(!failed, "the shell focuses strip {strip}: {answer}");
+    session
+        .step(std::time::Duration::from_millis(16))
+        .expect("a frame");
+}
+
+/// Press the pill of the window named `window`: the "This window" menu at the trailing end of that
+/// window's bar. Every strip's window carries a pill under the same name — and each bar also keeps
+/// a placeholder pill off screen — so the pill taken is the one on the same bar row as the window's
+/// own name, at the trailing side of it, as the bar that names the window carries it.
+fn press_window_menu(session: &mut Session, window: &str) {
+    let (place, node) = common::wait_for(
+        session,
+        format!("{window:?}'s own window menu"),
+        |session| {
+            let nodes: Vec<(ui::accesskit::NodeId, ui::accesskit::Node)> = session
+                .a11y_windows()
+                .into_iter()
+                .flat_map(|(_, _, tree)| tree.nodes)
+                .collect();
+            let named = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(window))
+                .and_then(|(_, node)| node.bounds())?;
+            let place = session
+                .a11y_windows()
+                .into_iter()
+                .find_map(|(place, _, tree)| {
+                    tree.nodes
+                        .iter()
+                        .any(|(_, node)| node.label() == Some(window))
+                        .then_some(place)
+                })?;
+            let trailing = nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some(WINDOW_MENU))
+                .filter_map(|(id, node)| node.bounds().map(|rect| (*id, rect)))
+                .filter(|(_, rect)| {
+                    rect.width() > 0.0
+                        && rect.height() > 0.0
+                        && rect.y0 < named.y1
+                        && rect.y1 > named.y0
+                        && rect.x0 >= named.x0
+                })
+                .min_by(|(_, a), (_, b)| a.x0.total_cmp(&b.x0))
+                .map(|(id, _)| id)?;
+            Some((place, trailing))
+        },
+    );
+    assert!(
+        session.a11y_perform(place, node, &ui::a11y::Action::Activate),
+        "the desk takes the press on {window:?}'s window menu"
+    );
+    until(
+        session,
+        &format!("{window:?}'s window menu to open"),
+        |session| session.shell_says("Narrow") && session.shell_says("Normal"),
+    );
+}
+
+/// In Strips only a window behind offers "Bring to front": the window in front's own menu never
+/// does, so a person reading it is offered nothing that would do nothing. `window_controls` takes
+/// `in_front` for that one row alone, and passing it `in_front and lists` offered the row on every
+/// window whenever the desk's bar listed no commands (`lists` false), which is Strips' way.
+#[test]
+fn only_a_window_behind_offers_bring_to_front_in_strips() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let (mut session, notes) = session(root.path());
+    let one = notes.first().expect("a note").clone();
+    let other = notes.get(1).expect("a second note").clone();
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    show(&mut session, root.path(), "Strips");
+
+    // Two notes placed, each into a strip of its own: two windows on the desk.
+    place(&mut session, &one);
+    place(&mut session, &other);
+    let one_strip = strip_of(&session, &one);
+    let other_strip = strip_of(&session, &other);
+    assert_ne!(one_strip, other_strip, "each note stands in its own strip");
+    let one_name = common::window_name_of(&session, &one);
+    let other_name = common::window_name_of(&session, &other);
+    until(
+        &mut session,
+        "both notes' windows on the Strips desk",
+        |session| {
+            on_screen(session, &one_name).is_some() && on_screen(session, &other_name).is_some()
+        },
+    );
+
+    for (front, back) in [(&one_name, &other_name), (&other_name, &one_name)] {
+        let front_strip = strip_of(&session, if front == &one_name { &one } else { &other });
+        focus_strip(&mut session, root.path(), &front_strip);
+
+        // The window in front: its own menu lists the window's commands and no way to come to
+        // the front it is already in front of.
+        press_window_menu(&mut session, front);
+        assert!(
+            !session.shell_says("Bring to front"),
+            "{front:?} is in front, so its own menu offers no way to come to the front of itself: \
+             {:?}",
+            session.accessible_labels()
+        );
+        dismiss_menu(&mut session);
+
+        // The window behind: its own menu offers that way, and it is the row the person presses.
+        press_window_menu(&mut session, back);
+        assert!(
+            session.shell_says("Bring to front"),
+            "{back:?} stands behind, so its own menu offers \"Bring to front\": {:?}",
+            session.accessible_labels()
+        );
+        dismiss_menu(&mut session);
+    }
 }
 
 /// A placed note's bar shows its actions, and pressing the pin runs the note's own action: the

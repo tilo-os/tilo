@@ -215,7 +215,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
         lists_actions: lists_the_shown(shown),
     ) {
         controls: {
-            window_controls(a, v, s, shown, in_front and lists, lists)
+            window_controls(a, v, s, shown, in_front, lists)
         }
         tabs: {
             if placed.len() > 1 {
