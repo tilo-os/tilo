@@ -630,7 +630,22 @@ fn a_wrong_pin_fails_and_counts_against_the_hardware_lockout() {
         "the correct PIN must unseal"
     );
 
+    // With no PIN at all the refusal names the missing PIN, and it comes before the TPM is asked
+    // to unseal anything: it does not spend one of the lockout's tries.
+    let untouched = lockout::read(&f.runner).expect("lockout before any refusal");
+    let e = f
+        .try_unseal(&token, None)
+        .expect_err("a PIN-sealed token must not unseal without a PIN");
+    assert!(
+        format!("{e:#}").contains("sealed with a PIN but none was supplied"),
+        "the refusal should name the missing PIN: {e:#}"
+    );
+
     let before = lockout::read(&f.runner).expect("lockout before");
+    assert_eq!(
+        before.counter, untouched.counter,
+        "a refusal for want of a PIN must not count as an attempt"
+    );
     let e = f
         .try_unseal(&token, Some(b"9999"))
         .expect_err("a wrong PIN must fail");

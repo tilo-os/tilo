@@ -735,6 +735,15 @@ mod tests {
             assert_eq!(decode(&[0, 0, 0, 0, 0, 0, 0, 7]).unwrap(), Some(7));
             assert_eq!(decode(&[1, 0, 0, 0, 0, 0, 0, 0]).unwrap(), Some(1 << 56));
             assert!(decode(&[0, 0]).is_err());
+            assert!(decode(&[]).is_err());
+        }
+        {
+            // A floor past the top of the generation space saturates; it does not wrap to a low one.
+            let s = FloorState {
+                counter: u64::MAX,
+                base: i64::MIN,
+            };
+            assert_eq!(s.floor_generation(), u64::MAX);
         }
         // Phase `index_is_formatted_the_way_tpm2_tools_expects`.
         {
