@@ -375,9 +375,6 @@ impl EnrollmentView {
             return Self::review_panel(content, actions, &state, phase, review);
         }
         content = self.sim_panel(content, actions, &state);
-        // One row per service, each saying what linking it takes. Without
-        // the messaging service on this device none can start: the section
-        // says why instead of offering rows that do nothing.
         if self.client.is_none() {
             return content.push(Box::new(Section::titled(
                 CATALOG.t("messages-setup-link-heading"),

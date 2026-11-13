@@ -1,4 +1,4 @@
-//! Private, transient service membership inspection. No workspace CRDT writes.
+//! Private, transient service membership inspection.
 use crate::{CATALOG, Messages, MessagesEffect, view::Sources};
 use std::rc::Rc;
 use tilo_messaging::{
@@ -49,8 +49,8 @@ impl GroupsView {
         self.draft.set(String::new());
         self.operation.set(uuid::Uuid::new_v4().to_string());
     }
-    /// What the window bar names while the groups are open, and the
-    /// effect refreshing an open group's membership.
+    /// What the window bar names while the groups are open, and the effect refreshing an
+    /// open group's membership.
     pub(crate) fn shown(&self) -> Option<(String, Option<MessagesEffect>)> {
         let page = self.page.get()?;
         Some(match page.as_ref() {
@@ -234,8 +234,8 @@ impl GroupsView {
             self.effect(sources, request, cx)
         });
     }
-    /// The accounts whose groups can be listed, one entry each; none
-    /// without such an account, so the people below keep the pane.
+    /// The accounts whose groups can be listed, one entry each; none without such an
+    /// account, so the people below keep the pane.
     pub(crate) fn entries(
         &self,
         sources: &Sources,

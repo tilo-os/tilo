@@ -143,8 +143,8 @@ pub(super) fn effect(
     let generation = view.key();
     let view = view.clone();
     let sources = sources.clone();
-    // Operation IDs survive uncertain failures. Only a definite receipt clears
-    // the draft; another click cannot silently replay a timed-out service write.
+    // Only a definite receipt clears the draft; another click cannot silently replay a
+    // timed-out service write.
     let sent_text = match &op {
         Operation::Send(_, text) => Some(text.clone()),
         _ => None,

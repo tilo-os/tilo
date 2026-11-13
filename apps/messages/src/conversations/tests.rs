@@ -63,7 +63,6 @@ fn a_delivered_message_lands_in_the_senders_conversation_under_a_derived_id() {
     let message = answer["message"].as_str().expect("the message's id");
     assert!(message.starts_with('m'), "{answer}");
 
-    // The same delivery again changes nothing and names no new message.
     let again = deliver(
         &mut app,
         json!({"from": "+1 555 0100", "body": "Running late, start without me",
@@ -313,8 +312,8 @@ fn the_agent_operations_are_offered_to_agents_as_reads_and_verbs() {
     }
 }
 
-/// What the record holds is what the window shows, live and in a past
-/// version, where the person's contacts and accounts are not read.
+/// What the record holds is what the window shows, live and in a past version, where the
+/// person's contacts and accounts are not read.
 #[test]
 fn a_past_version_reads_and_shows_its_messages() {
     ui::i18n::I18nManager::init("en-US");

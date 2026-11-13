@@ -91,11 +91,8 @@ fn selected(host: &Host) -> TestApp<MessagesShell> {
 
 /// Whether any accessible node `names` `text`.
 ///
-/// One conversation line is one list item whose spoken name is who said it,
-/// when, whether it arrived, and what it says — the substrate's shape
-/// (`ui::widget::conversation::ConversationList`). So a body is found in the
-/// item that names it rather than as a node of its own, and a plaintext that
-/// must not be shown is checked for anywhere in that name.
+/// So a body is found in the item that names it rather than as a node of its own, and a
+/// plaintext that must not be shown is checked for anywhere in that name.
 fn has_text(app: &mut TestApp<MessagesShell>, text: &str) -> bool {
     app.harness()
         .a11y_nodes()
@@ -110,7 +107,6 @@ fn host_history_is_transient_and_submission_is_never_delivered() {
     app.effect(&MessagesEffect::ReadHistory { choice: choice() })
         .expect("authorized history job");
     assert!(has_text(&mut app, PRIVATE));
-    // The transport's answer is in the shared vocabulary.
     assert!(has_text(&mut app, "Submitted"));
     assert!(!has_text(&mut app, "Delivered"));
     assert!(!app.harness().dump_json().contains(PRIVATE));
@@ -691,9 +687,8 @@ fn another_personas_host_capability_is_unavailable_before_any_read() {
     assert!(!has_text(&mut app, PRIVATE));
 }
 
-/// The transport's five answers land on the shared vocabulary — the same
-/// words, glyphs and tones Chat shows — rather than on five labels of this
-/// app's own.
+/// The transport's five answers land on the shared vocabulary — the same words, glyphs and
+/// tones Chat shows — rather than on five labels of this app's own.
 #[test]
 fn every_transport_state_speaks_the_shared_delivery_vocabulary() {
     use tilo_messaging::Delivery;
@@ -720,12 +715,10 @@ fn every_transport_state_speaks_the_shared_delivery_vocabulary() {
     );
 }
 
-/// A host with two pages of one conversation: the newest page, and the page
-/// before the oldest message it carries.
+/// A host with two pages of one conversation: the newest page, and the page before the
+/// oldest message it carries.
 #[derive(Clone)]
 struct Paged {
-    /// Every cursor the app asked with, in order (`None` for the newest
-    /// page).
     asked: Arc<Mutex<Vec<Option<String>>>>,
 }
 
@@ -771,8 +764,8 @@ impl HistoryHost for Paged {
     }
 }
 
-/// Older SMS is reachable, and the conversation says when it has reached its
-/// start rather than falling silent at the bottom of one page.
+/// Older SMS is reachable, and the conversation says when it has reached its start rather
+/// than falling silent at the bottom of one page.
 #[test]
 fn the_page_before_is_asked_for_by_the_oldest_message_shown() {
     let host = Paged::new();
@@ -818,8 +811,8 @@ fn the_page_before_is_asked_for_by_the_oldest_message_shown() {
     );
 }
 
-/// The conversation with a person reads from Chat's messages as the record door answers them:
-/// only theirs with this person, in each part's order, the person's as incoming.
+/// The conversation with a person reads from Chat's messages as the record door answers
+/// them: only theirs with this person, in each part's order, the person's as incoming.
 #[test]
 fn a_direct_conversation_reads_from_chats_messages() {
     let (me, peer) = ("aa", "bb");

@@ -23,11 +23,10 @@ struct CapturePeople {
     accounts: PersonAccounts,
 }
 
-/// A person of the workspace: their root public key, as the workspace names
-/// them, and the name it calls them.
+/// A person of the workspace: their root public key, as the workspace names them, and the
+/// name it calls them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspacePerson {
-    /// Their root public key, as the workspace names them.
     pub root: String,
     pub name: String,
 }
@@ -36,27 +35,22 @@ pub(crate) struct WorkspacePerson {
 pub(crate) struct Sources {
     directory: Option<PersonRecord<ContactDirectory>>,
     accounts: Option<PersonRecord<PersonAccounts>>,
-    /// The Messages record itself, whose conversations are listed first.
     record: Option<Live<Messages>>,
-    /// The workspace's own conversations are Chat's, and this window reaches
-    /// them through Chat's published operations.
     pub(crate) tilo: bool,
-    /// This window's own person, as their conversations name them.
     pub(crate) me: String,
-    /// The workspace's people as they were when this view was built.
     people: Vec<WorkspacePerson>,
     fixture: Rc<CapturePeople>,
 }
 
 impl Sources {
-    /// The person a Tilo conversation is with, by the key it keeps them
-    /// under: `None` for anyone the workspace does not name.
+    /// The person a Tilo conversation is with, by the key it keeps them under: `None` for
+    /// anyone the workspace does not name.
     pub(crate) fn workspace_person(&self, root: &str) -> Option<&WorkspacePerson> {
         self.people.iter().find(|person| person.root == root)
     }
 
-    /// Whether `person` is someone this window can write to, whether the
-    /// workspace names them or Contacts does.
+    /// Whether `person` is someone this window can write to, whether the workspace names
+    /// them or Contacts does.
     fn known_person(&self, person: &str) -> bool {
         self.workspace_person(person).is_some()
             || self
@@ -66,8 +60,8 @@ impl Sources {
                 .is_some_and(|person| !person.removed)
     }
 
-    /// What `person` is called: the workspace's name for one of its people,
-    /// else the name Contacts keeps.
+    /// What `person` is called: the workspace's name for one of its people, else the name
+    /// Contacts keeps.
     pub(crate) fn person_name(&self, person: &str) -> Option<String> {
         if let Some(person) = self.workspace_person(person) {
             return Some(person.name.clone());
@@ -108,8 +102,6 @@ impl Sources {
 pub(crate) struct Selection {
     pub(crate) person: String,
     pub(crate) choice: String,
-    /// The conversation open from the record's own ([`Messages`]), by its
-    /// key: read-only, beside the people rather than one of their routes.
     pub(crate) conversation: String,
 }
 
@@ -130,8 +122,6 @@ impl Choice {
         serde_json::to_string(self).unwrap_or_default()
     }
     pub(crate) fn label(&self, sources: &Sources) -> String {
-        // A Tilo conversation is the workspace's own record of it, between
-        // two people: there is no service account to name.
         if self.service == "tilo" {
             return CATALOG.t("messages-tilo");
         }
@@ -142,9 +132,9 @@ impl Choice {
                 .accounts()
                 .accounts
                 .get(&Id::from_raw(&self.account))
-                // The account's name, never its identifier: which account a
-                // thread arrives on is what a person needs, and the opaque key
-                // behind it means nothing to them.
+                // The account's name, never its identifier: which account a thread arrives
+                // on is what a person needs, and the opaque key behind it means nothing to
+                // them.
                 .map_or_else(
                     || self.account.clone(),
                     |account| account.display_name.clone(),
@@ -173,8 +163,6 @@ impl Choice {
 }
 
 pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
-    // A person the workspace names is written to as the workspace's own
-    // record of the conversation between you: one route, through no service.
     if let Some(workspace_person) = sources.workspace_person(person) {
         if !sources.tilo {
             return Vec::new();
@@ -218,8 +206,8 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
             .collect();
         let routes = routing::routes(&contacts, &person, service, &senders);
         if routes.is_empty() {
-            // Metadata can describe an unavailable account. It never supplies
-            // a recipient or identity revision to bypass the shared resolver.
+            // It never supplies a recipient or identity revision to bypass the shared
+            // resolver.
             let ids: Vec<_> = if senders.is_empty() {
                 vec![String::new()]
             } else {
@@ -252,9 +240,7 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
     result
 }
 
-/// Whom this window can write to: the workspace's people first, then the
-/// address book's. Someone the workspace names is listed once, by the
-/// workspace's name for them, whichever of their keys Contacts also keeps.
+/// Whom this window can write to: the workspace's people first, then the address book's.
 fn who(sources: &Sources) -> Vec<serde_json::Value> {
     let members: Vec<&str> = sources
         .people
@@ -312,9 +298,6 @@ fn answer(
             else {
                 return Err(CATALOG.t("messages-contact-missing"));
             };
-            // A Tilo route is the workspace's own record of the
-            // conversation: there is no service account to resolve it
-            // against.
             if valid.service != "tilo"
                 && !valid.recipient.is_empty()
                 && sources.contacts().resolve_account(
@@ -361,7 +344,6 @@ fn answer(
         | MessagesEffect::Send { .. } => {
             return Err(CATALOG.t("messages-transport-unavailable"));
         }
-        // Answered from the record before the broker's effects are reached.
         MessagesEffect::SearchMessages { .. }
         | MessagesEffect::ExportContent { .. }
         | MessagesEffect::OpenConversation { .. } => {
@@ -452,8 +434,8 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
     }
 }
 
-/// The workspace's people as the Tilo lane offers them: everyone the
-/// workspace names but this window's own person and its agents.
+/// The workspace's people as the Tilo lane offers them: everyone the workspace names but
+/// this window's own person and its agents.
 fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
     cx.people()
         .members()
@@ -475,8 +457,6 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let sources = sources(cx);
     let selection = LocalState::new(Selection::default());
     let live = cx.mode().is_live() && !cx.is_past();
-    // What the person is writing is theirs: the live draft and the record it
-    // is kept in, made together so a send can clear it where it was kept.
     let (sending, held_drafts) = sending_and_drafts(cx, live, sources.tilo);
     let history = crate::history::HistoryView::new(
         sending
@@ -573,8 +553,8 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     Box::new(crate::window_bar::MessagesWindow { content, bar })
 }
 
-/// The person's accounts in the messaging service, when the launcher
-/// connected this app to it rather than a host lending them.
+/// The person's accounts in the messaging service, when the launcher connected this app to
+/// it rather than a host lending them.
 fn inherited() -> Option<(
     tilo_messaging::EnrollmentClient,
     tilo_messaging::MessagingClient,
@@ -588,9 +568,8 @@ fn enrollment(cx: &ViewCx<Messages>) -> Option<tilo_messaging::EnrollmentClient>
         .or_else(|| inherited().map(|(enrollment, _)| enrollment))
 }
 
-/// What the content column shows: the open groups, the account setup or
-/// the conversation with the selected person.
-/// The composer's sending state and the person's own record of drafts.
+/// What the content column shows: the open groups, the account setup or the conversation
+/// with the selected person.
 fn sending_and_drafts(
     cx: &ViewCx<Messages>,
     live: bool,
@@ -643,8 +622,7 @@ fn shown(
     )
 }
 
-/// The people beside the open conversation, groups or account setup. The
-/// window bar names which and holds its actions ([`crate::window_bar`]).
+/// The people beside the open conversation, groups or account setup.
 fn navigation(
     detail: Element,
     sources: &Sources,
@@ -655,15 +633,13 @@ fn navigation(
     drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
 ) -> NavShell {
     let entries = groups.entries(sources, actions);
-    // Nobody to message only when the record holds no conversation either:
-    // a Messages with content never presents itself as empty.
+    // Nobody to message only when the record holds no conversation either: a Messages with
+    // content never presents itself as empty.
     let nobody = nobody_listed(sources) && sources.record().conversations.is_empty();
     let people = overview(sources, actions, selected, drafts);
     let shell = NavShell::new()
         .content_kind(ui::widget::ContentKind::Reading)
         .with_window_toolbar();
-    // With nobody and no group to list, and neither setup nor a group
-    // open, how to start is the whole window's, not a narrow list's.
     if nobody && entries.is_none() && !setup.visible() && !groups.visible() {
         return shell.nothing_listed(start_in_contacts(actions));
     }
@@ -688,8 +664,7 @@ fn navigation(
         .with_pane_state(&pane)
 }
 
-/// The draft line for `person`: the unsent words of whichever of their routes
-/// has them.
+/// The draft line for `person`: the unsent words of whichever of their routes has them.
 fn draft_for(
     sources: &Sources,
     drafts: &crate::drafts::MessageDrafts,
@@ -719,8 +694,6 @@ fn discard_invalid_route(
     sending: &crate::sending::Sending,
     history: &crate::history::HistoryView,
 ) -> bool {
-    // Shared account/contact edits can invalidate a selection without
-    // going through this app's navigation effects.
     let selected = selection.get();
     if selected.choice.is_empty()
         || choices(sources, &selected.person)
@@ -854,8 +827,8 @@ fn register_effects(
     });
 }
 
-/// Open the record's conversation `named` (its id, its item address or who
-/// it is with) in place of any person.
+/// Open the record's conversation `named` (its id, its item address or who it is with) in
+/// place of any person.
 fn open_conversation(
     record: &Messages,
     state: &LocalState<Selection>,
@@ -915,7 +888,6 @@ enum Entry {
 impl Entry {
     fn id(&self) -> Id {
         match self {
-            // Apart from the people's ids, which are Contacts identities.
             Self::Held(held) => Id::from_raw(format!("conversation:{}", held.key)),
             Self::Person(id, _) => id.clone(),
         }
@@ -928,12 +900,9 @@ fn overview(
     selected: &Selection,
     drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
 ) -> Element {
-    // The words left in a conversation are shown where the conversation is
-    // listed, beside the person they were written for: a draft you cannot find
-    // is a draft you have lost.
+    // The words left in a conversation are shown where the conversation is listed, beside
+    // the person they were written for: a draft you cannot find is a draft you have lost.
     let kept = drafts.map(PersonRecord::get);
-    // What the record holds leads: it is what this Messages is about, and
-    // it is all a past version or a shared copy has to show.
     let entries: Vec<_> = held(&sources.record())
         .into_iter()
         .map(Entry::Held)
@@ -952,8 +921,6 @@ fn overview(
                 .map(|(id, person)| Entry::Person(id.clone(), person.label.clone())),
         )
         .collect();
-    // The pane is a column under the group entries: the empty state fills
-    // what is left of it, as the list would, instead of collapsing to nothing.
     let fill =
         |element: Element| -> Element { Box::new(Container::new().filling().with_child(element)) };
     if entries.is_empty() {
@@ -1010,9 +977,8 @@ fn overview(
     Box::new(Container::new().filling().with_child(Box::new(list)))
 }
 
-/// The record's conversation `key`, read-only: who said what, and which of
-/// the words written here still wait for a person to send them. Nothing is
-/// sent from here ([`crate::conversations`]).
+/// The record's conversation `key`, read-only: who said what, and which of the words
+/// written here still wait for a person to send them.
 fn held_detail(record: &Messages, key: &str) -> Element {
     let Some(conversation) = record.conversations.get(&Id::from_raw(key)) else {
         return empty("messages-conversation-missing", "messages-held-hint");
@@ -1069,8 +1035,6 @@ fn detail(
         return held_detail(&record, &selected.conversation);
     }
     if selected.person.is_empty() {
-        // With nobody to choose, the list beside says how to start, and
-        // "Choose a person" would point at nothing.
         if nobody_listed(sources) {
             if record.conversations.is_empty() {
                 return Box::new(Column::new());
@@ -1129,10 +1093,8 @@ fn detail(
 
 /// The composer: the words, the button, and the keyboard.
 ///
-/// Enter sends and Shift+Enter breaks the line, exactly as in Chat — the rule
-/// is the toolkit's (`ui::widget::ComposerRule`), not this app's. Enter runs the
-/// same send the button does, so a refusal, an operation token and the draft it
-/// keeps are one path rather than two.
+/// Enter sends and Shift+Enter breaks the line, exactly as in Chat — the rule is the
+/// toolkit's (`ui::widget::ComposerRule`), not this app's.
 fn composer(
     sources: &Sources,
     actions: &Actions<Messages>,
@@ -1143,9 +1105,6 @@ fn composer(
     let enabled = choice
         .and_then(|c| crate::history::current_route(sources, selection, c).ok())
         .is_some_and(|route| sending.supports(&route));
-    // The draft follows the conversation, so what was left here is here when
-    // the person comes back — and is kept as they type, so closing the window
-    // does not throw it away.
     if let Some(choice) = choice {
         sending.open_draft(choice);
     }
@@ -1188,8 +1147,8 @@ fn composer(
     )
 }
 
-/// How to start with nobody to message: add people in Contacts, which the
-/// button opens ([`crate::open_contacts_action`]).
+/// How to start with nobody to message: add people in Contacts, which the button opens
+/// ([`crate::open_contacts_action`]).
 fn start_in_contacts(actions: &Actions<Messages>) -> Element {
     let state = EmptyState::new("messages-empty-heading")
         .with_icon(Icon::MessageSquare)
@@ -1272,8 +1231,6 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
 
 fn capture_history() -> tilo_messaging::HistoryPage {
     use tilo_messaging::{Delivery, Direction, HistoryPage, Message};
-    // Anchored to now, so the capture shows the day dividers a person would
-    // see whenever it is taken.
     let now_ms = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or(0);
     HistoryPage {
         route: routing::Route {
@@ -1285,12 +1242,8 @@ fn capture_history() -> tilo_messaging::HistoryPage {
             recipient: "+12025550123".into(),
             revision: "fixture-signal-revision".into(),
         },
-        // Older SMS waits below this page: the capture shows the way back to
-        // it, beside the conversation it belongs to.
         more: true,
         messages: [
-            // Two days, so the capture shows what a divider is for and what
-            // a time on every line is for.
             (
                 "capture-1",
                 "Are you nearby?",
@@ -1376,9 +1329,9 @@ mod route_tests {
             },
         )
     }
-    /// The words left in a conversation are shown under the person it belongs
-    /// to, and a route re-reviewed into another identity is another
-    /// conversation whose words stay where they were typed.
+    /// The words left in a conversation are shown under the person it belongs to, and a
+    /// route re-reviewed into another identity is another conversation whose words stay
+    /// where they were typed.
     #[test]
     fn a_persons_row_carries_the_draft_of_the_route_it_belongs_to() {
         let mut app = TestApp::<MessagesShell>::for_person("drafts-fixture").expect("headless app");
