@@ -252,47 +252,18 @@ fn the_runtime_does_the_work_of_what_it_shows(app: &str) {
     );
 }
 
-/// The notebooks one run of the notes bench holds, for the three gates that read it: the only
-/// note and the two hundred notes a key's views are compared from, the two sizes every app's gate
-/// compares ([`SMALL`], [`LARGE`]), and the two thousand notes a keystroke's change is held at.
-const NOTEBOOKS: [usize; 5] = [1, SMALL / 5, SMALL, LARGE / 5, LARGE];
-
-/// Notes, in one run of its bench over [`NOTEBOOKS`]: the runtime does the work of what the
-/// notebook shows whatever its size ([`gate`]), a key reruns the same views whatever the notebook
-/// holds, and a keystroke is one cheap change. Each gate reads the records of its own sizes, and
-/// the run seeds and indexes each notebook once for all of them. Every miss of every gate is
-/// reported.
 #[test]
 fn notes_does_the_work_of_what_it_shows() {
-    let records = bench_at("notes", NOTEBOOKS.to_vec(), 3);
-    let mut failed = Vec::new();
-    let mut misses = Vec::new();
-    gate("notes", &records, &mut misses);
-    if !misses.is_empty() {
-        failed.push(format!(
-            "more work in a larger workspace:\n{}",
-            misses.join("\n")
-        ));
-    }
-    let misses = a_key_reruns_the_same_views_whatever_the_notebook_holds(&records);
-    if !misses.is_empty() {
-        failed.push(format!(
-            "a key does more work in a larger notebook:\n{}",
-            misses.join("\n")
-        ));
-    }
-    let misses = a_keystroke_is_one_cheap_change(&records);
-    if !misses.is_empty() {
-        failed.push(misses.join("\n"));
-    }
-    assert!(failed.is_empty(), "{}", failed.join("\n\n"));
+    the_runtime_does_the_work_of_what_it_shows("notes");
 }
 
 /// Typing in a notebook runs the views that read what was typed, and no others: a key costs
-/// the same from the first note to ten thousand. What it misses, of the notes run's `records`.
-fn a_key_reruns_the_same_views_whatever_the_notebook_holds(records: &[Record]) -> Vec<String> {
+/// the same from the first note to ten thousand.
+#[test]
+fn a_key_reruns_the_same_views_whatever_the_notebook_holds() {
+    let records = bench_at("notes", vec![1, 200, LARGE], 2);
     let work = |size: &str| {
-        let record = find(records, "keystroke", size)
+        let record = find(&records, "keystroke", size)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
         Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
     };
@@ -329,7 +300,11 @@ fn a_key_reruns_the_same_views_whatever_the_notebook_holds(records: &[Record]) -
             ));
         }
     }
-    misses
+    assert!(
+        misses.is_empty(),
+        "a key does more work in a larger notebook:\n{}",
+        misses.join("\n")
+    );
 }
 
 #[test]
@@ -362,16 +337,16 @@ fn mail_does_the_work_of_what_it_shows() {
 /// What this scenario types into is the note's body, the document its window edits, as a person
 /// writing a note does; what else a letter costs is the views that show it, which are the same at
 /// 200 notes and at 2k ([`a_key_reruns_the_same_views_whatever_the_notebook_holds`]).
-///
-/// What it misses, of the notes run's `records` at `SMALL / 5` and `LARGE / 5` notes.
-fn a_keystroke_is_one_cheap_change(records: &[Record]) -> Vec<String> {
+#[test]
+fn a_keystroke_is_one_cheap_change() {
+    let records = bench_at("notes", vec![SMALL / 5, LARGE / 5], 3);
     let work = |size: &str| {
-        let record = find(records, "keystroke", size)
+        let record = find(&records, "keystroke", size)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
         Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
     };
     let first = |size: &str| {
-        let record = find(records, "keystroke", size)
+        let record = find(&records, "keystroke", size)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
         Work::first_of_record(record)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
@@ -406,7 +381,7 @@ fn a_keystroke_is_one_cheap_change(records: &[Record]) -> Vec<String> {
             }
         }
     }
-    misses
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
 
 /// The files an export writes, kept as they were handed in: the address of the content is the
