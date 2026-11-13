@@ -287,6 +287,11 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     writeSetup({...kept, shown: {...frame}}, storage);
   };
   const view = new Proxy(drawn, {get: (target, name) => (...args) => {
+    // A closed screen draws nothing: the person is done with it, or the page
+    // was turned away at a door, and what comes after is not the setup. Every
+    // write it makes is the page's first screen itself (`domView`'s `state`),
+    // so a late answer cannot bring it back over what took its place.
+    if (closed && name !== 'close') return undefined;
     if (name === 'offer' && args[0] === 'setup') frame.offer = args[1]?.text ?? null;
     else if (name === 'waiting') {
       if (typeof args[1]?.text === 'string') frame.prompt = args[1].text;

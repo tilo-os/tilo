@@ -159,6 +159,13 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
     tickets: Boolean(tickets),
     pairing: Boolean(deps.pairDevice),
   };
+  // A link that names a workspace at a host this page lists nothing at has no
+  // door to ask: it can only come back as the person this device holds, and a
+  // device that holds none is told it has no access. Said here, with what the
+  // page knew, so a refusal names what it was missing.
+  if (room && origin && !listed) {
+    console.warn('admission: this page lists no workspace at', origin, 'so it has no door to ask');
+  }
   const link = JSON.stringify({
     scope: scope.kind === 'room' ? {kind: 'room', room: room ?? undefined} : {kind: scope.kind},
     malformed: Boolean(secrets.malformed), invite: Boolean(secrets.invite), ticket: Boolean(secrets.ticket),
