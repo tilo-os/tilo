@@ -1,22 +1,16 @@
-//! Tilo's grammar set: Sublime syntax definitions run through `syntect`,
-//! used purely as a tokenizer. Each span's scope stack
-//! (`source.rust → meta.function → entity.name.function`) maps to one
-//! [`TokenKind`]; colours stay with the renderer and the OS theme, never
-//! with a syntect colour theme.
+//! Tilo's grammar set: Sublime syntax definitions run through `syntect`, used purely
+//! as a tokenizer. Each span's scope stack (`source.rust → meta.function →
+//! entity.name.function`) maps to one [`TokenKind`]; colours stay with the renderer
+//! and the OS theme.
 //!
-//! One process-wide syntax set backs every caller: the extended set curated
-//! by the `bat` project (the defaults plus TOML, TypeScript, Dockerfile and
-//! more). It is the same packed set Typst loads for raw blocks; the Typst
-//! engine library takes it from the highlight engine, so a process holding
-//! both maps those bytes once.
+//! One process-wide syntax set backs every caller: the extended set curated by the
+//! `bat` project. It is the packed set Typst loads for raw blocks, taken from the
+//! highlight engine, so a process holding both maps those bytes once.
 //!
-//! Without `syntax-definitions` (the browser toolkit core) there are no
-//! grammars to run, so neither syntect nor its regex engines are linked: the
-//! set holds only plain text, and every language highlights as plain text.
+//! Without `syntax-definitions` (the browser toolkit core) no grammars run: syntect
+//! and its regex engines are not linked, and every language is plain text.
 //!
-//! The toolkit reaches this through [`grammars`] as
-//! a [`tilo_highlight::Grammars`]: linked in a build without the shared
-//! runtime, from `libtilo_highlight_engine.so` in one.
+//! The toolkit reaches it as a [`tilo_highlight::Grammars`] through [`grammars`].
 //!
 //! [`TokenKind`]: tilo_highlight::TokenKind
 
@@ -33,7 +27,6 @@ pub fn grammars() -> &'static dyn Grammars {
     return &plain::PlainText;
 }
 
-/// A set with plain text as its only grammar.
 #[cfg(any(test, not(feature = "syntax-definitions")))]
 mod plain {
     use std::any::Any;
@@ -43,8 +36,6 @@ mod plain {
     pub(crate) struct PlainText;
 
     impl Grammars for PlainText {
-        /// Plain text answers to its file extension and its name, as it
-        /// does in a syntect set.
         fn find(&self, token: &str) -> Option<Grammar> {
             (token.eq_ignore_ascii_case("txt") || token.eq_ignore_ascii_case("plain text"))
                 .then_some(Grammar(0))
@@ -63,7 +54,6 @@ mod plain {
         }
     }
 
-    /// Plain text carries nothing from one line to the next.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct PlainState;
 

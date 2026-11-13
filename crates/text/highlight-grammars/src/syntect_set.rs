@@ -1,6 +1,4 @@
-//! The full grammar set: two-face's extended syntax set (the `bat`
-//! project's curation: the defaults plus TOML, TypeScript, Dockerfile and
-//! more) run through `syntect`.
+//! The full grammar set: two-face's extended syntax set, run through `syntect`.
 
 use std::any::Any;
 use std::sync::OnceLock;
