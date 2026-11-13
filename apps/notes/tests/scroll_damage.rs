@@ -8,6 +8,12 @@
 //! the body from around it, not the window. Every frame is presented over the
 //! one before (copies, then damage) and checked against a full render of the
 //! same scene, in dark, light and high contrast.
+//!
+//! Once the pointer rests over the note the app reads a clock the test steps
+//! ([`FRAME_STEP`] a frame), not the machine's: the pointer brings up the
+//! blocks' drag handles, which fade three seconds later, and a frame that
+//! fades them is not a scroll alone and does not copy. Read off the machine,
+//! how many scroll frames met the fade followed how fast the test ran.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -26,6 +32,7 @@ use ui::framework::testing::drive_live_window;
 use ui::offscreen::OffscreenRenderer;
 use ui::synthetic_input::{cursor_moved, key_input, mouse_press, mouse_release};
 use ui::theme::Theme;
+use ui::time::{Duration, Instant};
 use ui::winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 use vello::Scene;
@@ -33,6 +40,24 @@ use vello::kurbo::Rect;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 900;
+
+/// The time between two frames once the pointer rests over the note
+/// ([`Host::step_the_clock`]). The pointer coming to rest, the note going to
+/// its top and the ten frames after that take twelve frames, so the scroll
+/// down begins 1.92 s after the pointer woke the drag handles: its first
+/// seven frames scroll with the handles showing, the next two fall in their
+/// fade (3 s to 3.32 s after the pointer moved) and the one after paints
+/// them gone, and the rest of the way down and all the way back up scrolls
+/// with them gone.
+const FRAME_STEP: Duration = Duration::from_millis(160);
+
+/// Run `operation` at `clock` when the host steps one, else at the machine's.
+fn at<T>(clock: Option<Instant>, operation: impl FnOnce() -> T) -> T {
+    match clock {
+        Some(now) => ui::time::testing::with_monotonic_time(now, operation),
+        None => operation(),
+    }
+}
 
 /// A theme to check in, by name.
 type ThemeCase = (&'static str, fn() -> Theme);
@@ -65,6 +90,15 @@ struct Host {
     presented: OffscreenRenderer,
     full: OffscreenRenderer,
     background: vello::peniko::Color,
+    /// Whether frames reach the GPU target. Not while the note is written:
+    /// [`scroll`] begins by drawing the scene whole, which replaces whatever
+    /// the frames before it presented, so the frames that write the note
+    /// are framed by the app and their damage taken, and not drawn.
+    presenting: bool,
+    /// The instant the app reads the clock at, once the host steps it
+    /// ([`Self::step_the_clock`]): the next frame's, [`FRAME_STEP`] after
+    /// the frame before it.
+    clock: Option<Instant>,
 }
 
 /// What a run of scroll frames did.
@@ -88,35 +122,60 @@ impl Host {
                 .expect("a scroll copy is checked on the GPU the toolkit renders with"),
             full: OffscreenRenderer::new(WIDTH, HEIGHT),
             background: theme.tokens.colors.surfaces.content,
+            presenting: false,
+            clock: None,
         }
+    }
+
+    /// From here on the app reads the time this host gives it: now, and
+    /// [`FRAME_STEP`] later with each frame.
+    fn step_the_clock(&mut self) {
+        self.clock = Some(ui::time::now());
+    }
+
+    /// Deliver `event` to the window, at the host's clock.
+    fn send(&self, app: &mut App, event: WindowEvent) {
+        at(self.clock, || {
+            app.surface_input(&Window, event, false);
+        });
     }
 
     /// One frame of the app, presented as the window presents it.
     fn frame(&mut self, app: &mut App, run: &mut Run) {
         self.scene.reset();
-        app.surface_frame_with_damage(&Window, &mut self.scene, &mut self.damage);
+        let (scene, damage) = (&mut self.scene, &mut self.damage);
+        at(self.clock, || {
+            app.surface_frame_with_damage(&Window, scene, damage);
+        });
         run.frames += 1;
         if let Some((copies, rects)) = self.damage.take_copying() {
             if !copies.is_empty() {
                 run.copied_frames += 1;
                 run.repainted += covered(&rects);
             }
-            let _ = self.presented.render_copies_and_damage_gpu_wait(
-                &self.scene,
-                self.background,
-                &copies,
-                &rects,
-            );
+            if self.presenting {
+                let _ = self.presented.render_copies_and_damage_gpu_wait(
+                    &self.scene,
+                    self.background,
+                    &copies,
+                    &rects,
+                );
+            }
         } else {
             run.whole += 1;
             run.why = run.why.or_else(|| self.damage.repainted());
-            let _ = self.presented.render(&self.scene, self.background);
+            if self.presenting {
+                let _ = self.presented.render(&self.scene, self.background);
+            }
         }
-        let _ = app.refresh_semantic_tree();
+        let _ = at(self.clock, || app.refresh_semantic_tree());
+        if let Some(clock) = self.clock.as_mut() {
+            *clock += FRAME_STEP;
+        }
     }
 
     fn input(&mut self, app: &mut App, event: WindowEvent) {
-        app.surface_input(&Window, event, false);
+        self.send(app, event);
         self.frame(app, &mut Run::default());
     }
 
@@ -127,11 +186,23 @@ impl Host {
         let actual = self.presented.readback_current();
         let mut spread: Option<Rect> = None;
         let row = WIDTH as usize * 4;
+        // Both frames are the window's rows, so the rows hold every pixel.
+        assert_eq!(actual.len(), row * HEIGHT as usize, "the presented frame");
+        assert_eq!(expected.len(), actual.len(), "the full render");
+        let mut differing = 0_usize;
         for (y, (actual, expected)) in actual
             .chunks_exact(row)
             .zip(expected.chunks_exact(row))
             .enumerate()
         {
+            // A row presented byte for byte as the full render drew it holds
+            // no differing pixel: only a row that differs is compared and
+            // read pixel by pixel, which an unoptimised test build does
+            // slowly.
+            if actual == expected {
+                continue;
+            }
+            differing += OffscreenRenderer::pixels_differing_beyond_aa(actual, expected);
             for (x, (a, e)) in actual
                 .chunks_exact(4)
                 .zip(expected.chunks_exact(4))
@@ -147,10 +218,7 @@ impl Host {
                 }
             }
         }
-        (
-            OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected),
-            spread,
-        )
+        (differing, spread)
     }
 }
 
@@ -165,13 +233,18 @@ fn covered(rects: &[Rect]) -> f64 {
     let window = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT));
     let width = WIDTH as usize;
     let mut cells = vec![false; width * HEIGHT as usize];
+    // Each pixel is counted once, as the first rect over it covers it: the
+    // count reads the pixels the rects cover, not the whole window.
+    let mut count = 0_usize;
     for rect in rects {
         let rect = rect.intersect(window).expand();
         for y in rect.y0 as usize..rect.y1 as usize {
-            cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize].fill(true);
+            let row = &mut cells[y * width + rect.x0 as usize..y * width + rect.x1 as usize];
+            count += row.iter().filter(|cell| !**cell).count();
+            row.fill(true);
         }
     }
-    cells.iter().filter(|cell| **cell).count() as f64
+    count as f64
 }
 
 /// The bounds of the first published node named `name`.
@@ -215,6 +288,8 @@ fn write_a_long_note(app: &mut App, host: &mut Host, paragraphs: usize) {
     let escape = Key::Named(NamedKey::Escape);
     host.input(app, key_input(&escape, ElementState::Pressed));
     host.input(app, key_input(&escape, ElementState::Released));
+    // The pointer brings up the drag handles, which fade by the clock.
+    host.step_the_clock();
     host.input(app, cursor_moved(700.0, 500.0));
     // Writing left the end of the note on screen; start from its top.
     host.input(
@@ -298,6 +373,8 @@ fn write_a_rich_note(app: &mut App, host: &mut Host, sections: usize) {
     let escape = Key::Named(NamedKey::Escape);
     host.input(app, key_input(&escape, ElementState::Pressed));
     host.input(app, key_input(&escape, ElementState::Released));
+    // The pointer brings up the drag handles, which fade by the clock.
+    host.step_the_clock();
     host.input(app, cursor_moved(700.0, 500.0));
     host.input(
         app,
@@ -318,10 +395,11 @@ fn write_a_rich_note(app: &mut App, host: &mut Host, sections: usize) {
 /// step), each presented and checked against a full render.
 fn scroll(app: &mut App, host: &mut Host, label: &str, (step, frames): (f64, usize)) -> Run {
     let mut run = Run::default();
+    host.presenting = true;
     host.presented.render(&host.scene, host.background);
     for frame in 0..frames {
-        app.surface_input(
-            &Window,
+        host.send(
+            app,
             WindowEvent::MouseWheel {
                 device_id: ui::winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::PixelDelta(ui::winit::dpi::PhysicalPosition::new(
@@ -329,7 +407,6 @@ fn scroll(app: &mut App, host: &mut Host, label: &str, (step, frames): (f64, usi
                 )),
                 phase: TouchPhase::Moved,
             },
-            false,
         );
         host.frame(app, &mut run);
         let (differing, spread) = host.differing();
