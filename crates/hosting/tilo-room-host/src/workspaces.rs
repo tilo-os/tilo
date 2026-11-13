@@ -740,20 +740,15 @@ impl GovernedWorkspace {
     /// earlier stored layout as it opened: its document starts over from a
     /// base newer than any a member's device brought up for itself, and what
     /// the relay retains of the earlier layout is archived as it settles.
-    /// Whether a membership a 0.1 release kept was carried into this layout:
-    /// that workspace's records were written by such a release too.
+    /// Whether it was: the workspace's records were written under that layout
+    /// too.
     fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        let brought_up = self.peer().governance_brought_up();
-        let shared = self.peer.shared();
-        let mut replica = shared.lock();
-        let mut candidate = replica.clone();
-        // A membership log a 0.1 release kept is written anew in this
-        // layout's by this host, the device that governs the workspace, before
-        // the governance is published.
-        let carried = candidate.carry_earlier_membership(key, now)?;
-        if !brought_up && !carried {
+        if !self.peer().governance_brought_up() {
             return Ok(false);
         }
+        let shared = self.peer.shared();
+        let mut replica = shared.lock();
+        let candidate = replica.clone();
         let committed = self.commit_held(
             &mut replica,
             candidate,
@@ -762,7 +757,7 @@ impl GovernedWorkspace {
             |record, _| Ok(record.collaboration.clone()),
         );
         drop(replica);
-        committed.map(|_| carried)
+        committed.map(|_| true)
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -1262,7 +1257,6 @@ impl Workspaces {
         // workspace learns an address this host must rename.
         await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
-        this.adopt_listings_file().await?;
         this.start_following().await;
         Ok(this)
     }
