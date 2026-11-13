@@ -461,6 +461,7 @@ impl Channel {
             Some(acting) => crate::identity::acting_label(
                 &shown,
                 acting.person.as_ref().map(|person| person.0.as_str()),
+                crate::identity::RoleWord::InName,
                 |person| {
                     chat.people
                         .iter()

@@ -94,7 +94,7 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        if let Some(agent) = self.acting_name(id, None) {
+        if let Some(agent) = self.acting_name(id, None, crate::identity::RoleWord::InName) {
             return agent;
         }
         let named = self.display_name(id);
@@ -117,6 +117,7 @@ impl ChatApp {
         &self,
         id: &str,
         acting: Option<&ui::tilo_resource::Acting>,
+        word: crate::identity::RoleWord,
     ) -> Option<String> {
         let name = MemberId::parse(id)
             .filter(|member| !member.is_person())
@@ -130,6 +131,7 @@ impl ChatApp {
         Some(crate::identity::acting_label(
             &name,
             person,
+            word,
             |person| self.user_name(person),
             |person| self.is_me(person),
         ))

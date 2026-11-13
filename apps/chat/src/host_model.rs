@@ -76,7 +76,7 @@ impl HostModel {
 }
 impl ChatApp {
     pub(crate) fn model_message_label(&self, message: &crate::model::Message) -> String {
-        let author = self.message_author_label(message);
+        let author = self.message_author_label(message, crate::identity::RoleWord::InName);
         let mut label = format!("{author}: {}", message.text);
         // A shared file is the message, or part of it: name it, so a
         // screen reader hears more than who posted.
@@ -151,8 +151,12 @@ impl ChatApp {
         } else if message.author.starts_with("bot:") {
             self.bot_name(message)
         } else {
-            self.acting_name(&message.author, message.acting.as_ref())
-                .unwrap_or_else(|| self.user_name(&message.author))
+            self.acting_name(
+                &message.author,
+                message.acting.as_ref(),
+                crate::identity::RoleWord::InName,
+            )
+            .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 
@@ -171,7 +175,11 @@ impl ChatApp {
         }
     }
 
-    pub(crate) fn message_author_label(&self, message: &crate::model::Message) -> String {
+    pub(crate) fn message_author_label(
+        &self,
+        message: &crate::model::Message,
+        word: crate::identity::RoleWord,
+    ) -> String {
         let name = self.message_author_name(message);
         if self.is_provider_output(message) {
             crate::i18n::t_args(
@@ -209,7 +217,8 @@ impl ChatApp {
                 &[("name", shown.into()), ("bot", name.into())],
             )
         } else {
-            name
+            self.acting_name(&message.author, message.acting.as_ref(), word)
+                .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 

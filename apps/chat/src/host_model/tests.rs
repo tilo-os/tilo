@@ -262,7 +262,10 @@ fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
         matches!(app.message_author(&message, &name, &initiator, None),
         ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
     );
-    assert!(app.message_author_label(&message).contains("requested by"));
+    assert!(
+        app.message_author_label(&message, crate::identity::RoleWord::InName)
+            .contains("requested by")
+    );
     message.appearance = None;
     assert_eq!(app.message_author_name(&message), "Assistant");
     message.appearance = Some(tilo_actions::Appearance {
