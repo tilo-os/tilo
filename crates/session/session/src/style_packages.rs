@@ -264,10 +264,15 @@ impl Published for Served {
     }
 }
 
-/// "Make it mine" for the shipped style `style` (`so.tilo.shell:strips`): the shipped shell's
-/// source written into the person's workspace as their own package, compiled against what this
-/// session publishes, signed with their key and installed. Answers the package id and the style
-/// reference the copy offers.
+/// "Make it mine" for the shipped style `style` (`so.tilo.shell:strips`): the shipped style
+/// rewritten into the person's own short package in their workspace, compiled against what this
+/// session publishes, signed with their key and installed. Answers the package id, and the style
+/// the copy offers.
+///
+/// The copy is small: one `.tl` file whose one view is the shipped style's own body, its calls
+/// the shell's (`shell.strips_view`), so a person and their agent read and edit a file where
+/// every line is theirs. The shipped package is never copied whole, so an update to it never
+/// overwrites this file.
 ///
 /// Only the shipped shell's own styles have a source to copy: another package's style is already
 /// the person's (or another author's), and copying it would be a second package claiming its
@@ -285,63 +290,187 @@ fn make_it_mine(style: &str) -> Result<(String, String), String> {
              another package's style is already its author's"
         ));
     }
+    let view = shipped_view(view)?;
     let dir = package_dir(COPY_ID)?;
-    write_copy(&dir)?;
+    write_copy(&dir, &view)?;
     let installed = build_and_install(&dir, COPY_ID)?;
-    let style = if view.is_empty() {
-        format!("{installed}:strips")
-    } else {
-        format!("{installed}:{view}")
-    };
+    let own = format!("{installed}:{}", view.name);
     Ok((
-        installed.clone(),
-        format!("{installed} is yours; its `{style}` is offered in the switch"),
+        installed,
+        format!("{own} is yours: the switch offers it, and the desk draws it"),
     ))
 }
 
-/// Write the shipped shell's source into `dir` as the person's own package: every file of the
-/// package this build ships, and its source catalogue, with the `app` header renamed to the
-/// person's package id and the words it is listed by. Nothing else of the shipped package is
-/// read, so an update to it never reaches this copy.
-fn write_copy(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir.join("locales"))
-        .map_err(|error| format!("{}: {error}", dir.display()))?;
-    for (name, text) in tilo_surface_host::shell_part::shell_sources() {
-        let text = if *name == "app.tl" {
-            copy_header(text)
-        } else {
-            (*text).to_owned()
-        };
-        std::fs::write(dir.join(name), text)
-            .map_err(|error| format!("{}: {error}", dir.join(name).display()))?;
+/// The shipped style `named` (`strips`, or empty for it) as the shell this build carries declares
+/// it: its name, the doc line the switch lists it by, and its body.
+fn shipped_view(named: &str) -> Result<ShippedView, String> {
+    let named = if named.is_empty() { "strips" } else { named };
+    for (_, text) in tilo_surface_host::shell_part::shell_sources() {
+        if let Some(view) = view_in(text, named) {
+            return Ok(view);
+        }
     }
-    std::fs::write(
-        dir.join("locales").join("en-US.ftl"),
-        tilo_surface_host::shell_part::shell_catalogue(),
-    )
-    .map_err(|error| format!("{}: {error}", dir.join("locales/en-US.ftl").display()))?;
-    // The ids lock is the compiler's to draw for the copy's own declarations: a package of its
-    // own has ids of its own, and no id the shipped package was compiled with is reused.
+    Err(format!(
+        "`{}:{named}` is not a style this build ships",
+        tilo_surface_host::shell_part::SHELL_APP
+    ))
+}
+
+/// The view `named` as one of the shipped shell's source files declares it: its doc line, and
+/// the body between its signature's braces, which draws the desk, with the shell's own names
+/// qualified (`shell.strips_view`) so the copy compiles as a package of its own.
+fn view_in(text: &str, named: &str) -> Option<ShippedView> {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(&format!("view {named}(")))?;
+    // The view's doc line is the `///` block above it; its first line names the style.
+    let mut first = None;
+    for line in lines.get(..at).unwrap_or_default().iter().rev() {
+        match line.trim_start().strip_prefix("///") {
+            Some(words) => first = Some(words.trim().to_owned()),
+            None => break,
+        }
+    }
+    let body = lines.get(at.saturating_add(1)..)?;
+    let end = body.iter().position(|line| *line == "}")?;
+    let body = trim_blank_edges(body.get(..end)?).join("\n");
+    Some(ShippedView {
+        name: named.to_owned(),
+        line: first.unwrap_or_default(),
+        body: rewrite_shell_names(&body),
+    })
+}
+
+/// The style's body with the shell's own names qualified: the shipped styles write
+/// `strips_view(a, viewing, …)`, which is the shell's view and the shell's root; in a package of
+/// its own the same code says `shell.strips_view(a, shell.viewing, …)`. A name the shell does
+/// not declare (`fill`, `space`, `layers`, `a`, `lists`) stands as it was.
+fn rewrite_shell_names(body: &str) -> String {
+    let declared = shell_names();
+    let mut out = String::with_capacity(body.len());
+    let mut word = String::new();
+    // The character before the word being read: `.` means the word is a field, not a name.
+    let mut before = '\0';
+    let mut flush = |word: &mut String, before: char, out: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        let dotted = before == '.';
+        if !dotted && declared.iter().any(|name| name == word) {
+            out.push_str("shell.");
+        }
+        out.push_str(word);
+        word.clear();
+    };
+    for c in body.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, before, &mut out);
+            out.push(c);
+            before = c;
+        }
+    }
+    flush(&mut word, before, &mut out);
+    out
+}
+
+/// The names the shell package declares by their plain names: its views (its templates too), its
+/// functions, types, enums and named roots, as a style's copied body may write them.
+fn shell_names() -> &'static [String] {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut names: Vec<String> = Vec::new();
+        let mut push = |name: &str| {
+            if !name.is_empty() && !names.iter().any(|held| held == name) {
+                names.push(name.to_owned());
+            }
+        };
+        for (_, text) in tilo_surface_host::shell_part::shell_sources() {
+            for line in text.lines() {
+                let line = line.trim_start();
+                let line = line.strip_prefix("template ").unwrap_or(line);
+                // `view name(`, `fn name(`, `type name`, `enum name`, `root name`.
+                for (keyword, takes_paren) in [
+                    ("view ", true),
+                    ("fn ", true),
+                    ("type ", false),
+                    ("enum ", false),
+                    ("root ", false),
+                ] {
+                    let Some(rest) = line.strip_prefix(keyword) else {
+                        continue;
+                    };
+                    let end = if takes_paren {
+                        rest.find('(').unwrap_or(rest.len())
+                    } else {
+                        rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                            .unwrap_or(rest.len())
+                    };
+                    push(rest.get(..end).unwrap_or("").trim());
+                }
+            }
+        }
+        names
+    })
+}
+
+/// The lines of `body` without the blank lines at either end.
+fn trim_blank_edges<'a>(body: &'a [&'a str]) -> &'a [&'a str] {
+    let start = body
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(body.len());
+    let end = body
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map_or(start, |end| end.saturating_add(1));
+    body.get(start..end).unwrap_or_default()
+}
+
+/// A shipped style, as the shell this build carries declares it.
+struct ShippedView {
+    /// The view's own name, as its declaration writes it.
+    name: String,
+    /// The view's doc line, in its author's words: the name the switch lists it by.
+    line: String,
+    /// The body between the signature's braces, the shell's names qualified.
+    body: String,
+}
+
+/// Write the person's own style package into `dir`: a small package of its own that `use`s the
+/// shell and declares one view of `shell.Arrangement`, the shipped style `view` rebuilt through
+/// `shell.desk_style(...)` with the style's own places inside it.
+fn write_copy(dir: &Path, view: &ShippedView) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    // The ids lock is the compiler's to fill: a package of its own has ids of its own.
     std::fs::write(dir.join("app.ids"), "")
         .map_err(|error| format!("{}: {error}", dir.join("app.ids").display()))?;
+    std::fs::write(dir.join("app.tl"), style_source(view))
+        .map_err(|error| format!("{}: {error}", dir.join("app.tl").display()))?;
     Ok(())
 }
 
-/// The shipped shell's `app` header, as the person's own package declares it: `app so.tilo.shell
-/// "Shell" (…)` becomes `app mine.shell "My desk" (…)`, and every other line stands as it was.
-fn copy_header(text: &str) -> String {
-    text.split_inclusive('\n')
-        .map(|line| {
-            if line.trim_start().starts_with("app ") {
-                format!(
-                    "app {COPY_ID} \"{COPY_TITLE}\" (icon: .monitor, category: .system, records: \
-                     .own)\n"
-                )
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect()
+/// The source of the person's style package: its `app` header, its use of the shell, and the one
+/// view, named after the shipped style's own.
+fn style_source(view: &ShippedView) -> String {
+    format!(
+        "app {COPY_ID} \"{COPY_TITLE}\"\n\
+         \n\
+         // Make it mine: the shipped `{package}:{name}` as the person's own style. Edit it, then\n\
+         // install it: the desk draws what this file says.\n\
+         use {package} as shell\n\
+         \n\
+         /// {line}\n\
+         view {name}(a: shell.Arrangement) {{\n\
+         {body}\n\
+         }}\n",
+        package = tilo_surface_host::shell_part::SHELL_APP,
+        name = view.name,
+        line = view.line,
+        body = view.body,
+    )
 }
 
 /// Check the package `package` of the person's workspace: compile it against what this session
@@ -358,7 +487,7 @@ fn check(package: &str) -> Result<(String, String), String> {
         Ok(built) => {
             let app = built
                 .get(built.len().saturating_sub(1))
-                .map_or(package.to_owned(), |b| b.compiled.meta.app.clone());
+                .map_or_else(|| package.to_owned(), |b| b.compiled.meta.app.clone());
             Ok((app, "no errors".to_owned()))
         }
         Err(error) => Err(error),
@@ -383,24 +512,24 @@ fn install(package: &str) -> Result<(String, String), String> {
     ))
 }
 
-/// Compile the package in `dir` and the packages it uses against what this session publishes.
-///
-/// A desk style names the arrangement as `shell.Arrangement` (`use so.tilo.shell as shell`), so
-/// the shell's own package is offered as published metadata beside the platform's: a style
-/// compiles against the shell this session runs, whichever build installed it, without needing
-/// the shell's source beside it in the workspace. The metadata is read from the compiled shell
-/// itself, so it names the actions and types the desk's own code calls, never a second reading
-/// of the source.
+/// Compile the package in `dir` against the shell this session runs and what this session
+/// publishes. A desk style names the arrangement as `shell.Arrangement` (`use so.tilo.shell as
+/// shell`) and calls the shell's `template view`s, so the shell's own compiled package stands in
+/// `published`: only its metadata carries the package's templates, and it is read from the
+/// compiled shell itself, so it names the actions, types and templates the desk's own code calls.
 fn compile(dir: &Path) -> Result<Vec<tilolang_tilo::tilolang::source::BuiltPackage>, String> {
     let mut published = tilolang_tilo::catalogue::published_packages(
         &tilolang_tilo::tilolang::source::search_of(dir, &[]),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
+    // The shell's compiled package replaces any description the catalogue found for it, and goes
+    // first: the resolver takes the first package of an id it meets.
+    let mut shell = Vec::new();
     for package in shell_packages()? {
-        if !published.iter().any(|meta| meta.app == package.meta.app) {
-            published.push(package.meta);
-        }
+        published.retain(|meta| meta.app != package.meta.app);
+        shell.push(package.meta);
     }
+    shell.extend(published);
+    let published = shell;
     let mut rng = tilolang_tilo::tilolang::OsEntropy::default();
     let built = tilolang_tilo::tilolang::source::compile_package(dir, &[], &published, &mut rng)
         .map_err(|error| error.to_string())?;
@@ -421,42 +550,53 @@ fn build_and_install(dir: &Path, package: &str) -> Result<String, String> {
     let identity = tilolang_cli::identity_at(&identity_path)?;
     let out = build_out(package);
     std::fs::create_dir_all(&out).map_err(|error| format!("{}: {error}", out.display()))?;
-    let built = tilolang_cli::package::build(
-        &tilolang_cli::package::BuildOptions {
-            dir: dir.to_path_buf(),
-            search: Vec::new(),
-            out,
-            tilo_runtime: tilolang_cli::package::DEFAULT_TILO_RUNTIME.to_owned(),
-            tilolang_runtime: tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
-            version: "0.1.0".to_owned(),
-        },
+    // The package compiled against the shell this session runs (its metadata carries the
+    // templates a style calls), then delivered and signed the way `tilolang build` delivers
+    // any package.
+    let shell = shell_packages()?;
+    let built = compile(dir)?;
+    let Some(person) = built
+        .iter()
+        .find(|built| built.compiled.meta.app == package)
+        .or_else(|| built.last())
+    else {
+        return Err(format!("`{package}` compiled nothing"));
+    };
+    let options = tilolang_cli::package::BuildOptions {
+        dir: dir.to_path_buf(),
+        search: Vec::new(),
+        out,
+        tilo_runtime: tilolang_cli::package::DEFAULT_TILO_RUNTIME.to_owned(),
+        tilolang_runtime: tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+        version: "0.1.0".to_owned(),
+    };
+    let app = tilolang_cli::package::deliver_compiled(
+        &person.compiled,
+        &shell.iter().collect::<Vec<_>>(),
+        &options,
         &identity,
     )?;
     let catalogue = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
     let root = catalogue.user().root().to_path_buf();
     let store = package_store::PackageStore::at(root);
-    let mut installed = package.to_owned();
-    for app in built {
-        let tapp = std::fs::File::open(&app.tapp)
-            .map_err(|error| format!("{}: {error}", app.tapp.display()))?;
-        let source = app.tapp.display().to_string();
-        let id = app.app.clone();
-        store
-            .install(
-                std::io::BufReader::new(tapp),
-                move |_meta| {
-                    Ok(package_store::Admission {
-                        pinned: false,
-                        attested_by: String::new(),
-                        source,
-                        held: false,
-                    })
-                },
-                None,
-            )
-            .map_err(|error| format!("{id}: {error}"))?;
-        installed = id;
-    }
+    let tapp = std::fs::File::open(&app.tapp)
+        .map_err(|error| format!("{}: {error}", app.tapp.display()))?;
+    let source = app.tapp.display().to_string();
+    let installed = app.app;
+    store
+        .install(
+            std::io::BufReader::new(tapp),
+            move |_meta| {
+                Ok(package_store::Admission {
+                    pinned: false,
+                    attested_by: String::new(),
+                    source,
+                    held: false,
+                })
+            },
+            None,
+        )
+        .map_err(|error| format!("{installed}: {error}"))?;
     // The `tapp`s were the install's transport: the store holds what they carried, so the build
     // directory goes, and a person's cache keeps no second copy of what they installed.
     let out = build_out(package);

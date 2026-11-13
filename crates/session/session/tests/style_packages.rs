@@ -94,13 +94,30 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     let _settled = ui::motion::testing::settled();
     common::app_store();
     let _ = workspace();
-    let mut session = session();
+    // A session whose agent door a REPL reaches: the door is how the switch runs its own action
+    // (`shell.show_style`), as a press in the bar's menu does.
+    let root = common::private_home();
+    let program = std::env::current_exe().expect("this test's program");
+    let questions = tilo_service::Questions::new();
+    let mut session = common::headless(Options {
+        collab: false,
+        action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        services: vec![Box::new(common::seeded_apps())],
+        questions: Some(questions),
+        ..options()
+    });
     common::until(&mut session, "the shell draws its bar", |session| {
         session
             .accessible_labels()
             .iter()
             .any(|label| label == "Showing Strips")
     });
+    // The door, connected before the build runs, so its state is up: the copy is switched to by
+    // the shell's own action, as a press in the bar's menu runs it.
+    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
     // The copy is made and installed, answering the package it went in as.
     let answer = style_action(
         &mut session,
@@ -111,40 +128,60 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     .expect("completed");
     assert_eq!(answer["ok"], true, "{answer}");
     assert_eq!(answer["package"], tilo_session::style_packages::COPY_ID);
-    // The copy's own source is in the person's workspace, with a package id of its own.
+    // The copy is the person's own short style package: one .tl file, its own `app` header, the
+    // shell it uses, and one view of `shell.Arrangement` whose body draws the desk through the
+    // shell's own template.
     let source = workspace().join(tilo_session::style_packages::COPY_ID);
-    let header = std::fs::read_to_string(source.join("app.tl")).expect("the copy's app.tl");
+    let text = std::fs::read_to_string(source.join("app.tl")).expect("the copy's app.tl");
     assert!(
-        header.contains(&format!("app {}", tilo_session::style_packages::COPY_ID)),
-        "the copy is the person's own package: {header}"
+        text.contains(&format!("app {}", tilo_session::style_packages::COPY_ID)),
+        "the copy is the person's own package: {text}"
     );
-    // The store moved, so the session reads it again: the copy's style is offered, and its
-    // `strips` draws the desk. The shipped style is untouched and still offered.
+    assert!(
+        text.contains("shell.desk_style(a, false)") && text.contains("shell.strips_view"),
+        "the copy draws the desk through the shell's own chrome and its places: {text}"
+    );
+    // The store moved, so the session reads it again: the copy's style is offered and loads.
+    let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
     common::until(&mut session, "the copy is offered", |session| {
-        style_state(
-            session,
-            &format!("{}:strips", tilo_session::style_packages::COPY_ID),
-        )
-        .is_some()
+        style_state(session, &copy).is_some()
     });
-    let own = style_state(
-        &session,
-        &format!("{}:strips", tilo_session::style_packages::COPY_ID),
+    assert_eq!(
+        style_state(&session, &copy),
+        Some((true, String::new())),
+        "the copy loads"
     );
-    assert_eq!(own, Some((true, String::new())), "the copy loads");
     assert!(
         style_state(&session, "so.tilo.shell:strips").is_some(),
         "the shipped style stands beside the copy"
     );
+    // Choosing it draws the desk: the copy draws the shell's own chrome and its places, so the
+    // screen shows what the shipped Strips shows, the place's own empty state.
+    let (answer, failed) = repl.run(
+        &mut session,
+        &format!("shell.show_style(shell.viewing, shown: \"{copy}\")"),
+    );
+    assert!(!failed, "the desk shows the copy: {answer}");
+    common::until(&mut session, "the copy draws the desk", |session| {
+        common::on_screen(session, "No window here yet").is_some()
+    });
+    assert!(
+        style_state(&session, "so.tilo.shell:strips").is_some(),
+        "the shipped style is untouched"
+    );
     // Editing the copy and installing it again is the loop an agent runs: `check` reads it,
     // `install` puts the edited code in the store under the same package id, and the store
-    // moving makes the session read it again — the change reaches the session with no restart.
-    let view = std::fs::read_to_string(source.join("desk.tl")).expect("the copy's desk.tl");
-    std::fs::write(
-        source.join("desk.tl"),
-        view.replacen("/// Strips\n", "/// My strips\n", 1),
-    )
-    .expect("the copy is edited");
+    // moving makes the session read it again — the change reaches the desk with no restart.
+    // The edit stops drawing through the shell's chrome: the copy shows its places flat, so the
+    // bar's own style switch is gone from the screen while the copy is chosen.
+    let edited = text
+        .replacen("/// Strips\n", "/// My strips\n", 1)
+        .replace("shell.desk_style(a, false) {", "stack(fill) {");
+    assert!(
+        edited.contains("stack(fill) {"),
+        "the edit reaches the body"
+    );
+    std::fs::write(source.join("app.tl"), &edited).expect("the copy is edited");
     let checked = style_action(
         &mut session,
         "check",
@@ -161,11 +198,15 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     .expect("install ran")
     .expect("completed");
     assert_eq!(installed["ok"], true, "{installed}");
-    // The edited copy is what the switch now lists: its view's own doc line is the one name a
-    // style has everywhere, the reinstalled package loads (a reinstall clears a failure, as
-    // `desk_styles::a_fixed_style_package_brings_the_style_back_live` holds), and the store
-    // moving is what made the session read it again.
-    let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
+    // The copy the person chose is now the edited one, drawn without the shell's chrome: the
+    // bar's style switch, which only `shell.desk_style` draws, is gone from the screen, and the
+    // copy's places still stand. The reinstall redraws it where it stands: no switch needed.
+    common::until(&mut session, "the edited copy draws", |session| {
+        common::on_screen(session, "No window here yet").is_some()
+            && common::preset_menu(session).is_none()
+    });
+    // The switch lists the edited copy by its new name, and it loads: a reinstall clears a
+    // failure, as `desk_styles::a_fixed_style_package_brings_the_style_back_live` holds.
     common::until(
         &mut session,
         "the switch names the edited copy",
@@ -264,11 +305,18 @@ fn the_repl_makes_a_style_with_the_same_call() {
         }),
     );
     assert!(!failed, "the REPL made the style: {answer}");
+    let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
     // The copy is offered by the switch, as it is from the person's own press.
     common::until(&mut session, "the copy is offered", |session| {
-        desk(session)
-            .styles
-            .iter()
-            .any(|style| style.style == format!("{}:strips", tilo_session::style_packages::COPY_ID))
+        desk(session).styles.iter().any(|style| style.style == copy)
+    });
+    // The REPL switches to it by the same door, and the desk draws the copy.
+    let (answer, failed) = repl.run(
+        &mut session,
+        &format!("shell.show_style(shell.viewing, shown: \"{copy}\")"),
+    );
+    assert!(!failed, "the REPL switches to the copy: {answer}");
+    common::until(&mut session, "the copy draws the desk", |session| {
+        common::on_screen(session, "No window here yet").is_some()
     });
 }
