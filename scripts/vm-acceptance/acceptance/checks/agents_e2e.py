@@ -132,12 +132,17 @@ class Terminal:
         self.calls = 0
 
     def row(self, *operations: str) -> dict:
-        found = [r for r in terminal_rows(self.ctx)
-                 if identity(r) == self.bound and r.get("operation") in operations]
-        if len(found) != 1:
-            raise CheckFailed(f"{self.name}: expected one Terminal {'/'.join(operations)} action, "
-                              f"got {len(found)}")
-        return found[0]
+        """The session's action for the first of `operations` it offers: Terminal may offer a
+        resource's generic `read` beside its own `read-screen`, and the first named is meant."""
+        rows = [r for r in terminal_rows(self.ctx) if identity(r) == self.bound]
+        for operation in operations:
+            found = [r for r in rows if r.get("operation") == operation]
+            if len(found) > 1:
+                raise CheckFailed(f"{self.name}: expected one Terminal {operation} action, got {len(found)}")
+            if found:
+                return found[0]
+        raise CheckFailed(f"{self.name}: expected a Terminal {'/'.join(operations)} action, got none of "
+                          f"{sorted({str(r.get('operation')) for r in rows})}")
 
     def call(self, operations, args: dict | None = None, timeout: float = 60):
         operations = (operations,) if isinstance(operations, str) else operations
@@ -157,7 +162,7 @@ class Terminal:
     def screen(self) -> str:
         """What the session shows, a wrapped line joined again: the screen breaks a line at its
         width, and a line exactly that wide went on in the next."""
-        info = self.call(("read", "read-screen")) or {}
+        info = self.call(("read-screen", "read")) or {}
         lines = info.get("output", "").split("\n")
         width = max((len(line) for line in lines), default=0)
         joined: list[str] = []
