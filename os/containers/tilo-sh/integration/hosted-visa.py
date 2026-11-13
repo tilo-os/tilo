@@ -303,22 +303,30 @@ class Desk:
 async def open_browser(workspace: object) -> tuple[Page, float]:
     """Open the workspace's Browser and answer its window once it is live.
 
-    The open answers once the window is live (the relay places the session
-    and waits for it), so its own duration is the time from the open to a
-    live window."""
+    The open runs until the window is live (the relay places the session and
+    waits for it), so following its run to its end is the time from the open
+    to a live window. The window's actions reach the workspace a moment after,
+    so the listing is asked again until they do, and the last refusal is what
+    a window that never published says."""
     began = time.perf_counter()
-    opened = await workspace.do("browser#open")  # type: ignore[attr-defined]
+    opened = await outcome(workspace.do("browser#open"))  # type: ignore[attr-defined]
     live = time.perf_counter() - began
     say("   opened", str(opened)[:200])
     windows: list[str] = []
+    refused = ""
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
-        listing = await workspace.ls("browser")  # type: ignore[attr-defined]
+        try:
+            listing = await workspace.ls("browser")  # type: ignore[attr-defined]
+        except (Refused, ProtocolError) as error:
+            refused = str(error)
+            await asyncio.sleep(1)
+            continue
         windows = [str(row.path) for row in listing.rows if "@" in str(row.path)]
         if windows:
             break
         await asyncio.sleep(0.2)
-    check(windows, f"the workspace's Browser window is live ({windows})")
+    check(windows, f"the workspace's Browser window is live ({windows}; last refusal: {refused})")
     provider = windows[0].split("/", 1)[0].split("@", 1)[1]
     return Page(workspace, provider), live
 
