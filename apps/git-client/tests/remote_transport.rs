@@ -204,9 +204,9 @@ fn checkout_main(client: &Repository) {
     client.checkout_head(None).unwrap();
 }
 
-/// Remote operations against a real server: fetch with configured credentials,
-/// rejected credentials fail without retrying, push transfers objects and reports
-/// rejection, and pull preserves conflicting local edits. Each phase is a former test with its own fresh fixture.
+/// Remote operations against a real server: fetch with configured credentials, rejected credentials
+/// failing without retrying, push transferring objects and reporting rejection, and pull preserving
+/// conflicting local edits.
 #[test]
 fn remote_fetch_push_pull_move_real_objects_and_respect_credentials() {
     if isolated_credentials(
@@ -325,8 +325,8 @@ fn pull_preserves_conflicting_local_edits_and_head() {
     );
 }
 
-/// The production transport backend: HTTPS and SSH remotes are supported and an
-/// untrusted server certificate is rejected. Each phase is a former test with its own fresh fixture.
+/// The production transport backend: HTTPS and SSH remotes are supported, and an untrusted server
+/// certificate is rejected.
 #[test]
 fn production_backend_supports_https_and_ssh_and_rejects_untrusted_tls() {
     if isolated_credentials(
@@ -396,9 +396,8 @@ fn https_rejects_an_untrusted_server_certificate() {
     assert!(client.find_reference("refs/remotes/origin/main").is_err());
 }
 
-/// Remote effects from the app: a fetch keeps the app responsive and reports
-/// completion to its caller, and a failure reaches the caller and visible
-/// status. Each phase is a former test with its own fresh fixture.
+/// Remote effects from the app: a fetch keeps the app responsive and reports completion to its
+/// caller, and a failure reaches the caller and the visible status.
 #[test]
 fn app_remote_operations_stay_responsive_and_report_outcomes() {
     if isolated_credentials(

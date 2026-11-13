@@ -1,16 +1,9 @@
-//! The diff of the selected file: unified or side by side, syntax
-//! highlighted, with line numbers, per-hunk actions and a file header.
-//!
-//! The diff is a document the app draws: its rows read every size from the
-//! theme's `Code` line box and every colour from the theme (added and removed
-//! lines stand on the toolkit's success and danger status washes). With the
-//! wrap preference on (the default), a line longer than its pane wraps onto
-//! further rows of the same line, so no code is cut at a pane edge; with it
-//! off, long lines scroll sideways. The `diff --git` / `index` / `---` /
-//! `+++` metadata is not shown as rows: the file header above the rows
-//! names the file, its rename and its line counts, and carries the file's
-//! actions. Each hunk opens with its `@@` line and the hunk's own actions as
-//! Small buttons.
+//! The diff of the selected file: unified or side by side, syntax highlighted, with
+//! line numbers, per-hunk actions and a file header. Every size comes from the
+//! theme's `Code` line box and every colour from the theme. With the wrap
+//! preference on a long line wraps onto further rows of the same line; with it off,
+//! lines scroll sideways. The `diff --git` metadata is not rows: the file header
+//! names the file, its rename and its line counts, and carries the file's actions.
 
 use std::ops::Range;
 
@@ -31,78 +24,56 @@ use crate::i18n::{t, t_args};
 use crate::model::{DiffLine, DiffLineKind, FileDiff};
 use crate::settings::{DiffLayout, Settings};
 
-/// What a hunk button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HunkAction {
-    /// Stage this hunk (worktree side) or unstage it (staged side).
     Toggle,
-    /// Discard this hunk's worktree change.
     Discard,
 }
 
-/// What a press in the diff asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffHit {
-    /// Stage or unstage the whole file.
     StageFile,
-    /// Discard the file's worktree changes (after confirmation).
     DiscardFile,
     Hunk(usize, HunkAction),
 }
 
-/// What the diff shows this frame.
 pub struct DiffInput<'a> {
     pub diff: &'a FileDiff,
     pub scroll: f64,
-    /// How far the code is scrolled sideways (only without wrapping).
     pub hscroll: f64,
     pub settings: Settings,
     /// The staged side (HEAD → index): actions unstage.
     pub staged: bool,
-    /// Whether the worktree side may be discarded here.
     pub can_discard: bool,
-    /// Whether this file's changes can be staged or unstaged here at all.
-    /// They cannot while the file is conflicted — its two sides are the
-    /// decision, and `git add` on the markers would settle it the wrong way —
-    /// nor in a commit's history, where the change is already made.
+    /// Whether this file's changes can be staged or unstaged here at all. They cannot while the
+    /// file is conflicted — its two sides are the decision — nor in a commit's history, where the
+    /// change is already made.
     pub actions: bool,
     pub pointer: Option<Point>,
 }
 
-/// What one paint produced.
 pub struct DiffDraw {
     pub targets: Vec<(Rect, DiffHit)>,
-    /// The scrolling rows' viewport, under the file header (and under the
-    /// sentence saying two columns did not fit, where that is said).
+    /// The scrolling rows' viewport, under the file header and under the sentence saying two
+    /// columns did not fit.
     pub viewport: Rect,
-    /// The layout the rows were actually drawn in: side by side as asked, or
-    /// one column where the pane could not give each side a line of code.
+    /// The layout the rows were actually drawn in: side by side as asked, or one column where the
+    /// pane could not give each side a line of code.
     pub layout: DiffLayout,
-    /// Height of all rows, for clamping the vertical scroll.
     pub content_height: f64,
-    /// How far the code may scroll sideways before its longest line ends
-    /// (zero while lines wrap).
+    /// How far the code may scroll sideways before its longest line ends; zero while lines wrap.
     pub max_hscroll: f64,
 }
 
-/// Row geometry measured in the theme's `Code` role.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
-    /// One code row: the `Code` line box, in whole pixels.
     pub row_h: f64,
-    /// One hunk header row: a Small control with the file header's `s2`
-    /// margin above and below it.
     pub hunk_h: f64,
     pub cell_w: f64,
-    /// Width of the widest line number.
     pub number_w: f64,
-    /// Inset of the gutter and of code from the pane edges.
     pub pad: f64,
-    /// Gap between controls, and between the marker and the code.
     pub gap: f64,
-    /// Gap between the two number columns, and before the marker.
     pub column_gap: f64,
-    /// The file header band.
     pub header_h: f64,
 }
 
@@ -132,12 +103,10 @@ impl Metrics {
         }
     }
 
-    /// The unified gutter: both number columns and the marker.
     fn unified_gutter(&self) -> f64 {
         self.pad + self.number_w + self.column_gap + self.number_w + self.column_gap + self.marker()
     }
 
-    /// One half of the side-by-side layout: its number column and marker.
     fn half_gutter(&self) -> f64 {
         self.pad + self.number_w + self.column_gap + self.marker()
     }
@@ -147,24 +116,19 @@ impl Metrics {
     }
 }
 
-/// Line numbers: `Code` with tabular figures.
 fn number_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Code).numeric()
 }
 
-/// One row of the laid-out diff.
 #[derive(Clone, Copy, Debug)]
 enum Row {
     Hunk(usize),
-    /// A unified code line, at the line index.
     Line(usize),
-    /// A side-by-side pair: the old and the new line indices.
     Pair(Option<usize>, Option<usize>),
 }
 
-/// How many cells a wrapped line's continuation rows are indented: the
-/// line's own indentation, so wrapped code stays inside its block (at most
-/// half the pane).
+/// How many cells a wrapped line's continuation rows are indented: the line's own indentation, so
+/// wrapped code stays inside its block, at most half the pane.
 fn hanging_indent(content: &str, cols: usize) -> usize {
     content
         .chars()
@@ -173,25 +137,22 @@ fn hanging_indent(content: &str, cols: usize) -> usize {
         .min(cols / 2)
 }
 
-/// Where each line of code breaks to fit `cols` monospace cells: the byte
-/// range of every visual line, at least one. Continuation rows are
-/// [`hanging_indent`] cells narrower. A break prefers the last space, or the
-/// last place a word meets punctuation, in the second half of a visual line,
-/// so words stay whole where they can.
+/// Where each line of code breaks to fit `cols` monospace cells: the byte range of every visual
+/// line, at least one. A break prefers the last space, or the last place a word meets punctuation,
+/// in the second half of the line, so words stay whole where they can.
 fn wrap(content: &str, cols: usize) -> Vec<Range<usize>> {
     let first_cols = cols.max(1);
     let indent = hanging_indent(content, first_cols);
     let mut cols = first_cols;
     let mut segments = Vec::new();
     let mut start = 0;
-    // Characters on the visual line so far, and the last break after a
-    // space: its byte offset and how many characters precede it.
+    // Characters on the visual line so far, and the last break after a space: its byte offset and
+    // how many characters precede it.
     let mut count = 0;
     let mut soft: Option<(usize, usize)> = None;
     let mut previous: Option<char> = None;
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     for (i, c) in content.char_indices() {
-        // A word ends where punctuation follows it.
         if previous.is_some_and(is_word) && !is_word(c) && !c.is_whitespace() {
             soft = Some((i, count));
         }
@@ -216,8 +177,6 @@ fn wrap(content: &str, cols: usize) -> Vec<Range<usize>> {
     segments
 }
 
-/// Every line's visual lines in its pane, by line index (empty for lines
-/// that are not code).
 fn wrap_lines(diff: &FileDiff, cols: usize) -> Vec<Vec<Range<usize>>> {
     diff.lines
         .iter()
@@ -228,9 +187,9 @@ fn wrap_lines(diff: &FileDiff, cols: usize) -> Vec<Vec<Range<usize>>> {
         .collect()
 }
 
-/// How many monospace cells of code fit beside the gutter in `width`.
-/// The fewest columns of code a side-by-side pair must give each side. Below
-/// this the two columns are fragments of lines, and one column reads better.
+/// How many monospace cells of code fit beside the gutter in `width`, and the fewest a side-by-side
+/// pair must give each side: below it the two columns are fragments of lines and one column reads
+/// better.
 const MIN_SPLIT_COLUMNS: usize = 40;
 
 fn code_columns(width: f64, layout: DiffLayout, m: &Metrics) -> usize {
@@ -241,8 +200,8 @@ fn code_columns(width: f64, layout: DiffLayout, m: &Metrics) -> usize {
     (room / m.cell_w.max(1.0)).floor().max(1.0) as usize
 }
 
-/// Where each row sits: its top relative to the first row, and its height.
-/// A code row is as tall as its longest wrapped line needs.
+/// Where each row sits: its top relative to the first row, and its height, a code row being as tall
+/// as its longest wrapped line needs.
 fn lay_out(
     diff: &FileDiff,
     layout: DiffLayout,
@@ -285,9 +244,8 @@ fn lay_out(
     (placed, y)
 }
 
-/// Pair deletions with the additions that follow them for the side-by-side
-/// layout. Context lines span both sides; hunk lines span the whole row;
-/// metadata lines are not rows.
+/// Pair deletions with the additions that follow them for the side-by-side layout; context lines
+/// span both sides, hunk lines the whole row, and metadata lines are not rows.
 fn pair_rows(lines: &[DiffLine]) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut i = 0;
@@ -335,13 +293,10 @@ fn pair_rows(lines: &[DiffLine]) -> Vec<Row> {
     rows
 }
 
-/// Say that the two columns asked for did not fit, at the top of the rows,
-/// and return the viewport they start below.
 fn one_column_note(ctx: &mut PaintCtx<'_>, viewport: Rect, m: &Metrics) -> Rect {
     let style = ctx.theme.text(TextRole::Caption);
     let note = t("git-split-needs-width");
-    // The sentence is about the window it is read in, so it wraps to the
-    // pane rather than running off it.
+    // The sentence is about the window it is read in, so it wraps to the pane.
     let room = ui::num::f32_of_f64((viewport.width() - 2.0 * m.pad).max(0.0));
     let (_, line_h) = ctx.text.measure_style(&note, Some(room), &style);
     ctx.text(
@@ -391,9 +346,9 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
         };
     }
 
-    // Two columns need a line of code each. Where the pane cannot give them
-    // one, one column is what can be read — and the view says so rather than
-    // quietly drawing something other than what was asked for.
+    // Two columns need a line of code each; where the pane cannot give them one, one column is what
+    // can be read, and the view says so rather than quietly drawing something other than what was
+    // asked.
     let narrowed = input.settings.diff_layout == DiffLayout::SideBySide
         && code_columns(viewport.width(), DiffLayout::SideBySide, &m) < MIN_SPLIT_COLUMNS;
     let layout = if narrowed {
@@ -464,8 +419,8 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
     }
 }
 
-/// A diff with no text rows (a binary file, a mode change) says so in one
-/// sentence instead; returns whether it did.
+/// A diff with no text rows (a binary file, a mode change) says so in one sentence instead; returns
+/// whether it did.
 fn paint_empty(ctx: &mut PaintCtx<'_>, viewport: Rect, diff: &FileDiff) -> bool {
     let empty = if diff.binary {
         Some(("git-binary-file", "git-binary-file-detail"))
@@ -486,8 +441,6 @@ fn paint_empty(ctx: &mut PaintCtx<'_>, viewport: Rect, diff: &FileDiff) -> bool 
     true
 }
 
-/// The file header: the path (and the name it was renamed from), its line
-/// counts, and the file's actions.
 fn paint_file_header(
     ctx: &mut PaintCtx<'_>,
     band: Rect,
@@ -501,7 +454,6 @@ fn paint_file_header(
     let small_h = ButtonFace::height(ControlSize::Small, theme);
     let button_y = band.center().y - small_h / 2.0;
 
-    // Actions trail: the file's toggle last, discard before it.
     let mut right = band.x1 - m.pad;
     let mut buttons: Vec<(String, ButtonRole, DiffHit)> = Vec::new();
     if input.actions {
@@ -541,7 +493,6 @@ fn paint_file_header(
         right = rect.x0 - gap;
     }
 
-    // Path, then the counts.
     let diff = input.diff;
     let x = band.x0 + m.pad;
     let label = theme.text(TextRole::Label).strong();
@@ -597,24 +548,17 @@ fn paint_file_header(
     }
 }
 
-/// One paint pass over the visible rows.
 struct RowPass<'a, 'b> {
     input: &'a DiffInput<'b>,
     m: Metrics,
     viewport: Rect,
-    /// Where the first row's top is, after scrolling.
     top: f64,
-    /// Each line's visual lines, by line index.
     wrapped: &'a [Vec<Range<usize>>],
-    /// How many cells of code a row holds.
     cols: usize,
-    /// How far unwrapped code is scrolled sideways.
     hscroll: f64,
 }
 
 impl RowPass<'_, '_> {
-    /// A hunk's `@@` line and its actions. `rule` draws the separator that
-    /// parts it from the hunk above.
     fn hunk_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -693,14 +637,12 @@ impl RowPass<'_, '_> {
         ctx.text_role_in_band(&header, TextRole::Code, theme.text_tertiary, x, row, None);
     }
 
-    /// One unified code row.
     fn unified_row(&self, ctx: &mut PaintCtx<'_>, row: Rect, index: usize) {
         let Some(line) = self.input.diff.lines.get(index) else {
             return;
         };
         let m = &self.m;
         let ground = Self::paint_wash(ctx, row, line.kind);
-        // Numbers and the marker sit on the line's first visual line.
         let first = Rect::new(row.x0, row.y0, row.x1, row.y0 + m.row_h);
         let numbers = number_style(ctx.theme);
         let old_right = row.x0 + m.pad + m.number_w;
@@ -713,7 +655,6 @@ impl RowPass<'_, '_> {
         self.code(ctx, index, line, code);
     }
 
-    /// One side-by-side row: the old line on the left, the new on the right.
     fn split_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -754,8 +695,8 @@ impl RowPass<'_, '_> {
         }
     }
 
-    /// Wash an added or removed row in the toolkit's status wash; returns
-    /// the ground the row's text stands on.
+    /// Wash an added or removed row in the toolkit's status wash; returns the ground the row's text
+    /// stands on.
     fn paint_wash(ctx: &mut PaintCtx<'_>, row: Rect, kind: DiffLineKind) -> Color {
         let theme = ctx.theme;
         let ground = theme.tokens.colors.surfaces.content;
@@ -773,7 +714,6 @@ impl RowPass<'_, '_> {
         washed
     }
 
-    /// A right-aligned line number ending at `right`.
     fn number(
         ctx: &mut PaintCtx<'_>,
         number: Option<u32>,
@@ -796,7 +736,6 @@ impl RowPass<'_, '_> {
         );
     }
 
-    /// The `+` / `−` marker of an added or removed line.
     fn marker(ctx: &mut PaintCtx<'_>, kind: DiffLineKind, x: f64, row: Rect, ground: Color) {
         let colors = &ctx.theme.tokens.colors;
         let (glyph, tone) = match kind {
@@ -808,8 +747,8 @@ impl RowPass<'_, '_> {
         ctx.text_role_in_band(glyph, TextRole::Code, ink, x, row, None);
     }
 
-    /// The line's code in `area`, one visual line per row height, clipped
-    /// to the pane's code column.
+    /// The line's code in `area`, one visual line per row height, clipped to the pane's code
+    /// column.
     fn code(&self, ctx: &mut PaintCtx<'_>, index: usize, line: &DiffLine, area: Rect) {
         let clip = Rect::new(area.x0, area.y0, area.x1 - self.m.pad, area.y1);
         if clip.width() <= 0.0 {
@@ -860,8 +799,8 @@ impl RowPass<'_, '_> {
     }
 }
 
-/// The `range` of `content` with its top-left at `origin`, coloured by the
-/// theme's syntax palette where `spans` cover it (plain ink elsewhere).
+/// The `range` of `content` with its top-left at `origin`, coloured by the theme's syntax palette
+/// where `spans` cover it.
 fn draw_code(
     ctx: &mut PaintCtx<'_>,
     content: &str,
@@ -946,8 +885,8 @@ mod tests {
         )
     }
 
-    /// Metadata lines are not rows, side-by-side pairs a deletion with the
-    /// addition after it, and the rows follow the measured `Code` line box.
+    /// Metadata lines are not rows, side by side pairs a deletion with the addition after it, and
+    /// the rows follow the measured `Code` line box.
     #[test]
     fn rows_skip_metadata_pair_changes_and_follow_the_code_line() {
         let diff = sample_diff();
@@ -1012,10 +951,8 @@ mod tests {
         }
     }
 
-    /// Side by side needs a line of code each. Where the pane cannot give it
-    /// one the rows are one column, with a sentence saying why: a person who
-    /// asked for two columns gets either two or an explanation, never two
-    /// columns of fragments.
+    /// Side by side needs a line of code each; where the pane cannot give it one the rows are one
+    /// column with a sentence saying why, never two columns of fragments.
     #[test]
     fn two_columns_fold_into_one_when_the_pane_is_too_narrow() {
         let diff = sample_diff();
@@ -1049,9 +986,8 @@ mod tests {
         assert_eq!(wide.layout, DiffLayout::SideBySide, "1400 px can");
     }
 
-    /// A view that offers no actions draws none: the file's toggle and
-    /// discard, and each hunk's, are the working tree's business, and a
-    /// commit's file or a conflicted file has no working tree to act on.
+    /// A view that offers no actions draws none: a commit's file or a conflicted file has no
+    /// working tree to act on.
     #[test]
     fn a_view_without_actions_draws_none() {
         let diff = sample_diff();
@@ -1084,8 +1020,8 @@ mod tests {
         );
     }
 
-    /// Without wrapping, a narrow pane scrolls its long lines sideways; with
-    /// it, nothing scrolls sideways.
+    /// Without wrapping, a narrow pane scrolls its long lines sideways; with it, nothing scrolls
+    /// sideways.
     #[test]
     fn unwrapped_lines_scroll_sideways() {
         let diff = parse_unified(
@@ -1098,9 +1034,8 @@ mod tests {
         assert!(draw(&diff, 400.0, DiffLayout::Unified, false, true).max_hscroll <= 0.0);
     }
 
-    /// A long line wraps onto more rows of its pane instead of being cut at
-    /// the pane edge, breaking after a space or a word where one falls late enough,
-    /// and the row grows with it; a wide pane keeps it on one row.
+    /// A long line wraps onto more rows of its pane instead of being cut at the edge, breaking
+    /// after a space or a word where one falls late enough, and the row grows with it.
     #[test]
     fn long_lines_wrap_inside_their_pane() {
         let line = "let value = compute(with_a_long_argument, and_more);";
@@ -1151,8 +1086,7 @@ mod tests {
         }
     }
 
-    /// A word is not cut from the punctuation that follows it when the break
-    /// can fall between them.
+    /// A word is not cut from the punctuation that follows it when the break can fall between them.
     #[test]
     fn a_break_falls_between_a_word_and_its_punctuation() {
         let line = "    let x = blur_params);";

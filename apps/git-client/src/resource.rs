@@ -1,8 +1,7 @@
-//! Git client as a resource: the record is the repository it opens and
-//! what collaborators see of its history ([`GitClient`]); working-tree
-//! status, the history the window shows and an in-flight transfer are live
-//! rows the view publishes, and the diff preferences are the person's
-//! settings, switched by the view's effects.
+//! Git client as a resource: the record is the repository it opens and what
+//! collaborators see of its history ([`GitClient`]); working-tree status, the
+//! history the window shows and an in-flight transfer are live rows the view
+//! publishes.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
@@ -37,20 +36,15 @@ pub struct GitClient {
 }
 
 impl GitClient {
-    /// The repository the record opens, if one was opened.
     pub fn opened(&self) -> Option<&str> {
         Some(self.repository.0.as_str()).filter(|path| !path.is_empty())
     }
 }
 
 impl GitClient {
-    /// What the record holds: the repository it opens and what collaborators see of its
-    /// history.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds, answered through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads it as it reads any app's record, and a named item is read from the
+    /// record's table or by the read its own type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -92,7 +86,6 @@ pub const SCENARIOS: &[&str] = &[
     "narrow",
 ];
 
-/// Framework app: the git client widget over [`GitClient`].
 pub struct GitClientShell;
 
 impl ResourceApp for GitClientShell {
