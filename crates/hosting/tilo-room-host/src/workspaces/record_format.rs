@@ -309,15 +309,27 @@ mod tests {
     use tilo_peer_state::join::{MemberRole, TransportHint};
     use tilo_user_identity::DeviceCapabilities;
 
-    /// A device certificate, signed by its own key: a governor's, for the
-    /// layouts a record names.
-    fn cert(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
+    /// The capabilities the kept records' host certificate carries: a host as
+    /// the record kept here was written, which held none of the workspaces it
+    /// governed. A host owns the workspaces it governs today; the bytes kept
+    /// here are what a device already holds, and they stay that build's.
+    fn kept_host_capabilities() -> DeviceCapabilities {
+        DeviceCapabilities {
+            can_own_workspaces: false,
+            ..DeviceCapabilities::host()
+        }
+    }
+
+    /// A device certificate, signed by its own key: the governor of the
+    /// records kept here, with the capabilities it held when they were
+    /// written, so the fixture reproduces their bytes.
+    fn kept_cert(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let mut cert = DeviceCert {
             user_public_key: key.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
             device_label: format!("test {seed}"),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: kept_host_capabilities(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -361,7 +373,7 @@ mod tests {
     /// The signed invitation a build of the earlier layout wrote, and the
     /// grant it carries as that build's ledger kept it beside it.
     fn earlier_invitation() -> (Vec<u8>, Vec<u8>, InviteGrant) {
-        let (key, authority) = cert(1);
+        let (key, authority) = kept_cert(1);
         let grant = kept_grant();
         let earlier = GrantV1 {
             workspace_id: grant.workspace_id,
@@ -453,7 +465,7 @@ mod tests {
         InviteGrant {
             workspace_id: 7,
             room: KEPT_WORKSPACE.into(),
-            issuer: cert(1).1,
+            issuer: kept_cert(1).1,
             role: MemberRole::Editor,
             nonce: [4; 16],
             recipient_user_public_key: Some([5; 32]),
@@ -466,7 +478,7 @@ mod tests {
     /// The record version 3 wrote for the kept workspace: one invitation in
     /// its ledger, one publication out, its peer state inline.
     fn kept_version_three() -> WorkspaceRecord {
-        let (key, authority) = cert(1);
+        let (key, authority) = kept_cert(1);
         let grant = kept_grant();
         let signed = tilo_peer_state::join::issue_invitation(grant.clone(), &key).unwrap();
         WorkspaceRecord {
@@ -617,7 +629,7 @@ mod tests {
         bytes.extend(postcard::to_stdvec(&grant.room).unwrap());
         bytes.extend(postcard::to_stdvec(&grant.workspace_id).unwrap());
         bytes.extend(postcard::to_stdvec("Lounge").unwrap());
-        let (_, authority) = cert(1);
+        let (_, authority) = kept_cert(1);
         bytes.extend(postcard::to_stdvec(&authority).unwrap());
         bytes.extend(
             postcard::to_stdvec(&Vec::<super::super::peer_parts::PeerPart>::new()).unwrap(),
@@ -638,7 +650,7 @@ mod tests {
     #[test]
     fn a_grant_stored_in_this_layout_reads_back() {
         let (_, _, grant) = earlier_invitation();
-        let (key, _) = cert(1);
+        let (key, _) = kept_cert(1);
         let signed = tilo_peer_state::join::issue_invitation(grant.clone(), &key).unwrap();
         let issued = IssuedInvitation {
             invite_id: *blake3::hash(&signed).as_bytes(),
