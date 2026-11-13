@@ -180,6 +180,12 @@ pub enum Stream {
 }
 
 impl Stream {
+    /// The streams a device publishes of its own when it holds none of the
+    /// workspace's media keys and is lent theirs instead (a session in a
+    /// workspace's VM): who is here, its shared windows and its windows'
+    /// pages. Never a call's audio or camera, and nothing anyone else sends.
+    pub const OWN: [Self; 3] = [Self::Presence, Self::Window, Self::Page];
+
     /// The two bytes a media key is derived for: the kind of media, then the
     /// stream within it. A key is never one another stream's.
     #[must_use]

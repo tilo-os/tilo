@@ -72,6 +72,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod environment_device;
+
 use crate::certification::CertificationProtocol;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
@@ -592,6 +594,11 @@ impl HostedBrowsers {
         certificate: Option<&DeviceCert>,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
+        if let RemoteActionMessage::Invoke(request) = message
+            && let Some(answered) = self.environment_asked(workspace_id, caller, request)
+        {
+            return Some(answered);
+        }
         let RemoteActionMessage::Invoke(request) = message else {
             if let RemoteActionMessage::Confirm {
                 correlation,

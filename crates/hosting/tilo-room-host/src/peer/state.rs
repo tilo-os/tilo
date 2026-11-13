@@ -470,6 +470,11 @@ pub(super) async fn handle_delta(
         }));
     };
     trace_native_publication("server_authorized", &env, None);
+    if writes_for_an_environment(peer, session, std::slice::from_ref(&env)) {
+        // Neither kept nor forwarded, and the session stays, as for a
+        // refused change below.
+        return Ok(None);
+    }
     if change_refusal(
         &ws,
         peer,
@@ -738,7 +743,9 @@ pub(super) async fn handle_delta_prefix(
         }));
     };
     trace_all(&envelopes, "server_authorized");
-    if refused_prefix(&workspace, peer, session, &envelopes).await {
+    if writes_for_an_environment(peer, session, &envelopes)
+        || refused_prefix(&workspace, peer, session, &envelopes).await
+    {
         return Ok(None);
     }
     let governor_tap = workspace.lock().await.governor_tap.clone();
@@ -816,6 +823,35 @@ pub(super) async fn authorized_state_source(
     let source = StateSource::new(peer, session);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     Ok(source.publishes(&runtime, op, channel).then_some(source))
+}
+
+/// Whether `peer` is a browser environment's device and `envelopes` write the
+/// workspace's own document — its shared desktop, its governance — rather
+/// than its own record. Such a device writes none of that itself: what it
+/// shares is asked of this host, which writes it after checking it concerns
+/// the device's own windows. Its write is neither kept nor forwarded, and the
+/// session stays, since a session that writes its desk as any session does is
+/// not misbehaving.
+fn writes_for_an_environment(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    envelopes: &[Envelope],
+) -> bool {
+    let Some(scope) = session.environment(&peer.device_public_key) else {
+        return false;
+    };
+    let outside = envelopes.iter().any(|envelope| {
+        matches!(envelope, Envelope::Delta { .. })
+            && !crate::environment::Environment::Placed(scope)
+                .writes(crate::peer::admission::record_of(envelope))
+    });
+    if outside {
+        tracing::debug!(
+            device = %hex::encode(peer.device_public_key),
+            "a browser environment's device wrote the workspace's document, which is the host's to write for it"
+        );
+    }
+    outside
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace: the
