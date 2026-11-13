@@ -38,7 +38,6 @@ struct Partial {
 }
 
 impl<R> FrameReader<R> {
-    /// Read frames from `inner` as `framing` describes.
     pub const fn new(inner: R, framing: Framing) -> Self {
         Self {
             inner,
@@ -58,7 +57,6 @@ impl<R> FrameReader<R> {
         self.framing
     }
 
-    /// The wrapped reader.
     pub const fn get_ref(&self) -> &R {
         &self.inner
     }
@@ -69,7 +67,6 @@ impl<R> FrameReader<R> {
         &mut self.inner
     }
 
-    /// Consume the reader, returning the wrapped one.
     pub fn into_inner(self) -> R {
         self.inner
     }

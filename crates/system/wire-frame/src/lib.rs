@@ -1,30 +1,24 @@
 //! Length-prefixed framing for byte streams.
 //!
-//! Every socket protocol in the tree that sends discrete messages over a byte
-//! stream uses the same shape: a 4-byte unsigned length followed by that many
-//! payload bytes. This crate is the one implementation of that shape, and of
-//! its newline-delimited counterpart, [`read_line`], for text protocols that
-//! end each message with `\n`.
+//! Every socket protocol in the tree that sends discrete messages over a byte stream
+//! uses the same shape: a 4-byte unsigned length followed by that many payload bytes.
+//! This crate is the one implementation of that shape, and of its newline-delimited
+//! counterpart, [`read_line`], for text protocols that end each message with `\n`.
 //!
-//! A [`Framing`] names the two properties that differ between protocols and
-//! therefore must be chosen explicitly at every call site:
+//! A [`Framing`] names the two properties that differ between protocols and therefore
+//! must be chosen explicitly at every call site: the [`ByteOrder`] of the length
+//! prefix, which is part of each wire format and never defaulted, and the largest
+//! payload a peer may declare, checked before anything is allocated. Protocols that
+//! never send an empty payload can additionally [reject](Framing::reject_empty) one.
 //!
-//! - the [`ByteOrder`] of the length prefix, which is part of each wire format
-//!   and never defaulted; and
-//! - the largest payload a peer may declare, checked before anything is
-//!   allocated.
+//! Reading distinguishes a peer that closed the stream between frames (`Ok(None)`) from
+//! one that closed it mid-frame ([`FrameError::Truncated`]).
 //!
-//! Protocols that never send an empty payload can additionally
-//! [reject](Framing::reject_empty) one.
-//!
-//! Reading distinguishes a peer that closed the stream between frames
-//! (`Ok(None)`) from one that closed it mid-frame ([`FrameError::Truncated`]).
-//!
-//! The blocking API works on any [`std::io::Read`]/[`std::io::Write`]. The
-//! `tokio` feature adds the same operations for tokio's `AsyncRead` and
-//! `AsyncWrite`, and the `postcard` feature adds typed helpers that encode and
-//! decode payloads with postcard. [`FrameReader`] owns a payload buffer that is
-//! reused across frames, for receive loops on hot paths.
+//! The blocking API works on any [`std::io::Read`]/[`std::io::Write`]. The `tokio`
+//! feature adds the same operations for tokio's `AsyncRead` and `AsyncWrite`, and the
+//! `postcard` feature adds typed helpers that encode and decode payloads with postcard.
+//! [`FrameReader`] owns a payload buffer that is reused across frames, for receive
+//! loops on hot paths.
 //!
 //! ```
 //! use wire_frame::Framing;
@@ -57,15 +51,11 @@ pub use reader::FrameReader;
 #[cfg(feature = "postcard")]
 pub use value::decode_value;
 
-/// Size of the length prefix in front of every frame.
 pub const PREFIX_BYTES: usize = 4;
 
-/// Byte order of the length prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ByteOrder {
-    /// Least significant byte first.
     LittleEndian,
-    /// Most significant byte first (network order).
     BigEndian,
 }
 
@@ -82,17 +72,14 @@ pub struct Framing {
 }
 
 impl Framing {
-    /// Little-endian `u32` prefix, payloads of at most `max_len` bytes.
     pub const fn little_endian(max_len: usize) -> Self {
         Self::new(ByteOrder::LittleEndian, max_len)
     }
 
-    /// Big-endian `u32` prefix, payloads of at most `max_len` bytes.
     pub const fn big_endian(max_len: usize) -> Self {
         Self::new(ByteOrder::BigEndian, max_len)
     }
 
-    /// `order` prefix, payloads of at most `max_len` bytes.
     pub const fn new(order: ByteOrder, max_len: usize) -> Self {
         Self {
             order,
@@ -117,12 +104,10 @@ impl Framing {
         Self { max_len, ..self }
     }
 
-    /// Largest payload a frame may carry.
     pub const fn max_len(self) -> usize {
         self.max_len
     }
 
-    /// Byte order of the length prefix.
     pub const fn byte_order(self) -> ByteOrder {
         self.order
     }
@@ -285,28 +270,23 @@ fn truncated(error: io::Error) -> FrameError {
     }
 }
 
-/// Why a frame could not be read or written.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FrameError {
-    /// The underlying stream failed.
     Io(io::Error),
     Truncated,
-    /// The stream ended where the caller required another frame. Readers
-    /// return `Ok(None)` for a clean close; callers for which the next frame
-    /// is mandatory turn that into this error.
+    /// The stream ended where the caller required another frame. Readers return
+    /// `Ok(None)` for a clean close; a caller for which the next frame is mandatory
+    /// turns that into this error.
     Closed,
-    /// A zero-length frame where the protocol forbids one.
     EmptyFrame,
     /// A received prefix declared this many bytes, more than the limit.
     TooLarge(usize),
     /// A payload of this many bytes is larger than the limit, so it was not
     /// sent.
     PayloadTooLarge(usize),
-    /// The value could not be postcard-encoded.
     #[cfg(feature = "postcard")]
     Encode(postcard::Error),
-    /// The payload did not postcard-decode as the expected type.
     #[cfg(feature = "postcard")]
     Decode(postcard::Error),
 }
@@ -362,7 +342,6 @@ impl From<FrameError> for io::Error {
 }
 
 impl FrameError {
-    /// The [`io::ErrorKind`] this error converts to.
     pub fn kind(&self) -> io::ErrorKind {
         match self {
             Self::Io(error) => error.kind(),
