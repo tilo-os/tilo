@@ -676,6 +676,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
         fn the_vms_programs_are_told_their_shares_in_words_they_read_whole;
 
         phase the_job_file_quotes_every_word;
@@ -830,6 +834,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
         fn a_step_is_prepared_only_with_sound_share_names_and_reads_its_status_back;
 
         phase a_share_name_that_would_break_the_guests_mounts_is_refused;
