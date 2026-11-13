@@ -427,6 +427,15 @@ contrast and "make panels opaque" still win).
 A section with none of `mode`, `dark_theme`, `light_theme` is no user
 theme, so distribution defaults still show.
 
+**What an appearance draws** is `theme::drawn`, and every surface asks it:
+`dark` or `light` alone, Automatic's day/night schedule as both in turn, and
+an appearance that names no mode as the host's own answer. A page answers its
+browser's light or dark, which `Theme::configured_from` merges in before the
+layers resolve, so a page is light on a light system from its first frame; a
+computer running Tilo answers nothing and starts dark. The Theme Studio's "in
+use" is that same reading, so a card cannot name a polarity the surfaces do
+not draw.
+
 **The workspace temperature** is a hue only: the person's override for that
 workspace (`appearance.workspace_temperatures`, OKLCH degrees by workspace
 id, `workspace_temperature_override`) or the dominant hue of its wallpaper

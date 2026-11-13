@@ -1783,6 +1783,12 @@ impl App {
         if crate::host_appearance::session_document_owns_appearance() {
             return false;
         }
+        // The host's light or dark is also what an appearance the person left open draws with
+        // from now on, so the theme applied here and any "in use" the app shows are one reading.
+        crate::theme::install_host_scheme(
+            host.scheme
+                .map(|scheme| scheme == crate::host_appearance::Scheme::Dark),
+        );
         let _entry = self.enter_wake_scope();
         let mut base_theme = crate::host_appearance::theme(host);
         base_theme.caret_width = self.accessibility.base_theme.caret_width;

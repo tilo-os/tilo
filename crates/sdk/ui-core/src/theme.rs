@@ -314,6 +314,129 @@ pub struct AppearanceIntent {
     pub ui_scale: f32,
 }
 
+thread_local! {
+    /// The host's own light or dark, for an appearance the person left open
+    /// ([`install_host_scheme`]).
+    static HOST_SCHEME: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Have every theme this process resolves fall back to the host's own `dark` where the person
+/// left the appearance open: no mode, or Automatic. A page installs its browser's answer before
+/// its first frame, so it draws and it says "in use" one reading; a computer running Tilo installs
+/// nothing and keeps its dark start and Automatic's day/night schedule.
+pub fn install_host_scheme(dark: Option<bool>) {
+    HOST_SCHEME.with(|scheme| scheme.set(dark));
+}
+
+/// The host's own light or dark, as [`install_host_scheme`] set it, or `None` where it named none.
+#[must_use]
+pub fn host_scheme() -> Option<bool> {
+    HOST_SCHEME.with(std::cell::Cell::get)
+}
+
+/// [`install_host_scheme`] for as long as the guard lives, then the answer the process had: a
+/// test shares its thread with the tests beside it, and a host inside a host scopes its own.
+#[must_use]
+pub fn scoped_host_scheme(dark: Option<bool>) -> HostSchemeScope {
+    let previous = host_scheme();
+    install_host_scheme(dark);
+    HostSchemeScope { previous }
+}
+
+/// Puts back the host's scheme [`scoped_host_scheme`] found.
+pub struct HostSchemeScope {
+    previous: Option<bool>,
+}
+
+impl Drop for HostSchemeScope {
+    fn drop(&mut self) {
+        install_host_scheme(self.previous);
+    }
+}
+
+/// Which polarities an appearance draws, as the person set it and the host answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    Dark,
+    Light,
+    /// Automatic's day/night schedule, which draws each in turn.
+    Both,
+}
+
+impl Drawn {
+    /// The one polarity `dark` names.
+    #[must_use]
+    pub fn of(dark: bool) -> Self {
+        if dark { Self::Dark } else { Self::Light }
+    }
+
+    /// Whether `dark` is drawn, now or later today.
+    #[must_use]
+    pub fn dark(self) -> bool {
+        matches!(self, Self::Dark | Self::Both)
+    }
+
+    /// Whether light is drawn, now or later today.
+    #[must_use]
+    pub fn light(self) -> bool {
+        matches!(self, Self::Light | Self::Both)
+    }
+}
+
+/// The polarities the surfaces draw from an appearance whose mode is `mode` (the settings key
+/// `appearance.mode`), on a host that answers `host` to "light or dark, when the person left it
+/// open".
+///
+/// `dark` and `light` are the person's own choice and are drawn alone. Automatic is the
+/// system's: the day/night schedule, which draws each in turn — except on a page, whose Automatic
+/// is the browser's light or dark, the one the host answers. An appearance naming no mode draws
+/// the host's answer, and wherever the host names none, the dark a computer running Tilo starts
+/// with. Every surface asks this one function, and [`Theme::configured_from`] draws the same
+/// answer, so what is shown cannot part from what is drawn.
+#[must_use]
+pub fn drawn(mode: Option<&str>, host: Option<bool>) -> Drawn {
+    match mode {
+        Some("light") => Drawn::Light,
+        Some("dark") => Drawn::Dark,
+        Some(mode) if settings_store::day_schedule::is_automatic(mode) => {
+            host.map_or(Drawn::Both, Drawn::of)
+        }
+        // A mode this build does not know draws the stock dark theme.
+        Some(_) => Drawn::Dark,
+        None => Drawn::of(host.unwrap_or(true)),
+    }
+}
+
+/// `settings` with the host's light or dark standing in for an appearance the person left open —
+/// no mode, or Automatic — so the theme layers below draw what [`drawn`] says is drawn. A host
+/// naming no scheme leaves the document as it is, so Automatic keeps its schedule and no mode is
+/// written on the person's behalf.
+fn with_host_scheme(
+    mut settings: serde_json::Map<String, serde_json::Value>,
+    host: Option<bool>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let Some(host) = host else {
+        return settings;
+    };
+    let appearance = settings
+        .entry(APPEARANCE_SECTION)
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(appearance) = appearance.as_object_mut() else {
+        return settings;
+    };
+    let open = appearance
+        .get(MODE_KEY)
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(settings_store::day_schedule::is_automatic);
+    if open {
+        appearance.insert(
+            MODE_KEY.into(),
+            serde_json::Value::from(if host { "dark" } else { "light" }),
+        );
+    }
+    settings
+}
+
 /// The local wall-clock moment the day/night schedule is evaluated at, read through the
 /// toolkit clock.
 #[must_use]
@@ -590,9 +713,11 @@ impl Theme {
         Self::configured_from(&settings_store::load())
     }
 
-    /// [`Theme::configured`] from an explicit settings document.
+    /// [`Theme::configured`] from an explicit settings document, with the host's own light or dark
+    /// ([`host_scheme`]) standing in for an appearance the person left open.
     pub fn configured_from(settings: &serde_json::Map<String, serde_json::Value>) -> Self {
-        let text = serde_json::Value::Object(settings.clone()).to_string();
+        let text = serde_json::Value::Object(with_host_scheme(settings.clone(), host_scheme()))
+            .to_string();
         let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
         Self::configured_from_text(&text, reduce_motion_override)
     }
@@ -1151,6 +1276,71 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An appearance and the polarities it draws, against the theme every surface is drawn with:
+    /// what a surface says is in use is `drawn`'s answer, so the two must not part for any
+    /// appearance, on a page answering either way and on a computer that answers nothing.
+    #[test]
+    fn what_is_drawn_and_what_is_said_to_be_drawn_are_one_reading() {
+        let appearances = [
+            serde_json::json!({}),
+            serde_json::json!({"appearance": {"accent": "violet"}}),
+            serde_json::json!({"appearance": {"mode": "dark"}}),
+            serde_json::json!({"appearance": {"mode": "light"}}),
+            serde_json::json!({"appearance": {"mode": "automatic"}}),
+            serde_json::json!({"appearance": {"mode": "automatic", "dark_theme": "glass"}}),
+            serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+        ];
+        for settings in appearances {
+            let settings = settings.as_object().cloned().unwrap_or_default();
+            let mode = settings
+                .get(APPEARANCE_SECTION)
+                .and_then(|appearance| appearance.get(MODE_KEY))
+                .and_then(serde_json::Value::as_str);
+            for host in [None, Some(true), Some(false)] {
+                let drawn = drawn(mode, host);
+                let theme = {
+                    let _scheme = scoped_host_scheme(host);
+                    Theme::configured_from(&settings)
+                };
+                let now = Drawn::of(theme.document.is_dark());
+                assert!(
+                    drawn.dark() || !now.dark(),
+                    "{settings:?} on a host answering {host:?}: says dark is drawn, draws light"
+                );
+                assert!(
+                    drawn.light() || !now.light(),
+                    "{settings:?} on a host answering {host:?}: says light is drawn, draws dark"
+                );
+            }
+        }
+    }
+
+    /// A page answers its browser's light or dark, so an appearance the person left open — no
+    /// mode, or Automatic — is that; a computer running Tilo answers nothing, keeps its dark
+    /// start and follows Automatic's schedule.
+    #[test]
+    fn the_hosts_answer_stands_in_only_where_the_person_left_it_open() {
+        assert_eq!(drawn(None, None), Drawn::Dark, "a computer starts dark");
+        assert_eq!(drawn(None, Some(false)), Drawn::Light, "a light page");
+        assert_eq!(drawn(None, Some(true)), Drawn::Dark, "a dark page");
+        assert_eq!(
+            drawn(Some("automatic"), None),
+            Drawn::Both,
+            "the schedule draws each in turn"
+        );
+        assert_eq!(
+            drawn(Some("automatic"), Some(false)),
+            Drawn::Light,
+            "a page's Automatic is the browser's"
+        );
+        assert_eq!(
+            drawn(Some("light"), Some(true)),
+            Drawn::Light,
+            "the person's own choice stands over a dark page"
+        );
+        assert_eq!(drawn(Some("dark"), Some(false)), Drawn::Dark);
+    }
 
     #[test]
     fn a_preset_is_the_theme_its_document_builds() {

@@ -214,6 +214,39 @@ fn selected_cards(root: &dyn Widget, out: &mut Vec<String>) {
     }
 }
 
+/// On a page the theme follows the browser's light or dark until the person chooses one, so a
+/// light browser draws Light: the gallery rings Light, and Dark — drawn nowhere — offers itself.
+/// A Dark card marked "In use" over a light page named a choice the person never made.
+#[test]
+fn the_gallery_marks_in_use_the_theme_a_page_draws() {
+    let _page = ui::theme::scoped_host_scheme(Some(false));
+    let mut app = gallery_at(1680);
+    app.harness()
+        .relayout_themed((1680, 2400), ui::Theme::light())
+        .expect("the gallery lays out in the theme the page draws");
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("use-light")
+                .name_contains("In use")
+                .enabled(false),
+        )
+        .expect("the page draws Light, so Light is in use");
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("use-dark")
+                .name_contains("Use")
+                .enabled(true),
+        )
+        .expect("Dark is drawn nowhere, so it can be chosen");
+    let mut selected = Vec::new();
+    selected_cards(app.harness().root_widget(), &mut selected);
+    assert_eq!(
+        selected,
+        vec![Preset::Light.name().to_owned()],
+        "only the drawn theme's card is selected"
+    );
+}
+
 /// The sidebar is the toolkit's navigation list, not a column of buttons.
 #[test]
 fn the_sidebar_is_the_navigation_list() {
