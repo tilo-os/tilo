@@ -309,6 +309,18 @@ impl Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
         workspace: &str,
     ) -> Result<(), DoorError> {
+        self.deliver_answered(target, arguments, workspace, None)
+    }
+
+    /// [`Self::deliver`], telling `answered` what the action answered once it settled: the
+    /// broker holds the delivery until then, for at most [`ANSWER_WAIT_MS`].
+    fn deliver_answered(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        workspace: &str,
+        answered: Option<crate::search::Answered>,
+    ) -> Result<(), DoorError> {
         let (broker, caller, wake) = {
             let state = self.state.borrow();
             let Some(broker) = &state.broker else {
@@ -333,6 +345,10 @@ impl Apps {
             wait_ms: None,
             appearance: None,
         };
+        let request = InvokeRequest {
+            wait_ms: answered.is_some().then_some(ANSWER_WAIT_MS),
+            ..request
+        };
         // The delivery outlives this pass: its answer runs on the thread that completed it, and
         // wakes this loop, which reports what a person's own action could not do.
         let resource = request.target.address.resource.clone();
@@ -340,8 +356,18 @@ impl Apps {
         broker
             .action_invoke_local_person(&caller, &request)
             .then(move |answer| {
-                if let Some(Err(error)) = answer {
+                if let Some(Err(error)) = &answer {
                     tracing::warn!(%error, %resource, %action, "an app action was not delivered");
+                }
+                if let Some(answered) = answered {
+                    let value = match answer {
+                        Some(Ok(tilo_actions::remote::InvocationReceipt {
+                            status: tilo_actions::remote::ReceiptStatus::Completed { output },
+                            ..
+                        })) => output.value,
+                        _ => None,
+                    };
+                    answered(value);
                 }
                 if let Some(wake) = &wake {
                     wake();
@@ -1839,6 +1865,10 @@ fn provider_selection(
     )
 }
 
+/// How long the broker holds a delivery whose answer its caller waits for: an app's own action
+/// that writes its record settles well within it.
+const ANSWER_WAIT_MS: u32 = 10_000;
+
 impl AppActions for Apps {
     /// What the apps publish, read from the session's action broker: the one host every app
     /// publishes on, whatever it is built with. The broker keeps the last surface an app published
@@ -1897,6 +1927,23 @@ impl AppActions for Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError> {
         self.invoke_at(target, arguments, OpenPlace::Focus)
+    }
+
+    /// An app's own action, its answer told to `answered`: the broker delivers it as
+    /// [`Self::invoke`] does.
+    fn invoke_answered(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        answered: crate::search::Answered,
+    ) -> Result<(), DoorError> {
+        let workspace = match application_provider(&target.provider) {
+            Some((workspace, _)) => workspace.to_owned(),
+            None => provider_workspace(&target.provider)
+                .ok_or_else(no_action_host)?
+                .to_owned(),
+        };
+        self.deliver_answered(target, arguments, &workspace, Some(answered))
     }
 
     /// Open `app` where the person asked it, through the same run of the workspace's `open`

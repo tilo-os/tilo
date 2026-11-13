@@ -167,10 +167,11 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
         .into();
     let opened = cx.open(&whole, "press", t.conversation(), None);
     column.push(node::on(whole, "press", opened));
-    // The page's gutter and reading measure, as every page sets its blocks on: the turn stands on
-    // the canvas's surface with no frame, so its words keep the page's room from its edges.
-    ui::fill(ui::page(
+    // The page's gutter on every side and its reading measure, as every page sets its blocks on:
+    // the turn stands on the canvas's surface with no frame, so its words keep the page's room
+    // from its edges. A page that filled would give the sides up to what it holds.
+    ui::page(
         &cx.key("turn-page"),
         vec![ui::stack(&cx.key("turn"), Gap::Related, column)],
-    ))
+    )
 }

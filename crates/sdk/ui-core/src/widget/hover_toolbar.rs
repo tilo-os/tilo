@@ -20,9 +20,18 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, Rhythm};
 use crate::widget::DrawChild;
-use crate::widget::arrange::{At, Layers, Row};
+use crate::widget::arrange::{Align, At, Layers, Row, Stack};
 use crate::widget::context_menu_area::focus_within;
 use crate::widget::{Decorator, Element, EventCtx, Widget};
+
+/// Where a row's controls stand.
+#[derive(Clone, Copy)]
+enum Stands {
+    /// Centred on the row's top edge at its trailing corner.
+    Straddling,
+    /// In a band of their own over the row, at its trailing end.
+    Above,
+}
 
 /// How the toolbar is shown, shared by the row that decides and the toolbar that draws.
 #[derive(Default)]
@@ -50,23 +59,27 @@ impl HoverToolbar {
     /// `row`, with `controls` shown over it on hover and focus.
     #[must_use]
     pub fn new(row: Element, controls: Vec<Element>) -> Self {
-        Self::around(crate::widget::arrange::Slot::new(row), controls, true)
+        Self::around(
+            crate::widget::arrange::Slot::new(row),
+            controls,
+            Stands::Straddling,
+        )
     }
 
-    /// `row` filling the room it is given — content standing at a size of its own, a place on a
-    /// canvas — with `controls` shown inside its top trailing corner, a step in from its edges,
-    /// on hover and focus: the controls stay over what they belong to, so the pointer that went
-    /// to them is still over it.
+    /// `row` filling the room it is given under a band its controls are shown in — content
+    /// standing at a size of its own, a place on a canvas — with `controls` at the band's trailing
+    /// end, over the content's top edge rather than on it, on hover and focus: the band is kept
+    /// whether they are shown or not, so showing them covers nothing of the content and moves
+    /// nothing, and the pointer that went to them is still over what they belong to.
     #[must_use]
-    pub fn filling(row: Element, controls: Vec<Element>) -> Self {
+    pub fn above(row: Element, controls: Vec<Element>) -> Self {
         let mut slot = crate::widget::arrange::Slot::new(row);
         slot.fit = crate::widget::arrange::Fit::fill(1.0);
-        Self::around(slot, controls, false)
+        Self::around(slot, controls, Stands::Above)
     }
 
-    /// The row in `row`, with `controls` shown over it on hover and focus: straddling its top
-    /// edge, or inside its top trailing corner.
-    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>, straddle: bool) -> Self {
+    /// The row in `row`, with `controls` shown on hover and focus where `stands` says.
+    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>, stands: Stands) -> Self {
         let shown = Rc::new(Shown::default());
         let mut bar = Row::row().gap(Rhythm::Tight);
         for control in controls {
@@ -77,26 +90,30 @@ impl HoverToolbar {
             crate::widget::Surface::new(crate::widget::SurfaceLevel::Floating, Box::new(bar))
                 .padded(Rhythm::Tight),
         );
-        let bar: Element = if straddle {
-            surface
-        } else {
-            // A step in from the corner, on the rhythm's related gap.
-            Box::new(
-                crate::widget::Container::new()
-                    .with_padding(crate::tokens::RhythmScale::BASE.related)
-                    .with_child(surface),
-            )
-        };
         let face = ToolbarFace {
-            bar,
+            bar: surface,
             shown: Rc::clone(&shown),
         };
-        let layers = Layers::layers().push_slot(row);
-        let layers = if straddle {
+        let layers = match stands {
             // Over the row's top edge, half above it: a one-line message keeps its text clear.
-            layers.push_straddling(Box::new(face), At::TopTrailing)
-        } else {
-            layers.push_at(Box::new(face), At::TopTrailing)
+            Stands::Straddling => Layers::layers()
+                .push_slot(row)
+                .push_straddling(Box::new(face), At::TopTrailing),
+            // The band over the content, the controls at its trailing end, a tight step above
+            // the content's edge.
+            Stands::Above => {
+                let mut band = crate::widget::arrange::Slot::new(Box::new(face));
+                band.fit = crate::widget::arrange::Fit::hug().align(Align::End);
+                let column = Stack::stack()
+                    .fill_width()
+                    .fill_height()
+                    .gap(Rhythm::Tight)
+                    .push_slot(band)
+                    .push_slot(row);
+                let mut whole = crate::widget::arrange::Slot::new(Box::new(column));
+                whole.fit = crate::widget::arrange::Fit::fill(1.0);
+                Layers::layers().push_slot(whole)
+            }
         };
         Self {
             layers,

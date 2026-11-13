@@ -302,11 +302,12 @@ pub fn found_resource(
 
 /// What the canvas does with text that is a question, or that nothing matches (shell.md §8.1,
 /// "Asking from the canvas"; canvas.md §3): the session sends it as the person to the workspace's
-/// agent, as a send-to box sends, and Chat posts it in their conversation with the agent. The turn
-/// the message opens stands where the person typed once Chat's record holds it
-/// ([`Arrangement::stand_asked`]). `false` when the session cannot ask — no workspace to ask in,
-/// or the send was refused — and the text then fails to place as it always did.
-pub type Ask = Rc<dyn Fn(&str) -> bool>;
+/// agent, as a send-to box sends, and Chat posts it in their conversation with the agent. It
+/// answers the number the ask goes by: the turn its message opens stands where the person typed
+/// once Chat said which message it posted ([`Arrangement::stand_asked`]). `None` when the session
+/// cannot ask — no workspace to ask in, or the send was refused — and the text then fails to
+/// place as it always did.
+pub type Ask = Rc<dyn Fn(&str) -> Option<u64>>;
 
 /// What an ask made, as Chat's record holds it: the conversation the person's message was posted
 /// in, and the turn it opened (the message and the agent's reply to it), each by the resource it
@@ -318,6 +319,9 @@ pub struct Asked {
     pub conversation: String,
     /// The turn, by its address: the resource whose `turn` view stands at the caret.
     pub turn: String,
+    /// The conversation as its app publishes it (`chat.workspace.channels:<id>`): what the turn
+    /// places beside itself when the person asks for the whole conversation.
+    pub opened_as: String,
 }
 
 /// The query the platform has indexed instead of an answer: the resources it found, with the
@@ -382,7 +386,7 @@ pub struct Found<'a> {
     /// thread and never in the pass that places.
     pub hits: &'a [tilo_desktop_search::Hit],
     /// The ask for text that asks, [`Ask`].
-    pub ask: &'a dyn Fn(&str) -> bool,
+    pub ask: &'a dyn Fn(&str) -> Option<u64>,
     /// The ask of an app whose type the text names, when nothing it names is held, [`AskOrigin`]:
     /// `None` when the platform can ask no app for the text.
     pub ask_origin: &'a dyn Fn(
@@ -578,11 +582,11 @@ pub struct Arrangement {
     /// the places an agent's step in it makes stand. A turn is the session's while it runs, never
     /// the record's: the record holds the places it made.
     turns: RefCell<BTreeMap<String, TurnAnchor>>,
+    /// Each turn's conversation as its app publishes it, by that address: the conversation's
+    /// address the turns above are kept under.
+    opened_as: RefCell<BTreeMap<String, String>>,
     /// The asks sent from the canvas whose turn Chat's record does not hold yet, oldest first.
     awaiting: RefCell<Vec<AwaitedTurn>>,
-    /// The turns asked on the canvas that stood, by address: a later ask with the same words is a
-    /// turn of its own.
-    stood: RefCell<std::collections::BTreeSet<String>>,
     /// The queries the canvas stood while their app answers them, by the key each place shows it
     /// under (`session.arrangement_query`, shell.md §8): a query is no part of the desk's record
     /// — a place still shows one while it runs — so the session keeps it here, in step with the
@@ -608,8 +612,8 @@ impl Arrangement {
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
             turns: RefCell::new(BTreeMap::new()),
+            opened_as: RefCell::new(BTreeMap::new()),
             awaiting: RefCell::new(Vec::new()),
-            stood: RefCell::new(std::collections::BTreeSet::new()),
             queries: RefCell::new(BTreeMap::new()),
             query_held: RefCell::new(BTreeMap::new()),
         }
@@ -832,11 +836,11 @@ impl Arrangement {
         // (shell.md §8.1).
         let asks_agent = tilo_desktop_search::answers::question::asks(text) || named.is_none();
         if asks_agent {
-            if !ask(text) {
+            let Some(sent) = ask(text) else {
                 return Err(format!("nothing matches {text:?}"));
-            }
-            // The turn stands where the person asked once Chat holds their message.
-            self.await_turn(asked, text, strip, at, size);
+            };
+            // The turn stands where the person asked once Chat says which message it posted.
+            self.await_turn(asked, sent, strip, at, size);
             return Ok(None);
         }
         let Some(resource) = named else {
@@ -1114,7 +1118,10 @@ impl Arrangement {
         // first place fills the rectangle the person dragged for the answer, and any other stands
         // beside the turn's own place.
         let turn = self.turn_of(beside);
-        if let Some(room) = turn.and_then(|turn| turn.room) {
+        // The room is the agent's answer's: the conversation itself, opened on request, stands
+        // beside the turn instead.
+        let whole = self.conversation_opened_as(resource).as_deref() == Some(beside.trim());
+        if let Some(room) = turn.and_then(|turn| turn.room).filter(|_| !whole) {
             let surface = self.surface_at()?;
             let action = ArrangementAction::Place {
                 workspace: surface.workspace,
@@ -2520,7 +2527,15 @@ impl Door {
             // A place that names no point, strip or float but a resource to stand beside is the
             // system's `open` beside it: it stands in the free space next to that resource's
             // place, or the place already showing what it places comes forward.
-            if let Some(beside) = place_beside(arguments)
+            // A turn's conversation, opened from the turn with no point of its own, stands beside
+            // the turn (canvas.md §3).
+            let conversation = match &action {
+                ArrangementAction::Place { resource, .. } if !pointed(arguments) => {
+                    self.arrangement.borrow().conversation_opened_as(resource)
+                }
+                _ => None,
+            };
+            if let Some(beside) = place_beside(arguments).map(str::to_owned).or(conversation)
                 && let ArrangementAction::Place { resource, view, .. } = &action
             {
                 let asked = match actor.filter(|actor| !actor.is_empty()) {
@@ -2529,7 +2544,7 @@ impl Door {
                 };
                 self.arrangement
                     .borrow_mut()
-                    .open_place(&asked, resource, view, beside)
+                    .open_place(&asked, resource, view, &beside)
                     .map_err(|why| tilo_actions::DoorError::Unavailable {
                         code: "nowhere_to_place".to_owned(),
                         reason: why,
@@ -2799,7 +2814,7 @@ impl Door {
 }
 
 mod placing;
-use placing::{place_beside, placing_actions};
+use placing::{place_beside, placing_actions, pointed};
 mod specs;
 use specs::{float_actions, float_coord, float_side, strip_actions};
 

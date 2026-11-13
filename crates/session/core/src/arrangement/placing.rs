@@ -148,10 +148,7 @@ fn place_action() -> ActionSpec {
 /// The resource a `place` names to stand beside, when it names no point, strip, float or row of
 /// its own: where it stands is then next to that resource's place.
 pub(super) fn place_beside(arguments: &serde_json::Map<String, Json>) -> Option<&str> {
-    let pointed = ["x", "y", "strip", "float", "workspace", "row"]
-        .iter()
-        .any(|name| arguments.get(*name).is_some_and(|value| !value.is_null()));
-    if pointed {
+    if pointed(arguments) {
         return None;
     }
     arguments
@@ -159,6 +156,13 @@ pub(super) fn place_beside(arguments: &serde_json::Map<String, Json>) -> Option<
         .and_then(Json::as_str)
         .map(str::trim)
         .filter(|beside| !beside.is_empty())
+}
+
+/// Whether a `place` names where it stands: a point, a strip, a float, a workspace or a row.
+pub(super) fn pointed(arguments: &serde_json::Map<String, Json>) -> bool {
+    ["x", "y", "strip", "float", "workspace", "row"]
+        .iter()
+        .any(|name| arguments.get(*name).is_some_and(|value| !value.is_null()))
 }
 
 /// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.

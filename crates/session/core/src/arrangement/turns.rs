@@ -39,15 +39,14 @@ pub(super) struct TurnAnchor {
     pub(super) room: Option<CanvasRect>,
 }
 
-/// An ask sent from the canvas whose turn Chat's record does not hold yet: where it stands once it
-/// does. The send reaches Chat on a later pass, and Chat mints the message, so the turn is found
-/// by what the person said ([`Arrangement::stand_asked`]).
+/// An ask sent from the canvas whose turn does not stand yet: where it stands once Chat said
+/// which message it posted for it ([`Arrangement::stand_asked`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AwaitedTurn {
     /// Who asked.
     asked: String,
-    /// What they said.
-    text: String,
+    /// The number the session's send goes by ([`Ask`]).
+    sent: u64,
     /// The strip the caret was in, else the canvas.
     strip: Option<u64>,
     /// Where they asked.
@@ -56,28 +55,25 @@ pub(super) struct AwaitedTurn {
     size: Option<(i64, i64)>,
 }
 
-/// What a session reads an ask's turn back from, once Chat holds it: the turn whose question says
-/// the text, among those the canvas has not stood yet (the second of two asks with the same words
-/// is a turn of its own), with the resource the session publishes it as from then on.
-pub type FindTurn<'a> = &'a dyn Fn(
-    &str,
-    &std::collections::BTreeSet<String>,
-) -> Option<(Asked, tilo_actions::ResourceSpec)>;
+/// What a session reads an ask's turn back from: the turn the message Chat posted for the send
+/// numbered so opened, once Chat answered which message that is and its record holds it, with
+/// the resources the session publishes from then on: the turn, and the conversation it is in.
+pub type FindTurn<'a> = &'a dyn Fn(u64) -> Option<(Asked, Vec<tilo_actions::ResourceSpec>)>;
 
 impl Arrangement {
-    /// Keep the ask the person sent from the canvas until Chat's record holds its turn: the turn
-    /// then stands where they asked ([`Self::stand_asked`]).
+    /// Keep the ask the person sent from the canvas, numbered `sent`, until its turn is known:
+    /// the turn then stands where they asked ([`Self::stand_asked`]).
     pub(super) fn await_turn(
         &self,
         asked: &str,
-        text: &str,
+        sent: u64,
         strip: Option<u64>,
         at: (i64, i64),
         size: Option<(i64, i64)>,
     ) {
         self.awaiting.borrow_mut().push(AwaitedTurn {
             asked: asked.to_owned(),
-            text: text.trim().to_owned(),
+            sent,
             strip,
             at,
             size,
@@ -90,21 +86,20 @@ impl Arrangement {
         !self.awaiting.borrow().is_empty()
     }
 
-    /// Stand each turn an ask from the canvas opened that `find` now reads in Chat's record, where
-    /// the person asked (canvas.md §3); the asks Chat does not hold yet keep waiting. Answers how
-    /// many stood.
+    /// Stand each turn an ask from the canvas opened that `find` now knows, where the person
+    /// asked (canvas.md §3); the others keep waiting. Answers how many stood.
     pub fn stand_asked(&mut self, find: FindTurn<'_>, busy: Busy) -> usize {
         let awaiting = std::mem::take(&mut *self.awaiting.borrow_mut());
         let mut stood = 0;
         for ask in awaiting {
-            let found = find(&ask.text, &self.stood.borrow());
-            let Some((turn, published)) = found else {
+            let Some((turn, published)) = find(ask.sent) else {
                 self.awaiting.borrow_mut().push(ask);
                 continue;
             };
-            self.stood.borrow_mut().insert(turn.turn.clone());
-            // Published from this pass on, and placed now: the door's tree takes it in later.
-            self.catalog.borrow_mut().remember_resource(&published);
+            // Published from this pass on, and placed now: the door's tree takes them in later.
+            for resource in &published {
+                self.catalog.borrow_mut().remember_resource(resource);
+            }
             match self.place_turn(&ask.asked, &turn, ask.strip, ask.at, ask.size, busy) {
                 Ok(_) => stood += 1,
                 Err(why) => {
@@ -165,6 +160,9 @@ impl Arrangement {
             float: None,
         };
         self.ask(asked, action, busy)?;
+        self.opened_as
+            .borrow_mut()
+            .insert(turn.opened_as.clone(), turn.conversation.clone());
         self.turns.borrow_mut().insert(
             turn.conversation.clone(),
             TurnAnchor {
@@ -173,6 +171,13 @@ impl Arrangement {
             },
         );
         Ok(Some(surface.place))
+    }
+
+    /// The conversation of a turn asked on the canvas that `resource` is, as its app publishes it,
+    /// while the turn's place stands: by the address the turn's anchor is kept under.
+    pub(super) fn conversation_opened_as(&self, resource: &str) -> Option<String> {
+        let conversation = self.opened_as.borrow().get(resource.trim())?.clone();
+        self.turn_of(&conversation).map(|_| conversation)
     }
 
     /// The turn asked on the canvas in the conversation `beside` names, while its place stands.

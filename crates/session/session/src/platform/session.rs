@@ -462,7 +462,7 @@ impl Session {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
                 }) else {
-                    return false;
+                    return None;
                 };
                 let to = crate::agents::agent_recipient(agents.kept(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
@@ -471,13 +471,13 @@ impl Session {
                     "workspace": workspace,
                 });
                 let serde_json::Value::Object(arguments) = arguments else {
-                    return false;
+                    return None;
                 };
                 match sends.ask(&arguments) {
-                    Ok(_) => true,
+                    Ok(sent) => Some(sent),
                     Err(error) => {
                         tracing::warn!(%error, "the canvas's ask was not sent");
-                        false
+                        None
                     }
                 }
             })
@@ -1324,6 +1324,7 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::conversations::TurnSummonses::new(
                 Rc::clone(&conversations),
+                sends.clone(),
             )));
         services
             .borrow_mut()

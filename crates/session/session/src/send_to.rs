@@ -68,9 +68,11 @@ struct Sending {
     item: Option<String>,
     text: String,
     workspace: Option<String>,
-    /// Whether the conversation it lands in opens where the box stood: a box's send does, and an
-    /// ask from the canvas does not — its turn stands where the person asked instead.
-    opens: bool,
+    /// The person's ask from the canvas this is, by the number [`Sends::ask`] gave it: the
+    /// conversation it lands in does not open, and the message Chat posts for it is kept under
+    /// that number ([`Sends::posted`]), for its turn to stand where the person asked. `None` for
+    /// a box's send, which opens the conversation where the box stood.
+    asked: Option<u64>,
 }
 
 /// A send as carried out: what it carried, whom it reached, and whether it landed.
@@ -88,7 +90,15 @@ struct Sent {
 pub(crate) struct Sends {
     waiting: Rc<RefCell<Vec<Sending>>>,
     sent: Rc<RefCell<Vec<Sent>>>,
+    /// The number the next ask from the canvas takes.
+    asks: Rc<std::cell::Cell<u64>>,
+    /// The message Chat answered each ask's send with, by the ask's number: written on the
+    /// thread Chat's answer lands on, read by the pass.
+    posted: Posted,
 }
+
+/// The message Chat posted for each ask, by the ask's number.
+type Posted = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, String>>>;
 
 /// What [`RESOURCE`] publishes: the send.
 fn published() -> Vec<ResourceSpec> {
@@ -111,24 +121,36 @@ impl Sends {
         by: Option<tilo_actions::ActionInvoker>,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        self.take(by, arguments, true)
+        self.take(by, arguments, None)
     }
 
-    /// Take the person's ask from the canvas, a send with `arguments`, as [`Self::send`] does: the
-    /// conversation it lands in does not open, since the turn it opens stands on the canvas where
-    /// the person asked (canvas.md §3).
+    /// Take the person's ask from the canvas, a send with `arguments`, as [`Self::send`] does, and
+    /// answer the number it goes by: the conversation it lands in does not open, since the turn
+    /// it opens stands on the canvas where the person asked (canvas.md §3), and the message Chat
+    /// posts for it is [`Self::posted`] under that number once Chat answers.
     ///
     /// # Errors
     /// The arguments are not a send's, or the message has nothing to say or carry.
-    pub(crate) fn ask(&self, arguments: &Map<String, Value>) -> Result<Started, DoorError> {
-        self.take(None, arguments, false)
+    pub(crate) fn ask(&self, arguments: &Map<String, Value>) -> Result<u64, DoorError> {
+        let asked = self.asks.get().wrapping_add(1);
+        self.asks.set(asked);
+        self.take(None, arguments, Some(asked))?;
+        Ok(asked)
+    }
+
+    /// The message Chat posted for the ask `asked`, once Chat answered its send with it.
+    pub(crate) fn posted(&self, asked: u64) -> Option<String> {
+        self.posted
+            .lock()
+            .ok()
+            .and_then(|posted| posted.get(&asked).cloned())
     }
 
     fn take(
         &self,
         by: Option<tilo_actions::ActionInvoker>,
         arguments: &Map<String, Value>,
-        opens: bool,
+        asked: Option<u64>,
     ) -> Result<Started, DoorError> {
         let SendToAction::Send {
             to,
@@ -150,7 +172,7 @@ impl Sends {
             item,
             text,
             workspace,
-            opens,
+            asked,
         });
         Ok(Started::Accepted)
     }
@@ -245,7 +267,7 @@ impl Shared {
                     &to,
                     &attached,
                     &sending.text,
-                    sending.opens,
+                    sending.asked,
                 )
                 .err()
             });
@@ -316,7 +338,7 @@ impl Shared {
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
         text: &str,
-        opens: bool,
+        asked: Option<u64>,
     ) -> Result<(), String> {
         let text = text.trim();
         if text.is_empty() && attached.is_empty() {
@@ -338,7 +360,7 @@ impl Shared {
                     &resolved,
                     attached,
                     text,
-                    opens && agent.is_none(),
+                    asked.is_none() && agent.is_none(),
                 )?;
                 (workspace, target)
             }
@@ -353,6 +375,33 @@ impl Shared {
                 )
             }
         };
+        // An ask from the canvas is told which message Chat posted: its turn stands by it.
+        if let Some(asked) = asked {
+            let posted = std::sync::Arc::clone(&self.sends.posted);
+            let wake = std::sync::Arc::clone(&self.wake_handle);
+            return self
+                .search
+                .perform_answered(
+                    &workspace,
+                    target,
+                    Box::new(move |answer| {
+                        let message = answer
+                            .as_ref()
+                            .and_then(|answer| answer.get("message"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        let Some(message) = message else {
+                            tracing::warn!(asked, "Chat's answer to an ask names no message");
+                            return;
+                        };
+                        if let Ok(mut posted) = posted.lock() {
+                            posted.insert(asked, message);
+                        }
+                        wake();
+                    }),
+                )
+                .map_err(|error| error.to_string());
+        }
         self.search
             .perform(&workspace, target, &mut |own| {
                 let look = &mut tilo_session_core::door::Look::none();
@@ -582,15 +631,17 @@ mod tests {
         let serde_json::Value::Object(arguments) = arguments else {
             panic!("an object");
         };
-        sends.ask(&arguments).expect("the ask is taken");
+        let first = sends.ask(&arguments).expect("the ask is taken");
         sends.send(None, &arguments).expect("the send is taken");
-        let opens: Vec<bool> = sends
+        let second = sends.ask(&arguments).expect("another ask is taken");
+        let asked: Vec<Option<u64>> = sends
             .waiting
             .borrow()
             .iter()
-            .map(|sending| sending.opens)
+            .map(|sending| sending.asked)
             .collect();
-        assert_eq!(opens, [false, true]);
+        assert_eq!(asked, [Some(first), None, Some(second)]);
+        assert_ne!(first, second, "each ask is one of its own");
     }
 
     /// What a box holds reaches Chat as one action naming the recipients, what the message carries

@@ -54,6 +54,10 @@ use ui::search::Scope;
 
 /// The action host as the session's search reaches it: what open apps publish and run, and running
 /// what is chosen by address.
+/// What hears an app action's answer ([`AppActions::invoke_answered`]): on whichever thread the
+/// answer lands.
+pub type Answered = Box<dyn FnOnce(Option<serde_json::Value>) + Send>;
+
 pub trait AppActions {
     /// What the apps publish through the action host, by app and workspace: those open now and
     /// those that closed after publishing, which a chosen row starts again. `workspace` narrows it
@@ -82,6 +86,22 @@ pub trait AppActions {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError>;
+    /// [`Self::invoke`], and tell `answered` what the action answered once it settled: its value,
+    /// or `None` when it answered none or failed. A host that hears no answers tells it `None`
+    /// at once.
+    ///
+    /// # Errors
+    /// The host's refusal.
+    fn invoke_answered(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        answered: Answered,
+    ) -> Result<(), DoorError> {
+        let invoked = self.invoke(target, arguments);
+        answered(None);
+        invoked
+    }
     /// Open `item`, what the `open` `target` shows when run with `arguments`, in a window of the
     /// app's own beside the one it has: what the person asked by the modifier they held over its
     /// row. A host that starts no windows opens it where `open` does.
@@ -1003,6 +1023,35 @@ impl SessionSearch {
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
     ) -> Result<(), DoorError> {
         self.perform_checked(workspace, target, own)
+    }
+
+    /// Carry out `target`, an app's own action, and tell `answered` what it answered once it
+    /// settled ([`AppActions::invoke_answered`]): what a caller that needs the action's answer —
+    /// the message a send posted — runs instead of [`Self::perform`].
+    ///
+    /// # Errors
+    /// `target` is no app's action, or the host refused it.
+    pub(crate) fn perform_answered(
+        &self,
+        workspace: &str,
+        target: Target,
+        answered: Answered,
+    ) -> Result<(), DoorError> {
+        let _ = workspace;
+        let Target::Invoke(invoke) = target else {
+            return Err(DoorError::InvalidArguments(
+                "only an app's action answers what it did".into(),
+            ));
+        };
+        self.with_apps(|apps| {
+            let target = application_action_target(
+                &invoke.workspace,
+                &invoke.app,
+                invoke.address.resource.as_str(),
+                invoke.address.action.as_str(),
+            );
+            apps.invoke_answered(target, invoke.arguments, answered)
+        })
     }
 
     /// Carry out the rows the person chose in `handle`'s palette since the last call, naming the

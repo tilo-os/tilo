@@ -290,12 +290,15 @@ impl crate::Shared {
                 })
                 .collect(),
         );
-        // A turn the person asked on the canvas stands where they asked once Chat holds their
-        // message (canvas.md §3).
+        // A turn the person asked on the canvas stands where they asked once Chat said which
+        // message it posted for the ask and its record holds it (canvas.md §3).
         let mut arrangement = self.arrangement.borrow_mut();
         if arrangement.awaits_turns() {
             arrangement.stand_asked(
-                &|text, stood| self.conversations.asked_turn(text, stood),
+                &|sent| {
+                    let message = self.sends.posted(sent)?;
+                    self.conversations.asked_turn(&message)
+                },
                 crate::arrangement::Busy::default(),
             );
         }

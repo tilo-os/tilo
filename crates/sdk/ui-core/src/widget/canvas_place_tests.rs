@@ -1,4 +1,5 @@
-//! A place on a canvas fills the room its pin gives it: its ground is the whole place.
+//! A place on a canvas fills the room its pin gives it: its ground under the band its handle
+//! shows in.
 
 use super::*;
 use crate::widget::{Map, PinPlace};
@@ -43,10 +44,27 @@ fn a_place_fills_its_pin() {
     )
     .expect("the map lays out");
     let ground = ground_rect(&map).expect("the place's ground");
+    let handle = named_rect(&map, "HoverToolbarFace").expect("the place's handle");
     assert!(
-        (ground.width() - 400.0).abs() < 1.0 && (ground.height() - 300.0).abs() < 1.0,
-        "the place fills its pin: {ground:?}"
+        (ground.width() - 400.0).abs() < 1.0 && (ground.y1 - 330.0).abs() < 1.0,
+        "the place fills its pin's width and stands on its foot: {ground:?}"
     );
+    assert!(
+        handle.y0 >= 30.0 - 0.5 && handle.y1 <= ground.y0 + 0.5 && handle.x1 <= 440.0 + 0.5,
+        "the handle has a band of its own over the view, inside the pin: it covers no line of \
+         the view, and showing it moves nothing: {handle:?} over {ground:?}"
+    );
+}
+
+/// The box of the first widget under `widget` named `name`.
+fn named_rect(widget: &dyn Widget, name: &str) -> Option<Rect> {
+    if widget.name() == name {
+        return Some(widget.get_rect());
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| named_rect(child, name))
 }
 
 /// Whether a menu stands open under `widget`: an open menu is among the children its area

@@ -2806,7 +2806,15 @@ mod tests {
             Some(1)
         );
         assert!(Turn::of(&channel, "missing").is_none());
-        let said = texts(&turn::turn(&turn_of_q1, &view_cx(&channel)));
+        let tree = turn::turn(&turn_of_q1, &view_cx(&channel));
+        assert!(
+            tree.kind == "page" && !tree.props.contains_key("fill"),
+            "the turn is a page keeping its gutter at its sides, as the canvas's other views do: \
+             {} {:?}",
+            tree.kind,
+            tree.props
+        );
+        let said = texts(&tree);
         assert!(
             said.iter().any(|text| text == "what is due?")
                 && said.iter().any(|text| text == "Two tasks are due.")

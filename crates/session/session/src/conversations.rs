@@ -335,9 +335,10 @@ pub(crate) struct Conversations {
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
     open: RefCell<BTreeMap<String, Opened>>,
-    /// The turns asked from the canvas that stood, by the message that asked, with what it said:
-    /// the turns this session publishes for their places to draw ([`TurnSummonses`]).
-    asked: RefCell<BTreeMap<String, String>>,
+    /// The turns asked from the canvas that stood, by the message that asked, with the
+    /// conversation it is in and what it said: the turns, and their conversations, this session
+    /// publishes for their places to draw ([`TurnSummonses`]).
+    asked: RefCell<BTreeMap<String, (String, String)>>,
 }
 
 /// A workspace's records as they are open here, and what was read of them.
@@ -640,40 +641,38 @@ impl Conversations {
         Some((chat, part))
     }
 
-    /// The turn an ask the person sent from the canvas opened, once Chat holds it (canvas.md §3):
-    /// a conversation with an agent whose newest message by a person says `text`, its turn not
-    /// among those the canvas stood already (`stood`, by address). Read from Chat's record as
-    /// Chat posted it — the session posts nothing — and the turn is remembered as one this
-    /// session publishes ([`TurnSummonses`]). `None` while Chat does not hold it yet.
+    /// The turn the message `question` opened — the one Chat said it posted for an ask the person
+    /// sent from the canvas — once Chat's record of it is here (canvas.md §3): its conversation,
+    /// and the turn as this session publishes it from then on ([`TurnSummonses`]), read from
+    /// Chat's record as Chat posted it. `None` while the record does not hold the message yet.
     pub(crate) fn asked_turn(
         &self,
-        text: &str,
-        stood: &std::collections::BTreeSet<String>,
-    ) -> Option<(crate::arrangement::Asked, tilo_actions::ResourceSpec)> {
-        let text = text.trim();
-        let open = self.open.borrow();
-        let mut found: Option<(i64, String, String)> = None;
-        for opened in open.values() {
-            let (Some(chat_record), Some((_, part))) = (&opened.chat, &opened.part) else {
-                continue;
-            };
-            let held = asked_in(&chat_record.get(), &part.get(), text, stood);
-            if let Some(held) = held
-                && found.as_ref().is_none_or(|(at, _, _)| held.0 > *at)
-            {
-                found = Some(held);
-            }
-        }
-        let (_, channel, question) = found?;
+        question: &str,
+    ) -> Option<(crate::arrangement::Asked, Vec<tilo_actions::ResourceSpec>)> {
+        let (channel, text) = {
+            let open = self.open.borrow();
+            open.values().find_map(|opened| {
+                let (_, part) = opened.part.as_ref()?;
+                let part = part.get();
+                part.messages
+                    .iter()
+                    .find(|(id, _)| id.as_str() == question)
+                    .map(|(_, held)| (held.channel.as_str().to_owned(), held.text.clone()))
+            })?
+        };
         self.asked
             .borrow_mut()
-            .insert(question.clone(), text.to_owned());
+            .insert(question.to_owned(), (channel.clone(), text.clone()));
         Some((
             crate::arrangement::Asked {
                 conversation: format!("{}/channels/{channel}", chat::Chat::KIND),
-                turn: turn_address(&question),
+                turn: turn_address(question),
+                opened_as: format!("{CHANNELS}{channel}"),
             },
-            turn_resource(&question, text),
+            vec![
+                turn_resource(question, &text),
+                conversation_resource(&channel, self.conversation_name(&channel)),
+            ],
         ))
     }
 
@@ -682,23 +681,50 @@ impl Conversations {
     /// Chat's own page reads it. `None` where no open workspace holds the message.
     #[must_use]
     pub fn turn_reading(&self, question: &str) -> Option<chat::views::Turn> {
+        let channel = self.asked.borrow().get(question)?.0.clone();
+        let page = self.channel_reading(&channel)?;
+        chat::views::Turn::of(&page, question)
+    }
+
+    /// What the conversation `channel` is called, as Chat's window names it: the agent's name for
+    /// a conversation with an agent.
+    fn conversation_name(&self, channel: &str) -> String {
+        let open = self.open.borrow();
+        open.values()
+            .find_map(|opened| {
+                let chat = opened.chat.as_ref()?.get();
+                let person = opened.records.author().0.clone();
+                Some(chat.display_names(
+                    &Id::from_raw(channel),
+                    Some(&person),
+                    &Self::agent_names(opened),
+                ))
+            })
+            .unwrap_or_default()
+    }
+
+    /// The conversation `channel` (its id, a direct conversation's included) as Chat's own page
+    /// draws it, read from Chat's record of the workspace this session holds open that has its
+    /// messages: Chat's projection of its own record, the rows its window shows. `None` where no
+    /// open workspace holds a message of it.
+    #[must_use]
+    pub fn channel_reading(&self, channel: &str) -> Option<chat::views::Channel> {
         let open = self.open.borrow();
         for opened in open.values() {
             let (Some(chat_record), Some((index, part))) = (&opened.chat, &opened.part) else {
                 continue;
             };
             let held = chat::parts::ChatPart::clone(part.get().as_ref());
-            let Some(channel) = held
+            if !held
                 .messages
                 .iter()
-                .find(|(id, _)| id.as_str() == question)
-                .map(|(_, message)| message.channel.as_str().to_owned())
-            else {
+                .any(|(_, message)| message.channel.as_str() == channel)
+            {
                 continue;
-            };
+            }
             let chat = chat_record.get();
             let messages = chat::messages::Messages::new(vec![(*index, std::rc::Rc::new(held))]);
-            let rows = chat.message_rows(&messages, &channel);
+            let rows = chat.message_rows(&messages, channel);
             let me = opened.records.author().0.clone();
             let names = chat::views::Names {
                 me: crate::platform::person::desk_person_name(
@@ -707,8 +733,9 @@ impl Conversations {
                 ),
                 agents: Self::agent_names(opened),
             };
-            let page = chat::views::Channel::read(&chat, &rows, &channel, &me, &names);
-            return chat::views::Turn::of(&page, question);
+            return Some(chat::views::Channel::read(
+                &chat, &rows, channel, &me, &names,
+            ));
         }
         None
     }
@@ -725,42 +752,6 @@ impl Conversations {
             })
             .collect()
     }
-}
-
-/// The newest ask by a person that says `text` in a conversation of `chat` with an agent, read
-/// from `part`'s messages, whose turn is not among `stood`: when it was posted, its conversation's
-/// id and its own. An ask is the last thing a person said where they asked it, so only each
-/// conversation's newest message by a person is one.
-fn asked_in(
-    chat: &chat::Chat,
-    part: &chat::parts::ChatPart,
-    text: &str,
-    stood: &std::collections::BTreeSet<String>,
-) -> Option<(i64, String, String)> {
-    let mut newest: BTreeMap<&str, (i64, &Id, &chat::record::Message)> = BTreeMap::new();
-    for (id, message) in part.messages.iter() {
-        if person_of(&message.author.0).is_none() {
-            continue;
-        }
-        let held = newest
-            .entry(message.channel.as_str())
-            .or_insert((message.ts, id, message));
-        if (message.ts, id.as_str()) > (held.0, held.1.as_str()) {
-            *held = (message.ts, id, message);
-        }
-    }
-    newest
-        .into_iter()
-        .filter(|(_, (_, id, message))| {
-            message.text.trim() == text.trim()
-                && !stood.contains(&turn_address(id.as_str()))
-                && chat
-                    .conversation_participants(&message.channel)
-                    .iter()
-                    .any(|participant| matches!(participant, chat::record::Participant::Agent(_)))
-        })
-        .map(|(channel, (ts, id, _))| (ts, channel.to_owned(), id.as_str().to_owned()))
-        .max_by_key(|(ts, _, _)| *ts)
 }
 
 /// Where a turn is published: its stable address `chat.workspace.turns:<message>`, by the
@@ -792,6 +783,33 @@ fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
     spec
 }
 
+/// Where a conversation is published: Chat's channel item at its stable address
+/// (`chat.workspace.channels:<id>`), a direct conversation's included.
+const CHANNELS: &str = "chat.workspace.channels:";
+
+/// The conversation `channel` as a place's resource: Chat's channel, through Chat's own page,
+/// with Chat's own `send` its composer runs. What a turn's "Whole conversation" places beside it.
+fn conversation_resource(channel: &str, label: String) -> tilo_actions::ResourceSpec {
+    let mut spec = tilo_actions::ResourceSpec::new(
+        format!("{CHANNELS}{channel}"),
+        "chat.workspace.channels",
+        label.clone(),
+    )
+    .with_view(tilo_actions::ResourceViewSpec::new("page", label, "open"))
+    .with_type(tilo_actions::ResourceType {
+        noun: tilo_actions::Noun::new("conversation", "conversations"),
+        app: tilo_actions::Noun::new("Chat", "Chat"),
+        root: false,
+    });
+    if let Some(send) =
+        <chat::effects::ChatEffect as tilo_resource::Effect>::spec(crate::send_to::SEND)
+    {
+        spec = spec.with_action(send);
+    }
+    spec.app_id = Some("chat".to_owned());
+    spec
+}
+
 /// The turns going in the workspaces' conversations as a session service: each turn's summons, as
 /// Chat publishes a message's item, carrying Chat's own `record-work`, so the agent answering it has
 /// the address its answer goes to whether or not Chat's window is open. The verb runs on the
@@ -806,6 +824,8 @@ pub(crate) struct TurnSummonses {
     /// The revisions the asked turns were last read at: a reply landing moves them, and the turns'
     /// places read again.
     turns_at: Vec<(u64, u64, u64)>,
+    /// The one send: what a conversation's composer sends goes through it to Chat.
+    sends: crate::send_to::Sends,
 }
 
 /// What the summonses a [session's summonses](TurnSummonses) publishes depend on: each open
@@ -815,11 +835,12 @@ type SummonsKey = (u64, u64, u64);
 impl TurnSummonses {
     /// The service over `conversations`, the session's one open of the workspaces' chats.
     #[must_use]
-    pub(crate) fn new(conversations: Rc<Conversations>) -> Self {
+    pub(crate) fn new(conversations: Rc<Conversations>, sends: crate::send_to::Sends) -> Self {
         Self {
             conversations,
             summonses: std::cell::RefCell::new(None),
             turns_at: Vec::new(),
+            sends,
         }
     }
 }
@@ -861,22 +882,31 @@ impl tilo_service::Service for TurnSummonses {
             });
             specs.extend(items);
         }
-        // Each turn asked from the canvas, as its place draws it (canvas.md §3).
-        specs.extend(
-            self.conversations
-                .asked
-                .borrow()
-                .iter()
-                .map(|(question, asked)| turn_resource(question, asked)),
-        );
+        // Each turn asked from the canvas, as its place draws it (canvas.md §3), and the
+        // conversation it is in, which the turn places beside it on request.
+        let asked = self.conversations.asked.borrow();
+        let mut channels: Vec<&str> = Vec::new();
+        for (question, (channel, text)) in asked.iter() {
+            specs.push(turn_resource(question, text));
+            if !channels.contains(&channel.as_str()) {
+                channels.push(channel);
+            }
+        }
+        specs.extend(channels.into_iter().map(|channel| {
+            conversation_resource(channel, self.conversations.conversation_name(channel))
+        }));
         specs
     }
 
     /// A summons has no reading of its own: its message is Chat's to show. A turn asked from the
     /// canvas reads as the question and what the agent answered, from Chat's record.
     fn read(&self, resource: &str) -> Option<serde_json::Value> {
-        let question = resource.strip_prefix(TURNS)?;
-        let reading = self.conversations.turn_reading(question)?;
+        if let Some(question) = resource.strip_prefix(TURNS) {
+            let reading = self.conversations.turn_reading(question)?;
+            return serde_json::to_value(&reading).ok();
+        }
+        let channel = resource.strip_prefix(CHANNELS)?;
+        let reading = self.conversations.channel_reading(channel)?;
         serde_json::to_value(&reading).ok()
     }
 
@@ -917,6 +947,25 @@ impl tilo_service::Service for TurnSummonses {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        // A conversation's composer sends through the one send, to the conversation it is: Chat
+        // posts it, as a box's message.
+        if let Some(channel) = resource.strip_prefix(CHANNELS)
+            && action == crate::send_to::SEND
+        {
+            let text = arguments
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let to = ui::floating_surface::Recipient::found(
+                ui::floating_surface::RecipientKind::Conversation,
+                channel.to_owned(),
+                String::new(),
+            );
+            let mut send = serde_json::Map::new();
+            send.insert("to".into(), serde_json::json!([to]));
+            send.insert("text".into(), text.into());
+            return self.sends.send(Some(invoker.clone()), &send);
+        }
         if action != RECORD_WORK {
             return Err(tilo_actions::DoorError::Unknown(
                 tilo_actions::ActionAddress::new(resource, action),
@@ -1286,47 +1335,6 @@ mod tests {
     /// The turns `chat` 's conversations give for the messages of `head` .
     fn read(chat: &chat::Chat, head: &chat::parts::ChatPart) -> Vec<Entry> {
         turns(chat, head, ME, &chat::projection::AgentNames::new()).0
-    }
-
-    /// An ask from the canvas is found by what the person said, once Chat holds it: the newest
-    /// thing they said in a conversation with an agent, never an older message with the same
-    /// words, and never a turn the canvas already stood.
-    #[test]
-    fn an_ask_is_the_persons_newest_words_in_a_conversation_with_an_agent() {
-        let chat = workspace();
-        let none = std::collections::BTreeSet::new();
-        let head = part(vec![("m1", message(ME, "what is due?", 10))]);
-        assert_eq!(
-            asked_in(&chat, &head, " what is due? ", &none),
-            Some((10, CONVERSATION.to_owned(), "m1".to_owned())),
-            "the person's message is the ask's turn"
-        );
-        assert_eq!(
-            asked_in(&chat, &head, "what is late?", &none),
-            None,
-            "other words are another ask, not held yet"
-        );
-        let stood = std::collections::BTreeSet::from([turn_address("m1")]);
-        assert_eq!(
-            asked_in(&chat, &head, "what is due?", &stood),
-            None,
-            "a turn that stood is not the next ask with the same words"
-        );
-        let later = part(vec![
-            ("m1", message(ME, "what is due?", 10)),
-            ("m2", message(ME, "and tomorrow?", 20)),
-        ]);
-        assert_eq!(
-            asked_in(&chat, &later, "what is due?", &none),
-            None,
-            "an older message with the same words is no ask"
-        );
-        let agents_own = part(vec![("m1", message(AGENT_ACTOR, "what is due?", 10))]);
-        assert_eq!(
-            asked_in(&chat, &agents_own, "what is due?", &none),
-            None,
-            "the agent's own words are no ask"
-        );
     }
 
     #[test]

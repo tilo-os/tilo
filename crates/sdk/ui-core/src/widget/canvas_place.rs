@@ -2,9 +2,10 @@
 //!
 //! A place is its view on the window surface's own ground — rounded, with the surface's soft
 //! edge and shadow — and nothing else: no title bar, no border of a window. Its handle (what it
-//! is, the resource's actions, pin and close) comes inside its top trailing corner while the
-//! pointer is over it or something in it holds focus, the way a message's toolbar does, and
-//! fades away after. Picking the handle up carries the place's resource on the drag bus, so
+//! is, the resource's actions, pin and close) comes in a band over its top edge, at its trailing
+//! end, while the pointer is over it or something in it holds focus, the way a message's toolbar
+//! does, and fades away after. The band is kept whether the handle shows or not, so the handle
+//! never covers the view's first line and showing it moves nothing. Picking the handle up carries the place's resource on the drag bus, so
 //! letting it go over the canvas moves the place there and over a composer attaches it.
 //!
 //! The look is the theme's: the surface is [`SurfaceLevel::Window`], the handle a floating
@@ -109,7 +110,6 @@ impl Described for CanvasPlace {
         let mut slot = Slot::new(body.unwrap_or_else(empty));
         slot.fit = Fit::fill(1.0);
         let ground = PlaceGround {
-            name,
             column: Stack::stack()
                 .fill_width()
                 .fill_height()
@@ -120,7 +120,7 @@ impl Described for CanvasPlace {
         // is true then. It stands around the view and the handle both, so a right-click on the
         // handle — or on a part of the view that has no menu of its own — opens it.
         let offered = Rc::clone(&items);
-        let toolbar = HoverToolbar::filling(Box::new(ground), vec![handle]);
+        let toolbar = HoverToolbar::above(Box::new(ground), vec![handle]);
         let menu = ContextMenuArea::new(Box::new(toolbar), move |_| {
             offered
                 .borrow()
@@ -170,13 +170,20 @@ impl Decorator for CanvasPlace {
     fn name(&self) -> &'static str {
         "Place"
     }
+
+    /// The place is the group assistive technology reads, named for what it shows: the whole of
+    /// it, the band its handle shows in and the view under it.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name((!self.name.is_empty()).then(|| self.name.clone())),
+        )
+    }
 }
 
 /// The place's ground: the window surface under its view, which is cut at the surface's rounded
-/// edge so nothing it holds is seen past it. It is the place's own layout node, so it is the group
-/// assistive technology reads the place as, named for what it shows.
+/// edge so nothing it holds is seen past it.
 struct PlaceGround {
-    name: Option<String>,
     column: Stack,
 }
 
@@ -193,13 +200,6 @@ impl Decorator for PlaceGround {
 
     fn name(&self) -> &'static str {
         "PlaceGround"
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(self.name.clone()),
-        )
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {

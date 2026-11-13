@@ -261,26 +261,44 @@ fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
 }
 
 /// Chat holding the person's ask as the turn `question` of `conversation`: what Chat's process
-/// does in a person's session, posting the message the ask sent it into its record, which the
-/// session reads the turn back from. Chat's process is not part of this session, so this stands
-/// in for that read; everything around it — the pointing, the send, where the turn stands and
-/// what the agent's steps in it fill — is the production path.
+/// does in a person's session, posting the message the ask sent it, answering the send with that
+/// message, and holding it in its record, which the session reads the turn back from. Chat's
+/// process is not part of this session, so this stands in for that answer and that read;
+/// everything around it — the pointing, the send, where the turn stands and what the agent's
+/// steps in it fill — is the production path.
 fn chat_holds(session: &Session, conversation: &str, question: &str) {
     let turn = format!("chat.workspace.turns:{question}");
     let asked = tilo_session::arrangement::Asked {
         conversation: conversation.to_owned(),
         turn: turn.clone(),
+        opened_as: format!(
+            "chat.workspace.channels:{}",
+            conversation.trim_start_matches("chat.workspace/channels/")
+        ),
     };
     // The turn as the session publishes it once Chat holds it: Chat's `turn` view of it.
     let mut published = tilo_actions::ResourceSpec::new(turn, "chat.workspace.turns", "Asked")
         .with_view(tilo_actions::ResourceViewSpec::new("turn", "Asked", "open"));
     published.app_id = Some("chat".to_owned());
+    // And the conversation it is in, through Chat's page.
+    let mut whole = tilo_actions::ResourceSpec::new(
+        asked.opened_as.clone(),
+        "chat.workspace.channels",
+        "Assistant",
+    )
+    .with_view(tilo_actions::ResourceViewSpec::new(
+        "page",
+        "Assistant",
+        "open",
+    ));
+    whole.app_id = Some("chat".to_owned());
+    let published = vec![published, whole];
     assert!(
         session.arrangement().borrow().awaits_turns(),
         "the ask waits for Chat to hold it"
     );
     let stood = session.arrangement().borrow_mut().stand_asked(
-        &|_, _| Some((asked.clone(), published.clone())),
+        &|_| Some((asked.clone(), published.clone())),
         tilo_session::arrangement::Busy::default(),
     );
     assert_eq!(stood, 1, "the ask waited for its turn");
@@ -418,6 +436,56 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
         (ny, nh),
         (ty, th),
         ty + rect_h
+    );
+}
+
+/// The whole conversation a turn opens on request stands on the canvas beside the turn, as Chat's
+/// own page: content, not a Chat window, and not in the room the rectangle keeps for the agent's
+/// answer. It is opened as a composed view opens anything, through `place` naming only it.
+#[test]
+fn the_whole_conversation_stands_beside_its_turn() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let from = (x + w * 0.05, y + h * 0.05);
+    let to = (x + w * 0.45, y + h * 0.95);
+    frame_and_say(&mut session, from, to, "what is due?");
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q3");
+    let (tx, ty, tw, th) = wait_for(&mut session, "the turn placed", |session| {
+        canvas_box(session, "chat.workspace.turns:")
+    });
+
+    // What the turn's "Whole conversation" runs: the system's `place` of the conversation, as
+    // the shell places what a composed view opened.
+    session
+        .invoke(
+            "shell:arrangement",
+            "place",
+            serde_json::json!({"resource": "chat.workspace.channels:c_ask"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the conversation is placed: {error:?}"));
+    let whole = wait_for(&mut session, "the conversation placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record == "chat.workspace.channels:c_ask")
+    });
+    assert_eq!(whole.shown_as, "page", "it stands as Chat's page");
+    let (cx, cy, _, _) = canvas_box(&session, "chat.workspace.channels:").expect("its box");
+    assert!(
+        cx >= tx + tw,
+        "it stands beside the turn, not in the rectangle's room under it: {:?} beside {:?}",
+        (cx, cy),
+        (tx, ty, tw, th)
     );
 }
 
