@@ -951,12 +951,52 @@ mod tests {
             1,
             "a part of exactly max_part_bytes is written and read"
         );
+        BoundedArchive::from_bytes(&bytes, limits)
+            .unwrap()
+            .check_declared_sizes()
+            .expect("a part declaring exactly max_part_bytes passes the up-front check");
         // Two of three bytes fit, and read back under the same limits.
         let bytes = write_zip(&entries(2, 3), &limits).unwrap();
         assert_eq!(
             read_zip_parts(&bytes, &limits).unwrap().len(),
             2,
             "what is written reads back"
+        );
+        // The up-front check admits declared sizes exactly at both limits and
+        // refuses the same archive under a limit one byte lower.
+        BoundedArchive::from_bytes(&bytes, limits)
+            .unwrap()
+            .check_declared_sizes()
+            .expect("declared sizes summing to exactly max_total_bytes pass");
+        let one_less_in_all = ZipLimits {
+            max_total_bytes: 5,
+            ..limits
+        };
+        assert!(
+            matches!(
+                BoundedArchive::from_bytes(&bytes, one_less_in_all)
+                    .unwrap()
+                    .check_declared_sizes(),
+                Err(ZipError::TotalTooLarge { limit: 5 })
+            ),
+            "declared sizes one byte past max_total_bytes are refused"
+        );
+        let one_less_a_part = ZipLimits {
+            max_part_bytes: 2,
+            ..limits
+        };
+        assert!(
+            matches!(
+                BoundedArchive::from_bytes(&bytes, one_less_a_part)
+                    .unwrap()
+                    .check_declared_sizes(),
+                Err(ZipError::PartTooLarge {
+                    declared: 3,
+                    limit: 2,
+                    ..
+                })
+            ),
+            "a part declaring one byte past max_part_bytes is refused"
         );
     }
 }
