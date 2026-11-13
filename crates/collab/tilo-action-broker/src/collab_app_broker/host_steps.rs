@@ -588,6 +588,17 @@ impl AppBrokerState {
             }
             _ => &policy,
         };
+        // The turn the step answers, on its actor: a run host's connection carries none on its
+        // caller, so the actor decided from it has none, and the session stands what a turn's
+        // step shows beside the turn its actor is on. A step of no turn keeps its actor as it is.
+        let on_turn;
+        let actor = match turn {
+            Some(turn) if actor.turn() != Some(turn) => {
+                on_turn = actor.clone().on_turn(Some(turn.clone()));
+                &on_turn
+            }
+            _ => actor,
+        };
         let step = HostStepRequest {
             workspace: workspace_id,
             actor,

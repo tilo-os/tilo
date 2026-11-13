@@ -1205,3 +1205,81 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
         "with the room taken, the inbox stands beside the turn: {mails_at:?} beside {turn:?}"
     );
 }
+
+/// The live order: one turn asked in a dragged rectangle, whose agent fills it, then a second
+/// asked by a click elsewhere. The second turn's agent `place` stands what it shows beside the
+/// second turn: never above the first, and never at the canvas' origin as a place that names no
+/// turn does.
+#[test]
+fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let sent = |session: &mut Session, count: usize| {
+        until(session, "the ask sent", |session| {
+            session.settle_services();
+            session
+                .read("session:send-to")
+                .and_then(|sent| sent.as_array().map(|sent| sent.len() >= count))
+                .unwrap_or(false)
+        });
+    };
+
+    frame_and_say(
+        &mut session,
+        (x + w * 0.02, y + h * 0.05),
+        (x + w * 0.3, y + h * 0.6),
+        "summarise what changed in my notes this week",
+    );
+    sent(&mut session, 1);
+    chat_holds(&session, CONVERSATION, "q9");
+    let first = wait_for(&mut session, "the first turn placed", |session| {
+        turn_box(session, "q9")
+    });
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q9"),
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({ "resource": notes }),
+        )
+        .unwrap_or_else(|error| panic!("the first turn's place runs: {error}"));
+    wait_for(&mut session, "the notes placed", |session| {
+        canvas_box(session, "so.tilo.lang.notes")
+    });
+
+    point_and_say(
+        &mut session,
+        (x + w * 0.6, y + h * 0.55),
+        "show me my mails",
+    );
+    sent(&mut session, 2);
+    chat_holds(&session, CONVERSATION, "q10");
+    let (bx, by, bw, bh) = wait_for(&mut session, "the second turn placed", |session| {
+        turn_box(session, "q10")
+    });
+    let mails = root_of(&session, "so.tilo.lang.mail");
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q10"),
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({ "resource": mails }),
+        )
+        .unwrap_or_else(|error| panic!("the second turn's place runs: {error}"));
+    let (mx, my, _, _) = wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    let trailing = mx >= bx + bw && my >= by && my < by + bh;
+    let below = my >= by + bh && mx >= bx && mx < bx + bw;
+    assert!(
+        trailing || below,
+        "the inbox stands beside the second turn: {:?} beside {:?} (the first turn at {first:?})",
+        (mx, my),
+        (bx, by, bw, bh)
+    );
+}
