@@ -7,7 +7,7 @@
 //! passes on what it asked ([`DesktopHandle::declare_bar`] and its siblings), and takes back what
 //! the person did there for the app's connection ([`DesktopHandle::take_bar_events`]).
 
-use super::{DesktopHandle, DesktopSurface, TabId, descriptor, route_of};
+use super::{DesktopHandle, DesktopSurface, TabId, app_name_of, descriptor, route_of};
 use crate::navigation::Admitted;
 use ui::hosted_window::HostedWindow;
 use ui::widget::WindowGroup;
@@ -460,7 +460,7 @@ impl DesktopSurface {
                 } else if named_before
                     .get(&tab.id)
                     .is_some_and(|name| tab.title == *name)
-                    && let Some(app) = app_of(tab)
+                    && let Some(app) = app_name_of(tab)
                 {
                     // The app names nothing any more — the note it showed is closed — so the window
                     // goes back to its app's name rather than keeping a place it has left.
@@ -575,16 +575,6 @@ fn active_group(
     rows.values_mut()
         .flat_map(|row| row.groups.iter_mut())
         .find(|group| group.active_tab_id() == tab)
-}
-
-/// The name the app showing `tab` goes by: the label the tile carries, or,
-/// for a tile that names only the app, the name the app is listed under.
-fn app_of(tab: &tilo_desktop_model::Tab) -> Option<String> {
-    match &tab.tile {
-        tilo_desktop_model::TileContent::LocalApp { label, .. } => Some(label.clone()),
-        tile => tilo_desktop_model::apps::canonical_app_id(tile)
-            .map(|app| tilo_desktop_search::names::app_name(&app)),
-    }
 }
 
 #[cfg(test)]

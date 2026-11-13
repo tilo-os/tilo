@@ -317,7 +317,7 @@ impl WindowMenuSurface {
         self.menu
             .set_about(self.reading.subject.as_ref().map(|subject| {
                 let named = match &subject.app {
-                    Some(app) => format!("{} ({app})", subject.title),
+                    Some(app) => ui::window_name::named(app, &subject.title),
                     None => subject.title.clone(),
                 };
                 ui::shared_selection::SharedSelection::of_text(&named)
@@ -783,6 +783,11 @@ mod tests {
 
     /// A menu the length the desk publishes, naming its window.
     fn menu_of(rows: usize) -> String {
+        menu_of_named(rows, "Notes", "Notes")
+    }
+
+    /// A menu whose window calls itself `title` and shows the app named `app`.
+    fn menu_of_named(rows: usize, title: &str, app: &str) -> String {
         let rows: Vec<Value> = (0..rows)
             .map(|i| {
                 serde_json::json!({
@@ -795,10 +800,40 @@ mod tests {
         serde_json::json!({
             "tab": "20",
             "anchor": { "x": 40, "y": 50 },
-            "subject": { "title": "Notes", "app": "so.tilo.notes" },
+            "subject": { "title": title, "app": app },
             "rows": rows,
         })
         .to_string()
+    }
+
+    /// What the box the send row opens is about.
+    fn box_chip(reading: &str) -> Option<String> {
+        let mut surface = WindowMenuSurface::showing(reading);
+        let send = surface.menu.items().len().saturating_sub(1);
+        surface.menu.click_item(send);
+        assert!(surface.menu.send_to().is_open(), "the row opens the box");
+        surface
+            .menu
+            .send_to()
+            .subjects()
+            .first()
+            .and_then(|about| about.anchor.excerpt.clone())
+    }
+
+    /// The box is about the window as a person names it: its title and the app's own name, never
+    /// the id the app installs under.
+    #[test]
+    fn the_box_is_about_the_window_the_way_a_person_names_it() {
+        assert_eq!(
+            box_chip(&menu_of_named(2, "Notes", "Notes")).as_deref(),
+            Some("Notes"),
+            "a window named for its app is the app alone"
+        );
+        assert_eq!(
+            box_chip(&menu_of_named(2, "Meeting notes", "Notes")).as_deref(),
+            Some("Meeting notes — Notes"),
+            "otherwise its title, and the app it shows"
+        );
     }
 
     #[test]
@@ -822,7 +857,7 @@ mod tests {
             surface.reading.subject,
             Some(Subject {
                 title: "Notes".into(),
-                app: Some("so.tilo.notes".into()),
+                app: Some("Notes".into()),
             })
         );
     }

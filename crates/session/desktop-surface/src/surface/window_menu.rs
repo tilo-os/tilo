@@ -42,7 +42,7 @@ use ui::icons::Icon;
 use crate::i18n::{t, t_args};
 use crate::navigation::{ChromeEffect, DeskEffect, Destination, RouteIds, Verb, WidthPreset};
 
-use super::{DesktopHandle, Shared};
+use super::{DesktopHandle, Shared, app_name_of};
 
 impl DesktopHandle {
     /// The windows whose bar was asked for its menu since the last call — a secondary click — in
@@ -69,20 +69,15 @@ pub struct WindowSubject {
 }
 
 impl DesktopHandle {
-    /// The window `tab` shows, named as the person knows it: its title and the app that paints it.
+    /// The window `tab` shows, named as the person knows it: its title and the app that paints it,
+    /// by the name a person knows the app by rather than the id it installs under.
     #[must_use]
     pub fn window_subject(&self, tab: TabId) -> Option<WindowSubject> {
         let shared = self.shared.borrow();
         let tab = shared.tree.tab(tab)?;
-        let app = match &tab.tile {
-            TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-                Some(app_id.clone())
-            }
-            _ => None,
-        };
         Some(WindowSubject {
             title: tab.title.clone(),
-            app,
+            app: app_name_of(tab),
         })
     }
 }

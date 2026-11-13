@@ -99,7 +99,7 @@ pub use search::{
 };
 pub use seed::{seed_tree, seed_tree_in};
 pub use tile_content::tile_app_kind;
-use tile_content::{build_tile, descriptor, placeholder};
+use tile_content::{app_name_of, build_tile, descriptor, placeholder};
 pub use window_menu::Row as WindowMenuRow;
 
 /// The caret or selection a surface publishes as its presence: the keyboard-focused widget's when

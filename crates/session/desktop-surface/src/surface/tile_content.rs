@@ -34,9 +34,16 @@ pub(super) fn descriptor(tab: &Tab) -> TabDescriptor {
     TabDescriptor {
         app_kind: Some(tile_app_kind(&tab.tile)),
         named: tab.is_named(),
-        app_name: tile_app_id(&tab.tile).map(tilo_desktop_search::names::app_name),
+        app_name: app_name_of(tab),
         ..TabDescriptor::new(tab.id, tab.title.clone())
     }
+}
+
+/// The app showing `tab`, named as a person knows it — the name the app is listed under, never the
+/// id it installs under ("Notes", not "so.tilo.notes"). `None` for a tile that runs no app: a
+/// stand-in, or a window whose app has not arrived.
+pub(super) fn app_name_of(tab: &Tab) -> Option<String> {
+    tile_app_id(&tab.tile).map(tilo_desktop_search::names::app_name)
 }
 
 /// The app a window's tile shows; `None` for a stand-in.
