@@ -1,9 +1,7 @@
 //! Process-local registry of intentionally audible playback engines.
 //!
-//! It carries logical content identity and transport state only. Decoder
-//! handles, local paths, signed URLs and `PipeWire` node ids never leave the
-//! process, which lets the shell advertise handoff without leaking bearer
-//! material or pretending a hardware node is portable.
+//! It carries logical content identity and transport state only: decoder handles,
+//! paths, signed URLs and `PipeWire` node ids never leave the process.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -56,8 +54,6 @@ pub struct PlaybackReport {
 }
 
 impl PlaybackReport {
-    /// Check the private report against the app/workspace identity certified
-    /// by the local broker connection.
     pub fn validate_route(&self, app_id: &str, workspace_id: &str) -> bool {
         if self.session.app_id != app_id
             || self.workspace_id != workspace_id
@@ -121,8 +117,6 @@ pub struct AppPlayback<'a> {
     pub controller_bus_name: Option<&'a str>,
 }
 
-/// Process-local registration owned by an app-native media transport.
-/// Dropping it removes the session from the shell's private handoff feed.
 #[derive(Debug)]
 pub struct AppPlaybackHandle {
     id: u64,
@@ -139,8 +133,6 @@ impl AppPlaybackHandle {
         }
     }
 
-    /// Publish the latest state, or withdraw it when the source is no longer
-    /// meaningfully audible/selected. Invalid descriptors fail closed.
     pub fn publish(&self, playback: AppPlayback<'_>) {
         let Ok(mut sessions) = registry().lock() else {
             return;
@@ -328,7 +320,6 @@ pub(crate) fn remove(engine_id: u64) {
     }
 }
 
-/// Snapshot every audible engine in this process for the OS fabric bridge.
 pub fn playback_sessions() -> Vec<PlaybackSession> {
     let mut reports = registry()
         .lock()
@@ -355,11 +346,6 @@ pub fn playback_sessions() -> Vec<PlaybackSession> {
     sessions
 }
 
-/// Replace the shell-owned snapshot of standards-discovered players.
-///
-/// Unlike authenticated app reports, discovery has no broker route to trust.
-/// Every item is therefore revalidated from its own installed-package route,
-/// and observations expire if the discovery worker stops refreshing them.
 pub fn replace_system_reports(reports: Vec<PlaybackReport>) {
     let reports = reports
         .into_iter()
@@ -375,8 +361,6 @@ pub fn replace_system_reports(reports: Vec<PlaybackReport>) {
     }
 }
 
-/// Resolve private source/controller information for a selected logical
-/// session without ever copying it into the convergent device snapshot.
 pub fn playback_report(session_id: &str) -> Option<PlaybackReport> {
     if let Ok(local) = registry().lock()
         && let Some(report) = local
@@ -405,7 +389,6 @@ pub fn playback_report(session_id: &str) -> Option<PlaybackReport> {
     })
 }
 
-/// Accepted handoff request ids observed from actually-opened target engines.
 pub fn accepted_handoff_requests() -> Vec<[u8; 16]> {
     let mut requests = Vec::new();
     if let Ok(local) = registry().lock() {
@@ -450,8 +433,6 @@ pub fn accept_outbound_handoff(request_id: [u8; 16], session_id: &str) -> Option
     pending.remove(&request_id)
 }
 
-/// Forget one exact outbound request after a typed rejection or local cancel.
-/// A mismatched session cannot consume another pending handoff.
 pub fn cancel_outbound_handoff(request_id: [u8; 16], session_id: &str) -> Option<PlaybackReport> {
     accept_outbound_handoff(request_id, session_id)
 }

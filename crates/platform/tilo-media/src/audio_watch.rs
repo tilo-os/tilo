@@ -1,36 +1,22 @@
 //! Event-driven notice that the audio *device* graph changed.
 //!
-//! A registry listener on its own `PipeWire` loop thread reports when an
-//! audio device or device node (a sink, a source, a sound card) appears or
-//! disappears, or when the default sink or source moves. Nothing else counts:
-//! streams, clients, ports and links come and go every time anything plays a
-//! sound or a tool like `pw-dump` connects, and a watcher that woke on them
-//! would never go quiet. Between changes the thread blocks in the loop's
-//! `epoll` with no timer at all.
+//! A registry listener on its own `PipeWire` loop thread reports when a device or
+//! device node appears or disappears, or the default sink or source moves; streams,
+//! clients, ports and links come and go with every sound played, and a watcher that
+//! woke on them would never go quiet. Between changes the thread blocks in the loop's
+//! `epoll` with no timer.
 //!
-//! The watch reports *that* the graph changed, not what it now is: consumers
-//! re-read the graph they need ([`crate::audio::enumerate`]). A burst of
-//! changes — a headset arriving brings a card, a sink, a source and a default
-//! switch — is reported once, [`DEBOUNCE`] after the first of them, so the
-//! reaction time is bounded by the window rather than stretched by the burst.
-//!
-//! This is the change source the session's single audio-graph owner can grow
-//! into: today it notifies, a graph reducer behind it can later publish the
-//! graph itself.
-//!
-//! [`watch_output_levels_and_capture`] also follows capture streams (a
-//! microphone or camera recording) for the privacy indicator: it reports how
-//! many are running each time that number changes, from the streams' own
-//! state on the same connection. Nothing is started to find out, and an idle
-//! graph reports nothing.
+//! The watch reports *that* the graph changed, not what it now is: consumers re-read
+//! it ([`crate::audio::enumerate`]). A burst (a headset brings a card, a sink, a
+//! source and a default switch) is reported once, [`DEBOUNCE`] after its first
+//! change.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-/// Where a `PipeWire` client connects: `PIPEWIRE_REMOTE` (`pipewire-0`
-/// unless set), in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR` unless
-/// it is a path of its own. Watching it tells a daemon that is not running
-/// from one that cannot be watched.
+/// Where a `PipeWire` client connects: `PIPEWIRE_REMOTE` (`pipewire-0` unless
+/// set) in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR`. Watching it tells a
+/// daemon that is not running from one that cannot be watched.
 pub fn pipewire_socket() -> Option<std::path::PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     let remote =
@@ -42,21 +28,14 @@ pub fn pipewire_socket() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(directory).join(remote))
 }
 
-/// How long after the first change of a burst the watch reports it.
 pub const DEBOUNCE: Duration = Duration::from_millis(50);
 
-/// What the watch reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GraphWatchEvent {
-    /// The device graph changed. Also sent once as soon as the watch has
-    /// read the initial registry, as the baseline to read the graph against.
     Changed,
-    /// The connection to `PipeWire` ended. Nothing further is reported; the
-    /// consumer observes some other way and watches again later.
     Lost,
 }
 
-/// The kind of a registry global, as far as the device graph cares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlobalKind {
     Node,
@@ -85,7 +64,6 @@ impl DeviceGlobals {
         device
     }
 
-    /// Whether the removed global `id` was part of the device graph.
     pub fn removed(&mut self, id: u32) -> bool {
         self.tracked.remove(&id)
     }
@@ -97,20 +75,14 @@ fn is_device_class(media_class: &str) -> bool {
     media_class.starts_with("Audio/")
 }
 
-/// The `default` metadata keys whose change moves where sound goes.
 pub fn is_default_device_key(key: &str) -> bool {
     matches!(key, "default.audio.sink" | "default.audio.source")
 }
 
-/// Whether `media_class` is an output device node, whose level and mute
-/// [`watch_output_levels`] follows.
 pub fn is_output_class(media_class: &str) -> bool {
     media_class == "Audio/Sink"
 }
 
-/// Whether `media_class` is a capture stream the privacy indicator
-/// attributes: an app recording a microphone, or a camera stream. The same
-/// classes `os_actions::active_media_uses` reads.
 pub fn is_capture_class(media_class: &str) -> bool {
     matches!(
         media_class,
@@ -127,8 +99,6 @@ pub struct CaptureStreams {
 }
 
 impl CaptureStreams {
-    /// Capture stream `id` reported its state. Whether the running set
-    /// changed.
     pub fn state(&mut self, id: u32, running: bool) -> bool {
         if running {
             self.running.insert(id)
@@ -137,29 +107,24 @@ impl CaptureStreams {
         }
     }
 
-    /// Global `id` went away. Whether it was a running capture stream.
     pub fn removed(&mut self, id: u32) -> bool {
         self.running.remove(&id)
     }
 
-    /// How many capture streams are running.
     pub fn running(&self) -> usize {
         self.running.len()
     }
 }
 
-/// What a watch follows besides the device graph.
 #[cfg_attr(
     not(all(feature = "pipewire", target_os = "linux")),
     expect(dead_code, reason = "only the native watch reads what to follow")
 )]
 struct Follow {
     output_levels: bool,
-    /// Told how many capture streams run, on each change of that number.
     capture: Option<Box<dyn Fn(usize) + Send>>,
 }
 
-/// A running watch. Dropping it stops and joins the loop thread.
 pub struct AudioGraphWatch {
     #[cfg(all(feature = "pipewire", target_os = "linux"))]
     _native: native::Watch,
@@ -171,14 +136,13 @@ impl std::fmt::Debug for AudioGraphWatch {
     }
 }
 
-/// Start watching the device graph. `notify` runs on the watch's thread; it
-/// should only hand the news on.
+/// Start watching the device graph. `notify` runs on the watch's thread; it should
+/// only hand the news on.
 ///
 /// # Errors
 ///
-/// Returns a diagnostic when `PipeWire` cannot be reached or this build has
-/// no native `PipeWire` support. The caller falls back to a slower way of
-/// observing — never to not observing.
+/// When `PipeWire` cannot be reached or this build has no native support. The caller
+/// falls back to a slower way of observing — never to not observing.
 pub fn watch(notify: impl Fn(GraphWatchEvent) + Send + 'static) -> Result<AudioGraphWatch, String> {
     spawn(
         notify,
@@ -189,10 +153,8 @@ pub fn watch(notify: impl Fn(GraphWatchEvent) + Send + 'static) -> Result<AudioG
     )
 }
 
-/// Like [`watch`], and also reports a change of any output's volume or
-/// mute (its `Props`), from whoever made it: a volume key, a slider, another
-/// app, `wpctl` in a terminal. An output's level changes only when someone
-/// changes it, so this goes quiet as the device graph does.
+/// Like [`watch`], and also reports a change of any output's volume or mute (its
+/// `Props`), from whoever made it: a volume key, a slider, another app, `wpctl`.
 ///
 /// # Errors
 ///
@@ -209,14 +171,6 @@ pub fn watch_output_levels(
     )
 }
 
-/// Like [`watch`], and also tells `capture` how many capture streams
-/// ([`is_capture_class`]) are running: once with the baseline, then
-/// [`DEBOUNCE`] after the first change of a burst that moved the number of
-/// running streams.
-///
-/// # Errors
-///
-/// As [`watch`].
 pub fn watch_and_capture(
     notify: impl Fn(GraphWatchEvent) + Send + 'static,
     capture: impl Fn(usize) + Send + 'static,
@@ -230,11 +184,11 @@ pub fn watch_and_capture(
     )
 }
 
-/// Like [`watch_output_levels`], and also tells `capture` how many capture
-/// streams ([`is_capture_class`]) are running: once with the baseline, then
-/// [`DEBOUNCE`] after the first change of a burst that moved the number of
-/// running streams. One connection serves both, so a status reader needs no
-/// second client, thread or process to keep the privacy indicator true.
+/// Like [`watch_output_levels`], and also tells `capture` how many capture streams
+/// ([`is_capture_class`]) are running: once with the baseline, then [`DEBOUNCE`]
+/// after the first change of a burst that moved the number of running streams. One
+/// connection serves both, so a status reader needs no second client, thread or
+/// process to keep the privacy indicator true.
 ///
 /// # Errors
 ///
@@ -269,7 +223,6 @@ fn spawn(
 
 #[cfg(all(feature = "pipewire", target_os = "linux"))]
 mod native {
-    //! The registry listener and its loop thread.
 
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
@@ -316,8 +269,6 @@ mod native {
             stop,
             thread: Some(thread),
         };
-        // The thread answers before it blocks: connecting is synchronous and
-        // fails at once when there is no daemon to connect to.
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(watch),
             Ok(Err(error)) => Err(error),
@@ -329,8 +280,6 @@ mod native {
     /// that order, so the listener drops before the proxy it listens on.
     type Bound = (u32, pw::metadata::MetadataListener, pw::metadata::Metadata);
 
-    /// A bound node: its listener and proxy, listener first. An output's
-    /// listener follows its `Props`, a capture stream's its state.
     type Output = (pw::node::NodeListener, pw::node::Node);
 
     type Connected = (
@@ -354,9 +303,6 @@ mod native {
         Ok((mainloop, context, core, registry))
     }
 
-    /// Where the initial registry read stands: two round trips, one for the
-    /// globals and the metadata bind they cause, one for the metadata's
-    /// properties, then the baseline.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Phase {
         Globals,
@@ -420,8 +366,6 @@ mod native {
             .error({
                 let lost = Rc::clone(&lost);
                 move |id, _, _, _| {
-                    // A failed bind is about one object; an error on the core
-                    // itself is the connection going away.
                     if id == pw::core::PW_ID_CORE {
                         lost.set(true);
                     }
@@ -506,8 +450,6 @@ mod native {
                         && property("media.class").is_some_and(is_capture_class)
                         && let Ok(node) = registry.bind::<pw::node::Node, _>(global)
                     {
-                        // Bound, the node reports its whole info, state
-                        // included, and then each change of it.
                         let id = global.id;
                         let listener = node
                             .add_listener_local()
@@ -515,8 +457,6 @@ mod native {
                                 let capture = Rc::clone(&capture);
                                 let mark_capture = mark_capture.clone();
                                 move |info| {
-                                    // The raw state: `NodeInfoRef::state`
-                                    // panics on an error without a message.
                                     let running = info.as_raw().state
                                         == pw::sys::pw_node_state_PW_NODE_STATE_RUNNING;
                                     if capture.borrow_mut().state(id, running) {
@@ -548,8 +488,6 @@ mod native {
                         .as_ref()
                         .is_some_and(|(bound, _, _)| *bound == id);
                     if unbound {
-                        // A restarted session manager publishes a new one to
-                        // bind; this one goes, listener before proxy.
                         let unbound = metadata.borrow_mut().take();
                         drop(unbound);
                         mark();

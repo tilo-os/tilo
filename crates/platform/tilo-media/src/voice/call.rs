@@ -1,26 +1,18 @@
-//! One call's audio devices: one-shot `PipeWire` registry custody for the
-//! graph a person picks a microphone from, and the exact connection
-//! `GStreamer` then runs that microphone and the call's output on.
+//! One call's audio devices: one-shot `PipeWire` registry custody for the graph a
+//! person picks a microphone from, and the exact connection `GStreamer` runs that
+//! microphone and the call's output on.
 //!
-//! The connection is the observer's own: it is opened, read for one registry
-//! round trip and handed over, so no other reader of the same socket survives
-//! and no stream reconnects by name behind the person's back.
-//!
-//! This is custody only: a [`Voice`] holds no call authority and no
-//! microphone permission, and the call that drives it owns both.
+//! The connection is the observer's own, opened, read for one registry round trip and
+//! handed over, so no other reader of the socket survives and no stream reconnects by
+//! name behind the person's back. A [`Voice`] holds no call authority and no
+//! microphone permission; the call that drives it owns both.
 
-/// What went wrong opening or running a call's audio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallError {
-    /// No audio graph, no sink to play on.
     Unavailable,
-    /// The microphone stopped yielding frames.
     CaptureFailed,
-    /// The capture source was lost.
     SourceLost,
-    /// The playout path failed.
     TransportFailed,
-    /// This platform has no voice audio.
     Unsupported,
 }
 
@@ -32,8 +24,6 @@ impl std::fmt::Display for CallError {
 
 impl std::error::Error for CallError {}
 
-/// What a call's audio runs on: this machine's speakers and microphones, or,
-/// in tests, the same pipeline ending in memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Audio {
     Devices,
@@ -43,24 +33,19 @@ pub enum Audio {
     Software,
 }
 
-/// A microphone this call may send: what the person picks between.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Source {
     pub id: String,
     pub label: String,
-    /// The node and its stable serial, as the observation named them.
     pub node: u32,
     pub serial: u32,
 }
 
-/// One frame this call's microphone captured.
 pub struct Frame {
     pub timestamp_48k: u64,
     pub payload: Vec<u8>,
 }
 
-/// What one observation saw: the audio nodes, the core's cookie, and the
-/// connection a call's streams run on.
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 pub struct Observed {
     pub graph: crate::audio::AudioGraph,
@@ -323,19 +308,13 @@ pub fn observe() -> Result<Observed, String> {
     if raw < 0 {
         return Err("PipeWire socket handoff unavailable".into());
     }
-    // SAFETY: a successful steal returns a new owned descriptor exactly once.
     let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
     drop(core);
     Ok(Observed { graph, socket })
 }
 
-/// One call's audio: the microphone it sends and what it plays, on one
-/// observation of the device graph.
 pub struct Voice(inner::Inner);
 
-/// A call's audio needs something to run it on: this device's `PipeWire`
-/// streams on Linux, or the software pipeline tests use. A host with neither
-/// has no call to open ([`CallError::Unavailable`]).
 #[cfg(all(
     feature = "voice",
     unix,
@@ -359,10 +338,7 @@ mod inner {
 
     pub(super) struct Inner {
         audio: Backing,
-        /// The microphones this call may send.
         sources: Vec<Source>,
-        /// The graph this call's streams were opened from: the connection its
-        /// microphone and output run on.
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         observed: Option<Observed>,
     }
@@ -385,8 +361,6 @@ mod inner {
         }
     }
 
-    /// The voice `sender`'s frames are played as: one publisher per device of
-    /// the call, at the one carrier generation this call's lane is.
     fn publisher(sender: [u8; 32]) -> PublicationId {
         PublicationId {
             namespace: hex::encode(sender),
@@ -480,7 +454,6 @@ mod inner {
             self.0.audio().set_deafened(deafened);
         }
 
-        /// The frames the microphone captured since the last pump.
         pub fn pump(&mut self, now: Instant) -> Result<Vec<Frame>, CallError> {
             let frames = self
                 .0
@@ -503,7 +476,6 @@ mod inner {
                 .map_err(|_| CallError::TransportFailed)
         }
 
-        /// Play one frame heard from `sender`.
         pub fn receive(
             &mut self,
             sender: [u8; 32],
@@ -538,8 +510,6 @@ mod inner {
             self.0.audio().remove_publisher(&publisher(sender));
         }
 
-        /// The samples played since this was last called, where the call
-        /// plays into memory.
         #[cfg(feature = "test-support")]
         pub fn played(&mut self) -> Vec<f32> {
             match &mut self.0.audio {

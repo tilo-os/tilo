@@ -1,82 +1,45 @@
 //! Checking and completing a calibration with more than one microphone.
 //!
-//! What a speaker group needs is each speaker's delay and level *where the
-//! listener sits*. The microphone at the listening position measures exactly
-//! that: its reading of a speaker is the whole delay from the scheduled start
-//! on the fabric clock (the member's output pipeline plus the acoustic path
-//! to the seat), and the level there. That reading is the answer.
+//! What a group needs is each speaker's delay and level *where the listener sits*,
+//! and the listening microphone measures exactly that. Other microphones help around
+//! it: every usable reading (SNR at least [`MIN_SNR_DB`]) is fit by
+//! `t[s,m] = a[s] + b[m] + r[s,m]` with a weighted median polish, so one bad reading
+//! cannot drag it; the seat's reading is checked against that prediction, and a
+//! missing, noisy or set-aside one is replaced by it, which carries the other
+//! microphones' average geometry. A microphone on a speaker's own device records and
+//! plays on one clock, so its reading splits into that device's output latency and
+//! the acoustic time of flight.
 //!
-//! Other microphones only help around it:
-//!
-//! * **Checking.** Every usable reading (SNR at least [`MIN_SNR_DB`]) is fit
-//!   by a small additive model, `t[s,m] = a[s] + b[m] + r[s,m]`: a per-speaker
-//!   term (output latency, member clock error), a per-microphone term (its
-//!   clock offset, capture latency) and a residual (geometry, noise). The fit
-//!   is a weighted median polish, so one bad reading cannot drag it. To check
-//!   the listening microphone's readings, the worst seat reading further
-//!   than [`ARRIVAL_OUTLIER_NS`] (15 ms) from the fit's `a[s] + b[L]` is set
-//!   aside and the fit repeated: gross errors (a clock step, a missed direct
-//!   sound) are tens of milliseconds, room geometry is a few. A seat reading
-//!   is judged only when at least two other microphones heard its speaker
-//!   and the seat kept two other speakers to anchor `b[L]`; a pair's two
-//!   seat readings anchor only each other, so they always stand. Levels are
-//!   checked the same way with [`LEVEL_OUTLIER_DB`].
-//! * **Filling in.** A listening reading that is missing, too noisy or set
-//!   aside is replaced by that prediction, which carries the other
-//!   microphones' average geometry instead of the seat's own: accurate to the
-//!   room's path differences, a few milliseconds at most. Without a
-//!   prediction (no other microphone heard the speaker, or the listening
-//!   microphone heard nothing else to anchor `b[L]`) the speaker is unknown.
-//! * **Splitting.** A microphone on the speaker's own device hears it
-//!   centimetres away, recording and playing on one clock, so fabric-clock
-//!   error cancels: its reading is that device's output latency. The rest
-//!   of the listening delay is acoustic time of flight.
-//!
-//! A reading's weight is its linear SNR, capped at [`MAX_SNR_DB`], discounted
-//! by the error bound of its device's clock estimate. With only the listening
+//! A reading's weight is its linear SNR, capped at [`MAX_SNR_DB`] and discounted by
+//! the error bound of its device's clock estimate. With only the listening
 //! microphone the result is exactly its raw readings.
 
-/// Readings with less SNR than this are ignored.
 pub const MIN_SNR_DB: f64 = 10.0;
-/// SNR beyond this adds no weight: other errors dominate by then.
 pub const MAX_SNR_DB: f64 = 40.0;
-/// A clock error bound of this much halves a reading's weight.
 pub const CLOCK_SCALE_NS: f64 = 250_000.0;
-/// A listening reading this far from the other microphones' prediction is a
-/// gross error rather than geometry.
 pub const ARRIVAL_OUTLIER_NS: f64 = 15_000_000.0;
 pub const LEVEL_OUTLIER_DB: f64 = 10.0;
-/// Median polish passes; it settles in a handful.
 const POLISH_PASSES: usize = 32;
 
-/// What one microphone heard of one speaker's sweep.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hearing {
     pub speaker: usize,
     pub microphone: usize,
-    /// Arrival after the sweep's scheduled start, measured on the
-    /// microphone's device against its fabric-clock mapping of the leader's
-    /// clock.
     pub arrival_ns: f64,
     pub level_db: f64,
     pub snr_db: f64,
-    /// Error bound of that device's leader-clock estimate at the sweep.
     pub clock_error_ns: f64,
 }
 
-/// One run's readings.
 #[derive(Clone, Copy, Debug)]
 pub struct FusionInput<'a> {
     pub speakers: usize,
     pub microphones: usize,
     pub hearings: &'a [Hearing],
     pub listening: usize,
-    /// Per speaker: the microphone on that speaker's own device, if it takes
-    /// part.
     pub own_microphone: &'a [Option<usize>],
 }
 
-/// One speaker as heard at the listening position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FusedSpeaker {
     pub arrival_ns: f64,
@@ -89,8 +52,6 @@ pub struct FusedSpeaker {
     /// (play and record share that device's clock, so fabric-clock error
     /// cancels).
     pub output_latency_ns: Option<f64>,
-    /// `arrival_ns - output_latency_ns`: time of flight to the listening
-    /// position.
     pub acoustic_ns: Option<f64>,
 }
 
@@ -99,12 +60,9 @@ pub struct Fusion {
     /// One per speaker; `None` when it could not be placed at the listening
     /// position.
     pub speakers: Vec<Option<FusedSpeaker>>,
-    /// `(speaker, microphone)` readings set aside.
     pub rejected: Vec<(usize, usize)>,
 }
 
-/// How much a reading counts: its linear SNR, capped, discounted by the
-/// clock error bound. Zero below [`MIN_SNR_DB`] or for a non-finite input.
 #[must_use]
 pub fn weight(snr_db: f64, clock_error_ns: f64) -> f64 {
     if snr_db.is_nan() || snr_db < MIN_SNR_DB || !clock_error_ns.is_finite() {
@@ -114,7 +72,6 @@ pub fn weight(snr_db: f64, clock_error_ns: f64) -> f64 {
     10.0_f64.powf(snr_db.min(MAX_SNR_DB) / 10.0) / clock.mul_add(clock, 1.0)
 }
 
-/// One usable reading of one quantity.
 #[derive(Clone, Copy, Debug)]
 struct Point {
     speaker: usize,
@@ -123,9 +80,6 @@ struct Point {
     weight: f64,
 }
 
-/// What the other microphones say the listening microphone should have
-/// read for `speaker`: `a[s] + b[L]` from a median polish without that
-/// reading. `None` without both terms.
 fn predict(
     points: &[Point],
     speakers: usize,
@@ -142,7 +96,6 @@ fn predict(
     Some(rows.get(speaker).copied().flatten()? + columns.get(listening).copied().flatten()?)
 }
 
-/// Weighted median polish of `value = row[speaker] + column[microphone]`.
 fn polish(
     points: &[Point],
     speakers: usize,
@@ -276,8 +229,6 @@ fn resolve(
         .collect()
 }
 
-/// The listening microphone's reading of every speaker, checked and
-/// completed by the others. See the module documentation for the model.
 #[must_use]
 pub fn fuse(input: &FusionInput<'_>) -> Fusion {
     let usable = input
@@ -357,12 +308,10 @@ mod tests {
     use super::*;
 
     const SOUND_M_PER_S: f64 = 343.0;
-    /// The listening microphone in every room below.
     const SEAT: usize = 0;
 
     struct Room {
         speakers: Vec<[f64; 2]>,
-        /// Output latency of each speaker's device.
         latency_ns: Vec<f64>,
         gain_db: Vec<f64>,
         microphones: Vec<[f64; 2]>,
@@ -415,7 +364,6 @@ mod tests {
             out
         }
 
-        /// What the seat's microphone truly reads of each speaker.
         fn truth(&self) -> Vec<(f64, f64)> {
             self.speakers
                 .iter()
