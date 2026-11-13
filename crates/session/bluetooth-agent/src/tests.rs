@@ -532,38 +532,42 @@ fn answers_are_exact_and_refuse_rather_than_guess() {
     assert_eq!(reply(&passkey(), None), PairingReply::Reject, "declined");
 }
 
-#[test]
-fn bluetooth_services_are_named_or_left_out_never_shown_as_uuids() {
-    assert_eq!(
-        service_key("0000110B-0000-1000-8000-00805F9B34FB"),
-        Some("bluetooth-service-audio")
-    );
-    assert_eq!(
-        service_key("00001124-0000-1000-8000-00805f9b34fb"),
-        Some("bluetooth-service-input")
-    );
-    assert_eq!(service_key("0000fe2c-0000-1000-8000-00805f9b34fb"), None);
-    assert_eq!(service_key("6e400001-b5a3-f393-e0a9-e50e24dcca9e"), None);
-}
+tilo_test_env::scenario! {
+    fn a_bluetooth_service_is_shown_by_what_it_does;
 
-#[test]
-fn a_service_request_names_the_service_by_what_it_does() {
-    let request = PairingRequest {
-        device_path: DEVICE.into(),
-        device_name: "Studio Headphones".into(),
-        prompt: PairingPrompt::AuthorizeService {
-            uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
-        },
-    };
-    let shown = PairingDetails::from(&request);
-    assert_eq!(shown.method, Method::AuthorizeService);
-    assert_eq!(shown.code, None);
-    assert_eq!(
-        shown.service_key.as_deref(),
-        Some("bluetooth-service-audio")
-    );
-    assert_eq!(
-        serde_json::to_value(&shown).expect("json")["method"],
-        "authorize_service"
-    );
+    phase bluetooth_services_are_named_or_left_out_never_shown_as_uuids;
+    {
+        assert_eq!(
+            service_key("0000110B-0000-1000-8000-00805F9B34FB"),
+            Some("bluetooth-service-audio")
+        );
+        assert_eq!(
+            service_key("00001124-0000-1000-8000-00805f9b34fb"),
+            Some("bluetooth-service-input")
+        );
+        assert_eq!(service_key("0000fe2c-0000-1000-8000-00805f9b34fb"), None);
+        assert_eq!(service_key("6e400001-b5a3-f393-e0a9-e50e24dcca9e"), None);
+    }
+
+    phase a_service_request_names_the_service_by_what_it_does;
+    {
+        let request = PairingRequest {
+            device_path: DEVICE.into(),
+            device_name: "Studio Headphones".into(),
+            prompt: PairingPrompt::AuthorizeService {
+                uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
+            },
+        };
+        let shown = PairingDetails::from(&request);
+        assert_eq!(shown.method, Method::AuthorizeService);
+        assert_eq!(shown.code, None);
+        assert_eq!(
+            shown.service_key.as_deref(),
+            Some("bluetooth-service-audio")
+        );
+        assert_eq!(
+            serde_json::to_value(&shown).expect("json")["method"],
+            "authorize_service"
+        );
+    }
 }
