@@ -201,6 +201,7 @@ pub struct CaptureScene {
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     pub access: Option<crate::panes::devices_access::AccessSample>,
     pub linked_account: Option<ui::linked_accounts::LinkState>,
+    #[cfg(feature = "tilo-os")]
     pub personal_devices: Vec<crate::panes::device_mesh::PersonalDevice>,
     pub home_relay: Option<ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting>,
     pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
@@ -340,6 +341,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
             .then(home_relay_fixture),
         billing: billing_fixture(fixture.scenario()),
+        #[cfg(feature = "tilo-os")]
         personal_devices: if matches!(
             fixture.scenario(),
             Some(scenario) if scenario == Category::DeviceMesh.slug()
@@ -382,6 +384,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
     });
 }
 
+#[cfg(feature = "tilo-os")]
 fn personal_devices_fixture() -> Vec<crate::panes::device_mesh::PersonalDevice> {
     use crate::panes::device_mesh::PersonalDevice;
     let device = |label: &str, key: &str, local, nearby| PersonalDevice {
