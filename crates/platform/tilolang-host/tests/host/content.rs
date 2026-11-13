@@ -56,15 +56,17 @@ fn body_field(window: &Window) -> (String, patch::ResourceRef) {
     (field, note)
 }
 
-/// The change of `doc` whose recorded action keeps parts as content, and those parts.
+/// The change of `doc` whose recorded action keeps parts as content, and those parts. Only what
+/// each change says of itself is read, in the order the document lists its changes: none is
+/// built again whole, the megabyte the paste wrote included.
 fn kept_as_content(doc: &mut automerge::AutoCommit) -> (automerge::ChangeHash, Vec<String>) {
     let document = doc.document();
     document
-        .get_changes(&[])
+        .get_changes_meta(&[])
         .iter()
         .rev()
         .find_map(|change| {
-            let hash = change.hash();
+            let hash = change.hash;
             let action = entry_of(document, hash)?.action?;
             let parts = action.content_parts();
             (!parts.is_empty()).then_some((hash, parts))
@@ -200,11 +202,13 @@ fn a_paragraph_of_the_whole_limit_is_kept_aloud() {
 fn pastes_past_a_mebibyte(paragraphs: usize) {
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
     let device = ContentStore::memory();
+    // One build of the package, for the three instances that run it here.
+    let notes = notes();
     let mut host = TilolangHost::new(None, wake());
     let (mut window, sent, _inbox) = instance_keeping(
         &mut host,
         spec(1, "ada", &route),
-        notes(),
+        notes.clone(),
         &route,
         Rc::default(),
         Rc::default(),
@@ -270,8 +274,18 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         "the writing device reads the paste back as it ran"
     );
 
-    reopened_reads_it_back(&route, &sent, device, paste);
-    a_peer_fetches_it(&route, &sent, paste, &parts, &offers);
+    // What the workspace holds of the record now. Ada's host runs no frame until her undo, so
+    // her connection sends nothing more meanwhile: the record that opens again and the peer
+    // each read a copy of this.
+    let workspace = workspace_copy(&sent);
+    let went_out = sent.borrow().len();
+    reopened_reads_it_back(&route, &notes, &workspace, device, paste);
+    a_peer_fetches_it(&route, &notes, &workspace, paste, &parts, &offers);
+    assert_eq!(
+        sent.borrow().len(),
+        went_out,
+        "Ada's connection sent nothing while the others read her record"
+    );
 
     // Ada's undo takes the paste back exactly.
     window.send(&[ToApp::Undo]);
@@ -283,11 +297,13 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
     );
 }
 
-/// The record opens again on the same device, over what its workspace holds: the device's store
-/// still holds the parts of the paste `paste`, and the action reads back as it ran.
+/// The record opens again on the same device, in an instance of `notes` over what its
+/// `workspace` holds: the device's store still holds the parts of the paste `paste`, and the
+/// action reads back as it ran.
 fn reopened_reads_it_back(
     route: &RouteSpec,
-    sent: &Sent,
+    notes: &Bundle,
+    workspace: &automerge::AutoCommit,
     device: ContentStore,
     paste: automerge::ChangeHash,
 ) {
@@ -297,27 +313,29 @@ fn reopened_reads_it_back(
     let (mut reopened, _, _) = instance_keeping(
         &mut again,
         spec(2, "ada", route),
-        notes(),
+        notes.clone(),
         route,
         Rc::default(),
         Rc::default(),
-        workspace_copy(sent),
+        workspace.clone(),
         device,
     );
     settle(&mut again, &mut reopened);
     let record = again.instances().next().unwrap().record();
     assert_eq!(
-        decoded(&workspace_copy(sent), paste, record.content().clone()),
+        decoded(workspace, paste, record.content().clone()),
         Verified::Reproduced,
         "after the record opens again, the paste reads back as it ran"
     );
 }
 
-/// A peer holds the change `paste` and not the `parts` it kept: decoding it asks the record's
-/// route, and once what Ada `offers` arrives the action reproduces its change there too.
+/// A peer runs `notes` over what the `workspace` holds: the change `paste` and not the `parts` it
+/// kept. Decoding it asks the record's route, and once what Ada `offers` arrives the action
+/// reproduces its change there too.
 fn a_peer_fetches_it(
     route: &RouteSpec,
-    sent: &Sent,
+    notes: &Bundle,
+    workspace: &automerge::AutoCommit,
     paste: automerge::ChangeHash,
     parts: &[String],
     offers: &BTreeMap<String, Vec<u8>>,
@@ -329,11 +347,11 @@ fn a_peer_fetches_it(
     let (mut graces, grace_sent, grace_inbox) = instance_on(
         &mut theirs,
         spec(3, "grace", &peer_route),
-        notes(),
+        notes.clone(),
         &peer_route,
         Rc::default(),
         Rc::default(),
-        workspace_copy(sent),
+        workspace.clone(),
     );
     settle(&mut theirs, &mut graces);
     let store = theirs
@@ -345,7 +363,7 @@ fn a_peer_fetches_it(
         .clone();
     assert!(
         matches!(
-            decoded(&workspace_copy(sent), paste, store.clone()),
+            decoded(workspace, paste, store.clone()),
             Verified::ContentMissing(_)
         ),
         "the peer lacks the body until it arrives"
@@ -377,7 +395,7 @@ fn a_peer_fetches_it(
     }
     settle(&mut theirs, &mut graces);
     assert_eq!(
-        decoded(&workspace_copy(sent), paste, store),
+        decoded(workspace, paste, store),
         Verified::Reproduced,
         "once the body arrived, the peer's action reproduces its change"
     );

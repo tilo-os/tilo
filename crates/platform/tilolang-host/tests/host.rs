@@ -1674,14 +1674,14 @@ fn press_new_note(window: &mut Window) {
     }]);
 }
 
-/// A notebook of `held` notes, the first of them open in the window as the person made it; what
-/// the instance did while the person typed `typed` into the open note's field whose placeholder
-/// is `field`, a key at a time, each followed by the host's frames until it owes none, as its
-/// loop runs them.
-fn typing(held: usize, field: &str, typed: &str) -> Typed {
+/// A notebook of `held` notes, an instance of `notes`, the first of them open in the window as
+/// the person made it; what the instance did while the person typed `typed` into the open note's
+/// field whose placeholder is `field`, a key at a time, each followed by the host's frames until
+/// it owes none, as its loop runs them.
+fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
     let directory = Rc::new(RefCell::new(Directory::default()));
     let (mut host, mut window, sent, inbox, _route) =
-        running_with("ada", NOTES, notes(), Rc::clone(&directory));
+        running_with("ada", NOTES, notes.clone(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     // The person starts a note from the empty notebook: it opens beside the list.
     press_new_note(&mut window);
@@ -1778,12 +1778,14 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
 
 #[test]
 fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook() {
+    // One build of the package, for the four notebooks typed in here.
+    let notes = notes();
     // A new note's title is empty, so its body's first text is its label until it has a
     // title: each key of the body publishes that label alone, with one note or with two
     // hundred, never the whole notebook's surface.
     let mut held_by = Vec::new();
     for held in [1, 200] {
-        let body = typing(held, "Write something", "draft");
+        let body = typing(&notes, held, "Write something", "draft");
         assert_eq!(
             (body.built, body.relabeled),
             (0, 5),
@@ -1812,7 +1814,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
     // note as with two hundred, and never the whole surface.
     let mut held_by = Vec::new();
     for held in [1, 200] {
-        let title = typing(held, "Untitled", "abc");
+        let title = typing(&notes, held, "Untitled", "abc");
         held_by.push((held, title.visited));
         assert_eq!(
             title.swept, 0,
