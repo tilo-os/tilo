@@ -481,28 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn line_local_word_boundaries_match_whole_text_segmentation() {
-        for text in [
-            "",
-            "\n",
-            "hello",
-            "hello\n\n  \nworld.",
-            "first line, done.\n\n\n   ... \n(second) line\n",
-            "שלום עולם\nمرحبا بالعالم!\n\nภาษาไทยไม่มีช่องว่าง\n日本語の文章。\n",
-            "emoji 👩‍💻 then e\u{301}\n  — \n can't stop\r\nnow",
-            "...\n!!\n",
-        ] {
-            for byte in 0..=text.len() + 1 {
-                assert_eq!(
-                    word_boundaries(text, byte),
-                    whole_text_word_boundaries(text, byte),
-                    "{text:?} at {byte}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn empty_clipboard_is_unavailable_but_whitespace_is_content() {
         let (services, _) = crate::host::HostServices::recording();
         let _host = crate::host::enter(&services);
@@ -682,233 +660,261 @@ mod tests {
         }
     }
 
-    #[test]
-    fn word_boundaries_follow_unicode_words_and_dictionaries() {
+    tilo_test_env::scenario! {
+        /// Word, grapheme, character and line boundaries.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn boundaries_are_grapheme_and_word_clean_at_every_byte;
+
+        phase line_local_word_boundaries_match_whole_text_segmentation;
         {
-            let s = "hello world quick ui";
-            assert_eq!(prev_word_boundary(s, s.len()), 18);
-            assert_eq!(prev_word_boundary(s, 18), 12);
-            assert_eq!(prev_word_boundary(s, 12), 6);
-            assert_eq!(prev_word_boundary(s, 6), 0);
-            assert_eq!(prev_word_boundary(s, 0), 0);
+            for text in [
+                "",
+                "\n",
+                "hello",
+                "hello\n\n  \nworld.",
+                "first line, done.\n\n\n   ... \n(second) line\n",
+                "שלום עולם\nمرحبا بالعالم!\n\nภาษาไทยไม่มีช่องว่าง\n日本語の文章。\n",
+                "emoji 👩‍💻 then e\u{301}\n  — \n can't stop\r\nnow",
+                "...\n!!\n",
+            ] {
+                for byte in 0..=text.len() + 1 {
+                    assert_eq!(
+                        word_boundaries(text, byte),
+                        whole_text_word_boundaries(text, byte),
+                        "{text:?} at {byte}"
+                    );
+                }
+            }
         }
 
+        phase word_boundaries_follow_unicode_words_and_dictionaries;
         {
-            let s = "hello world quick ui";
-            assert_eq!(next_word_boundary(s, 0), 6);
-            assert_eq!(next_word_boundary(s, 6), 12);
-            assert_eq!(next_word_boundary(s, 12), 18);
-            assert_eq!(next_word_boundary(s, 18), s.len());
-            assert_eq!(next_word_boundary(s, s.len()), s.len());
+            {
+                let s = "hello world quick ui";
+                assert_eq!(prev_word_boundary(s, s.len()), 18);
+                assert_eq!(prev_word_boundary(s, 18), 12);
+                assert_eq!(prev_word_boundary(s, 12), 6);
+                assert_eq!(prev_word_boundary(s, 6), 0);
+                assert_eq!(prev_word_boundary(s, 0), 0);
+            }
+
+            {
+                let s = "hello world quick ui";
+                assert_eq!(next_word_boundary(s, 0), 6);
+                assert_eq!(next_word_boundary(s, 6), 12);
+                assert_eq!(next_word_boundary(s, 12), 18);
+                assert_eq!(next_word_boundary(s, 18), s.len());
+                assert_eq!(next_word_boundary(s, s.len()), s.len());
+            }
+
+            {
+                let s = "hello world";
+                assert_eq!(word_boundaries(s, 2), (0, 5));
+                assert_eq!(word_boundaries(s, 0), (0, 5));
+                // At the space (idx 5), the left edge is the start of the previous word body
+                // — anchor snaps left.
+                assert_eq!(word_boundaries(s, 5), (0, 5));
+                assert_eq!(word_boundaries(s, 6), (6, 11));
+                assert_eq!(word_boundaries(s, 11), (6, 11));
+            }
+
+            // Case `word_boundaries_utf8_clean`: No slicing into the middle of a code point
+            // ("café" — é is 2 bytes).
+            {
+                let s = "café latte";
+                // Bytes: c=0 a=1 f=2 é=3..5 (space=5) l=6 a=7 t=8 t=9 e=10. len=11.
+                assert_eq!(s.len(), 11);
+                // Cursor inside "café": should select 0..5.
+                assert_eq!(word_boundaries(s, 3), (0, 5));
+                // Cursor at the space: snap left to 0..5.
+                assert_eq!(word_boundaries(s, 5), (0, 5));
+                // Cursor in "latte": 6..11.
+                assert_eq!(word_boundaries(s, 8), (6, 11));
+            }
+
+            {
+                let text = "can't pay 32.3 now";
+                assert_eq!(word_boundaries(text, 3), (0, "can't".len()));
+                let number_start = text.find("32.3").unwrap();
+                assert_eq!(
+                    word_boundaries(text, number_start + 2),
+                    (number_start, number_start + "32.3".len())
+                );
+                assert_eq!(next_word_boundary(text, 0), "can't ".len());
+            }
+
+            {
+                let text = "nai\u{308}ve café";
+                let first_end = text.find(' ').unwrap();
+                assert_eq!(word_boundaries(text, 4), (0, first_end));
+                assert_eq!(prev_word_boundary(text, first_end), 0);
+            }
+
+            {
+                let text = "ทุกสองสัปดาห์";
+                assert_eq!(next_word_boundary(text, 0), 9);
+                assert_eq!(next_word_boundary(text, 9), 18);
+                assert_eq!(prev_word_boundary(text, text.len()), 18);
+                assert_eq!(word_boundaries(text, 12), (9, 18));
+            }
+
+            {
+                assert_eq!(word_boundaries("", 0), (0, 0));
+            }
+
+            {
+                let s = "alpha beta gamma";
+                // A char index inside "beta" (chars 6..10) snaps to the word's char span.
+                assert_eq!(word_boundaries_chars(s, 7), (6, 10));
+                assert_eq!(next_word_boundary_chars(s, 0), 6); // start of "beta"
+                assert_eq!(next_word_boundary_chars(s, 6), 11); // start of "gamma"
+                assert_eq!(prev_word_boundary_chars(s, 10), 6); // start of "beta"
+            }
         }
 
+        phase line_scoped_grapheme_walks_match_whole_text_segmentation_at_every_byte;
         {
-            let s = "hello world";
-            assert_eq!(word_boundaries(s, 2), (0, 5));
-            assert_eq!(word_boundaries(s, 0), (0, 5));
-            // At the space (idx 5), the left edge is the start of the previous word body
-            // — anchor snaps left.
-            assert_eq!(word_boundaries(s, 5), (0, 5));
-            assert_eq!(word_boundaries(s, 6), (6, 11));
-            assert_eq!(word_boundaries(s, 11), (6, 11));
-        }
-
-        // Case `word_boundaries_utf8_clean`: No slicing into the middle of a code point
-        // ("café" — é is 2 bytes).
-        {
-            let s = "café latte";
-            // Bytes: c=0 a=1 f=2 é=3..5 (space=5) l=6 a=7 t=8 t=9 e=10. len=11.
-            assert_eq!(s.len(), 11);
-            // Cursor inside "café": should select 0..5.
-            assert_eq!(word_boundaries(s, 3), (0, 5));
-            // Cursor at the space: snap left to 0..5.
-            assert_eq!(word_boundaries(s, 5), (0, 5));
-            // Cursor in "latte": 6..11.
-            assert_eq!(word_boundaries(s, 8), (6, 11));
-        }
-
-        {
-            let text = "can't pay 32.3 now";
-            assert_eq!(word_boundaries(text, 3), (0, "can't".len()));
-            let number_start = text.find("32.3").unwrap();
-            assert_eq!(
-                word_boundaries(text, number_start + 2),
-                (number_start, number_start + "32.3".len())
-            );
-            assert_eq!(next_word_boundary(text, 0), "can't ".len());
-        }
-
-        {
-            let text = "nai\u{308}ve café";
-            let first_end = text.find(' ').unwrap();
-            assert_eq!(word_boundaries(text, 4), (0, first_end));
-            assert_eq!(prev_word_boundary(text, first_end), 0);
-        }
-
-        {
-            let text = "ทุกสองสัปดาห์";
-            assert_eq!(next_word_boundary(text, 0), 9);
-            assert_eq!(next_word_boundary(text, 9), 18);
-            assert_eq!(prev_word_boundary(text, text.len()), 18);
-            assert_eq!(word_boundaries(text, 12), (9, 18));
-        }
-
-        {
-            assert_eq!(word_boundaries("", 0), (0, 0));
-        }
-
-        {
-            let s = "alpha beta gamma";
-            // A char index inside "beta" (chars 6..10) snaps to the word's char span.
-            assert_eq!(word_boundaries_chars(s, 7), (6, 10));
-            assert_eq!(next_word_boundary_chars(s, 0), 6); // start of "beta"
-            assert_eq!(next_word_boundary_chars(s, 6), 11); // start of "gamma"
-            assert_eq!(prev_word_boundary_chars(s, 10), 6); // start of "beta"
-        }
-    }
-
-    #[test]
-    fn line_scoped_grapheme_walks_match_whole_text_segmentation_at_every_byte() {
-        let atoms = [
-            "",
-            "a",
-            "\n",
-            "\r",
-            "\r\n",
-            "a\u{301}",
-            "\u{301}",
-            "👩‍👩‍👧‍👦",
-            "👩🏽‍🚀",
-            "🇫🇮🇦🇺",
-            "\u{600}a",
-            "क्‍ष",
-            "\0",
-        ];
-        for left in atoms {
-            for right in atoms {
-                for separator in ["", "\n", "\r\n"] {
-                    let text = format!("{left}{separator}{right}");
-                    let boundaries: Vec<usize> = grapheme_indices(&text).map(|(i, _)| i).collect();
-                    for offset in 0..=text.len().saturating_add(1) {
-                        let bounded = offset.min(text.len());
-                        let at_or_before = if offset >= text.len() {
-                            text.len()
-                        } else {
-                            boundaries
+            let atoms = [
+                "",
+                "a",
+                "\n",
+                "\r",
+                "\r\n",
+                "a\u{301}",
+                "\u{301}",
+                "👩‍👩‍👧‍👦",
+                "👩🏽‍🚀",
+                "🇫🇮🇦🇺",
+                "\u{600}a",
+                "क्‍ष",
+                "\0",
+            ];
+            for left in atoms {
+                for right in atoms {
+                    for separator in ["", "\n", "\r\n"] {
+                        let text = format!("{left}{separator}{right}");
+                        let boundaries: Vec<usize> = grapheme_indices(&text).map(|(i, _)| i).collect();
+                        for offset in 0..=text.len().saturating_add(1) {
+                            let bounded = offset.min(text.len());
+                            let at_or_before = if offset >= text.len() {
+                                text.len()
+                            } else {
+                                boundaries
+                                    .iter()
+                                    .copied()
+                                    .rfind(|&i| i <= offset)
+                                    .unwrap_or(0)
+                            };
+                            let previous = boundaries
                                 .iter()
                                 .copied()
-                                .rfind(|&i| i <= offset)
-                                .unwrap_or(0)
-                        };
-                        let previous = boundaries
-                            .iter()
-                            .copied()
-                            .rfind(|&i| i < bounded)
-                            .unwrap_or(0);
-                        let next = boundaries
-                            .iter()
-                            .copied()
-                            .find(|&i| i > bounded)
-                            .unwrap_or(text.len());
-                        assert_eq!(
-                            grapheme_boundary_at_or_before(&text, offset),
-                            at_or_before,
-                            "at or before byte {offset} in {text:?}"
-                        );
-                        assert_eq!(
-                            prev_char_boundary(&text, offset),
-                            previous,
-                            "before byte {offset} in {text:?}"
-                        );
-                        assert_eq!(
-                            next_char_boundary(&text, offset),
-                            next,
-                            "after byte {offset} in {text:?}"
-                        );
+                                .rfind(|&i| i < bounded)
+                                .unwrap_or(0);
+                            let next = boundaries
+                                .iter()
+                                .copied()
+                                .find(|&i| i > bounded)
+                                .unwrap_or(text.len());
+                            assert_eq!(
+                                grapheme_boundary_at_or_before(&text, offset),
+                                at_or_before,
+                                "at or before byte {offset} in {text:?}"
+                            );
+                            assert_eq!(
+                                prev_char_boundary(&text, offset),
+                                previous,
+                                "before byte {offset} in {text:?}"
+                            );
+                            assert_eq!(
+                                next_char_boundary(&text, offset),
+                                next,
+                                "after byte {offset} in {text:?}"
+                            );
+                        }
                     }
                 }
             }
         }
-    }
 
-    #[test]
-    fn character_and_line_boundaries_are_utf8_and_grapheme_clean() {
+        phase character_and_line_boundaries_are_utf8_and_grapheme_clean;
         {
-            let s = "first\nsecond\nthird";
-            // In "first" (idx 2): start 0, end 5 (the \n).
-            assert_eq!(line_boundaries(s, 2), (0, 5));
-            // At the first newline (idx 5): treated as end-of-first-line.
-            assert_eq!(line_boundaries(s, 5), (0, 5));
-            // In "second" (idx 8): start 6, end 12.
-            assert_eq!(line_boundaries(s, 8), (6, 12));
-            // In "third" (idx 14): start 13, end = len = 18.
-            assert_eq!(line_boundaries(s, 14), (13, 18));
-            assert_eq!(line_boundaries(s, s.len()), (13, 18));
-        }
+            {
+                let s = "first\nsecond\nthird";
+                // In "first" (idx 2): start 0, end 5 (the \n).
+                assert_eq!(line_boundaries(s, 2), (0, 5));
+                // At the first newline (idx 5): treated as end-of-first-line.
+                assert_eq!(line_boundaries(s, 5), (0, 5));
+                // In "second" (idx 8): start 6, end 12.
+                assert_eq!(line_boundaries(s, 8), (6, 12));
+                // In "third" (idx 14): start 13, end = len = 18.
+                assert_eq!(line_boundaries(s, 14), (13, 18));
+                assert_eq!(line_boundaries(s, s.len()), (13, 18));
+            }
 
-        {
-            assert_eq!(line_boundaries("", 0), (0, 0));
-        }
+            {
+                assert_eq!(line_boundaries("", 0), (0, 0));
+            }
 
-        {
-            let s = "\n\n";
-            // Before first \n: empty line, (0,0).
-            assert_eq!(line_boundaries(s, 0), (0, 0));
-            // Right after first \n: empty middle line, (1,1).
-            assert_eq!(line_boundaries(s, 1), (1, 1));
-            // After last \n: empty final line, (2,2).
-            assert_eq!(line_boundaries(s, 2), (2, 2));
-        }
+            {
+                let s = "\n\n";
+                // Before first \n: empty line, (0,0).
+                assert_eq!(line_boundaries(s, 0), (0, 0));
+                // Right after first \n: empty middle line, (1,1).
+                assert_eq!(line_boundaries(s, 1), (1, 1));
+                // After last \n: empty final line, (2,2).
+                assert_eq!(line_boundaries(s, 2), (2, 2));
+            }
 
-        {
-            let s = "aé€b"; // a=0, é=1..3, €=3..6, b=6..7. len=7.
-            assert_eq!(s.len(), 7);
-            assert_eq!(next_char_boundary(s, 0), 1);
-            assert_eq!(next_char_boundary(s, 1), 3);
-            assert_eq!(next_char_boundary(s, 3), 6);
-            assert_eq!(next_char_boundary(s, 6), 7);
-            assert_eq!(next_char_boundary(s, 7), 7);
-            assert_eq!(prev_char_boundary(s, 7), 6);
-            assert_eq!(prev_char_boundary(s, 6), 3);
-            assert_eq!(prev_char_boundary(s, 3), 1);
-            assert_eq!(prev_char_boundary(s, 1), 0);
-            assert_eq!(prev_char_boundary(s, 0), 0);
-        }
+            {
+                let s = "aé€b"; // a=0, é=1..3, €=3..6, b=6..7. len=7.
+                assert_eq!(s.len(), 7);
+                assert_eq!(next_char_boundary(s, 0), 1);
+                assert_eq!(next_char_boundary(s, 1), 3);
+                assert_eq!(next_char_boundary(s, 3), 6);
+                assert_eq!(next_char_boundary(s, 6), 7);
+                assert_eq!(next_char_boundary(s, 7), 7);
+                assert_eq!(prev_char_boundary(s, 7), 6);
+                assert_eq!(prev_char_boundary(s, 6), 3);
+                assert_eq!(prev_char_boundary(s, 3), 1);
+                assert_eq!(prev_char_boundary(s, 1), 0);
+                assert_eq!(prev_char_boundary(s, 0), 0);
+            }
 
-        {
-            let combining = "a\u{301}b";
-            let first_cluster_end = "a\u{301}".len();
-            assert_eq!(next_char_boundary(combining, 0), first_cluster_end);
-            assert_eq!(prev_char_boundary(combining, first_cluster_end), 0);
+            {
+                let combining = "a\u{301}b";
+                let first_cluster_end = "a\u{301}".len();
+                assert_eq!(next_char_boundary(combining, 0), first_cluster_end);
+                assert_eq!(prev_char_boundary(combining, first_cluster_end), 0);
 
-            let family = "👩‍👩‍👧‍👦!";
-            let emoji_end = family.len() - 1;
-            assert_eq!(next_char_boundary(family, 0), emoji_end);
-            assert_eq!(prev_char_boundary(family, emoji_end), 0);
-            assert_eq!(
-                grapheme_boundary_at_or_before(family, family.len()),
-                family.len()
-            );
-            assert_eq!(grapheme_boundary_at_or_before(family, 4), 0);
-        }
+                let family = "👩‍👩‍👧‍👦!";
+                let emoji_end = family.len() - 1;
+                assert_eq!(next_char_boundary(family, 0), emoji_end);
+                assert_eq!(prev_char_boundary(family, emoji_end), 0);
+                assert_eq!(
+                    grapheme_boundary_at_or_before(family, family.len()),
+                    family.len()
+                );
+                assert_eq!(grapheme_boundary_at_or_before(family, 4), 0);
+            }
 
-        {
-            let s = "abc";
-            assert_eq!(prev_word_boundary(s, s.len()), 0);
-            assert_eq!(next_word_boundary(s, s.len()), s.len());
-            assert_eq!(prev_word_boundary(s, 0), 0);
-            assert_eq!(next_word_boundary(s, 0), s.len());
-            assert_eq!(prev_word_boundary("", 0), 0);
-            assert_eq!(next_word_boundary("", 0), 0);
-        }
+            {
+                let s = "abc";
+                assert_eq!(prev_word_boundary(s, s.len()), 0);
+                assert_eq!(next_word_boundary(s, s.len()), s.len());
+                assert_eq!(prev_word_boundary(s, 0), 0);
+                assert_eq!(next_word_boundary(s, 0), s.len());
+                assert_eq!(prev_word_boundary("", 0), 0);
+                assert_eq!(next_word_boundary("", 0), 0);
+            }
 
-        {
-            // Multibyte chars: indices returned are *char* indices, not bytes.
-            let s = "café złto";
-            // "café" is chars 0..4 ('c','a','f','é'); index 2 lands inside it.
-            assert_eq!(word_boundaries_chars(s, 2), (0, 4));
-            // The next word "złto" is chars 5..9.
-            assert_eq!(word_boundaries_chars(s, 6), (5, 9));
+            {
+                // Multibyte chars: indices returned are *char* indices, not bytes.
+                let s = "café złto";
+                // "café" is chars 0..4 ('c','a','f','é'); index 2 lands inside it.
+                assert_eq!(word_boundaries_chars(s, 2), (0, 4));
+                // The next word "złto" is chars 5..9.
+                assert_eq!(word_boundaries_chars(s, 6), (5, 9));
+            }
         }
     }
 }

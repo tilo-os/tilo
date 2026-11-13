@@ -741,18 +741,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_preset_is_a_valid_legible_document() {
-        for preset in Preset::ALL {
-            let doc = preset.document();
-            assert_eq!(doc.validate(), Ok(()), "{}", preset.name());
-            assert_eq!(doc.findings(), Vec::new(), "{}", preset.name());
-            assert_eq!(Preset::find(preset.id()), Some(preset));
-            assert_eq!(Preset::find(preset.name()), Some(preset));
-        }
-        assert_eq!(Preset::find("Nord"), None);
-    }
-
-    #[test]
     fn every_tinted_emphasis_hue_keeps_every_floor_on_every_preset() {
         for preset in Preset::ALL {
             for step in 0..72_u16 {
@@ -776,395 +764,419 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_document_round_trips_and_other_schemas_are_not_admitted() {
-        let mut doc = Preset::DarkSoft.document();
-        doc.emphasis = Emphasis::Tinted { hue: 30.0 };
-        let json = serde_json::to_value(&doc).unwrap();
-        assert_eq!(json["type"]["base_size"], 14.0);
-        assert_eq!(json["emphasis"]["kind"], "tinted");
-        let back: ThemeDocument = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(back, doc);
+    tilo_test_env::scenario! {
+        /// A theme document through its JSON, at this schema and older ones.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn documents_round_trip_and_older_schemas_still_load;
 
-        let mut old = doc.clone();
-        old.schema_version = 4;
-        assert_eq!(old.validate(), Err("unsupported theme schema"));
-        let mut legacy = json;
-        legacy["accent"] = serde_json::json!("#3b82f6");
-        assert!(
-            serde_json::from_value::<ThemeDocument>(legacy).is_err(),
-            "roles this schema does not have are not admitted"
-        );
-    }
+        phase a_document_round_trips_and_other_schemas_are_not_admitted;
+        {
+            let mut doc = Preset::DarkSoft.document();
+            doc.emphasis = Emphasis::Tinted { hue: 30.0 };
+            let json = serde_json::to_value(&doc).unwrap();
+            assert_eq!(json["type"]["base_size"], 14.0);
+            assert_eq!(json["emphasis"]["kind"], "tinted");
+            let back: ThemeDocument = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(back, doc);
 
-    /// The Liquid Glass document round-trips with its lens: the set's name and every
-    /// parameter it states come back, a band, light angle or dispersion out of its
-    /// admitted range is refused, and the theme built from it hands the lens to every
-    /// role's parts.
-    #[test]
-    fn the_liquid_glass_document_round_trips_with_its_lens() {
-        use crate::tokens::SurfaceRole;
-        let mut doc = Preset::LiquidGlass.document();
-        doc.material.floating = Finish::named(
-            "liquid",
-            [
-                ("tint", 0.2),
-                ("refraction", 10.0),
-                ("band", 16.0),
-                ("dispersion", 0.25),
-                ("light_angle", 60.0),
-            ],
-        )
-        .unwrap();
-        let json = serde_json::to_value(&doc).unwrap();
-        assert_eq!(json["material"]["floating"]["painter"], "liquid");
-        assert_eq!(json["material"]["floating"]["band"], 16.0);
-        assert_eq!(json["material"]["floating"]["dispersion"], 0.25);
-        let back: ThemeDocument = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(back, doc);
-        assert_eq!(back.validate(), Ok(()));
-        let theme = crate::theme::Theme::from_document(&back).unwrap();
-        for role in [
-            SurfaceRole::Window,
-            SurfaceRole::Control,
-            SurfaceRole::Floating,
-            SurfaceRole::Bar,
-        ] {
-            assert_eq!(theme.finish(role).painter(), "liquid", "{role:?}");
-        }
-        assert_eq!(
-            theme.finish(SurfaceRole::Floating).param("band"),
-            Some(16.0)
-        );
-        assert_eq!(
-            theme.finish(SurfaceRole::Floating).param("light_angle"),
-            Some(60.0)
-        );
-        for (name, value) in [("band", 80.0), ("light_angle", 400.0), ("dispersion", 0.9)] {
-            let mut out = json.clone();
-            out["material"]["floating"][name] = serde_json::json!(value);
-            let refused = serde_json::from_value::<ThemeDocument>(out)
-                .map_or(true, |doc| doc.validate().is_err());
-            assert!(refused, "{name} {value} was admitted");
-        }
-    }
-
-    #[test]
-    fn out_of_band_values_are_refused_and_failing_contrast_is_named() {
-        let base = Preset::Light.document();
-        for (field, edit) in [
-            (
-                "radius",
-                Box::new(|d: &mut ThemeDocument| d.shape.window_radius = 80.0)
-                    as Box<dyn Fn(&mut ThemeDocument)>,
-            ),
-            (
-                "density",
-                Box::new(|d: &mut ThemeDocument| d.density.spacing = 0.1),
-            ),
-            (
-                "size",
-                Box::new(|d: &mut ThemeDocument| d.type_.base_size = f32::NAN),
-            ),
-            (
-                "face",
-                Box::new(|d: &mut ThemeDocument| d.type_.face = " ".into()),
-            ),
-            (
-                "motion",
-                Box::new(|d: &mut ThemeDocument| d.motion.character = 3.0),
-            ),
-            (
-                "tint",
-                Box::new(|d: &mut ThemeDocument| {
-                    d.material.floating = Finish::frosted(24.0, 1.4, 1.0);
-                }),
-            ),
-            (
-                "glass",
-                Box::new(|d: &mut ThemeDocument| {
-                    d.material.window = Finish::glass([24.0, 0.4, 1.0, 90.0, 0.2, 0.1]);
-                }),
-            ),
-            (
-                "border",
-                Box::new(|d: &mut ThemeDocument| d.shape.border.width = 12.0),
-            ),
-            (
-                "depth",
-                Box::new(|d: &mut ThemeDocument| d.depth = Depth::Shadow { strength: -1.0 }),
-            ),
-            (
-                "type contrast",
-                Box::new(|d: &mut ThemeDocument| d.type_.contrast = 4.0),
-            ),
-            (
-                "weights",
-                Box::new(|d: &mut ThemeDocument| {
-                    d.type_.weights.heading = ThemeWeight::Regular;
-                    d.type_.weights.label = ThemeWeight::Bold;
-                }),
-            ),
-            (
-                "duration",
-                Box::new(|d: &mut ThemeDocument| d.motion.duration_scale = 0.0),
-            ),
-            (
-                "hover",
-                Box::new(|d: &mut ThemeDocument| d.material.selector.hover_alpha = 0.3),
-            ),
-            (
-                "rim",
-                Box::new(|d: &mut ThemeDocument| d.material.selector.rim_alpha = f32::NAN),
-            ),
-            (
-                "chroma",
-                Box::new(|d: &mut ThemeDocument| d.palette.chroma = 0.2),
-            ),
-        ] {
-            let mut doc = base.clone();
-            edit(&mut doc);
-            assert!(doc.validate().is_err(), "{field} must be refused");
-        }
-
-        let mut murky = base;
-        murky.palette.ink.tertiary = 0.80;
-        assert_eq!(murky.validate(), Ok(()), "structurally fine");
-        let findings = murky.findings();
-        assert!(
-            findings
-                .iter()
-                .any(|f| f.foreground == crate::tokens::contrast::Role::TextTertiary),
-            "{findings:?}"
-        );
-    }
-
-    #[test]
-    fn high_contrast_keeps_shape_density_type_and_motion() {
-        let mut doc = Preset::Light.document();
-        doc.shape.window_radius = 6.0;
-        doc.density.spacing = 1.2;
-        doc.emphasis = Emphasis::Tinted { hue: 30.0 };
-        let hc = doc.in_high_contrast();
-        assert!(hc.palette.high_contrast && !hc.palette.dark);
-        assert_eq!(hc.name, "High contrast light");
-        assert_eq!(hc.emphasis, Emphasis::Inverted);
-        assert!((hc.shape.window_radius - 6.0).abs() < f32::EPSILON);
-        assert!((hc.density.spacing - 1.2).abs() < f32::EPSILON);
-        assert_eq!(hc.material, ThemeMaterial::opaque());
-        assert_eq!(hc.material.selector, SelectorFinish::OPAQUE);
-        assert_eq!(hc.findings(), Vec::new());
-    }
-
-    #[test]
-    fn shipped_documents_are_valid_and_legible_and_parse_from_their_files() {
-        for (preset, json) in SHIPPED_DOCUMENTS {
-            let parsed: ThemeDocument = serde_json::from_str(json).unwrap();
-            assert_eq!(parsed.id, preset.id());
-            assert_eq!(parsed.name, preset.name());
-            assert_eq!(parsed.palette, preset.palette(), "{}", preset.name());
-            assert_eq!(preset.document(), parsed);
-        }
-        let glass = Preset::Glass.document();
-        for role in [
-            glass.material.window,
-            glass.material.control,
-            glass.material.floating,
-        ] {
-            assert_eq!(role.painter(), "glass", "{role:?}");
-        }
-        let block = Preset::Block.document();
-        assert_eq!(block.shape.window_radius, 0.0);
-        assert_eq!(block.depth, Depth::None);
-        assert_eq!(block.motion.curve, MotionCurve::None);
-        assert!(block.shape.border.outlines());
-        assert_eq!(block.material.roles().opaque(), block.material.roles());
-
-        // Every look's icon role is its own: Pixelated's outline is a whole 2 px it can
-        // land on, and no other shipped look restates it.
-        let pixelated = Preset::Pixelated.document();
-        assert_eq!(pixelated.icons, Some(ThemeIcons { stroke: 2.0 }));
-        for preset in Preset::ALL {
-            if preset == Preset::Pixelated {
-                continue;
-            }
-            assert_eq!(
-                preset.document().icons,
-                None,
-                "{} keeps the stock icons",
-                preset.name()
+            let mut old = doc.clone();
+            old.schema_version = 4;
+            assert_eq!(old.validate(), Err("unsupported theme schema"));
+            let mut legacy = json;
+            legacy["accent"] = serde_json::json!("#3b82f6");
+            assert!(
+                serde_json::from_value::<ThemeDocument>(legacy).is_err(),
+                "roles this schema does not have are not admitted"
             );
         }
-        assert!(
-            (crate::theme::Theme::preset(Preset::Pixelated)
-                .tokens
-                .icon_stroke_px
-                - 2.0)
-                .abs()
-                < f32::EPSILON
-        );
-        assert!(
-            (crate::theme::Theme::preset(Preset::Block)
-                .tokens
-                .icon_stroke_px
-                - 1.5)
-                .abs()
-                < f32::EPSILON
-        );
-    }
 
-    /// A theme a person saved at schema 7 keeps applying: it is read as the current
-    /// schema, resolves to exactly the theme it built before, and is written back at the
-    /// current schema.
-    #[test]
-    fn a_schema_7_document_resolves_as_it_did_and_saves_as_the_current_schema() {
-        const EMBER_V7: &str = include_str!("../tests/fixtures/themes/ember-schema-7.json");
-        assert!(THEME_SCHEMAS_READ.contains(&7));
-        let old: ThemeDocument = serde_json::from_str(EMBER_V7).expect("schema 7 is read");
-        assert_eq!(old.validate(), Ok(()));
-        assert_eq!(old.schema_version, THEME_SCHEMA_VERSION);
-
-        // What schema 7 built: its blur and tint on floating chrome, and every role it
-        // could not name at its stock value.
-        let mut current: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
-        current["schema_version"] = serde_json::json!(THEME_SCHEMA_VERSION);
-        current["material"] = serde_json::json!({
-            "floating": { "painter": "default", "blur": 30.0, "tint": 0.8, "saturation": 1.0 },
-            "selector": current["material"]["selector"].clone(),
-        });
-        let current: ThemeDocument = serde_json::from_value(current).unwrap();
-        assert_eq!(old, current);
-        let theme = crate::theme::Theme::from_document(&old).expect("admitted");
-        let surfaces = &theme.tokens.colors.surfaces;
-        assert!((surfaces.material_blur_px - 30.0).abs() < f32::EPSILON);
-        assert!((surfaces.material_opacity - 0.8).abs() < f32::EPSILON);
-        assert_eq!(
-            theme.tokens,
-            crate::theme::Theme::from_document(&current).unwrap().tokens
-        );
-
-        // The stock dark theme as schema 7 wrote it resolves to Dark.
-        let mut dark = serde_json::to_value(Preset::Dark.document()).unwrap();
-        dark["schema_version"] = serde_json::json!(7);
-        dark["shape"] = serde_json::json!({ "window_radius": dark["shape"]["window_radius"] });
-        for added in ["contrast", "weights"] {
-            dark["type"].as_object_mut().unwrap().remove(added);
-        }
-        for added in ["curve", "duration_scale"] {
-            dark["motion"].as_object_mut().unwrap().remove(added);
-        }
-        dark.as_object_mut().unwrap().remove("depth");
-        dark["material"] = serde_json::json!({
-            "blur": crate::tokens::colors::MATERIAL_BLUR_PX,
-            "tint_opacity": crate::tokens::colors::MATERIAL_ALPHA,
-            "selector": dark["material"]["selector"].clone(),
-        });
-        let dark: ThemeDocument = serde_json::from_value(dark).expect("schema 7 is read");
-        assert_eq!(
-            crate::theme::Theme::from_document(&dark).unwrap().tokens,
-            crate::theme::Theme::dark().tokens
-        );
-
-        let saved = serde_json::to_value(&old).unwrap();
-        assert_eq!(saved["schema_version"], THEME_SCHEMA_VERSION);
-        assert!(saved["material"].get("blur").is_none());
-        assert_eq!(serde_json::from_value::<ThemeDocument>(saved).unwrap(), old);
-
-        let mut unknown: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
-        unknown["schema_version"] = serde_json::json!(6);
-        let unknown: ThemeDocument = serde_json::from_value(unknown).unwrap();
-        assert_eq!(unknown.validate(), Err("unsupported theme schema"));
-    }
-
-    #[test]
-    fn every_material_round_trips_on_a_whole_document() {
-        let glass = Finish::glass([20.0, 0.2, 1.8, 12.0, 0.4, 0.2]);
-        let translucent = Finish::frosted(30.0, 0.4, 0.5);
-        for finish in [Finish::flat(), Finish::solid(), translucent, glass] {
-            let mut doc = Preset::Dark.document();
-            doc.material.window = finish.clone();
-            doc.material.control = finish.clone();
-            doc.material.floating = finish.clone();
-            doc.material.bar = Some(finish.clone());
-            doc.shape.border = Border {
-                width: 2.0,
-                ink: crate::tokens::BorderInk::Standard,
-            };
-            doc.depth = Depth::Outline;
-            doc.type_.contrast = 1.25;
-            doc.type_.weights = ThemeWeights {
-                body: ThemeWeight::Medium,
-                label: ThemeWeight::Semibold,
-                heading: ThemeWeight::Bold,
-            };
-            doc.motion = ThemeMotion {
-                character: 0.5,
-                curve: MotionCurve::Eased,
-                duration_scale: 1.5,
-            };
-            assert_eq!(doc.validate(), Ok(()), "{finish:?}");
-            let json = serde_json::to_string(&doc).unwrap();
-            let back: ThemeDocument = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, doc, "{finish:?}");
-            assert_eq!(doc.findings(), Vec::new(), "{finish:?}");
-        }
-    }
-
-    #[test]
-    fn a_document_naming_only_the_old_roles_takes_the_stock_new_ones() {
-        let json = serde_json::json!({
-            "schema_version": THEME_SCHEMA_VERSION,
-            "id": "terse", "name": "Terse",
-            "palette": serde_json::to_value(Palette::dark()).unwrap(),
-            "presence": { "lightness": 0.74, "chroma": 0.14 },
-            "shape": { "window_radius": 14.0 },
-            "density": { "spacing": 1.0 },
-            "type": { "face": "Default", "reading": "Literata", "base_size": 14.0 },
-            "motion": { "character": 1.0 },
-            "material": {}
-        });
-        let doc: ThemeDocument = serde_json::from_value(json).unwrap();
-        assert_eq!(doc.material, ThemeMaterial::stock());
-        assert_eq!(doc.depth, Depth::STOCK);
-        assert_eq!(doc.shape.border, Border::STOCK);
-        assert_eq!(doc.motion, ThemeMotion::STOCK);
-        assert_eq!(doc.type_.weights, ThemeWeights::STOCK);
-        assert_eq!(doc.validate(), Ok(()));
-    }
-
-    #[test]
-    fn the_backdrop_band_narrows_to_what_the_ink_can_afford() {
-        use crate::tokens::SurfaceRole;
-        use crate::tokens::finish::{MATERIAL_SPREAD, material_spread, worst_grounds};
-        let mut doc = Preset::Dark.document();
-        doc.palette.ink.secondary = 0.64;
-        doc.material.window = Finish::glass([24.0, 0.0, 1.0, 8.0, 0.2, 0.1]);
-        assert_eq!(doc.validate(), Ok(()));
-        let colors =
-            Colors::as_authored(&doc.palette, doc.emphasis, doc.presence, PresenceHue::Blue);
-        let spread = material_spread(&colors, colors.surfaces.content);
-        assert!((1.0..MATERIAL_SPREAD).contains(&spread), "{spread}");
-        for ground in worst_grounds(&colors, &doc.material.roles(), SurfaceRole::Window) {
-            for (ink, floor) in [(colors.text_dim, 4.5), (colors.text_tertiary, 3.0)] {
-                let ratio = crate::color::contrast_ratio(ink, ground);
-                assert!(ratio >= floor - 1e-6, "{ratio} under {floor}");
+        phase the_liquid_glass_document_round_trips_with_its_lens;
+        // The Liquid Glass document round-trips with its lens: the set's name and every
+        // parameter it states come back, a band, light angle or dispersion out of its
+        // admitted range is refused, and the theme built from it hands the lens to every
+        // role's parts.
+        {
+            use crate::tokens::SurfaceRole;
+            let mut doc = Preset::LiquidGlass.document();
+            doc.material.floating = Finish::named(
+                "liquid",
+                [
+                    ("tint", 0.2),
+                    ("refraction", 10.0),
+                    ("band", 16.0),
+                    ("dispersion", 0.25),
+                    ("light_angle", 60.0),
+                ],
+            )
+            .unwrap();
+            let json = serde_json::to_value(&doc).unwrap();
+            assert_eq!(json["material"]["floating"]["painter"], "liquid");
+            assert_eq!(json["material"]["floating"]["band"], 16.0);
+            assert_eq!(json["material"]["floating"]["dispersion"], 0.25);
+            let back: ThemeDocument = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(back, doc);
+            assert_eq!(back.validate(), Ok(()));
+            let theme = crate::theme::Theme::from_document(&back).unwrap();
+            for role in [
+                SurfaceRole::Window,
+                SurfaceRole::Control,
+                SurfaceRole::Floating,
+                SurfaceRole::Bar,
+            ] {
+                assert_eq!(theme.finish(role).painter(), "liquid", "{role:?}");
+            }
+            assert_eq!(
+                theme.finish(SurfaceRole::Floating).param("band"),
+                Some(16.0)
+            );
+            assert_eq!(
+                theme.finish(SurfaceRole::Floating).param("light_angle"),
+                Some(60.0)
+            );
+            for (name, value) in [("band", 80.0), ("light_angle", 400.0), ("dispersion", 0.9)] {
+                let mut out = json.clone();
+                out["material"]["floating"][name] = serde_json::json!(value);
+                let refused = serde_json::from_value::<ThemeDocument>(out)
+                    .map_or(true, |doc| doc.validate().is_err());
+                assert!(refused, "{name} {value} was admitted");
             }
         }
-        assert!(
-            !doc.findings()
-                .iter()
-                .any(|f| matches!(f.ground, crate::tokens::contrast::Role::Material(_))),
-            "no ink misses its floor on the material"
-        );
-        let stock = Colors::as_authored(
-            &Palette::dark(),
-            Emphasis::You,
-            Palette::dark().stock_presence(),
-            PresenceHue::Blue,
-        );
-        assert!(
-            (material_spread(&stock, stock.surfaces.overlay) - MATERIAL_SPREAD).abs() < 1e-9,
-            "Default's floating material keeps its band"
-        );
+
+        phase a_schema_7_document_resolves_as_it_did_and_saves_as_the_current_schema;
+        // A theme a person saved at schema 7 keeps applying: it is read as the current
+        // schema, resolves to exactly the theme it built before, and is written back at the
+        // current schema.
+        {
+            const EMBER_V7: &str = include_str!("../tests/fixtures/themes/ember-schema-7.json");
+            assert!(THEME_SCHEMAS_READ.contains(&7));
+            let old: ThemeDocument = serde_json::from_str(EMBER_V7).expect("schema 7 is read");
+            assert_eq!(old.validate(), Ok(()));
+            assert_eq!(old.schema_version, THEME_SCHEMA_VERSION);
+
+            // What schema 7 built: its blur and tint on floating chrome, and every role it
+            // could not name at its stock value.
+            let mut current: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
+            current["schema_version"] = serde_json::json!(THEME_SCHEMA_VERSION);
+            current["material"] = serde_json::json!({
+                "floating": { "painter": "default", "blur": 30.0, "tint": 0.8, "saturation": 1.0 },
+                "selector": current["material"]["selector"].clone(),
+            });
+            let current: ThemeDocument = serde_json::from_value(current).unwrap();
+            assert_eq!(old, current);
+            let theme = crate::theme::Theme::from_document(&old).expect("admitted");
+            let surfaces = &theme.tokens.colors.surfaces;
+            assert!((surfaces.material_blur_px - 30.0).abs() < f32::EPSILON);
+            assert!((surfaces.material_opacity - 0.8).abs() < f32::EPSILON);
+            assert_eq!(
+                theme.tokens,
+                crate::theme::Theme::from_document(&current).unwrap().tokens
+            );
+
+            // The stock dark theme as schema 7 wrote it resolves to Dark.
+            let mut dark = serde_json::to_value(Preset::Dark.document()).unwrap();
+            dark["schema_version"] = serde_json::json!(7);
+            dark["shape"] = serde_json::json!({ "window_radius": dark["shape"]["window_radius"] });
+            for added in ["contrast", "weights"] {
+                dark["type"].as_object_mut().unwrap().remove(added);
+            }
+            for added in ["curve", "duration_scale"] {
+                dark["motion"].as_object_mut().unwrap().remove(added);
+            }
+            dark.as_object_mut().unwrap().remove("depth");
+            dark["material"] = serde_json::json!({
+                "blur": crate::tokens::colors::MATERIAL_BLUR_PX,
+                "tint_opacity": crate::tokens::colors::MATERIAL_ALPHA,
+                "selector": dark["material"]["selector"].clone(),
+            });
+            let dark: ThemeDocument = serde_json::from_value(dark).expect("schema 7 is read");
+            assert_eq!(
+                crate::theme::Theme::from_document(&dark).unwrap().tokens,
+                crate::theme::Theme::dark().tokens
+            );
+
+            let saved = serde_json::to_value(&old).unwrap();
+            assert_eq!(saved["schema_version"], THEME_SCHEMA_VERSION);
+            assert!(saved["material"].get("blur").is_none());
+            assert_eq!(serde_json::from_value::<ThemeDocument>(saved).unwrap(), old);
+
+            let mut unknown: serde_json::Value = serde_json::from_str(EMBER_V7).unwrap();
+            unknown["schema_version"] = serde_json::json!(6);
+            let unknown: ThemeDocument = serde_json::from_value(unknown).unwrap();
+            assert_eq!(unknown.validate(), Err("unsupported theme schema"));
+        }
+
+        phase every_material_round_trips_on_a_whole_document;
+        {
+            let glass = Finish::glass([20.0, 0.2, 1.8, 12.0, 0.4, 0.2]);
+            let translucent = Finish::frosted(30.0, 0.4, 0.5);
+            for finish in [Finish::flat(), Finish::solid(), translucent, glass] {
+                let mut doc = Preset::Dark.document();
+                doc.material.window = finish.clone();
+                doc.material.control = finish.clone();
+                doc.material.floating = finish.clone();
+                doc.material.bar = Some(finish.clone());
+                doc.shape.border = Border {
+                    width: 2.0,
+                    ink: crate::tokens::BorderInk::Standard,
+                };
+                doc.depth = Depth::Outline;
+                doc.type_.contrast = 1.25;
+                doc.type_.weights = ThemeWeights {
+                    body: ThemeWeight::Medium,
+                    label: ThemeWeight::Semibold,
+                    heading: ThemeWeight::Bold,
+                };
+                doc.motion = ThemeMotion {
+                    character: 0.5,
+                    curve: MotionCurve::Eased,
+                    duration_scale: 1.5,
+                };
+                assert_eq!(doc.validate(), Ok(()), "{finish:?}");
+                let json = serde_json::to_string(&doc).unwrap();
+                let back: ThemeDocument = serde_json::from_str(&json).unwrap();
+                assert_eq!(back, doc, "{finish:?}");
+                assert_eq!(doc.findings(), Vec::new(), "{finish:?}");
+            }
+        }
+
+        phase a_document_naming_only_the_old_roles_takes_the_stock_new_ones;
+        {
+            let json = serde_json::json!({
+                "schema_version": THEME_SCHEMA_VERSION,
+                "id": "terse", "name": "Terse",
+                "palette": serde_json::to_value(Palette::dark()).unwrap(),
+                "presence": { "lightness": 0.74, "chroma": 0.14 },
+                "shape": { "window_radius": 14.0 },
+                "density": { "spacing": 1.0 },
+                "type": { "face": "Default", "reading": "Literata", "base_size": 14.0 },
+                "motion": { "character": 1.0 },
+                "material": {}
+            });
+            let doc: ThemeDocument = serde_json::from_value(json).unwrap();
+            assert_eq!(doc.material, ThemeMaterial::stock());
+            assert_eq!(doc.depth, Depth::STOCK);
+            assert_eq!(doc.shape.border, Border::STOCK);
+            assert_eq!(doc.motion, ThemeMotion::STOCK);
+            assert_eq!(doc.type_.weights, ThemeWeights::STOCK);
+            assert_eq!(doc.validate(), Ok(()));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// What a theme document must hold to be admitted.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn documents_are_valid_and_legible_or_refused_by_name;
+
+        phase every_preset_is_a_valid_legible_document;
+        {
+            for preset in Preset::ALL {
+                let doc = preset.document();
+                assert_eq!(doc.validate(), Ok(()), "{}", preset.name());
+                assert_eq!(doc.findings(), Vec::new(), "{}", preset.name());
+                assert_eq!(Preset::find(preset.id()), Some(preset));
+                assert_eq!(Preset::find(preset.name()), Some(preset));
+            }
+            assert_eq!(Preset::find("Nord"), None);
+        }
+
+        phase out_of_band_values_are_refused_and_failing_contrast_is_named;
+        {
+            let base = Preset::Light.document();
+            for (field, edit) in [
+                (
+                    "radius",
+                    Box::new(|d: &mut ThemeDocument| d.shape.window_radius = 80.0)
+                        as Box<dyn Fn(&mut ThemeDocument)>,
+                ),
+                (
+                    "density",
+                    Box::new(|d: &mut ThemeDocument| d.density.spacing = 0.1),
+                ),
+                (
+                    "size",
+                    Box::new(|d: &mut ThemeDocument| d.type_.base_size = f32::NAN),
+                ),
+                (
+                    "face",
+                    Box::new(|d: &mut ThemeDocument| d.type_.face = " ".into()),
+                ),
+                (
+                    "motion",
+                    Box::new(|d: &mut ThemeDocument| d.motion.character = 3.0),
+                ),
+                (
+                    "tint",
+                    Box::new(|d: &mut ThemeDocument| {
+                        d.material.floating = Finish::frosted(24.0, 1.4, 1.0);
+                    }),
+                ),
+                (
+                    "glass",
+                    Box::new(|d: &mut ThemeDocument| {
+                        d.material.window = Finish::glass([24.0, 0.4, 1.0, 90.0, 0.2, 0.1]);
+                    }),
+                ),
+                (
+                    "border",
+                    Box::new(|d: &mut ThemeDocument| d.shape.border.width = 12.0),
+                ),
+                (
+                    "depth",
+                    Box::new(|d: &mut ThemeDocument| d.depth = Depth::Shadow { strength: -1.0 }),
+                ),
+                (
+                    "type contrast",
+                    Box::new(|d: &mut ThemeDocument| d.type_.contrast = 4.0),
+                ),
+                (
+                    "weights",
+                    Box::new(|d: &mut ThemeDocument| {
+                        d.type_.weights.heading = ThemeWeight::Regular;
+                        d.type_.weights.label = ThemeWeight::Bold;
+                    }),
+                ),
+                (
+                    "duration",
+                    Box::new(|d: &mut ThemeDocument| d.motion.duration_scale = 0.0),
+                ),
+                (
+                    "hover",
+                    Box::new(|d: &mut ThemeDocument| d.material.selector.hover_alpha = 0.3),
+                ),
+                (
+                    "rim",
+                    Box::new(|d: &mut ThemeDocument| d.material.selector.rim_alpha = f32::NAN),
+                ),
+                (
+                    "chroma",
+                    Box::new(|d: &mut ThemeDocument| d.palette.chroma = 0.2),
+                ),
+            ] {
+                let mut doc = base.clone();
+                edit(&mut doc);
+                assert!(doc.validate().is_err(), "{field} must be refused");
+            }
+
+            let mut murky = base;
+            murky.palette.ink.tertiary = 0.80;
+            assert_eq!(murky.validate(), Ok(()), "structurally fine");
+            let findings = murky.findings();
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.foreground == crate::tokens::contrast::Role::TextTertiary),
+                "{findings:?}"
+            );
+        }
+
+        phase high_contrast_keeps_shape_density_type_and_motion;
+        {
+            let mut doc = Preset::Light.document();
+            doc.shape.window_radius = 6.0;
+            doc.density.spacing = 1.2;
+            doc.emphasis = Emphasis::Tinted { hue: 30.0 };
+            let hc = doc.in_high_contrast();
+            assert!(hc.palette.high_contrast && !hc.palette.dark);
+            assert_eq!(hc.name, "High contrast light");
+            assert_eq!(hc.emphasis, Emphasis::Inverted);
+            assert!((hc.shape.window_radius - 6.0).abs() < f32::EPSILON);
+            assert!((hc.density.spacing - 1.2).abs() < f32::EPSILON);
+            assert_eq!(hc.material, ThemeMaterial::opaque());
+            assert_eq!(hc.material.selector, SelectorFinish::OPAQUE);
+            assert_eq!(hc.findings(), Vec::new());
+        }
+
+        phase shipped_documents_are_valid_and_legible_and_parse_from_their_files;
+        {
+            for (preset, json) in SHIPPED_DOCUMENTS {
+                let parsed: ThemeDocument = serde_json::from_str(json).unwrap();
+                assert_eq!(parsed.id, preset.id());
+                assert_eq!(parsed.name, preset.name());
+                assert_eq!(parsed.palette, preset.palette(), "{}", preset.name());
+                assert_eq!(preset.document(), parsed);
+            }
+            let glass = Preset::Glass.document();
+            for role in [
+                glass.material.window,
+                glass.material.control,
+                glass.material.floating,
+            ] {
+                assert_eq!(role.painter(), "glass", "{role:?}");
+            }
+            let block = Preset::Block.document();
+            assert_eq!(block.shape.window_radius, 0.0);
+            assert_eq!(block.depth, Depth::None);
+            assert_eq!(block.motion.curve, MotionCurve::None);
+            assert!(block.shape.border.outlines());
+            assert_eq!(block.material.roles().opaque(), block.material.roles());
+
+            // Every look's icon role is its own: Pixelated's outline is a whole 2 px it can
+            // land on, and no other shipped look restates it.
+            let pixelated = Preset::Pixelated.document();
+            assert_eq!(pixelated.icons, Some(ThemeIcons { stroke: 2.0 }));
+            for preset in Preset::ALL {
+                if preset == Preset::Pixelated {
+                    continue;
+                }
+                assert_eq!(
+                    preset.document().icons,
+                    None,
+                    "{} keeps the stock icons",
+                    preset.name()
+                );
+            }
+            assert!(
+                (crate::theme::Theme::preset(Preset::Pixelated)
+                    .tokens
+                    .icon_stroke_px
+                    - 2.0)
+                    .abs()
+                    < f32::EPSILON
+            );
+            assert!(
+                (crate::theme::Theme::preset(Preset::Block)
+                    .tokens
+                    .icon_stroke_px
+                    - 1.5)
+                    .abs()
+                    < f32::EPSILON
+            );
+        }
+
+        phase the_backdrop_band_narrows_to_what_the_ink_can_afford;
+        {
+            use crate::tokens::SurfaceRole;
+            use crate::tokens::finish::{MATERIAL_SPREAD, material_spread, worst_grounds};
+            let mut doc = Preset::Dark.document();
+            doc.palette.ink.secondary = 0.64;
+            doc.material.window = Finish::glass([24.0, 0.0, 1.0, 8.0, 0.2, 0.1]);
+            assert_eq!(doc.validate(), Ok(()));
+            let colors =
+                Colors::as_authored(&doc.palette, doc.emphasis, doc.presence, PresenceHue::Blue);
+            let spread = material_spread(&colors, colors.surfaces.content);
+            assert!((1.0..MATERIAL_SPREAD).contains(&spread), "{spread}");
+            for ground in worst_grounds(&colors, &doc.material.roles(), SurfaceRole::Window) {
+                for (ink, floor) in [(colors.text_dim, 4.5), (colors.text_tertiary, 3.0)] {
+                    let ratio = crate::color::contrast_ratio(ink, ground);
+                    assert!(ratio >= floor - 1e-6, "{ratio} under {floor}");
+                }
+            }
+            assert!(
+                !doc.findings()
+                    .iter()
+                    .any(|f| matches!(f.ground, crate::tokens::contrast::Role::Material(_))),
+                "no ink misses its floor on the material"
+            );
+            let stock = Colors::as_authored(
+                &Palette::dark(),
+                Emphasis::You,
+                Palette::dark().stock_presence(),
+                PresenceHue::Blue,
+            );
+            assert!(
+                (material_spread(&stock, stock.surfaces.overlay) - MATERIAL_SPREAD).abs() < 1e-9,
+                "Default's floating material keeps its band"
+            );
+        }
     }
 }

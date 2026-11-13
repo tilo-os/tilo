@@ -779,144 +779,150 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn every_finish_round_trips_and_out_of_band_values_are_refused() {
-        let glass = glass_with(10.0, 0.15, 1.6);
-        for finish in [
-            Finish::flat(),
-            Finish::solid(),
-            Finish::frosted(24.0, 0.5, 1.2),
-            glass.clone(),
-        ] {
-            let json = serde_json::to_value(&finish).unwrap();
-            assert_eq!(serde_json::from_value::<Finish>(json).unwrap(), finish);
-            assert_eq!(finish.validate(), Ok(()));
-        }
-        let json = serde_json::to_value(&glass).unwrap();
-        assert_eq!(json["painter"], serde_json::json!("glass"));
-        assert_eq!(json["refraction"], serde_json::json!(10.0));
-        assert_eq!(
-            serde_json::from_value::<Finish>(serde_json::json!({"painter": "block"})).unwrap(),
-            Finish::flat()
-        );
-        assert_eq!(
-            serde_json::from_value::<Finish>(serde_json::json!({"painter": "default"})).unwrap(),
-            Finish::solid()
-        );
-        assert_eq!(
-            serde_json::from_value::<Finish>(serde_json::json!({
-                "painter": "default", "saturation": 1.2, "tint": 0.5, "blur": 24.0
-            }))
-            .unwrap(),
-            Finish::frosted(24.0, 0.5, 1.2)
-        );
-        assert!(
-            serde_json::from_value::<Finish>(serde_json::json!({"painter": "block", "blur": 3.0}))
-                .is_err(),
-            "the block set takes no blur"
-        );
-        assert!(
-            serde_json::from_value::<Finish>(serde_json::json!({"painter": "glass", "blur": 3.0}))
-                .is_err(),
-            "glass states every parameter"
-        );
-        assert!(
-            serde_json::from_value::<Finish>(serde_json::json!({"painter": "chrome"})).is_err(),
-            "a painter set this build does not have is not admitted"
-        );
-        for bad in [
-            Finish::frosted(80.0, 0.5, 1.0),
-            Finish::frosted(8.0, f32::NAN, 1.0),
-            glass_with(64.0, 0.1, 1.0),
-            glass_with(8.0, 0.9, 1.0),
-            glass_with(8.0, 0.1, 3.0),
-        ] {
-            assert!(bad.validate().is_err(), "{bad:?}");
-        }
-        assert!((Finish::frosted(60.0, 0.5, 1.0).usable().blur() - 48.0).abs() < 1e-6);
-    }
+    tilo_test_env::scenario! {
+        /// `Finish`: its JSON, its bounds and what the translucency settings make of it.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn finishes_round_trip_and_follow_translucency;
 
-    #[test]
-    fn opaque_keeps_flat_flat_and_makes_the_rest_solid() {
-        let block = RoleFinishes {
-            window: Finish::flat(),
-            control: Finish::flat(),
-            floating: Finish::flat(),
-            bar: Some(Finish::flat()),
-        };
-        assert_eq!(block.opaque(), block);
-        assert_eq!(RoleFinishes::stock().opaque().floating, Finish::solid());
-        assert_eq!(*glass_with(4.0, 0.1, 1.0).opaque(), Finish::solid());
-        assert_eq!(*glass_with(4.0, 0.1, 1.0).forced(), Finish::solid());
-        assert_eq!(*Finish::flat().forced(), Finish::flat());
-        assert_eq!(
-            *RoleFinishes {
-                bar: None,
-                ..RoleFinishes::stock()
+        phase every_finish_round_trips_and_out_of_band_values_are_refused;
+        {
+            let glass = glass_with(10.0, 0.15, 1.6);
+            for finish in [
+                Finish::flat(),
+                Finish::solid(),
+                Finish::frosted(24.0, 0.5, 1.2),
+                glass.clone(),
+            ] {
+                let json = serde_json::to_value(&finish).unwrap();
+                assert_eq!(serde_json::from_value::<Finish>(json).unwrap(), finish);
+                assert_eq!(finish.validate(), Ok(()));
             }
-            .of(SurfaceRole::Bar),
-            Finish::flat(),
-            "a theme without a bar body draws it flat"
-        );
-        let stock = RoleFinishes::stock();
-        let stock_bar = stock.of(SurfaceRole::Bar);
-        assert!(stock_bar.translucent() && stock_bar.blur() > 0.0);
-        assert!(stock_bar.hairline(), "the stock bar keeps its hairline");
-        assert_eq!(
-            stock.opaque().bar.as_ref(),
-            Some(&Finish::solid()),
-            "nothing may be translucent"
-        );
-        assert!(!Finish::flat().hairline());
-        assert!(Finish::solid().hairline());
-        assert!(!Finish::solid().translucent());
-        assert!(Finish::stock_floating().translucent());
-    }
-
-    /// A calm surface is the glass with its translucency off: its light falls away with
-    /// the strength, but a look's own grain — a pixel cell, the cell grid, a shader's
-    /// pattern size — is what the look is made of, so it stays.
-    #[test]
-    fn calm_keeps_the_looks_own_grain_and_drops_the_light() {
-        let pixelated = Finish::named(
-            "pixelated",
-            [("cell", 4.0), ("cover", 0.8), ("blur", 0.0), ("grid", 0.2)],
-        )
-        .unwrap();
-        let calm = pixelated.with_translucency(0.0);
-        assert_eq!(calm.painter(), "pixelated");
-        assert_eq!(calm.param("cell"), Some(4.0), "the cells stay a look");
-        assert_eq!(calm.param("cover"), Some(0.0), "nothing shows through");
-        assert_eq!(calm.param("grid"), Some(0.2), "the grid stays");
-        let glass = glass_with(16.0, 0.2, 1.5);
-        let calm = glass.with_translucency(0.0);
-        assert!((calm.param("refraction").unwrap_or(0.0)).abs() < 1e-6);
-        assert!((calm.param("specular").unwrap_or(0.0)).abs() < 1e-6);
-        assert!((calm.tint() - 1.0).abs() < 1e-6, "the ground is opaque");
-    }
-
-    #[test]
-    fn depth_and_border_round_trip() {
-        for depth in [Depth::STOCK, Depth::Outline, Depth::None] {
-            let json = serde_json::to_value(depth).unwrap();
-            assert_eq!(serde_json::from_value::<Depth>(json).unwrap(), depth);
-        }
-        assert!(Depth::Shadow { strength: 3.0 }.validate().is_err());
-        let border = Border {
-            width: 2.0,
-            ink: BorderInk::Strong,
-        };
-        let json = serde_json::to_value(border).unwrap();
-        assert_eq!(serde_json::from_value::<Border>(json).unwrap(), border);
-        assert!(border.outlines());
-        assert!(!Border::STOCK.outlines());
-        assert!(
-            Border {
-                width: 9.0,
-                ..border
+            let json = serde_json::to_value(&glass).unwrap();
+            assert_eq!(json["painter"], serde_json::json!("glass"));
+            assert_eq!(json["refraction"], serde_json::json!(10.0));
+            assert_eq!(
+                serde_json::from_value::<Finish>(serde_json::json!({"painter": "block"})).unwrap(),
+                Finish::flat()
+            );
+            assert_eq!(
+                serde_json::from_value::<Finish>(serde_json::json!({"painter": "default"})).unwrap(),
+                Finish::solid()
+            );
+            assert_eq!(
+                serde_json::from_value::<Finish>(serde_json::json!({
+                    "painter": "default", "saturation": 1.2, "tint": 0.5, "blur": 24.0
+                }))
+                .unwrap(),
+                Finish::frosted(24.0, 0.5, 1.2)
+            );
+            assert!(
+                serde_json::from_value::<Finish>(serde_json::json!({"painter": "block", "blur": 3.0}))
+                    .is_err(),
+                "the block set takes no blur"
+            );
+            assert!(
+                serde_json::from_value::<Finish>(serde_json::json!({"painter": "glass", "blur": 3.0}))
+                    .is_err(),
+                "glass states every parameter"
+            );
+            assert!(
+                serde_json::from_value::<Finish>(serde_json::json!({"painter": "chrome"})).is_err(),
+                "a painter set this build does not have is not admitted"
+            );
+            for bad in [
+                Finish::frosted(80.0, 0.5, 1.0),
+                Finish::frosted(8.0, f32::NAN, 1.0),
+                glass_with(64.0, 0.1, 1.0),
+                glass_with(8.0, 0.9, 1.0),
+                glass_with(8.0, 0.1, 3.0),
+            ] {
+                assert!(bad.validate().is_err(), "{bad:?}");
             }
-            .validate()
-            .is_err()
-        );
+            assert!((Finish::frosted(60.0, 0.5, 1.0).usable().blur() - 48.0).abs() < 1e-6);
+        }
+
+        phase opaque_keeps_flat_flat_and_makes_the_rest_solid;
+        {
+            let block = RoleFinishes {
+                window: Finish::flat(),
+                control: Finish::flat(),
+                floating: Finish::flat(),
+                bar: Some(Finish::flat()),
+            };
+            assert_eq!(block.opaque(), block);
+            assert_eq!(RoleFinishes::stock().opaque().floating, Finish::solid());
+            assert_eq!(*glass_with(4.0, 0.1, 1.0).opaque(), Finish::solid());
+            assert_eq!(*glass_with(4.0, 0.1, 1.0).forced(), Finish::solid());
+            assert_eq!(*Finish::flat().forced(), Finish::flat());
+            assert_eq!(
+                *RoleFinishes {
+                    bar: None,
+                    ..RoleFinishes::stock()
+                }
+                .of(SurfaceRole::Bar),
+                Finish::flat(),
+                "a theme without a bar body draws it flat"
+            );
+            let stock = RoleFinishes::stock();
+            let stock_bar = stock.of(SurfaceRole::Bar);
+            assert!(stock_bar.translucent() && stock_bar.blur() > 0.0);
+            assert!(stock_bar.hairline(), "the stock bar keeps its hairline");
+            assert_eq!(
+                stock.opaque().bar.as_ref(),
+                Some(&Finish::solid()),
+                "nothing may be translucent"
+            );
+            assert!(!Finish::flat().hairline());
+            assert!(Finish::solid().hairline());
+            assert!(!Finish::solid().translucent());
+            assert!(Finish::stock_floating().translucent());
+        }
+
+        phase calm_keeps_the_looks_own_grain_and_drops_the_light;
+        // A calm surface is the glass with its translucency off: its light falls away with
+        // the strength, but a look's own grain — a pixel cell, the cell grid, a shader's
+        // pattern size — is what the look is made of, so it stays.
+        {
+            let pixelated = Finish::named(
+                "pixelated",
+                [("cell", 4.0), ("cover", 0.8), ("blur", 0.0), ("grid", 0.2)],
+            )
+            .unwrap();
+            let calm = pixelated.with_translucency(0.0);
+            assert_eq!(calm.painter(), "pixelated");
+            assert_eq!(calm.param("cell"), Some(4.0), "the cells stay a look");
+            assert_eq!(calm.param("cover"), Some(0.0), "nothing shows through");
+            assert_eq!(calm.param("grid"), Some(0.2), "the grid stays");
+            let glass = glass_with(16.0, 0.2, 1.5);
+            let calm = glass.with_translucency(0.0);
+            assert!((calm.param("refraction").unwrap_or(0.0)).abs() < 1e-6);
+            assert!((calm.param("specular").unwrap_or(0.0)).abs() < 1e-6);
+            assert!((calm.tint() - 1.0).abs() < 1e-6, "the ground is opaque");
+        }
+
+        phase depth_and_border_round_trip;
+        {
+            for depth in [Depth::STOCK, Depth::Outline, Depth::None] {
+                let json = serde_json::to_value(depth).unwrap();
+                assert_eq!(serde_json::from_value::<Depth>(json).unwrap(), depth);
+            }
+            assert!(Depth::Shadow { strength: 3.0 }.validate().is_err());
+            let border = Border {
+                width: 2.0,
+                ink: BorderInk::Strong,
+            };
+            let json = serde_json::to_value(border).unwrap();
+            assert_eq!(serde_json::from_value::<Border>(json).unwrap(), border);
+            assert!(border.outlines());
+            assert!(!Border::STOCK.outlines());
+            assert!(
+                Border {
+                    width: 9.0,
+                    ..border
+                }
+                .validate()
+                .is_err()
+            );
+        }
     }
 }

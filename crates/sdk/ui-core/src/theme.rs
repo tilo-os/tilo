@@ -1277,200 +1277,6 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 mod tests {
     use super::*;
 
-    /// An appearance and the polarities it draws, against the theme every surface is drawn with:
-    /// what a surface says is in use is `drawn`'s answer, so the two must not part for any
-    /// appearance, on a page answering either way and on a computer that answers nothing.
-    #[test]
-    fn what_is_drawn_and_what_is_said_to_be_drawn_are_one_reading() {
-        let appearances = [
-            serde_json::json!({}),
-            serde_json::json!({"appearance": {"accent": "violet"}}),
-            serde_json::json!({"appearance": {"mode": "dark"}}),
-            serde_json::json!({"appearance": {"mode": "light"}}),
-            serde_json::json!({"appearance": {"mode": "automatic"}}),
-            serde_json::json!({"appearance": {"mode": "automatic", "dark_theme": "glass"}}),
-            serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
-        ];
-        for settings in appearances {
-            let settings = settings.as_object().cloned().unwrap_or_default();
-            let mode = settings
-                .get(APPEARANCE_SECTION)
-                .and_then(|appearance| appearance.get(MODE_KEY))
-                .and_then(serde_json::Value::as_str);
-            for host in [None, Some(true), Some(false)] {
-                let drawn = drawn(mode, host);
-                let theme = {
-                    let _scheme = scoped_host_scheme(host);
-                    Theme::configured_from(&settings)
-                };
-                let now = Drawn::of(theme.document.is_dark());
-                assert!(
-                    drawn.dark() || !now.dark(),
-                    "{settings:?} on a host answering {host:?}: says dark is drawn, draws light"
-                );
-                assert!(
-                    drawn.light() || !now.light(),
-                    "{settings:?} on a host answering {host:?}: says light is drawn, draws dark"
-                );
-            }
-        }
-    }
-
-    /// A page answers its browser's light or dark, so an appearance the person left open — no
-    /// mode, or Automatic — is that; a computer running Tilo answers nothing, keeps its dark
-    /// start and follows Automatic's schedule.
-    #[test]
-    fn the_hosts_answer_stands_in_only_where_the_person_left_it_open() {
-        assert_eq!(drawn(None, None), Drawn::Dark, "a computer starts dark");
-        assert_eq!(drawn(None, Some(false)), Drawn::Light, "a light page");
-        assert_eq!(drawn(None, Some(true)), Drawn::Dark, "a dark page");
-        assert_eq!(
-            drawn(Some("automatic"), None),
-            Drawn::Both,
-            "the schedule draws each in turn"
-        );
-        assert_eq!(
-            drawn(Some("automatic"), Some(false)),
-            Drawn::Light,
-            "a page's Automatic is the browser's"
-        );
-        assert_eq!(
-            drawn(Some("light"), Some(true)),
-            Drawn::Light,
-            "the person's own choice stands over a dark page"
-        );
-        assert_eq!(drawn(Some("dark"), Some(false)), Drawn::Dark);
-    }
-
-    #[test]
-    fn a_preset_is_the_theme_its_document_builds() {
-        for preset in Preset::ALL {
-            let fresh = Theme::built(preset.document(), PresenceHue::Blue);
-            assert_eq!(Theme::preset(preset), fresh, "{}", preset.id());
-            assert_eq!(Theme::preset(preset), fresh, "{} again", preset.id());
-        }
-    }
-
-    /// Every control fill in every shipped theme, on every ground a control stands on,
-    /// clears the non-text contrast floor there and is never the text colour; and a
-    /// control's face (an unchecked box, a button, a track) is a surface that body text
-    /// reads on, never ink.
-    #[test]
-    fn every_control_fill_reads_on_its_ground_and_is_never_the_text_colour() {
-        use crate::a11y::contrast_ratio;
-        use crate::color::Oklch;
-        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
-        let lab = |c: Color| {
-            let o = Oklch::from_color(c);
-            let h = f64::from(o.h).to_radians();
-            (
-                f64::from(o.l),
-                f64::from(o.c) * h.cos(),
-                f64::from(o.c) * h.sin(),
-            )
-        };
-        let distance = |a: Color, b: Color| {
-            let ((l1, a1, b1), (l2, a2, b2)) = (lab(a), lab(b));
-            ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
-        };
-        for preset in Preset::ALL {
-            let base = Theme::preset(preset);
-            let s = &base.tokens.colors.surfaces;
-            for (ground_name, ground) in [
-                ("content", s.content),
-                ("sidebar", s.sidebar),
-                ("inspector", s.inspector),
-                ("raised", s.raised),
-                ("overlay", composite(s.overlay, s.content)),
-            ] {
-                let theme = base.on_ground(ground);
-                let c = &theme.tokens.colors;
-                let ink = c.text_primary;
-                for (token, fill) in [
-                    ("value_fill", c.intent.value_fill),
-                    ("on_state", c.intent.on_state),
-                ] {
-                    let ratio = contrast_ratio(fill, ground);
-                    assert!(
-                        ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
-                        "{}: {token} reaches only {ratio:.2}:1 on the {ground_name} ground",
-                        base.name
-                    );
-                    assert!(
-                        distance(fill, ink) >= 0.08,
-                        "{}: {token} {fill:?} is the text colour {ink:?} on the {ground_name} ground",
-                        base.name
-                    );
-                }
-                let track = contrast_ratio(c.intent.value_fill, c.intent.selection);
-                assert!(
-                    track >= NON_TEXT_MIN_CONTRAST - 0.01,
-                    "{}: value_fill reaches only {track:.2}:1 on its track on the {ground_name} ground",
-                    base.name
-                );
-                assert!(
-                    distance(c.intent.value_fill, c.border_focus) >= 0.08,
-                    "{}: value_fill is the focus ring's colour on the {ground_name} ground",
-                    base.name
-                );
-                let face = contrast_ratio(c.surfaces.raised, ink);
-                assert!(
-                    face >= 4.5 - 0.01,
-                    "{}: a control face on the {ground_name} ground carries text at only {face:.2}:1, so it reads as ink",
-                    base.name
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_document_grows_its_text_only_in_a_pane_much_wider_than_its_page() {
-        let page = 560.0;
-        // Laptop, phone and a 1440p display at 1.5x keep the stock size.
-        for width in [0.0, 360.0, 1000.0, 1427.0] {
-            assert!((Theme::document_zoom(width, page) - 1.0).abs() < f32::EPSILON);
-        }
-        let grown = Theme::document_zoom(1700.0, page);
-        assert!(grown > 1.0 && grown < MAX_DOCUMENT_ZOOM, "{grown}");
-        // Whole sixteenths: a window resized by a pixel re-sets no text.
-        assert!((grown * 16.0 - (grown * 16.0).round()).abs() < 1e-6);
-        assert!((Theme::document_zoom(2280.0, page) - MAX_DOCUMENT_ZOOM).abs() < f32::EPSILON);
-        assert!((Theme::document_zoom(f64::NAN, page) - 1.0).abs() < f32::EPSILON);
-
-        // The zoom multiplies the reader's text scale, never replaces it.
-        let large = Theme::dark().with_text_scale(1.25);
-        let zoomed = large.with_document_zoom(1.5);
-        assert!((zoomed.text_scale - 1.875).abs() < 1e-5);
-        let body = |t: &Theme| t.text(crate::TextRole::Body).size;
-        assert!((body(&zoomed) / body(&large) - 1.5).abs() < 1e-3);
-        assert_eq!(large.with_document_zoom(1.0), large);
-    }
-
-    #[test]
-    fn a_primary_control_on_a_flipped_ground_stays_legible() {
-        use crate::a11y::contrast_ratio;
-        for theme in [Theme::light(), Theme::dark()] {
-            let letterbox = theme.tokens.colors.media.letterbox;
-            let on = theme.on_ground(letterbox);
-            let i = &on.tokens.colors.intent;
-            assert!(
-                contrast_ratio(i.on_accent, i.accent) >= 4.5,
-                "the label on the primary fill must read over media",
-            );
-            assert!(
-                contrast_ratio(i.accent, letterbox) >= 3.0,
-                "the primary fill must stand off the media ground",
-            );
-            assert_ne!(i.accent, i.accent_hover);
-        }
-        let dark = Theme::dark();
-        let sidebar = dark.tokens.colors.surfaces.sidebar;
-        assert_eq!(
-            dark.on_ground(sidebar).tokens.colors.intent.accent,
-            dark.tokens.colors.intent.accent
-        );
-    }
-
     use crate::a11y::contrast_ratio;
     use crate::color::Oklch;
     use crate::color_compat::ColorCompat;
@@ -1486,663 +1292,881 @@ mod tests {
         doc
     }
 
-    #[test]
-    fn a_documents_response_role_is_how_controls_answer_the_pointer() {
-        use crate::chrome::{SelectionState, selection_tier_on};
-        use crate::tokens::{Response, ResponseStep};
-        let mut document = Preset::Dark.document();
-        assert_eq!(
-            Theme::from_document(&document).unwrap().tokens.response,
-            Response::STOCK
-        );
-        let response = Response {
-            hover: ResponseStep {
-                lift: 1.0,
-                tint: 0.2,
-                scale: 1.05,
-                glow: 0.0,
-            },
-            press: ResponseStep {
-                lift: 2.0,
-                tint: 0.0,
-                scale: 0.9,
-                glow: 0.4,
-            },
-        };
-        document.response = Some(response);
-        let theme = Theme::from_document(&document).expect("an admitted response");
-        assert_eq!(theme.tokens.response, response);
-        let ground = theme.tokens.colors.surfaces.content;
-        let pressed = SelectionState {
-            pressed: true,
-            ..SelectionState::default()
-        };
-        let hovered = SelectionState {
-            hover: true,
-            ..SelectionState::default()
-        };
-        assert!((selection_tier_on(&theme, pressed, ground).scale - 0.9).abs() < 1e-6);
-        assert!((selection_tier_on(&theme, hovered, ground).scale - 1.05).abs() < 1e-6);
-        let stock = Theme::dark();
-        assert_ne!(
-            selection_tier_on(&theme, hovered, ground).fill,
-            selection_tier_on(&stock, hovered, ground).fill,
-            "the hover's lift and tint are the theme's"
-        );
-        document.response = Some(Response {
-            press: ResponseStep {
-                scale: 0.2,
-                ..response.press
-            },
-            ..response
-        });
-        assert!(Theme::from_document(&document).is_none());
-        assert!(Theme::refusal(&document).unwrap().contains("scale"));
-        // Block holds still: lifts only.
-        let block = Theme::preset(Preset::Block);
-        assert_eq!(block.tokens.response, Response::STILL);
-    }
+    tilo_test_env::scenario! {
+        /// The shipped themes: what they resolve to and how they read.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_shipped_themes_are_legible_on_every_ground;
 
-    /// A theme whose surface shader does not compile is refused with the compiler's
-    /// reason and where it is, so the person importing it can fix it; it never applies.
-    #[test]
-    fn a_broken_surface_shader_is_refused_with_its_reason() {
-        let mut document = Preset::Dark.document();
-        let finish = crate::tokens::Finish::named(
-            "shader",
-            std::collections::BTreeMap::<String, f32>::new(),
-        )
-        .expect("the shader set")
-        .with_shader(crate::tokens::SurfaceShader {
-            wgsl: "fn fs_surface( -> vec4<f32> { return fill; }".to_owned(),
-            time: 0.0,
-        });
-        document.material.window = finish;
-        assert!(Theme::from_document(&document).is_none());
-        let reason = Theme::refusal(&document).expect("a reason");
-        assert!(reason.starts_with("material.window: "), "{reason}");
-        assert_ne!(
-            reason, "material.window: surface shader is not a shader a theme may draw",
-            "the reason is the compiler's, not a generic refusal"
-        );
-    }
-
-    /// The person's choice of chrome material is resolved by the theme alone: glass is
-    /// the theme's own bar (else floating) material, calm is that same material with
-    /// nothing showing through and every light off, and a theme without a bar body paints
-    /// its flat bar's body and takes the floating material for its glass. A view picks
-    /// between them and never states a finish.
-    #[test]
-    fn chrome_material_resolves_to_the_themes_own_finishes() {
-        use crate::tokens::ChromeMaterial;
-        let glass = Theme::preset(Preset::Glass);
-        let glossy = glass.chrome_material(ChromeMaterial::Glass);
-        assert_eq!(glossy, *glass.tokens.finishes.bar.as_ref().unwrap());
-        assert!(glossy.translucent() && glossy.blur() > 0.0);
-        let calm = glass.chrome_material(ChromeMaterial::Calm);
-        assert_eq!(calm.painter(), glossy.painter());
-        assert_eq!(
-            (calm.blur(), calm.tint()),
-            (0.0, 1.0),
-            "calm shows nothing through it"
-        );
-        assert_eq!(calm.param("specular"), Some(0.0), "calm lights nothing");
-        assert_eq!(
-            glass.chrome_material(ChromeMaterial::Bar),
-            glass.finish(crate::tokens::SurfaceRole::Bar).clone(),
-            "the bar keeps the theme's own bar body"
-        );
-
-        let dark = Theme::dark();
-        let stock_glass = dark.chrome_material(ChromeMaterial::Glass);
-        assert_eq!(
-            dark.tokens.finishes.bar.as_ref(),
-            Some(&stock_glass),
-            "the stock themes declare their own glass bar"
-        );
-        assert!(
-            stock_glass.translucent() && stock_glass.blur() > 0.0,
-            "the stock glass is glass: {stock_glass:?}"
-        );
-        assert!(stock_glass.hairline(), "and keeps its hairline");
-        let stock_calm = dark.chrome_material(ChromeMaterial::Calm);
-        assert_eq!(stock_calm.painter(), stock_glass.painter());
-        assert_eq!((stock_calm.blur(), stock_calm.tint()), (0.0, 1.0));
-        assert_eq!(
-            dark.chrome_material(ChromeMaterial::Bar),
-            dark.finish(crate::tokens::SurfaceRole::Bar).clone()
-        );
-        assert_ne!(
-            dark.chrome_material(ChromeMaterial::Glass),
-            stock_calm,
-            "glass and calm read differently over the same wallpaper"
-        );
-        let mut without = Theme::preset(Preset::Dark);
-        without.tokens.finishes.bar = None;
-        assert_eq!(
-            without.chrome_material(ChromeMaterial::Glass),
-            without.tokens.finishes.floating,
-            "without a bar material, glass is the floating material"
-        );
-
-        let mut reduced = Theme::preset(Preset::Glass);
-        reduced.reduce_transparency = true;
-        assert!(
-            !reduced.chrome_material(ChromeMaterial::Glass).translucent(),
-            "reduced transparency makes glass solid"
-        );
-    }
-
-    #[test]
-    fn the_shipped_themes_resolve_by_name_and_keep_every_floor() {
-        // phase: every_name_round_trips
+        phase a_preset_is_the_theme_its_document_builds;
         {
-            for name in Theme::ALL {
-                let theme = Theme::named(name).unwrap_or_else(|| panic!("{name} resolves"));
-                assert_eq!(theme.name, name);
-            }
-            assert_eq!(Theme::named("high-contrast").unwrap().name, "High contrast");
-            assert_eq!(Theme::named("dark-soft").unwrap().name, "Dark soft");
-            assert!(Theme::named("Dracula").is_none(), "no third-party palettes");
-            assert_eq!(ALL_PRESETS_FOR_TEST.len(), Theme::ALL.len());
-        }
-        // phase: every_shipped_theme_keeps_every_floor
-        {
-            use crate::tokens::contrast::audit;
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let findings = audit(&t.tokens.colors);
-                assert!(
-                    findings.is_empty(),
-                    "{} misses: {}",
-                    t.name,
-                    findings
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
+            for preset in Preset::ALL {
+                let fresh = Theme::built(preset.document(), PresenceHue::Blue);
+                assert_eq!(Theme::preset(preset), fresh, "{}", preset.id());
+                assert_eq!(Theme::preset(preset), fresh, "{} again", preset.id());
             }
         }
-        // phase: the_shortcuts_mirror_the_tokens
-        {
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let c = &t.tokens.colors;
-                assert_eq!(t.text_primary, c.text_primary, "{}", t.name);
-                assert_eq!(t.border_focus, c.intent.accent_ink, "{}", t.name);
-                assert!((t.radius_standard - f64::from(t.tokens.radii.control)).abs() < 1e-9);
-            }
-            assert!(Theme::high_contrast().colors_are_forced());
-            assert!(Theme::preset(Preset::HighContrastLight).colors_are_forced());
-            assert!(!Theme::dark().colors_are_forced());
-        }
-    }
 
-    #[test]
-    fn the_window_edge_and_content_surface_register_against_their_ground() {
-        // phase: window_edge_registers_against_the_desktop_on_every_theme
+        phase every_control_fill_reads_on_its_ground_and_is_never_the_text_colour;
+        // Every control fill in every shipped theme, on every ground a control stands on,
+        // clears the non-text contrast floor there and is never the text colour; and a
+        // control's face (an unchecked box, a button, a track) is a surface that body text
+        // reads on, never ink.
         {
-            use crate::a11y::relative_luminance;
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let ground = t.tokens.colors.surfaces.base;
-                let seen = crate::tokens::colors::composite(t.window_edge(), ground);
-                let moved = (relative_luminance(seen) - relative_luminance(ground)).abs();
-                assert!(moved >= 0.02, "{}: the window edge is not an edge", t.name);
-            }
-        }
-        // phase: window_edge_flips_a_border_its_ground_would_swallow
-        {
-            let mut t = Theme::dark();
-            t.tokens.colors.surfaces.base = Color::WHITE;
-            t.tokens.colors.surfaces.content_edge = Color::from_rgba8(255, 255, 255, 51);
-            let edge = t.window_edge();
-            assert_eq!([edge.r(), edge.g(), edge.b(), edge.a()], [0, 0, 0, 51]);
-        }
-        // phase: the_content_surface_hosts_the_theme_s_own_ink
-        {
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let on = t.on_content();
-                assert_eq!(on.ink, t.text_primary, "{}", t.name);
-                assert_eq!(on.ink_dim, t.text_dim, "{}", t.name);
-                assert_eq!(on.ink_tertiary, t.text_tertiary, "{}", t.name);
-                let r = contrast_ratio(on.tint, t.tokens.colors.surfaces.content);
-                assert!(r < 1.6, "{}: the tint reads as a panel ({r:.2}:1)", t.name);
-            }
-        }
-        // phase: a_region_theme_measures_ink_and_selection_against_its_ground
-        {
-            use crate::surface::Region;
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                for region in [Region::Content, Region::Sidebar, Region::Inspector] {
-                    let ground = t.region(region);
-                    let r = t.in_region(region);
-                    let c = &r.tokens.colors;
-                    assert_eq!(c.surfaces.content, ground, "{} {region:?}", t.name);
-                    assert_eq!(r.text_primary, c.text_primary, "{} {region:?}", t.name);
-                    for (tier, ink) in [("primary", r.text_primary), ("secondary", r.text_dim)] {
-                        let ratio = contrast_ratio(ink, ground);
+            use crate::a11y::contrast_ratio;
+            use crate::color::Oklch;
+            use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+            let lab = |c: Color| {
+                let o = Oklch::from_color(c);
+                let h = f64::from(o.h).to_radians();
+                (
+                    f64::from(o.l),
+                    f64::from(o.c) * h.cos(),
+                    f64::from(o.c) * h.sin(),
+                )
+            };
+            let distance = |a: Color, b: Color| {
+                let ((l1, a1, b1), (l2, a2, b2)) = (lab(a), lab(b));
+                ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
+            };
+            for preset in Preset::ALL {
+                let base = Theme::preset(preset);
+                let s = &base.tokens.colors.surfaces;
+                for (ground_name, ground) in [
+                    ("content", s.content),
+                    ("sidebar", s.sidebar),
+                    ("inspector", s.inspector),
+                    ("raised", s.raised),
+                    ("overlay", composite(s.overlay, s.content)),
+                ] {
+                    let theme = base.on_ground(ground);
+                    let c = &theme.tokens.colors;
+                    let ink = c.text_primary;
+                    for (token, fill) in [
+                        ("value_fill", c.intent.value_fill),
+                        ("on_state", c.intent.on_state),
+                    ] {
+                        let ratio = contrast_ratio(fill, ground);
                         assert!(
-                            ratio >= 4.5,
-                            "{} {region:?}: {tier} ink {ratio:.2}:1",
-                            t.name
+                            ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                            "{}: {token} reaches only {ratio:.2}:1 on the {ground_name} ground",
+                            base.name
+                        );
+                        assert!(
+                            distance(fill, ink) >= 0.08,
+                            "{}: {token} {fill:?} is the text colour {ink:?} on the {ground_name} ground",
+                            base.name
                         );
                     }
-                    let step = contrast_ratio(c.intent.selection, ground);
-                    assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
-                    assert_eq!(c.intent.accent, t.tokens.colors.intent.accent);
+                    let track = contrast_ratio(c.intent.value_fill, c.intent.selection);
+                    assert!(
+                        track >= NON_TEXT_MIN_CONTRAST - 0.01,
+                        "{}: value_fill reaches only {track:.2}:1 on its track on the {ground_name} ground",
+                        base.name
+                    );
+                    assert!(
+                        distance(c.intent.value_fill, c.border_focus) >= 0.08,
+                        "{}: value_fill is the focus ring's colour on the {ground_name} ground",
+                        base.name
+                    );
+                    let face = contrast_ratio(c.surfaces.raised, ink);
+                    assert!(
+                        face >= 4.5 - 0.01,
+                        "{}: a control face on the {ground_name} ground carries text at only {face:.2}:1, so it reads as ink",
+                        base.name
+                    );
                 }
-                assert_eq!(
-                    t.in_region(Region::Content).tokens.colors.intent.selection,
-                    t.tokens.colors.intent.selection,
-                    "{}: the content region is the theme itself",
-                    t.name
-                );
             }
         }
-    }
 
-    #[test]
-    fn a_raised_face_stands_off_every_ground() {
-        use crate::color::Oklch;
-        let l = |c: Color| Oklch::from_color(c).l;
-        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let colors = &t.tokens.colors;
-            let step = l(colors.surfaces.raised) - l(colors.surfaces.content);
-            if step.abs() <= f32::EPSILON {
-                continue;
-            }
-            let panel = crate::chrome::panel_ground(&t);
-            for ground in [
-                colors.surfaces.content,
-                colors.surfaces.sidebar,
-                colors.surfaces.inspector,
-                panel,
-            ] {
-                let raised = t.on_ground(ground).tokens.colors.surfaces.raised;
-                let off = (l(raised) - l(ground)).abs();
+        phase a_primary_control_on_a_flipped_ground_stays_legible;
+        {
+            use crate::a11y::contrast_ratio;
+            for theme in [Theme::light(), Theme::dark()] {
+                let letterbox = theme.tokens.colors.media.letterbox;
+                let on = theme.on_ground(letterbox);
+                let i = &on.tokens.colors.intent;
                 assert!(
-                    off + 1e-4 >= step.abs() / 2.0,
-                    "{}: a face on {ground:?} stands {off:.3} off it (step {step:.3})",
-                    t.name
+                    contrast_ratio(i.on_accent, i.accent) >= 4.5,
+                    "the label on the primary fill must read over media",
+                );
+                assert!(
+                    contrast_ratio(i.accent, letterbox) >= 3.0,
+                    "the primary fill must stand off the media ground",
+                );
+                assert_ne!(i.accent, i.accent_hover);
+            }
+            let dark = Theme::dark();
+            let sidebar = dark.tokens.colors.surfaces.sidebar;
+            assert_eq!(
+                dark.on_ground(sidebar).tokens.colors.intent.accent,
+                dark.tokens.colors.intent.accent
+            );
+        }
+
+        phase chrome_material_resolves_to_the_themes_own_finishes;
+        // The person's choice of chrome material is resolved by the theme alone: glass is
+        // the theme's own bar (else floating) material, calm is that same material with
+        // nothing showing through and every light off, and a theme without a bar body paints
+        // its flat bar's body and takes the floating material for its glass. A view picks
+        // between them and never states a finish.
+        {
+            use crate::tokens::ChromeMaterial;
+            let glass = Theme::preset(Preset::Glass);
+            let glossy = glass.chrome_material(ChromeMaterial::Glass);
+            assert_eq!(glossy, *glass.tokens.finishes.bar.as_ref().unwrap());
+            assert!(glossy.translucent() && glossy.blur() > 0.0);
+            let calm = glass.chrome_material(ChromeMaterial::Calm);
+            assert_eq!(calm.painter(), glossy.painter());
+            assert_eq!(
+                (calm.blur(), calm.tint()),
+                (0.0, 1.0),
+                "calm shows nothing through it"
+            );
+            assert_eq!(calm.param("specular"), Some(0.0), "calm lights nothing");
+            assert_eq!(
+                glass.chrome_material(ChromeMaterial::Bar),
+                glass.finish(crate::tokens::SurfaceRole::Bar).clone(),
+                "the bar keeps the theme's own bar body"
+            );
+
+            let dark = Theme::dark();
+            let stock_glass = dark.chrome_material(ChromeMaterial::Glass);
+            assert_eq!(
+                dark.tokens.finishes.bar.as_ref(),
+                Some(&stock_glass),
+                "the stock themes declare their own glass bar"
+            );
+            assert!(
+                stock_glass.translucent() && stock_glass.blur() > 0.0,
+                "the stock glass is glass: {stock_glass:?}"
+            );
+            assert!(stock_glass.hairline(), "and keeps its hairline");
+            let stock_calm = dark.chrome_material(ChromeMaterial::Calm);
+            assert_eq!(stock_calm.painter(), stock_glass.painter());
+            assert_eq!((stock_calm.blur(), stock_calm.tint()), (0.0, 1.0));
+            assert_eq!(
+                dark.chrome_material(ChromeMaterial::Bar),
+                dark.finish(crate::tokens::SurfaceRole::Bar).clone()
+            );
+            assert_ne!(
+                dark.chrome_material(ChromeMaterial::Glass),
+                stock_calm,
+                "glass and calm read differently over the same wallpaper"
+            );
+            let mut without = Theme::preset(Preset::Dark);
+            without.tokens.finishes.bar = None;
+            assert_eq!(
+                without.chrome_material(ChromeMaterial::Glass),
+                without.tokens.finishes.floating,
+                "without a bar material, glass is the floating material"
+            );
+
+            let mut reduced = Theme::preset(Preset::Glass);
+            reduced.reduce_transparency = true;
+            assert!(
+                !reduced.chrome_material(ChromeMaterial::Glass).translucent(),
+                "reduced transparency makes glass solid"
+            );
+        }
+
+        phase the_shipped_themes_resolve_by_name_and_keep_every_floor;
+        {
+            // phase: every_name_round_trips
+            {
+                for name in Theme::ALL {
+                    let theme = Theme::named(name).unwrap_or_else(|| panic!("{name} resolves"));
+                    assert_eq!(theme.name, name);
+                }
+                assert_eq!(Theme::named("high-contrast").unwrap().name, "High contrast");
+                assert_eq!(Theme::named("dark-soft").unwrap().name, "Dark soft");
+                assert!(Theme::named("Dracula").is_none(), "no third-party palettes");
+                assert_eq!(ALL_PRESETS_FOR_TEST.len(), Theme::ALL.len());
+            }
+            // phase: every_shipped_theme_keeps_every_floor
+            {
+                use crate::tokens::contrast::audit;
+                for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                    let findings = audit(&t.tokens.colors);
+                    assert!(
+                        findings.is_empty(),
+                        "{} misses: {}",
+                        t.name,
+                        findings
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+            }
+            // phase: the_shortcuts_mirror_the_tokens
+            {
+                for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                    let c = &t.tokens.colors;
+                    assert_eq!(t.text_primary, c.text_primary, "{}", t.name);
+                    assert_eq!(t.border_focus, c.intent.accent_ink, "{}", t.name);
+                    assert!((t.radius_standard - f64::from(t.tokens.radii.control)).abs() < 1e-9);
+                }
+                assert!(Theme::high_contrast().colors_are_forced());
+                assert!(Theme::preset(Preset::HighContrastLight).colors_are_forced());
+                assert!(!Theme::dark().colors_are_forced());
+            }
+        }
+
+        phase the_window_edge_and_content_surface_register_against_their_ground;
+        {
+            // phase: window_edge_registers_against_the_desktop_on_every_theme
+            {
+                use crate::a11y::relative_luminance;
+                for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                    let ground = t.tokens.colors.surfaces.base;
+                    let seen = crate::tokens::colors::composite(t.window_edge(), ground);
+                    let moved = (relative_luminance(seen) - relative_luminance(ground)).abs();
+                    assert!(moved >= 0.02, "{}: the window edge is not an edge", t.name);
+                }
+            }
+            // phase: window_edge_flips_a_border_its_ground_would_swallow
+            {
+                let mut t = Theme::dark();
+                t.tokens.colors.surfaces.base = Color::WHITE;
+                t.tokens.colors.surfaces.content_edge = Color::from_rgba8(255, 255, 255, 51);
+                let edge = t.window_edge();
+                assert_eq!([edge.r(), edge.g(), edge.b(), edge.a()], [0, 0, 0, 51]);
+            }
+            // phase: the_content_surface_hosts_the_theme_s_own_ink
+            {
+                for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                    let on = t.on_content();
+                    assert_eq!(on.ink, t.text_primary, "{}", t.name);
+                    assert_eq!(on.ink_dim, t.text_dim, "{}", t.name);
+                    assert_eq!(on.ink_tertiary, t.text_tertiary, "{}", t.name);
+                    let r = contrast_ratio(on.tint, t.tokens.colors.surfaces.content);
+                    assert!(r < 1.6, "{}: the tint reads as a panel ({r:.2}:1)", t.name);
+                }
+            }
+            // phase: a_region_theme_measures_ink_and_selection_against_its_ground
+            {
+                use crate::surface::Region;
+                for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                    for region in [Region::Content, Region::Sidebar, Region::Inspector] {
+                        let ground = t.region(region);
+                        let r = t.in_region(region);
+                        let c = &r.tokens.colors;
+                        assert_eq!(c.surfaces.content, ground, "{} {region:?}", t.name);
+                        assert_eq!(r.text_primary, c.text_primary, "{} {region:?}", t.name);
+                        for (tier, ink) in [("primary", r.text_primary), ("secondary", r.text_dim)] {
+                            let ratio = contrast_ratio(ink, ground);
+                            assert!(
+                                ratio >= 4.5,
+                                "{} {region:?}: {tier} ink {ratio:.2}:1",
+                                t.name
+                            );
+                        }
+                        let step = contrast_ratio(c.intent.selection, ground);
+                        assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
+                        assert_eq!(c.intent.accent, t.tokens.colors.intent.accent);
+                    }
+                    assert_eq!(
+                        t.in_region(Region::Content).tokens.colors.intent.selection,
+                        t.tokens.colors.intent.selection,
+                        "{}: the content region is the theme itself",
+                        t.name
+                    );
+                }
+            }
+        }
+
+        phase a_raised_face_stands_off_every_ground;
+        {
+            use crate::color::Oklch;
+            let l = |c: Color| Oklch::from_color(c).l;
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let colors = &t.tokens.colors;
+                let step = l(colors.surfaces.raised) - l(colors.surfaces.content);
+                if step.abs() <= f32::EPSILON {
+                    continue;
+                }
+                let panel = crate::chrome::panel_ground(&t);
+                for ground in [
+                    colors.surfaces.content,
+                    colors.surfaces.sidebar,
+                    colors.surfaces.inspector,
+                    panel,
+                ] {
+                    let raised = t.on_ground(ground).tokens.colors.surfaces.raised;
+                    let off = (l(raised) - l(ground)).abs();
+                    assert!(
+                        off + 1e-4 >= step.abs() / 2.0,
+                        "{}: a face on {ground:?} stands {off:.3} off it (step {step:.3})",
+                        t.name
+                    );
+                }
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The builders that derive one theme from another.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn scale_colour_and_accessibility_build_on_a_theme;
+
+        phase a_document_grows_its_text_only_in_a_pane_much_wider_than_its_page;
+        {
+            let page = 560.0;
+            // Laptop, phone and a 1440p display at 1.5x keep the stock size.
+            for width in [0.0, 360.0, 1000.0, 1427.0] {
+                assert!((Theme::document_zoom(width, page) - 1.0).abs() < f32::EPSILON);
+            }
+            let grown = Theme::document_zoom(1700.0, page);
+            assert!(grown > 1.0 && grown < MAX_DOCUMENT_ZOOM, "{grown}");
+            // Whole sixteenths: a window resized by a pixel re-sets no text.
+            assert!((grown * 16.0 - (grown * 16.0).round()).abs() < 1e-6);
+            assert!((Theme::document_zoom(2280.0, page) - MAX_DOCUMENT_ZOOM).abs() < f32::EPSILON);
+            assert!((Theme::document_zoom(f64::NAN, page) - 1.0).abs() < f32::EPSILON);
+
+            // The zoom multiplies the reader's text scale, never replaces it.
+            let large = Theme::dark().with_text_scale(1.25);
+            let zoomed = large.with_document_zoom(1.5);
+            assert!((zoomed.text_scale - 1.875).abs() < 1e-5);
+            let body = |t: &Theme| t.text(crate::TextRole::Body).size;
+            assert!((body(&zoomed) / body(&large) - 1.5).abs() < 1e-3);
+            assert_eq!(large.with_document_zoom(1.0), large);
+        }
+
+        phase temperature_and_your_colour_are_theme_builders;
+        {
+            // phase: a_tinted_palette_takes_the_workspace_hue
+            {
+                let warm = Theme::light().with_neutral_hue(60.0);
+                let h = Oklch::from_color(warm.tokens.colors.surfaces.sidebar).h;
+                assert!((h - 60.0).abs() <= 25.0, "sidebar hue {h:.0}");
+                assert_eq!(
+                    warm.region(crate::surface::Region::Content),
+                    warm.tokens.colors.surfaces.content
+                );
+                assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
+                assert_eq!(warm.name, "Light");
+                assert_eq!(warm.document.palette.hue, Some(60.0));
+                let same = Theme::light().with_neutral_hue(f32::NAN);
+                assert_eq!(
+                    same.tokens.colors.surfaces.content,
+                    Theme::light().tokens.colors.surfaces.content,
+                    "a NaN hue is ignored"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn temperature_and_your_colour_are_theme_builders() {
-        // phase: a_tinted_palette_takes_the_workspace_hue
-        {
-            let warm = Theme::light().with_neutral_hue(60.0);
-            let h = Oklch::from_color(warm.tokens.colors.surfaces.sidebar).h;
-            assert!((h - 60.0).abs() <= 25.0, "sidebar hue {h:.0}");
-            assert_eq!(
-                warm.region(crate::surface::Region::Content),
-                warm.tokens.colors.surfaces.content
-            );
-            assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
-            assert_eq!(warm.name, "Light");
-            assert_eq!(warm.document.palette.hue, Some(60.0));
-            let same = Theme::light().with_neutral_hue(f32::NAN);
-            assert_eq!(
-                same.tokens.colors.surfaces.content,
-                Theme::light().tokens.colors.surfaces.content,
-                "a NaN hue is ignored"
-            );
-        }
-        // phase: a_temperature_moves_the_hue_never_the_lightness_or_chroma
-        // The stock material is hue 260 at chroma 0.006; a workspace's hue
-        // replaces the hue only (design language, "Workspace temperature").
-        {
-            let dark = Theme::dark().with_neutral_hue(60.0);
-            let stock = Theme::dark();
-            for (warm, cool) in [
-                (
-                    dark.tokens.colors.surfaces.base,
-                    stock.tokens.colors.surfaces.base,
-                ),
-                (
-                    dark.tokens.colors.surfaces.content,
-                    stock.tokens.colors.surfaces.content,
-                ),
-            ] {
-                let (w, c) = (Oklch::from_color(warm), Oklch::from_color(cool));
-                assert!((w.l - c.l).abs() <= 0.005, "lightness {} vs {}", w.l, c.l);
-                assert!(w.c <= 0.010 + 0.004, "chroma {}", w.c);
-            }
-        }
-        // phase: your_colour_is_the_focus_ring_and_survives_every_track
-        {
-            let mine = Theme::dark().with_your_colour(PresenceHue::Magenta);
-            let you = mine.tokens.colors.intent.you;
-            assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
-            let ring = (Oklch::from_color(mine.border_focus).h - Oklch::from_color(you).h)
-                .rem_euclid(360.0);
-            assert!(ring.min(360.0 - ring) < 15.0, "the ring is your hue");
-            assert_ne!(you, Theme::dark().tokens.colors.intent.you);
-            let warm = mine.clone().with_neutral_hue(40.0);
-            assert_eq!(warm.tokens.colors.you, PresenceHue::Magenta);
-            let hc = mine.with_a11y(
-                &crate::a11y::A11ySettings {
-                    high_contrast: true,
-                    ..Default::default()
-                },
-                1.0,
-                1.0,
-            );
-            assert_eq!(hc.tokens.colors.you, PresenceHue::Magenta);
-            let hue = |c: Color| Oklch::from_color(c).h;
-            let d = (hue(hc.border_focus) - hue(you)).rem_euclid(360.0);
-            assert!(d.min(360.0 - d) < 5.0, "high contrast keeps your hue");
-        }
-        // phase: a_wallpaper_gives_its_hue_and_a_grey_one_none
-        {
-            let orange: Vec<u8> = [0xE0, 0x80, 0x30, 0xFF].repeat(64);
-            let hue = workspace_hue(&orange).expect("an orange wallpaper has a hue");
-            let want = Oklch::from_color(Color::from_rgb8(0xE0, 0x80, 0x30)).h;
-            assert!((hue - want).abs() < 6.0, "{hue} vs {want}");
-            let grey: Vec<u8> = [0x80, 0x80, 0x80, 0xFF].repeat(64);
-            assert_eq!(workspace_hue(&grey), None);
-            assert_eq!(workspace_hue(&[]), None);
-        }
-        // phase: light_without_a_workspace_is_the_stock_temperature_in_every_region
-        // Cool, not grey-blue: chroma never past 0.010 (8-bit quantisation
-        // adds a few thousandths).
-        {
-            let light = Theme::light();
-            for region in [
-                crate::surface::Region::Content,
-                crate::surface::Region::Sidebar,
-                crate::surface::Region::Inspector,
-            ] {
-                let ground = Oklch::from_color(light.region(region));
-                assert!(ground.c <= 0.014, "{region:?} chroma {}", ground.c);
-            }
-            let base = Oklch::from_color(light.tokens.colors.surfaces.base);
-            assert!(base.c <= 0.014, "base chroma {}", base.c);
-        }
-    }
-
-    #[test]
-    fn text_and_ui_scale_multiply_compose_and_clamp() {
-        {
-            let base = Theme::dark();
-            let scaled = Theme::dark().with_text_scale(1.5);
-            assert_eq!(scaled.text_scale, 1.5);
-            for role in crate::tokens::TextRole::ALL {
-                assert!((scaled.text(role).size - base.text(role).size * 1.5).abs() < 1e-4);
-            }
-        }
-
-        {
-            assert!(Theme::dark().with_text_scale(0.0).text_scale >= 0.5);
-            assert!(Theme::dark().with_text_scale(100.0).text_scale <= 4.0);
-        }
-
-        {
-            let base = Theme::dark();
-            let bs = base.tokens.spacing.s3;
-            let r = base.tokens.radii.clone();
-            let bt = base.text(crate::tokens::TextRole::Body).size;
-
-            let scaled = Theme::dark().with_ui_scale(1.5);
-            assert_eq!(scaled.ui_scale, 1.5);
-            assert!((scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4);
-            let s = &scaled.tokens.radii;
-            for (name, got, want) in [
-                ("tile", s.tile, r.tile),
-                ("panel", s.panel, r.panel),
-                ("control", s.control, r.control),
-                ("item", s.item, r.item),
-                ("detail", s.detail, r.detail),
-            ] {
-                assert!((got - want * 1.5).abs() < 1e-4, "{name} grows");
-            }
-            assert_eq!(s.full, r.full, "radii.full is a sentinel, not scaled");
-            assert!((scaled.text(crate::tokens::TextRole::Body).size - bt * 1.5).abs() < 1e-4);
-            assert!((scaled.padding_standard - bs * 1.5).abs() < 1e-4);
-            assert!((scaled.radius_standard - f64::from(r.control) * 1.5).abs() < 1e-4);
-        }
-
-        {
-            assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
-            assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
-        }
-
-        {
-            let base = Theme::dark();
-            let base_type = base.text(crate::tokens::TextRole::Body).size;
-            let base_gap = base.tokens.spacing.s3;
-            let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
-            assert!(
-                (composed.text(crate::tokens::TextRole::Body).size - base_type * 1.25 * 1.2).abs()
-                    < 1e-3
-            );
-            assert!((composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3);
-        }
-
-        {
-            assert_eq!(Theme::dark().responsive_scale(), 1.0);
-            assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
-            assert_eq!(Theme::dark().with_text_scale(0.75).responsive_scale(), 1.0);
-            assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
-            assert!((Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn a11y_preferences_fold_into_the_theme() {
-        {
-            assert!(!Theme::dark().reduce_motion, "default is motion on");
-            assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
-        }
-
-        {
-            assert!(Theme::configured_from_text("", true).reduce_motion);
-            assert!(!Theme::configured_from_text("", false).reduce_motion);
-        }
-
-        // Case `the_settings_switch_reaches_a_host_without_the_override`. The shell reads
-        // its chrome theme through `configured_from_text` on every settings change, so
-        // the person's switch must be enough.
-        {
-            let on = r#"{"appearance":{"reduce_motion":true}}"#;
-            let off = r#"{"appearance":{"reduce_motion":false}}"#;
-            assert!(Theme::configured_from_text(on, false).reduce_motion);
-            assert!(!Theme::configured_from_text(off, false).reduce_motion);
-            assert!(Theme::configured_from_text(off, true).reduce_motion);
-            let layer =
-                r#"{"appearance":{"accessibility":{"schema_version":1,"reduce_motion":true}}}"#;
-            assert!(Theme::configured_from_text(layer, false).reduce_motion);
-            let rejected =
-                r#"{"appearance":{"accessibility":{"schema_version":99,"reduce_motion":true}}}"#;
-            assert!(!Theme::configured_from_text(rejected, false).reduce_motion);
-        }
-
-        {
-            use crate::a11y::A11ySettings;
-            let settings = A11ySettings {
-                high_contrast: true,
-                reduce_motion: true,
-                screen_reader: false,
-            };
-            let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
-            assert_eq!(theme.name, "High contrast");
-            assert!(
-                contrast_ratio(theme.text_primary, theme.tokens.colors.surfaces.content) >= 7.0
-            );
-            assert!(theme.reduce_motion);
-            assert_eq!(theme.text_scale, 2.0);
-            let light = Theme::light().with_a11y(&settings, 1.0, 1.0);
-            assert_eq!(light.name, "High contrast light");
-            assert!(light.colors_are_forced());
-            assert!(contrast_ratio(light.text_dim, light.tokens.colors.surfaces.content) >= 7.0);
-        }
-
-        {
-            let off = crate::a11y::A11ySettings::default();
-            let theme = Theme::light().with_a11y(&off, 1.0, 1.0);
-            assert_eq!(theme.name, "Light");
-            assert!(!theme.reduce_motion);
-        }
-    }
-
-    #[test]
-    fn a_document_sets_every_role_it_names() {
-        {
-            let doc = quiet_ocean(1.25);
-            let json = serde_json::json!({
-                "appearance": {
-                    "mode": "dark",
-                    "dark_theme": "custom:quiet-ocean",
-                    "custom_themes": [doc],
+            // phase: a_temperature_moves_the_hue_never_the_lightness_or_chroma
+            // The stock material is hue 260 at chroma 0.006; a workspace's hue
+            // replaces the hue only (design language, "Workspace temperature").
+            {
+                let dark = Theme::dark().with_neutral_hue(60.0);
+                let stock = Theme::dark();
+                for (warm, cool) in [
+                    (
+                        dark.tokens.colors.surfaces.base,
+                        stock.tokens.colors.surfaces.base,
+                    ),
+                    (
+                        dark.tokens.colors.surfaces.content,
+                        stock.tokens.colors.surfaces.content,
+                    ),
+                ] {
+                    let (w, c) = (Oklch::from_color(warm), Oklch::from_color(cool));
+                    assert!((w.l - c.l).abs() <= 0.005, "lightness {} vs {}", w.l, c.l);
+                    assert!(w.c <= 0.010 + 0.004, "chroma {}", w.c);
                 }
-            });
-            let theme = Theme::from_settings_json(&json.to_string()).unwrap();
-            assert_eq!(theme.name, "Quiet ocean");
-            assert_eq!(theme.document.palette.hue, Some(220.0));
-            assert!(theme.document.palette.dark);
-            assert!((theme.tokens.spacing.s3 - 15.0).abs() < 1e-4);
-            assert_eq!(theme.tokens.typography.sans_family, "Inter");
-            assert_eq!(theme.tokens.radii, crate::tokens::Radii::default());
-            assert!(crate::tokens::contrast::audit(&theme.tokens.colors).is_empty());
-        }
-
-        {
-            let theme = Theme::from_document(&quiet_ocean(1.25)).unwrap();
-            let s = theme.tokens.spacing;
-            for (value, steps) in [(s.s1, 1.0), (s.s4, 4.0), (s.s16, 16.0)] {
-                assert!((value - 4.0 * 1.25 * steps).abs() < 1e-3);
             }
-            assert_eq!(theme.tokens.metrics, crate::tokens::Metrics::BASE);
-            let dense = Theme::from_document(&quiet_ocean(0.5)).unwrap();
-            assert!((dense.tokens.spacing.s3 - 12.0 * 0.75).abs() < 1e-4);
-            assert!(Theme::from_document(&quiet_ocean(0.1)).is_none());
+            // phase: your_colour_is_the_focus_ring_and_survives_every_track
+            {
+                let mine = Theme::dark().with_your_colour(PresenceHue::Magenta);
+                let you = mine.tokens.colors.intent.you;
+                assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
+                let ring = (Oklch::from_color(mine.border_focus).h - Oklch::from_color(you).h)
+                    .rem_euclid(360.0);
+                assert!(ring.min(360.0 - ring) < 15.0, "the ring is your hue");
+                assert_ne!(you, Theme::dark().tokens.colors.intent.you);
+                let warm = mine.clone().with_neutral_hue(40.0);
+                assert_eq!(warm.tokens.colors.you, PresenceHue::Magenta);
+                let hc = mine.with_a11y(
+                    &crate::a11y::A11ySettings {
+                        high_contrast: true,
+                        ..Default::default()
+                    },
+                    1.0,
+                    1.0,
+                );
+                assert_eq!(hc.tokens.colors.you, PresenceHue::Magenta);
+                let hue = |c: Color| Oklch::from_color(c).h;
+                let d = (hue(hc.border_focus) - hue(you)).rem_euclid(360.0);
+                assert!(d.min(360.0 - d) < 5.0, "high contrast keeps your hue");
+            }
+            // phase: a_wallpaper_gives_its_hue_and_a_grey_one_none
+            {
+                let orange: Vec<u8> = [0xE0, 0x80, 0x30, 0xFF].repeat(64);
+                let hue = workspace_hue(&orange).expect("an orange wallpaper has a hue");
+                let want = Oklch::from_color(Color::from_rgb8(0xE0, 0x80, 0x30)).h;
+                assert!((hue - want).abs() < 6.0, "{hue} vs {want}");
+                let grey: Vec<u8> = [0x80, 0x80, 0x80, 0xFF].repeat(64);
+                assert_eq!(workspace_hue(&grey), None);
+                assert_eq!(workspace_hue(&[]), None);
+            }
+            // phase: light_without_a_workspace_is_the_stock_temperature_in_every_region
+            // Cool, not grey-blue: chroma never past 0.010 (8-bit quantisation
+            // adds a few thousandths).
+            {
+                let light = Theme::light();
+                for region in [
+                    crate::surface::Region::Content,
+                    crate::surface::Region::Sidebar,
+                    crate::surface::Region::Inspector,
+                ] {
+                    let ground = Oklch::from_color(light.region(region));
+                    assert!(ground.c <= 0.014, "{region:?} chroma {}", ground.c);
+                }
+                let base = Oklch::from_color(light.tokens.colors.surfaces.base);
+                assert!(base.c <= 0.014, "base chroma {}", base.c);
+            }
         }
 
+        phase text_and_ui_scale_multiply_compose_and_clamp;
         {
-            let mut doc = quiet_ocean(1.0);
-            doc.shape.window_radius = 28.0;
-            doc.type_.base_size = 16.0;
-            doc.motion.character = 0.0;
-            let selector = crate::tokens::SelectorFinish {
-                strip: crate::tokens::StripMaterial::Opaque,
-                rim_span: 0.3,
-                rim_alpha: 0.1,
-                hover_alpha: 0.8,
-            };
-            doc.material = ThemeMaterial {
-                floating: crate::tokens::Finish::frosted(40.0, 0.9, 1.0),
-                selector,
-                ..ThemeMaterial::stock()
-            };
-            doc.emphasis = Emphasis::Tinted { hue: 150.0 };
-            let theme = Theme::from_document(&doc).unwrap();
-            let stock = Theme::dark();
-            assert!((theme.tokens.radii.tile - 28.0).abs() < 1e-4);
-            assert!((theme.tokens.radii.control - 16.0).abs() < 1e-4);
-            assert!(
-                (theme.tokens.typography.size(crate::tokens::TextRole::Body) - 16.0).abs() < 1e-4
-            );
-            assert_eq!(
-                theme.tokens.motion.springs.snappy.stiffness,
-                stock.tokens.motion.springs.subtle.stiffness
-            );
-            assert!((theme.tokens.colors.surfaces.material_blur_px - 40.0).abs() < 1e-4);
-            assert_eq!(theme.tokens.colors.surfaces.material.a(), 230);
-            assert_eq!(theme.tokens.selector, selector);
-            let fill = Oklch::from_color(theme.tokens.colors.intent.accent);
-            assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
+            {
+                let base = Theme::dark();
+                let scaled = Theme::dark().with_text_scale(1.5);
+                assert_eq!(scaled.text_scale, 1.5);
+                for role in crate::tokens::TextRole::ALL {
+                    assert!((scaled.text(role).size - base.text(role).size * 1.5).abs() < 1e-4);
+                }
+            }
+
+            {
+                assert!(Theme::dark().with_text_scale(0.0).text_scale >= 0.5);
+                assert!(Theme::dark().with_text_scale(100.0).text_scale <= 4.0);
+            }
+
+            {
+                let base = Theme::dark();
+                let bs = base.tokens.spacing.s3;
+                let r = base.tokens.radii.clone();
+                let bt = base.text(crate::tokens::TextRole::Body).size;
+
+                let scaled = Theme::dark().with_ui_scale(1.5);
+                assert_eq!(scaled.ui_scale, 1.5);
+                assert!((scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4);
+                let s = &scaled.tokens.radii;
+                for (name, got, want) in [
+                    ("tile", s.tile, r.tile),
+                    ("panel", s.panel, r.panel),
+                    ("control", s.control, r.control),
+                    ("item", s.item, r.item),
+                    ("detail", s.detail, r.detail),
+                ] {
+                    assert!((got - want * 1.5).abs() < 1e-4, "{name} grows");
+                }
+                assert_eq!(s.full, r.full, "radii.full is a sentinel, not scaled");
+                assert!((scaled.text(crate::tokens::TextRole::Body).size - bt * 1.5).abs() < 1e-4);
+                assert!((scaled.padding_standard - bs * 1.5).abs() < 1e-4);
+                assert!((scaled.radius_standard - f64::from(r.control) * 1.5).abs() < 1e-4);
+            }
+
+            {
+                assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
+                assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
+            }
+
+            {
+                let base = Theme::dark();
+                let base_type = base.text(crate::tokens::TextRole::Body).size;
+                let base_gap = base.tokens.spacing.s3;
+                let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
+                assert!(
+                    (composed.text(crate::tokens::TextRole::Body).size - base_type * 1.25 * 1.2).abs()
+                        < 1e-3
+                );
+                assert!((composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3);
+            }
+
+            {
+                assert_eq!(Theme::dark().responsive_scale(), 1.0);
+                assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
+                assert_eq!(Theme::dark().with_text_scale(0.75).responsive_scale(), 1.0);
+                assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
+                assert!((Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9);
+            }
         }
 
+        phase a11y_preferences_fold_into_the_theme;
         {
-            use crate::text_render::TextWeight;
-            use crate::tokens::{Depth, Finish, TextRole};
-            let block = Theme::preset(Preset::Block);
-            assert_eq!(block.tokens.radii.control, 0.0);
-            assert_eq!(block.tokens.radii.tile, 0.0);
-            assert_eq!(block.tokens.finishes.window, Finish::flat());
-            assert_eq!(block.tokens.finishes.floating, Finish::flat());
-            assert_eq!(block.tokens.colors.surfaces.material_blur_px, 0.0);
-            assert_eq!(block.tokens.elevation.window.color.components[3], 0.0);
-            assert_eq!(block.tokens.elevation.floating.color.components[3], 0.0);
-            assert!(block.tokens.elevation.window.outline.is_none());
-            assert!(block.motion().still() && !block.motion().moves());
-            assert_eq!(
-                block.text(TextRole::Heading).weight,
-                TextWeight::Bold,
-                "Block's headings are bold"
-            );
-            assert_eq!(block.text(TextRole::Label).weight, TextWeight::Semibold);
-            assert_eq!(
-                block.tokens.elevation.floating_edge, block.tokens.colors.text_tertiary,
-                "a floating panel's edge is the strong border"
-            );
+            {
+                assert!(!Theme::dark().reduce_motion, "default is motion on");
+                assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
+            }
 
-            let glass = Theme::preset(Preset::Glass);
-            assert_eq!(glass.tokens.finishes.window.painter(), "glass");
-            assert!(glass.tokens.colors.surfaces.material_blur_px > 0.0);
-            assert!(
-                glass.tokens.elevation.floating.color.components[3]
-                    > Theme::dark().tokens.elevation.floating.color.components[3]
-            );
+            {
+                assert!(Theme::configured_from_text("", true).reduce_motion);
+                assert!(!Theme::configured_from_text("", false).reduce_motion);
+            }
 
-            let mut doc = Preset::Dark.document();
-            doc.depth = Depth::Outline;
-            doc.type_.contrast = 1.5;
-            let outlined = Theme::from_document(&doc).unwrap();
-            assert_eq!(outlined.tokens.elevation.window.color.components[3], 0.0);
-            assert!(outlined.tokens.elevation.window.outline.is_some());
-            assert!(
-                outlined.tokens.typography.size(TextRole::Display)
-                    > Theme::dark().tokens.typography.size(TextRole::Display)
-            );
-            assert_eq!(
-                outlined.tokens.typography.size(TextRole::Body),
-                Theme::dark().tokens.typography.size(TextRole::Body)
-            );
+            // Case `the_settings_switch_reaches_a_host_without_the_override`. The shell reads
+            // its chrome theme through `configured_from_text` on every settings change, so
+            // the person's switch must be enough.
+            {
+                let on = r#"{"appearance":{"reduce_motion":true}}"#;
+                let off = r#"{"appearance":{"reduce_motion":false}}"#;
+                assert!(Theme::configured_from_text(on, false).reduce_motion);
+                assert!(!Theme::configured_from_text(off, false).reduce_motion);
+                assert!(Theme::configured_from_text(off, true).reduce_motion);
+                let layer =
+                    r#"{"appearance":{"accessibility":{"schema_version":1,"reduce_motion":true}}}"#;
+                assert!(Theme::configured_from_text(layer, false).reduce_motion);
+                let rejected =
+                    r#"{"appearance":{"accessibility":{"schema_version":99,"reduce_motion":true}}}"#;
+                assert!(!Theme::configured_from_text(rejected, false).reduce_motion);
+            }
 
-            // Default stays exactly the design language.
-            let stock = Theme::dark();
-            assert_eq!(stock.tokens.elevation, crate::tokens::Elevation::dark());
-            assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::stock());
-            assert!(!stock.motion().still());
-        }
+            {
+                use crate::a11y::A11ySettings;
+                let settings = A11ySettings {
+                    high_contrast: true,
+                    reduce_motion: true,
+                    screen_reader: false,
+                };
+                let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
+                assert_eq!(theme.name, "High contrast");
+                assert!(
+                    contrast_ratio(theme.text_primary, theme.tokens.colors.surfaces.content) >= 7.0
+                );
+                assert!(theme.reduce_motion);
+                assert_eq!(theme.text_scale, 2.0);
+                let light = Theme::light().with_a11y(&settings, 1.0, 1.0);
+                assert_eq!(light.name, "High contrast light");
+                assert!(light.colors_are_forced());
+                assert!(contrast_ratio(light.text_dim, light.tokens.colors.surfaces.content) >= 7.0);
+            }
 
-        {
-            let mut old = quiet_ocean(1.0);
-            old.schema_version = 4;
-            assert!(Theme::from_document(&old).is_none());
-            let json = serde_json::json!({
-                "appearance": { "dark_theme": "custom:wanted", "custom_themes": [quiet_ocean(1.0)] }
-            });
-            assert!(Theme::from_settings_json(&json.to_string()).is_none());
-            let legacy =
-                r#"{"appearance":{"theme":"custom:x","custom_theme":{"schema_version":4}}}"#;
-            assert!(Theme::from_settings_json(legacy).is_none());
+            {
+                let off = crate::a11y::A11ySettings::default();
+                let theme = Theme::light().with_a11y(&off, 1.0, 1.0);
+                assert_eq!(theme.name, "Light");
+                assert!(!theme.reduce_motion);
+            }
         }
     }
 
-    #[test]
-    fn the_automatic_mode_is_light_by_day_and_dark_by_night() {
-        use settings_store::day_schedule::LocalMoment;
-        let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dark-soft","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
-        let at = |minute_of_day| LocalMoment {
-            day_of_year: 100,
-            minute_of_day,
-            utc_offset_minutes: 0,
-        };
-        assert_eq!(
-            Theme::from_settings_json_at(json, at(12 * 60))
-                .unwrap()
-                .name,
-            Theme::light().name
-        );
-        assert_eq!(
-            Theme::from_settings_json_at(json, at(22 * 60))
-                .unwrap()
-                .name,
-            "Dark soft"
-        );
+    tilo_test_env::scenario! {
+        /// A theme built from a document.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_document_builds_the_roles_it_names_or_is_refused;
+
+        phase a_documents_response_role_is_how_controls_answer_the_pointer;
+        {
+            use crate::chrome::{SelectionState, selection_tier_on};
+            use crate::tokens::{Response, ResponseStep};
+            let mut document = Preset::Dark.document();
+            assert_eq!(
+                Theme::from_document(&document).unwrap().tokens.response,
+                Response::STOCK
+            );
+            let response = Response {
+                hover: ResponseStep {
+                    lift: 1.0,
+                    tint: 0.2,
+                    scale: 1.05,
+                    glow: 0.0,
+                },
+                press: ResponseStep {
+                    lift: 2.0,
+                    tint: 0.0,
+                    scale: 0.9,
+                    glow: 0.4,
+                },
+            };
+            document.response = Some(response);
+            let theme = Theme::from_document(&document).expect("an admitted response");
+            assert_eq!(theme.tokens.response, response);
+            let ground = theme.tokens.colors.surfaces.content;
+            let pressed = SelectionState {
+                pressed: true,
+                ..SelectionState::default()
+            };
+            let hovered = SelectionState {
+                hover: true,
+                ..SelectionState::default()
+            };
+            assert!((selection_tier_on(&theme, pressed, ground).scale - 0.9).abs() < 1e-6);
+            assert!((selection_tier_on(&theme, hovered, ground).scale - 1.05).abs() < 1e-6);
+            let stock = Theme::dark();
+            assert_ne!(
+                selection_tier_on(&theme, hovered, ground).fill,
+                selection_tier_on(&stock, hovered, ground).fill,
+                "the hover's lift and tint are the theme's"
+            );
+            document.response = Some(Response {
+                press: ResponseStep {
+                    scale: 0.2,
+                    ..response.press
+                },
+                ..response
+            });
+            assert!(Theme::from_document(&document).is_none());
+            assert!(Theme::refusal(&document).unwrap().contains("scale"));
+            // Block holds still: lifts only.
+            let block = Theme::preset(Preset::Block);
+            assert_eq!(block.tokens.response, Response::STILL);
+        }
+
+        phase a_broken_surface_shader_is_refused_with_its_reason;
+        // A theme whose surface shader does not compile is refused with the compiler's
+        // reason and where it is, so the person importing it can fix it; it never applies.
+        {
+            let mut document = Preset::Dark.document();
+            let finish = crate::tokens::Finish::named(
+                "shader",
+                std::collections::BTreeMap::<String, f32>::new(),
+            )
+            .expect("the shader set")
+            .with_shader(crate::tokens::SurfaceShader {
+                wgsl: "fn fs_surface( -> vec4<f32> { return fill; }".to_owned(),
+                time: 0.0,
+            });
+            document.material.window = finish;
+            assert!(Theme::from_document(&document).is_none());
+            let reason = Theme::refusal(&document).expect("a reason");
+            assert!(reason.starts_with("material.window: "), "{reason}");
+            assert_ne!(
+                reason, "material.window: surface shader is not a shader a theme may draw",
+                "the reason is the compiler's, not a generic refusal"
+            );
+        }
+
+        phase a_document_sets_every_role_it_names;
+        {
+            {
+                let doc = quiet_ocean(1.25);
+                let json = serde_json::json!({
+                    "appearance": {
+                        "mode": "dark",
+                        "dark_theme": "custom:quiet-ocean",
+                        "custom_themes": [doc],
+                    }
+                });
+                let theme = Theme::from_settings_json(&json.to_string()).unwrap();
+                assert_eq!(theme.name, "Quiet ocean");
+                assert_eq!(theme.document.palette.hue, Some(220.0));
+                assert!(theme.document.palette.dark);
+                assert!((theme.tokens.spacing.s3 - 15.0).abs() < 1e-4);
+                assert_eq!(theme.tokens.typography.sans_family, "Inter");
+                assert_eq!(theme.tokens.radii, crate::tokens::Radii::default());
+                assert!(crate::tokens::contrast::audit(&theme.tokens.colors).is_empty());
+            }
+
+            {
+                let theme = Theme::from_document(&quiet_ocean(1.25)).unwrap();
+                let s = theme.tokens.spacing;
+                for (value, steps) in [(s.s1, 1.0), (s.s4, 4.0), (s.s16, 16.0)] {
+                    assert!((value - 4.0 * 1.25 * steps).abs() < 1e-3);
+                }
+                assert_eq!(theme.tokens.metrics, crate::tokens::Metrics::BASE);
+                let dense = Theme::from_document(&quiet_ocean(0.5)).unwrap();
+                assert!((dense.tokens.spacing.s3 - 12.0 * 0.75).abs() < 1e-4);
+                assert!(Theme::from_document(&quiet_ocean(0.1)).is_none());
+            }
+
+            {
+                let mut doc = quiet_ocean(1.0);
+                doc.shape.window_radius = 28.0;
+                doc.type_.base_size = 16.0;
+                doc.motion.character = 0.0;
+                let selector = crate::tokens::SelectorFinish {
+                    strip: crate::tokens::StripMaterial::Opaque,
+                    rim_span: 0.3,
+                    rim_alpha: 0.1,
+                    hover_alpha: 0.8,
+                };
+                doc.material = ThemeMaterial {
+                    floating: crate::tokens::Finish::frosted(40.0, 0.9, 1.0),
+                    selector,
+                    ..ThemeMaterial::stock()
+                };
+                doc.emphasis = Emphasis::Tinted { hue: 150.0 };
+                let theme = Theme::from_document(&doc).unwrap();
+                let stock = Theme::dark();
+                assert!((theme.tokens.radii.tile - 28.0).abs() < 1e-4);
+                assert!((theme.tokens.radii.control - 16.0).abs() < 1e-4);
+                assert!(
+                    (theme.tokens.typography.size(crate::tokens::TextRole::Body) - 16.0).abs() < 1e-4
+                );
+                assert_eq!(
+                    theme.tokens.motion.springs.snappy.stiffness,
+                    stock.tokens.motion.springs.subtle.stiffness
+                );
+                assert!((theme.tokens.colors.surfaces.material_blur_px - 40.0).abs() < 1e-4);
+                assert_eq!(theme.tokens.colors.surfaces.material.a(), 230);
+                assert_eq!(theme.tokens.selector, selector);
+                let fill = Oklch::from_color(theme.tokens.colors.intent.accent);
+                assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
+            }
+
+            {
+                use crate::text_render::TextWeight;
+                use crate::tokens::{Depth, Finish, TextRole};
+                let block = Theme::preset(Preset::Block);
+                assert_eq!(block.tokens.radii.control, 0.0);
+                assert_eq!(block.tokens.radii.tile, 0.0);
+                assert_eq!(block.tokens.finishes.window, Finish::flat());
+                assert_eq!(block.tokens.finishes.floating, Finish::flat());
+                assert_eq!(block.tokens.colors.surfaces.material_blur_px, 0.0);
+                assert_eq!(block.tokens.elevation.window.color.components[3], 0.0);
+                assert_eq!(block.tokens.elevation.floating.color.components[3], 0.0);
+                assert!(block.tokens.elevation.window.outline.is_none());
+                assert!(block.motion().still() && !block.motion().moves());
+                assert_eq!(
+                    block.text(TextRole::Heading).weight,
+                    TextWeight::Bold,
+                    "Block's headings are bold"
+                );
+                assert_eq!(block.text(TextRole::Label).weight, TextWeight::Semibold);
+                assert_eq!(
+                    block.tokens.elevation.floating_edge, block.tokens.colors.text_tertiary,
+                    "a floating panel's edge is the strong border"
+                );
+
+                let glass = Theme::preset(Preset::Glass);
+                assert_eq!(glass.tokens.finishes.window.painter(), "glass");
+                assert!(glass.tokens.colors.surfaces.material_blur_px > 0.0);
+                assert!(
+                    glass.tokens.elevation.floating.color.components[3]
+                        > Theme::dark().tokens.elevation.floating.color.components[3]
+                );
+
+                let mut doc = Preset::Dark.document();
+                doc.depth = Depth::Outline;
+                doc.type_.contrast = 1.5;
+                let outlined = Theme::from_document(&doc).unwrap();
+                assert_eq!(outlined.tokens.elevation.window.color.components[3], 0.0);
+                assert!(outlined.tokens.elevation.window.outline.is_some());
+                assert!(
+                    outlined.tokens.typography.size(TextRole::Display)
+                        > Theme::dark().tokens.typography.size(TextRole::Display)
+                );
+                assert_eq!(
+                    outlined.tokens.typography.size(TextRole::Body),
+                    Theme::dark().tokens.typography.size(TextRole::Body)
+                );
+
+                // Default stays exactly the design language.
+                let stock = Theme::dark();
+                assert_eq!(stock.tokens.elevation, crate::tokens::Elevation::dark());
+                assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::stock());
+                assert!(!stock.motion().still());
+            }
+
+            {
+                let mut old = quiet_ocean(1.0);
+                old.schema_version = 4;
+                assert!(Theme::from_document(&old).is_none());
+                let json = serde_json::json!({
+                    "appearance": { "dark_theme": "custom:wanted", "custom_themes": [quiet_ocean(1.0)] }
+                });
+                assert!(Theme::from_settings_json(&json.to_string()).is_none());
+                let legacy =
+                    r#"{"appearance":{"theme":"custom:x","custom_theme":{"schema_version":4}}}"#;
+                assert!(Theme::from_settings_json(legacy).is_none());
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Which polarity an appearance draws: the mode, the host's answer and the schedule.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_appearance_drawn_is_the_persons_choice_or_the_hosts_answer;
+
+        phase what_is_drawn_and_what_is_said_to_be_drawn_are_one_reading;
+        // An appearance and the polarities it draws, against the theme every surface is drawn with:
+        // what a surface says is in use is `drawn`'s answer, so the two must not part for any
+        // appearance, on a page answering either way and on a computer that answers nothing.
+        {
+            let appearances = [
+                serde_json::json!({}),
+                serde_json::json!({"appearance": {"accent": "violet"}}),
+                serde_json::json!({"appearance": {"mode": "dark"}}),
+                serde_json::json!({"appearance": {"mode": "light"}}),
+                serde_json::json!({"appearance": {"mode": "automatic"}}),
+                serde_json::json!({"appearance": {"mode": "automatic", "dark_theme": "glass"}}),
+                serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+            ];
+            for settings in appearances {
+                let settings = settings.as_object().cloned().unwrap_or_default();
+                let mode = settings
+                    .get(APPEARANCE_SECTION)
+                    .and_then(|appearance| appearance.get(MODE_KEY))
+                    .and_then(serde_json::Value::as_str);
+                for host in [None, Some(true), Some(false)] {
+                    let drawn = drawn(mode, host);
+                    let theme = {
+                        let _scheme = scoped_host_scheme(host);
+                        Theme::configured_from(&settings)
+                    };
+                    let now = Drawn::of(theme.document.is_dark());
+                    assert!(
+                        drawn.dark() || !now.dark(),
+                        "{settings:?} on a host answering {host:?}: says dark is drawn, draws light"
+                    );
+                    assert!(
+                        drawn.light() || !now.light(),
+                        "{settings:?} on a host answering {host:?}: says light is drawn, draws dark"
+                    );
+                }
+            }
+        }
+
+        phase the_hosts_answer_stands_in_only_where_the_person_left_it_open;
+        // A page answers its browser's light or dark, so an appearance the person left open — no
+        // mode, or Automatic — is that; a computer running Tilo answers nothing, keeps its dark
+        // start and follows Automatic's schedule.
+        {
+            assert_eq!(drawn(None, None), Drawn::Dark, "a computer starts dark");
+            assert_eq!(drawn(None, Some(false)), Drawn::Light, "a light page");
+            assert_eq!(drawn(None, Some(true)), Drawn::Dark, "a dark page");
+            assert_eq!(
+                drawn(Some("automatic"), None),
+                Drawn::Both,
+                "the schedule draws each in turn"
+            );
+            assert_eq!(
+                drawn(Some("automatic"), Some(false)),
+                Drawn::Light,
+                "a page's Automatic is the browser's"
+            );
+            assert_eq!(
+                drawn(Some("light"), Some(true)),
+                Drawn::Light,
+                "the person's own choice stands over a dark page"
+            );
+            assert_eq!(drawn(Some("dark"), Some(false)), Drawn::Dark);
+        }
+
+        phase the_automatic_mode_is_light_by_day_and_dark_by_night;
+        {
+            use settings_store::day_schedule::LocalMoment;
+            let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dark-soft","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
+            let at = |minute_of_day| LocalMoment {
+                day_of_year: 100,
+                minute_of_day,
+                utc_offset_minutes: 0,
+            };
+            assert_eq!(
+                Theme::from_settings_json_at(json, at(12 * 60))
+                    .unwrap()
+                    .name,
+                Theme::light().name
+            );
+            assert_eq!(
+                Theme::from_settings_json_at(json, at(22 * 60))
+                    .unwrap()
+                    .name,
+                "Dark soft"
+            );
+        }
     }
 }
 

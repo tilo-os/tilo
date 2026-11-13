@@ -3394,25 +3394,6 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_graph_revision_rejects_a_mutation_without_reusing_live_state() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let before = handle.document().unwrap();
-        handle.inner.write().unwrap().revision = u64::MAX;
-        let replacement = UiDocument::new(UiNode::Text {
-            id: "replacement".into(),
-            text: UiTextSource::Static {
-                value: "Replacement".into(),
-            },
-            role: UiTextRole::Body,
-        });
-        assert!(matches!(
-            handle.replace(replacement),
-            Err(UiGraphError::RevisionExhausted)
-        ));
-        assert_eq!(handle.document().unwrap(), before);
-    }
-
-    #[test]
     fn serialized_check_label_builds_visible_and_spoken_semantics() {
         fn has_visible_label(node: &crate::headless::InspectionNode) -> bool {
             node.semantics.as_ref().is_some_and(|semantics| {
@@ -3632,44 +3613,67 @@ mod tests {
         assert_eq!(route.current(), "home");
     }
 
-    #[test]
-    fn validation_is_atomic_and_accessibility_is_required() {
-        let handle = UiGraphHandle::new(sample()).unwrap();
-        let before = handle.to_json_pretty().unwrap();
-        let error = handle
-            .update_node("save", |node| {
-                if let UiNode::Button {
-                    label,
-                    accessible_name,
-                    ..
-                } = node
-                {
-                    label.clear();
-                    *accessible_name = None;
-                }
-            })
-            .unwrap_err();
-        assert!(matches!(error, UiGraphError::MissingAccessibleName(_)));
-        assert_eq!(handle.to_json_pretty().unwrap(), before);
-    }
+    tilo_test_env::scenario! {
+        fn an_invalid_graph_is_rejected_and_leaves_the_last_good_one;
 
-    #[test]
-    fn duplicate_ids_and_unknown_fields_are_rejected() {
-        let mut duplicate = sample();
-        if let UiNode::Column { children, .. } = &mut duplicate.root {
-            *children.last_mut().unwrap() = UiNode::Spacer {
-                id: "title-input".into(),
-            };
+        phase exhausted_graph_revision_rejects_a_mutation_without_reusing_live_state;
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let before = handle.document().unwrap();
+            handle.inner.write().unwrap().revision = u64::MAX;
+            let replacement = UiDocument::new(UiNode::Text {
+                id: "replacement".into(),
+                text: UiTextSource::Static {
+                    value: "Replacement".into(),
+                },
+                role: UiTextRole::Body,
+            });
+            assert!(matches!(
+                handle.replace(replacement),
+                Err(UiGraphError::RevisionExhausted)
+            ));
+            assert_eq!(handle.document().unwrap(), before);
         }
-        assert!(matches!(
-            duplicate.validate(),
-            Err(UiGraphError::DuplicateId(_))
-        ));
-        let json = r#"{"version":1,"root":{"type":"spacer","id":"root","mystery":1}}"#;
-        assert!(matches!(
-            UiDocument::from_json(json),
-            Err(UiGraphError::Json(_))
-        ));
+
+        phase validation_is_atomic_and_accessibility_is_required;
+        {
+            let handle = UiGraphHandle::new(sample()).unwrap();
+            let before = handle.to_json_pretty().unwrap();
+            let error = handle
+                .update_node("save", |node| {
+                    if let UiNode::Button {
+                        label,
+                        accessible_name,
+                        ..
+                    } = node
+                    {
+                        label.clear();
+                        *accessible_name = None;
+                    }
+                })
+                .unwrap_err();
+            assert!(matches!(error, UiGraphError::MissingAccessibleName(_)));
+            assert_eq!(handle.to_json_pretty().unwrap(), before);
+        }
+
+        phase duplicate_ids_and_unknown_fields_are_rejected;
+        {
+            let mut duplicate = sample();
+            if let UiNode::Column { children, .. } = &mut duplicate.root {
+                *children.last_mut().unwrap() = UiNode::Spacer {
+                    id: "title-input".into(),
+                };
+            }
+            assert!(matches!(
+                duplicate.validate(),
+                Err(UiGraphError::DuplicateId(_))
+            ));
+            let json = r#"{"version":1,"root":{"type":"spacer","id":"root","mystery":1}}"#;
+            assert!(matches!(
+                UiDocument::from_json(json),
+                Err(UiGraphError::Json(_))
+            ));
+        }
     }
 
     #[test]
@@ -3953,113 +3957,117 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn structural_insert_is_validated_and_atomic() {
-        let mut document = sample();
-        document
-            .insert_child(
-                "root",
-                1,
-                UiNode::Text {
-                    id: "subtitle".into(),
-                    text: UiTextSource::Static {
-                        value: "A small project".into(),
+    tilo_test_env::scenario! {
+        fn structural_edits_are_validated_and_atomic;
+
+        phase structural_insert_is_validated_and_atomic;
+        {
+            let mut document = sample();
+            document
+                .insert_child(
+                    "root",
+                    1,
+                    UiNode::Text {
+                        id: "subtitle".into(),
+                        text: UiTextSource::Static {
+                            value: "A small project".into(),
+                        },
+                        role: UiTextRole::Caption,
                     },
-                    role: UiTextRole::Caption,
-                },
-            )
-            .unwrap();
-        let ids: Vec<_> = document.nodes().iter().map(|node| node.id()).collect();
-        assert_eq!(
-            ids,
-            ["root", "title-view", "subtitle", "title-input", "save"]
-        );
+                )
+                .unwrap();
+            let ids: Vec<_> = document.nodes().iter().map(|node| node.id()).collect();
+            assert_eq!(
+                ids,
+                ["root", "title-view", "subtitle", "title-input", "save"]
+            );
 
-        let before = document.clone();
-        let error = document
-            .insert_child("root", 0, UiNode::Spacer { id: "save".into() })
-            .unwrap_err();
-        assert!(matches!(error, UiGraphError::DuplicateId(id) if id == "save"));
-        assert_eq!(document, before, "a failed structural edit is atomic");
-    }
+            let before = document.clone();
+            let error = document
+                .insert_child("root", 0, UiNode::Spacer { id: "save".into() })
+                .unwrap_err();
+            assert!(matches!(error, UiGraphError::DuplicateId(id) if id == "save"));
+            assert_eq!(document, before, "a failed structural edit is atomic");
+        }
 
-    #[test]
-    fn move_reparents_and_reorders_without_losing_the_subtree() {
-        let mut document = sample();
-        document
-            .insert_child(
-                "root",
-                1,
-                UiNode::Row {
-                    id: "actions".into(),
-                    children: vec![UiNode::Spacer {
-                        id: "action-gap".into(),
-                    }],
-                    no_wrap: true,
-                    fill_remaining_height: false,
-                },
-            )
-            .unwrap();
-        document.move_node("save", "actions", 0).unwrap();
-        let actions = document.node("actions").unwrap();
-        assert_eq!(
-            actions
-                .children()
-                .iter()
-                .map(|child| child.id())
-                .collect::<Vec<_>>(),
-            ["save", "action-gap"]
-        );
-        assert!(matches!(
-            document.move_node("actions", "save", 0),
-            Err(UiGraphError::MoveIntoDescendant { .. })
-        ));
-        assert!(document.node("save").is_some());
-    }
+        phase move_reparents_and_reorders_without_losing_the_subtree;
+        {
+            let mut document = sample();
+            document
+                .insert_child(
+                    "root",
+                    1,
+                    UiNode::Row {
+                        id: "actions".into(),
+                        children: vec![UiNode::Spacer {
+                            id: "action-gap".into(),
+                        }],
+                        no_wrap: true,
+                        fill_remaining_height: false,
+                    },
+                )
+                .unwrap();
+            document.move_node("save", "actions", 0).unwrap();
+            let actions = document.node("actions").unwrap();
+            assert_eq!(
+                actions
+                    .children()
+                    .iter()
+                    .map(|child| child.id())
+                    .collect::<Vec<_>>(),
+                ["save", "action-gap"]
+            );
+            assert!(matches!(
+                document.move_node("actions", "save", 0),
+                Err(UiGraphError::MoveIntoDescendant { .. })
+            ));
+            assert!(document.node("save").is_some());
+        }
 
-    #[test]
-    fn remove_and_replace_obey_root_and_container_invariants() {
-        let mut document = UiDocument::new(UiNode::Container {
-            id: "root".into(),
-            child: Box::new(UiNode::Text {
-                id: "body".into(),
-                text: UiTextSource::Static {
-                    value: "Before".into(),
-                },
-                role: UiTextRole::Body,
-            }),
-            background: true,
-            no_padding: false,
-            fill_height: false,
-            width: None,
-            height: None,
-        });
-        assert!(matches!(
-            document.remove_node("body"),
-            Err(UiGraphError::RequiredContainerChild { .. })
-        ));
-        document
-            .replace_node(
-                "body",
-                UiNode::Button {
-                    id: "continue".into(),
-                    label: "Continue".into(),
-                    accessible_name: None,
-                    tooltip: None,
-                    on_click_path: None,
-                    click_value: None,
-                    navigate: None,
-                    enabled: true,
-                    role: UiButtonRole::Primary,
-                },
-            )
-            .unwrap();
-        assert!(document.node("body").is_none());
-        assert!(document.node("continue").is_some());
-        assert!(matches!(
-            document.remove_node("root"),
-            Err(UiGraphError::CannotRemoveRoot)
-        ));
+        phase remove_and_replace_obey_root_and_container_invariants;
+        {
+            let mut document = UiDocument::new(UiNode::Container {
+                id: "root".into(),
+                child: Box::new(UiNode::Text {
+                    id: "body".into(),
+                    text: UiTextSource::Static {
+                        value: "Before".into(),
+                    },
+                    role: UiTextRole::Body,
+                }),
+                background: true,
+                no_padding: false,
+                fill_height: false,
+                width: None,
+                height: None,
+            });
+            assert!(matches!(
+                document.remove_node("body"),
+                Err(UiGraphError::RequiredContainerChild { .. })
+            ));
+            document
+                .replace_node(
+                    "body",
+                    UiNode::Button {
+                        id: "continue".into(),
+                        label: "Continue".into(),
+                        accessible_name: None,
+                        tooltip: None,
+                        on_click_path: None,
+                        click_value: None,
+                        navigate: None,
+                        enabled: true,
+                        role: UiButtonRole::Primary,
+                    },
+                )
+                .unwrap();
+            assert!(document.node("body").is_none());
+            assert!(document.node("continue").is_some());
+            assert!(matches!(
+                document.remove_node("root"),
+                Err(UiGraphError::CannotRemoveRoot)
+            ));
+        }
     }
 
     #[test]

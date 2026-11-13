@@ -581,155 +581,107 @@ mod tests {
         crate::testing::inert_widget_methods!(leaf_layout);
     }
 
-    #[test]
-    fn deferred_native_history_waits_for_original_ack_and_preserves_document() {
-        use crate::widget::{Edits, ResourceOperation, ResourceOperationStart};
-        let mut widget = NativeHistoryProbe::default();
-        let mut doc = automerge::AutoCommit::new();
-        let original = doc.get_heads();
-        let invocation = tilo_actions::InvocationId::new();
-        let other = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&UndoRequest::Undo).unwrap();
-        let operation = ResourceOperation::local(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            EDIT_OPERATION,
-            &payload,
-        );
-        assert!(crate::widget::resource_operation_handlers(&widget).contains(EDIT_OPERATION));
-        assert_eq!(
+    tilo_test_env::scenario! {
+        /// A widget's own history answering an undo operation later.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn deferred_native_history_reports_only_what_the_original_did;
+
+        phase deferred_native_history_waits_for_original_ack_and_preserves_document;
+        {
+            use crate::widget::{Edits, ResourceOperation, ResourceOperationStart};
+            let mut widget = NativeHistoryProbe::default();
+            let mut doc = automerge::AutoCommit::new();
+            let original = doc.get_heads();
+            let invocation = tilo_actions::InvocationId::new();
+            let other = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&UndoRequest::Undo).unwrap();
+            let operation = ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                EDIT_OPERATION,
+                &payload,
+            );
+            assert!(crate::widget::resource_operation_handlers(&widget).contains(EDIT_OPERATION));
+            assert_eq!(
+                crate::widget::start_operation(
+                    &mut widget,
+                    &operation,
+                    &mut Edits::lend(&mut doc),
+                    &automerge::ROOT
+                )
+                .unwrap(),
+                Some(ResourceOperationStart::Accepted)
+            );
+            assert!(
+                crate::widget::poll_resource_operation(
+                    &mut widget,
+                    invocation,
+                    false,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .is_none()
+            );
+            widget.acknowledged = true;
+            assert!(
+                crate::widget::poll_resource_operation(
+                    &mut widget,
+                    other,
+                    false,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .is_none()
+            );
+            assert!(
+                matches!(crate::widget::poll_resource_operation(&mut widget, invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
+            );
+            assert!(
+                crate::widget::poll_resource_operation(
+                    &mut widget,
+                    invocation,
+                    false,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .is_none()
+            );
+            assert_eq!(doc.get_heads(), original);
+        }
+
+        phase deferred_native_history_cancellation_does_not_report_success;
+        {
+            use crate::widget::{Edits, ResourceOperation};
+            let mut widget = NativeHistoryProbe::default();
+            let mut doc = automerge::AutoCommit::new();
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&UndoRequest::Redo).unwrap();
+            let operation = ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                EDIT_OPERATION,
+                &payload,
+            );
             crate::widget::start_operation(
                 &mut widget,
                 &operation,
                 &mut Edits::lend(&mut doc),
-                &automerge::ROOT
+                &automerge::ROOT,
             )
-            .unwrap(),
-            Some(ResourceOperationStart::Accepted)
-        );
-        assert!(
-            crate::widget::poll_resource_operation(
-                &mut widget,
-                invocation,
-                false,
-                &doc,
-                &automerge::ROOT
-            )
-            .is_none()
-        );
-        widget.acknowledged = true;
-        assert!(
-            crate::widget::poll_resource_operation(
-                &mut widget,
-                other,
-                false,
-                &doc,
-                &automerge::ROOT
-            )
-            .is_none()
-        );
-        assert!(
-            matches!(crate::widget::poll_resource_operation(&mut widget, invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
-        );
-        assert!(
-            crate::widget::poll_resource_operation(
-                &mut widget,
-                invocation,
-                false,
-                &doc,
-                &automerge::ROOT
-            )
-            .is_none()
-        );
-        assert_eq!(doc.get_heads(), original);
-    }
-
-    #[test]
-    fn deferred_native_history_cancellation_does_not_report_success() {
-        use crate::widget::{Edits, ResourceOperation};
-        let mut widget = NativeHistoryProbe::default();
-        let mut doc = automerge::AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&UndoRequest::Redo).unwrap();
-        let operation = ResourceOperation::local(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            EDIT_OPERATION,
-            &payload,
-        );
-        crate::widget::start_operation(
-            &mut widget,
-            &operation,
-            &mut Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(
-            matches!(crate::widget::poll_resource_operation(&mut widget, invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
-        );
-        widget.acknowledged = true;
-        assert!(
-            crate::widget::poll_resource_operation(
-                &mut widget,
-                invocation,
-                false,
-                &doc,
-                &automerge::ROOT
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn undo_access_publishes_status_and_refuses_unavailable_verbs_once() {
-        {
-            let mut spacer = crate::widget::Spacer::new();
-            crate::undo::set_undo_status(&mut spacer, &mut || {
-                panic!("default widget must not request a summary")
-            });
-        }
-
-        {
-            use crate::widget::Widget;
-            let mut button = crate::widget::UndoButton::undo();
-            let mut calls = 0;
-            crate::undo::set_undo_status(&mut button, &mut || {
-                calls += 1;
-                status(true, false)
-            });
-            assert_eq!(calls, 1);
-            assert!(button.is_enabled());
-            assert_eq!(
-                button.accessibility().unwrap().description.as_deref(),
-                Some("Undo: Renamed the card")
+            .unwrap();
+            assert!(
+                matches!(crate::widget::poll_resource_operation(&mut widget, invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
             );
-        }
-
-        {
-            let mut access = UndoAccess::new();
-            assert!(!access.request(UndoRequest::Undo), "empty history refuses");
-            assert_eq!(
-                access.take_request(),
-                None,
-                "a refused request must not reach the host"
-            );
-
-            access.publish(&status(true, false));
-            assert!(access.request(UndoRequest::Undo));
-            assert_eq!(access.take_request(), Some(UndoRequest::Undo));
-            assert!(!access.request(UndoRequest::Redo));
-            assert_eq!(access.take_request(), None);
-        }
-
-        {
-            let mut access = UndoAccess::new();
-            access.publish(&status(true, true));
-            access.request(UndoRequest::Undo);
-            assert_eq!(access.take_request(), Some(UndoRequest::Undo));
-            assert_eq!(
-                access.take_request(),
-                None,
-                "a drained request must not fire twice"
+            widget.acknowledged = true;
+            assert!(
+                crate::widget::poll_resource_operation(
+                    &mut widget,
+                    invocation,
+                    false,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .is_none()
             );
         }
     }
@@ -743,45 +695,105 @@ mod tests {
         }
     }
 
-    #[test]
-    fn undo_shortcuts_and_descriptions_never_promise_a_missing_action() {
+    tilo_test_env::scenario! {
+        /// What the undo status publishes, admits and describes.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn undo_status_gates_requests_shortcuts_and_descriptions;
+
+        phase undo_access_publishes_status_and_refuses_unavailable_verbs_once;
         {
-            use crate::platform::{Platform, PlatformConventions};
-            let linux = PlatformConventions::new(Platform::Linux);
-            let shortcut = |c, command, shift| shortcut(linux, c, command, shift);
-            assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
-            assert_eq!(shortcut("Z", true, false), Some(UndoRequest::Undo));
-            assert_eq!(shortcut("z", true, true), Some(UndoRequest::Redo));
-            assert_eq!(shortcut("Z", true, true), Some(UndoRequest::Redo));
-            assert_eq!(shortcut("y", true, false), Some(UndoRequest::Redo));
-            // Without Ctrl these are ordinary characters and must reach the widget.
-            assert_eq!(shortcut("z", false, false), None);
-            assert_eq!(shortcut("Z", false, true), None);
-            assert_eq!(shortcut("k", true, false), None);
-            // ⌘Y is History on macOS, never Redo.
-            let mac = PlatformConventions::new(Platform::MacOs);
-            assert_eq!(super::shortcut(mac, "y", true, false), None);
+            {
+                let mut spacer = crate::widget::Spacer::new();
+                crate::undo::set_undo_status(&mut spacer, &mut || {
+                    panic!("default widget must not request a summary")
+                });
+            }
+
+            {
+                use crate::widget::Widget;
+                let mut button = crate::widget::UndoButton::undo();
+                let mut calls = 0;
+                crate::undo::set_undo_status(&mut button, &mut || {
+                    calls += 1;
+                    status(true, false)
+                });
+                assert_eq!(calls, 1);
+                assert!(button.is_enabled());
+                assert_eq!(
+                    button.accessibility().unwrap().description.as_deref(),
+                    Some("Undo: Renamed the card")
+                );
+            }
+
+            {
+                let mut access = UndoAccess::new();
+                assert!(!access.request(UndoRequest::Undo), "empty history refuses");
+                assert_eq!(
+                    access.take_request(),
+                    None,
+                    "a refused request must not reach the host"
+                );
+
+                access.publish(&status(true, false));
+                assert!(access.request(UndoRequest::Undo));
+                assert_eq!(access.take_request(), Some(UndoRequest::Undo));
+                assert!(!access.request(UndoRequest::Redo));
+                assert_eq!(access.take_request(), None);
+            }
+
+            {
+                let mut access = UndoAccess::new();
+                access.publish(&status(true, true));
+                access.request(UndoRequest::Undo);
+                assert_eq!(access.take_request(), Some(UndoRequest::Undo));
+                assert_eq!(
+                    access.take_request(),
+                    None,
+                    "a drained request must not fire twice"
+                );
+            }
         }
 
+        phase undo_shortcuts_and_descriptions_never_promise_a_missing_action;
         {
-            let empty = UndoStatus::empty();
-            assert_eq!(empty.description(UndoRequest::Undo), "Nothing to undo");
-            assert_eq!(empty.description(UndoRequest::Redo), "Nothing to redo");
+            {
+                use crate::platform::{Platform, PlatformConventions};
+                let linux = PlatformConventions::new(Platform::Linux);
+                let shortcut = |c, command, shift| shortcut(linux, c, command, shift);
+                assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
+                assert_eq!(shortcut("Z", true, false), Some(UndoRequest::Undo));
+                assert_eq!(shortcut("z", true, true), Some(UndoRequest::Redo));
+                assert_eq!(shortcut("Z", true, true), Some(UndoRequest::Redo));
+                assert_eq!(shortcut("y", true, false), Some(UndoRequest::Redo));
+                // Without Ctrl these are ordinary characters and must reach the widget.
+                assert_eq!(shortcut("z", false, false), None);
+                assert_eq!(shortcut("Z", false, true), None);
+                assert_eq!(shortcut("k", true, false), None);
+                // ⌘Y is History on macOS, never Redo.
+                let mac = PlatformConventions::new(Platform::MacOs);
+                assert_eq!(super::shortcut(mac, "y", true, false), None);
+            }
 
-            let live = status(true, true);
-            assert_eq!(
-                live.description(UndoRequest::Undo),
-                "Undo: Renamed the card"
-            );
-            assert_eq!(live.description(UndoRequest::Redo), "Redo: Added a card");
-        }
+            {
+                let empty = UndoStatus::empty();
+                assert_eq!(empty.description(UndoRequest::Undo), "Nothing to undo");
+                assert_eq!(empty.description(UndoRequest::Redo), "Nothing to redo");
 
-        {
-            let s = UndoStatus {
-                can_undo: true,
-                ..Default::default()
-            };
-            assert_eq!(s.description(UndoRequest::Undo), "Undo");
+                let live = status(true, true);
+                assert_eq!(
+                    live.description(UndoRequest::Undo),
+                    "Undo: Renamed the card"
+                );
+                assert_eq!(live.description(UndoRequest::Redo), "Redo: Added a card");
+            }
+
+            {
+                let s = UndoStatus {
+                    can_undo: true,
+                    ..Default::default()
+                };
+                assert_eq!(s.description(UndoRequest::Undo), "Undo");
+            }
         }
     }
 }

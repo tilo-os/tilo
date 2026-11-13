@@ -629,213 +629,10 @@ impl TypingRun {
 mod tests {
     use super::*;
 
-    #[test]
-    fn line_up_and_down_keep_the_column_and_stop_at_the_edges() {
-        let text = "abc\ndéf\nghij";
-        let at = |core: &EditCore| core.selection().cursor;
-        let mut core = EditCore::new();
-        // Line 0, column 2 → line 1, column 2 (after the two-byte "é").
-        core.set_caret(2);
-        core.motion(text, Motion::LineDown, false);
-        assert_eq!(at(&core), "abc\ndé".len());
-        core.motion(text, Motion::LineUp, false);
-        assert_eq!(at(&core), 2);
-        core.motion(text, Motion::LineUp, false);
-        assert_eq!(at(&core), 2);
-        core.set_caret(text.len());
-        core.motion(text, Motion::LineDown, false);
-        assert_eq!(at(&core), text.len());
-        // Column 4 clamps to the end of a shorter line, and extends a selection.
-        core.motion(text, Motion::LineUp, true);
-        assert_eq!(at(&core), "abc\ndéf".len());
-        assert!(core.has_selection());
-
-        let text = "abc\ne\u{301}e\u{301}";
-        let mut core = EditCore::at(3);
-        core.motion(text, Motion::LineDown, false);
-        assert_eq!(at(&core), "abc\ne\u{301}".len());
-    }
-
     fn apply(text: &str, e: &Edit) -> String {
         let mut s = String::from(text);
         s.replace_range(e.at..e.at.saturating_add(e.removed), &e.inserted);
         s
-    }
-
-    #[test]
-    fn caret_motion_selection_and_clamping_land_on_shared_boundaries() {
-        let cases: &[(&str, &str, usize, &[(Motion, usize, &str)])] = &[
-            (
-                "char motion clamps at the start",
-                "abc",
-                1,
-                &[
-                    (Motion::Left, 0, "left steps"),
-                    (Motion::Left, 0, "left at start stays"),
-                ],
-            ),
-            (
-                "char motion clamps at the end",
-                "abc",
-                2,
-                &[
-                    (Motion::Right, 3, "right steps"),
-                    (Motion::Right, 3, "right at end stays"),
-                ],
-            ),
-            (
-                "word motion uses shared boundaries",
-                "hello world quick",
-                0,
-                &[
-                    (
-                        Motion::WordRight,
-                        6,
-                        "word-right lands on the next word start",
-                    ),
-                    (Motion::WordRight, 12, "word-right again"),
-                    (
-                        Motion::WordLeft,
-                        6,
-                        "word-left walks back to the word start",
-                    ),
-                ],
-            ),
-            (
-                "line and document motion",
-                "first\nsecond\nthird",
-                8, // inside "second"
-                &[
-                    (Motion::LineStart, 6, "Home goes to the line start"),
-                    (
-                        Motion::LineEnd,
-                        12,
-                        "End goes to the line end (the trailing \\n)",
-                    ),
-                    (Motion::DocStart, 0, "document start"),
-                    (Motion::DocEnd, 18, "document end"),
-                ],
-            ),
-        ];
-        for (case, text, start, steps) in cases {
-            let mut c = EditCore::at(*start);
-            for (motion, want, why) in *steps {
-                c.motion(text, *motion, false);
-                assert_eq!(c.caret(), *want, "case {case}: {why}");
-            }
-        }
-        assert_eq!("first\nsecond\nthird".len(), 18);
-
-        // Shift motion extends; a plain Left collapses to the LEFT edge of the selection,
-        // not 3.
-        let t = "abcdef";
-        let mut c = EditCore::at(2);
-        c.motion(t, Motion::Right, true);
-        c.motion(t, Motion::Right, true);
-        assert!(c.has_selection());
-        assert_eq!(c.range(), 2..4, "shift-right extends the selection");
-        c.motion(t, Motion::Left, false);
-        assert!(!c.has_selection());
-        assert_eq!(
-            c.caret(),
-            2,
-            "plain left collapses to the selection's near edge"
-        );
-
-        let t = "alpha beta";
-        let mut c = EditCore::new();
-        c.select_all(t);
-        assert_eq!(c.range(), 0..t.len());
-        c.select_word(t, 7); // inside "beta"
-        assert_eq!(c.range(), 6..10);
-
-        // "café" — é is two bytes (3..5). A caret past a shrunk text must land on a char
-        // boundary, never inside the é.
-        let mut c = EditCore::at(20);
-        c.clamp_to("café");
-        assert_eq!(c.caret(), "café".len());
-        c.set_caret(4); // mid-é byte
-        c.clamp_to("café");
-        assert!(
-            "café".is_char_boundary(c.caret()),
-            "clamp lands on a char boundary"
-        );
-        let combining = "a\u{301}b";
-        c.set_caret(1); // between the base and combining mark
-        c.clamp_to(combining);
-        assert_eq!(c.caret(), 0, "clamp never lands inside a grapheme");
-    }
-
-    #[test]
-    fn edits_insert_and_delete_by_char_word_selection_and_grapheme() {
-        {
-            let t = "abc";
-            let mut c = EditCore::at(1);
-            let e = c.insert("XY");
-            assert_eq!(
-                e,
-                Edit {
-                    at: 1,
-                    removed: 0,
-                    inserted: "XY".into()
-                }
-            );
-            assert_eq!(apply(t, &e), "aXYbc");
-            assert_eq!(c.caret(), 3, "caret sits after the insert");
-
-            let t2 = "aXYbc";
-            let mut c2 = EditCore::new();
-            c2.set_selection(1, 3); // "XY"
-            let e2 = c2.insert("Z");
-            assert_eq!(apply(t2, &e2), "aZbc");
-            assert_eq!(c2.caret(), 2);
-            assert!(!c2.has_selection());
-        }
-
-        {
-            let t = "abc";
-            let mut c = EditCore::at(2);
-            let e = c.delete_backward(t, false);
-            assert_eq!(apply(t, &e), "ac");
-            assert_eq!(c.caret(), 1);
-            let mut c0 = EditCore::at(0);
-            assert!(c0.delete_backward(t, false).is_noop());
-            let tw = "hello world";
-            let mut cw = EditCore::at(tw.len());
-            let ew = cw.delete_backward(tw, true);
-            assert_eq!(apply(tw, &ew), "hello ");
-            let mut cs = EditCore::new();
-            cs.set_selection(0, 5);
-            let es = cs.delete_backward(tw, false);
-            assert_eq!(apply(tw, &es), " world");
-        }
-
-        {
-            let t = "abc";
-            let mut c = EditCore::at(1);
-            let e = c.delete_forward(t, false);
-            assert_eq!(apply(t, &e), "ac");
-            assert_eq!(c.caret(), 1, "forward delete keeps the caret put");
-            let mut cend = EditCore::at(t.len());
-            assert!(cend.delete_forward(t, false).is_noop());
-            let tw = "hello world";
-            let mut cw = EditCore::at(0);
-            let ew = cw.delete_forward(tw, true);
-            assert_eq!(apply(tw, &ew), "world");
-        }
-
-        {
-            let text = "A👩‍👩‍👧‍👦B";
-            let after_emoji = text.len() - 1;
-            let mut backward = EditCore::at(after_emoji);
-            let edit = backward.delete_backward(text, false);
-            assert_eq!(apply(text, &edit), "AB");
-            assert_eq!(backward.caret(), 1);
-
-            let mut forward = EditCore::at(1);
-            let edit = forward.delete_forward(text, false);
-            assert_eq!(apply(text, &edit), "AB");
-        }
     }
 
     const CLUSTERS: &[&str] = &[
@@ -872,211 +669,420 @@ mod tests {
         assert!(edit.apply(text));
     }
 
-    #[test]
-    fn typing_char_by_char_reproduces_the_typed_string() {
-        let mut rng = Rng(7);
-        for _ in 0..200 {
-            let len = rng.below(24);
-            let typed: String = (0..len).map(|_| rng.cluster()).collect();
-            let mut core = EditCore::new();
-            let mut text = String::new();
-            for ch in typed.chars() {
-                let mut buf = [0; 4];
-                type_into(&mut core, &mut text, ch.encode_utf8(&mut buf));
-            }
-            assert_eq!(text, typed);
-            assert_eq!(core.caret(), typed.len());
-        }
-    }
+    tilo_test_env::scenario! {
+        /// `EditCore`: caret motion, selection, edits, filters and composition.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn the_edit_core_moves_selects_and_edits_on_grapheme_boundaries;
 
-    /// Random edits at the caret against a grapheme-list model: the buffer always equals
-    /// the model's concatenation and the caret sits on the model's cluster boundary, so
-    /// no motion or delete ever splits one.
-    #[test]
-    fn random_edits_at_the_caret_match_a_grapheme_model() {
-        for seed in 0..64 {
-            let mut rng = Rng(seed);
+        phase line_up_and_down_keep_the_column_and_stop_at_the_edges;
+        {
+            let text = "abc\ndéf\nghij";
+            let at = |core: &EditCore| core.selection().cursor;
             let mut core = EditCore::new();
-            let mut text = String::new();
-            let mut model: Vec<&str> = Vec::new();
-            let mut at = 0usize;
-            for step in 0..120 {
-                match rng.below(6) {
-                    0 | 1 => {
-                        let cluster = rng.cluster();
-                        type_into(&mut core, &mut text, cluster);
-                        model.insert(at, cluster);
-                        at += 1;
-                    }
-                    2 => {
-                        core.motion(&text, Motion::Left, false);
-                        at = at.saturating_sub(1);
-                    }
-                    3 => {
-                        core.motion(&text, Motion::Right, false);
-                        at = (at + 1).min(model.len());
-                    }
-                    4 => {
-                        let edit = core.delete_backward(&text, false);
-                        assert!(edit.apply(&mut text));
-                        if at > 0 {
-                            at -= 1;
-                            model.remove(at);
-                        }
-                    }
-                    _ => {
-                        let edit = core.delete_forward(&text, false);
-                        assert!(edit.apply(&mut text));
-                        if at < model.len() {
-                            model.remove(at);
-                        }
-                    }
+            // Line 0, column 2 → line 1, column 2 (after the two-byte "é").
+            core.set_caret(2);
+            core.motion(text, Motion::LineDown, false);
+            assert_eq!(at(&core), "abc\ndé".len());
+            core.motion(text, Motion::LineUp, false);
+            assert_eq!(at(&core), 2);
+            core.motion(text, Motion::LineUp, false);
+            assert_eq!(at(&core), 2);
+            core.set_caret(text.len());
+            core.motion(text, Motion::LineDown, false);
+            assert_eq!(at(&core), text.len());
+            // Column 4 clamps to the end of a shorter line, and extends a selection.
+            core.motion(text, Motion::LineUp, true);
+            assert_eq!(at(&core), "abc\ndéf".len());
+            assert!(core.has_selection());
+
+            let text = "abc\ne\u{301}e\u{301}";
+            let mut core = EditCore::at(3);
+            core.motion(text, Motion::LineDown, false);
+            assert_eq!(at(&core), "abc\ne\u{301}".len());
+        }
+
+        phase caret_motion_selection_and_clamping_land_on_shared_boundaries;
+        {
+            let cases: &[(&str, &str, usize, &[(Motion, usize, &str)])] = &[
+                (
+                    "char motion clamps at the start",
+                    "abc",
+                    1,
+                    &[
+                        (Motion::Left, 0, "left steps"),
+                        (Motion::Left, 0, "left at start stays"),
+                    ],
+                ),
+                (
+                    "char motion clamps at the end",
+                    "abc",
+                    2,
+                    &[
+                        (Motion::Right, 3, "right steps"),
+                        (Motion::Right, 3, "right at end stays"),
+                    ],
+                ),
+                (
+                    "word motion uses shared boundaries",
+                    "hello world quick",
+                    0,
+                    &[
+                        (
+                            Motion::WordRight,
+                            6,
+                            "word-right lands on the next word start",
+                        ),
+                        (Motion::WordRight, 12, "word-right again"),
+                        (
+                            Motion::WordLeft,
+                            6,
+                            "word-left walks back to the word start",
+                        ),
+                    ],
+                ),
+                (
+                    "line and document motion",
+                    "first\nsecond\nthird",
+                    8, // inside "second"
+                    &[
+                        (Motion::LineStart, 6, "Home goes to the line start"),
+                        (
+                            Motion::LineEnd,
+                            12,
+                            "End goes to the line end (the trailing \\n)",
+                        ),
+                        (Motion::DocStart, 0, "document start"),
+                        (Motion::DocEnd, 18, "document end"),
+                    ],
+                ),
+            ];
+            for (case, text, start, steps) in cases {
+                let mut c = EditCore::at(*start);
+                for (motion, want, why) in *steps {
+                    c.motion(text, *motion, false);
+                    assert_eq!(c.caret(), *want, "case {case}: {why}");
                 }
-                assert_eq!(text, model.concat(), "seed {seed} step {step}");
-                let caret: usize = model[..at].iter().map(|c| c.len()).sum();
-                assert_eq!(core.caret(), caret, "seed {seed} step {step}");
+            }
+            assert_eq!("first\nsecond\nthird".len(), 18);
+
+            // Shift motion extends; a plain Left collapses to the LEFT edge of the selection,
+            // not 3.
+            let t = "abcdef";
+            let mut c = EditCore::at(2);
+            c.motion(t, Motion::Right, true);
+            c.motion(t, Motion::Right, true);
+            assert!(c.has_selection());
+            assert_eq!(c.range(), 2..4, "shift-right extends the selection");
+            c.motion(t, Motion::Left, false);
+            assert!(!c.has_selection());
+            assert_eq!(
+                c.caret(),
+                2,
+                "plain left collapses to the selection's near edge"
+            );
+
+            let t = "alpha beta";
+            let mut c = EditCore::new();
+            c.select_all(t);
+            assert_eq!(c.range(), 0..t.len());
+            c.select_word(t, 7); // inside "beta"
+            assert_eq!(c.range(), 6..10);
+
+            // "café" — é is two bytes (3..5). A caret past a shrunk text must land on a char
+            // boundary, never inside the é.
+            let mut c = EditCore::at(20);
+            c.clamp_to("café");
+            assert_eq!(c.caret(), "café".len());
+            c.set_caret(4); // mid-é byte
+            c.clamp_to("café");
+            assert!(
+                "café".is_char_boundary(c.caret()),
+                "clamp lands on a char boundary"
+            );
+            let combining = "a\u{301}b";
+            c.set_caret(1); // between the base and combining mark
+            c.clamp_to(combining);
+            assert_eq!(c.caret(), 0, "clamp never lands inside a grapheme");
+        }
+
+        phase edits_insert_and_delete_by_char_word_selection_and_grapheme;
+        {
+            {
+                let t = "abc";
+                let mut c = EditCore::at(1);
+                let e = c.insert("XY");
+                assert_eq!(
+                    e,
+                    Edit {
+                        at: 1,
+                        removed: 0,
+                        inserted: "XY".into()
+                    }
+                );
+                assert_eq!(apply(t, &e), "aXYbc");
+                assert_eq!(c.caret(), 3, "caret sits after the insert");
+
+                let t2 = "aXYbc";
+                let mut c2 = EditCore::new();
+                c2.set_selection(1, 3); // "XY"
+                let e2 = c2.insert("Z");
+                assert_eq!(apply(t2, &e2), "aZbc");
+                assert_eq!(c2.caret(), 2);
+                assert!(!c2.has_selection());
+            }
+
+            {
+                let t = "abc";
+                let mut c = EditCore::at(2);
+                let e = c.delete_backward(t, false);
+                assert_eq!(apply(t, &e), "ac");
+                assert_eq!(c.caret(), 1);
+                let mut c0 = EditCore::at(0);
+                assert!(c0.delete_backward(t, false).is_noop());
+                let tw = "hello world";
+                let mut cw = EditCore::at(tw.len());
+                let ew = cw.delete_backward(tw, true);
+                assert_eq!(apply(tw, &ew), "hello ");
+                let mut cs = EditCore::new();
+                cs.set_selection(0, 5);
+                let es = cs.delete_backward(tw, false);
+                assert_eq!(apply(tw, &es), " world");
+            }
+
+            {
+                let t = "abc";
+                let mut c = EditCore::at(1);
+                let e = c.delete_forward(t, false);
+                assert_eq!(apply(t, &e), "ac");
+                assert_eq!(c.caret(), 1, "forward delete keeps the caret put");
+                let mut cend = EditCore::at(t.len());
+                assert!(cend.delete_forward(t, false).is_noop());
+                let tw = "hello world";
+                let mut cw = EditCore::at(0);
+                let ew = cw.delete_forward(tw, true);
+                assert_eq!(apply(tw, &ew), "world");
+            }
+
+            {
+                let text = "A👩‍👩‍👧‍👦B";
+                let after_emoji = text.len() - 1;
+                let mut backward = EditCore::at(after_emoji);
+                let edit = backward.delete_backward(text, false);
+                assert_eq!(apply(text, &edit), "AB");
+                assert_eq!(backward.caret(), 1);
+
+                let mut forward = EditCore::at(1);
+                let edit = forward.delete_forward(text, false);
+                assert_eq!(apply(text, &edit), "AB");
             }
         }
-    }
 
-    #[test]
-    fn motion_and_deletion_never_split_a_grapheme_cluster() {
-        for cluster in CLUSTERS {
-            let text = format!("<{cluster}>");
-            let (start, end) = (1, 1 + cluster.len());
-
-            let mut core = EditCore::at(start);
-            core.motion(&text, Motion::Right, false);
-            assert_eq!(core.caret(), end, "Right steps over {cluster:?}");
-            core.motion(&text, Motion::Left, false);
-            assert_eq!(core.caret(), start, "Left steps over {cluster:?}");
-
-            let mut back = EditCore::at(end);
-            let edit = back.delete_backward(&text, false);
-            assert_eq!(apply(&text, &edit), "<>", "Backspace removes {cluster:?}");
-            assert_eq!(back.caret(), start);
-
-            let mut forward = EditCore::at(start);
-            let edit = forward.delete_forward(&text, false);
-            assert_eq!(apply(&text, &edit), "<>", "Delete removes {cluster:?}");
-            assert_eq!(forward.caret(), start);
-
-            let mut select = EditCore::at(start);
-            select.motion(&text, Motion::Right, true);
-            assert_eq!(select.range(), start..end);
+        phase typing_char_by_char_reproduces_the_typed_string;
+        {
+            let mut rng = Rng(7);
+            for _ in 0..200 {
+                let len = rng.below(24);
+                let typed: String = (0..len).map(|_| rng.cluster()).collect();
+                let mut core = EditCore::new();
+                let mut text = String::new();
+                for ch in typed.chars() {
+                    let mut buf = [0; 4];
+                    type_into(&mut core, &mut text, ch.encode_utf8(&mut buf));
+                }
+                assert_eq!(text, typed);
+                assert_eq!(core.caret(), typed.len());
+            }
         }
-    }
 
-    #[test]
-    fn insert_replaces_the_selection_and_filter_admits_per_char() {
-        let mut core = EditCore::new();
-        let mut text = String::from("hello world");
-        core.set_selection(11, 6);
-        type_into(&mut core, &mut text, "there");
-        assert_eq!(text, "hello there");
-        assert_eq!(core.caret(), 11);
-        assert!(!core.has_selection());
+        phase random_edits_at_the_caret_match_a_grapheme_model;
+        // Random edits at the caret against a grapheme-list model: the buffer always equals
+        // the model's concatenation and the caret sits on the model's cluster boundary, so
+        // no motion or delete ever splits one.
+        {
+            for seed in 0..64 {
+                let mut rng = Rng(seed);
+                let mut core = EditCore::new();
+                let mut text = String::new();
+                let mut model: Vec<&str> = Vec::new();
+                let mut at = 0usize;
+                for step in 0..120 {
+                    match rng.below(6) {
+                        0 | 1 => {
+                            let cluster = rng.cluster();
+                            type_into(&mut core, &mut text, cluster);
+                            model.insert(at, cluster);
+                            at += 1;
+                        }
+                        2 => {
+                            core.motion(&text, Motion::Left, false);
+                            at = at.saturating_sub(1);
+                        }
+                        3 => {
+                            core.motion(&text, Motion::Right, false);
+                            at = (at + 1).min(model.len());
+                        }
+                        4 => {
+                            let edit = core.delete_backward(&text, false);
+                            assert!(edit.apply(&mut text));
+                            if at > 0 {
+                                at -= 1;
+                                model.remove(at);
+                            }
+                        }
+                        _ => {
+                            let edit = core.delete_forward(&text, false);
+                            assert!(edit.apply(&mut text));
+                            if at < model.len() {
+                                model.remove(at);
+                            }
+                        }
+                    }
+                    assert_eq!(text, model.concat(), "seed {seed} step {step}");
+                    let caret: usize = model[..at].iter().map(|c| c.len()).sum();
+                    assert_eq!(core.caret(), caret, "seed {seed} step {step}");
+                }
+            }
+        }
 
-        core.set_selection(0, 5);
-        core.motion(&text, Motion::WordRight, false);
-        assert_eq!((core.caret(), core.has_selection()), (5, false));
-        core.set_selection(5, 0);
-        core.motion(&text, Motion::Left, false);
-        assert_eq!(core.caret(), 0);
+        phase motion_and_deletion_never_split_a_grapheme_cluster;
+        {
+            for cluster in CLUSTERS {
+                let text = format!("<{cluster}>");
+                let (start, end) = (1, 1 + cluster.len());
 
-        let mut digits = EditCore::new();
-        digits.set_filter(Some(|ch: char| ch.is_ascii_digit()));
-        let mut text = String::from("12");
-        digits.set_selection(0, 2);
-        assert!(digits.insert("ab").is_noop());
-        assert_eq!(digits.range(), 0..2);
-        type_into(&mut digits, &mut text, "a3b4");
-        assert_eq!(text, "34");
-        assert_eq!(digits.caret(), 2);
-        assert_eq!(digits.admit("x5y"), "5");
-    }
+                let mut core = EditCore::at(start);
+                core.motion(&text, Motion::Right, false);
+                assert_eq!(core.caret(), end, "Right steps over {cluster:?}");
+                core.motion(&text, Motion::Left, false);
+                assert_eq!(core.caret(), start, "Left steps over {cluster:?}");
 
-    #[test]
-    fn ime_composition_is_display_only_until_commit() {
-        let mut text = String::from("ab");
-        let mut core = EditCore::at(1);
-        core.set_preedit("漢字", Some(("漢".len(), "漢".len())));
-        assert!(core.has_preedit());
-        let comp = "漢字".len();
-        assert_eq!(core.display_text(&text), "a漢字b");
-        assert_eq!(core.preedit_display_range(&text), Some(1..1 + comp));
-        assert_eq!(core.display_caret(&text), 1 + "漢".len());
-        assert_eq!(core.to_display(&text, 0), 0);
-        assert_eq!(core.to_display(&text, 1), 1);
-        assert_eq!(core.to_display(&text, 2), 2 + comp);
-        assert_eq!(core.from_display(&text, 1 + comp), 1);
-        assert_eq!(core.from_display(&text, 2), 1, "inside maps to the caret");
-        assert_eq!(core.from_display(&text, 2 + comp), 2);
+                let mut back = EditCore::at(end);
+                let edit = back.delete_backward(&text, false);
+                assert_eq!(apply(&text, &edit), "<>", "Backspace removes {cluster:?}");
+                assert_eq!(back.caret(), start);
 
-        core.set_preedit("e\u{301}x", Some((1, 1)));
-        assert_eq!(core.display_caret(&text), 1);
+                let mut forward = EditCore::at(start);
+                let edit = forward.delete_forward(&text, false);
+                assert_eq!(apply(&text, &edit), "<>", "Delete removes {cluster:?}");
+                assert_eq!(forward.caret(), start);
 
-        let edit = core.commit("漢字");
-        assert!(edit.apply(&mut text));
-        assert_eq!(text, "a漢字b");
-        assert!(!core.has_preedit());
-        assert_eq!(core.caret(), 1 + comp);
-        assert_eq!(core.display_text(&text), text.as_str());
+                let mut select = EditCore::at(start);
+                select.motion(&text, Motion::Right, true);
+                assert_eq!(select.range(), start..end);
+            }
+        }
 
-        let mut text = String::from("x12y");
-        let mut core = EditCore::new();
-        core.set_filter(Some(|ch: char| ch != 'q'));
-        core.set_selection(1, 3);
-        core.set_preedit("aqb", Some((3, 3)));
-        assert_eq!(core.preedit(), "ab");
-        assert_eq!(
-            core.preedit_cursor(),
-            None,
-            "a filtered composition drops the IME cursor"
-        );
-        let edit = core.commit("aqb");
-        assert!(edit.apply(&mut text));
-        assert_eq!(text, "xaby");
-        assert_eq!(core.caret(), 3);
+        phase insert_replaces_the_selection_and_filter_admits_per_char;
+        {
+            let mut core = EditCore::new();
+            let mut text = String::from("hello world");
+            core.set_selection(11, 6);
+            type_into(&mut core, &mut text, "there");
+            assert_eq!(text, "hello there");
+            assert_eq!(core.caret(), 11);
+            assert!(!core.has_selection());
 
-        core.set_preedit("z", None);
-        core.clear_preedit();
-        assert!(!core.has_preedit());
-    }
+            core.set_selection(0, 5);
+            core.motion(&text, Motion::WordRight, false);
+            assert_eq!((core.caret(), core.has_selection()), (5, false));
+            core.set_selection(5, 0);
+            core.motion(&text, Motion::Left, false);
+            assert_eq!(core.caret(), 0);
 
-    #[test]
-    fn edits_convert_to_char_splices_for_automerge() {
-        use automerge::{AutoCommit, ObjType, ReadDoc};
-        let mut doc = AutoCommit::new();
-        let obj = doc.put_object(automerge::ROOT, "t", ObjType::Text).unwrap();
-        let mut text = String::from("añb👍🏽c");
-        doc.splice_text(&obj, 0, 0, &text).unwrap();
+            let mut digits = EditCore::new();
+            digits.set_filter(Some(|ch: char| ch.is_ascii_digit()));
+            let mut text = String::from("12");
+            digits.set_selection(0, 2);
+            assert!(digits.insert("ab").is_noop());
+            assert_eq!(digits.range(), 0..2);
+            type_into(&mut digits, &mut text, "a3b4");
+            assert_eq!(text, "34");
+            assert_eq!(digits.caret(), 2);
+            assert_eq!(digits.admit("x5y"), "5");
+        }
 
-        let mut core = EditCore::new();
-        core.set_selection("añb".len(), "añb👍🏽".len());
-        let edit = core.insert("é");
-        assert_eq!(
-            edit.char_splice(&text),
-            Some(CharSplice {
-                at: 3,
-                removed: 2,
-                inserted: 1
-            })
-        );
-        assert!(edit.splice_automerge(&mut doc, &obj, &text).is_some());
-        assert!(edit.apply(&mut text));
-        assert_eq!(text, "añbéc");
-        assert_eq!(doc.text(&obj).unwrap(), text);
+        phase ime_composition_is_display_only_until_commit;
+        {
+            let mut text = String::from("ab");
+            let mut core = EditCore::at(1);
+            core.set_preedit("漢字", Some(("漢".len(), "漢".len())));
+            assert!(core.has_preedit());
+            let comp = "漢字".len();
+            assert_eq!(core.display_text(&text), "a漢字b");
+            assert_eq!(core.preedit_display_range(&text), Some(1..1 + comp));
+            assert_eq!(core.display_caret(&text), 1 + "漢".len());
+            assert_eq!(core.to_display(&text, 0), 0);
+            assert_eq!(core.to_display(&text, 1), 1);
+            assert_eq!(core.to_display(&text, 2), 2 + comp);
+            assert_eq!(core.from_display(&text, 1 + comp), 1);
+            assert_eq!(core.from_display(&text, 2), 1, "inside maps to the caret");
+            assert_eq!(core.from_display(&text, 2 + comp), 2);
 
-        let bad = Edit {
-            at: 2,
-            removed: 0,
-            inserted: "x".into(),
-        };
-        assert_eq!(bad.char_splice(&text), None);
-        assert!(!bad.apply(&mut text));
-        assert!(bad.splice_automerge(&mut doc, &obj, &text).is_none());
-        assert_eq!(doc.text(&obj).unwrap(), "añbéc");
+            core.set_preedit("e\u{301}x", Some((1, 1)));
+            assert_eq!(core.display_caret(&text), 1);
+
+            let edit = core.commit("漢字");
+            assert!(edit.apply(&mut text));
+            assert_eq!(text, "a漢字b");
+            assert!(!core.has_preedit());
+            assert_eq!(core.caret(), 1 + comp);
+            assert_eq!(core.display_text(&text), text.as_str());
+
+            let mut text = String::from("x12y");
+            let mut core = EditCore::new();
+            core.set_filter(Some(|ch: char| ch != 'q'));
+            core.set_selection(1, 3);
+            core.set_preedit("aqb", Some((3, 3)));
+            assert_eq!(core.preedit(), "ab");
+            assert_eq!(
+                core.preedit_cursor(),
+                None,
+                "a filtered composition drops the IME cursor"
+            );
+            let edit = core.commit("aqb");
+            assert!(edit.apply(&mut text));
+            assert_eq!(text, "xaby");
+            assert_eq!(core.caret(), 3);
+
+            core.set_preedit("z", None);
+            core.clear_preedit();
+            assert!(!core.has_preedit());
+        }
+
+        phase edits_convert_to_char_splices_for_automerge;
+        {
+            use automerge::{AutoCommit, ObjType, ReadDoc};
+            let mut doc = AutoCommit::new();
+            let obj = doc.put_object(automerge::ROOT, "t", ObjType::Text).unwrap();
+            let mut text = String::from("añb👍🏽c");
+            doc.splice_text(&obj, 0, 0, &text).unwrap();
+
+            let mut core = EditCore::new();
+            core.set_selection("añb".len(), "añb👍🏽".len());
+            let edit = core.insert("é");
+            assert_eq!(
+                edit.char_splice(&text),
+                Some(CharSplice {
+                    at: 3,
+                    removed: 2,
+                    inserted: 1
+                })
+            );
+            assert!(edit.splice_automerge(&mut doc, &obj, &text).is_some());
+            assert!(edit.apply(&mut text));
+            assert_eq!(text, "añbéc");
+            assert_eq!(doc.text(&obj).unwrap(), text);
+
+            let bad = Edit {
+                at: 2,
+                removed: 0,
+                inserted: "x".into(),
+            };
+            assert_eq!(bad.char_splice(&text), None);
+            assert!(!bad.apply(&mut text));
+            assert!(bad.splice_automerge(&mut doc, &obj, &text).is_none());
+            assert_eq!(doc.text(&obj).unwrap(), "añbéc");
+        }
     }
 
     #[test]

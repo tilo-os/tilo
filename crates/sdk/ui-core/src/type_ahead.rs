@@ -99,36 +99,42 @@ mod tests {
 
     const NAMES: [&str; 5] = ["Apple", "apricot", "Banana", "berry", "Cherry"];
 
-    #[test]
-    fn typing_spells_a_name_and_a_pause_starts_over() {
-        let t0 = crate::time::now();
-        let mut typing = TypeAhead::default();
-        typing.type_text("a", t0);
-        assert_eq!(typing.target(NAMES, None), Some(0));
-        typing.type_text("p", t0);
-        typing.type_text("r", t0);
-        assert_eq!(typing.target(NAMES, Some(0)), Some(1), "refines to apricot");
-        typing.type_text("c", t0 + PAUSE + Duration::from_millis(1));
-        assert_eq!(typing.typed(), "c", "a pause starts a new name");
-        assert_eq!(typing.target(NAMES, Some(1)), Some(4));
-        typing.type_text("x", t0 + PAUSE + Duration::from_millis(2));
-        assert_eq!(typing.target(NAMES, Some(4)), None);
-        assert!(typing.is_typing(t0 + PAUSE + Duration::from_millis(3)));
-        assert!(
-            !typing.is_typing(t0 + PAUSE + PAUSE + Duration::from_millis(3)),
-            "after a pause nothing is being typed"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `TypeAhead`.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn typing_finds_rows_by_name_and_by_repeated_letter;
 
-    #[test]
-    fn one_letter_again_steps_through_its_rows() {
-        let t0 = crate::time::now();
-        let mut typing = TypeAhead::default();
-        typing.type_text("B", t0);
-        assert_eq!(typing.target(NAMES, Some(0)), Some(2));
-        typing.type_text("b", t0);
-        assert_eq!(typing.target(NAMES, Some(2)), Some(3));
-        typing.type_text("b", t0);
-        assert_eq!(typing.target(NAMES, Some(3)), Some(2), "wraps around");
+        phase typing_spells_a_name_and_a_pause_starts_over;
+        {
+            let t0 = crate::time::now();
+            let mut typing = TypeAhead::default();
+            typing.type_text("a", t0);
+            assert_eq!(typing.target(NAMES, None), Some(0));
+            typing.type_text("p", t0);
+            typing.type_text("r", t0);
+            assert_eq!(typing.target(NAMES, Some(0)), Some(1), "refines to apricot");
+            typing.type_text("c", t0 + PAUSE + Duration::from_millis(1));
+            assert_eq!(typing.typed(), "c", "a pause starts a new name");
+            assert_eq!(typing.target(NAMES, Some(1)), Some(4));
+            typing.type_text("x", t0 + PAUSE + Duration::from_millis(2));
+            assert_eq!(typing.target(NAMES, Some(4)), None);
+            assert!(typing.is_typing(t0 + PAUSE + Duration::from_millis(3)));
+            assert!(
+                !typing.is_typing(t0 + PAUSE + PAUSE + Duration::from_millis(3)),
+                "after a pause nothing is being typed"
+            );
+        }
+
+        phase one_letter_again_steps_through_its_rows;
+        {
+            let t0 = crate::time::now();
+            let mut typing = TypeAhead::default();
+            typing.type_text("B", t0);
+            assert_eq!(typing.target(NAMES, Some(0)), Some(2));
+            typing.type_text("b", t0);
+            assert_eq!(typing.target(NAMES, Some(2)), Some(3));
+            typing.type_text("b", t0);
+            assert_eq!(typing.target(NAMES, Some(3)), Some(2), "wraps around");
+        }
     }
 }

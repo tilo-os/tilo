@@ -173,69 +173,75 @@ impl Default for Response {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_stock_response_keeps_the_design_languages_lifts() {
-        let stock = Response::STOCK;
-        assert_eq!(stock.validate(), Ok(()));
-        let hover = stock.step(true, false);
-        assert!((hover.lift - 0.5).abs() <= f32::EPSILON);
-        assert!((hover.scale - 1.0).abs() <= f32::EPSILON);
-        let press = stock.step(true, true);
-        assert!((press.lift - 1.0).abs() <= f32::EPSILON);
-        assert!((press.scale - 0.97).abs() <= 1e-6);
-        assert!(press.glow > 0.0);
-        assert_eq!(stock.step(false, false), ResponseStep::REST);
-        assert!(ResponseStep::REST.is_rest());
-        assert!(!press.is_rest());
-    }
+    tilo_test_env::scenario! {
+        /// `Response`: the stock lifts, a moment between rest and full, and its bounds.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_response_keeps_its_lifts_interpolates_and_refuses_out_of_band;
 
-    #[test]
-    fn a_moment_interpolates_from_rest_and_is_clamped() {
-        let step = ResponseStep {
-            lift: 1.0,
-            tint: 0.2,
-            scale: 0.9,
-            glow: 0.4,
-        };
-        let half = step.at(0.5);
-        assert!((half.lift - 0.5).abs() <= f32::EPSILON);
-        assert!((half.tint - 0.1).abs() <= f32::EPSILON);
-        assert!((half.scale - 0.95).abs() <= f32::EPSILON);
-        assert!((half.glow - 0.2).abs() <= f32::EPSILON);
-        assert_eq!(step.at(0.0), ResponseStep::REST);
-        assert_eq!(step.at(1.0), step);
-        assert_eq!(step.at(4.0), step, "a spring past its target holds still");
-    }
+        phase the_stock_response_keeps_the_design_languages_lifts;
+        {
+            let stock = Response::STOCK;
+            assert_eq!(stock.validate(), Ok(()));
+            let hover = stock.step(true, false);
+            assert!((hover.lift - 0.5).abs() <= f32::EPSILON);
+            assert!((hover.scale - 1.0).abs() <= f32::EPSILON);
+            let press = stock.step(true, true);
+            assert!((press.lift - 1.0).abs() <= f32::EPSILON);
+            assert!((press.scale - 0.97).abs() <= 1e-6);
+            assert!(press.glow > 0.0);
+            assert_eq!(stock.step(false, false), ResponseStep::REST);
+            assert!(ResponseStep::REST.is_rest());
+            assert!(!press.is_rest());
+        }
 
-    #[test]
-    fn out_of_band_levers_are_refused() {
-        for bad in [
-            ResponseStep::REST,
-            ResponseStep {
-                lift: -0.1,
-                ..ResponseStep::REST
-            },
-            ResponseStep {
+        phase a_moment_interpolates_from_rest_and_is_clamped;
+        {
+            let step = ResponseStep {
                 lift: 1.0,
-                tint: 0.3,
-                ..ResponseStep::REST
-            },
-            ResponseStep {
-                lift: 1.0,
-                scale: 0.6,
-                ..ResponseStep::REST
-            },
-            ResponseStep {
-                lift: 1.0,
-                glow: 0.6,
-                ..ResponseStep::REST
-            },
-            ResponseStep {
-                lift: f32::NAN,
-                ..ResponseStep::REST
-            },
-        ] {
-            assert!(bad.validate().is_err(), "{bad:?}");
+                tint: 0.2,
+                scale: 0.9,
+                glow: 0.4,
+            };
+            let half = step.at(0.5);
+            assert!((half.lift - 0.5).abs() <= f32::EPSILON);
+            assert!((half.tint - 0.1).abs() <= f32::EPSILON);
+            assert!((half.scale - 0.95).abs() <= f32::EPSILON);
+            assert!((half.glow - 0.2).abs() <= f32::EPSILON);
+            assert_eq!(step.at(0.0), ResponseStep::REST);
+            assert_eq!(step.at(1.0), step);
+            assert_eq!(step.at(4.0), step, "a spring past its target holds still");
+        }
+
+        phase out_of_band_levers_are_refused;
+        {
+            for bad in [
+                ResponseStep::REST,
+                ResponseStep {
+                    lift: -0.1,
+                    ..ResponseStep::REST
+                },
+                ResponseStep {
+                    lift: 1.0,
+                    tint: 0.3,
+                    ..ResponseStep::REST
+                },
+                ResponseStep {
+                    lift: 1.0,
+                    scale: 0.6,
+                    ..ResponseStep::REST
+                },
+                ResponseStep {
+                    lift: 1.0,
+                    glow: 0.6,
+                    ..ResponseStep::REST
+                },
+                ResponseStep {
+                    lift: f32::NAN,
+                    ..ResponseStep::REST
+                },
+            ] {
+                assert!(bad.validate().is_err(), "{bad:?}");
+            }
         }
     }
 }

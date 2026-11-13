@@ -1768,289 +1768,301 @@ mod tests {
         view
     }
 
-    #[test]
-    fn dense_placement_hit_testing_and_reveal_use_variable_heights() {
+    tilo_test_env::scenario! {
+        /// `VirtualViewport`, the dense one.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_dense_viewport_places_hits_and_anchors_by_key;
+
+        phase dense_placement_hit_testing_and_reveal_use_variable_heights;
         {
-            let mut view = viewport();
-            assert!(view.measure(&"a", 10.0));
-            assert!(view.measure(&"b", 30.0));
-            assert!(view.measure(&"c", 50.0));
-            view.set_offset(35.0);
-            assert_eq!(view.visible_range(), 1..3);
-            view.set_overscan(25.0);
-            assert_eq!(view.visible_range(), 1..4);
+            {
+                let mut view = viewport();
+                assert!(view.measure(&"a", 10.0));
+                assert!(view.measure(&"b", 30.0));
+                assert!(view.measure(&"c", 50.0));
+                view.set_offset(35.0);
+                assert_eq!(view.visible_range(), 1..3);
+                view.set_overscan(25.0);
+                assert_eq!(view.visible_range(), 1..4);
+            }
+
+            {
+                let mut view = viewport();
+                view.measure(&"a", 10.0);
+                view.measure(&"b", 30.0);
+                view.measure(&"c", 50.0);
+                view.set_offset(15.0);
+                assert_eq!(view.item_view_top(1), Some(-5.0));
+                assert_eq!(view.hit_test(0.0), Some(1));
+                assert_eq!(view.hit_test(24.9), Some(1));
+                assert_eq!(view.hit_test(25.0), Some(2));
+                assert_eq!(view.hit_test(40.0), None, "bottom edge is outside");
+            }
+
+            {
+                let mut view = viewport();
+                assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
+                assert!(view.scroll_to_index(3, ScrollAlignment::Nearest));
+                assert_eq!(view.offset(), 40.0);
+                assert!(!view.scroll_to_index(2, ScrollAlignment::Nearest));
+            }
+
+            {
+                let mut view = viewport();
+                view.measure(&"a", 120.0);
+                assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
+                view.set_offset(40.0);
+                assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
+                assert_eq!(view.offset(), 40.0);
+            }
+
+            {
+                let mut view = VirtualViewport::new(24.0);
+                view.reconcile(0_u64..1_000_000).expect("unique keys");
+                view.set_viewport(720.0);
+                view.set_overscan(48.0);
+                view.set_offset(view.max_offset() / 2.0);
+                let range = view.visible_range();
+                assert!(
+                    range.len() <= 35,
+                    "only viewport + overscan rows: {range:?}"
+                );
+                assert_eq!(view.content_extent(), 24_000_000.0);
+            }
         }
 
+        phase dense_anchor_and_measurements_follow_keys_through_edits;
         {
-            let mut view = viewport();
-            view.measure(&"a", 10.0);
-            view.measure(&"b", 30.0);
-            view.measure(&"c", 50.0);
-            view.set_offset(15.0);
-            assert_eq!(view.item_view_top(1), Some(-5.0));
-            assert_eq!(view.hit_test(0.0), Some(1));
-            assert_eq!(view.hit_test(24.9), Some(1));
-            assert_eq!(view.hit_test(25.0), Some(2));
-            assert_eq!(view.hit_test(40.0), None, "bottom edge is outside");
-        }
+            {
+                let mut view = viewport();
+                view.set_offset(45.0); // c, five pixels below its top
+                view.reconcile(["new-1", "new-2", "a", "b", "c", "d", "e", "f"])
+                    .expect("unique keys");
+                assert_eq!(view.key(view.hit_test(0.0).expect("top item")), Some(&"c"));
+                let top = view
+                    .item_view_top(view.index_of(&"c").expect("c"))
+                    .expect("c geometry");
+                assert!((top + 5.0).abs() < 0.001);
+            }
 
-        {
-            let mut view = viewport();
-            assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
-            assert!(view.scroll_to_index(3, ScrollAlignment::Nearest));
-            assert_eq!(view.offset(), 40.0);
-            assert!(!view.scroll_to_index(2, ScrollAlignment::Nearest));
-        }
+            {
+                let mut view = viewport();
+                view.set_offset(45.0); // c at -5
+                let before = view.item_view_top(view.index_of(&"c").expect("c"));
+                view.measure(&"a", 80.0);
+                let after = view.item_view_top(view.index_of(&"c").expect("c"));
+                assert_eq!(before, after);
+            }
 
-        {
-            let mut view = viewport();
-            view.measure(&"a", 120.0);
-            assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
-            view.set_offset(40.0);
-            assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
-            assert_eq!(view.offset(), 40.0);
-        }
+            {
+                let mut view = viewport();
+                view.measure(&"b", 77.0);
+                view.reconcile(["f", "b", "a", "c", "d", "e"])
+                    .expect("unique keys");
+                assert_eq!(
+                    view.item_height(view.index_of(&"b").expect("b")),
+                    Some(77.0)
+                );
+            }
 
-        {
-            let mut view = VirtualViewport::new(24.0);
-            view.reconcile(0_u64..1_000_000).expect("unique keys");
-            view.set_viewport(720.0);
-            view.set_overscan(48.0);
-            view.set_offset(view.max_offset() / 2.0);
-            let range = view.visible_range();
-            assert!(
-                range.len() <= 35,
-                "only viewport + overscan rows: {range:?}"
-            );
-            assert_eq!(view.content_extent(), 24_000_000.0);
-        }
-    }
+            {
+                let mut view = viewport();
+                view.set_offset(45.0); // c
+                view.reconcile(["a", "b", "d", "e", "f"])
+                    .expect("unique keys");
+                assert_eq!(view.key(view.hit_test(0.0).expect("top item")), Some(&"d"));
+                assert_eq!(
+                    view.item_view_top(view.index_of(&"d").expect("d")),
+                    Some(0.0)
+                );
+            }
 
-    #[test]
-    fn dense_anchor_and_measurements_follow_keys_through_edits() {
-        {
-            let mut view = viewport();
-            view.set_offset(45.0); // c, five pixels below its top
-            view.reconcile(["new-1", "new-2", "a", "b", "c", "d", "e", "f"])
-                .expect("unique keys");
-            assert_eq!(view.key(view.hit_test(0.0).expect("top item")), Some(&"c"));
-            let top = view
-                .item_view_top(view.index_of(&"c").expect("c"))
-                .expect("c geometry");
-            assert!((top + 5.0).abs() < 0.001);
-        }
-
-        {
-            let mut view = viewport();
-            view.set_offset(45.0); // c at -5
-            let before = view.item_view_top(view.index_of(&"c").expect("c"));
-            view.measure(&"a", 80.0);
-            let after = view.item_view_top(view.index_of(&"c").expect("c"));
-            assert_eq!(before, after);
-        }
-
-        {
-            let mut view = viewport();
-            view.measure(&"b", 77.0);
-            view.reconcile(["f", "b", "a", "c", "d", "e"])
-                .expect("unique keys");
-            assert_eq!(
-                view.item_height(view.index_of(&"b").expect("b")),
-                Some(77.0)
-            );
-        }
-
-        {
-            let mut view = viewport();
-            view.set_offset(45.0); // c
-            view.reconcile(["a", "b", "d", "e", "f"])
-                .expect("unique keys");
-            assert_eq!(view.key(view.hit_test(0.0).expect("top item")), Some(&"d"));
-            assert_eq!(
-                view.item_view_top(view.index_of(&"d").expect("d")),
-                Some(0.0)
-            );
-        }
-
-        {
-            let mut view = viewport();
-            let before = view.content_extent();
-            assert_eq!(
-                view.reconcile(["a", "a"]),
-                Err(ReconcileError::DuplicateKey)
-            );
-            assert_eq!(view.len(), 6);
-            assert_eq!(view.content_extent(), before);
-        }
-    }
-
-    #[test]
-    fn sparse_viewport_pages_places_and_hits_at_huge_row_counts() {
-        {
-            let mut view = SparseVirtualViewport::<u64>::new(24.0);
-            view.reconcile(100_000_000, |_| None, None);
-            view.set_viewport(720.0);
-            view.set_overscan(48.0);
-            view.set_offset(view.max_offset() / 2.0);
-
-            assert_eq!(view.len(), 100_000_000);
-            assert_eq!(view.resident_measurements(), 0);
-            assert!(view.visible_range().len() <= 35);
-            assert_eq!(view.content_extent(), 2_400_000_000.0);
-        }
-
-        {
-            let mut view = SparseVirtualViewport::<u64>::new(24.0);
-            view.reconcile(100_000_000, |_| None, None);
-            view.set_viewport(720.0);
-            let current = 50_000_000;
-            view.set_offset(view.item_top(current).expect("middle row"));
-
-            let (next, moved) = view.page_from(current, true).expect("page down");
-            assert!(moved);
-            assert_eq!(next, current + 27);
-            assert_eq!(view.resident_measurements(), 0);
-
-            let (previous, moved) = view.page_from(next, false).expect("page up");
-            assert!(moved);
-            assert_eq!(previous, current);
-            assert_eq!(view.resident_measurements(), 0);
-        }
-
-        {
-            let mut view = SparseVirtualViewport::<u64>::new(24.0);
-            view.reconcile(5, |_| None, None);
-            view.set_viewport(720.0);
-            assert_eq!(view.page_from(0, true), Some((4, false)));
-            assert_eq!(view.page_from(4, false), Some((0, false)));
-
-            view.reconcile(100, |_| None, None);
-            view.set_viewport(240.0);
-            view.set_offset(view.max_offset() - 12.0);
-            let top = view.hit_test(0.0).expect("a row at the top");
-            let (next, moved) = view.page_from(top, true).expect("page down");
-            assert!(moved);
-            assert_eq!(next, 99, "the last page's last row");
-            let (back, moved) = view.page_from(next, false).expect("page up");
-            assert!(moved, "a full page back up still scrolls");
-            assert_ne!(
-                back, 0,
-                "and keeps its place rather than leaping to the top"
-            );
-        }
-
-        {
-            let mut view = SparseVirtualViewport::new(20.0);
-            view.reconcile(6, |_| None::<usize>, None);
-            view.set_viewport(40.0);
-            assert!(view.measure(0, "a", 10.0));
-            assert!(view.measure(1, "b", 30.0));
-            assert!(view.measure(2, "c", 50.0));
-            view.set_offset(15.0);
-
-            assert_eq!(view.item_view_top(1), Some(-5.0));
-            assert_eq!(view.hit_test(0.0), Some(1));
-            assert_eq!(view.hit_test(24.9), Some(1));
-            assert_eq!(view.hit_test(25.0), Some(2));
-        }
-
-        {
-            let mut view = SparseVirtualViewport::<usize>::new(20.0);
-            view.reconcile(10, |_| None, None);
-            view.set_viewport(50.0);
-            assert!(view.set_edges(12.0, 8.0));
-            assert!(!view.set_edges(12.0, 8.0));
-            assert_eq!(view.item_top(0), Some(12.0));
-            assert_eq!(view.content_extent(), 12.0 + 200.0 + 8.0);
-            assert_eq!(view.hit_test(5.0), None, "the lead is no item's");
-            assert_eq!(view.hit_test(12.0), Some(0));
-            view.set_offset(view.max_offset());
-            assert_eq!(view.item_view_top(9), Some(50.0 - 8.0 - 20.0));
-            assert_eq!(view.hit_test(45.0), None, "nor is the trail");
-
-            view.set_offset(100.0);
-            let before = view.item_view_top(5);
-            assert!(view.set_edges(20.0, 8.0));
-            assert_eq!(view.item_view_top(5), before);
-
-            view.set_offset(0.0);
-            assert!(view.set_edges(30.0, 8.0));
-            assert_eq!(view.offset(), 0.0);
-            assert_eq!(view.item_view_top(0), Some(30.0));
-        }
-
-        {
-            let mut view = SparseVirtualViewport::new(20.0);
-            view.reconcile(3, |_| None::<usize>, None);
-            assert!(view.measure(1, "custom", 12.0));
-
-            view.set_minimum_height(48.0);
-            assert_eq!(view.estimated_height(), 48.0);
-            assert_eq!(view.item_height(0), Some(48.0));
-            assert_eq!(view.item_height(1), Some(48.0));
-            assert_eq!(view.content_extent(), 144.0);
-
-            view.set_minimum_height(1.0);
-            assert_eq!(view.estimated_height(), 20.0);
-            assert_eq!(view.item_height(0), Some(20.0));
-            assert_eq!(view.item_height(1), Some(12.0));
-            assert_eq!(view.content_extent(), 52.0);
+            {
+                let mut view = viewport();
+                let before = view.content_extent();
+                assert_eq!(
+                    view.reconcile(["a", "a"]),
+                    Err(ReconcileError::DuplicateKey)
+                );
+                assert_eq!(view.len(), 6);
+                assert_eq!(view.content_extent(), before);
+            }
         }
     }
 
-    #[test]
-    fn sparse_anchor_and_measurements_follow_keys_through_edits() {
+    tilo_test_env::scenario! {
+        /// `SparseVirtualViewport`.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_sparse_viewport_pages_hits_and_anchors_by_key;
+
+        phase sparse_viewport_pages_places_and_hits_at_huge_row_counts;
         {
-            let mut view = SparseVirtualViewport::new(20.0);
-            view.reconcile(100, |_| None::<usize>, None);
-            view.set_viewport(40.0);
-            view.set_offset(50.0 * 20.0 + 5.0);
-            let anchor = view.capture_anchor(|index| u64::try_from(index).ok());
-            let before = view.item_view_top(50);
+            {
+                let mut view = SparseVirtualViewport::<u64>::new(24.0);
+                view.reconcile(100_000_000, |_| None, None);
+                view.set_viewport(720.0);
+                view.set_overscan(48.0);
+                view.set_offset(view.max_offset() / 2.0);
 
-            view.reconcile(
-                110,
-                |key| usize::try_from(*key).ok().map(|index| index + 10),
-                anchor.as_ref(),
-            );
+                assert_eq!(view.len(), 100_000_000);
+                assert_eq!(view.resident_measurements(), 0);
+                assert!(view.visible_range().len() <= 35);
+                assert_eq!(view.content_extent(), 2_400_000_000.0);
+            }
 
-            assert_eq!(view.item_view_top(60), before);
+            {
+                let mut view = SparseVirtualViewport::<u64>::new(24.0);
+                view.reconcile(100_000_000, |_| None, None);
+                view.set_viewport(720.0);
+                let current = 50_000_000;
+                view.set_offset(view.item_top(current).expect("middle row"));
+
+                let (next, moved) = view.page_from(current, true).expect("page down");
+                assert!(moved);
+                assert_eq!(next, current + 27);
+                assert_eq!(view.resident_measurements(), 0);
+
+                let (previous, moved) = view.page_from(next, false).expect("page up");
+                assert!(moved);
+                assert_eq!(previous, current);
+                assert_eq!(view.resident_measurements(), 0);
+            }
+
+            {
+                let mut view = SparseVirtualViewport::<u64>::new(24.0);
+                view.reconcile(5, |_| None, None);
+                view.set_viewport(720.0);
+                assert_eq!(view.page_from(0, true), Some((4, false)));
+                assert_eq!(view.page_from(4, false), Some((0, false)));
+
+                view.reconcile(100, |_| None, None);
+                view.set_viewport(240.0);
+                view.set_offset(view.max_offset() - 12.0);
+                let top = view.hit_test(0.0).expect("a row at the top");
+                let (next, moved) = view.page_from(top, true).expect("page down");
+                assert!(moved);
+                assert_eq!(next, 99, "the last page's last row");
+                let (back, moved) = view.page_from(next, false).expect("page up");
+                assert!(moved, "a full page back up still scrolls");
+                assert_ne!(
+                    back, 0,
+                    "and keeps its place rather than leaping to the top"
+                );
+            }
+
+            {
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(6, |_| None::<usize>, None);
+                view.set_viewport(40.0);
+                assert!(view.measure(0, "a", 10.0));
+                assert!(view.measure(1, "b", 30.0));
+                assert!(view.measure(2, "c", 50.0));
+                view.set_offset(15.0);
+
+                assert_eq!(view.item_view_top(1), Some(-5.0));
+                assert_eq!(view.hit_test(0.0), Some(1));
+                assert_eq!(view.hit_test(24.9), Some(1));
+                assert_eq!(view.hit_test(25.0), Some(2));
+            }
+
+            {
+                let mut view = SparseVirtualViewport::<usize>::new(20.0);
+                view.reconcile(10, |_| None, None);
+                view.set_viewport(50.0);
+                assert!(view.set_edges(12.0, 8.0));
+                assert!(!view.set_edges(12.0, 8.0));
+                assert_eq!(view.item_top(0), Some(12.0));
+                assert_eq!(view.content_extent(), 12.0 + 200.0 + 8.0);
+                assert_eq!(view.hit_test(5.0), None, "the lead is no item's");
+                assert_eq!(view.hit_test(12.0), Some(0));
+                view.set_offset(view.max_offset());
+                assert_eq!(view.item_view_top(9), Some(50.0 - 8.0 - 20.0));
+                assert_eq!(view.hit_test(45.0), None, "nor is the trail");
+
+                view.set_offset(100.0);
+                let before = view.item_view_top(5);
+                assert!(view.set_edges(20.0, 8.0));
+                assert_eq!(view.item_view_top(5), before);
+
+                view.set_offset(0.0);
+                assert!(view.set_edges(30.0, 8.0));
+                assert_eq!(view.offset(), 0.0);
+                assert_eq!(view.item_view_top(0), Some(30.0));
+            }
+
+            {
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(3, |_| None::<usize>, None);
+                assert!(view.measure(1, "custom", 12.0));
+
+                view.set_minimum_height(48.0);
+                assert_eq!(view.estimated_height(), 48.0);
+                assert_eq!(view.item_height(0), Some(48.0));
+                assert_eq!(view.item_height(1), Some(48.0));
+                assert_eq!(view.content_extent(), 144.0);
+
+                view.set_minimum_height(1.0);
+                assert_eq!(view.estimated_height(), 20.0);
+                assert_eq!(view.item_height(0), Some(20.0));
+                assert_eq!(view.item_height(1), Some(12.0));
+                assert_eq!(view.content_extent(), 52.0);
+            }
         }
 
+        phase sparse_anchor_and_measurements_follow_keys_through_edits;
         {
-            let mut view = SparseVirtualViewport::new(20.0);
-            view.reconcile(10, |_| None::<usize>, None);
-            assert!(view.measure(3, "measured", 73.0));
-            view.reconcile(10, |key| (*key == "measured").then_some(7), None);
+            {
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(100, |_| None::<usize>, None);
+                view.set_viewport(40.0);
+                view.set_offset(50.0 * 20.0 + 5.0);
+                let anchor = view.capture_anchor(|index| u64::try_from(index).ok());
+                let before = view.item_view_top(50);
 
-            assert_eq!(view.item_height(3), Some(20.0));
-            assert_eq!(view.item_height(7), Some(73.0));
-            assert_eq!(view.resident_measurements(), 1);
-        }
+                view.reconcile(
+                    110,
+                    |key| usize::try_from(*key).ok().map(|index| index + 10),
+                    anchor.as_ref(),
+                );
 
-        {
-            let mut view = SparseVirtualViewport::new(20.0);
-            view.reconcile(10, |_| None::<usize>, None);
-            assert!(view.measure(3, "loading", 73.0));
-            assert!(view.remap_key(&"loading", "loaded"));
-            view.reconcile(10, |key| (*key == "loaded").then_some(3), None);
+                assert_eq!(view.item_view_top(60), before);
+            }
 
-            assert_eq!(view.item_height(3), Some(73.0));
-            assert_eq!(view.resident_measurements(), 1);
-            assert!(!view.remap_key(&"missing", "unused"));
-        }
+            {
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(10, |_| None::<usize>, None);
+                assert!(view.measure(3, "measured", 73.0));
+                view.reconcile(10, |key| (*key == "measured").then_some(7), None);
 
-        {
-            let mut view = SparseVirtualViewport::new(20.0);
-            view.reconcile(100, |_| None::<usize>, None);
-            view.set_viewport(40.0);
-            view.set_offset(50.0 * 20.0 + 5.0);
-            let anchor = view.capture_anchor(|index| u64::try_from(index).ok());
+                assert_eq!(view.item_height(3), Some(20.0));
+                assert_eq!(view.item_height(7), Some(73.0));
+                assert_eq!(view.resident_measurements(), 1);
+            }
 
-            view.reconcile(99, |_| None, anchor.as_ref());
+            {
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(10, |_| None::<usize>, None);
+                assert!(view.measure(3, "loading", 73.0));
+                assert!(view.remap_key(&"loading", "loaded"));
+                view.reconcile(10, |key| (*key == "loaded").then_some(3), None);
 
-            assert_eq!(view.hit_test(0.0), Some(50));
-            assert_eq!(view.item_view_top(50), Some(0.0));
+                assert_eq!(view.item_height(3), Some(73.0));
+                assert_eq!(view.resident_measurements(), 1);
+                assert!(!view.remap_key(&"missing", "unused"));
+            }
+
+            {
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(100, |_| None::<usize>, None);
+                view.set_viewport(40.0);
+                view.set_offset(50.0 * 20.0 + 5.0);
+                let anchor = view.capture_anchor(|index| u64::try_from(index).ok());
+
+                view.reconcile(99, |_| None, anchor.as_ref());
+
+                assert_eq!(view.hit_test(0.0), Some(50));
+                assert_eq!(view.item_view_top(50), Some(0.0));
+            }
         }
     }
 }

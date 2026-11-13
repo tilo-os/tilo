@@ -192,99 +192,105 @@ mod tests {
     use automerge::{ObjType, ROOT, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
 
-    #[test]
-    fn anchored_selection_and_viewport_follow_concurrent_unicode_edits() {
-        for encoding in [
-            TextEncoding::UnicodeCodePoint,
-            TextEncoding::Utf8CodeUnit,
-            TextEncoding::Utf16CodeUnit,
-            TextEncoding::GraphemeCluster,
-        ] {
-            let mut original = AutoCommit::new_with_encoding(encoding);
-            let text = original.put_object(ROOT, "body", ObjType::Text).unwrap();
-            original
-                .splice_text(&text, 0, 0, "zero\né🐈éx\nlast")
-                .unwrap();
-            let view = ResolvedTextPosition {
-                carets: vec![(9, Some(6)), (3, None)],
-                top_character: 5,
-                vertical_fraction: 0.25,
-                horizontal_columns: 7.5,
-            };
-            let position = TextPosition::capture(
-                &original,
-                &text,
-                "11111111-2222-4333-8444-555555555555",
-                &view,
-            )
-            .unwrap();
-            assert_eq!(position.resolve(&original, &text), Some(view));
-            let mut first = original.fork();
-            let mut second = original.fork();
-            first.splice_text(&text, 0, 0, "α\n").unwrap();
-            second
-                .splice_text(&text, second.length(&text), 0, "\npeer")
-                .unwrap();
-            first.merge_incoming(&mut second).unwrap();
-            second.merge_incoming(&mut first).unwrap();
-            assert_eq!(first.text(&text).unwrap(), second.text(&text).unwrap());
-            let resolved = position.resolve(&first, &text).unwrap();
-            assert_eq!(resolved.carets, vec![(11, Some(8)), (5, None)]);
-            assert_eq!(resolved.top_character, 7);
-            assert_eq!(resolved.vertical_fraction, 0.25);
-            assert_eq!(resolved.horizontal_columns, 7.5);
-            assert_eq!(position.resolve(&second, &text), Some(resolved));
-            let encoded = serde_json::to_string(&position).unwrap();
-            assert!(!encoded.contains("zero") && !encoded.contains("last"));
-        }
-    }
+    tilo_test_env::scenario! {
+        /// `TextPosition`: anchors that follow edits, and anchors that cannot be taken.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_text_position_anchors_through_edits_or_is_refused;
 
-    #[test]
-    fn invalid_or_unavailable_view_anchors_are_refused() {
-        let mut doc = AutoCommit::new();
-        let text = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "abcdef").unwrap();
-        let view = ResolvedTextPosition {
-            carets: vec![(3, Some(1))],
-            top_character: 0,
-            vertical_fraction: 0.0,
-            horizontal_columns: 0.0,
-        };
-        assert!(TextPosition::capture(&doc, &text, "/private/path", &view).is_none());
-        let position =
-            TextPosition::capture(&doc, &text, "11111111-2222-4333-8444-555555555555", &view)
+        phase anchored_selection_and_viewport_follow_concurrent_unicode_edits;
+        {
+            for encoding in [
+                TextEncoding::UnicodeCodePoint,
+                TextEncoding::Utf8CodeUnit,
+                TextEncoding::Utf16CodeUnit,
+                TextEncoding::GraphemeCluster,
+            ] {
+                let mut original = AutoCommit::new_with_encoding(encoding);
+                let text = original.put_object(ROOT, "body", ObjType::Text).unwrap();
+                original
+                    .splice_text(&text, 0, 0, "zero\né🐈éx\nlast")
+                    .unwrap();
+                let view = ResolvedTextPosition {
+                    carets: vec![(9, Some(6)), (3, None)],
+                    top_character: 5,
+                    vertical_fraction: 0.25,
+                    horizontal_columns: 7.5,
+                };
+                let position = TextPosition::capture(
+                    &original,
+                    &text,
+                    "11111111-2222-4333-8444-555555555555",
+                    &view,
+                )
                 .unwrap();
-        let mut invalid = position.clone();
-        invalid.horizontal_columns = f64::NAN;
-        assert!(!invalid.valid());
-        invalid = position.clone();
-        invalid.carets[0].cursor = vec![255];
-        assert!(!invalid.valid());
-        invalid = position.clone();
-        invalid.carets = vec![invalid.carets[0].clone(); 33];
-        assert!(!invalid.valid());
-        let mut other = AutoCommit::new();
-        let unrelated = other.put_object(ROOT, "body", ObjType::Text).unwrap();
-        other.splice_text(&unrelated, 0, 0, "unrelated").unwrap();
-        assert!(position.resolve(&other, &unrelated).is_none());
-        let other_text = doc.put_object(ROOT, "other", ObjType::Text).unwrap();
-        doc.splice_text(&other_text, 0, 0, "different sequence")
-            .unwrap();
-        let foreign_cursor = Cursor::try_from(position.carets[0].cursor.as_slice()).unwrap();
-        assert!(matches!(
-            doc.get_cursor_position(&other_text, &foreign_cursor, None),
-            Err(automerge::AutomergeError::InvalidCursor(_))
-        ));
-        assert!(
-            position.resolve(&doc, &other_text).is_none(),
-            "an operation in the same document is not an anchor in another text"
-        );
-        doc.splice_text(&text, 1, 3, "").unwrap();
-        let resolved = position.resolve(&doc, &text).unwrap();
-        assert_eq!(
-            resolved.carets,
-            vec![(1, Some(1))],
-            "deleted anchors resolve at the next surviving character"
-        );
+                assert_eq!(position.resolve(&original, &text), Some(view));
+                let mut first = original.fork();
+                let mut second = original.fork();
+                first.splice_text(&text, 0, 0, "α\n").unwrap();
+                second
+                    .splice_text(&text, second.length(&text), 0, "\npeer")
+                    .unwrap();
+                first.merge_incoming(&mut second).unwrap();
+                second.merge_incoming(&mut first).unwrap();
+                assert_eq!(first.text(&text).unwrap(), second.text(&text).unwrap());
+                let resolved = position.resolve(&first, &text).unwrap();
+                assert_eq!(resolved.carets, vec![(11, Some(8)), (5, None)]);
+                assert_eq!(resolved.top_character, 7);
+                assert_eq!(resolved.vertical_fraction, 0.25);
+                assert_eq!(resolved.horizontal_columns, 7.5);
+                assert_eq!(position.resolve(&second, &text), Some(resolved));
+                let encoded = serde_json::to_string(&position).unwrap();
+                assert!(!encoded.contains("zero") && !encoded.contains("last"));
+            }
+        }
+
+        phase invalid_or_unavailable_view_anchors_are_refused;
+        {
+            let mut doc = AutoCommit::new();
+            let text = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "abcdef").unwrap();
+            let view = ResolvedTextPosition {
+                carets: vec![(3, Some(1))],
+                top_character: 0,
+                vertical_fraction: 0.0,
+                horizontal_columns: 0.0,
+            };
+            assert!(TextPosition::capture(&doc, &text, "/private/path", &view).is_none());
+            let position =
+                TextPosition::capture(&doc, &text, "11111111-2222-4333-8444-555555555555", &view)
+                    .unwrap();
+            let mut invalid = position.clone();
+            invalid.horizontal_columns = f64::NAN;
+            assert!(!invalid.valid());
+            invalid = position.clone();
+            invalid.carets[0].cursor = vec![255];
+            assert!(!invalid.valid());
+            invalid = position.clone();
+            invalid.carets = vec![invalid.carets[0].clone(); 33];
+            assert!(!invalid.valid());
+            let mut other = AutoCommit::new();
+            let unrelated = other.put_object(ROOT, "body", ObjType::Text).unwrap();
+            other.splice_text(&unrelated, 0, 0, "unrelated").unwrap();
+            assert!(position.resolve(&other, &unrelated).is_none());
+            let other_text = doc.put_object(ROOT, "other", ObjType::Text).unwrap();
+            doc.splice_text(&other_text, 0, 0, "different sequence")
+                .unwrap();
+            let foreign_cursor = Cursor::try_from(position.carets[0].cursor.as_slice()).unwrap();
+            assert!(matches!(
+                doc.get_cursor_position(&other_text, &foreign_cursor, None),
+                Err(automerge::AutomergeError::InvalidCursor(_))
+            ));
+            assert!(
+                position.resolve(&doc, &other_text).is_none(),
+                "an operation in the same document is not an anchor in another text"
+            );
+            doc.splice_text(&text, 1, 3, "").unwrap();
+            let resolved = position.resolve(&doc, &text).unwrap();
+            assert_eq!(
+                resolved.carets,
+                vec![(1, Some(1))],
+                "deleted anchors resolve at the next surviving character"
+            );
+        }
     }
 }

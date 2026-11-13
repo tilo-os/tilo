@@ -515,60 +515,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_failing_palette_names_the_pair_and_the_shortfall() {
-        let mut murky = Colors::dark();
-        murky.text_dim = murky.surfaces.raised;
-        let findings = audit(&murky);
-        assert!(
-            findings
-                .iter()
-                .any(|f| f.foreground == Role::TextDim && f.ground == Role::Raised)
-        );
-        let finding = ContrastFinding {
-            foreground: Role::TextDim,
-            ground: Role::Raised,
-            ratio: 4.11,
-            min_ratio: 4.5,
-        };
-        assert_eq!(
-            finding.to_string(),
-            "text_dim on surfaces.raised is 4.11:1, needs 4.5:1"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `audit` and `repair` on one palette.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_audit_names_a_shortfall_and_repair_restores_it;
 
-    #[test]
-    fn repair_restores_every_floor_without_moving_a_ground() {
-        // phase: murky_ink_and_a_dim_presence_palette
+        phase a_failing_palette_names_the_pair_and_the_shortfall;
         {
-            let mut palette = Palette::dark();
-            palette.ink.secondary = 0.40;
-            palette.ink.tertiary = 0.30;
-            let presence = crate::tokens::palette::Tone::new(0.40, 0.14);
-            let authored =
-                Colors::as_authored(&palette, Emphasis::Inverted, presence, PresenceHue::Blue);
-            assert!(!audit(&authored).is_empty());
-            let mut repaired = authored.clone();
-            let missed = repair(&mut repaired);
-            assert!(!missed.is_empty(), "repair reports what it fixed");
-            assert_eq!(audit(&repaired), Vec::new());
-            assert_eq!(repaired.surfaces.content, authored.surfaces.content);
-            assert_eq!(repaired.surfaces.overlay, authored.surfaces.overlay);
-            assert_eq!(repaired.border_focus, repaired.intent.accent_ink);
-            let lightness: Vec<f32> = (0..PRESENCE_LEN)
-                .map(|s| (Oklch::from_color(repaired.presence.get(s)).l * 100.0).round())
-                .collect();
+            let mut murky = Colors::dark();
+            murky.text_dim = murky.surfaces.raised;
+            let findings = audit(&murky);
             assert!(
-                lightness.windows(2).all(|w| w.first() == w.last()),
-                "presence moves as one: {lightness:?}"
+                findings
+                    .iter()
+                    .any(|f| f.foreground == Role::TextDim && f.ground == Role::Raised)
+            );
+            let finding = ContrastFinding {
+                foreground: Role::TextDim,
+                ground: Role::Raised,
+                ratio: 4.11,
+                min_ratio: 4.5,
+            };
+            assert_eq!(
+                finding.to_string(),
+                "text_dim on surfaces.raised is 4.11:1, needs 4.5:1"
             );
         }
-        // phase: a_legible_set_is_left_alone
+
+        phase repair_restores_every_floor_without_moving_a_ground;
         {
-            let mut colors = Colors::light();
-            let before = colors.clone();
-            assert!(repair(&mut colors).is_empty());
-            assert_eq!(colors.text_dim, before.text_dim);
+            // phase: murky_ink_and_a_dim_presence_palette
+            {
+                let mut palette = Palette::dark();
+                palette.ink.secondary = 0.40;
+                palette.ink.tertiary = 0.30;
+                let presence = crate::tokens::palette::Tone::new(0.40, 0.14);
+                let authored =
+                    Colors::as_authored(&palette, Emphasis::Inverted, presence, PresenceHue::Blue);
+                assert!(!audit(&authored).is_empty());
+                let mut repaired = authored.clone();
+                let missed = repair(&mut repaired);
+                assert!(!missed.is_empty(), "repair reports what it fixed");
+                assert_eq!(audit(&repaired), Vec::new());
+                assert_eq!(repaired.surfaces.content, authored.surfaces.content);
+                assert_eq!(repaired.surfaces.overlay, authored.surfaces.overlay);
+                assert_eq!(repaired.border_focus, repaired.intent.accent_ink);
+                let lightness: Vec<f32> = (0..PRESENCE_LEN)
+                    .map(|s| (Oklch::from_color(repaired.presence.get(s)).l * 100.0).round())
+                    .collect();
+                assert!(
+                    lightness.windows(2).all(|w| w.first() == w.last()),
+                    "presence moves as one: {lightness:?}"
+                );
+            }
+            // phase: a_legible_set_is_left_alone
+            {
+                let mut colors = Colors::light();
+                let before = colors.clone();
+                assert!(repair(&mut colors).is_empty());
+                assert_eq!(colors.text_dim, before.text_dim);
+            }
         }
     }
 }

@@ -45,54 +45,60 @@ fn module() -> Vec<u8> {
     .unwrap()
 }
 
-#[test]
-fn a_bundle_registers_its_painters_and_its_document_names_them() {
-    let document = BAUHAUS.replace("\"bauhaus\"", "\"test.bundle-sets\"");
-    let mut asked = Vec::new();
-    let theme = load(&document, |set| {
-        asked.push(set.to_owned());
-        Ok(Some(module()))
-    })
-    .unwrap();
-    assert_eq!(asked, ["test.bundle-sets"], "each set is loaded once");
-    for role in [
-        SurfaceRole::Window,
-        SurfaceRole::Control,
-        SurfaceRole::Floating,
-        SurfaceRole::Bar,
-    ] {
-        assert_eq!(theme.finish(role).painter(), "test.bundle-sets");
-    }
-    assert_eq!(theme.finish(SurfaceRole::Bar).param("levels"), Some(3.0));
-}
+tilo_test_env::scenario! {
+    /// Loading a theme bundle.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_bundle_loads_its_painters_or_is_refused;
 
-#[test]
-fn a_bundle_missing_a_module_or_carrying_a_bad_one_is_refused() {
-    let named = |name: &str| BAUHAUS.replace("\"bauhaus\"", &format!("{name:?}"));
-    assert!(matches!(
-        load(&named("test.bundle-missing"), |_| Ok(None)),
-        Err(BundleError::Missing(name)) if name == "test.bundle-missing"
-    ));
-    assert!(matches!(
-        load(&named("../escape"), |_| Ok(Some(module()))),
-        Err(BundleError::SetName(_))
-    ));
-    let imports = wat::parse_str(
-        r#"(module (import "env" "clock" (func (result i64))) (memory (export "memory") 1))"#,
-    )
-    .unwrap();
-    assert!(matches!(
-        load(&named("test.bundle-imports"), |_| Ok(Some(imports.clone()))),
-        Err(BundleError::Painter {
-            refusal: wasm::Refusal::Imports(_),
-            ..
+    phase a_bundle_registers_its_painters_and_its_document_names_them;
+    {
+        let document = BAUHAUS.replace("\"bauhaus\"", "\"test.bundle-sets\"");
+        let mut asked = Vec::new();
+        let theme = load(&document, |set| {
+            asked.push(set.to_owned());
+            Ok(Some(module()))
         })
-    ));
-    let extra = named("test.bundle-extra").replace("\"shadow\": 3.0", "\"glow\": 1.0");
-    assert!(matches!(
-        load(&extra, |_| Ok(Some(module()))),
-        Err(BundleError::Document(_))
-    ));
+        .unwrap();
+        assert_eq!(asked, ["test.bundle-sets"], "each set is loaded once");
+        for role in [
+            SurfaceRole::Window,
+            SurfaceRole::Control,
+            SurfaceRole::Floating,
+            SurfaceRole::Bar,
+        ] {
+            assert_eq!(theme.finish(role).painter(), "test.bundle-sets");
+        }
+        assert_eq!(theme.finish(SurfaceRole::Bar).param("levels"), Some(3.0));
+    }
+
+    phase a_bundle_missing_a_module_or_carrying_a_bad_one_is_refused;
+    {
+        let named = |name: &str| BAUHAUS.replace("\"bauhaus\"", &format!("{name:?}"));
+        assert!(matches!(
+            load(&named("test.bundle-missing"), |_| Ok(None)),
+            Err(BundleError::Missing(name)) if name == "test.bundle-missing"
+        ));
+        assert!(matches!(
+            load(&named("../escape"), |_| Ok(Some(module()))),
+            Err(BundleError::SetName(_))
+        ));
+        let imports = wat::parse_str(
+            r#"(module (import "env" "clock" (func (result i64))) (memory (export "memory") 1))"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            load(&named("test.bundle-imports"), |_| Ok(Some(imports.clone()))),
+            Err(BundleError::Painter {
+                refusal: wasm::Refusal::Imports(_),
+                ..
+            })
+        ));
+        let extra = named("test.bundle-extra").replace("\"shadow\": 3.0", "\"glow\": 1.0");
+        assert!(matches!(
+            load(&extra, |_| Ok(Some(module()))),
+            Err(BundleError::Document(_))
+        ));
+    }
 }
 
 #[test]

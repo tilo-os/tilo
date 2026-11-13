@@ -33,39 +33,6 @@ fn families(glyphs: &[(String, u16)]) -> Vec<&str> {
     out
 }
 
-#[test]
-fn new_computer_modern_is_set_in_the_cut_each_size_calls_for() {
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    let style = reading(ReadingFace::Default);
-    for (size, ground, cut) in [
-        (10.0, TextGround::Light, "New Computer Modern 08"),
-        (16.0, TextGround::Light, "New Computer Modern Book"),
-        (19.5, TextGround::Dark, "New Computer Modern Book"),
-        (26.0, TextGround::Light, "New Computer Modern"),
-        (26.0, TextGround::Dark, "New Computer Modern Book"),
-        (48.0, TextGround::Dark, "New Computer Modern"),
-    ] {
-        let glyphs = shaped(
-            &mut renderer,
-            "Chapter",
-            &style.clone().with_content_size(size).with_ground(ground),
-        );
-        assert_eq!(families(&glyphs), [cut], "{size} px on {ground:?}");
-    }
-    // Small italics take Book's italic: the 8 pt design ships upright only.
-    let glyphs = shaped(
-        &mut renderer,
-        "Park",
-        &style.clone().with_content_size(10.0).with_italic(true),
-    );
-    assert_eq!(families(&glyphs), ["New Computer Modern Book"]);
-    let generic = TextStyle::content(48.0).with_family(FontChoice::Serif);
-    assert_eq!(
-        families(&shaped(&mut renderer, "Chapter", &generic)),
-        ["New Computer Modern"]
-    );
-}
-
 /// The SDK's standalone catalog (next to a third-party app's build) has only New Computer
 /// Modern's GUST-licensed cuts: Book sets titles there too, while the Tilo OS catalog
 /// sets them in Regular.
@@ -124,123 +91,162 @@ fn the_standalone_catalog_sets_titles_in_book() {
     }
 }
 
-#[test]
-fn rich_text_spans_take_the_cut_of_their_own_size() {
-    let mut fs = crate::font_catalog::fixture_font_system();
-    let style = reading(ReadingFace::Default).with_content_size(19.5);
-    let spans = [
-        crate::richtext::RichSpan::new("enough."),
-        crate::richtext::RichSpan {
-            size: Some(11.0),
-            ..crate::richtext::RichSpan::new("1")
-        },
-    ];
-    let layout = crate::richtext::RichTextLayout::shape_styled(
-        &mut fs,
-        &spans,
-        &style,
-        None,
-        crate::richtext::TextAlign::Left,
-        Vec::new(),
-        Vec::new(),
-    );
-    let used: Vec<String> = layout
-        .buffer
-        .layout_runs()
-        .flat_map(|run| run.glyphs.iter())
-        .filter_map(|glyph| {
-            fs.db()
-                .face(glyph.font_id)
-                .and_then(|face| face.families.first().map(|(name, _)| name.clone()))
-        })
-        .collect();
-    assert_eq!(
-        used.first().map(String::as_str),
-        Some("New Computer Modern Book")
-    );
-    assert_eq!(
-        used.last().map(String::as_str),
-        Some("New Computer Modern 08")
-    );
-}
+tilo_test_env::scenario! {
+    /// The reading faces through the real shaping path.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn reading_faces_set_each_run_in_its_own_cut_figures_and_script;
 
-#[test]
-fn reading_figures_are_old_style_until_a_kind_asks_for_lining() {
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    for face in ReadingFace::ALL {
-        let style = reading(face);
-        let oldstyle = shaped(&mut renderer, "1813", &style);
-        let lining = shaped(&mut renderer, "1813", &style.clone().numeric());
-        let plain = shaped(
-            &mut renderer,
-            "1813",
-            &style
-                .clone()
-                .with_numeric_style(NumericStyle::ProportionalLining),
-        );
-        assert_ne!(oldstyle, lining, "{face:?}: numeric text is lining");
-        if face != ReadingFace::Garamond {
-            assert_ne!(oldstyle, plain, "{face:?}: running text is old-style");
+    phase new_computer_modern_is_set_in_the_cut_each_size_calls_for;
+    {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let style = reading(ReadingFace::Default);
+        for (size, ground, cut) in [
+            (10.0, TextGround::Light, "New Computer Modern 08"),
+            (16.0, TextGround::Light, "New Computer Modern Book"),
+            (19.5, TextGround::Dark, "New Computer Modern Book"),
+            (26.0, TextGround::Light, "New Computer Modern"),
+            (26.0, TextGround::Dark, "New Computer Modern Book"),
+            (48.0, TextGround::Dark, "New Computer Modern"),
+        ] {
+            let glyphs = shaped(
+                &mut renderer,
+                "Chapter",
+                &style.clone().with_content_size(size).with_ground(ground),
+            );
+            assert_eq!(families(&glyphs), [cut], "{size} px on {ground:?}");
         }
-        assert!(
-            style
-                .font_features
-                .iter()
-                .any(|feature| feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS)
+        // Small italics take Book's italic: the 8 pt design ships upright only.
+        let glyphs = shaped(
+            &mut renderer,
+            "Park",
+            &style.clone().with_content_size(10.0).with_italic(true),
         );
-        assert!(
-            !style
-                .clone()
-                .numeric()
-                .font_features
-                .iter()
-                .any(|feature| feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS)
+        assert_eq!(families(&glyphs), ["New Computer Modern Book"]);
+        let generic = TextStyle::content(48.0).with_family(FontChoice::Serif);
+        assert_eq!(
+            families(&shaped(&mut renderer, "Chapter", &generic)),
+            ["New Computer Modern"]
         );
     }
-}
 
-#[test]
-fn small_caps_and_ligatures_reach_every_reading_face() {
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    for face in ReadingFace::ALL {
-        let style = reading(face);
-        let text = shaped(&mut renderer, "truth", &style);
-        let caps = shaped(&mut renderer, "truth", &style.clone().with_small_caps(true));
-        assert_ne!(text, caps, "{face:?}: small caps");
-        assert!(
-            shaped(&mut renderer, "fi", &style).len() == 1,
-            "{face:?}: the fi ligature"
+    phase rich_text_spans_take_the_cut_of_their_own_size;
+    {
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = reading(ReadingFace::Default).with_content_size(19.5);
+        let spans = [
+            crate::richtext::RichSpan::new("enough."),
+            crate::richtext::RichSpan {
+                size: Some(11.0),
+                ..crate::richtext::RichSpan::new("1")
+            },
+        ];
+        let layout = crate::richtext::RichTextLayout::shape_styled(
+            &mut fs,
+            &spans,
+            &style,
+            None,
+            crate::richtext::TextAlign::Left,
+            Vec::new(),
+            Vec::new(),
+        );
+        let used: Vec<String> = layout
+            .buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .filter_map(|glyph| {
+                fs.db()
+                    .face(glyph.font_id)
+                    .and_then(|face| face.families.first().map(|(name, _)| name.clone()))
+            })
+            .collect();
+        assert_eq!(
+            used.first().map(String::as_str),
+            Some("New Computer Modern Book")
         );
         assert_eq!(
-            shaped(
-                &mut renderer,
-                "fi",
-                &style
-                    .clone()
-                    .with_font_feature(OpenTypeTag::STANDARD_LIGATURES, 0)
-            )
-            .len(),
-            2,
-            "{face:?}: ligatures can be turned off"
+            used.last().map(String::as_str),
+            Some("New Computer Modern 08")
         );
     }
-}
 
-#[test]
-fn greek_and_cyrillic_are_the_reading_face_s_own() {
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    for face in [
-        ReadingFace::Default,
-        ReadingFace::Libertinus,
-        ReadingFace::Literata,
-    ] {
-        let style = reading(face);
-        let cut = shaped(&mut renderer, "a", &style);
-        for line in ["Η αρχή είναι το ήμισυ", "Хорошее начало", "Tiếng Việt"]
-        {
-            let glyphs = shaped(&mut renderer, line, &style);
-            assert_eq!(families(&glyphs), families(&cut), "{face:?}: {line}");
-            assert!(glyphs.iter().all(|(_, id)| *id != 0), "{face:?}: {line}");
+    phase reading_figures_are_old_style_until_a_kind_asks_for_lining;
+    {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        for face in ReadingFace::ALL {
+            let style = reading(face);
+            let oldstyle = shaped(&mut renderer, "1813", &style);
+            let lining = shaped(&mut renderer, "1813", &style.clone().numeric());
+            let plain = shaped(
+                &mut renderer,
+                "1813",
+                &style
+                    .clone()
+                    .with_numeric_style(NumericStyle::ProportionalLining),
+            );
+            assert_ne!(oldstyle, lining, "{face:?}: numeric text is lining");
+            if face != ReadingFace::Garamond {
+                assert_ne!(oldstyle, plain, "{face:?}: running text is old-style");
+            }
+            assert!(
+                style
+                    .font_features
+                    .iter()
+                    .any(|feature| feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS)
+            );
+            assert!(
+                !style
+                    .clone()
+                    .numeric()
+                    .font_features
+                    .iter()
+                    .any(|feature| feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS)
+            );
+        }
+    }
+
+    phase small_caps_and_ligatures_reach_every_reading_face;
+    {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        for face in ReadingFace::ALL {
+            let style = reading(face);
+            let text = shaped(&mut renderer, "truth", &style);
+            let caps = shaped(&mut renderer, "truth", &style.clone().with_small_caps(true));
+            assert_ne!(text, caps, "{face:?}: small caps");
+            assert!(
+                shaped(&mut renderer, "fi", &style).len() == 1,
+                "{face:?}: the fi ligature"
+            );
+            assert_eq!(
+                shaped(
+                    &mut renderer,
+                    "fi",
+                    &style
+                        .clone()
+                        .with_font_feature(OpenTypeTag::STANDARD_LIGATURES, 0)
+                )
+                .len(),
+                2,
+                "{face:?}: ligatures can be turned off"
+            );
+        }
+    }
+
+    phase greek_and_cyrillic_are_the_reading_face_s_own;
+    {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        for face in [
+            ReadingFace::Default,
+            ReadingFace::Libertinus,
+            ReadingFace::Literata,
+        ] {
+            let style = reading(face);
+            let cut = shaped(&mut renderer, "a", &style);
+            for line in ["Η αρχή είναι το ήμισυ", "Хорошее начало", "Tiếng Việt"]
+            {
+                let glyphs = shaped(&mut renderer, line, &style);
+                assert_eq!(families(&glyphs), families(&cut), "{face:?}: {line}");
+                assert!(glyphs.iter().all(|(_, id)| *id != 0), "{face:?}: {line}");
+            }
         }
     }
 }

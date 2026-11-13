@@ -296,59 +296,65 @@ fn fs_surface(
 }
 ";
 
-    #[test]
-    fn a_shader_of_the_documented_shape_is_admitted_and_wraps() {
-        check(GOOD).expect("the documented shape is admitted");
-        let source = Source {
-            wgsl: GOOD.to_owned(),
-            time: 3.0,
-        };
-        assert_eq!(source.validate(), Ok(()));
-        let module = wrap(&source);
-        naga::front::wgsl::parse_str(&module).expect("the wrapper is WGSL");
-        assert!(module.contains("fn shade_main"));
-        assert!(module.contains(ENTRY));
-    }
+    tilo_test_env::scenario! {
+        /// The check a theme's surface shader passes before it is wrapped.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_surface_shader_is_admitted_only_in_the_documented_shape;
 
-    #[test]
-    fn a_shader_of_another_shape_is_refused_with_the_reason() {
-        let cases: [(&str, &str); 6] = [
-            ("", "0 functions"),
-            ("fn other(a: f32) -> f32 { return a; }", "not `fs_surface`"),
-            (
-                "@fragment fn fs_surface() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
-                "entry point",
-            ),
-            (
-                "@group(0) @binding(0) var t: texture_2d<f32>;\nfn fs_surface(a: vec4<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>, e: vec4<f32>, f: vec4<f32>, g: vec4<f32>, h: vec4<f32>, i: vec4<f32>, j: vec4<f32>, k: vec4<f32>, l: f32) -> vec4<f32> { return a; }",
-                "global variable",
-            ),
-            (
-                "fn fs_surface(a: f32) -> f32 { return a; }",
-                "takes 1 inputs",
-            ),
-            (
-                "fn fs_surface(a: vec4<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>, e: vec4<f32>, f: vec4<f32>, g: vec4<f32>, h: vec4<f32>, i: vec4<f32>, j: vec4<f32>, k: vec4<f32>, l: f32) -> f32 { return l; }",
-                "returns f32",
-            ),
-        ];
-        for (wgsl, reason) in cases {
-            let refused = check(wgsl).expect_err(wgsl);
-            assert!(refused.contains(reason), "{wgsl}: {refused}");
+        phase a_shader_of_the_documented_shape_is_admitted_and_wraps;
+        {
+            check(GOOD).expect("the documented shape is admitted");
+            let source = Source {
+                wgsl: GOOD.to_owned(),
+                time: 3.0,
+            };
+            assert_eq!(source.validate(), Ok(()));
+            let module = wrap(&source);
+            naga::front::wgsl::parse_str(&module).expect("the wrapper is WGSL");
+            assert!(module.contains("fn shade_main"));
+            assert!(module.contains(ENTRY));
         }
-        let bad_type = GOOD.replace("ink: vec4<f32>", "ink: vec3<f32>");
-        let refused = check(&bad_type).expect_err("wrong input type");
-        assert!(refused.contains("`ink` is vec3<f32>"), "{refused}");
-        let too_long = Source {
-            wgsl: " ".repeat(MAX_SOURCE + 1),
-            time: 0.0,
-        };
-        assert!(too_long.validate().is_err());
-        let no_time = Source {
-            wgsl: GOOD.to_owned(),
-            time: f32::NAN,
-        };
-        assert!(no_time.validate().is_err());
-        assert!(Source::empty().validate().is_err());
+
+        phase a_shader_of_another_shape_is_refused_with_the_reason;
+        {
+            let cases: [(&str, &str); 6] = [
+                ("", "0 functions"),
+                ("fn other(a: f32) -> f32 { return a; }", "not `fs_surface`"),
+                (
+                    "@fragment fn fs_surface() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+                    "entry point",
+                ),
+                (
+                    "@group(0) @binding(0) var t: texture_2d<f32>;\nfn fs_surface(a: vec4<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>, e: vec4<f32>, f: vec4<f32>, g: vec4<f32>, h: vec4<f32>, i: vec4<f32>, j: vec4<f32>, k: vec4<f32>, l: f32) -> vec4<f32> { return a; }",
+                    "global variable",
+                ),
+                (
+                    "fn fs_surface(a: f32) -> f32 { return a; }",
+                    "takes 1 inputs",
+                ),
+                (
+                    "fn fs_surface(a: vec4<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>, e: vec4<f32>, f: vec4<f32>, g: vec4<f32>, h: vec4<f32>, i: vec4<f32>, j: vec4<f32>, k: vec4<f32>, l: f32) -> f32 { return l; }",
+                    "returns f32",
+                ),
+            ];
+            for (wgsl, reason) in cases {
+                let refused = check(wgsl).expect_err(wgsl);
+                assert!(refused.contains(reason), "{wgsl}: {refused}");
+            }
+            let bad_type = GOOD.replace("ink: vec4<f32>", "ink: vec3<f32>");
+            let refused = check(&bad_type).expect_err("wrong input type");
+            assert!(refused.contains("`ink` is vec3<f32>"), "{refused}");
+            let too_long = Source {
+                wgsl: " ".repeat(MAX_SOURCE + 1),
+                time: 0.0,
+            };
+            assert!(too_long.validate().is_err());
+            let no_time = Source {
+                wgsl: GOOD.to_owned(),
+                time: f32::NAN,
+            };
+            assert!(no_time.validate().is_err());
+            assert!(Source::empty().validate().is_err());
+        }
     }
 }

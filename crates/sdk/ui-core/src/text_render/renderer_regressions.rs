@@ -66,104 +66,6 @@ fn assert_source_owner(renderer: &TextRenderer, id: ID, font: &Font) {
     }
 }
 
-#[test]
-fn font_sources_and_collection_indices_are_shared_with_emitted_runs() {
-    // phase: collection_indices_and_shared_owners_reach_the_real_scene
-    {
-        let mut renderer = renderer();
-        let mut fonts = Vec::new();
-        for (family, index) in [
-            ("Noto Sans CJK JP", 0),
-            ("Noto Sans CJK KR", 1),
-            ("Noto Sans CJK SC", 2),
-            ("Noto Sans CJK TC", 3),
-            ("Noto Sans CJK HK", 4),
-        ] {
-            let id = face_id(&renderer, family);
-            assert_eq!(renderer.font_system.db().face(id).unwrap().index, index);
-            let style = named_style(family);
-            let scene = draw(&mut renderer, "漢", &style);
-            let font = one_run(&scene).font.clone();
-            assert_eq!(font.index, index, "{family}");
-            assert_source_owner(&renderer, id, &font);
-            let repeat = draw(&mut renderer, "漢", &style);
-            assert_eq!(one_run(&repeat).font.data.id(), font.data.id());
-            fonts.push(font);
-        }
-        let (owner, _) = fonts[0].data.clone().into_raw_parts();
-        for font in &fonts[1..] {
-            let (other, _) = font.data.clone().into_raw_parts();
-            assert!(
-                Arc::ptr_eq(&owner, &other),
-                "TTC faces share one byte owner"
-            );
-        }
-    }
-    // phase: binary_font_source_is_shared_with_emitted_runs
-    {
-        let mut renderer = renderer();
-        // Keep the explicit fixture database, replacing only this known TTC's
-        // representation to cover Binary as well as the loader's File source.
-        let ids: Vec<_> = renderer
-            .font_system
-            .db()
-            .faces()
-            .filter(|face| {
-                face.families
-                    .iter()
-                    .any(|(name, _)| name.starts_with("Noto Sans CJK "))
-            })
-            .map(|face| face.id)
-            .collect();
-        assert_eq!(ids.len(), 5);
-        for id in ids {
-            renderer.font_system.db_mut().remove_face(id);
-        }
-        let bytes =
-            std::fs::read(crate::font_catalog::checkout_root().join("NotoSansCJK-VF.ttc")).unwrap();
-        let owner: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
-        assert_eq!(
-            renderer
-                .font_system
-                .db_mut()
-                .load_font_source(Source::Binary(owner.clone()))
-                .len(),
-            5
-        );
-        renderer.bump_generation();
-        let style = named_style("Noto Sans CJK SC");
-        let scene = draw(&mut renderer, "漢", &style);
-        let font = &one_run(&scene).font;
-        assert_eq!(font.index, 2);
-        let (emitted_owner, _) = font.data.clone().into_raw_parts();
-        assert!(Arc::ptr_eq(&owner, &emitted_owner));
-    }
-    // phase: different_shaped_weights_reuse_bytes_and_system_replacement_refreshes_handles
-    {
-        let mut renderer = renderer();
-        let style = named_style("Noto Sans");
-        let regular = draw(&mut renderer, "A", &style);
-        let bold = draw(
-            &mut renderer,
-            "A",
-            &style.clone().with_weight(TextWeight::Bold),
-        );
-        let (regular_owner, _) = one_run(&regular).font.data.clone().into_raw_parts();
-        let (bold_owner, _) = one_run(&bold).font.data.clone().into_raw_parts();
-        assert!(Arc::ptr_eq(&regular_owner, &bold_owner));
-        renderer.font_system = configured_font_system_with_catalog(&catalog()).unwrap();
-        renderer.bump_generation();
-        let replacement = draw(&mut renderer, "A", &style);
-        let new_font = &one_run(&replacement).font;
-        assert_source_owner(&renderer, face_id(&renderer, "Noto Sans"), new_font);
-        let (new_owner, _) = new_font.data.clone().into_raw_parts();
-        assert!(!Arc::ptr_eq(&regular_owner, &new_owner));
-        assert_ne!(one_run(&regular).font.data.id(), new_font.data.id());
-        // The old scene remains readable while its own handle keeps bytes alive.
-        assert_eq!(one_run(&regular).font.data.len(), new_font.data.len());
-    }
-}
-
 fn emitted_coords(scene: &Scene, run: &vello_encoding::GlyphRun) -> Vec<i16> {
     scene.encoding().resources.normalized_coords[run.normalized_coords.clone()].to_vec()
 }
@@ -207,13 +109,14 @@ fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected:
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn runs_paint_with_their_shaped_weight_and_axis_order() {
-    // phase: plain_paint_uses_named_and_rounded_explicit_shaped_weights
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn runs_paint_with_their_shaped_weight_and_axis_order;
+
+    phase plain_paint_uses_named_and_rounded_explicit_shaped_weights;
     {
         let mut renderer = renderer();
         // Adwaita has a 100..900 weight range.
@@ -242,7 +145,8 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
             }
         }
     }
-    // phase: weight_fix_preserves_optical_axis_order_in_actual_runs
+
+    phase weight_fix_preserves_optical_axis_order_in_actual_runs;
     {
         let mut renderer = renderer();
         let style = named_style("Adwaita Sans")
@@ -264,7 +168,8 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
         );
         assert_eq!(emitted_coords(&scene, run)[0], 16384);
     }
-    // phase: rich_same_face_runs_split_at_shaped_weight_and_retain_span_bold
+
+    phase rich_same_face_runs_split_at_shaped_weight_and_retain_span_bold;
     {
         let mut renderer = renderer();
         let style = named_style("Noto Sans").with_font_variation(OpenTypeTag::WEIGHT, 675.4);
@@ -309,7 +214,8 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
             assert_source_owner(&renderer, glyph.font_id, &run.font);
         }
     }
-    // phase: rich_equal_weight_adjacent_spans_stay_batched
+
+    phase rich_equal_weight_adjacent_spans_stay_batched;
     {
         let mut renderer = renderer();
         let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
@@ -335,7 +241,8 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
             expected_coords(&run.font, 700, None)
         );
     }
-    // phase: rich_visible_discretionary_hyphen_uses_its_bold_marker_weight
+
+    phase rich_visible_discretionary_hyphen_uses_its_bold_marker_weight;
     {
         let mut renderer = renderer();
         let style = named_style("Noto Sans").with_font_variation(OpenTypeTag::WEIGHT, 675.4);
@@ -410,13 +317,14 @@ fn runs_paint_with_their_shaped_weight_and_axis_order() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
-    // phase: clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs;
+
+    phase clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels;
     {
         let mut renderer = renderer();
         let text = "Italic e\u{301} Αλφα fallback. ".repeat(120);
@@ -463,15 +371,18 @@ fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
             "clipping optimization must preserve exact RGBA"
         );
     }
-    // phase: clipped_rich_text_preserves_transformed_styled_ink_and_invalid_clip_fallback
+
+    phase clipped_rich_text_preserves_transformed_styled_ink_and_invalid_clip_fallback;
     {
         clipped_styled_pixel_matrix(true);
     }
-    // phase: clipped_rich_text_gpu_pixels_stay_within_summation_noise
+
+    phase clipped_rich_text_gpu_pixels_stay_within_summation_noise;
     {
         clipped_styled_pixel_matrix(false);
     }
-    // phase: clipped_rich_text_preserves_exercised_discretionary_hyphen
+
+    phase clipped_rich_text_preserves_exercised_discretionary_hyphen;
     {
         let mut renderer = renderer();
         let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
@@ -512,7 +423,8 @@ fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
             assert!(gpu.render(&reference, Color::BLACK) == gpu.render(&candidate, Color::BLACK));
         }
     }
-    // phase: clipped_rich_text_does_not_cull_color_or_invalid_font_outlines
+
+    phase clipped_rich_text_does_not_cull_color_or_invalid_font_outlines;
     {
         let mut renderer = renderer();
         for family in ["Noto Color Emoji", "Noto Sans"] {
@@ -696,9 +608,10 @@ fn clipped_styled_pixel_matrix(stable_preprocessing: bool) {
     assert_eq!(renderer.ink_bounds_entries, 0);
 }
 
-#[test]
-fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
-    // phase: clipped_ink_cache_groups_glyphs_by_font_instance
+tilo_test_env::scenario! {
+    fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded;
+
+    phase clipped_ink_cache_groups_glyphs_by_font_instance;
     {
         let mut renderer = renderer();
         let layout = RichTextLayout::shape_styled(
@@ -723,7 +636,8 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             "one font-instance lookup per batch"
         );
     }
-    // phase: clipped_ink_cache_remains_bounded_across_font_instances_and_reuses_after_eviction
+
+    phase clipped_ink_cache_remains_bounded_across_font_instances_and_reuses_after_eviction;
     {
         let mut renderer = renderer();
         let layout = RichTextLayout::shape_styled(
@@ -790,13 +704,14 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
-    // phase: uniform_rich_runs_borrow_glyphs_with_exact_reference_output
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn painted_glyphs_match_the_reference_output_and_shaped_offsets;
+
+    phase uniform_rich_runs_borrow_glyphs_with_exact_reference_output;
     {
         use crate::richtext::BaselineShift;
         let mut renderer = renderer();
@@ -882,7 +797,8 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
         assert!(borrowed > 0);
         assert!(copied > 0, "fixture must cover conservative fallback");
     }
-    // phase: painted_glyphs_keep_shaped_mark_offsets_for_bengali_conjuncts
+
+    phase painted_glyphs_keep_shaped_mark_offsets_for_bengali_conjuncts;
     // Bengali conjuncts are assembled from several glyphs that the shaper
     // positions relative to each other with GPOS offsets (the below-base forms
     // and vowel signs of নমস্কার and বিশ্ব). Painting only the pen positions
@@ -994,60 +910,164 @@ fn assert_same_origins(painted: &[(u32, f32, f32)], shaped: &[(u32, f32, f32)], 
     }
 }
 
-#[test]
-fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
-    let mut renderer = renderer();
-    let style = named_style(UI_SANS_FAMILY);
-    let runs = renderer.shaped_runs("Report Отчёт Αναφορά", None, &style);
-    let sizes: Vec<f32> = runs.iter().map(|run| run.size).collect();
-    assert!(sizes.contains(&style.size), "{sizes:?}");
-    assert_eq!(
-        sizes.iter().filter(|size| **size != style.size).count(),
-        1,
-        "Cyrillic is x-height matched, Greek is the UI face's own: {sizes:?}"
-    );
-    let (width, _) = renderer.measure_style("Report Отчёт Αναφορά", None, &style);
-    let last = runs.last().and_then(|run| run.glyphs.last()).unwrap();
-    assert!(last.x < width);
-}
+tilo_test_env::scenario! {
+    /// The face, size and width a run is shaped at are the ones it is painted with.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn runs_are_shaped_and_painted_from_the_face_and_size_they_resolved;
 
-#[test]
-fn condensed_text_is_shaped_at_the_width_it_is_drawn() {
-    let mut renderer = renderer();
-    let text = "paypa1.com/l0gin SN 0O1I-l0O8";
-    let normal = named_style("Tilo Sans");
-    let condensed = named_style("Tilo Sans").with_font_variation(OpenTypeTag::WIDTH, 75.0);
-    let normal_width = renderer.measure_style(text, None, &normal).0;
-    let condensed_width = renderer.measure_style(text, None, &condensed).0;
-    // Tilo Sans' condensed `n` is 442 units against 599.
-    assert!(
-        condensed_width < normal_width * 0.85,
-        "condensed {condensed_width} against normal {normal_width}"
-    );
-    for (width, stretch) in [
-        (75.0, cosmic_text::Stretch::Condensed),
-        (80.0, cosmic_text::Stretch::Condensed),
-        (90.0, cosmic_text::Stretch::SemiCondensed),
-        (100.0, cosmic_text::Stretch::Normal),
-    ] {
-        assert_eq!(stretch_for_width(width), stretch, "{width}");
+    phase font_sources_and_collection_indices_are_shared_with_emitted_runs;
+    {
+        // phase: collection_indices_and_shared_owners_reach_the_real_scene
+        {
+            let mut renderer = renderer();
+            let mut fonts = Vec::new();
+            for (family, index) in [
+                ("Noto Sans CJK JP", 0),
+                ("Noto Sans CJK KR", 1),
+                ("Noto Sans CJK SC", 2),
+                ("Noto Sans CJK TC", 3),
+                ("Noto Sans CJK HK", 4),
+            ] {
+                let id = face_id(&renderer, family);
+                assert_eq!(renderer.font_system.db().face(id).unwrap().index, index);
+                let style = named_style(family);
+                let scene = draw(&mut renderer, "漢", &style);
+                let font = one_run(&scene).font.clone();
+                assert_eq!(font.index, index, "{family}");
+                assert_source_owner(&renderer, id, &font);
+                let repeat = draw(&mut renderer, "漢", &style);
+                assert_eq!(one_run(&repeat).font.data.id(), font.data.id());
+                fonts.push(font);
+            }
+            let (owner, _) = fonts[0].data.clone().into_raw_parts();
+            for font in &fonts[1..] {
+                let (other, _) = font.data.clone().into_raw_parts();
+                assert!(
+                    Arc::ptr_eq(&owner, &other),
+                    "TTC faces share one byte owner"
+                );
+            }
+        }
+        // phase: binary_font_source_is_shared_with_emitted_runs
+        {
+            let mut renderer = renderer();
+            // Keep the explicit fixture database, replacing only this known TTC's
+            // representation to cover Binary as well as the loader's File source.
+            let ids: Vec<_> = renderer
+                .font_system
+                .db()
+                .faces()
+                .filter(|face| {
+                    face.families
+                        .iter()
+                        .any(|(name, _)| name.starts_with("Noto Sans CJK "))
+                })
+                .map(|face| face.id)
+                .collect();
+            assert_eq!(ids.len(), 5);
+            for id in ids {
+                renderer.font_system.db_mut().remove_face(id);
+            }
+            let bytes =
+                std::fs::read(crate::font_catalog::checkout_root().join("NotoSansCJK-VF.ttc")).unwrap();
+            let owner: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
+            assert_eq!(
+                renderer
+                    .font_system
+                    .db_mut()
+                    .load_font_source(Source::Binary(owner.clone()))
+                    .len(),
+                5
+            );
+            renderer.bump_generation();
+            let style = named_style("Noto Sans CJK SC");
+            let scene = draw(&mut renderer, "漢", &style);
+            let font = &one_run(&scene).font;
+            assert_eq!(font.index, 2);
+            let (emitted_owner, _) = font.data.clone().into_raw_parts();
+            assert!(Arc::ptr_eq(&owner, &emitted_owner));
+        }
+        // phase: different_shaped_weights_reuse_bytes_and_system_replacement_refreshes_handles
+        {
+            let mut renderer = renderer();
+            let style = named_style("Noto Sans");
+            let regular = draw(&mut renderer, "A", &style);
+            let bold = draw(
+                &mut renderer,
+                "A",
+                &style.clone().with_weight(TextWeight::Bold),
+            );
+            let (regular_owner, _) = one_run(&regular).font.data.clone().into_raw_parts();
+            let (bold_owner, _) = one_run(&bold).font.data.clone().into_raw_parts();
+            assert!(Arc::ptr_eq(&regular_owner, &bold_owner));
+            renderer.font_system = configured_font_system_with_catalog(&catalog()).unwrap();
+            renderer.bump_generation();
+            let replacement = draw(&mut renderer, "A", &style);
+            let new_font = &one_run(&replacement).font;
+            assert_source_owner(&renderer, face_id(&renderer, "Noto Sans"), new_font);
+            let (new_owner, _) = new_font.data.clone().into_raw_parts();
+            assert!(!Arc::ptr_eq(&regular_owner, &new_owner));
+            assert_ne!(one_run(&regular).font.data.id(), new_font.data.id());
+            // The old scene remains readable while its own handle keeps bytes alive.
+            assert_eq!(one_run(&regular).font.data.len(), new_font.data.len());
+        }
     }
-}
 
-#[test]
-fn the_generic_sans_follows_the_theme_ui_face() {
-    let mut renderer = renderer();
-    let generic = TextStyle::new(20.0);
-    let default_face = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
-    renderer.set_ui_face(UI_HYPERLEGIBLE_FAMILY);
-    let hyperlegible = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
-    assert!(
-        (default_face - hyperlegible).abs() > 1.0,
-        "{default_face} vs {hyperlegible}"
-    );
-    renderer.set_ui_face("No Such Family");
-    let unchanged = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
-    assert!((unchanged - hyperlegible).abs() < f32::EPSILON);
+    phase matched_fallbacks_paint_at_the_size_they_were_shaped_at;
+    {
+        let mut renderer = renderer();
+        let style = named_style(UI_SANS_FAMILY);
+        let runs = renderer.shaped_runs("Report Отчёт Αναφορά", None, &style);
+        let sizes: Vec<f32> = runs.iter().map(|run| run.size).collect();
+        assert!(sizes.contains(&style.size), "{sizes:?}");
+        assert_eq!(
+            sizes.iter().filter(|size| **size != style.size).count(),
+            1,
+            "Cyrillic is x-height matched, Greek is the UI face's own: {sizes:?}"
+        );
+        let (width, _) = renderer.measure_style("Report Отчёт Αναφορά", None, &style);
+        let last = runs.last().and_then(|run| run.glyphs.last()).unwrap();
+        assert!(last.x < width);
+    }
+
+    phase condensed_text_is_shaped_at_the_width_it_is_drawn;
+    {
+        let mut renderer = renderer();
+        let text = "paypa1.com/l0gin SN 0O1I-l0O8";
+        let normal = named_style("Tilo Sans");
+        let condensed = named_style("Tilo Sans").with_font_variation(OpenTypeTag::WIDTH, 75.0);
+        let normal_width = renderer.measure_style(text, None, &normal).0;
+        let condensed_width = renderer.measure_style(text, None, &condensed).0;
+        // Tilo Sans' condensed `n` is 442 units against 599.
+        assert!(
+            condensed_width < normal_width * 0.85,
+            "condensed {condensed_width} against normal {normal_width}"
+        );
+        for (width, stretch) in [
+            (75.0, cosmic_text::Stretch::Condensed),
+            (80.0, cosmic_text::Stretch::Condensed),
+            (90.0, cosmic_text::Stretch::SemiCondensed),
+            (100.0, cosmic_text::Stretch::Normal),
+        ] {
+            assert_eq!(stretch_for_width(width), stretch, "{width}");
+        }
+    }
+
+    phase the_generic_sans_follows_the_theme_ui_face;
+    {
+        let mut renderer = renderer();
+        let generic = TextStyle::new(20.0);
+        let default_face = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+        renderer.set_ui_face(UI_HYPERLEGIBLE_FAMILY);
+        let hyperlegible = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+        assert!(
+            (default_face - hyperlegible).abs() > 1.0,
+            "{default_face} vs {hyperlegible}"
+        );
+        renderer.set_ui_face("No Such Family");
+        let unchanged = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+        assert!((unchanged - hyperlegible).abs() < f32::EPSILON);
+    }
 }
 
 fn features_renderer() -> TextRenderer {
@@ -1082,80 +1102,86 @@ fn rich_ids(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<u
         .collect()
 }
 
-#[test]
-fn the_distinct_letters_setting_reaches_every_shaping_path() {
-    let mut renderer = features_renderer();
-    let style = named_style("Tilo Sans Features Fixture");
-    let plain = shaped_ids(&mut renderer, "Il0", &style);
-    let distinct = shaped_ids(
-        &mut renderer,
-        "Il0",
-        &style.clone().with_kind(TextKind::Url),
-    );
-    assert_ne!(plain, distinct);
-    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+tilo_test_env::scenario! {
+    /// The distinct-letters features, by setting, by surface and by kind.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn distinct_letters_reach_every_shaping_path_and_surface;
 
-    let epoch = Arc::clone(renderer.layout_epoch());
-    renderer.set_distinct_letters(true);
-    assert!(renderer.distinguishes_letters());
-    assert!(
-        !Arc::ptr_eq(&epoch, renderer.layout_epoch()),
-        "widget layouts reshape when the setting changes"
-    );
-    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), distinct);
-    assert_eq!(rich_ids(&mut renderer, "Il0", &style), distinct);
+    phase the_distinct_letters_setting_reaches_every_shaping_path;
+    {
+        let mut renderer = features_renderer();
+        let style = named_style("Tilo Sans Features Fixture");
+        let plain = shaped_ids(&mut renderer, "Il0", &style);
+        let distinct = shaped_ids(
+            &mut renderer,
+            "Il0",
+            &style.clone().with_kind(TextKind::Url),
+        );
+        assert_ne!(plain, distinct);
+        assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
 
-    renderer.set_distinct_letters(false);
-    assert!(!renderer.distinguishes_letters());
-    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
-
-    // Another renderer on the thread keeps its own setting.
-    let mut other = features_renderer();
-    other.set_distinct_letters(true);
-    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
-    assert_eq!(rich_ids(&mut other, "Il0", &style), distinct);
-}
-
-#[test]
-fn security_surfaces_distinguish_whatever_the_setting() {
-    let mut renderer = features_renderer();
-    let style = named_style("Tilo Sans Features Fixture");
-    let plain = shaped_ids(&mut renderer, "Il0", &style);
-    let distinct = shaped_ids(
-        &mut renderer,
-        "Il0",
-        &style.clone().with_kind(TextKind::Url),
-    );
-    let inside = renderer.security_surface(|renderer| {
+        let epoch = Arc::clone(renderer.layout_epoch());
+        renderer.set_distinct_letters(true);
         assert!(renderer.distinguishes_letters());
-        (
-            shaped_ids(renderer, "Il0", &style),
-            rich_ids(renderer, "Il0", &style),
-        )
-    });
-    assert_eq!(inside, (distinct.clone(), distinct.clone()));
-    assert!(!renderer.distinguishes_letters());
-    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
-    assert_eq!(
-        shaped_ids(&mut renderer, "Il0", &style.clone().on_security_surface()),
-        distinct
-    );
-}
+        assert!(
+            !Arc::ptr_eq(&epoch, renderer.layout_epoch()),
+            "widget layouts reshape when the setting changes"
+        );
+        assert_eq!(shaped_ids(&mut renderer, "Il0", &style), distinct);
+        assert_eq!(rich_ids(&mut renderer, "Il0", &style), distinct);
 
-#[test]
-fn identifiers_in_a_label_are_set_apart_with_no_kind_declared() {
-    let mut renderer = features_renderer();
-    let style = named_style("Tilo Sans Features Fixture");
-    let prose = shaped_ids(&mut renderer, "Il0 ", &style);
-    let line = shaped_ids(&mut renderer, "Il0 https://Il0.example", &style);
-    let url = shaped_ids(
-        &mut renderer,
-        "Il0",
-        &style.clone().with_kind(TextKind::Url),
-    );
-    assert_eq!(line[..4], prose[..]);
-    assert_eq!(line[12..15], url[..]);
-    assert_ne!(line[12..15], prose[..3]);
+        renderer.set_distinct_letters(false);
+        assert!(!renderer.distinguishes_letters());
+        assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+
+        // Another renderer on the thread keeps its own setting.
+        let mut other = features_renderer();
+        other.set_distinct_letters(true);
+        assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+        assert_eq!(rich_ids(&mut other, "Il0", &style), distinct);
+    }
+
+    phase security_surfaces_distinguish_whatever_the_setting;
+    {
+        let mut renderer = features_renderer();
+        let style = named_style("Tilo Sans Features Fixture");
+        let plain = shaped_ids(&mut renderer, "Il0", &style);
+        let distinct = shaped_ids(
+            &mut renderer,
+            "Il0",
+            &style.clone().with_kind(TextKind::Url),
+        );
+        let inside = renderer.security_surface(|renderer| {
+            assert!(renderer.distinguishes_letters());
+            (
+                shaped_ids(renderer, "Il0", &style),
+                rich_ids(renderer, "Il0", &style),
+            )
+        });
+        assert_eq!(inside, (distinct.clone(), distinct.clone()));
+        assert!(!renderer.distinguishes_letters());
+        assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+        assert_eq!(
+            shaped_ids(&mut renderer, "Il0", &style.clone().on_security_surface()),
+            distinct
+        );
+    }
+
+    phase identifiers_in_a_label_are_set_apart_with_no_kind_declared;
+    {
+        let mut renderer = features_renderer();
+        let style = named_style("Tilo Sans Features Fixture");
+        let prose = shaped_ids(&mut renderer, "Il0 ", &style);
+        let line = shaped_ids(&mut renderer, "Il0 https://Il0.example", &style);
+        let url = shaped_ids(
+            &mut renderer,
+            "Il0",
+            &style.clone().with_kind(TextKind::Url),
+        );
+        assert_eq!(line[..4], prose[..]);
+        assert_eq!(line[12..15], url[..]);
+        assert_ne!(line[12..15], prose[..3]);
+    }
 }
 
 #[test]

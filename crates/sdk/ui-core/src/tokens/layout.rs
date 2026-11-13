@@ -203,85 +203,91 @@ mod breakpoint_tests {
         Metrics::BASE
     }
 
-    #[test]
-    fn the_thresholds_are_tokens_not_literals() {
-        let m = metrics();
-        let (compact, wide) = Breakpoint::thresholds(&m);
-        assert_eq!(compact, f64::from(m.compact_breakpoint));
-        assert_eq!(wide, f64::from(m.compact_breakpoint + m.overview_width));
-        let scaled = m.scaled(1.5);
-        let (compact, wide) = Breakpoint::thresholds(&scaled);
-        assert!((compact - 1260.0).abs() < 1e-4, "ui scale grows it");
-        assert!(wide > compact);
-    }
+    tilo_test_env::scenario! {
+        /// `Breakpoint` and its tracker.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_window_lands_in_the_class_its_size_and_type_call_for;
 
-    #[test]
-    fn each_size_lands_in_its_class() {
-        let m = metrics();
-        assert_eq!(Breakpoint::of(390.0, &m), Breakpoint::Compact);
-        assert_eq!(Breakpoint::of(768.0, &m), Breakpoint::Compact);
-        assert_eq!(Breakpoint::of(1366.0, &m), Breakpoint::Wide);
-        assert_eq!(Breakpoint::of(1920.0, &m), Breakpoint::Wide);
-        assert_eq!(Breakpoint::of(1000.0, &m), Breakpoint::Medium);
-        let (compact, wide) = Breakpoint::thresholds(&m);
-        assert_eq!(Breakpoint::of(compact, &m), Breakpoint::Medium);
-        assert_eq!(Breakpoint::of(wide - 1.0, &m), Breakpoint::Medium);
-        assert_eq!(Breakpoint::of(wide, &m), Breakpoint::Wide);
-    }
+        phase the_thresholds_are_tokens_not_literals;
+        {
+            let m = metrics();
+            let (compact, wide) = Breakpoint::thresholds(&m);
+            assert_eq!(compact, f64::from(m.compact_breakpoint));
+            assert_eq!(wide, f64::from(m.compact_breakpoint + m.overview_width));
+            let scaled = m.scaled(1.5);
+            let (compact, wide) = Breakpoint::thresholds(&scaled);
+            assert!((compact - 1260.0).abs() < 1e-4, "ui scale grows it");
+            assert!(wide > compact);
+        }
 
-    #[test]
-    fn a_tracked_class_does_not_flutter_on_its_threshold() {
-        let m = metrics();
-        let (compact_at, _) = Breakpoint::thresholds(&m);
-        let band = f64::from(m.layout_hysteresis);
-        let mut tracker = BreakpointTracker::new();
-        assert_eq!(tracker.derive(compact_at + 1.0, &m), Breakpoint::Medium);
-        assert_eq!(tracker.derive(compact_at - 1.0, &m), Breakpoint::Medium);
-        assert_eq!(
-            tracker.derive(compact_at - band + 1.0, &m),
-            Breakpoint::Medium
-        );
-        // The band's own edge still holds: a class is clear of it only past that edge,
-        // exactly as `NavShell`'s own thresholds read.
-        assert_eq!(tracker.derive(compact_at - band, &m), Breakpoint::Medium);
-        assert_eq!(
-            tracker.derive(compact_at - band - 0.5, &m),
-            Breakpoint::Compact
-        );
-        assert_eq!(tracker.derive(compact_at, &m), Breakpoint::Compact);
-        assert_eq!(
-            tracker.derive(compact_at + band - 1.0, &m),
-            Breakpoint::Compact
-        );
-        assert_eq!(tracker.derive(compact_at + band, &m), Breakpoint::Medium);
-    }
+        phase each_size_lands_in_its_class;
+        {
+            let m = metrics();
+            assert_eq!(Breakpoint::of(390.0, &m), Breakpoint::Compact);
+            assert_eq!(Breakpoint::of(768.0, &m), Breakpoint::Compact);
+            assert_eq!(Breakpoint::of(1366.0, &m), Breakpoint::Wide);
+            assert_eq!(Breakpoint::of(1920.0, &m), Breakpoint::Wide);
+            assert_eq!(Breakpoint::of(1000.0, &m), Breakpoint::Medium);
+            let (compact, wide) = Breakpoint::thresholds(&m);
+            assert_eq!(Breakpoint::of(compact, &m), Breakpoint::Medium);
+            assert_eq!(Breakpoint::of(wide - 1.0, &m), Breakpoint::Medium);
+            assert_eq!(Breakpoint::of(wide, &m), Breakpoint::Wide);
+        }
 
-    #[test]
-    fn a_tracker_that_has_not_laid_out_takes_its_rect() {
-        let m = metrics();
-        let mut tracker = BreakpointTracker::new();
-        assert_eq!(tracker.held(), None);
-        assert_eq!(tracker.derive(390.0, &m), Breakpoint::Compact);
-        assert_eq!(tracker.held(), Some(Breakpoint::Compact));
-        tracker.forget();
-        assert_eq!(tracker.held(), None);
-        assert_eq!(tracker.derive(1920.0, &m), Breakpoint::Wide);
-    }
+        phase a_tracked_class_does_not_flutter_on_its_threshold;
+        {
+            let m = metrics();
+            let (compact_at, _) = Breakpoint::thresholds(&m);
+            let band = f64::from(m.layout_hysteresis);
+            let mut tracker = BreakpointTracker::new();
+            assert_eq!(tracker.derive(compact_at + 1.0, &m), Breakpoint::Medium);
+            assert_eq!(tracker.derive(compact_at - 1.0, &m), Breakpoint::Medium);
+            assert_eq!(
+                tracker.derive(compact_at - band + 1.0, &m),
+                Breakpoint::Medium
+            );
+            // The band's own edge still holds: a class is clear of it only past that edge,
+            // exactly as `NavShell`'s own thresholds read.
+            assert_eq!(tracker.derive(compact_at - band, &m), Breakpoint::Medium);
+            assert_eq!(
+                tracker.derive(compact_at - band - 0.5, &m),
+                Breakpoint::Compact
+            );
+            assert_eq!(tracker.derive(compact_at, &m), Breakpoint::Compact);
+            assert_eq!(
+                tracker.derive(compact_at + band - 1.0, &m),
+                Breakpoint::Compact
+            );
+            assert_eq!(tracker.derive(compact_at + band, &m), Breakpoint::Medium);
+        }
 
-    #[test]
-    fn a_large_type_window_reaches_wide_later() {
-        let m = metrics();
-        let large = m.scaled(2.0);
-        assert_eq!(Breakpoint::of(1366.0, &m), Breakpoint::Wide);
-        assert_eq!(
-            Breakpoint::of(1366.0, &large),
-            Breakpoint::Compact,
-            "the same window holds less at twice the density"
-        );
-        assert_eq!(
-            Breakpoint::of(2000.0, &large),
-            Breakpoint::Medium,
-            "and reaches the next class where a 1x window reaches it at half the width"
-        );
+        phase a_tracker_that_has_not_laid_out_takes_its_rect;
+        {
+            let m = metrics();
+            let mut tracker = BreakpointTracker::new();
+            assert_eq!(tracker.held(), None);
+            assert_eq!(tracker.derive(390.0, &m), Breakpoint::Compact);
+            assert_eq!(tracker.held(), Some(Breakpoint::Compact));
+            tracker.forget();
+            assert_eq!(tracker.held(), None);
+            assert_eq!(tracker.derive(1920.0, &m), Breakpoint::Wide);
+        }
+
+        phase a_large_type_window_reaches_wide_later;
+        {
+            let m = metrics();
+            let large = m.scaled(2.0);
+            assert_eq!(Breakpoint::of(1366.0, &m), Breakpoint::Wide);
+            assert_eq!(
+                Breakpoint::of(1366.0, &large),
+                Breakpoint::Compact,
+                "the same window holds less at twice the density"
+            );
+            assert_eq!(
+                Breakpoint::of(2000.0, &large),
+                Breakpoint::Medium,
+                "and reaches the next class where a 1x window reaches it at half the width"
+            );
+        }
     }
 }

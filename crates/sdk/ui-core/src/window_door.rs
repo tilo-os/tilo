@@ -474,53 +474,59 @@ mod transport {
             door().map(|(one, _)| one)
         }
 
-        #[test]
-        fn a_window_request_arrives_with_its_own_connections() {
-            let Some((shell, app)) = door() else { return };
-            let (Some(collaboration), Some(shell_ui)) = (connection(), connection()) else {
-                return;
-            };
-            let request = WindowRequest {
-                instance: 41,
-                collaboration: true,
-                shell_ui: true,
-                reveal: Some("chat/channels/c_ada".into()),
-                open: None,
-            };
-            send(&shell, &request, Some(&collaboration), Some(&shell_ui)).unwrap();
-            let opening = receive(&app).unwrap().unwrap();
-            assert_eq!(opening.request, request);
-            assert!(opening.collaboration.is_some() && opening.shell_ui.is_some());
+        tilo_test_env::scenario! {
+            /// A window request sent over the door and received at the app's end.
+            /// Each phase was a test of its own and builds its own fixture.
+            fn a_window_request_carries_exactly_the_connections_it_names;
 
-            let bare = WindowRequest {
-                instance: 42,
-                collaboration: false,
-                shell_ui: false,
-                reveal: None,
-                open: Some("/documents/Budget.txt".into()),
-            };
-            send(&shell, &bare, None, None).unwrap();
-            let opening = receive(&app).unwrap().unwrap();
-            assert_eq!(opening.request, bare, "the file it opens comes with it");
-            assert!(opening.collaboration.is_none() && opening.shell_ui.is_none());
-            drop(shell);
-            assert!(receive(&app).unwrap().is_none());
-        }
+            phase a_window_request_arrives_with_its_own_connections;
+            {
+                let Some((shell, app)) = door() else { return };
+                let (Some(collaboration), Some(shell_ui)) = (connection(), connection()) else {
+                    return;
+                };
+                let request = WindowRequest {
+                    instance: 41,
+                    collaboration: true,
+                    shell_ui: true,
+                    reveal: Some("chat/channels/c_ada".into()),
+                    open: None,
+                };
+                send(&shell, &request, Some(&collaboration), Some(&shell_ui)).unwrap();
+                let opening = receive(&app).unwrap().unwrap();
+                assert_eq!(opening.request, request);
+                assert!(opening.collaboration.is_some() && opening.shell_ui.is_some());
 
-        #[test]
-        fn a_request_that_does_not_carry_what_it_names_is_refused() {
-            let Some((shell, app)) = door() else { return };
-            let request = WindowRequest {
-                instance: 1,
-                collaboration: true,
-                shell_ui: false,
-                reveal: None,
-                open: None,
-            };
-            assert!(send(&shell, &request, None, None).is_err());
-            runtime_portal::windows::send_open(&shell, &serde_json::to_vec(&request).unwrap(), &[])
-                .unwrap();
-            assert!(receive(&app).is_err());
+                let bare = WindowRequest {
+                    instance: 42,
+                    collaboration: false,
+                    shell_ui: false,
+                    reveal: None,
+                    open: Some("/documents/Budget.txt".into()),
+                };
+                send(&shell, &bare, None, None).unwrap();
+                let opening = receive(&app).unwrap().unwrap();
+                assert_eq!(opening.request, bare, "the file it opens comes with it");
+                assert!(opening.collaboration.is_none() && opening.shell_ui.is_none());
+                drop(shell);
+                assert!(receive(&app).unwrap().is_none());
+            }
+
+            phase a_request_that_does_not_carry_what_it_names_is_refused;
+            {
+                let Some((shell, app)) = door() else { return };
+                let request = WindowRequest {
+                    instance: 1,
+                    collaboration: true,
+                    shell_ui: false,
+                    reveal: None,
+                    open: None,
+                };
+                assert!(send(&shell, &request, None, None).is_err());
+                runtime_portal::windows::send_open(&shell, &serde_json::to_vec(&request).unwrap(), &[])
+                    .unwrap();
+                assert!(receive(&app).is_err());
+            }
         }
 
         /// While a window is built for a request its instance and connections stand in

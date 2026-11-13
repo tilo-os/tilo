@@ -60,58 +60,64 @@ mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
 
-    #[test]
-    fn type_metrics_match_measurement() {
+    tilo_test_env::scenario! {
+        /// The type metrics against a renderer's own measurement.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn type_metrics_follow_what_the_renderer_measures;
+
+        phase type_metrics_match_measurement;
         {
-            for scale in [1.0_f32, 2.0, 0.75] {
-                let mut tr = TextRenderer::new();
-                tr.set_text_scale(scale);
-                let (_, measured) = tr.measure("Ag", 14.0, None);
-                assert!(
-                    (line_height_px(14.0, scale) - f64::from(measured)).abs() < 1e-4,
-                    "at {scale}x the renderer-less line ({}) must equal the measured one ({measured})",
-                    line_height_px(14.0, scale)
-                );
+            {
+                for scale in [1.0_f32, 2.0, 0.75] {
+                    let mut tr = TextRenderer::new();
+                    tr.set_text_scale(scale);
+                    let (_, measured) = tr.measure("Ag", 14.0, None);
+                    assert!(
+                        (line_height_px(14.0, scale) - f64::from(measured)).abs() < 1e-4,
+                        "at {scale}x the renderer-less line ({}) must equal the measured one ({measured})",
+                        line_height_px(14.0, scale)
+                    );
+                }
+                assert_eq!(line_height_px(14.0, 9.0), line_height_px(14.0, 4.0));
+                assert_eq!(line_height_px(14.0, f32::NAN), line_height_px(14.0, 1.0));
             }
-            assert_eq!(line_height_px(14.0, 9.0), line_height_px(14.0, 4.0));
-            assert_eq!(line_height_px(14.0, f32::NAN), line_height_px(14.0, 1.0));
-        }
 
-        {
-            assert_eq!(line_growth(14.0, 1.0), 0.0);
-            assert_eq!(
-                line_growth(14.0, 0.75),
-                0.0,
-                "smaller text never shrinks a design"
-            );
-            assert!(line_growth(14.0, 2.0) > 17.0);
-            assert_eq!(authored_h(28.0, &[13.0], 1.0), 28.0);
-            assert_eq!(authored_h(74.0, &[26.0, 13.0], 1.0), 74.0);
-            assert!(authored_h(28.0, &[13.0], 2.0) >= 28.0 + line_growth(13.0, 2.0));
-            assert_eq!(at_least_whole(16.0, 13.75), 16.0);
-            assert_eq!(at_least_whole(16.0, 17.75), 18.0);
-        }
-    }
-
-    #[test]
-    fn centered_text_top_centres_the_measured_line_box() {
-        {
-            assert_eq!(centered_text_top(10.0, 28.0, 17.5), 10.0 + 5.25);
-            assert_eq!(centered_text_top(0.0, 20.0, 35.0), -7.5);
-        }
-
-        {
-            // Centring the `.1` of `measure` puts the line's centre on the band's centre
-            // at every renderer scale — the rule every migrated site uses.
-            for scale in [1.0_f32, 2.0] {
-                let mut tr = TextRenderer::new();
-                tr.set_text_scale(scale);
-                let (_, line_h) = tr.measure("Ag", 14.0, None);
-                let top = centered_text_top(100.0, 40.0, f64::from(line_h));
-                assert!(
-                    ((top + f64::from(line_h) / 2.0) - 120.0).abs() < 1e-9,
-                    "at {scale}x the measured line ({line_h}) must centre on the band"
+            {
+                assert_eq!(line_growth(14.0, 1.0), 0.0);
+                assert_eq!(
+                    line_growth(14.0, 0.75),
+                    0.0,
+                    "smaller text never shrinks a design"
                 );
+                assert!(line_growth(14.0, 2.0) > 17.0);
+                assert_eq!(authored_h(28.0, &[13.0], 1.0), 28.0);
+                assert_eq!(authored_h(74.0, &[26.0, 13.0], 1.0), 74.0);
+                assert!(authored_h(28.0, &[13.0], 2.0) >= 28.0 + line_growth(13.0, 2.0));
+                assert_eq!(at_least_whole(16.0, 13.75), 16.0);
+                assert_eq!(at_least_whole(16.0, 17.75), 18.0);
+            }
+        }
+
+        phase centered_text_top_centres_the_measured_line_box;
+        {
+            {
+                assert_eq!(centered_text_top(10.0, 28.0, 17.5), 10.0 + 5.25);
+                assert_eq!(centered_text_top(0.0, 20.0, 35.0), -7.5);
+            }
+
+            {
+                // Centring the `.1` of `measure` puts the line's centre on the band's centre
+                // at every renderer scale — the rule every migrated site uses.
+                for scale in [1.0_f32, 2.0] {
+                    let mut tr = TextRenderer::new();
+                    tr.set_text_scale(scale);
+                    let (_, line_h) = tr.measure("Ag", 14.0, None);
+                    let top = centered_text_top(100.0, 40.0, f64::from(line_h));
+                    assert!(
+                        ((top + f64::from(line_h) / 2.0) - 120.0).abs() < 1e-9,
+                        "at {scale}x the measured line ({line_h}) must centre on the band"
+                    );
+                }
             }
         }
     }

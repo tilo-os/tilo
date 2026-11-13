@@ -122,47 +122,6 @@ fn compatibility_styles() -> Vec<TextStyle> {
             .with_font_feature(OpenTypeTag::KERNING, 0),
     ]
 }
-#[test]
-fn main_first_baseline_matches_pinned_original_after_shared_cache_warmth() {
-    for scale in [1.0, 1.5, 2.0] {
-        let mut current = crate::font_catalog::fixture_renderer();
-        let mut original = crate::font_catalog::fixture_renderer();
-        current.set_text_scale(scale);
-        original.set_text_scale(scale);
-        for text in [
-            "",
-            " ",
-            "\u{ad}",
-            "office e\u{301} Ελληνικά العربية\nline two",
-        ] {
-            for style in compatibility_styles() {
-                for width in [None, Some(40.0), Some(1000.0)] {
-                    let prepared = PreparedText::new(text, style.clone());
-                    current.measure_prepared(&prepared, width);
-                    current.draw_prepared(
-                        &mut Scene::new(),
-                        &prepared,
-                        Color::WHITE,
-                        Affine::IDENTITY,
-                        width,
-                    );
-                    let expected =
-                        original.pinned_original_first_baseline_style(text, width, &style);
-                    for _ in 0..2 {
-                        assert_eq!(
-                            current.first_baseline_style(text, width, &style).to_bits(),
-                            expected.to_bits(),
-                            "original baseline: {text:?} scale {scale} width {width:?} style {style:?}"
-                        );
-                    }
-                    if text.is_empty() {
-                        assert_eq!(expected.to_bits(), (style.size * scale * 0.8).to_bits());
-                    }
-                }
-            }
-        }
-    }
-}
 fn assert_outline_geometry(actual: &[GlyphOutline], expected: &[GlyphOutline]) {
     assert_eq!(
         actual.len(),
@@ -190,80 +149,129 @@ fn assert_outline_geometry(actual: &[GlyphOutline], expected: &[GlyphOutline]) {
         );
     }
 }
-#[test]
-fn main_glyph_outlines_match_pinned_original_after_other_public_cache_operations() {
-    for scale in [1.0, 1.5, 2.0] {
-        let mut current = crate::font_catalog::fixture_renderer();
-        let mut original = crate::font_catalog::fixture_renderer();
-        current.set_text_scale(scale);
-        original.set_text_scale(scale);
-        for text in [
-            "",
-            "office",
-            "(office) e\u{301} Ελληνικά\nالعربية 👩‍💻",
-            "hy\u{ad}phenation",
-        ] {
-            for style in compatibility_styles() {
-                for width in [None, Some(40.0), Some(1000.0)] {
-                    let prepared = PreparedText::new(text, style.clone());
-                    current.measure_prepared(&prepared, width);
-                    current.draw_style(
-                        &mut Scene::new(),
-                        text,
-                        Color::WHITE,
-                        Affine::IDENTITY,
-                        width,
-                        &style,
-                    );
-                    current.first_baseline_style(text, width, &style);
-                    let expected = original.pinned_original_glyph_outlines(text, width, &style);
-                    if text == "office" {
-                        assert!(
-                            !expected.is_empty(),
-                            "real fixture must expose outline geometry"
+tilo_test_env::scenario! {
+    /// The current baseline and outline geometry against the pinned original.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn main_baselines_and_outlines_match_the_pinned_original;
+
+    phase main_first_baseline_matches_pinned_original_after_shared_cache_warmth;
+    {
+        for scale in [1.0, 1.5, 2.0] {
+            let mut current = crate::font_catalog::fixture_renderer();
+            let mut original = crate::font_catalog::fixture_renderer();
+            current.set_text_scale(scale);
+            original.set_text_scale(scale);
+            for text in [
+                "",
+                " ",
+                "\u{ad}",
+                "office e\u{301} Ελληνικά العربية\nline two",
+            ] {
+                for style in compatibility_styles() {
+                    for width in [None, Some(40.0), Some(1000.0)] {
+                        let prepared = PreparedText::new(text, style.clone());
+                        current.measure_prepared(&prepared, width);
+                        current.draw_prepared(
+                            &mut Scene::new(),
+                            &prepared,
+                            Color::WHITE,
+                            Affine::IDENTITY,
+                            width,
                         );
-                    }
-                    for _ in 0..2 {
-                        assert_outline_geometry(
-                            &current.glyph_outlines(text, width, &style),
-                            &expected,
-                        );
+                        let expected =
+                            original.pinned_original_first_baseline_style(text, width, &style);
+                        for _ in 0..2 {
+                            assert_eq!(
+                                current.first_baseline_style(text, width, &style).to_bits(),
+                                expected.to_bits(),
+                                "original baseline: {text:?} scale {scale} width {width:?} style {style:?}"
+                            );
+                        }
+                        if text.is_empty() {
+                            assert_eq!(expected.to_bits(), (style.size * scale * 0.8).to_bits());
+                        }
                     }
                 }
             }
         }
     }
-}
-#[test]
-fn main_outline_and_baseline_change_with_current_scale_width_and_font_generation() {
-    let text = "Current typography wraps onto another line";
-    let style = TextStyle::new(18.0).with_align(ParagraphAlign::End);
-    let mut current = crate::font_catalog::fixture_renderer();
-    let before = current.glyph_outlines(text, Some(90.0), &style);
-    for (scale, width) in [(1.5, 50.0), (2.0, 160.0), (1.0, 90.0)] {
-        current.set_text_scale(scale);
-        current.bump_generation();
-        let mut original = crate::font_catalog::fixture_renderer();
-        original.set_text_scale(scale);
-        let outlines = current.glyph_outlines(text, Some(width), &style);
-        assert_outline_geometry(
-            &outlines,
-            &original.pinned_original_glyph_outlines(text, Some(width), &style),
-        );
-        assert_eq!(
-            current
-                .first_baseline_style(text, Some(width), &style)
-                .to_bits(),
-            original
-                .pinned_original_first_baseline_style(text, Some(width), &style)
-                .to_bits()
-        );
-        if scale != 1.0 {
-            assert_ne!(
-                outlines[0].path.elements(),
-                before[0].path.elements(),
-                "control must expose changed real outline, rather than empty/equal geometry"
+
+    phase main_glyph_outlines_match_pinned_original_after_other_public_cache_operations;
+    {
+        for scale in [1.0, 1.5, 2.0] {
+            let mut current = crate::font_catalog::fixture_renderer();
+            let mut original = crate::font_catalog::fixture_renderer();
+            current.set_text_scale(scale);
+            original.set_text_scale(scale);
+            for text in [
+                "",
+                "office",
+                "(office) e\u{301} Ελληνικά\nالعربية 👩‍💻",
+                "hy\u{ad}phenation",
+            ] {
+                for style in compatibility_styles() {
+                    for width in [None, Some(40.0), Some(1000.0)] {
+                        let prepared = PreparedText::new(text, style.clone());
+                        current.measure_prepared(&prepared, width);
+                        current.draw_style(
+                            &mut Scene::new(),
+                            text,
+                            Color::WHITE,
+                            Affine::IDENTITY,
+                            width,
+                            &style,
+                        );
+                        current.first_baseline_style(text, width, &style);
+                        let expected = original.pinned_original_glyph_outlines(text, width, &style);
+                        if text == "office" {
+                            assert!(
+                                !expected.is_empty(),
+                                "real fixture must expose outline geometry"
+                            );
+                        }
+                        for _ in 0..2 {
+                            assert_outline_geometry(
+                                &current.glyph_outlines(text, width, &style),
+                                &expected,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    phase main_outline_and_baseline_change_with_current_scale_width_and_font_generation;
+    {
+        let text = "Current typography wraps onto another line";
+        let style = TextStyle::new(18.0).with_align(ParagraphAlign::End);
+        let mut current = crate::font_catalog::fixture_renderer();
+        let before = current.glyph_outlines(text, Some(90.0), &style);
+        for (scale, width) in [(1.5, 50.0), (2.0, 160.0), (1.0, 90.0)] {
+            current.set_text_scale(scale);
+            current.bump_generation();
+            let mut original = crate::font_catalog::fixture_renderer();
+            original.set_text_scale(scale);
+            let outlines = current.glyph_outlines(text, Some(width), &style);
+            assert_outline_geometry(
+                &outlines,
+                &original.pinned_original_glyph_outlines(text, Some(width), &style),
             );
+            assert_eq!(
+                current
+                    .first_baseline_style(text, Some(width), &style)
+                    .to_bits(),
+                original
+                    .pinned_original_first_baseline_style(text, Some(width), &style)
+                    .to_bits()
+            );
+            if scale != 1.0 {
+                assert_ne!(
+                    outlines[0].path.elements(),
+                    before[0].path.elements(),
+                    "control must expose changed real outline, rather than empty/equal geometry"
+                );
+            }
         }
     }
 }
