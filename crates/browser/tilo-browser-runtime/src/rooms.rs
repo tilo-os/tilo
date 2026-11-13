@@ -10,8 +10,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::{
-    PendingInvite, Role, WaitListEntry, Workspace, WorkspaceMember, WorkspacesReply,
-    WorkspacesRequest,
+    PendingInvite, WaitListEntry, Workspace, WorkspaceMember, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_workspace_join::encode_invitation_text;
 use wasm_bindgen::prelude::*;

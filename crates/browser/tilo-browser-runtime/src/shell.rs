@@ -985,6 +985,14 @@ impl BrowserShell {
                         resource,
                     });
                 }
+                // Another of the person's devices: the page has no sheet of its own for the
+                // code, so it opens the Settings page their devices are listed and added on.
+                tilo_session::people::PeopleAsk::PairDevice => {
+                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
+                        app: SETTINGS_APP.into(),
+                        resource: "settings.section:devices_access".into(),
+                    });
+                }
                 // How an agent connects, asked of the card: the page shows the
                 // setup its own first screen does.
                 tilo_session::people::PeopleAsk::ConnectAgent => {
