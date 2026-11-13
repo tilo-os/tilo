@@ -1,12 +1,8 @@
-//! Local personal vocabulary shared by input consumers, outside room records.
+//! Local personal vocabulary shared by input consumers, outside workspace records.
 //!
-//! The session host owns [`Service`]. It supplies a private local root and binds
-//! the authenticated person's root key; neither is discovered from an app's
-//! environment. Consumers receive only [`Reader`], never a filesystem path or
-//! the authority to switch people. Anonymous/demo sessions have no reader.
-//! Nothing in this module exports records, changes settings grants, or syncs.
-//! Hosts must bind again on account changes and issue fresh readers. Old
-//! readers fail closed, including after switching back to the same person.
+//! The session host owns [`Service`] and binds the authenticated person's root key; consumers
+//! receive only [`Reader`], never a filesystem path or the authority to switch people. Old readers
+//! fail closed, including after switching back to the same person.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -32,7 +28,6 @@ pub struct Word {
 }
 
 impl Word {
-    /// Validate and canonicalise an addition, retaining its display casing.
     pub fn new(spelling: &str, language: Option<&str>) -> io::Result<Self> {
         let spelling: String = spelling.trim().nfc().collect();
         if spelling.is_empty()
@@ -80,8 +75,6 @@ fn folded(word: &str) -> String {
     word.nfc().flat_map(char::to_lowercase).nfc().collect()
 }
 
-/// A current, bounded set of hints. Consumers retain user-entered text; they
-/// use these spellings only for visible suggestions or recognition biasing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub revision: u64,
@@ -124,7 +117,6 @@ impl Snapshot {
             .ok_or_else(|| invalid("dictionary revision exhausted"))?;
         Ok(next)
     }
-    /// Hints with their exact display spellings, applicable to this language.
     pub fn hints<'a>(&'a self, language: &'a str) -> impl Iterator<Item = &'a str> {
         self.words
             .iter()
@@ -132,15 +124,11 @@ impl Snapshot {
             .map(|w| w.spelling.as_str())
     }
 
-    /// Protect an explicit addition from autocorrection, without changing its
-    /// typed casing. Unicode canonical equivalence is accepted.
     pub fn contains(&self, typed: &str, language: &str) -> bool {
         let key = folded(typed);
         self.hints(language).any(|hint| folded(hint) == key)
     }
 
-    /// Explicit completion chips, preserving casing. No edit-distance or
-    /// substring replacements: a personal word is a hint, not a rewrite rule.
     pub fn completions(&self, prefix: &str, language: &str, limit: usize) -> Vec<String> {
         if prefix.is_empty() || limit == 0 {
             return Vec::new();
@@ -159,16 +147,10 @@ impl Snapshot {
     }
 }
 
-/// Small read/biasing interface for OSK, spellcheck and on-device dictation.
-/// Read before each input operation; an error must clear cached personal hints.
 pub trait Vocabulary: Send + Sync {
-    /// # Errors
-    /// Revoked account binding, unavailable storage, or invalid persisted data.
     fn snapshot(&self) -> io::Result<Snapshot>;
 }
 
-/// An explicit edit. Replace/remove name the old entry; optimistic revisions
-/// keep a stale settings screen from deleting or overwriting newer additions.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Edit {
     Add(Word),
@@ -221,14 +203,11 @@ pub struct Service(Arc<Inner>);
 
 impl Drop for Service {
     fn drop(&mut self) {
-        // Consumers must not keep account authority alive after its host exits.
         self.0.binding.lock_recover().owner = None;
         self.0.changes.ring();
     }
 }
 
-/// Revocable read capability for one authenticated binding. Clones share the
-/// binding; account switching invalidates every old clone.
 #[derive(Clone)]
 pub struct Reader {
     inner: Arc<Inner>,
@@ -236,7 +215,6 @@ pub struct Reader {
 }
 
 impl Service {
-    /// Create an unbound service. A host must establish identity explicitly.
     pub fn new(root: PathBuf) -> io::Result<Self> {
         if !root.is_absolute() {
             return Err(invalid(
@@ -253,8 +231,6 @@ impl Service {
         })))
     }
 
-    /// Called by the host after authenticating/switching the local account.
-    /// `None` revokes access (logout, unverified identity, public demo).
     pub fn bind(&self, owner: Option<[u8; 32]>) -> Option<Reader> {
         let mut binding = self.0.binding.lock_recover();
         let Some(epoch) = binding.epoch.checked_add(1) else {
@@ -272,12 +248,10 @@ impl Service {
         reader
     }
 
-    /// The currently authenticated host binding; never inferred from an app.
     pub fn owner(&self) -> Option<[u8; 32]> {
         self.0.binding.lock_recover().owner
     }
 
-    /// Issue a reader for the current binding without changing its epoch.
     pub fn reader(&self) -> Option<Reader> {
         let binding = self.0.binding.lock_recover();
         let reader = binding.owner.map(|_| Reader {
@@ -288,7 +262,6 @@ impl Service {
         reader
     }
 
-    /// Issue a reader only when the expected account is the live binding.
     pub(crate) fn reader_for(&self, owner: [u8; 32]) -> Option<Reader> {
         let binding = self.0.binding.lock_recover();
         (binding.owner == Some(owner)).then(|| Reader {
@@ -297,7 +270,6 @@ impl Service {
         })
     }
 
-    /// Watch other host instances' atomic edits without retaining authority.
     #[cfg(feature = "watch")]
     pub(crate) fn watch(&self) -> io::Result<crate::watch::SettingsWatch> {
         create_private_directory(&self.0.root)?;
@@ -313,7 +285,6 @@ impl Service {
         &self.0.changes
     }
 
-    /// Apply a user edit to the current person, under the local file lock.
     pub fn edit(&self, reader: &Reader, revision: u64, edit: Edit) -> io::Result<Snapshot> {
         let result = self.change(reader, revision, |doc| {
             match edit {
@@ -383,8 +354,6 @@ impl Service {
         }
         tilo_files::native::atomic::write_private(&path, &bytes)?;
         let snapshot = doc.snapshot();
-        // Keep the binding locked through publication: logout must not race a
-        // checked edit and allow it to write after account authority is revoked.
         drop(binding);
         Ok(snapshot)
     }
@@ -397,8 +366,6 @@ impl Inner {
 }
 
 impl Reader {
-    /// Compare opaque binding identity without reading dictionary contents.
-    /// A same-person logout/login still issues a different binding epoch.
     pub fn same_binding(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner) && self.epoch == other.epoch
     }
@@ -415,8 +382,6 @@ impl Vocabulary for Reader {
     fn snapshot(&self) -> io::Result<Snapshot> {
         let binding = self.inner.binding.lock_recover();
         let owner = self.owner(&binding)?;
-        // Atomic replacement means readers see one whole committed document.
-        // Always reload; a mtime-only cache misses rapid edits and removals.
         let snapshot = read(&self.inner.path(owner), owner)?.snapshot();
         drop(binding);
         Ok(snapshot)

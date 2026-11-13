@@ -19,15 +19,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Settings section and leaf that hold [`SystemSoundPrefs`].
 pub const SECTION: &str = "audio";
 pub const LEAF: &str = "system_sounds";
 
-/// The sound theme used when the person has not chosen one: the
-/// freedesktop.org reference theme every other theme inherits from.
 pub const DEFAULT_THEME: &str = "freedesktop";
 
-/// A system event that can make a sound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SystemSoundEvent {
     Notification,
@@ -40,14 +36,9 @@ pub enum SystemSoundEvent {
     Error,
 }
 
-/// How an event relates to Do Not Disturb and focus time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundKind {
-    /// Confirms something the person just did (a volume key, a screenshot).
-    /// Quiet modes hold back interruptions, not answers to your own action.
     Feedback,
-    /// Something happened that the person did not ask for. Silenced by Do
-    /// Not Disturb, focus time and while presenting or sharing the screen.
     Interruption,
     /// The machine needs attention soon or it stops working. Plays through
     /// Do Not Disturb and focus time; only its own toggle silences it.
@@ -66,7 +57,6 @@ impl SystemSoundEvent {
         Self::Error,
     ];
 
-    /// Stable key in `system_sounds.events`.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -86,7 +76,6 @@ impl SystemSoundEvent {
         Self::ALL.into_iter().find(|event| event.key() == key)
     }
 
-    /// Row label in Settings → Sound.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -101,8 +90,6 @@ impl SystemSoundEvent {
         }
     }
 
-    /// freedesktop.org sound-naming-spec ids, most specific first. A theme
-    /// that lacks the first falls back to the next.
     #[must_use]
     pub const fn sound_ids(self) -> &'static [&'static str] {
         match self {
@@ -117,7 +104,6 @@ impl SystemSoundEvent {
         }
     }
 
-    /// Accessible description passed along with the cue.
     #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
@@ -145,8 +131,6 @@ impl SystemSoundEvent {
         }
     }
 
-    /// The event a desktop notification stands for, from its freedesktop
-    /// `category` hint (or the portal's `category`).
     #[must_use]
     pub fn for_notification_category(category: Option<&str>) -> Self {
         match category.unwrap_or_default() {
@@ -171,21 +155,13 @@ impl SystemSoundEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct SystemSoundEvents {
-    /// A sound when a notification arrives.
     pub notification: bool,
-    /// A sound when a message arrives.
     pub message: bool,
-    /// A tick as the volume changes.
     pub volume_change: bool,
-    /// A shutter sound when a screenshot is taken.
     pub screenshot: bool,
-    /// A sound when a device is plugged in.
     pub device_connected: bool,
-    /// A sound when a device is unplugged.
     pub device_disconnected: bool,
-    /// A warning sound when the battery runs low.
     pub low_battery: bool,
-    /// A sound when something fails.
     pub error: bool,
 }
 
@@ -236,7 +212,6 @@ impl SystemSoundEvents {
     }
 }
 
-/// The "System sounds" preference.
 #[cfg_attr(
     feature = "model",
     derive(tilo_resource::Model, tilo_resource::JsonSchema)
@@ -244,14 +219,11 @@ impl SystemSoundEvents {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct SystemSoundPrefs {
-    /// Master switch.
     pub enabled: bool,
     /// How loud system sounds play, `0..=1` of the output volume.
     #[cfg_attr(feature = "model", model(range = 0.0..=1.0))]
     pub volume: f64,
-    /// freedesktop sound theme name; `None` follows [`DEFAULT_THEME`].
     pub theme: Option<String>,
-    /// Which events make a sound.
     pub events: SystemSoundEvents,
 }
 
@@ -271,8 +243,6 @@ impl Default for SystemSoundPrefs {
 pub const DEFAULT_VOLUME: f64 = 0.7;
 
 impl SystemSoundPrefs {
-    /// Read from a parsed settings document; anything missing or malformed
-    /// falls back to the defaults.
     #[must_use]
     pub fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Self {
         doc.get(SECTION)
@@ -296,15 +266,12 @@ impl SystemSoundPrefs {
         self
     }
 
-    /// The theme to look sounds up in.
     #[must_use]
     pub fn theme_name(&self) -> &str {
         self.theme.as_deref().unwrap_or(DEFAULT_THEME)
     }
 }
 
-/// A theme name is one path component: no separators, no `.`/`..`, nothing
-/// that could make a lookup leave the sound-theme directories.
 #[must_use]
 pub fn is_valid_theme_name(name: &str) -> bool {
     !name.is_empty()
@@ -315,13 +282,10 @@ pub fn is_valid_theme_name(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
-/// What is holding interruptions back right now.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuietState {
     pub do_not_disturb: bool,
-    /// A focus schedule is active.
     pub focus: bool,
-    /// Presenting or sharing the screen.
     pub presenting: bool,
 }
 
@@ -384,13 +348,9 @@ mod tests {
         assert_eq!(SystemSoundEvent::from_key("startup"), None);
     }
 
-    /// Every event × Do Not Disturb × its own toggle.
     #[test]
     fn policy_table() {
         use SystemSoundEvent as E;
-        // Feedback and critical events play through Do Not Disturb.
-        // Notifications and messages carry their own verdict, which is
-        // already "no" under DND; other interruptions are held back here.
         let expected_under_dnd =
             |event: E| matches!(event, E::VolumeChange | E::Screenshot | E::LowBattery);
         for event in E::ALL {

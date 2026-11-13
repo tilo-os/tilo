@@ -36,7 +36,6 @@ impl ContinuityCapability {
         Self::AppContinuations,
     ];
 
-    /// The facet's switch in the `continuity` section.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {

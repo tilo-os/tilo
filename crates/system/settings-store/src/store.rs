@@ -1,37 +1,10 @@
-//! One profile's settings, kept as two Automerge documents.
+//! One profile's settings, kept as two Automerge documents: the person's in
+//! `<root>/records/person.automerge` and this device's in `<root>/records/device.automerge`.
 //!
-//! A [`Store`] holds the person's document (the sections
-//! [`crate::placement`] gives the person) and this device's document (every
-//! other section), in `<root>/records/person.automerge` and
-//! `<root>/records/device.automerge`. Each section is a map at the document's
-//! root and each leaf a key in it; a value is stored as what it is (an object
-//! a map, an array a list, a string, number, boolean or `null` a scalar), as
-//! every Tilo document stores JSON ([`tilo_automerge::json`]), so concurrent
-//! edits of different keys merge and a typed model can read the same
-//! document. Readers see the device document with the person's leaves laid
-//! over it.
-//!
-//! A write changes the documents in memory, commits it with its
-//! [`ChangeOrigin`] as the change's message, and shows it to readers at once;
-//! one that needs the document itself (a section's undo, which reads its
-//! history) changes it through [`Store::edit_document`], committed, shown and
-//! saved the same way. Root keys under [`BOOKKEEPING`] are that history's
-//! bookkeeping (what was undone), never a section;
-//! one background thread saves the documents. No write waits for the disk,
-//! so a thread that must keep answering input may write. A save that fails
-//! is reported ([`crate::take_deferred_failures`]) and retried with the next
-//! change: the documents keep the change.
-//!
-//! One process holds a profile at a time (the session, for the person's):
-//! it takes `<root>/records/settings.lock` for as long as the store is open.
-//! Any other process opening the profile reads the same documents and
-//! follows the holder's saves; its writes go to the holder over
-//! `<root>/records/settings.sock`, which applies them as its own and saves
-//! before it answers. Nothing else stands in for the documents: there is no
-//! copy to keep in step. A follower whose write the door does not take
-//! makes it itself only where the holder is gone (its lock is free); while
-//! the holder lives, the write fails with what the door said, and never
-//! waits for the holder to end.
+//! A write changes the documents in memory and a background thread saves them, so no write waits
+//! for the disk; a failed save is reported and retried with the next change. One process holds a
+//! profile at a time (`<root>/records/settings.lock`): another process opening it follows the
+//! holder's saves, and its own writes go to the holder over `<root>/records/settings.sock`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -71,10 +44,7 @@ type DecideSections<'a> =
 struct Docs {
     person: AutoCommit,
     device: AutoCommit,
-    /// The sections changed since the documents were last saved.
     unsaved: std::collections::BTreeSet<String>,
-    /// The number of the save a follower last took the documents from, so it notices the holder's
-    /// next one.
     seen: u64,
 }
 
@@ -96,8 +66,6 @@ impl Docs {
         document
     }
 
-    /// Note `sections` changed and unsaved: the documents as readers now
-    /// see them.
     fn keep(&mut self, sections: Vec<String>) -> Arc<Map<String, Value>> {
         self.unsaved.extend(sections);
         Arc::new(self.projection())
@@ -108,27 +76,20 @@ struct Snapshot {
     document: Arc<Map<String, Value>>,
 }
 
-/// One profile's settings: see the module docs.
 pub struct Store {
     me: Weak<Store>,
     root: PathBuf,
     records: Records,
-    /// Another process holds the profile: this one follows its saves.
     follower: std::sync::atomic::AtomicBool,
-    /// Opened to hold the profile: takes it over when its holder is gone.
     may_hold: bool,
-    /// The holder's lock; `None` for a follower.
     lock: Mutex<Option<Holding>>,
-    /// Why this process may not write (a follower, an unisolated test).
     refused: Mutex<Option<String>>,
     docs: Mutex<Docs>,
     snapshot: Mutex<Snapshot>,
     revision: AtomicU64,
     changes: crate::ChangeSignal,
     failures: Mutex<Vec<crate::DeferredFailure>>,
-    /// A follower's watch on the holder's saves.
     watch: Mutex<Option<Watch>>,
-    /// The holder's door for other processes' writes.
     door: Mutex<Option<Door>>,
 }
 
@@ -153,7 +114,6 @@ fn load_doc(records: &Records, name: &str) -> std::io::Result<AutoCommit> {
     }
 }
 
-/// Both documents as saved now, with the number of the save they stand at.
 fn load_docs(records: &Records) -> std::io::Result<(AutoCommit, AutoCommit, u64)> {
     let seen = records.revision();
     Ok((
@@ -228,7 +188,6 @@ impl Store {
         Ok(store)
     }
 
-    /// Take other processes' writes from now on.
     fn open_door(&self) {
         let weak = self.me.clone();
         let opened = self.records.open_door(move |request| {
@@ -291,31 +250,26 @@ impl Store {
         true
     }
 
-    /// The profile's root directory.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Whether this process holds the profile (and may write it).
     #[must_use]
     pub fn is_holder(&self) -> bool {
         self.refused.lock_recover().is_none()
     }
 
-    /// Refuse every write from now on, saying `why`.
     pub(crate) fn refuse_writes(&self, why: &str) {
         *self.refused.lock_recover() = Some(why.to_owned());
     }
 
-    /// The whole document as readers see it.
     #[must_use]
     pub fn document(&self) -> Arc<Map<String, Value>> {
         self.take_in_saves();
         Arc::clone(&self.snapshot.lock_recover().document)
     }
 
-    /// A follower takes in what the holder saved since it last looked.
     fn take_in_saves(&self) {
         if !self.is_follower() {
             return;
@@ -329,11 +283,8 @@ impl Store {
             load_doc(&self.records, PERSON_FILE),
             load_doc(&self.records, DEVICE_FILE),
         ) else {
-            // A save half seen: the holder's rename lands whole on the next look.
             return;
         };
-        // A follower writes nothing of its own: the holder's save is the
-        // whole of both documents.
         docs.person = person;
         docs.device = device;
         docs.seen = now;
@@ -355,8 +306,6 @@ impl Store {
         self.changes.ring();
     }
 
-    /// Under the documents' lock: let `decide` look at section `name` as it
-    /// stands and write what it returns, as one change made by `origin`.
     fn write_where(
         &self,
         name: &str,
@@ -373,8 +322,6 @@ impl Store {
         })
     }
 
-    /// Under the documents' lock: let `decide` look at the whole document
-    /// and merge the sections it returns, as one change made by `origin`.
     fn write_sections(
         &self,
         origin: &ChangeOrigin,
@@ -437,7 +384,6 @@ impl Store {
         Ok(ConditionalUpdate::Stored)
     }
 
-    /// Save the documents if they changed since they were last saved.
     fn save(&self) {
         let mut docs = self.docs.lock_recover();
         if docs.unsaved.is_empty() {
@@ -446,9 +392,6 @@ impl Store {
         let sections = std::mem::take(&mut docs.unsaved);
         let person = docs.person.save();
         let device = docs.device.save();
-        // The save both documents are about to stand at, said once they do: a follower notices a
-        // change by this number alone, so it never takes one document of this save and the other
-        // of the save before.
         let revision = self.records.revision().saturating_add(1);
         drop(docs);
         let saved = self
@@ -476,7 +419,6 @@ impl Store {
     #[must_use]
     pub fn change_log(&self) -> Vec<Value> {
         let mut docs = self.docs.lock_recover();
-        // A change to both documents is recorded in each: once here.
         let mut changes: BTreeMap<(u64, u64), Value> = BTreeMap::new();
         for holder in [Holder::Person, Holder::Device] {
             for change in docs.doc(holder).get_changes_meta(&[]) {
@@ -512,12 +454,6 @@ impl Store {
 }
 
 impl Store {
-    /// Change the document holding section `section` (the person's or this
-    /// device's, as [`placement`] places it) through `edit`, as one change
-    /// made by `origin`: what a change that needs the document itself makes
-    /// (a section's undo, which reads its history and marks what it took
-    /// back). The change records the leaves it set, as every write does,
-    /// and is shown and saved like one. `edit` refusing changes nothing.
     pub fn edit_document(
         &self,
         section: &str,
@@ -535,7 +471,6 @@ impl Store {
                     why,
                 ));
             }
-            // Made on a copy of what the holder saved, and sent to it whole.
             self.take_in_saves();
             let mut copy = self.docs.lock_recover().doc(holder).fork();
             let before = copy.get_heads();
@@ -558,7 +493,6 @@ impl Store {
         let Some(mut touched) = commit_edit(docs.doc(holder), origin, edit)? else {
             return Ok(());
         };
-        // The history moved even where no leaf did (an undo's mark).
         if touched.is_empty() {
             touched.push(section.to_owned());
         }
@@ -568,14 +502,11 @@ impl Store {
         Ok(())
     }
 
-    /// Show `document`, the documents as changed, and save them.
     fn show(&self, document: Arc<Map<String, Value>>) {
         self.publish(document);
         writer().schedule(&self.me);
     }
 
-    /// Merge `changes`, which another process made to a copy of one of the
-    /// documents, as the holder.
     fn take_changes(&self, changes: &door::Changes) -> std::io::Result<()> {
         let holder = if changes.person {
             Holder::Person
@@ -592,8 +523,6 @@ impl Store {
         Ok(())
     }
 
-    /// A follower's change to a copy of one of the documents: made by the
-    /// holder, and read back from its save.
     fn forward_changes(&self, changes: door::Changes, why: &str) -> std::io::Result<()> {
         let request = door::Request {
             origin: ChangeOrigin::default(),
@@ -620,10 +549,6 @@ impl Store {
     }
 }
 
-/// Make the maps `sections` are written into that do not exist yet (each
-/// section's, and each leaf's that is an object), as a change of its own
-/// that nobody made: a change of a leaf, and its undo, then never removes
-/// the map holding it, which a redo of a later change writes into again.
 fn make_containers(
     docs: &mut Docs,
     sections: &[(String, Map<String, Value>)],
@@ -724,10 +649,6 @@ fn commit_edit(
     Ok(Some(sections))
 }
 
-/// Whether the change whose message is `message` was made by an action
-/// whose id starts with `action_prefix` (`settings.appearance/`), invoked
-/// by `principal`: what tells a section's steps by one invoker apart in a
-/// document's history.
 #[must_use]
 pub fn made_by(message: &str, action_prefix: &str, principal: &str) -> bool {
     serde_json::from_str::<Value>(message).is_ok_and(|message| {
@@ -740,8 +661,6 @@ pub fn made_by(message: &str, action_prefix: &str, principal: &str) -> bool {
 }
 
 impl Store {
-    /// A follower's write: decided over what it reads now, made by the
-    /// holder, and read back from the holder's save.
     fn forward(
         &self,
         origin: &ChangeOrigin,
@@ -792,8 +711,6 @@ impl Store {
     }
 }
 
-/// What crosses the holder's door: another process's write and the
-/// holder's answer.
 mod door {
     use serde_json::{Map, Value};
     use tilo_settings_records::Records;
@@ -813,12 +730,9 @@ mod door {
         pub(super) changes: Option<Changes>,
     }
 
-    /// Changes another process made to a copy of one of the documents.
     #[derive(serde::Serialize, serde::Deserialize)]
     pub(super) struct Changes {
-        /// The person's document; else the device's.
         pub(super) person: bool,
-        /// The section they were made for.
         pub(super) section: String,
         pub(super) bytes: Vec<u8>,
     }
@@ -855,7 +769,6 @@ mod door {
                 .all(|(name, value)| document.get(name) == value.as_ref())
                 .then(|| sections.take().unwrap_or_default())
         });
-        // Saved before the answer, so the writer reads its change back.
         crate::SettingsSource::flush_pending(store);
         match stored {
             Ok(ConditionalUpdate::Stored) => Answer::Stored,
@@ -875,9 +788,6 @@ mod door {
     }
 }
 
-/// What a change records of itself: the leaves it set, their new values and
-/// what made it.
-/// Orders the changes of one process across both documents.
 static CHANGES: AtomicU64 = AtomicU64::new(0);
 
 fn change_message(
@@ -992,7 +902,6 @@ impl SettingsSource for Store {
     }
 }
 
-/// The one thread that saves every store of the process.
 struct Writer {
     queue: Mutex<WriterQueue>,
     wake: Condvar,
@@ -1001,10 +910,7 @@ struct Writer {
 #[derive(Default)]
 struct WriterQueue {
     scheduled: Vec<Weak<Store>>,
-    /// A store is being saved.
     busy: bool,
-    /// The thread is running; `false` where threads cannot start (the web),
-    /// which saves on the writing thread instead.
     running: bool,
 }
 
@@ -1064,7 +970,6 @@ impl Writer {
         }
     }
 
-    /// Wait until `store` has nothing left to save.
     fn flush(&self, store: &Store) {
         let mut queue = self.queue.lock_recover();
         while queue.busy || queue.scheduled.iter().any(|known| known.ptr_eq(&store.me)) {
@@ -1074,16 +979,10 @@ impl Writer {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(queue);
-        // A save that failed is still unsaved: try once more here.
         store.save();
     }
 }
 
-/// The profile at `root`, opened once per process.
-///
-/// # Panics
-/// Never: a profile whose documents cannot be read opens empty and refuses
-/// writes, so nothing overwrites what could not be read.
 #[must_use]
 pub fn profile(root: &Path) -> Arc<Store> {
     static PROFILES: Mutex<BTreeMap<PathBuf, Arc<Store>>> = Mutex::new(BTreeMap::new());
@@ -1101,7 +1000,6 @@ pub fn profile(root: &Path) -> Arc<Store> {
     store
 }
 
-/// An empty profile at `root` kept in memory only.
 fn empty(root: &Path) -> Arc<Store> {
     Arc::new_cyclic(|me| Store {
         me: me.clone(),
@@ -1128,9 +1026,6 @@ fn empty(root: &Path) -> Arc<Store> {
     })
 }
 
-// ----- the sections as JSON -----
-
-/// The sections of `doc`: its root, without the history's bookkeeping.
 fn read_root(doc: &AutoCommit) -> Map<String, Value> {
     doc.keys(&ROOT)
         .filter(|key| !key.starts_with(BOOKKEEPING))
@@ -1264,8 +1159,6 @@ mod tests {
         assert_eq!(follower.load_section_value("s")["z"], 3);
     }
 
-    /// `write`'s result, failing the test where it has not returned within
-    /// seconds: a write that waits for nobody.
     fn promptly<T: Send + 'static>(write: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, result) = std::sync::mpsc::channel();
         std::thread::spawn(move || done.send(write()));
@@ -1274,7 +1167,6 @@ mod tests {
             .expect("the write returned")
     }
 
-    /// A profile whose door's path is longer than a socket's path may be.
     fn deep_profile() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("a".repeat(60)).join("b".repeat(60));
@@ -1318,7 +1210,6 @@ mod tests {
         holder.update_section("s", object(json!({"x": 1}))).unwrap();
         holder.flush_pending();
         let follower = Store::open(dir.path()).unwrap();
-        // The holder lives on with its lock, behind a door nobody answers.
         *holder.door.lock_recover() = None;
         let [_, door] = holder.records.runtime_files();
         drop(std::os::unix::net::UnixListener::bind(&door).unwrap());
@@ -1377,8 +1268,6 @@ mod tests {
         assert_eq!(store.load_section_value("a"), json!({"x": 1}));
     }
 
-    /// Put `value` at `leaf` of the section `section` of `doc`, and mark
-    /// the history's bookkeeping beside it.
     fn put_leaf(doc: &mut AutoCommit, section: &str, leaf: &str, value: i64) {
         let map = json::map_at(doc, &ROOT, section).unwrap();
         doc.put(&map, leaf, value).unwrap();

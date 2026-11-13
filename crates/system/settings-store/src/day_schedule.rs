@@ -14,20 +14,14 @@ use std::path::Path;
 use serde_json::{Map, Value};
 
 pub const SECTION: &str = "appearance";
-/// `"sun"` or `"custom"`.
 pub const SCHEDULE_KEY: &str = "schedule";
-/// Custom sunrise, `HH:MM`.
 pub const SUNRISE_KEY: &str = "sunrise";
-/// Custom sunset, `HH:MM`.
 pub const SUNSET_KEY: &str = "sunset";
-/// The appearance mode: `"dark"`, `"light"` or [`AUTOMATIC_MODE`].
 pub const MODE_KEY: &str = "mode";
-/// The mode meaning "light by day, dark by night".
 pub const AUTOMATIC_MODE: &str = "automatic";
 
 const MINUTES_PER_DAY: i32 = 24 * 60;
 
-/// Sunrise and sunset as minutes after local midnight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DaySchedule {
     pub sunrise: u16,
@@ -35,13 +29,11 @@ pub struct DaySchedule {
 }
 
 impl DaySchedule {
-    /// The fallback when neither a location nor custom times say otherwise.
     pub const FIXED: Self = Self {
         sunrise: 7 * 60,
         sunset: 19 * 60,
     };
 
-    /// Whether `minute_of_day` falls between sunset and the next sunrise.
     pub fn is_night(self, minute_of_day: u16) -> bool {
         if self.sunrise <= self.sunset {
             minute_of_day < self.sunrise || minute_of_day >= self.sunset
@@ -57,29 +49,23 @@ impl Default for DaySchedule {
     }
 }
 
-/// A local wall-clock moment: what the sun position depends on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalMoment {
     /// 1 for 1 January.
     pub day_of_year: u16,
     pub minute_of_day: u16,
-    /// Local time minus UTC, in minutes.
     pub utc_offset_minutes: i32,
 }
 
-/// Where the sun is looked up: degrees north and east.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Location {
     pub latitude: f64,
     pub longitude: f64,
 }
 
-/// The persisted choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScheduleConfig {
-    /// Follow the sun when a location is known.
     pub follow_sun: bool,
-    /// The fixed times: the custom schedule, and the fallback when the sun cannot be followed.
     pub fixed: DaySchedule,
 }
 
@@ -93,8 +79,6 @@ impl Default for ScheduleConfig {
 }
 
 impl ScheduleConfig {
-    /// Read the choice from an `appearance` section; missing or malformed values take the
-    /// defaults.
     pub fn from_section(section: &Map<String, Value>) -> Self {
         let time = |key: &str, fallback: u16| {
             section
@@ -112,7 +96,6 @@ impl ScheduleConfig {
         }
     }
 
-    /// Today's schedule at `moment`, given where the system time zone puts us.
     pub fn resolve(self, location: Option<Location>, moment: LocalMoment) -> DaySchedule {
         if self.follow_sun
             && let Some(location) = location
@@ -124,8 +107,6 @@ impl ScheduleConfig {
     }
 }
 
-/// The schedule plus the location it follows, resolved once when settings change so the
-/// per-frame question "is it night now?" is only arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scheduled {
     pub config: ScheduleConfig,
@@ -133,7 +114,6 @@ pub struct Scheduled {
 }
 
 impl Scheduled {
-    /// The schedule in `settings` (the whole document), at the system time zone's location.
     pub fn from_settings(settings: &Map<String, Value>) -> Self {
         let section = settings
             .get(SECTION)
@@ -153,8 +133,6 @@ impl Scheduled {
     }
 }
 
-/// Whether `mode` (the `appearance.mode` value) asks for light by day and
-/// dark by night.
 pub fn is_automatic(mode: &str) -> bool {
     mode == AUTOMATIC_MODE
 }
@@ -225,7 +203,6 @@ pub fn sun_times(
     })
 }
 
-/// The location tzdata publishes for the system time zone, if any.
 pub fn timezone_location() -> Option<Location> {
     let zone = system_timezone()?;
     [
@@ -237,8 +214,6 @@ pub fn timezone_location() -> Option<Location> {
     .and_then(|table| timezone_location_in(&zone, &table))
 }
 
-/// The IANA name of the system time zone: `$TZ` when it names one, else the `/etc/localtime`
-/// link target below `zoneinfo/`.
 fn system_timezone() -> Option<String> {
     if let Some(tz) = std::env::var_os("TZ").and_then(|v| v.into_string().ok()) {
         let tz = tz.trim_start_matches(':');
@@ -255,7 +230,6 @@ fn zone_from_link(target: &Path) -> Option<String> {
     (!zone.is_empty()).then(|| zone.to_string())
 }
 
-/// Look `zone` up in a `zone1970.tab`/`zone.tab` body.
 pub fn timezone_location_in(zone: &str, table: &str) -> Option<Location> {
     table
         .lines()
@@ -289,7 +263,6 @@ fn parse_coordinate_part(value: &str, latitude: bool) -> Option<f64> {
         _ => return None,
     };
     let digits = value.get(1..)?;
-    // DDMM[SS] for latitude, DDDMM[SS] for longitude.
     let (degrees_end, minutes_end, with_seconds) = match (latitude, digits.len()) {
         (true, 4) => (2, 4, false),
         (true, 6) => (2, 4, true),
@@ -340,11 +313,9 @@ mod tests {
 
     #[test]
     fn berlin_sunrise_and_sunset_match_the_almanac() {
-        // 21 June, CEST: sunrise 04:43, sunset 21:33.
         let summer = sun_times(BERLIN, 172, 120).unwrap();
         near(summer.sunrise, "04:43");
         near(summer.sunset, "21:33");
-        // 21 December, CET: sunrise 08:15, sunset 15:54.
         let winter = sun_times(BERLIN, 355, 60).unwrap();
         near(winter.sunrise, "08:15");
         near(winter.sunset, "15:54");
@@ -384,7 +355,6 @@ mod tests {
         assert_eq!(schedule.sunrise, parse_hhmm("08:30").unwrap());
         assert_eq!(schedule.sunset, parse_hhmm("21:15").unwrap());
 
-        // A night-shift schedule: "day" from 22:00 to 06:00.
         let inverted = DaySchedule {
             sunrise: parse_hhmm("22:00").unwrap(),
             sunset: parse_hhmm("06:00").unwrap(),

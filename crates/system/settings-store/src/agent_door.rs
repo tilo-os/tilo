@@ -1,15 +1,11 @@
-//! This device's agent door, as the person set it (`agent_door`): whether an
-//! agent on another of their own devices is let in without asking here.
-//! Kept on this device only — a box nobody sits at says yes for itself, and a
-//! box branched from it says the same — and off unless the person turns it on.
+//! This device's agent door, as the person set it (`agent_door`): whether an agent on another of
+//! their devices is let in without asking here. Kept on this device only, and off unless the person
+//! turns it on.
 
 use serde_json::{Map, Value};
 
-/// The settings document's section.
 pub const SECTION: &str = "agent_door";
 
-/// Whether an agent from another of the person's own devices is admitted
-/// without a question here.
 pub const ACCEPT_OWN_DEVICES: &str = "accept_own_devices";
 
 /// Whether `document` lets an agent from another of the person's devices in

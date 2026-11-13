@@ -1,16 +1,6 @@
-//! One parsed settings document shared by a whole long-lived process.
-//!
-//! A process with several subsystems that follow settings (the compositor's
-//! input devices, switch control, rotation lock, automatic brightness, the
-//! on-screen keyboard) used to poll the document once per subsystem, each on
-//! its own schedule and some of them on the input path. [`LiveSettings`]
-//! reads the document once per change, off the caller's thread, and hands
-//! every subsystem the same parsed snapshot and the same [`generation`]
-//! number, so a change made in Settings lands everywhere at once and a reader
-//! between changes does no I/O at all.
-//!
-//! Changes arrive through the [`SettingsSource`]'s change signal. Between
-//! changes the refresh thread sleeps with no timeout.
+//! One parsed settings document shared by a long-lived process: [`LiveSettings`] reads it once
+//! per change, off the caller's thread, and hands every subsystem the same snapshot and the same
+//! [`generation`] number, so a reader between changes does no I/O.
 //!
 //! [`generation`]: LiveSettings::generation
 
@@ -25,18 +15,13 @@ use serde_json::{Map, Value};
 use crate::{Listener, SectionDigest, SettingsSource};
 use tilo_lock::MutexRecover as _;
 
-/// One version of the settings document.
 #[derive(Debug, Default)]
 pub struct Snapshot {
-    /// Advances by one each time the document's content changes. Starts at 0.
     pub generation: u64,
-    /// The parsed document; empty when it is missing or malformed.
     pub document: Map<String, Value>,
 }
 
 impl Snapshot {
-    /// One top-level section as an object; empty when it is absent or not an
-    /// object.
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
         match self.document.get(name) {
@@ -45,14 +30,12 @@ impl Snapshot {
         }
     }
 
-    /// Sections `names` read as one ([`crate::merged_sections`]).
     #[must_use]
     pub fn sections(&self, names: &[&str]) -> Map<String, Value> {
         crate::merged_sections(&self.document, names)
     }
 }
 
-/// The session's settings document, refreshed on change. Cloning shares it.
 #[derive(Clone)]
 pub struct LiveSettings(Arc<Inner>);
 
@@ -62,31 +45,21 @@ struct Inner {
     generation: AtomicU64,
     origin: Arc<dyn SettingsSource>,
     nudge: mpsc::Sender<()>,
-    /// Kept for as long as the document is followed; dropping it ends the
-    /// notifications and, with them, the refresh thread.
     notified: Mutex<Option<Notified>>,
 }
 
-/// What tells the refresh thread to look.
 struct Notified {
     _listener: Arc<Listener>,
     degraded: Option<String>,
 }
 
 impl LiveSettings {
-    /// Follow this process's settings ([`crate::source`]). `on_change` runs
-    /// on the refresh thread after each new generation is published, so it
-    /// should only wake whoever reads it.
-    ///
-    /// The first snapshot is read on the calling thread, so it is current
-    /// as soon as this returns.
     pub fn start(on_change: impl Fn() + Send + 'static) -> Self {
         let source = crate::source()
             .unwrap_or_else(|| Arc::new(crate::HostDocument::new(Map::new(), |_| Ok(()))));
         Self::start_from(source, on_change)
     }
 
-    /// Follow `source` through its change signal.
     pub fn start_from(
         source: Arc<dyn SettingsSource>,
         on_change: impl Fn() + Send + 'static,
@@ -97,8 +70,6 @@ impl LiveSettings {
             let _ = ring.send(());
         });
         source.changes().listen(&listener);
-        // The source rings whenever its revision changes (the
-        // `SettingsSource::changes` contract), so nothing needs polling.
         let notified = Notified {
             _listener: listener,
             degraded: None,
@@ -136,8 +107,6 @@ impl LiveSettings {
         Self(inner)
     }
 
-    /// Why changes may not arrive at all: no refresh thread. `None` when
-    /// changes arrive as they are made.
     #[must_use]
     pub fn degraded(&self) -> Option<String> {
         self.0
@@ -147,27 +116,21 @@ impl LiveSettings {
             .and_then(|notified| notified.degraded.clone())
     }
 
-    /// The current generation: one atomic load, for a reader deciding
-    /// whether to look again.
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.0.generation.load(Ordering::Acquire)
     }
 
-    /// The current document and its generation.
     #[must_use]
     pub fn snapshot(&self) -> Arc<Snapshot> {
         Arc::clone(&self.0.current.lock_recover())
     }
 
-    /// One top-level section of the current document.
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
         self.snapshot().section(name)
     }
 
-    /// Block until the generation moves past `seen` or `timeout` passes, and
-    /// return the snapshot current then.
     #[must_use]
     pub fn wait_for_change(&self, seen: u64, timeout: Duration) -> Arc<Snapshot> {
         let current = self.0.current.lock_recover();
@@ -181,9 +144,6 @@ impl LiveSettings {
         )
     }
 
-    /// Block until the generation moves past `seen`, however long that takes,
-    /// and return the snapshot current then: for a reader with nothing to do
-    /// until the document changes, which then costs no wakeups at all.
     #[must_use]
     pub fn wait_for_next(&self, seen: u64) -> Arc<Snapshot> {
         let current = self.0.current.lock_recover();
@@ -196,17 +156,10 @@ impl LiveSettings {
         )
     }
 
-    /// Ask the refresh thread to re-read now, for a caller that knows the
-    /// document was written by a path that may ring nothing.
     pub fn refresh(&self) {
         let _ = self.0.nudge.send(());
     }
 
-    /// Re-read the document on the calling thread and return the result,
-    /// publishing it as a new generation if it changed — for a caller that
-    /// has just written a setting and must act on it at once. Every other
-    /// reader keeps to [`Self::snapshot`]. The `on_change` callback is not
-    /// run: the caller is the one awake.
     #[must_use]
     pub fn refresh_now(&self) -> Arc<Snapshot> {
         let document = self.0.origin.load();
@@ -215,12 +168,8 @@ impl LiveSettings {
     }
 }
 
-/// The refresh thread: wait for a nudge, re-read, and publish a new
-/// generation only when the content changed. Ends when the last
-/// [`LiveSettings`] is dropped.
 fn follow(inner: &Weak<Inner>, nudges: &mpsc::Receiver<()>, on_change: &dyn Fn()) {
     while nudges.recv().is_ok() {
-        // One read covers every notification queued so far.
         while nudges.try_recv().is_ok() {}
         let Some(inner) = inner.upgrade() else {
             return;
@@ -232,8 +181,6 @@ fn follow(inner: &Weak<Inner>, nudges: &mpsc::Receiver<()>, on_change: &dyn Fn()
     }
 }
 
-/// Make `document` current unless it equals the current one. Returns whether
-/// a new generation was published.
 fn publish(inner: &Inner, document: Map<String, Value>) -> bool {
     let mut current = inner.current.lock_recover();
     if current.document == document {
@@ -250,17 +197,12 @@ fn publish(inner: &Inner, document: Map<String, Value>) -> bool {
     true
 }
 
-/// Follows the top-level sections of a [`LiveSettings`] document, for a
-/// reader that does different work per section: a write to one section
-/// never pays for the work another needs.
 pub struct SectionFollower {
     generation: u64,
     digest: SectionDigest,
 }
 
 impl SectionFollower {
-    /// Start from the current document: what it holds now is the baseline,
-    /// not a change.
     #[must_use]
     pub fn new(settings: &LiveSettings) -> Self {
         let snapshot = settings.snapshot();
@@ -270,8 +212,6 @@ impl SectionFollower {
         }
     }
 
-    /// The sections that changed since the last call. Empty, with no work
-    /// beyond one atomic load, while the generation has not moved.
     pub fn changed_sections(&mut self, settings: &LiveSettings) -> BTreeSet<String> {
         if settings.generation() == self.generation {
             return BTreeSet::new();
@@ -316,7 +256,6 @@ mod tests {
         assert_eq!(rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(), 1);
     }
 
-    /// A source that counts how often it is looked at.
     struct Counting {
         document: HostDocument,
         looks: AtomicU64,
@@ -349,9 +288,6 @@ mod tests {
             document: HostDocument::new(Map::new(), |_| Ok(())),
             looks: AtomicU64::new(0),
         });
-        // The follower's thread is the one that runs `on_change`, so the change below is what names
-        // it here: this binary runs its tests as threads of one process, and every follower of the
-        // process is a thread of the same name, so a thread found by name may be another test's.
         let (named, name) = mpsc::channel();
         let live = LiveSettings::start_from(source.clone(), move || {
             let _ = named.send(tilo_test_env::idle::current_thread_id());
@@ -366,8 +302,6 @@ mod tests {
             display(2.0)
         );
 
-        // The source holds still from here: a follower that looks between changes, or that wakes
-        // for anything but one, is one that polls.
         crate::tests::blocked_count(&refresh);
         let looks = source.looks.load(Ordering::SeqCst);
         tilo_test_env::idle::assert_stays_asleep(&refresh, "follower of a ringing source");
@@ -378,8 +312,6 @@ mod tests {
         );
         assert!(live.degraded().is_none());
 
-        // And it still wakes for the next change, so the idleness above is not a follower that
-        // stopped following.
         source.update_section("display", display(3.0)).unwrap();
         let snapshot = live.wait_for_change(1, tilo_test_env::hang_bound());
         assert_eq!(snapshot.section("display"), display(3.0));

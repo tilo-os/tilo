@@ -28,8 +28,6 @@ pub struct Origin {
 pub struct SettingResolution {
     pub key: String,
     pub winner: Origin,
-    /// Other certified origins advertising a value different from the
-    /// winner, sorted by revision and device id for stable presentation.
     pub alternatives: Vec<Origin>,
 }
 
@@ -120,14 +118,6 @@ struct LegacySettingResolution {
 }
 
 impl RoamingProvenance {
-    /// Decode the current projection or migrate the read-only v1 shape.
-    /// Future versions fail closed rather than being partially displayed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProvenanceError::Json`] for malformed JSON or mismatched field types,
-    /// [`ProvenanceError::Invalid`] for out-of-policy data, or
-    /// [`ProvenanceError::UnsupportedSchema`] for a future schema.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ProvenanceError> {
         let value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(ProvenanceError::Json)?;
@@ -170,19 +160,12 @@ impl RoamingProvenance {
         Ok(projection)
     }
 
-    /// Load and validate provenance from the configured settings directory.
     pub fn load() -> Result<Self, ProvenanceError> {
         let path = path()
             .ok_or_else(|| ProvenanceError::Io(std::io::Error::other("no config directory")))?;
         Self::load_at(&path)
     }
 
-    /// Load and validate provenance from an explicit sidecar path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when `path` cannot be read, and forwards decoding
-    /// and validation errors from [`Self::from_slice`].
     pub fn load_at(path: &Path) -> Result<Self, ProvenanceError> {
         let bytes = std::fs::read(path).map_err(ProvenanceError::Io)?;
         Self::from_slice(&bytes)
@@ -201,12 +184,6 @@ impl RoamingProvenance {
         self.save_at(&path)
     }
 
-    /// Validate and atomically replace an explicit sidecar path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when `path` cannot be replaced. Validation returns
-    /// [`ProvenanceError::Invalid`]; serialization returns [`ProvenanceError::Json`].
     pub fn save_at(&mut self, path: &Path) -> Result<(), ProvenanceError> {
         self.schema_version = SCHEMA_VERSION;
         self.normalise()?;
@@ -372,7 +349,6 @@ mod tests {
 
     #[test]
     fn roaming_provenance_migrates_round_trips_and_fails_closed() {
-        // Phase `v1_migrates_without_inventing_wifi_or_conflicts`.
         {
             let decoded = RoamingProvenance::from_slice(
                 br#"{"schema_version":1,"generated_unix_ms":7,"settings":[{"key":"tilo.appearance.mode","device_id":"laptop","counter":4}]}"#,

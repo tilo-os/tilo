@@ -1,18 +1,7 @@
-//! The person's desk widgets: which ones they keep, when each shows itself,
-//! where on each display it rests and how wide its card is.
-//!
-//! A widget is something the person added (music, the people in this
-//! workspace, a calendar, the system monitor). This is the one place widgets
-//! are chosen: the top bar keeps only the time, and has no widgets of its
-//! own. A widget is never pushed at them: while they type it is away, and
-//! it comes back in its small resting form when they pause, when they reach
-//! for it, or when they ask (Super). Each widget carries one choice of when
-//! it shows ([`ShowMode`]), where it rests on each display it has been on
-//! ([`WidgetPrefs::places`]) and how wide its card is ([`WidgetPrefs::width`]).
-//!
-//! Settings → Appearance edits the choices; the compositor reads them
-//! through [`DeskWidgetPrefs::from_document`], and the desk writes back
-//! where a widget was dropped, its width after a resize, and its removal.
+//! The person's desk widgets: which ones they keep, when each shows itself, where on each display
+//! it rests and how wide its card is. Settings → Appearance edits the choices; the compositor reads
+//! them through [`DeskWidgetPrefs::from_document`], and the desk writes back where a widget was
+//! dropped, its width after a resize, and its removal.
 //!
 //! ```json
 //! "desk_widgets": {
@@ -28,28 +17,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::Key;
 
-/// Settings section holding every desk widget's choices.
 pub const SECTION: &str = "desk_widgets";
 
-/// One of the widgets the desk offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WidgetId {
-    /// What is playing, and play/pause/next, whichever workspace the player
-    /// runs in.
     Music,
-    /// The people in this workspace: who they are, what they say they are
-    /// doing and where they are.
     Team,
-    /// Today's date at a glance; the month around it when open.
     Calendar,
-    /// How busy the machine is: processor, memory and temperature.
     SystemMonitor,
 }
 
 impl WidgetId {
     pub const ALL: [Self; 4] = [Self::Music, Self::Team, Self::Calendar, Self::SystemMonitor];
 
-    /// The widget's leaf in [`SECTION`].
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -60,10 +40,6 @@ impl WidgetId {
         }
     }
 
-    /// Where a widget rests until the person moves it, as a [`Place`]'s
-    /// fractions: music in the bottom-right corner, the people and the date
-    /// down the right edge, the machine's load bottom left. None rests at
-    /// the top: the top bar lives there.
     #[must_use]
     pub const fn default_place(self) -> (f64, f64) {
         match self {
@@ -83,8 +59,6 @@ impl WidgetId {
         matches!(self, Self::Music | Self::Team)
     }
 
-    /// When a widget nobody has configured shows itself. The machine's load
-    /// is something to look up, not to be shown at every pause.
     #[must_use]
     pub const fn default_show(self) -> ShowMode {
         match self {
@@ -114,7 +88,6 @@ pub enum ShowMode {
 impl ShowMode {
     pub const ALL: [Self; 3] = [Self::Pause, Self::Always, Self::Ask];
 
-    /// Row label in Settings.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -147,7 +120,6 @@ impl DockEdge {
         Self::BottomRight,
     ];
 
-    /// Row label in Settings.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -219,7 +191,6 @@ const fn default_true() -> bool {
 }
 
 impl WidgetPrefs {
-    /// A widget nobody has configured yet.
     #[must_use]
     pub fn default_for(id: WidgetId) -> Self {
         Self {
@@ -241,8 +212,6 @@ impl WidgetPrefs {
             .find(|place| connected.contains(&place.display.as_str()))
     }
 
-    /// Dropped at `x`, `y` on `display`: that display becomes the one it
-    /// lives on, and its place there is this one.
     pub fn drop_on(&mut self, display: &str, x: f64, y: f64) {
         self.places.retain(|place| place.display != display);
         self.places.insert(
@@ -255,7 +224,6 @@ impl WidgetPrefs {
         );
     }
 
-    /// Whether [`ShowMode::Always`] holds on `strip`.
     #[must_use]
     pub fn always_on(&self, strip: Option<u64>) -> bool {
         self.show == ShowMode::Always
@@ -264,26 +232,20 @@ impl WidgetPrefs {
     }
 }
 
-/// The Music widget's choices.
 pub const MUSIC: Key<WidgetPrefs> = Key::new(SECTION, "music", || {
     WidgetPrefs::default_for(WidgetId::Music)
 });
-/// The Team widget's choices.
 pub const TEAM: Key<WidgetPrefs> =
     Key::new(SECTION, "team", || WidgetPrefs::default_for(WidgetId::Team));
-/// The Calendar widget's choices.
 pub const CALENDAR: Key<WidgetPrefs> = Key::new(SECTION, "calendar", || {
     WidgetPrefs::default_for(WidgetId::Calendar)
 });
-/// The System monitor widget's choices.
 pub const SYSTEM_MONITOR: Key<WidgetPrefs> = Key::new(SECTION, "system_monitor", || {
     WidgetPrefs::default_for(WidgetId::SystemMonitor)
 });
 
-/// The people roster pinned out of the bar: whether it waits at an edge of the desk, and which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeopleOverlayPrefs {
-    /// Whether the person pinned it to their desk.
     #[serde(default)]
     pub pinned: bool,
     #[serde(default = "people_overlay_edge")]
@@ -303,11 +265,9 @@ impl Default for PeopleOverlayPrefs {
     }
 }
 
-/// The pinned roster's choices.
 pub const PEOPLE_OVERLAY: Key<PeopleOverlayPrefs> =
     Key::new(SECTION, "people_overlay", PeopleOverlayPrefs::default);
 
-/// The key holding `id`'s choices.
 #[must_use]
 pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
     match id {
@@ -318,7 +278,6 @@ pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
     }
 }
 
-/// Every widget's choices, as one read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeskWidgetPrefs {
     pub music: WidgetPrefs,
@@ -339,8 +298,6 @@ impl Default for DeskWidgetPrefs {
 }
 
 impl DeskWidgetPrefs {
-    /// The choices in an already loaded settings document; anything unset
-    /// or unreadable reads as its default.
     #[must_use]
     pub fn from_document(document: &serde_json::Map<String, serde_json::Value>) -> Self {
         Self {
@@ -397,9 +354,6 @@ mod tests {
         );
     }
 
-    /// The calendar and the system monitor, once the top bar's own
-    /// widgets, are desk widgets the person adds: off until chosen, then
-    /// read and written like any other.
     #[test]
     fn the_calendar_and_system_monitor_are_desk_widgets_the_person_adds() {
         let prefs = DeskWidgetPrefs::default();
@@ -476,9 +430,6 @@ mod tests {
 mod place_tests {
     use super::*;
 
-    /// A widget lives on the display it was last dropped on while that one
-    /// is connected, keeps its place on every other display it was on, and
-    /// goes back to it when it is plugged in again.
     #[test]
     fn a_widget_keeps_a_place_per_display_and_goes_home_when_replugged() {
         let mut prefs = WidgetPrefs::default_for(WidgetId::Music);

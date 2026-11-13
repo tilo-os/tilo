@@ -1,17 +1,12 @@
 //! Which of a profile's two documents holds each section.
 //!
-//! A section is the person's or this device's, never some of each: the
-//! person's document syncs to the person's devices, the device's stays on
-//! it. [`SECTIONS`] declares each section once. A section it does not name
-//! (an app's own, or one added without a declaration) is the device's, so
-//! nothing leaves the device until someone decides it should.
+//! A section is the person's or this device's, never some of each. [`SECTIONS`] declares each
+//! section once; one it does not name is the device's, so nothing leaves the device until someone
+//! decides it should.
 
-/// Who holds a section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Holder {
-    /// The person: the section follows them to each of their devices.
     Person,
-    /// This device: the section stays on it.
     Device,
 }
 
@@ -20,8 +15,6 @@ pub enum Holder {
 /// and only those that follow the person are written here.
 pub const APP_PERSONAL_SECTION: &str = "app_personal";
 
-/// The section holding every app's settings that stay on this device, one
-/// object per app id.
 pub const APP_DEVICE_LOCAL_SECTION: &str = "app_device_local";
 
 /// The largest serialized value of the person's the device fabric carries.
@@ -29,9 +22,7 @@ pub const APP_DEVICE_LOCAL_SECTION: &str = "app_device_local";
 /// object must fit.
 pub const MAX_PERSONAL_VALUE_BYTES: usize = 64 * 1024;
 
-/// Every section the system writes, and who holds it.
 pub const SECTIONS: &[(&str, Holder)] = &[
-    // The person's.
     ("accessibility", Holder::Person),
     ("agent_providers_person", Holder::Person),
     (APP_PERSONAL_SECTION, Holder::Person),
@@ -50,7 +41,6 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("shell_views", Holder::Person),
     ("shortcuts", Holder::Person),
     ("text_assistance", Holder::Person),
-    // This device's.
     ("accessibility_device", Holder::Device),
     (crate::agent_door::SECTION, Holder::Device),
     ("agent_providers", Holder::Device),
@@ -76,7 +66,6 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("updates", Holder::Device),
 ];
 
-/// Who holds section `name`: as [`SECTIONS`] declares it, else this device.
 #[must_use]
 pub fn holder(name: &str) -> Holder {
     SECTIONS
@@ -85,8 +74,6 @@ pub fn holder(name: &str) -> Holder {
         .map_or(Holder::Device, |(_, holder)| *holder)
 }
 
-/// Who holds the leaf a device-fabric key (`tilo.<section>.<leaf>`) names;
-/// `None` when `key` names no leaf.
 #[must_use]
 pub fn holder_of_key(key: &str) -> Option<Holder> {
     let (section, leaf) = key.strip_prefix("tilo.")?.split_once('.')?;
