@@ -2704,7 +2704,7 @@ mod tests {
         {
             let composed = app.harness().root_widget();
             let holder = |id: &str| row_holding(composed, id);
-            assert_eq!(holder("device_mesh.role").as_deref(), Some("Ada's Laptop"));
+            assert_eq!(holder("device_mesh.work").as_deref(), Some("Ada's Laptop"));
 
             let rename = peer_key("name", NEARBY_DEVICE);
             assert_eq!(holder(&rename).as_deref(), Some("Kitchen NAS"));

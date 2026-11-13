@@ -79,7 +79,7 @@ fn json_encodings_are_pinned() {
         concat!(
             r#"{"kinds":{"actions":true,"indexing":true,"model_calls":true,"builds":true},"#,
             r#""from":"own_devices","#,
-            r#""when":{"charging_only":false,"free_cpu_percent":20,"free_memory_percent":20}}"#,
+            r#""when":{"charging_only":false,"free_cpu_percent":0,"free_memory_percent":0}}"#,
         ),
     );
 
@@ -234,7 +234,7 @@ fn json_encodings_are_pinned() {
 fn postcard_wire_encodings_and_shard_ids_are_pinned() {
     // Management responses and compute worker adverts carry these fields in
     // postcard frames.
-    assert_postcard(&ServiceCapabilities::personal_server(), "0101010101");
+    assert_postcard(&ServiceCapabilities::personal_server(), "010101010101");
 
     // Mesh enums.
     assert_postcard(
@@ -286,6 +286,10 @@ full_replica_status = "/var/lib/tilo/full-replica/status.json"
 home_peer_bundle = "/etc/tilo/home-peer.toml"
 iroh_listen = "0.0.0.0:4919"
 
+[trust_policy]
+kind = "allow_list"
+users = ["abababababababababababababababababababababababababababababababab"]
+
 [work]
 from = "own_devices"
 
@@ -297,12 +301,8 @@ builds = true
 
 [work.when]
 charging_only = false
-free_cpu_percent = 20
-free_memory_percent = 20
-
-[trust_policy]
-kind = "allow_list"
-users = ["abababababababababababababababababababababababababababababababab"]
+free_cpu_percent = 0
+free_memory_percent = 0
 
 [services]
 workspace_replication = true

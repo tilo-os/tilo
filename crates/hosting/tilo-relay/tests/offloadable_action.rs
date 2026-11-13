@@ -337,7 +337,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // The host governs the workspace and keeps its content: the photographs
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
-    let hosted = host_on(&owner, &desk, WorkSetting::own_person_always()).await;
+    let hosted = host_on(&owner, &desk, WorkSetting::own_person()).await;
     let created = hosted.host.workspaces().create("Photos").await.unwrap();
     let workspace = created.workspace.clone();
     let content = Arc::new(Media::default());

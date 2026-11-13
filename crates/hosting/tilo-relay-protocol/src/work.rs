@@ -108,7 +108,8 @@ pub struct WorkWhen {
 }
 
 impl WorkWhen {
-    /// Takes work whatever the machine is doing: what a device with no one at it says.
+    /// Takes work whatever the machine is doing: what a device that says nothing more about its
+    /// states does.
     #[must_use]
     pub const fn always() -> Self {
         Self {
@@ -121,11 +122,7 @@ impl WorkWhen {
 
 impl Default for WorkWhen {
     fn default() -> Self {
-        Self {
-            charging_only: false,
-            free_cpu_percent: 20,
-            free_memory_percent: 20,
-        }
+        Self::always()
     }
 }
 
@@ -159,15 +156,6 @@ impl WorkSetting {
         Self {
             from: WorkFrom::OwnDevices,
             ..Self::default()
-        }
-    }
-
-    /// The same, in whatever state the machine is in.
-    #[must_use]
-    pub fn own_person_always() -> Self {
-        Self {
-            when: WorkWhen::always(),
-            ..Self::own_person()
         }
     }
 
@@ -391,27 +379,38 @@ mod tests {
                 .is_ok()
         );
 
+        let room_kept = WorkSetting {
+            when: super::WorkWhen {
+                free_cpu_percent: 20,
+                free_memory_percent: 20,
+                ..super::WorkWhen::always()
+            },
+            ..WorkSetting::own_person()
+        };
         let busy = Machine {
             busy_permille: 900,
             ..roomy
         };
         assert_eq!(busy.free_cpu_percent(), 10);
         assert_eq!(
-            WorkSetting::own_person()
-                .answer(busy, true, None, Vec::new())
-                .verdict,
+            room_kept.answer(busy, true, None, Vec::new()).verdict,
             Err(Decline::LowResources),
-            "20 percent of the processors is the default the setting wants free"
+            "20 percent of the processors is what the setting wants free"
         );
         let full = Machine {
             free_memory_percent: Some(2),
             ..roomy
         };
         assert_eq!(
-            WorkSetting::own_person()
-                .answer(full, true, None, Vec::new())
-                .verdict,
+            room_kept.answer(full, true, None, Vec::new()).verdict,
             Err(Decline::LowResources)
+        );
+        assert!(
+            WorkSetting::own_person()
+                .answer(busy, true, None, Vec::new())
+                .verdict
+                .is_ok(),
+            "a device told nothing about the states it takes work in takes it whatever its load"
         );
         let answer = WorkSetting::own_person().answer(roomy, true, None, vec![[7; 32]]);
         assert!(answer.verdict.is_ok(), "a machine with room takes the work");
