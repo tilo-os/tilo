@@ -1,8 +1,9 @@
-//! Scrims: the dim behind a modal Panel and the fade under text on media.
+//! Scrims: the dim behind a modal Panel, the fade under text on media, and the
+//! plate a line of text stands on where a fade cannot keep it legible.
 //!
-//! Both read their colour from the theme (`surfaces.scrim`, `media.scrim`).
-//! A scrim is never a literal colour and never an opaque fill, so what it
-//! covers stays visible behind it.
+//! All read their colour from the theme (`surfaces.scrim`, `media.scrim`).
+//! A scrim never names a colour of its own, and one over the window stays
+//! translucent, so what it covers shows behind it.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -125,9 +126,112 @@ pub fn fade_alpha(t: f64, strength: f32) -> f32 {
     strength.clamp(0.0, 1.0) * (1.0 - t * t * (3.0 - 2.0 * t))
 }
 
+/// The plate a line of words stands on where it is painted straight onto media
+/// (a caption over the picture, a label over a call): `media.scrim` in the
+/// theme's control radius, at the strength [`MediaColors::ink`] is measured
+/// legible on in every theme. Paint it, then the line in that ink, inside
+/// `rect`: words over the picture alone are legible on some frames and lost on
+/// others. [`vertical_fade`] suits words along an edge, where the picture above
+/// them stays clear; a line that needs the same room on every side of it stands
+/// on a plate. A plate thinner than its radius takes half its short side, so a
+/// short one stays a squircle rather than a sliver.
+///
+/// [`MediaColors::ink`]: crate::tokens::colors::MediaColors::ink
+pub fn text_plate(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let radius = theme
+        .radius_standard
+        .min(rect.width().min(rect.height()) / 2.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.media.scrim,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The plate is the words' own room and nothing more: a fill over the
+    /// picture, rounded at the theme's control radius, so what it covers still
+    /// reads as the picture around it.
+    #[test]
+    fn the_plate_keeps_its_room_behind_the_words_and_its_rounded_corners() {
+        let theme = Theme::dark();
+        let rect = Rect::new(20.0, 10.0, 220.0, 50.0);
+        {
+            let mut scene = Scene::new();
+            text_plate(&mut scene, Affine::IDENTITY, rect, &theme);
+            assert_eq!(
+                scene.encoding().draw_tags.len(),
+                1,
+                "one fill: the plate is not also a border or a second shape"
+            );
+        }
+        {
+            let mut scene = Scene::new();
+            text_plate(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(5.0, 5.0, 5.0, 60.0),
+                &theme,
+            );
+            text_plate(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 40.0, 0.0),
+                &theme,
+            );
+            assert!(
+                scene.encoding().draw_tags.is_empty(),
+                "no room for words, no plate"
+            );
+        }
+        #[cfg(feature = "native")]
+        {
+            // The words' own room is dimmed, and a corner inside the rect but
+            // outside the radius still shows the picture, so a caption never
+            // reads as a black rectangle laid over the frame.
+            let (width, height) = (240_u32, 60_u32);
+            let ground = vello::peniko::Color::from_rgb8(200, 190, 170);
+            let render = |plate: bool| {
+                let mut scene = Scene::new();
+                if plate {
+                    text_plate(&mut scene, Affine::IDENTITY, rect, &theme);
+                }
+                let mut pixels = vec![0_u8; (width * height * 4) as usize];
+                let mut target =
+                    tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                        .expect("a raster target");
+                tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+                    scene.encoding(),
+                    &mut target,
+                    None,
+                    ground,
+                );
+                pixels
+            };
+            let at = |pixels: &[u8], x: u32, y: u32| {
+                pixels[((y * width + x) * 4) as usize..][..4].to_vec()
+            };
+            let (plated, picture) = (render(true), render(false));
+            assert_ne!(
+                at(&plated, 120, 30),
+                at(&picture, 120, 30),
+                "the words' room is dimmed"
+            );
+            assert_eq!(
+                at(&plated, 21, 11),
+                at(&picture, 21, 11),
+                "the corner outside the radius keeps the picture"
+            );
+        }
+    }
 
     /// The scrim is under the sheet's material, not cut around it: the
     /// material blurs a dimmed scene, so a primary button behind a sheet

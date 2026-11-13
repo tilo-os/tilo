@@ -788,9 +788,11 @@ that are not about saving.
 
 **Chrome over media uses the material on the media.** Video controls are a
 floating Panel over the picture; text drawn straight onto media sits on
-`overlay::scrim::vertical_fade` in `colors.media.ink`; a letterbox is
+`overlay::scrim::vertical_fade` in `colors.media.ink` where it runs along an
+edge, or on `overlay::scrim::text_plate` where a line needs the same room on
+every side of it (a caption above the transport); a letterbox is
 `colors.media.letterbox` in every theme. No stepped bands, no theme surface
-behind a frame.
+behind a frame, no app painting its own rectangle in the media scrim.
 
 **The History bar is the window's, only where the app has no header row.**
 An app with a `NavShell` header row gets the History control in that row

@@ -87,9 +87,9 @@ impl PlayerHost {
         let y0 = (y1 - f64::from(height) - 2.0 * pad_y).max(self.rect.y0);
         let x0 = (self.rect.center().x - f64::from(width) / 2.0 - pad_x).max(self.rect.x0);
         let x1 = (self.rect.center().x + f64::from(width) / 2.0 + pad_x).min(self.rect.x1);
-        let scrim = Rect::new(x0, y0, x1, y1);
+        let plate = Rect::new(x0, y0, x1, y1);
         let caption = CaptionOverlay {
-            scrim,
+            plate,
             pad_x,
             pad_y,
             max_text,
@@ -230,7 +230,8 @@ impl Widget for PlayerHost {
 }
 
 struct CaptionOverlay {
-    scrim: Rect,
+    /// The plate the words stand on ([`ui::overlay::scrim::text_plate`]).
+    plate: Rect,
     pad_x: f64,
     pad_y: f64,
     max_text: f64,
@@ -244,33 +245,20 @@ fn paint_caption(
     caption: &CaptionOverlay,
     text: &str,
 ) {
-    let (scrim, pad_x, pad_y, max_text) = (
-        caption.scrim,
+    let (plate, pad_x, pad_y, max_text) = (
+        caption.plate,
         caption.pad_x,
         caption.pad_y,
         caption.max_text,
     );
     let media = &theme.tokens.colors.media;
     let style = theme.text(ui::TextRole::Body);
-    // ratchet-allow(raw_paint): a caption's scrim over the video picture, content
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        media.scrim,
-        None,
-        &vello::kurbo::RoundedRect::new(
-            scrim.x0,
-            scrim.y0,
-            scrim.x1,
-            scrim.y1,
-            f64::from(theme.tokens.spacing.s2),
-        ),
-    );
+    ui::overlay::scrim::text_plate(scene, transform, plate, theme);
     text_renderer.draw_style(
         scene,
         text,
         media.ink,
-        transform.then_translate(vello::kurbo::Vec2::new(scrim.x0 + pad_x, scrim.y0 + pad_y)),
+        transform.then_translate(vello::kurbo::Vec2::new(plate.x0 + pad_x, plate.y0 + pad_y)),
         Some(max_text as f32),
         &style,
     );
