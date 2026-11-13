@@ -37,7 +37,7 @@ mod keychain {
     }
 
     #[test]
-    fn a_key_file_moves_into_the_keychain_once_and_no_file_is_written() {
+    fn the_keychain_key_is_created_once_and_no_file_is_written() {
         let _keychain = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(CHANNEL_STATE_KEY);
@@ -48,13 +48,6 @@ mod keychain {
         let first = stored(fresh).unwrap();
         vault_key(directory.path(), fresh, IdentityStorage::Platform).unwrap();
         assert_eq!(stored(fresh).unwrap(), first, "an existing key is kept");
-
-        let migrated = WorkspaceId::new();
-        vault_key(directory.path(), migrated, IdentityStorage::Files).unwrap();
-        let file_key = std::fs::read(&path).unwrap();
-        vault_key(directory.path(), migrated, IdentityStorage::Platform).unwrap();
-        assert_eq!(stored(migrated).unwrap(), file_key);
-        assert!(!path.exists(), "the key file stayed behind");
     }
 
     struct Locked;
@@ -75,24 +68,12 @@ mod keychain {
     }
 
     #[test]
-    fn a_conflicting_or_refusing_keychain_fails_closed_and_keeps_the_file() {
+    fn a_refusing_keychain_fails_closed() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join(CHANNEL_STATE_KEY);
         let workspace_id = WorkspaceId::new();
-        {
-            let _keychain = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
-            vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap();
-            std::fs::write(&path, [9; 32]).unwrap();
-            let error =
-                vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
-            assert!(error.to_string().contains("different"), "{error}");
-        }
-        {
-            let _keychain = tilo_secrets::scope_thread(std::sync::Arc::new(Locked));
-            let error =
-                vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        }
-        assert_eq!(std::fs::read(&path).unwrap(), [9; 32]);
+        let _keychain = tilo_secrets::scope_thread(std::sync::Arc::new(Locked));
+        let error =
+            vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 }

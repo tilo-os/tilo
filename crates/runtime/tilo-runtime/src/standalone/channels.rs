@@ -198,7 +198,7 @@ fn vault_key(
     let file = profile.join(CHANNEL_STATE_KEY);
     #[cfg(target_os = "macos")]
     if storage == IdentityStorage::Platform {
-        return keychain::vault_key(&file, workspace).map(VaultKey::new);
+        return keychain::vault_key(workspace).map(VaultKey::new);
     }
     let _ = (workspace, storage);
     if let Some(key) = read_key_file(&file)? {
@@ -229,55 +229,37 @@ fn random_key() -> [u8; 32] {
     key
 }
 
-/// The channel-state key as a Keychain generic password. A key file an
-/// earlier build wrote moves in once: stored, read back, then removed. A
-/// Keychain that refuses or fails fails the start; nothing falls back to a
-/// file.
+/// The channel-state key as a Keychain generic password, created on first
+/// use. A Keychain that refuses or fails fails the start; nothing falls back
+/// to a file.
 #[cfg(target_os = "macos")]
 mod keychain {
-    use super::{WorkspaceId, random_key, read_key_file};
-    use std::{io, path::Path};
+    use super::{WorkspaceId, random_key};
+    use std::io;
     use tilo_secrets::{PutOptions, SecretStore};
 
     const SECRETS_APP: &str = "so.tilo.runtime";
 
-    pub(super) fn vault_key(file: &Path, workspace: WorkspaceId) -> io::Result<[u8; 32]> {
+    pub(super) fn vault_key(workspace: WorkspaceId) -> io::Result<[u8; 32]> {
         let store = SecretStore::for_app(SECRETS_APP);
         let name = format!("channel-state-v1.{workspace}");
-        let stored = get(&store, &name)?;
-        let legacy = read_key_file(file)?;
-        let key = match (stored, legacy) {
-            (Some(stored), Some(legacy)) if stored != legacy => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "the login Keychain and {} hold different channel state keys",
-                        file.display()
-                    ),
-                ));
-            }
-            (Some(stored), _) => stored,
-            (None, legacy) => {
-                let key = legacy.unwrap_or_else(random_key);
-                store
-                    .put_blocking(
-                        &name,
-                        &key,
-                        PutOptions {
-                            label: Some("Tilo channel state key".into()),
-                        },
-                    )
-                    .map_err(|error| keychain_error(&error))?;
-                if get(&store, &name)? != Some(key) {
-                    return Err(io::Error::other(
-                        "the login Keychain did not return the stored channel state key",
-                    ));
-                }
-                key
-            }
-        };
-        if legacy.is_some() {
-            std::fs::remove_file(file)?;
+        if let Some(key) = get(&store, &name)? {
+            return Ok(key);
+        }
+        let key = random_key();
+        store
+            .put_blocking(
+                &name,
+                &key,
+                PutOptions {
+                    label: Some("Tilo channel state key".into()),
+                },
+            )
+            .map_err(|error| keychain_error(&error))?;
+        if get(&store, &name)? != Some(key) {
+            return Err(io::Error::other(
+                "the login Keychain did not return the stored channel state key",
+            ));
         }
         Ok(key)
     }
