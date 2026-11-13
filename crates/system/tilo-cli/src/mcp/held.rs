@@ -151,12 +151,23 @@ fn start_holder(place: &Place) -> std::io::Result<std::process::Child> {
         .spawn()
 }
 
+/// The threads a bridge's runtime works on.
+const BRIDGE_THREADS: usize = 2;
+
+/// The runtime a bridge between agents and their workspace runs on: a worker per core would hold
+/// a thread and its heap arena per core of the computer, hundreds of them on a large one, for
+/// agents that each ask one thing at a time.
+fn bridge_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(BRIDGE_THREADS)
+        .enable_all()
+        .build()
+}
+
 /// Serve this connection's stdio alone: with no login to share, or when no
 /// holder could be reached.
 pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = bridge_runtime()?;
     runtime.block_on(async {
         // Enter the workspace while the agent starts, not at its first call.
         let entering = Arc::clone(shared);
@@ -218,9 +229,7 @@ fn hold_for<E: Enter>(
     let Some(_held) = take_lock(&place.lock, taking_over)? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = bridge_runtime()?;
     runtime.block_on(serve_held(place, shared, linger))?;
     Ok(ExitCode::SUCCESS)
 }
