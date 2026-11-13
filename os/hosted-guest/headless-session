@@ -70,7 +70,13 @@ export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
 # secrets go to the sealed file store a machine without a Secret Service uses.
 # The identity is the one the material hands it at every start, which is what
 # the relay certifies for each session; the image holds none.
-mkdir -p -m 700 "$home/.config/tilo/identity" "$home/.local/share/tilo/secrets"
+# The device's keys and certificate live where TILO_IDENTITY_ROOT names; unset,
+# that is the system's /var/lib/tilo, which this unprivileged account may not
+# write, and the session ends before it joins its workspace. A directory of
+# their own, apart from the person's records beside it, and inside what a
+# saved Browser profile leaves out.
+mkdir -p -m 700 "$home/.config/tilo/identity/device" "$home/.local/share/tilo/secrets"
+export TILO_IDENTITY_ROOT=$home/.config/tilo/identity/device
 export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
 
 size=${TILO_HEADLESS_SIZE:-1280x800}
