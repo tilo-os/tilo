@@ -406,27 +406,63 @@ mod tests {
             .collect()
     }
 
+    /// What `scan` finds, by the name of the test each row was: a text, and exactly the spans the
+    /// scan proposes in it with their categories (none where the text must be left alone).
     #[test]
-    fn emails_are_found_with_their_exact_span() {
-        assert_eq!(
-            found("write to jana.novak+work@mail.example.cz today"),
-            [("jana.novak+work@mail.example.cz", RedactionCategory::Email)]
-        );
-    }
-
-    #[test]
-    fn phone_numbers_are_found_but_dates_and_versions_are_not() {
-        assert_eq!(
-            found("call +49 30 1234 5678 now"),
-            [("+49 30 1234 5678", RedactionCategory::Phone)]
-        );
-        assert_eq!(
-            found("(030) 1234-5678"),
-            [("(030) 1234-5678", RedactionCategory::Phone)]
-        );
-        assert!(found("on 2026-09-26 at 10:30").is_empty());
-        assert!(found("version 1.24.3").is_empty());
-        assert!(found("room 1234").is_empty());
+    fn a_scan_finds_exactly_the_spans_its_patterns_name() {
+        type Spans = &'static [(&'static str, RedactionCategory)];
+        let cases: [(&str, &[(&str, Spans)]); 4] = [
+            (
+                "emails_are_found_with_their_exact_span",
+                &[(
+                    "write to jana.novak+work@mail.example.cz today",
+                    &[("jana.novak+work@mail.example.cz", RedactionCategory::Email)],
+                )],
+            ),
+            (
+                "phone_numbers_are_found_but_dates_and_versions_are_not",
+                &[
+                    (
+                        "call +49 30 1234 5678 now",
+                        &[("+49 30 1234 5678", RedactionCategory::Phone)],
+                    ),
+                    (
+                        "(030) 1234-5678",
+                        &[("(030) 1234-5678", RedactionCategory::Phone)],
+                    ),
+                    ("on 2026-09-26 at 10:30", &[]),
+                    ("version 1.24.3", &[]),
+                    ("room 1234", &[]),
+                ],
+            ),
+            (
+                "url_credentials_are_redacted_but_the_rest_of_the_url_is_kept",
+                &[
+                    (
+                        "open https://files.example.com/share/doc?id=7&token=abc123XYZ&view=1 now",
+                        &[("abc123XYZ", RedactionCategory::CredentialLike)],
+                    ),
+                    (
+                        "https://ana:s3cr3t@dav.example.org/cal",
+                        &[("s3cr3t", RedactionCategory::CredentialLike)],
+                    ),
+                    (
+                        "https://app.example.com/cb#access_token=zzTop42&state=x",
+                        &[("zzTop42", RedactionCategory::CredentialLike)],
+                    ),
+                    ("https://tilo.so/docs?page=2", &[]),
+                ],
+            ),
+            (
+                "plain_prose_proposes_nothing",
+                &[("You pressed Send and nothing happened.", &[])],
+            ),
+        ];
+        for (case, texts) in cases {
+            for &(text, spans) in texts {
+                assert_eq!(found(text), spans, "{case}: {text}");
+            }
+        }
     }
 
     #[test]
@@ -454,26 +490,6 @@ mod tests {
     }
 
     #[test]
-    fn url_credentials_are_redacted_but_the_rest_of_the_url_is_kept() {
-        let text = "open https://files.example.com/share/doc?id=7&token=abc123XYZ&view=1 now";
-        assert_eq!(
-            found(text),
-            [("abc123XYZ", RedactionCategory::CredentialLike)]
-        );
-        let userinfo = "https://ana:s3cr3t@dav.example.org/cal";
-        assert_eq!(
-            found(userinfo),
-            [("s3cr3t", RedactionCategory::CredentialLike)]
-        );
-        let fragment = "https://app.example.com/cb#access_token=zzTop42&state=x";
-        assert_eq!(
-            found(fragment),
-            [("zzTop42", RedactionCategory::CredentialLike)]
-        );
-        assert!(found("https://tilo.so/docs?page=2").is_empty());
-    }
-
-    #[test]
     fn credential_shapes_are_found() {
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"; // example token
         assert_eq!(
@@ -497,11 +513,6 @@ mod tests {
         );
         // Long ordinary words are not tokens.
         assert!(found("Donaudampfschifffahrtsgesellschaftskapitaen").is_empty());
-    }
-
-    #[test]
-    fn plain_prose_proposes_nothing() {
-        assert!(found("You pressed Send and nothing happened.").is_empty());
     }
 
     #[test]
