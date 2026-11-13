@@ -21,7 +21,6 @@ fn a_german_bar_names_its_door_and_its_tabs_controls_in_german() {
     b.set_mark(1, Some(TabMark::Muted));
     lay_out_at_width_with(&mut b, 900.0, &theme);
 
-    // The door's name, as the layout reads it and under the pointer.
     let door = b
         .bar_layout()
         .controls
@@ -68,6 +67,5 @@ fn a_german_bar_names_its_door_and_its_tabs_controls_in_german() {
     assert_eq!(chip("tab-close:1").as_deref(), Some("Chat schließen"));
     assert_eq!(chip("tab-mute:1").as_deref(), Some("Chat stummschalten"));
 
-    // Back to the source copy: the manager is thread-local, and the bar's other tests read it.
     I18nManager::init("en-US");
 }

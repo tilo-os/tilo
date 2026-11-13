@@ -1,6 +1,6 @@
 //! The app's name after a tab's title, where the title alone would not tell the tab from
 //! another of the bar: two windows of different apps on pages of one name ("Today" in Tasks and
-//! in Today) say whose each is. Two windows of one app on the same page read the same.
+//! in Today) say whose each is.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -17,9 +17,8 @@ pub(super) fn qualifier_gap(theme: &Theme) -> f32 {
 
 impl TabBar {
     /// The app tab `i` is a window of, where its title alone would not tell it from another tab
-    /// of the bar: one that reads the same and is another app's ("Today" in Tasks beside Today's
-    /// own window). Two windows of one app on the same page read the same, and a title that is
-    /// already its app's name needs nothing after it.
+    /// of the bar: one that reads the same and is another app's ("Today" in Tasks beside
+    /// Today's own window).
     pub(super) fn qualifier(&self, i: usize) -> Option<&str> {
         let tab = self.tabs.get(i)?;
         let app = tab
@@ -43,8 +42,8 @@ impl TabBar {
     }
 
     /// The app's name after a title another tab of the bar reads too ([`Self::qualifier`]): in
-    /// the body weight and `ink`, a step quieter than the title, so the title still reads first. Drawn only where it
-    /// fits whole before the pill's end; [`Self::visible_title`] leaves it the room.
+    /// the body weight and `ink`, a step quieter than the title, so the title still reads
+    /// first.
     pub(super) fn draw_pill_qualifier(
         &self,
         scene: &mut Scene,
@@ -109,11 +108,9 @@ mod tests {
             .collect();
         assert_eq!(names, ["Today Tasks", "Today Tasks", "Today", "Inbox"]);
 
-        // Alone with windows of its own app, a page needs no app's name.
         b.tabs_mut().remove(2);
         assert_eq!(b.qualifier(0), None);
 
-        // The name asks for its own room, so the pill grows by it rather than eliding the title.
         b.tabs_mut()[1].app_name = Some("Calendar".to_owned());
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

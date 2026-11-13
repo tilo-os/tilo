@@ -12,24 +12,14 @@ use crate::Theme;
 use std::cell::RefCell;
 use std::mem;
 
-// A widget paints its parts every frame it draws, each part into a scene of
-// its own (`PaintParts::draw_bounded`). Those scenes are worth keeping: a part
-// scene is appended to the frame and then no longer read, so the next frame's
-// part of the same shape draws into it instead of allocating another encoding.
-// A part that drew a great deal hands its scene to the allocator instead, so
-// one large draw does not pin its memory.
-
-/// How many drawn scenes one thread keeps for the parts of the frames after.
 const SPARE_SCENES: usize = 1024;
 
 /// How much encoded drawing all the kept scenes hold together, in entries
 /// of their streams: a few megabytes, however many parts a desk paints.
 const SPARE_ENTRIES: usize = 64 * 1024;
 
-/// A part that drew more than this many draw commands was no row or cell.
 const SPARE_PART_TAGS: usize = 4096;
 
-/// Roughly the memory a scene's encoding holds, in entries of its streams.
 fn held(scene: &Scene) -> usize {
     let encoding = scene.encoding();
     encoding.draw_tags.capacity()
@@ -51,10 +41,6 @@ thread_local! {
 }
 
 /// A scene to draw one part into, its last frame's drawing cleared.
-///
-/// A thread that is past its own cleanup keeps no spares: the pool belongs
-/// to the thread, so the part takes a fresh scene rather than reaching for
-/// one that is already gone.
 fn take_scene() -> Scene {
     DRAW_SCENES
         .try_with(|pool| {
@@ -69,10 +55,6 @@ fn take_scene() -> Scene {
 }
 
 /// The part's drawing is in the frame; keep its scene for the next one.
-///
-/// A part dropped while its thread tears down (a whole tree going away at the
-/// end of a thread) hands its scene to the allocator: the pool is that thread's
-/// and may be gone already, and a drop that reached for it would panic.
 fn spare_scene(mut scene: Scene) {
     let tags = held(&scene);
     if tags > SPARE_PART_TAGS {
@@ -127,9 +109,7 @@ impl From<Vec<Rect>> for Damage {
     }
 }
 
-/// One stable draw partition, with the damage its owning widget certified.
 pub struct PaintPart {
-    /// Its name in the frame: a literal as it is, a made one as it is made.
     key: Cow<'static, str>,
     rect: Rect,
     scene: Scene,
@@ -141,9 +121,6 @@ pub struct PaintPart {
 
 impl PaintPart {
     /// Record the scene that was actually appended and its logical geometry.
-    /// `damage` covers where the scene can differ from the last frame's part
-    /// of the same key and rect; a part that comes, goes or changes its rect
-    /// repaints the whole frame.
     pub fn new(
         key: impl Into<Cow<'static, str>>,
         rect: Rect,
@@ -159,7 +136,6 @@ impl PaintPart {
         }
     }
 
-    /// The scene, as drawn.
     pub fn scene(&self) -> &Scene {
         &self.scene
     }
@@ -195,7 +171,6 @@ impl PaintPart {
     }
 }
 
-/// A complete draw partitioning: unchanged outside paint plus stable children.
 pub struct PaintFrame {
     geometry: Vec<Rect>,
     transform: Affine,
@@ -260,13 +235,10 @@ impl PaintFrame {
     }
 }
 
-/// Where `current` differs from `previous`, part by part, matched by key: a
-/// part whose scene changed in place damages what it certified; a placed
-/// part ([`PaintPart::placed`]) that came damages where it is, one that went
-/// where it was, and one that moved or changed where it was and is. `None`
-/// when that cannot be said: a key repeats, the parts both frames hold are
-/// painted in another order, a part that is not placed came, went or moved,
-/// or a part that changed certified no damage.
+/// Where `current` differs from `previous`, part by part, matched by key: a part whose scene
+/// changed in place damages what it certified; a placed part ([`PaintPart::placed`]) that came
+/// damages where it is, one that went where it was, and one that moved or changed where it was
+/// and is.
 fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect>> {
     // The common frame: the same parts, each where it was. Only their
     // drawings can differ, and comparing them in order answers that without
@@ -283,8 +255,6 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
             if was.scene.encoding_eq(&is.scene) {
                 continue;
             }
-            // A part that changed and certified no damage paints the same
-            // pixels: the drawing it made differs, where it shows does not.
             is.damage.each(|rect| damage.push(rect));
         }
         return Some(tidied(damage));
@@ -305,8 +275,6 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     {
         return None;
     }
-    // A placed part that paints nothing changes no pixel where it is or was.
-    // Compared with an empty scene: text alone encodes no paths.
     let nothing = Scene::new();
     let painting = |part: &PaintPart| !part.scene.encoding_eq(&nothing);
     let mut changed: Vec<&PaintPart> = Vec::new();
@@ -318,7 +286,6 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
             }
             Some(was) if was.rect == part.rect => changed.push(part),
             None if part.placed => changed.extend(painting(part).then_some(part)),
-            // Moved, came or went without saying where it painted.
             Some(_) | None => return None,
         }
     }
@@ -333,8 +300,6 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     if changed.iter().any(|part| part.damage.is_empty()) {
         return None;
     }
-    // A part that changed in place damages the same rows it was and is:
-    // each once.
     let mut damage: Vec<Rect> = Vec::new();
     for part in changed {
         part.damage.each(|rect| damage.push(rect));
@@ -342,7 +307,6 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     Some(tidied(damage))
 }
 
-/// `damage` with each region once.
 fn tidied(mut damage: Vec<Rect>) -> Vec<Rect> {
     let bits = |rect: &Rect| [rect.x0, rect.y0, rect.x1, rect.y1].map(f64::to_bits);
     damage.compact_sort_by_key(bits);
@@ -350,19 +314,11 @@ fn tidied(mut damage: Vec<Rect>) -> Vec<Rect> {
     damage
 }
 
-/// A self-drawn widget's draw, split into the parts of a [`PaintFrame`] as
-/// it paints: each part is drawn on its own, appended to the scene the
-/// widget paints in, and kept for the comparison with the last frame. A
-/// widget that paints its regions by hand (a timeline, a composer, a side
-/// panel) thereby reports the regions whose drawing changed, without
-/// tracking what each event touched.
-///
-/// Everything the widget paints must be in a part: ink added to the scene
-/// between parts is not compared, so the frame then proves nothing
-/// ([`Self::finish`] gives no frame).
+/// A self-drawn widget's draw, split into the parts of a [`PaintFrame`] as it paints: each part
+/// is drawn on its own, appended to the scene the widget paints in, and kept for the comparison
+/// with the last frame.
 pub struct PaintParts {
     parts: Vec<PaintPart>,
-    /// The scene's draw commands when the last part was appended.
     drawn: usize,
     outside: bool,
 }
@@ -433,14 +389,12 @@ pub struct PaintDamage {
 }
 
 impl PaintDamage {
-    /// A missing proof explicitly requests conservative full bounds.
     pub fn record(&mut self, bounds: Rect, frame: Option<PaintFrame>) {
         self.current_bounds = Some(bounds);
         self.current = frame.map(Box::new);
         self.recorded = true;
     }
 
-    /// Whether this draw supplied a proof or explicitly requested full bounds.
     pub fn is_recorded(&self) -> bool {
         self.recorded
     }
@@ -483,7 +437,6 @@ impl PaintDamage {
         self.recorded = false;
     }
 
-    /// Adopt only the frame the ordinary draw lifecycle accepted.
     pub fn mark_drawn(&mut self) {
         if self.recorded {
             self.previous = self.current.take();
@@ -518,15 +471,12 @@ mod tests {
         PaintPart::placed(key, row(top), filled(row(top)), vec![row(top)])
     }
 
-    /// A part that is not placed, painting its row.
     fn unplaced(key: &'static str, top: f64) -> PaintPart {
         PaintPart::new(key, row(top), filled(row(top)), vec![row(top)])
     }
 
-    /// Where the editor painted, the whole of it.
     const BOUNDS: Rect = Rect::new(0.0, 0.0, 100.0, 400.0);
 
-    /// What a frame of `next` repaints after a frame of `parts`.
     fn damage(parts: Vec<PaintPart>, next: Vec<PaintPart>) -> Vec<Rect> {
         let theme = Theme::dark();
         let geometry = vec![Rect::new(0.0, 0.0, 100.0, 0.0)];
@@ -551,7 +501,6 @@ mod tests {
 
     #[test]
     fn a_placed_part_that_came_damages_where_it_is_and_moves_the_parts_below() {
-        // "b" came between "a" and "c"; "c" moved down under it.
         let repainted = damage(
             vec![placed("a", 0.0), placed("c", 20.0)],
             vec![placed("a", 0.0), placed("b", 20.0), placed("c", 40.0)],
@@ -598,7 +547,6 @@ mod tests {
             ),
             vec![BOUNDS]
         );
-        // Changed in place: what it certified.
         let changed = PaintPart::new("a", row(0.0), filled(row(1.0)), vec![row(0.0)]);
         assert_eq!(
             damage(vec![unplaced("a", 0.0)], vec![changed]),

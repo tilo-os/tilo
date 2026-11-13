@@ -5,18 +5,18 @@ use crate::widget::Element;
 
 use super::Scrollable;
 
-/// A body that scrolls under its column's fixed header: its content as tall as it is, the
-/// part of it the column has room for shown.
+/// A body that scrolls under its column's fixed header, showing the part of the content the
+/// column has room for.
 #[derive(Component, Default)]
 #[component(name = "Scroll", role = "ScrollView")]
 pub struct ScrollProps {
-    /// Open at the end of the content and stay there while it grows, unless the person
-    /// scrolled away from the end: a conversation's transcript, whose newest line is last.
+    /// Open at the end of the content and stay there while it grows, unless the person scrolled
+    /// away: a transcript, whose newest line is last.
     pub follow_end: bool,
     /// Scroll sideways instead: a row wider than its column, such as a board's lanes.
     pub across: bool,
-    /// Scroll both ways: a 2D surface whose content is wider and taller than its column, such
-    /// as a desk of strips. Takes precedence over `across`.
+    /// Scroll both ways, for a 2D surface wider and taller than its column (a board of strips);
+    /// takes precedence over `across`.
     pub both: bool,
     /// What scrolls.
     #[component(slot(default))]
@@ -36,9 +36,6 @@ impl Described for Scrollable {
         let mut scroll = if both {
             Self::new(super::ScrollAxis::Both)
         } else if across {
-            // What scrolls sideways shares its width out by weight — a board's lanes — so it
-            // fills the view when it fits and grows past it when it needs more room, and the
-            // view's width is a size it can lay what it holds out in.
             Self::new_horizontal().with_content_min_viewport_width()
         } else {
             Self::new_vertical()
@@ -52,7 +49,6 @@ impl Described for Scrollable {
         }
     }
 
-    /// The same scroll stays, and keeps its position, while its content changes in place.
     fn set_props(&mut self, props: ScrollProps) -> bool {
         let same_axis = if props.both {
             matches!(self.axis, super::ScrollAxis::Both)
@@ -70,7 +66,6 @@ impl Described for Scrollable {
     }
 }
 
-/// The content of the scroll: one view, or none.
 impl SlotViews for Scrollable {
     fn len(&self) -> usize {
         usize::from(self.child.is_some())

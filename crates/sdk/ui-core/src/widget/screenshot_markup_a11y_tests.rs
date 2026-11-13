@@ -93,8 +93,6 @@ fn every_toolbar_control_is_named_and_operable_through_accessibility() {
         vec![ScreenshotMarkupCommand::OpenExternal]
     );
 
-    // The tool button discloses the tools; picking one is a checked choice
-    // that closes the picker and renames the button after it.
     assert!(
         h.a11y_node_named("Arrow").is_none(),
         "the picker starts closed"
@@ -169,7 +167,6 @@ fn tab_reaches_every_toolbar_control_and_enter_activates_the_one_it_is_on() {
         ]
     );
 
-    // Enter on Copy copies; it does not save.
     tab_to(&mut h, "Copy");
     h.key("Enter");
     assert!(
@@ -202,7 +199,6 @@ fn a_picker_closed_by_a_press_outside_returns_the_keyboard_to_its_button() {
     h.key("Tab");
     assert_eq!(focused_label(&h).as_deref(), Some("Pen"));
 
-    // A press on the header, away from every control, closes the picker.
     let header = h.root::<ScreenshotMarkup>().rect;
     h.click_at(header.x0 + 4.0, header.y0 + 4.0);
     assert!(!h.root::<ScreenshotMarkup>().tool_picker_open);
@@ -212,7 +208,6 @@ fn a_picker_closed_by_a_press_outside_returns_the_keyboard_to_its_button() {
         "the keyboard returns to the button that opened the picker"
     );
 
-    // So Enter presses that button again rather than saving and closing.
     h.key("Enter");
     assert!(
         h.root_mut::<ScreenshotMarkup>().take_commands().is_empty(),

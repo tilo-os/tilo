@@ -1,26 +1,4 @@
 //! A one-line, in-place text field for naming something.
-//!
-//! Both history surfaces need the same small thing: a field that appears where
-//! the name will live, takes the keyboard while it is up, commits on Enter and
-//! abandons on Escape. The activity pane grows it inside a band header; the
-//! word processor's strip grows it in the button row. Writing it twice would
-//! mean two sets of key handling, two truncation rules, and two carets that
-//! drift apart — so it is one primitive.
-//!
-//! It is **not** a general-purpose text input: no selection, no clipboard, no
-//! caret movement — those belong to [`TextInput`](crate::widget::TextInput),
-//! which is far too much machinery for a label a user types once. Its typing,
-//! grapheme-wise Backspace and IME composition still go through the shared
-//! [`EditCore`], so it erases and composes exactly like every other field.
-//! What this does have is the behaviour a name field must not get wrong:
-//!
-//! * It keeps the **tail** visible when the text outruns the box, because what
-//!   the user is typing is at the end.
-//! * Enter and Escape are consumed, so a host cannot accidentally also act on
-//!   them.
-//! * An empty commit is reported as an empty string rather than swallowed: over
-//!   an existing name that means "remove it", and only the host knows whether
-//!   there is one.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -40,7 +18,6 @@ fn name_char(character: char) -> bool {
     !character.is_control()
 }
 
-/// What a key did to the field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NameFieldOutcome {
     /// Not for us — the host should keep looking.
@@ -62,9 +39,8 @@ pub struct NameField {
     /// Caret and display-only IME composition. The caret stays at the end of
     /// the buffer: this field types and erases at its tail only.
     core: EditCore,
-    /// `draw` is intentionally `&self` because both history surfaces paint
-    /// through immutable row helpers. Interior mutability retains the shaped
-    /// paragraph and publishes exact candidate-window geometry.
+    /// `draw` is intentionally `&self` because both history surfaces paint through immutable
+    /// row helpers.
     visual: RefCell<NameFieldVisual>,
 }
 
@@ -122,14 +98,12 @@ impl NameField {
         }
     }
 
-    /// Builder: replace the dim prompt shown while the field is empty.
     #[must_use]
     pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
-    /// The text as typed, untrimmed.
     pub fn text(&self) -> &str {
         &self.buffer
     }
@@ -140,7 +114,6 @@ impl NameField {
         self.core.set_caret(self.buffer.len());
     }
 
-    /// Apply a core edit to the buffer, keeping the caret at its end.
     fn apply(&mut self, edit: &Edit) {
         edit.apply(&mut self.buffer);
         self.core.set_caret(self.buffer.len());
@@ -296,7 +269,6 @@ impl NameField {
         scene.pop_layer();
     }
 
-    /// The field's background fill and focus-ring stroke.
     fn draw_chrome(
         scene: &mut Scene,
         transform: Affine,
@@ -359,7 +331,6 @@ impl NameField {
         }
     }
 
-    /// The blinking-caret line, drawn over the shaped text.
     fn draw_caret_line(
         scene: &mut Scene,
         transform: Affine,
@@ -379,16 +350,8 @@ impl NameField {
     }
 }
 
-/// Shorten `s` until it fits `budget` pixels in `style`, appending an
-/// ellipsis when anything was dropped.
-///
-/// Binary chop on the char index; `measure` is cheap and the common case (a short
-/// label in a wide slot) exits on the first measurement. Returns an empty string
-/// when not even one character fits, which is the empty result for a slot that
-/// has been squeezed to nothing.
-///
-/// Shared by every history surface: a version name that ellipsises one way in the
-/// activity pane and another on the version strip reads as two different names.
+/// Shorten `s` until it fits `budget` pixels in `style`, appending an ellipsis when anything
+/// was dropped.
 pub fn fit(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> String {
     const ELLIPSIS: &str = "\u{2026}";
     if budget <= 0.0 {
@@ -405,10 +368,8 @@ pub fn fit(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> St
     let mut lo = 0usize;
     let mut hi = s.chars().count();
     while lo < hi {
-        // Never overflows: `hi - lo` can't underflow (loop invariant
-        // `lo < hi`), and `lo + (hi - lo)` is exactly `hi`, already a
-        // valid `usize`. `saturating_*` states that to the lint rather
-        // than relying on the invariant holding at every call site.
+        // Never overflows: `hi - lo` can't underflow (loop invariant `lo < hi`), and `lo + (hi
+        // - lo)` is exactly `hi`, already a valid `usize`.
         let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
         let candidate: String = s.chars().take(mid).collect();
         if f64::from(tr.measure_style(&candidate, None, style).0) <= inner {
@@ -512,9 +473,6 @@ mod tests {
         }
 
         {
-            // The pane behind this field filters by author as you type. An arrow key
-            // (or anything else) leaking through while a name field is up would
-            // silently re-filter the list under the user.
             let mut f = NameField::new("x");
             let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
             assert_eq!(out, NameFieldOutcome::Edited, "consumed");
@@ -575,7 +533,6 @@ mod tests {
         let typed = |s: &str| key(Key::Character(s.into()));
         let backspace = key(Key::Named(NamedKey::Backspace));
         let mut field = NameField::new("");
-        // A decomposed "é" arrives as two keystrokes; emoji and a flag as one.
         for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
             assert_eq!(field.handle_event(&typed(s), &m), NameFieldOutcome::Edited);
         }
@@ -600,7 +557,6 @@ mod tests {
         assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪火");
         assert!(!field.core.has_preedit());
 
-        // Backspace erases one whole cluster per press.
         for want in ["e\u{301}👍🏽🇩🇪", "e\u{301}👍🏽", "e\u{301}", ""] {
             field.handle_event(&backspace, &m);
             assert_eq!(field.text(), want);

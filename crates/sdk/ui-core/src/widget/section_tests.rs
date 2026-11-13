@@ -41,9 +41,6 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
     let items = &root.children[1..];
     assert!((rect(&items[0]).y0 - rect(header).y1 - f64::from(rhythm.related)).abs() < 0.5);
     assert!((rect(&items[1]).y0 - rect(&items[0]).y1 - f64::from(rhythm.sibling)).abs() < 0.5);
-    // Title on the content edge, count, then the action whose label ends on
-    // the trailing edge: a labelled plain button is laid out as its label,
-    // and its lift bleeds past it.
     assert_eq!(header.children.len(), 3);
     let title = rect(&header.children[0]);
     let count = rect(&header.children[1]);
@@ -159,7 +156,6 @@ fn list_rows_in_a_section_are_one_list() {
     let footer = rect(&root.children[4]);
     let sibling = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
     assert!((footer.y0 - rows[2].y1 - sibling).abs() < 0.5);
-    // No rule between rows: they sit edge to edge and spacing does the work.
     let mut section = Section::new(vec![
         Box::new(ListRow::new("a", "Ada")),
         Box::new(ListRow::new("b", "Grace").selected(true)),
@@ -330,7 +326,6 @@ fn headings_take_their_role_and_follow_the_text_scale() {
     assert!((heading - f64::from(theme.text(TextRole::Heading).line_height_px())).abs() < 1.0);
     assert!((group - f64::from(theme.text(TextRole::Subheading).line_height_px())).abs() < 1.0);
     assert!(height(SectionHeader::heading("Library"), 2.0) > heading * 1.8);
-    // No header, no edge spacing.
     let plain = Section::new(vec![Box::new(Text::new("one"))]);
     assert_eq!(plain.parts.children.len(), 1);
 }
@@ -491,9 +486,7 @@ fn a_header_in_a_taller_box_keeps_its_line_at_the_box_s_foot() {
     let width = 400.0;
     let height = face.height(&mut text, &theme, width);
     let natural = Rect::new(0.0, 100.0, width, 100.0 + height);
-    // The room a finger needs: the box grows, as a list's heading band does on a touch screen.
     let taller = Rect::new(0.0, 100.0, width, 100.0 + height + 20.0);
-    // How far the line stands above the foot of its box: the room between it and what follows.
     let mut above_foot = |rect: Rect| {
         face.action_rect(rect, &mut text, &theme)
             .expect("the header has an action")

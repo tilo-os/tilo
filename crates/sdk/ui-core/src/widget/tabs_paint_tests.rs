@@ -155,11 +155,8 @@ fn a_turning_busy_arc_repaints_only_its_square() {
     assert_eq!(bar.fresh_draws, drawn, "a still ring is shown again");
 }
 
-/// Every method that can change what the bar draws says so
-/// ([`TabBar::touch`]) before anything else, so a frame never shows a
-/// drawing of the bar from before the change. Those that only hand the
-/// host what the bar asked for, and the draw and update that judge
-/// themselves, are named here.
+/// Every method that can change what the bar draws says so ([`TabBar::touch`]) before anything
+/// else, so a frame never shows a drawing of the bar from before the change.
 #[test]
 fn every_mutable_method_of_the_bar_touches_its_drawing() {
     const JUDGE_THEMSELVES: &[&str] = &[

@@ -8,9 +8,8 @@ use crate::widget::picture as picture_module;
 
 crate::component::part_slot!(PictureOptionProps);
 
-/// A choice among pictures whose meaning is visual: a text size, a pointer size, a colour
-/// filter. Each tile shows its picture over its name, and the chosen tile carries the
-/// selection edge.
+/// A choice among pictures whose meaning is visual (a text size, a pointer size, a colour
+/// filter), each tile showing its picture over its name, the chosen one edged.
 #[derive(Component, Default)]
 #[component(name = "PictureChoice", role = "Group", label = "label")]
 pub struct PictureChoiceProps {
@@ -23,7 +22,7 @@ pub struct PictureChoiceProps {
     pub label: Option<String>,
     /// Whether it can be chosen from now.
     pub enabled: bool,
-    /// A tile was chosen: carries its index, counted from 0.
+    /// A tile was chosen: its index, counted from 0, is the value.
     #[component(event(value = i64))]
     pub change: Event,
 }
@@ -35,7 +34,7 @@ pub struct PictureOptionProps {
     /// What the tile says under its picture, and its spoken name.
     #[component(required, positional)]
     pub label: String,
-    /// What the tile shows: the theme's own sample of a setting.
+    /// What the tile shows: a sample of the setting from the theme.
     #[component(required)]
     pub picture: PictureKind,
 }

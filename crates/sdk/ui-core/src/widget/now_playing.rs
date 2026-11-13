@@ -1,16 +1,5 @@
-//! What plays, painted the one way every player surface paints it: Music's
-//! transport and its Now Playing page, the shell's Quick Settings card, the
-//! lock screen and the desk.
-//!
-//! * [`SongFace`]: the song's cover and lines. When the song changes (the
-//!   next one, a cover arriving over its placeholder) the old cover and
-//!   lines fade out where they stand while the new ones fade in
-//!   ([`CrossFade`]); a change a key or an action made lands at once.
-//! * [`Scrub`]: a seek bar held by the pointer or a finger in a surface that
-//!   paints its own controls. The knob follows the hand 1:1, the time under
-//!   it shows on a chip above it ([`paint_held_readout`]), and letting go
-//!   seeks once. The retained [`Slider`](crate::widget::Slider) does the same
-//!   with [`Slider::reads_out_while_held`](crate::widget::Slider::reads_out_while_held).
+//! What plays, painted the one way every player surface paints it: Music's transport and its
+//! Now Playing page, the shell's Quick Settings card, the lock screen and the desk.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -25,18 +14,15 @@ use crate::widget::{SliderFace, TextStackFace, Tone, TransportArt};
 
 pub use crate::widget::slider::paint_held_readout;
 
-/// The song a player surface shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Song {
     pub title: String,
     /// Who it is by, or why it can't play ([`Self::error`]).
     pub subtitle: String,
-    /// A third, quieter line: the app that plays it, where several can.
     pub detail: String,
     /// The subtitle says why the song can't play.
     pub error: bool,
     pub art: TransportArt,
-    /// The name the placeholder cover takes its initials and colour from.
     pub art_name: String,
 }
 
@@ -46,7 +32,6 @@ impl Song {
     }
 }
 
-/// A song on screen, cross-fading to the next: see the [module docs](self).
 #[derive(Clone, Debug)]
 pub struct SongFace {
     fade: CrossFade<Song>,
@@ -59,7 +44,6 @@ impl Default for SongFace {
 }
 
 impl SongFace {
-    /// Showing nothing yet.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -107,7 +91,6 @@ impl SongFace {
         self.fade = CrossFade::new(song);
     }
 
-    /// The song shown (the newest one, while the old still fades).
     #[must_use]
     pub fn song(&self) -> &Song {
         self.fade.shown()
@@ -123,7 +106,6 @@ impl SongFace {
         self.fade.settles_at()
     }
 
-    /// The outgoing song and the incoming one, each with its opacity.
     fn layers(&self, now: Instant) -> impl Iterator<Item = (&Song, f32)> {
         self.fade.outgoing(now).into_iter().chain(std::iter::once((
             self.fade.shown(),
@@ -201,8 +183,6 @@ fn faded(
         paint(ctx);
         return;
     }
-    // The layer clips: a cover's anti-aliased edge and a line's descenders
-    // stay inside it.
     let bounds = bounds.inflate(2.0, 2.0);
     ctx.scene.push_layer(
         Fill::NonZero,
@@ -215,10 +195,8 @@ fn faded(
     ctx.scene.pop_layer();
 }
 
-/// A seek bar held by the pointer or a finger, for a surface that paints
-/// its own controls and routes its own input (the shell's cards). The host
-/// hands in the face it paints, so the press, the drag and the paint read
-/// one geometry.
+/// A seek bar held by the pointer or a finger, for a surface that paints its own controls and
+/// routes its own input (the shell's cards).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Scrub {
     held: Option<f64>,
@@ -239,12 +217,10 @@ impl Scrub {
         Some(*held)
     }
 
-    /// Let go: the fraction to seek to, once.
     pub fn release(&mut self) -> Option<f64> {
         self.held.take()
     }
 
-    /// Drop the hold without seeking (the surface closed under it).
     pub fn cancel(&mut self) {
         self.held = None;
     }

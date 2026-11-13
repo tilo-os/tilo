@@ -1,17 +1,4 @@
-//! Parts of a widget tree that change while their neighbours stay:
-//! [`Slot`] and [`Switch`].
-//!
-//! A request panel, a response panel or a dialog changes with the model
-//! while the controls around it (a URL bar, the tabs, a split) keep their
-//! focus and state. A [`Slot`] stands where the changing part goes; the app
-//! keeps its [`SlotHandle`] and hands over a freshly built element, which the
-//! slot adopts at its next synchronization, so a replacement never happens
-//! while an event is still being routed.
-//!
-//! A [`Switch`] shows one of several parts chosen by a key (the open tab,
-//! the screen of a wizard) and keeps every part it has built alive, so
-//! switching back finds a part as it was left: its scroll position, its
-//! drafts, its focus.
+//! Parts of a widget tree that change while their neighbours stay: [`Slot`] and [`Switch`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -25,7 +12,6 @@ pub struct SlotHandle {
 }
 
 impl SlotHandle {
-    /// Replace the slot's content at its next synchronization.
     pub fn set(&self, content: Element) {
         *self.pending.borrow_mut() = Some(content);
     }
@@ -45,7 +31,6 @@ pub struct Slot {
 }
 
 impl Slot {
-    /// A slot showing `content`, and the handle that replaces it.
     pub fn new(content: Element) -> (Self, SlotHandle) {
         let pending = Rc::new(RefCell::new(None));
         let handle = SlotHandle {
@@ -173,12 +158,10 @@ impl<K: PartialEq + 'static> Switch<K> {
         Self::new(move || state.with(&mut key), build)
     }
 
-    /// The part showing now.
     pub fn current(&mut self) -> &mut dyn Widget {
         self.parts[self.current].1.as_mut()
     }
 
-    /// The part kept for `key`, if it was built.
     pub fn part(&mut self, key: &K) -> Option<&mut dyn Widget> {
         self.parts
             .iter_mut()

@@ -1,8 +1,5 @@
-//! The one widget shell every chart kind shares: layout, title, hover,
-//! keyboard and touch inspection, activation, the legend toggles and the
-//! accessibility tree. A chart kind only supplies its marks — geometry, hit
-//! testing and painting — through [`PlotMarks`]; its builder name is an
-//! alias of [`Plot`] over those marks (`Heatmap` is `Plot<HeatmapMarks>`).
+//! The one widget shell every chart kind shares: layout, title, hover, keyboard and touch
+//! inspection, activation, the legend toggles and the accessibility tree.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -33,7 +30,6 @@ pub struct PlotFrame<H> {
 }
 
 impl<H> PlotFrame<H> {
-    /// A frame that takes the room it is given.
     pub(crate) fn fill(min_height: f32) -> Self {
         Self {
             rect: Rect::ZERO,
@@ -54,7 +50,6 @@ impl<H> PlotFrame<H> {
     }
 }
 
-/// One accessible, activatable mark: a point, bar, slice, node or link.
 pub struct PlotItem<A> {
     pub(crate) target: String,
     pub(crate) name: String,
@@ -81,18 +76,14 @@ impl<A> PlotItem<A> {
 
 /// What a chart kind supplies to [`Plot`].
 pub trait PlotMarks: 'static {
-    /// The inspected mark.
     type Hover: Clone + PartialEq;
     /// What activating a mark reports through [`Plot::take_activated`].
     type Activated: Clone;
-    /// The widget name.
     const NAME: &'static str;
-    /// The accessible name of an untitled chart.
     const LABEL: &'static str;
 
     fn frame(&self) -> &PlotFrame<Self::Hover>;
     fn frame_mut(&mut self) -> &mut PlotFrame<Self::Hover>;
-    /// The mark under `point`.
     fn hit(&self, point: Point) -> Option<Self::Hover>;
     /// The marks the keyboard steps through, in order.
     fn keyboard_items(&self) -> Vec<Self::Hover>;
@@ -100,9 +91,7 @@ pub trait PlotMarks: 'static {
     fn anchor(&self, item: &Self::Hover) -> Option<Point>;
     /// What activating `item` reports; `None` when it is not activatable.
     fn activation(&self, item: &Self::Hover) -> Option<Self::Activated>;
-    /// Every mark the accessibility tree lists.
     fn items(&self) -> Vec<PlotItem<Self::Activated>>;
-    /// The accessible name, which can depend on the marks' style.
     fn label(&self) -> &'static str {
         Self::LABEL
     }
@@ -110,7 +99,6 @@ pub trait PlotMarks: 'static {
     fn series(&self) -> Vec<(&str, &str)> {
         Vec::new()
     }
-    /// Whether clicking a legend entry shows or hides its series.
     fn legend_interactive(&self) -> bool {
         false
     }
@@ -120,7 +108,6 @@ pub trait PlotMarks: 'static {
     fn toggles_mut(&mut self) -> Option<&mut SeriesToggles> {
         None
     }
-    /// The series `item` belongs to, if any.
     fn series_of(&self, _item: &Self::Hover) -> Option<&str> {
         None
     }
@@ -136,11 +123,8 @@ pub trait PlotMarks: 'static {
     fn natural_height(&self, _tr: &mut TextRenderer, _theme: &Theme, _width: f64) -> f64 {
         320.0
     }
-    /// Places what the marks read before they paint: the plot's own rect, a
-    /// legend's entries, each measured in `theme`'s own type. The layout runs
-    /// this, so a frame that is read before it is drawn — a press, a hover,
-    /// assistive technology — finds every mark where it is drawn. Defaults to
-    /// nothing for a chart kind whose marks are a pure function of the frame.
+    /// Places what the marks read before they paint: the plot's own rect, a legend's entries,
+    /// each measured in `theme`'s own type.
     fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {}
     /// Paints the marks. Call [`Self::follow_keyboard_anchor`] once the
     /// geometry is current and before painting the inspector.
@@ -155,8 +139,6 @@ pub trait PlotMarks: 'static {
     fn wants_pointer_capture(&self) -> bool {
         false
     }
-    /// A series was shown or hidden: marks that cache their domain or their
-    /// geometry drop it.
     fn visible_changed(&mut self) {}
     /// Keeps the pointer on a mark the keyboard chose while the geometry
     /// changes under it, so its inspector shows there.
@@ -221,7 +203,6 @@ impl<M: PlotMarks> Plot<M> {
     pub fn take_activated(&mut self) -> Option<M::Activated> {
         self.activated.take()
     }
-    /// The activation waiting to be read, without taking it.
     pub(crate) fn activation(&self) -> Option<&M::Activated> {
         self.activated.as_ref()
     }
@@ -280,7 +261,6 @@ impl<M: PlotMarks> Plot<M> {
         self.marks.visible_changed();
         true
     }
-    /// The latest series a legend showed or hid, once.
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
         self.marks.toggles_mut()?.take_changed()
     }
@@ -326,7 +306,6 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
         let Some(id) = self.marks.toggles().and_then(|toggles| toggles.hit(point)) else {
             return false;
         };
-        // A legend entry claims the click even when its series is gone.
         let _ = self.toggle_series(&id);
         true
     }
@@ -399,15 +378,12 @@ impl<M: PlotMarks> Widget for Plot<M> {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // A page shown as HTML shows it as one image.
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.marks.event(event, ctx) {
-            // A pan, a zoom or a brush moves the ticks and the legend the
-            // marks place, not only what they paint.
             self.layout_dirty = true;
             return;
         }

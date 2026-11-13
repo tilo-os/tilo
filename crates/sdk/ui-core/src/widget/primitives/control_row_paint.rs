@@ -1,11 +1,5 @@
-//! The Control surface a list row, tile or card stands on
-//! (`docs/architecture/ui-inventory.md`, "Quick Settings list language").
-//!
-//! Quick Settings, the notification centre and the settings panes all draw
-//! the same Control: a resting fill on the one selection ramp, its derived
-//! edge, the shared focus ring, and an optional severity rail. That language
-//! lived as a local copy in `desktop-surface`'s `drill_in`; here it is the
-//! toolkit's, so every host that paints a Control uses the same one.
+//! The Control surface a list row, tile or card stands on (`docs/architecture/ui-inventory.md`,
+//! "Quick Settings list language").
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -15,10 +9,8 @@ use crate::chrome::{ChromeRole, SelectionState, selection_floor_ramp};
 use crate::theme::Theme;
 use crate::widget::{Tone, paint_focus_ring};
 
-/// A Control's fill: the shared hover tier when hovered, otherwise a quiet
-/// floor on the same ramp, so a row reads as a surface rather than bare text
-/// on the panel. Both states sit on one ordered ramp, so hover is always the
-/// more prominent.
+/// A Control's fill: the shared hover tier when hovered, otherwise a quiet floor on the same
+/// ramp, so a row reads as a surface rather than bare text on the panel.
 #[must_use]
 pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
     selection_floor_ramp(
@@ -28,16 +20,13 @@ pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
     )
 }
 
-/// The Control radius for `rect` (`radii.control`).
 #[must_use]
 pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
     ChromeRole::Control.radius(theme, rect.height())
 }
 
-/// Paint one Control: its fill with the derived rest edge at the Control
-/// radius, and the toolkit's 2 px focus ring when `focused`. The one painter
-/// for every tile, card, power row, edit row and list row a host draws, so
-/// they cannot drift apart.
+/// Paint one Control: its fill with the derived rest edge at the Control radius, and the
+/// toolkit's 2 px focus ring when `focused`.
 pub fn paint_control_row(
     scene: &mut Scene,
     transform: Affine,

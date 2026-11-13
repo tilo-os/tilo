@@ -1,8 +1,5 @@
-//! Naming a tab in place: the tab's title becomes a field inside its own
-//! pill, set in the bar's own text role, holding the title selected. Enter
-//! or a press anywhere else commits; Escape puts the title back. A blank
-//! name is committed as empty, which the host reads as "no name": the tab
-//! shows its window's own title again.
+//! Naming a tab in place: the tab's title becomes a field inside its own pill, set in the bar's
+//! own text role, holding the title selected.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -16,21 +13,15 @@ use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::{EditOutcome, EditableLabel, Widget};
 
-/// A tab being named: which one, and its field.
 pub(super) struct TabRename {
     tab: u64,
-    /// The title the edit started from: committing it unchanged names
-    /// nothing.
     from: String,
     label: Box<EditableLabel>,
 }
 
 impl TabBar {
-    /// Turn tab `id`'s title into a field holding it, all of it selected,
-    /// where the title stands. `name` is what a reader announces the field
-    /// as. Returns whether the edit is open; a pinned tab, drawn as its icon
-    /// alone, has no title to edit. A window's one tab drawn as its icon
-    /// shows its title while it is named.
+    /// Turn tab `id`'s title into a field holding it, all of it selected, where the title
+    /// stands. `name` is what a reader announces the field as.
     pub fn begin_rename(&mut self, id: u64, name: &str) -> bool {
         self.touch();
         let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) else {
@@ -57,13 +48,11 @@ impl TabBar {
         true
     }
 
-    /// The tab whose name is being edited in place, if any.
     #[must_use]
     pub fn renaming(&self) -> Option<u64> {
         self.rename.as_ref().map(|rename| rename.tab)
     }
 
-    /// The name field's text while it is edited.
     #[must_use]
     pub fn rename_text(&self) -> Option<&str> {
         self.rename
@@ -71,11 +60,7 @@ impl TabBar {
             .map(|rename| rename.label.current_text())
     }
 
-    /// Hand an event to the name field while a tab is being named. The
-    /// keyboard is the field's whole (typing never reaches the window under
-    /// it); a press on the field is the field's, and a press anywhere else
-    /// commits the name and goes on to what is under it. Returns whether the
-    /// field took the event.
+    /// Hand an event to the name field while a tab is being named.
     pub fn rename_event(
         &mut self,
         event: &WindowEvent,
@@ -107,8 +92,6 @@ impl TabBar {
                     false
                 }
             }
-            // The field follows the pointer (for a drag selection) without
-            // claiming it, so the bar keeps its hover.
             WindowEvent::CursorMoved { .. } => {
                 let was = *ctx.handled;
                 rename.label.handle_event(event, ctx);
@@ -121,8 +104,6 @@ impl TabBar {
         took
     }
 
-    /// Put the title back, ending the edit, as Escape does. Returns whether
-    /// a tab was being named.
     pub fn cancel_rename(&mut self) -> bool {
         self.touch();
         let Some(rename) = self.rename.as_mut() else {
@@ -211,7 +192,6 @@ impl TabBar {
         }
     }
 
-    /// Paint the name field over its pill, in place of the title.
     pub(super) fn draw_rename(
         &mut self,
         scene: &mut Scene,
@@ -278,7 +258,6 @@ mod tests {
     fn enter_commits_the_name_and_the_tab_shows_it() {
         let mut bar = bar();
         bar.begin_rename(1, "Tab name");
-        // The title is selected: the first key replaces it.
         type_text(&mut bar, "Build");
         assert!(dispatch(&mut bar, &named_key(NamedKey::Enter)));
         assert_eq!(bar.renaming(), None);
@@ -354,8 +333,6 @@ mod tests {
         let other = bar.tab_rects[1].center();
         dispatch(&mut bar, &cursor_moved(other.x, other.y));
         assert_eq!(bar.renaming(), Some(1), "moving the pointer ends nothing");
-        // The press commits, and the bar goes on to handle it as a press on
-        // the other tab.
         dispatch(&mut bar, &mouse_press());
         assert_eq!(bar.renaming(), None);
         assert_eq!(bar.take_rename(), Some((1, "Q".into())));

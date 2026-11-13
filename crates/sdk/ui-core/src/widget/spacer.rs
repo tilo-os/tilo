@@ -42,7 +42,6 @@ impl Default for Spacer {
 }
 
 impl Spacer {
-    /// A flexible spacer that grows to fill the remaining main-axis space.
     pub fn new() -> Self {
         Self {
             rect: Rect::ZERO,
@@ -54,19 +53,14 @@ impl Spacer {
         }
     }
 
-    /// Address this spacer by a stable graph id.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// A fixed gap of exactly `px` logical pixels on both axes, so it reads
-    /// as a vertical gap in a `Column` and a horizontal one in a `Row`
-    /// without a second constructor. Replaces the
-    /// `Container::new().with_no_padding().with_height(px)` idiom. Prefer
-    /// [`Spacer::token`] when the value is a spacing step: this form does
-    /// not scale with the theme.
+    /// A fixed gap of exactly `px` logical pixels on both axes, so it reads as a vertical gap
+    /// in a `Column` and a horizontal one in a `Row` without a second constructor.
     #[must_use]
     pub fn fixed(px: f32) -> Self {
         Self {
@@ -86,14 +80,12 @@ impl Spacer {
         }
     }
 
-    /// Opt this spacer into presence tracking by binding it to a CRDT-style path.
     #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
-    /// Gate this spacer behind a permission scope.
     #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
@@ -124,8 +116,6 @@ impl Widget for Spacer {
                 flex_shrink: 1.0,
                 ..Default::default()
             },
-            // A zero step is no gap at all: out of the flow, so the
-            // container does not put its own gap on both sides of it.
             Some(px) if px <= 0.0 => super::when::removed_from_flow(),
             Some(px) => Style {
                 flex_grow: 0.0,
@@ -300,8 +290,6 @@ mod tests {
         }
 
         // Case `zero_extent_spacer_at_the_origin_is_not_permanently_layout_dirty`.
-        // A zero-size spacer laid out at the origin must not read as
-        // "never laid out", or the host relayouts on every event forever.
         {
             let mut column = Column::new()
                 .with_intrinsic_height()

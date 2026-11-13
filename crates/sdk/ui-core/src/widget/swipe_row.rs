@@ -1,17 +1,4 @@
 //! [`SwipeRow`] — a row that follows the finger sideways and uncovers what swiping it does.
-//!
-//! A horizontal drag on a touch screen moves the row with the finger (a vertical one is the
-//! list's scroll and leaves it alone). Dragging towards the trailing edge uncovers the leading
-//! action, towards the leading edge the trailing one; a side with no action does not move.
-//! Let go past [`COMMIT_SHARE`] of the row's width, or flung so it would come to rest past it, and the action runs;
-//! either way the row settles back on the platform's spring, carrying the finger's velocity
-//! ([`crate::motion::Snap::SPEC`]). A touch during the settle catches the row where it is
-//! drawn: the motion is interruptible. Crossing the threshold is fed back on the uncovered
-//! action itself: its glyph grows and its label shows, so the person knows letting go now
-//! runs it. Reduced motion lands the settle at once.
-//!
-//! The row is moved by transform, never laid out again; while it moves only its own box is
-//! damaged.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -34,7 +21,6 @@ pub const COMMIT_SHARE: f64 = 0.35;
 /// tap slop, past which a touch is no tap.
 const SLOP: f64 = crate::interaction::TouchPointerEmulator::TAP_SLOP;
 
-/// One side's action.
 struct Side {
     icon: Icon,
     label: String,
@@ -63,7 +49,6 @@ impl Side {
     }
 }
 
-/// The contact id of a drag that reaches the row as the pointer.
 const POINTER: u64 = u64::MAX;
 
 /// Whether the contact `id` moves `drag`: its own finger, or the pointer the platform makes of
@@ -72,40 +57,30 @@ fn follows(drag: &Drag, id: u64) -> bool {
     drag.id == id || id == POINTER
 }
 
-/// A finger on the row.
 struct Drag {
     id: u64,
     start: Point,
-    /// Where the row was when the finger came down: a settle caught mid-way.
     from: f64,
     /// Whether the drag is sideways: unknown until it moved past [`SLOP`].
     sideways: Option<bool>,
     /// Whether the finger left where it came down: a contact that never did is a tap.
     dragged: bool,
-    /// The last two samples of the finger, for its velocity at release.
     samples: [(f64, Instant); 2],
 }
 
-/// A row that swipes sideways to run an action. See the [module docs](self).
 #[crate::component::not_a_component(part, "a row's swipe, from `ui.Swipe` and its `swipe` slot")]
 pub struct SwipeRow {
     content: Element,
-    /// Uncovered by dragging towards the trailing edge.
     leading: Option<Side>,
-    /// Uncovered by dragging towards the leading edge.
     trailing: Option<Side>,
-    /// How far the row is moved: positive towards the trailing edge.
     offset: MotionValue<f64>,
     drag: Option<Drag>,
-    /// The offset last drawn, to damage while it changes.
     drawn: f64,
-    /// How many actions it ran, for tests.
     ran: usize,
     /// Whether the person uses a touchscreen now: a finger's sideways drag then reaches the row
     /// as a left-button drag ([`crate::interaction::TouchClaim::DragAcross`]); a mouse's drag
     /// selects text instead.
     touch: bool,
-    /// Where the finger was last, for a drag that reaches the row as the pointer.
     pointer: Point,
 }
 
@@ -130,19 +105,16 @@ impl SwipeRow {
         }
     }
 
-    /// How far the row is moved now: positive towards the trailing edge.
     #[must_use]
     pub fn offset(&self) -> f64 {
         self.offset.get(crate::motion::frame_now())
     }
 
-    /// How many times a swipe ran its action.
     #[must_use]
     pub fn ran(&self) -> usize {
         self.ran
     }
 
-    /// The row under the swipe.
     #[must_use]
     pub fn content(&self) -> &dyn Widget {
         self.content.as_ref()
@@ -160,7 +132,6 @@ impl SwipeRow {
         offset.clamp(least, most)
     }
 
-    /// The side `offset` uncovers.
     fn side(&self, offset: f64) -> Option<&Side> {
         if offset > 0.0 {
             self.leading.as_ref()
@@ -188,7 +159,6 @@ impl SwipeRow {
         let [(x0, t0), (x1, t1)] = drag.samples;
         let dt = t1.saturating_duration_since(t0).as_secs_f64();
         let velocity = if dt > 0.0 { (x1 - x0) / dt } else { 0.0 };
-        // A flick is judged where the release would come to rest, as every thrown surface is.
         let motion = crate::tokens::EffectiveMotion::default();
         let projected = Snap::rest_for(offset, velocity, motion);
         let flung = projected.signum() == offset.signum() && self.past_threshold(projected);
@@ -212,8 +182,6 @@ impl SwipeRow {
     fn pointer(&mut self, event: &WindowEvent, ctx: &EventCtx<'_>) -> bool {
         use winit::event::{ElementState, MouseButton};
         let phase = match event {
-            // The platform parks the pointer off the window once a finger's contact ends: that
-            // is no move of the finger.
             WindowEvent::CursorMoved { position, .. } if position.x < 0.0 || position.y < 0.0 => {
                 return false;
             }
@@ -221,8 +189,6 @@ impl SwipeRow {
                 self.pointer = ctx.logical(position);
                 TouchPhase::Moved
             }
-            // The finger already on the row headed across: the platform presses where it
-            // landed once it is sure.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -258,13 +224,11 @@ impl SwipeRow {
         self.contact(event.id, event.phase, at)
     }
 
-    /// One contact's update: the finger `id` at `at`.
     fn contact(&mut self, id: u64, phase: TouchPhase, at: Point) -> bool {
         let now = crate::motion::frame_now();
         match phase {
             TouchPhase::Started if self.drag.is_none() && self.content.get_rect().contains(at) => {
                 let from = self.offset.get(now);
-                // A settle caught mid-way stays where it is drawn.
                 self.offset.snap(from);
                 self.drag = Some(Drag {
                     id,
@@ -282,7 +246,6 @@ impl SwipeRow {
                 };
                 let moved = at - drag.start;
                 if moved.hypot() >= SLOP {
-                    // The finger left where it came down: this contact is a drag, not a tap.
                     drag.dragged = true;
                     if drag.sideways.is_none() {
                         drag.sideways = Some(moved.x.abs() > moved.y.abs());
@@ -297,7 +260,6 @@ impl SwipeRow {
                         true
                     }
                     Some(false) => {
-                        // A scroll: the list's, not the row's.
                         let drag = self.drag.take();
                         if let Some(drag) = drag {
                             self.release(&drag, true);
@@ -311,12 +273,7 @@ impl SwipeRow {
                 let Some(mut drag) = self.drag.take_if(|drag| follows(drag, id)) else {
                     return false;
                 };
-                // Where the finger lifted, and when: a finger held still before it lifts
-                // throws nothing.
                 drag.samples = [drag.samples[1], (at.x, now)];
-                // A finger that lifted where it came down tapped the row: the platform turns
-                // that into a click, and the row's list answers it, opening what was tapped.
-                // Only a drag that headed across is the row's.
                 let sideways = drag.sideways == Some(true) && drag.dragged;
                 self.release(&drag, phase == TouchPhase::Cancelled);
                 sideways
@@ -348,7 +305,6 @@ impl SwipeRow {
         let (fill, ink) = uncovered_colors(theme, side.destructive, armed);
         scene.fill(Fill::NonZero, transform, fill, None, &uncovered);
         let inset = f64::from(theme.tokens.spacing.s4);
-        // Armed, the glyph grows: what letting go now does is told at a glance.
         let icon = if armed {
             f64::from(theme.tokens.metrics.icon_md)
         } else {
@@ -424,7 +380,6 @@ impl Decorator for SwipeRow {
             *ctx.handled = true;
             return;
         }
-        // While it is dragged sideways the row's content sees none of the finger.
         if self
             .drag
             .as_ref()
@@ -465,7 +420,6 @@ impl Decorator for SwipeRow {
         );
         self.paint_uncovered(scene, transform, text, theme, offset);
         let moved = transform.pre_translate(Vec2::new(offset, 0.0));
-        // The moving row stays opaque over what it uncovers.
         scene.fill(
             Fill::NonZero,
             moved,
@@ -503,9 +457,7 @@ impl Decorator for SwipeRow {
         self.offset.is_moving(crate::motion::frame_now()) || self.content.needs_animation_frame()
     }
 
-    /// Rest what the frame drew. The list draws the rows near its box and culls the others away,
-    /// and a row it did not draw owes nothing for the offset it moved by unseen: the next frame
-    /// draws it where it is now, so a row out of view does not keep a window at rest awake.
+    /// Rest what the frame drew.
     fn mark_drawn(&mut self) {
         self.drawn = self.offset.get(crate::motion::frame_now());
         self.content.mark_drawn();

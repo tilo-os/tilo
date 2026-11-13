@@ -1,11 +1,4 @@
 //! Between tilo-doc's paragraphs and the block editor's blocks, both ways.
-//!
-//! tilo-doc names paragraph kinds and inline marks the way its codecs do (`heading` with a
-//! `level`, `list_item` with `ordered`/`checked`, `strong`, `em`), and counts offsets in
-//! characters. The block editor has its own kinds and marks and counts bytes. Everything the
-//! editor shows passes through [`content_of`]; everything it writes back, as a whole document,
-//! goes through [`view_of_content`] and [`block_of_view`] (the rich-text SDK writes an edit of
-//! one block as an action instead, `tilo_rich_text`).
 
 use tilo_doc::document::MarkValue;
 use tilo_doc::snapshot::BlockView;
@@ -14,7 +7,6 @@ use super::BlockContent;
 use super::marks::{Mark, MarkSpan};
 use super::{BlockKind, CalloutKind};
 
-/// The deepest list indent the editor draws.
 pub const MAX_INDENT: i64 = 5;
 
 /// The byte offset of character `chars` in `text`.
@@ -50,7 +42,6 @@ fn indent_of(view: &BlockView) -> u8 {
     u8::try_from(int_attr(view, "level").unwrap_or(0).clamp(0, MAX_INDENT)).unwrap_or(0)
 }
 
-/// The editor kind a paragraph shows as.
 pub fn kind_of(view: &BlockView) -> BlockKind {
     match view.kind.as_str() {
         "heading" => BlockKind::Heading(
@@ -89,14 +80,11 @@ pub const CALLOUT: &str = "alert";
 /// the page's id, which the document's link validation accepts.
 pub const PAGE_LINK_PREFIX: &str = "#page-";
 
-/// The scheme a resource link is written with in a `link` mark's target, in
-/// the one form every document codec already round-trips: `tilo://open#…`,
-/// the native link `tilo_reference::link::Link::to_native` makes. A link
-/// mark whose target starts with this scheme names a resource, so it is
-/// shown as a [`Mark::ResourceLink`] rather than an external URL.
+/// The scheme a resource link is written with in a `link` mark's target, in the one form every
+/// document codec already round-trips: `tilo://open#…`, the native link
+/// `tilo_reference::link::Link::to_native` makes.
 pub const RESOURCE_LINK_SCHEME: &str = "tilo://open#";
 
-/// The editor mark a tilo-doc mark shows as, when it has one.
 pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     match (name, value) {
         (_, MarkValue::Bool(false)) => None,
@@ -139,7 +127,6 @@ pub fn is_resource_link(target: &str) -> bool {
         .is_some_and(|route| !route.is_empty())
 }
 
-/// What a paragraph shows as in the editor.
 pub fn content_of(view: &BlockView) -> BlockContent {
     let text = view.text.clone();
     let mut marks: Vec<MarkSpan> = view
@@ -179,14 +166,12 @@ pub fn content_of(view: &BlockView) -> BlockContent {
     }
 }
 
-/// The mark a reference's run carries (`tilo_reference::embed::MARK`).
 pub const REFERENCE_MARK: &str = tilo_reference::embed::MARK;
 
 /// The stored mark of a paragraph projecting a reference (`Mark::Transclusion`,
 /// `Mark::Embed`): what the paragraph is, rather than how its text is drawn.
 pub const EMBED_MARK: &str = tilo_doc::schema::MARK_PROJECTION;
 
-/// A paragraph a component is given, as tilo-doc reads it.
 #[must_use]
 pub fn view_of(block: &tilo_ui_graph::rich::Block, id: String) -> BlockView {
     use tilo_ui_graph::rich::Attr;
@@ -391,11 +376,7 @@ pub fn blocks_as_written(rich: &tilo_ui_graph::rich::RichText) -> Vec<BlockConte
 }
 
 /// `rich` with the paragraphs `blocks` are: everything an editor's document writes back
-/// ([`blocks_as_written`]'s inverse). A paragraph the person did not touch is kept as `rich`
-/// wrote it, marks the editor cannot draw included: it is found again among `rich`'s blocks by
-/// what it now reads as, so all it holds beyond that reads on. One they changed is written from
-/// what the editor shows. How each reference reads inline stays as `rich` said it, since that is
-/// the reader's, not the text's.
+/// ([`blocks_as_written`]'s inverse).
 #[must_use]
 pub fn rich_of_blocks(
     blocks: &[BlockContent],
@@ -452,10 +433,8 @@ pub fn unreadable_phrase() -> String {
     crate::i18n::I18nManager::lookup("rich-text-reference-unreadable", None)
 }
 
-/// The mark a time's run carries (`tilo_doc::inline_time`).
 pub const TIME_MARK: &str = tilo_doc::inline_time::MARK;
 
-/// How an inline time reads for the person reading.
 pub use tilo_doc::inline_time::Show as TimeShow;
 
 /// A moment written into rich text (`tilo_doc::inline_time`), read: every reader sees it as
@@ -467,7 +446,6 @@ pub struct InlineTime {
 }
 
 impl InlineTime {
-    /// The time a [`TIME_MARK`] mark's value names.
     #[must_use]
     pub fn of_mark(value: &str) -> Option<Self> {
         let written = tilo_doc::inline_time::InlineTime::of_mark(value)?;
@@ -480,7 +458,6 @@ impl InlineTime {
         })
     }
 
-    /// The [`TIME_MARK`] mark's value naming it.
     #[must_use]
     pub fn mark_value(&self) -> String {
         tilo_doc::inline_time::InlineTime {
@@ -534,7 +511,6 @@ pub struct Reading<Tz: chrono::TimeZone> {
     pub formats: crate::format::Formats,
 }
 
-/// The person reading here, now.
 #[must_use]
 pub fn reading_here() -> Reading<chrono::Local> {
     Reading {
@@ -634,7 +610,6 @@ fn relabel(view: &mut BlockView, label: impl Fn(&str, &str, &str) -> Option<Stri
             MarkValue::Bool(_) | MarkValue::Int(_) => None,
         })
         .collect();
-    // From the last, so the offsets of those before stay as they are.
     references.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
     for (start, end, label) in references {
         let chars: Vec<char> = view.text.chars().collect();
@@ -700,7 +675,6 @@ mod tests {
             at: at("2026-10-29T11:04:59Z"),
             show: TimeShow::Countdown,
         };
-        // Each run is the moment as its writer wrote it.
         let text = "Standup 23:30 UTC, release noon, launch 11:05.";
         RichText {
             blocks: vec![Block {
@@ -763,7 +737,6 @@ mod tests {
             "nobody reads the writer's words for it"
         );
 
-        // Past the moment, a countdown says how long ago it was; times tick on their own.
         let mut later = reading(chrono::Utc);
         later.now = at("2026-10-29T11:08:00Z");
         assert!(
@@ -789,9 +762,6 @@ mod tests {
         use crate::i18n::I18nManager;
         let rich = three_times();
         I18nManager::init("en-US");
-        // A window speaks a language when its own catalogue is written in it;
-        // the toolkit's words in that language then ride along, which is where
-        // a time's are.
         I18nManager::add_resource("de-DE", "window = Fenster".to_owned());
         I18nManager::register_widget_messages();
         I18nManager::set_locale("de-DE");
@@ -897,8 +867,6 @@ mod tests {
             "offsets count characters, the editor counts bytes"
         );
 
-        // What the editor writes back is the document again, and reading it again finds the
-        // same paragraphs.
         let back = rich_of_blocks(&blocks, &written);
         assert_eq!(blocks_as_written(&back), blocks);
         let stored = view_of_content(&blocks[6]);
@@ -949,8 +917,6 @@ mod tests {
             back.blocks[6].marks.iter().all(|mark| mark.name != "time"),
             "what the editor shows is what a changed paragraph is written as"
         );
-        // An editor's block ids are its own, minted as it splits and joins: a paragraph is
-        // found again by reading as it does, however many edits moved it.
         let mut renamed = untouched.clone();
         renamed[6].id = "split-3".into();
         renamed.insert(6, BlockContent::paragraph("made room for it", ""));
@@ -966,7 +932,6 @@ mod tests {
         use tilo_ui_graph::rich::{Embed, InlineView};
         const TASK: &str =
             r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":""}"#;
-        // Written while the task was called "Acquisition plan".
         let read_as = |view: InlineView| RichText {
             blocks: vec![Block {
                 kind: "paragraph".into(),

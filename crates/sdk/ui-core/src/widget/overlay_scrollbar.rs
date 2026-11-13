@@ -1,11 +1,7 @@
-//! The overlay scroll bar for a host that scrolls and paints its own
-//! content (a terminal's scrollback, a canvas): the thumb a [`Scrollable`]
-//! shows, laid over the content's trailing edge instead of standing in a
-//! gutter beside it, shown while the content scrolls or the pointer is at
-//! it and faded out at rest ([`BarFade`]); always shown under reduced
-//! motion. Showing or hiding it never changes the space the content has.
-//!
-//! [`Scrollable`]: crate::widget::Scrollable
+//! The overlay scroll bar for a host that scrolls and paints its own content (a terminal's
+//! scrollback, a canvas): the thumb a [`Scrollable`] shows, laid over the content's trailing
+//! edge instead of standing in a gutter beside it, shown while the content scrolls or the
+//! pointer is at it and faded out at rest ([`BarFade`]); always shown under reduced motion.
 
 use std::cell::Cell;
 
@@ -17,23 +13,17 @@ use super::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar, thumb_co
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 
-/// A vertical overlay scroll bar. The host keeps its own offset and gives
-/// the bar the area it scrolls ([`Self::track`]) and its [`ScrollMetrics`]
-/// each time; the bar keeps the drag, the hover and the idle fade, and the
-/// theme's sizes and motion policy as last given ([`Self::set_theme`]).
+/// A vertical overlay scroll bar.
 #[derive(Debug)]
 pub struct OverlayScrollbar {
     bar: Scrollbar,
     fade: Cell<BarFade>,
-    /// The offset the bar was last painted at: a change shows the bar.
     painted_offset: Cell<Option<f64>>,
-    /// The pointer is in the bar's lane: the bar stays shown.
     pointer_near: bool,
     /// The lane's width (`metrics.scrollbar_gutter`).
     gutter: f64,
     /// The thumb's thickness (`metrics.scroll_thumb`).
     thumb: f64,
-    /// The theme asks for reduced motion: the bar does not fade.
     reduce_motion: bool,
 }
 
@@ -44,7 +34,6 @@ impl Default for OverlayScrollbar {
 }
 
 impl OverlayScrollbar {
-    /// A vertical bar along the trailing edge, at the default theme's sizes.
     #[must_use]
     pub fn vertical() -> Self {
         let metrics = crate::tokens::Metrics::BASE;
@@ -78,13 +67,11 @@ impl OverlayScrollbar {
         )
     }
 
-    /// The thumb's track over `area`, where a `Scrollable`'s would be.
     #[must_use]
     pub fn track(&self, area: Rect) -> Rect {
         self.bar.track_of_thickness(self.lane(area), self.thumb)
     }
 
-    /// Show the bar now, as a scroll does.
     pub fn wake(&self) {
         let mut fade = self.fade.get();
         fade.wake(crate::time::now());
@@ -118,8 +105,6 @@ impl OverlayScrollbar {
         changed
     }
 
-    /// The pointer left: the bar fades as at rest. Returns whether
-    /// anything the bar paints changed.
     pub fn pointer_left(&mut self) -> bool {
         let hovered = self.bar.set_hover(false);
         let near = std::mem::take(&mut self.pointer_near);
@@ -157,7 +142,6 @@ impl OverlayScrollbar {
         released
     }
 
-    /// Whether the thumb is being dragged.
     #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.bar.is_dragging()
@@ -167,7 +151,6 @@ impl OverlayScrollbar {
         self.reduce_motion || self.pointer_near || self.bar.is_active()
     }
 
-    /// The bar's opacity at this frame.
     #[must_use]
     pub fn opacity(&self) -> f32 {
         self.fade
@@ -214,7 +197,6 @@ impl OverlayScrollbar {
             .fading_at(crate::motion::frame_now(), self.held())
     }
 
-    /// When the fade starts, for the host's `next_wake_deadline`.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         self.fade

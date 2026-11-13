@@ -4,9 +4,8 @@ use crate::component::{Component, Described};
 
 use super::PagePreview;
 
-/// A page's shape in a print queue, a scan or a document picker: a sheet of paper with the
-/// lines a page holds, and "Page n of m" under it. It shows the shape and the progress, never
-/// the content, which it does not have.
+/// A page's shape in a print queue, a scan or a picker: a sheet with the lines a page has and
+/// "Page n of m" under it, showing the shape and never the content.
 #[derive(Component, Default)]
 #[component(name = "PagePreview", role = "Image", label = "label")]
 pub struct PagePreviewProps {

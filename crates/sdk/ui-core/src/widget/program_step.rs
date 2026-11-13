@@ -3,10 +3,6 @@
 //! agent ran, read-only and coloured in a raised well; what it answered, line by line, with the
 //! resource each line names as a reference chip that opens it; what it changed, as rows that
 //! undo; and what it proposes, as cards the person confirms or declines.
-//!
-//! The view holds no authority. Opening, undoing, confirming and declining are the host's
-//! answers, each offered as the control's own effect or view action; without an answer the
-//! view offers no control for it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,7 +22,6 @@ use crate::widget::{
 
 /// An answer longer than this many lines shows its first [`SHOWN_LINES`] and folds the rest.
 const FOLD_AFTER: usize = 6;
-/// How many lines a folded answer shows.
 const SHOWN_LINES: usize = 4;
 
 type OnAnswer = Rc<RefCell<dyn FnMut(StepAnswer)>>;
@@ -45,9 +40,7 @@ pub enum StepAnswer {
     Decline(StepPreview),
 }
 
-/// One program step of an agent's task, with the host's answer to what the person does with
-/// it. Build it with [`ProgramStepView::new`] and turn it into a widget with
-/// [`ProgramStepView::into_widget`].
+/// One program step of an agent's task, with the host's answer to what the person does with it.
 pub struct ProgramStepView {
     id: String,
     step: ProgramStep,
@@ -83,7 +76,6 @@ impl ProgramStepView {
         self
     }
 
-    /// The step as a widget: the program, then the answer, the changes and the proposals.
     #[must_use]
     pub fn into_widget(self) -> Element {
         let mut column = Column::new()
@@ -113,7 +105,6 @@ impl ProgramStepView {
         Box::new(column)
     }
 
-    /// The program, read-only and coloured, in a raised well.
     fn program(&self) -> Element {
         let editor = CodeEditor::local()
             .with_language(Language::Tilolang)
@@ -128,7 +119,7 @@ impl ProgramStepView {
 
     /// What the step answered: each line in the code role and secondary ink, a line led by a
     /// reference showing it as a chip; a refused or failed step's diagnostics in the danger
-    /// status ink. A long answer folds after its first lines.
+    /// status ink.
     fn answer(&self) -> Option<Element> {
         let lines = &self.step.answer;
         if lines.is_empty() {
@@ -189,7 +180,6 @@ impl ProgramStepView {
         Box::new(row)
     }
 
-    /// A change as a row: what was done, to what, and Undo.
     fn change(&self, index: usize, change: &StepChange) -> Element {
         let id = format!("{}-change-{index}", self.id);
         let mut row = ListRow::new(id.clone(), change.action.clone())
@@ -212,7 +202,6 @@ impl ProgramStepView {
         Box::new(row)
     }
 
-    /// A change a preview would make, as a row: what, to what. Nothing to undo: it has not run.
     fn planned(&self, index: usize, planned: &StepChange) -> Element {
         Box::new(
             ListRow::new(
@@ -224,7 +213,6 @@ impl ProgramStepView {
         )
     }
 
-    /// A proposal as an object card: the action, what it would do, Confirm and Decline.
     fn preview(&self, index: usize, preview: &StepPreview) -> Element {
         let id = format!("{}-preview-{index}", self.id);
         let summary = if preview.summary.trim().is_empty() {
@@ -268,7 +256,6 @@ impl ProgramStepView {
     }
 }
 
-/// A line of code in the answer's ink.
 fn code_line(line: &str) -> Element {
     Box::new(
         Text::new(line)
@@ -291,8 +278,7 @@ fn diagnostic_line(line: &str) -> Element {
 }
 
 /// `fields` with each reference literal that its label follows left out: `column:
-/// @board.Column:root/columns:todo "To do"` reads `column: "To do"`. The chip beside them
-/// already says which record the line is; the fields' references are read by their labels.
+/// @board.Column:root/columns:todo "To do"` reads `column: "To do"`.
 fn labelled_only(fields: &str) -> String {
     let (tokens, _) = lexer::lex(fields);
     let mut shown = String::with_capacity(fields.len());
@@ -337,7 +323,6 @@ fn leading_reference<'a>(
                 .is_some_and(|head| head.is_empty() || head.ends_with('.'))
     })?;
     let mut end = first.span.end.min(line.len());
-    // The label the literal is followed by is the chip's own.
     if let Some(next) = tokens.next()
         && let Tok::Str(pieces) = &next.tok
         && let [lexer::StrPiece::Lit(label)] = pieces.as_slice()

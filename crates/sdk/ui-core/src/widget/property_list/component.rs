@@ -49,7 +49,6 @@ impl Described for PropertyList {
         if props.striped { list.striped() } else { list }
     }
 
-    /// The facts and the striping change where the list stands.
     fn set_props(&mut self, props: PropertyListProps) -> bool {
         self.groups = vec![(
             None,
@@ -63,7 +62,6 @@ impl Described for PropertyList {
     }
 }
 
-/// [`PropertyProps`] in a slot of any number of them.
 impl crate::component::SlotType for Vec<PropertyProps> {
     const MANY: bool = true;
 

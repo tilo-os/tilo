@@ -1,12 +1,4 @@
 //! [`ModalDialog`], [`FloatingPanel`] and [`Popover`] as described components.
-//!
-//! A modal is how a view asks a question over the window (HIG §4b, §7c); a popover is how it
-//! shows a menu or a small form beside its control. Both are the window's one top layer, which
-//! the host runs after its chrome, so a view places them in its tree and the toolkit presents
-//! them.
-//!
-//! Each is generic over its content in Rust; here it is given a column of views, and the view
-//! is `ui.ModalDialog`, `ui.FloatingPanel` or `ui.Popover`.
 
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -18,7 +10,6 @@ use crate::widget::{
     Widget,
 };
 
-/// The views of a slot in a column, the column filling its width.
 fn column(views: Vec<Element>) -> Container {
     let mut stack = crate::widget::arrange::Stack::stack()
         .fill_width()
@@ -31,9 +22,9 @@ fn column(views: Vec<Element>) -> Container {
         .with_child(Box::new(stack))
 }
 
-/// A question over the window: a dimmed page, a sheet with a title, the view's content, and up
-/// to three answers. Escape or a click on the scrim closes it; Enter fires the main answer,
-/// except in a destructive question, where Enter is the safe one.
+/// A question over the window: a dimmed page, a sheet with a title, the content and up to three
+/// answers; Escape or the scrim closes it, and Enter fires the main answer, or the safe one
+/// when it destroys something.
 #[derive(Component, Default)]
 #[component(name = "ModalDialog", role = "Dialog", label = "title")]
 pub struct ModalProps {
@@ -44,18 +35,18 @@ pub struct ModalProps {
     pub icon: Option<crate::icons::Icon>,
     /// What assistive technology says after the title.
     pub description: Option<String>,
-    /// Whether it is open. A closed dialog paints nothing and takes no input.
+    /// Whether it is open; a closed dialog paints nothing and takes no input.
     pub open: bool,
     /// The main answer's label ("Delete"): the inverted button, and what Enter fires.
     pub primary: Option<String>,
     /// The other answer's label, usually Cancel. Escape fires it.
     pub secondary: Option<String>,
-    /// A third answer's label, standing apart ("Don't save"). Enter never fires it.
+    /// A third answer's label, set apart ("Don't save"); Enter never fires it.
     pub tertiary: Option<String>,
     /// The main answer destroys something: it is a destructive button, and Enter is the safe
     /// answer instead.
     pub destructive: bool,
-    /// The main answer cannot be taken yet. A dialog with this has it disabled.
+    /// The main answer cannot be taken yet, so it is disabled.
     pub primary_enabled: bool,
     /// The view's content, inside the sheet.
     #[component(slot(default))]
@@ -69,19 +60,16 @@ pub struct ModalProps {
     /// The third answer was taken.
     #[component(event)]
     pub act_tertiary: Event,
-    /// It was closed (Escape, the scrim, or a click on Cancel): a dialog with this closes as
-    /// it is.
+    /// It was closed (Escape, the scrim, or Cancel): a dialog with this closes as it is.
     #[component(event)]
     pub dismiss: Event,
 }
 
-/// A modal driven from a view: its answers and its dismissal reach the view's events.
 pub struct DeclaredModal {
     dialog: ModalDialog<Container>,
 }
 
 impl DeclaredModal {
-    /// The modal the props describe.
     #[must_use]
     pub fn new(mut props: ModalProps) -> Self {
         let mut dialog =
@@ -117,7 +105,6 @@ impl DeclaredModal {
         Self { dialog }
     }
 
-    /// The dialog, for a host to place.
     #[must_use]
     pub fn dialog(&mut self) -> &mut ModalDialog<Container> {
         &mut self.dialog
@@ -267,7 +254,6 @@ impl Described for DeclaredModal {
         true
     }
 
-    /// The sheet's content changes by key in place.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
         if slot != "body" {
             return None;
@@ -283,12 +269,8 @@ impl Described for DeclaredModal {
     }
 }
 
-/// A floating panel a view places itself: a header slot, a body and a footer slot, on the
-/// floating material.
-///
-/// A view rarely places one: a menu is a `Popover` beside its control, a question a
-/// `ModalDialog`, and the window's chrome belongs to the shell (§7c). It is for the surface a
-/// canvas's own inspector or a document's navigator stands on.
+/// A floating panel with a header slot, a body and a footer slot, which a view rarely places
+/// itself: a menu is a `Popover` and a question a `ModalDialog`.
 #[derive(Component, Default)]
 #[component(name = "FloatingPanel", role = "Group")]
 pub struct FloatingPanelProps {
@@ -305,7 +287,6 @@ pub struct FloatingPanelProps {
     pub width: Option<f64>,
 }
 
-/// A floating panel whose body, header and footer may change by key.
 pub struct DeclaredPanel {
     panel: FloatingPanel,
     rect: Rect,
@@ -313,7 +294,6 @@ pub struct DeclaredPanel {
     editing: PanelSlot,
 }
 
-/// A floating panel's slot that holds one view, or none.
 #[derive(Clone, Copy)]
 enum PanelSlot {
     Header,
@@ -321,7 +301,6 @@ enum PanelSlot {
 }
 
 impl DeclaredPanel {
-    /// The panel the props describe.
     #[must_use]
     pub fn new(mut props: FloatingPanelProps) -> Self {
         let mut panel = FloatingPanel::new(Box::new(column(std::mem::take(&mut props.body))));
@@ -355,7 +334,6 @@ impl DeclaredPanel {
         *self.slot() = Some(view);
     }
 
-    /// The panel, for a host to place.
     #[must_use]
     pub fn panel(&mut self) -> &mut FloatingPanel {
         &mut self.panel
@@ -483,7 +461,6 @@ impl Described for DeclaredPanel {
     }
 }
 
-/// The view of the header or footer being changed: one, or none.
 impl crate::component::SlotViews for DeclaredPanel {
     fn len(&self) -> usize {
         let slot = match self.editing {
@@ -515,8 +492,7 @@ impl crate::component::SlotViews for DeclaredPanel {
     }
 }
 
-/// A menu or a small form beside its control: the one anchored floating panel. The view's
-/// content is inside it.
+/// A menu or a small form anchored beside its control, with the view's content inside it.
 #[derive(Component, Default)]
 #[component(name = "Popover", role = "Group", label = "label")]
 pub struct PopoverProps {
@@ -534,14 +510,12 @@ pub struct PopoverProps {
     pub content: Vec<Element>,
 }
 
-/// A popover whose content may change by key.
 pub struct DeclaredPopover {
     popover: Popover<Container>,
     rect: Rect,
 }
 
 impl DeclaredPopover {
-    /// The popover the props describe.
     #[must_use]
     pub fn new(mut props: PopoverProps) -> Self {
         let mut popover =
@@ -562,7 +536,6 @@ impl DeclaredPopover {
         }
     }
 
-    /// The popover, for a host to anchor.
     #[must_use]
     pub fn popover(&mut self) -> &mut Popover<Container> {
         &mut self.popover
@@ -687,7 +660,6 @@ impl Described for DeclaredPopover {
         true
     }
 
-    /// Its content changes by key in place.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
         if slot != "content" {
             return None;
@@ -703,9 +675,8 @@ impl Described for DeclaredPopover {
     }
 }
 
-/// A button that opens a popover anchored to itself: a filter's options, a share sheet, a
-/// picker of values. A press opens it, and it closes by a second press, Escape, or a press
-/// outside it.
+/// A button that opens a popover anchored to itself (a filter's options, a share sheet); a
+/// second press, Escape or a press outside closes it.
 #[derive(Component, Default)]
 #[component(name = "PopoverButton", role = "Button", label = "label")]
 pub struct PopoverButtonProps {
@@ -716,20 +687,18 @@ pub struct PopoverButtonProps {
     pub icon: Option<crate::icons::Icon>,
     /// The side of the button it opens on: `below` unless said.
     pub side: Option<PopoverSide>,
-    /// Whether it opens at the button's trailing edge instead of its leading edge.
+    /// Whether it opens at the button's trailing edge, not its leading edge.
     pub trailing: bool,
     /// The popover's content.
     #[component(slot(default))]
     pub content: Vec<Element>,
 }
 
-/// A popover button whose content may change by key.
 pub struct DeclaredPopoverButton {
     pair: crate::widget::PopoverButton<Container>,
 }
 
 impl DeclaredPopoverButton {
-    /// The button the props describe, its content inside the popover.
     #[must_use]
     pub fn new(key: &str, mut props: PopoverButtonProps) -> Self {
         let content = column(std::mem::take(&mut props.content));
@@ -747,7 +716,6 @@ impl DeclaredPopoverButton {
         Self { pair }
     }
 
-    /// The button and its popover, for a host to place.
     #[must_use]
     pub fn pair(&mut self) -> &mut crate::widget::PopoverButton<Container> {
         &mut self.pair
@@ -881,7 +849,6 @@ impl Described for DeclaredPopoverButton {
         true
     }
 
-    /// Its content changes by key in place.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
         if slot != "content" {
             return None;

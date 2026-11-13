@@ -1,11 +1,5 @@
-//! `KeyHint`: drawn keycaps and what they do ("Enter Save", "Esc Cancel"),
-//! never a sentence with a separator glyph (`docs/design-language.md`,
-//! "Primitives").
-//!
-//! [`KeyHintsFace`] lays a strip of hints out with a `sibling` gap between
-//! them; each hint is its keycaps (the shared keycap painter,
-//! [`crate::widget::InputHint`], in the person's keyboard legends), a
-//! `related` gap, and its label in `Caption` secondary ink.
+//! `KeyHint`: drawn keycaps and what they do ("Enter Save", "Esc Cancel"), never a sentence
+//! with a separator glyph (`docs/design-language.md`, "Primitives").
 
 use vello::kurbo::{Point, Rect};
 
@@ -45,7 +39,6 @@ fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
 
-/// A strip of key hints, borrowed.
 #[derive(Clone, Copy, Debug)]
 pub struct KeyHintsFace<'a> {
     hints: &'a [KeyHint],
@@ -57,7 +50,6 @@ impl<'a> KeyHintsFace<'a> {
         Self { hints }
     }
 
-    /// The strip's height: one keycap.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
         InputHint::keycap_height(theme)
@@ -66,14 +58,12 @@ impl<'a> KeyHintsFace<'a> {
     fn hint_width(hint: &KeyHint, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let caps = InputHint::measure_keycap_labels(&hint.keys, text, theme);
         if hint.label.is_empty() {
-            // Keys alone (a shortcut's chord): no gap for a missing label.
             return caps;
         }
         let label = f64::from(text.measure_style(&hint.label, None, &label_style(theme)).0);
         caps + f64::from(theme.tokens.spacing.rhythm.related) + label
     }
 
-    /// The strip's natural width.
     #[must_use]
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
@@ -146,21 +136,17 @@ impl<'a> KeyHintsFace<'a> {
     }
 }
 
-/// A retained strip of key hints: a chord's drawn keycaps on a row's
-/// trailing edge (a shortcut that cannot be changed), or several chords
-/// side by side, a `sibling` gap apart. Never a joined string.
+/// A retained strip of key hints: a chord's drawn keycaps on a row's trailing edge (a shortcut
+/// that cannot be changed), or several chords side by side, a `sibling` gap apart.
 pub struct KeyHints {
     hints: Vec<KeyHint>,
     rect: Rect,
-    /// Not yet drawn as it stands.
     dirty: bool,
-    /// Not yet laid out in the theme last seen, or for the hints it shows.
     layout_dirty: bool,
     theme: Option<Theme>,
 }
 
 impl KeyHints {
-    /// The hints it shows changed where the strip stands: measured again for what they say.
     pub fn set_hints(&mut self, hints: Vec<KeyHint>) {
         let same = self.hints.len() == hints.len()
             && self
@@ -207,12 +193,6 @@ impl crate::widget::Widget for KeyHints {
             KeyHintsFace::new(&self.hints).width(text, theme)
         });
         let style = taffy::Style {
-            // A strip wider than its line gives way and its tail elides rather than running
-            // past the edge: a window too narrow for every hint shows the ones that fit. Its
-            // own size is its content's; `min_size` zero lets a flex parent take it below that,
-            // and `max_size` the line's width keeps it inside a parent that wraps it onto a
-            // line of its own (a footer row at a narrow window), where the strip is not shrunk
-            // by a sibling but given the line's full width.
             flex_shrink: 1.0,
             size: taffy::Size {
                 width: taffy::Dimension::length(crate::num::f32_of_f64(width.ceil())),

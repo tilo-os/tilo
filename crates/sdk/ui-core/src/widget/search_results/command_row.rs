@@ -17,16 +17,12 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 
-/// What the view knows about a row beyond its data.
 pub(super) struct RowState<'a> {
     pub selected: bool,
-    /// The query whose words are set off where the row matches them.
     pub highlight: &'a str,
     pub held: Option<ActivationModifier>,
 }
 
-/// The ground a row's ink is measured on: the armed lift when selected,
-/// else the panel.
 fn row_ground(theme: &Theme, selected: bool) -> Color {
     if selected {
         crate::widget::floating_surface::armed_row(theme).0
@@ -35,7 +31,6 @@ fn row_ground(theme: &Theme, selected: bool) -> Color {
     }
 }
 
-/// Where the leading glyph sits.
 fn icon_rect(row: Rect) -> Rect {
     let size = 16.0;
     let cy = f64::midpoint(row.y0, row.y1);
@@ -47,8 +42,6 @@ fn icon_rect(row: Rect) -> Rect {
     )
 }
 
-/// Where a person's avatar sits: the icon's place, a little larger, so its
-/// initials read.
 fn avatar_rect(row: Rect) -> Rect {
     let icon = icon_rect(row);
     let grow = 2.0;
@@ -77,9 +70,6 @@ pub(super) fn draw(
     let label_style = theme.text(TextRole::Body);
     let desc_style = theme.text(TextRole::Caption);
     let selected = state.selected;
-    // Needs contrast against the armed lift: take the nearest legible step
-    // from the theme's dim tone rather than promoting it to the title's
-    // weight to survive.
     let subtitle_ink = colors.ink_on(
         row_ground(theme, selected),
         colors.text_dim,
@@ -141,8 +131,6 @@ pub(super) fn draw(
         );
         return;
     };
-    // A path keeps both ends; prose keeps its beginning, where the meaning
-    // is.
     let sub = if row.description_is_path {
         elide_middle(ctx.text, desc, &desc_style, avail)
     } else {
@@ -178,8 +166,6 @@ pub(super) fn draw(
     };
     let sub_y = ly + f64::from(label_height) + gap;
     if row.facts.len() > 1 {
-        // Facts are runs of their own with space between them, the last
-        // losing its end when the row runs out.
         let fact_gap = f64::from(theme.tokens.spacing.s3);
         let mut x = text_x;
         let right = text_x + avail;
@@ -232,9 +218,6 @@ fn draw_trailing(
     let colors = &theme.tokens.colors;
     let selected = state.selected;
     let cy = f64::midpoint(rect.y0, rect.y1);
-    // What Enter does, when the row says: its outcome, as a button at the
-    // trailing edge ("Join", "Answer"). The row is the control; the button
-    // names what choosing it does.
     let mut right = rect.x1 - 8.0;
     if let Some(outcome) = row.outcome.as_deref() {
         use crate::widget::button::{Button, ButtonFace, ButtonRole};
@@ -253,7 +236,6 @@ fn draw_trailing(
         Button::paint(scene, transform, text_renderer, theme, &face);
         right = at.x0 - 8.0;
     }
-    // Faces first: who the row is about outranks a hint.
     if !row.faces.is_empty() {
         let stack = crate::presence::FaceStack::WINDOW;
         let (shown, more) = stack.split(row.faces.len());
@@ -278,8 +260,6 @@ fn draw_trailing(
     if row.outcome.is_some() {
         return right;
     }
-    // Reserved before measuring the text, so a long title is ellipsised
-    // rather than painted under the chip.
     if let Some(badge) = &row.badge {
         let badge_style = theme.text(TextRole::Caption);
         let (text_w, text_h) = text_renderer.measure_style(badge, None, &badge_style);
@@ -380,11 +360,8 @@ fn draw_trailing(
     }
 }
 
-/// What `row` sets off in `text`: the query's words where search matched
-/// them, merged and in order — the part of a row a person reads to see why it
-/// matched. A row that echoes the query sets off nothing: highlighting says
-/// why a row was found, and a row that just says what was typed was found by
-/// nothing ([`CommandRow::echoes_query`]).
+/// What `row` sets off in `text`: the query's words where search matched them, merged and in
+/// order — the part of a row a person reads to see why it matched.
 fn marked_spans(
     row: &CommandRow,
     query: &str,
@@ -453,10 +430,8 @@ fn draw_marked(
     }
 }
 
-/// Shorten `text` by eating its middle, keeping both ends readable — for
-/// paths, where the head (root) and tail (own folder) both carry more
-/// information than the middle. Trailing-ellipsis case is
-/// [`TextRenderer::elide_to_width`].
+/// Shorten `text` by eating its middle, keeping both ends readable — for paths, where the head
+/// (root) and tail (own folder) both carry more information than the middle.
 pub(super) fn elide_middle(
     tr: &mut TextRenderer,
     text: &str,

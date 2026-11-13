@@ -1,14 +1,5 @@
-//! `ResizableSplit` — a two-pane container with a draggable divider — and
-//! the divider itself, [`SplitHandle`], for hosts that paint their panes.
-//!
-//! The divider is a hairline at rest with a wider target around it; it
-//! thickens under the pointer and while dragged. Dragging it, or the arrow
-//! keys while it holds keyboard focus, moves the [`SplitRatio`], clamped so
-//! neither pane collapses. Assistive technology meets it as a separator
-//! whose value is the first pane's share.
-//!
-//! State lives on the widget rather than the CRDT: the ratio is a
-//! per-instance visual tuning, not replicated content.
+//! `ResizableSplit` — a two-pane container with a draggable divider — and the divider itself,
+//! [`SplitHandle`], for hosts that paint their panes.
 
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
@@ -25,12 +16,9 @@ use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// The least share either pane keeps, so neither is lost off-screen.
 const SPLIT_MIN: f32 = 0.1;
-/// See [`SPLIT_MIN`].
 const SPLIT_MAX: f32 = 0.9;
 const SPLIT_DEFAULT: f32 = 0.5;
-/// How far one arrow key moves the divider.
 const KEY_STEP: f32 = 0.05;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,7 +57,6 @@ impl SplitRatio {
         }
     }
 
-    /// Narrow the range the divider may move in.
     #[must_use]
     pub fn with_bounds(mut self, min: f32, max: f32) -> Self {
         self.min = min.clamp(0.0, 1.0);
@@ -78,7 +65,6 @@ impl SplitRatio {
         self
     }
 
-    /// The first pane's share.
     #[must_use]
     pub fn position(&self) -> f32 {
         self.position
@@ -103,7 +89,6 @@ impl SplitRatio {
         self.set(crate::num::f32_of_f64((along - start) / extent.max(1.0)))
     }
 
-    /// The first pane's length on an extent `total` long.
     #[must_use]
     pub fn first_extent(&self, total: f64) -> f64 {
         total * f64::from(self.position)
@@ -123,11 +108,8 @@ impl SplitRatio {
     }
 }
 
-/// The divider between two panes: hit-testing, hover, dragging, keyboard
-/// steps, painting and its accessible separator node. [`ResizableSplit`]
-/// keeps one; a host that paints its panes itself (a query editor over its
-/// results, a source beside its preview) keeps one too, sets its rect each
-/// layout and lays its panes out in [`SplitHandle::pane_rects`].
+/// The divider between two panes: hit-testing, hover, dragging, keyboard steps, painting and
+/// its accessible separator node.
 #[derive(Clone, Debug)]
 #[crate::component::not_a_component(part, "the handle of the language's `split`")]
 pub struct SplitHandle {
@@ -268,13 +250,11 @@ impl SplitHandle {
         };
     }
 
-    /// Where the divider takes the pointer.
     #[must_use]
     pub fn hit_rect(&self) -> Rect {
         self.divider
     }
 
-    /// The two panes, either side of the hairline.
     #[must_use]
     pub fn pane_rects(&self) -> (Rect, Rect) {
         let r = self.rect;
@@ -312,7 +292,6 @@ impl SplitHandle {
         self.focused = focused;
     }
 
-    /// The resize cursor over the divider and throughout a drag.
     #[must_use]
     pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.drag.is_some() || self.divider.contains(point)).then_some(match self.orientation {
@@ -449,8 +428,6 @@ impl SplitHandle {
         }
     }
 
-    /// The divider as a separator node with the first pane's share as its
-    /// value.
     pub fn accessibility(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Separator)
@@ -610,7 +587,6 @@ impl Widget for SplitHandle {
 /// The first pane's extent on its way from where it was drawn to where the
 /// layout puts it (`motion::PanelSlide`).
 struct SplitGlide {
-    /// The drawn extent of the first pane along the split.
     first: crate::motion::MotionValue<f64>,
     from: f64,
     to: f64,
@@ -624,9 +600,7 @@ pub struct ResizableSplit<L: Widget, R: Widget> {
     handle: SplitHandle,
     /// The first pane takes its content's size until the divider is moved.
     content_sized_first: bool,
-    /// The first pane's declared axis size, before ratio layout overrides it.
     first_content_size: taffy::Dimension,
-    /// The ratio moved since the panes were last laid out.
     layout_dirty: bool,
     rect: Rect,
     /// Where a double-click on the divider puts it back: the position the
@@ -643,9 +617,7 @@ pub struct ResizableSplit<L: Widget, R: Widget> {
     /// extents, so no frame of the glide lays them out again and each
     /// reflows once, at its wide end.
     glide_laid: bool,
-    /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
-    /// When the divider was last pressed, for a double-click.
     last_divider_press: Option<crate::time::Instant>,
 }
 
@@ -704,7 +676,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         self
     }
 
-    /// Give the actual divider a stable identity for accessibility and input tests.
     #[must_use]
     pub fn with_divider_id(mut self, id: impl Into<String>) -> Self {
         self.handle.test_id = Some(id.into());
@@ -729,9 +700,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     }
 
     /// Whether the first pane stands at its content size: built so
-    /// ([`Self::with_content_sized_first`]) or reset to it, and the divider
-    /// not moved since. A control that resets the split has nothing to do
-    /// while this holds.
+    /// ([`Self::with_content_sized_first`]) or reset to it, and the divider not moved since.
     #[must_use]
     pub fn is_at_content_size(&self) -> bool {
         self.content_sized_first && !self.handle.layout_dirty
@@ -777,7 +746,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             .unwrap_or(crate::tokens::MotionSource::Action)
     }
 
-    /// The split's length along its axis.
     fn axis_extent(&self) -> f64 {
         match self.orientation {
             SplitOrientation::Horizontal => self.rect.width(),
@@ -785,7 +753,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         }
     }
 
-    /// The first pane's laid-out length along the axis.
     fn laid_first_extent(&self) -> f64 {
         let first = self.left.get_rect();
         match self.orientation {
@@ -794,14 +761,12 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         }
     }
 
-    /// Whether the divider is gliding now.
     fn is_gliding(&self) -> bool {
         self.glide
             .as_ref()
             .is_some_and(|glide| glide.first.is_moving(crate::motion::frame_now()))
     }
 
-    /// How long the first pane is drawn now.
     fn drawn_first_extent(&self) -> f64 {
         match &self.glide {
             Some(glide) if self.glide_laid || self.is_gliding() => {
@@ -811,9 +776,8 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         }
     }
 
-    /// Glide the first pane from `from` to `to` (`motion::PanelSlide`): a
-    /// key, an agent, reduced motion or a change too small to see lands. A
-    /// glide already under way continues from where it is drawn.
+    /// Glide the first pane from `from` to `to` (`motion::PanelSlide`): a key, an agent,
+    /// reduced motion or a change too small to see lands.
     fn glide_to(&mut self, from: f64, to: f64, source: crate::tokens::MotionSource) {
         use crate::motion::{Direction, PanelSlide};
         let timing = PanelSlide::SPEC.timing(Direction::of(to >= from), self.motion, source);
@@ -838,8 +802,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         glide.first.is_moving(crate::motion::frame_now())
     }
 
-    /// The panes' lengths while a glide is laid out: each at the wider of
-    /// its two ends.
     fn glide_lengths(&self) -> Option<(f64, f64)> {
         let glide = self.glide.as_ref().filter(|_| self.is_gliding())?;
         let extent = self.axis_extent();
@@ -880,12 +842,10 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         }
     }
 
-    /// The first (leading or top) pane.
     pub fn left(&self) -> &L {
         &self.left
     }
 
-    /// The second (trailing or bottom) pane.
     pub fn right(&self) -> &R {
         &self.right
     }
@@ -893,12 +853,9 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     fn moved(&mut self) {
         self.content_sized_first = false;
         self.layout_dirty = true;
-        // Dragged or stepped: the divider is welded to the hand or lands.
         self.glide = None;
     }
 
-    /// Grow factors for the two panes: the ratio, or the first pane at its
-    /// content size.
     fn grows(&self) -> (f32, f32, bool) {
         if self.content_sized_first {
             (0.0, 1.0, true)
@@ -924,8 +881,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                 | WindowEvent::MouseWheel { .. }
                 | WindowEvent::Touch(_)
         );
-        // The capturing child owns motion and release even outside its pane.
-        // The divider has already had its own capture handled first.
         if pointer_event {
             if self.left.wants_pointer_capture()
                 && let Some(node) = left_node
@@ -951,7 +906,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             _ => None,
         };
 
-        // While a glide is laid out the panes are hit where they are drawn.
         let (left_rect, right_rect, right_offset) = self.drawn_panes();
         if let Some(pt) = cursor_pt {
             if let WindowEvent::CursorMoved { device_id, .. } = event {
@@ -1043,10 +997,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         ] {
             if let Ok(current) = taffy.style(node) {
                 let mut style = current.clone();
-                // A zero basis divides the available axis by the two grow
-                // factors, avoiding percentage sizing's circular
-                // intrinsic-width calculation. A content-sized pane keeps
-                // its own size along the split.
                 if sized_by_content {
                     match self.orientation {
                         SplitOrientation::Horizontal => {
@@ -1105,8 +1055,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             presence,
         );
         scene.pop_layer();
-        // The divider stands where the layout puts it at rest; it is drawn
-        // where the first pane now ends.
         let rest = self.handle.hit_rect().center();
         let shift = match self.orientation {
             SplitOrientation::Horizontal => vello::kurbo::Vec2::new(first.x1 - rest.x, 0.0),
@@ -1166,8 +1114,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     /// Forward the per-frame update pass to both panes, so a pane that
     /// polls a model (a data table, a pending image) keeps updating.
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
-        // A glide is laid out at its wide end when it starts and at rest
-        // when it ends; between the two it only paints.
         if self.glide_laid != self.is_gliding() {
             crate::widget::note_layout_moved();
         }
@@ -1215,7 +1161,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         taffy.widget_node(style, &children, node_map, self)
     }
 
-    /// The panes follow a moved divider without rebuilding the tree.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1232,7 +1177,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             self.moved();
         }
         let mut changed = self.style_panes(taffy, left, right);
-        // A glide that has arrived is laid out once more, at rest.
         self.glide_laid = self.glide_lengths().is_some();
         if !self.glide_laid && !self.is_gliding() {
             self.glide = None;
@@ -1251,10 +1195,8 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             || self.right.is_layout_dirty()
     }
 
-    /// A moved divider or a reset to the content size changes the panes'
-    /// sizes, so the host must re-solve them, not just reposition the boxes
-    /// it solved before. The default asks only the children, which have not
-    /// changed, and the panes would then trail the divider by a frame.
+    /// A moved divider or a reset to the content size changes the panes' sizes, so the host
+    /// must re-solve them, not just reposition the boxes it solved before.
     fn layout_needs_measure(&self) -> bool {
         self.layout_dirty
             || self.handle.layout_dirty
@@ -1267,7 +1209,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap_or_default();
-        // The Taffy children deliberately match `Widget::children`.
         if let Some(&n) = children.first() {
             self.left.apply_layout(taffy, n, new_origin);
         }
@@ -1278,7 +1219,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             self.content_extent = Some(self.laid_first_extent());
         }
         let divider_followed_content = self.content_sized_first && !self.glide_laid && {
-            // The divider sits where the content-sized pane ends.
             let first = self.left.get_rect();
             let (along, extent) = match self.orientation {
                 SplitOrientation::Horizontal => (first.x1, self.rect.width()),
@@ -1302,7 +1242,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Children first — the divider paints on top.
         use crate::widget::draw_child;
         self.motion = theme.motion();
         if self.glide_laid && self.glide.is_some() {
@@ -1358,8 +1297,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             }
         );
         if pressed && self.glide_laid {
-            // A hand taking the divider mid-glide takes it where it is drawn:
-            // the glide stops there and the drag starts from it.
             let (first, _, _) = self.drawn_panes();
             let (along, start, extent) = match self.orientation {
                 SplitOrientation::Horizontal => (first.x1, self.rect.x0, self.rect.width()),
@@ -1390,12 +1327,9 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         };
         if moved {
             self.moved();
-            // A press that dragged is no half of a double-click.
             self.last_divider_press = None;
         }
         if pressed && !was_dragging && self.handle.is_dragging() {
-            // A double-click on the divider puts it back where it rests,
-            // gliding; the press does not start a drag that would undo it.
             let now = crate::time::now();
             let double = self.last_divider_press.is_some_and(|at| {
                 now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
@@ -1481,10 +1415,8 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         self.rect
     }
 
-    /// East-west over a horizontal divider, north-south over a vertical
-    /// one; kept while dragging regardless of where the cursor strays.
-    /// Off the divider, `None` lets the pane under the point claim its
-    /// own cursor via the host's `node_map` sweep.
+    /// East-west over a horizontal divider, north-south over a vertical one; kept while
+    /// dragging regardless of where the cursor strays.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.handle.cursor_shape(point)
     }
@@ -1500,8 +1432,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        // Without this, straying outside the strip mid-drag routes the
-        // release to a sibling and the drag silently ends early.
         self.handle.is_dragging()
             || self.left.wants_pointer_capture()
             || self.right.wants_pointer_capture()
@@ -1945,7 +1875,6 @@ mod tests {
         assert!((s.right().rect.width() - 680.0).abs() < 0.1);
     }
 
-    /// Whether the split itself asks for a layout (its panes aside).
     fn own_layout_dirty<L: Widget + 'static, R: Widget + 'static>(
         s: &ResizableSplit<L, R>,
     ) -> bool {
@@ -1973,8 +1902,6 @@ mod tests {
         relayout(&mut s, &mut tree, node, 400.0, 300.0);
         assert!((s.left().rect.width() - 300.0).abs() < 0.5);
 
-        // The frame's instant is held, so the test reads the glide where it
-        // starts.
         let _frame = crate::motion::pin_frame();
         double_click_divider(&mut s, &tree, node, Point::new(300.0, 150.0));
         assert!(
@@ -1985,7 +1912,6 @@ mod tests {
         assert!(s.is_gliding(), "and it glides there");
         assert!(Widget::needs_animation_frame(&s));
         relayout(&mut s, &mut tree, node, 400.0, 300.0);
-        // Laid out once for the glide: each pane at its wider end.
         assert!((s.left().rect.width() - 300.0).abs() < 0.5);
         assert!((s.right().rect.width() - 200.0).abs() < 0.5);
         assert!(
@@ -1997,7 +1923,6 @@ mod tests {
         assert!((second.x0 - 300.0).abs() < 0.5);
         assert!(offset.x.abs() < 0.5);
 
-        // Arrived: laid out once more, at rest, and no more frames.
         let _settled = crate::motion::testing::settled();
         assert!(own_layout_dirty(&s), "the narrowing pane reflows once");
         relayout(&mut s, &mut tree, node, 400.0, 300.0);
@@ -2017,7 +1942,6 @@ mod tests {
         double_click_divider(&mut s, &tree, node, Point::new(300.0, 150.0));
         relayout(&mut s, &mut tree, node, 400.0, 300.0);
         assert!(s.is_gliding());
-        // Pressed where it is drawn, and dragged: it follows the pointer.
         dispatch(&mut s, &tree, node, &cursor_moved(300.0, 150.0));
         dispatch(&mut s, &tree, node, &mouse_press());
         assert!(!s.is_gliding(), "the glide stops where it is drawn");
@@ -2035,7 +1959,6 @@ mod tests {
         let (mut tree, node) = solve(&mut s, 400.0, 300.0);
         let _frame = crate::motion::pin_frame();
 
-        // A button the person clicked collapses the second pane.
         crate::motion::note_source(crate::tokens::MotionSource::Pointer);
         s.set_split_position(0.9);
         assert!(
@@ -2043,14 +1966,12 @@ mod tests {
             "a programmatic change a click asked for glides"
         );
 
-        // The same by a key lands.
         crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
         s.set_split_position(0.25);
         assert!(!s.is_gliding(), "a key's result lands");
         relayout(&mut s, &mut tree, node, 400.0, 300.0);
         assert!((s.left().rect.width() - 100.0).abs() < 0.5);
 
-        // Under reduced motion a double-click lands too.
         s.motion = Theme::dark().with_reduce_motion(true).motion();
         double_click_divider(&mut s, &tree, node, Point::new(100.0, 150.0));
         assert!((s.split_position() - 0.5).abs() < 1e-4);

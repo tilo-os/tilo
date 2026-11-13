@@ -35,9 +35,6 @@ impl TabBar {
                 }
             }
             (ElementState::Pressed, MouseButton::Middle) => {
-                // A middle press on a tab closes it: the × without aiming at
-                // it, down to the same fade and the host's word on a tab
-                // whose app has unsaved work.
                 if let Some(id) = self.tab_under_middle_press() {
                     self.start_closing(id);
                     *ctx.handled = true;
@@ -48,11 +45,9 @@ impl TabBar {
         }
     }
 
-    /// Left-button press: fresh hit-tests against authoritative rects, not the
-    /// `CursorMoved` hover cache, which can lag a click that arrives before a
-    /// hover-refresh — otherwise the icon hit is swallowed and the tab just
-    /// activates. Split out of `handle_event` to keep that dispatcher inside
-    /// the `too_many_lines` budget.
+    /// Left-button press: fresh hit-tests against authoritative rects, not the `CursorMoved`
+    /// hover cache, which can lag a click that arrives before a hover-refresh — otherwise the
+    /// icon hit is swallowed and the tab just activates.
     pub(super) fn on_left_press(&mut self, handled: &mut bool) {
         self.touch();
         let cursor_pos = self.last_cursor;
@@ -115,7 +110,6 @@ impl TabBar {
             *handled = true;
             return;
         }
-        // A sound mark is a control of its own: it mutes, it does not select.
         let mark_hit = self.tabs.iter().zip(&self.mark_rects).find_map(|(t, r)| {
             let mark = self.marks.get(&t.id).copied()?;
             (mark.is_control() && r.area() > 0.0 && r.inflate(2.0, 2.0).contains(cursor_pos))
@@ -135,8 +129,6 @@ impl TabBar {
             *handled = true;
             return;
         }
-        // Maximize icon — fires on first click regardless of whether
-        // the tab is already active.
         if let Some(mi) = max_idx
             && let Some(t) = self.tabs.get(mi)
         {
@@ -144,7 +136,6 @@ impl TabBar {
             *handled = true;
             return;
         }
-        // Search icon — same deal; shell drains `pending_search`.
         if let Some(si) = search_idx
             && let Some(t) = self.tabs.get(si)
         {
@@ -155,8 +146,6 @@ impl TabBar {
             *handled = true;
             return;
         }
-        // History opens on the window it names: unlike the other chips it
-        // selects its tab, so the History it opens is the one shown.
         if let Some(id) = history_idx.and_then(|hi| self.tabs.get(hi)).map(|t| t.id)
             && self.press_history(id)
         {
@@ -164,8 +153,6 @@ impl TabBar {
             return;
         }
         if let Some(idx) = self.hover_idx {
-            // Can go stale if a neighbouring widget shrunk `tabs`/`tab_rects`
-            // between move and press; clear so the next move repopulates it.
             let Some(pill) = self.tab_rects.get(idx).copied() else {
                 self.hover_idx = None;
                 return;
@@ -184,7 +171,6 @@ impl TabBar {
                 self.last_cursor.x - pill.x0,
                 self.last_cursor.y - pill.y0,
             ));
-            // Guard against `tabs`/`tab_rects` desyncing mid-frame.
             if let Some(tab) = self.tabs.get(idx) {
                 let id = tab.id;
                 self.active_id = id;

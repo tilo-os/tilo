@@ -3278,7 +3278,7 @@
     },
     {
       "name": "NumberInput",
-      "doc": "A number with a step either side: a page size, a margin, a count. Typing in it, its steppers and the arrow keys all set the value, within its range.",
+      "doc": "A number with a step either side (a page size, a margin, a count), set by typing, its steppers and the arrow keys within its range.",
       "props": [
         {
           "name": "label",
@@ -3303,7 +3303,7 @@
         },
         {
           "name": "step",
-          "doc": "How much one press of a stepper adds, 1 unless said.",
+          "doc": "How much one press of a stepper adds; 1 unless said.",
           "type": {
             "option": "float"
           }
@@ -3348,7 +3348,7 @@
     },
     {
       "name": "PagePreview",
-      "doc": "A page's shape in a print queue, a scan or a document picker: a sheet of paper with the lines a page holds, and \"Page n of m\" under it. It shows the shape and the progress, never the content, which it does not have.",
+      "doc": "A page's shape in a print queue, a scan or a picker: a sheet with the lines a page has and \"Page n of m\" under it, showing the shape and never the content.",
       "props": [
         {
           "name": "label",
@@ -3377,7 +3377,7 @@
     },
     {
       "name": "PageSidebar",
-      "doc": "A rail down a document's side: one numbered thumbnail per page, the page open lifted, and, unless read-only, pages that can be dragged to reorder, copied, moved and added.",
+      "doc": "A rail of numbered page thumbnails down a document's side; unless read-only, pages are dragged, copied, moved and added.",
       "props": [
         {
           "name": "aspect",
@@ -3406,37 +3406,37 @@
         },
         {
           "name": "add",
-          "doc": "The label of the button that adds a page at the foot (\"Import…\"). Without it there is no add button.",
+          "doc": "The label of the button that adds a page at the foot (\"Import…\"); without it there is no add button.",
           "type": {
             "option": "text"
           }
         },
         {
           "name": "panel",
-          "doc": "The rail paints its own panel (a document's whole side column). Without it it paints only the thumbnails, on the ground its host gives it.",
+          "doc": "The rail paints the document's whole side panel; without it it paints only the thumbnails, on the host's background.",
           "type": "bool"
         }
       ],
       "events": [
         {
           "name": "select",
-          "doc": "A page was chosen: carries its index, from 0.",
+          "doc": "A page was chosen: its index, counted from 0, is the value.",
           "value": "int"
         },
         {
           "name": "reorder",
-          "doc": "A page was moved: carries its old index, then its place among the others.",
+          "doc": "A page was moved: its old index, then its place among the others.",
           "value": "int",
           "at": "int"
         },
         {
           "name": "duplicate",
-          "doc": "A page was to be copied: carries its index.",
+          "doc": "A page was to be copied: its index is the value.",
           "value": "int"
         },
         {
           "name": "delete",
-          "doc": "A page was to be removed: carries its index.",
+          "doc": "A page was to be removed: its index is the value.",
           "value": "int"
         },
         {
@@ -3450,11 +3450,11 @@
     },
     {
       "name": "PageSlide",
-      "doc": "One page of a stack, in the place a view shows it, with the page it replaced leaving while the view swaps the two: a panel that opens a deeper page of its own, and Back that slides it away again.\nA page that goes deeper arrives from the side its level names, and the page it replaced leaves toward the other; a page that goes shallower runs the motion the other way. A view that puts a different page at the same level (a list's item opened in the page the list showed) changes it where it stands, and nothing moves.",
+      "doc": "One page of a stack that a view shows in place, the replaced page leaving as it swaps: a panel opening a deeper page, and Back sliding it away.",
       "props": [
         {
           "name": "level",
-          "doc": "How deep the page stands: 0 the first page, 1 the page it opens.",
+          "doc": "How deep the page is: 0 the first page, 1 the page it opens.",
           "type": "int"
         }
       ],
@@ -3472,11 +3472,11 @@
     },
     {
       "name": "PersonField",
-      "doc": "A form's person: who is doing it, shown as their avatar and name, and picked from the workspace's members and agents. \"Me\" picks the person the view is shown to, \"No one\" clears it.",
+      "doc": "A form's person, shown as an avatar and name and picked from the workspace's members and agents; \"Me\" is the person the view is shown to, \"No one\" clears it.",
       "props": [
         {
           "name": "people",
-          "doc": "The people to offer, after \"Me\" and \"No one\": the workspace's members and agents, as the platform's membership names them.",
+          "doc": "The people offered after \"Me\" and \"No one\": the workspace's members and agents.",
           "type": {
             "option": {
               "list": "principal"
@@ -3494,7 +3494,7 @@
       "bindings": [
         {
           "name": "value",
-          "doc": "The person's identity, as the person a component binds (its identity text, empty for nobody), and where a pick goes.",
+          "doc": "The person's identity and the binding a pick writes (empty for nobody).",
           "type": "principal",
           "merge": "register"
         }
@@ -3505,7 +3505,7 @@
     },
     {
       "name": "PictureChoice",
-      "doc": "A choice among pictures whose meaning is visual: a text size, a pointer size, a colour filter. Each tile shows its picture over its name, and the chosen tile carries the selection edge.",
+      "doc": "A choice among pictures whose meaning is visual (a text size, a pointer size, a colour filter), each tile showing its picture over its name, the chosen one edged.",
       "props": [
         {
           "name": "selected",
@@ -3541,7 +3541,7 @@
       "events": [
         {
           "name": "change",
-          "doc": "A tile was chosen: carries its index, counted from 0.",
+          "doc": "A tile was chosen: its index, counted from 0, is the value.",
           "value": "int"
         }
       ],
@@ -3552,11 +3552,11 @@
     },
     {
       "name": "BarChip",
-      "doc": "One bar control that stands for people: their faces, a label and a press. A chip with faces opens who is here, an invite opens the host's own invite flow; a press reaches the view's `press` event, which is the same action the palette, scripts and agents invoke.",
+      "doc": "A bar control for people: their faces, a label and a press, with faces opening who is here and an invite opening the host's invite flow.",
       "props": [
         {
           "name": "name",
-          "doc": "What the chip is for assistive technology (and its tooltip when it shows only a glyph).",
+          "doc": "The chip's name for assistive technology, and its tooltip when it shows only a glyph.",
           "type": "text",
           "required": true,
           "positional": true
@@ -3584,19 +3584,19 @@
         },
         {
           "name": "who",
-          "doc": "Who it stands for, in order: the faces it shows, then a count for everyone past them.",
+          "doc": "Who it shows, in order: their faces, then a count for everyone past them.",
           "type": {
             "list": "principal"
           }
         },
         {
           "name": "open",
-          "doc": "The chip's panel is open: it holds the whole lift.",
+          "doc": "The chip's panel is open: the chip is lifted as a whole.",
           "type": "bool"
         },
         {
           "name": "focused",
-          "doc": "Keyboard focus. The ring shows only while focus is visible.",
+          "doc": "Keyboard focus; the ring shows only while focus is visible.",
           "type": "bool"
         },
         {
@@ -3617,7 +3617,7 @@
       "events": [
         {
           "name": "press",
-          "doc": "A press: the chip's own action."
+          "doc": "A press: the chip's action."
         }
       ],
       "semantics": {
@@ -3627,7 +3627,7 @@
     },
     {
       "name": "DisclosureRow",
-      "doc": "A row whose body opens in place under it: a device's details, a run's log, a setting's options. Its chevron turns as it opens, and what follows moves down with it. A press on the row, Enter or Space opens and closes it.",
+      "doc": "A row whose body opens under it (a device's details, a run's log, a setting's options), its chevron turning as the rows below move down; a press, Enter or Space opens and closes it.",
       "props": [
         {
           "name": "title",
@@ -3659,7 +3659,7 @@
         },
         {
           "name": "who",
-          "doc": "A person before the title, as an avatar: who did the work the row stands for.",
+          "doc": "A person before the title, as an avatar: who did the work the row shows.",
           "type": {
             "option": "principal"
           }
@@ -3684,14 +3684,14 @@
         },
         {
           "name": "expanded",
-          "doc": "Whether the row is open. Unless given, the row keeps it.",
+          "doc": "Whether the row is open; unless given the row keeps it.",
           "type": {
             "option": "bool"
           }
         },
         {
           "name": "motion",
-          "doc": "The pace its body unfolds at, and the pace a view's open or close takes: the theme's unless it says otherwise.",
+          "doc": "The pace the body unfolds at, and a view's open or close: the theme's unless said.",
           "type": {
             "option": {
               "choice": {
@@ -3724,7 +3724,7 @@
       "events": [
         {
           "name": "toggle",
-          "doc": "The row was opened or closed; carries whether it is open now.",
+          "doc": "The row was opened or closed: whether it is open now is the value.",
           "value": "bool"
         }
       ],
@@ -3735,7 +3735,7 @@
     },
     {
       "name": "Facts",
-      "doc": "Separate facts in one row, each an optional glyph and its text, with space between them and no separator glyph: \"12 files\", \"3 MB\", \"Edited today\" are three facts. Where the row is too narrow, the facts that matter least give way first.",
+      "doc": "Facts in one row, each an optional glyph and its text, spaced apart with no separator (\"12 files\", \"3 MB\", \"Edited today\"); when the row is too narrow the least important give way first.",
       "slots": [
         {
           "name": "facts",
@@ -3753,7 +3753,7 @@
     },
     {
       "name": "KeyHints",
-      "doc": "Shortcuts and what they do, side by side: each hint the drawn keycaps of a chord and its label (\"Enter Save\", \"Esc Cancel\"), in the person's own keyboard legends. Never a sentence with a separator glyph.",
+      "doc": "Shortcuts and what they do, side by side, each hint the drawn keycaps of a chord and its label (\"Enter Save\") in the person's keyboard legends.",
       "slots": [
         {
           "name": "hints",
@@ -3771,7 +3771,7 @@
     },
     {
       "name": "ModalDialog",
-      "doc": "A question over the window: a dimmed page, a sheet with a title, the view's content, and up to three answers. Escape or a click on the scrim closes it; Enter fires the main answer, except in a destructive question, where Enter is the safe one.",
+      "doc": "A question over the window: a dimmed page, a sheet with a title, the content and up to three answers; Escape or the scrim closes it, and Enter fires the main answer, or the safe one when it destroys something.",
       "props": [
         {
           "name": "title",
@@ -3795,7 +3795,7 @@
         },
         {
           "name": "open",
-          "doc": "Whether it is open. A closed dialog paints nothing and takes no input.",
+          "doc": "Whether it is open; a closed dialog paints nothing and takes no input.",
           "type": "bool"
         },
         {
@@ -3814,7 +3814,7 @@
         },
         {
           "name": "tertiary",
-          "doc": "A third answer's label, standing apart (\"Don't save\"). Enter never fires it.",
+          "doc": "A third answer's label, set apart (\"Don't save\"); Enter never fires it.",
           "type": {
             "option": "text"
           }
@@ -3826,7 +3826,7 @@
         },
         {
           "name": "primary_enabled",
-          "doc": "The main answer cannot be taken yet. A dialog with this has it disabled.",
+          "doc": "The main answer cannot be taken yet, so it is disabled.",
           "type": "bool"
         }
       ],
@@ -3854,7 +3854,7 @@
         },
         {
           "name": "dismiss",
-          "doc": "It was closed (Escape, the scrim, or a click on Cancel): a dialog with this closes as it is."
+          "doc": "It was closed (Escape, the scrim, or Cancel): a dialog with this closes as it is."
         }
       ],
       "semantics": {
@@ -3864,7 +3864,7 @@
     },
     {
       "name": "FloatingPanel",
-      "doc": "A floating panel a view places itself: a header slot, a body and a footer slot, on the floating material.\nA view rarely places one: a menu is a `Popover` beside its control, a question a `ModalDialog`, and the window's chrome belongs to the shell (§7c). It is for the surface a canvas's own inspector or a document's navigator stands on.",
+      "doc": "A floating panel with a header slot, a body and a footer slot, which a view rarely places itself: a menu is a `Popover` and a question a `ModalDialog`.",
       "props": [
         {
           "name": "width",
@@ -3899,7 +3899,7 @@
     },
     {
       "name": "Popover",
-      "doc": "A menu or a small form beside its control: the one anchored floating panel. The view's content is inside it.",
+      "doc": "A menu or a small form anchored beside its control, with the view's content inside it.",
       "props": [
         {
           "name": "label",
@@ -3953,7 +3953,7 @@
     },
     {
       "name": "PopoverButton",
-      "doc": "A button that opens a popover anchored to itself: a filter's options, a share sheet, a picker of values. A press opens it, and it closes by a second press, Escape, or a press outside it.",
+      "doc": "A button that opens a popover anchored to itself (a filter's options, a share sheet); a second press, Escape or a press outside closes it.",
       "props": [
         {
           "name": "label",
@@ -3988,7 +3988,7 @@
         },
         {
           "name": "trailing",
-          "doc": "Whether it opens at the button's trailing edge instead of its leading edge.",
+          "doc": "Whether it opens at the button's trailing edge, not its leading edge.",
           "type": "bool"
         }
       ],
@@ -4008,7 +4008,7 @@
     },
     {
       "name": "TextStack",
-      "doc": "A title over a secondary line, with an optional third line under it, in fixed roles and at fixed gaps: a file's name over its folder, a person over their role. Each line is one line, cut short with an ellipsis; two facts never share a line.",
+      "doc": "A title over a secondary line and an optional third (a file's name over its folder, a person over their role), each one line cut short with an ellipsis.",
       "props": [
         {
           "name": "title",
@@ -4062,11 +4062,11 @@
     },
     {
       "name": "ProgressBar",
-      "doc": "How far something is: a transfer, an import, a sync. Without a value it is under way with no known end, a segment sliding across the track. A measured level (a disk, a quota) turns warning and then danger as it fills.",
+      "doc": "How far something is (a transfer, an import, a sync): without a value a segment slides across the track with no known end, and a measured level (a disk, a quota) turns warning then danger as it fills.",
       "props": [
         {
           "name": "value",
-          "doc": "The share done, from 0 to 1. Without it the bar is under way with no known end.",
+          "doc": "The share done, from 0 to 1; without it the bar has no known end.",
           "type": {
             "option": "float"
           },
@@ -4074,7 +4074,7 @@
         },
         {
           "name": "label",
-          "doc": "What is under way (\"Uploading\"). A named bar announces its progress to assistive technology without taking focus.",
+          "doc": "What is under way (\"Uploading\"); a named bar announces its progress without taking focus.",
           "type": {
             "option": "text"
           }
@@ -4099,7 +4099,7 @@
         },
         {
           "name": "level",
-          "doc": "A measured level rather than progress: the fill turns warning, then danger, as it fills.",
+          "doc": "A measured level instead of progress: the fill turns warning, then danger, as it fills.",
           "type": "bool"
         },
         {
@@ -4149,7 +4149,7 @@
     },
     {
       "name": "QrCode",
-      "doc": "A QR code of a payload, for a phone's camera to read: a pairing handshake, an invite.\nIts payload may be private (a pairing secret): give `secret`, and it is left out of screenshots, recordings and screens, and never spoken by assistive technology.",
+      "doc": "A QR code of a payload for a phone's camera to read (a pairing handshake, an invite); a private payload is left out of screenshots and screens and never spoken.",
       "props": [
         {
           "name": "payload",
@@ -4161,7 +4161,7 @@
         },
         {
           "name": "alt",
-          "doc": "What scanning it means, as assistive technology announces it; \"QR code\" unless said.",
+          "doc": "What scanning it means, as assistive technology announces it: \"QR code\" unless said.",
           "type": {
             "option": "text"
           }
@@ -4179,7 +4179,7 @@
     },
     {
       "name": "Time",
-      "doc": "A moment shown as how long ago it was, or how far ahead: `2 min ago`, `Yesterday`, `in 3 min`, in the person's language and time zone. It changes when what it says does, and wakes the window for nothing else.",
+      "doc": "A moment as how long ago or how far ahead it was (`2 min ago`, `Yesterday`, `in 3 min`) in the person's language and time zone, changing only when its text does.",
       "props": [
         {
           "name": "at",
@@ -4211,17 +4211,17 @@
         },
         {
           "name": "secondary",
-          "doc": "It stands beside the content it is about, in secondary ink: when a change was made.",
+          "doc": "Beside the content it is about, in secondary ink: when a change was made.",
           "type": "bool"
         },
         {
           "name": "past",
-          "doc": "The moment has already happened, as a message received or an entry logged: a moment the reader's clock has not reached yet (the clock of the device that wrote it runs ahead) reads `just now`, never ahead.",
+          "doc": "The moment has happened, as a received message or a logged entry: one the reader's clock has not reached reads `just now`, never ahead.",
           "type": "bool"
         },
         {
           "name": "clock",
-          "doc": "Show the time of day the moment falls at in the person's zone (`5:16 AM`), as a conversation's transcript says when a message was sent, rather than how long ago it was: the day it falls on is the transcript's divider, never this line.",
+          "doc": "Show the time of day in the person's zone (`5:16 AM`), as a transcript shows when a message was sent; the day it falls on is the transcript's divider, never this line.",
           "type": "bool"
         }
       ],
@@ -4231,7 +4231,7 @@
     },
     {
       "name": "RichInput",
-      "doc": "A field to type rich text into, bound to the rich text it edits: each reference a completion picks is written as a reference, which every reader sees as their own inline view of what it names.",
+      "doc": "A field that types rich text, bound to what it edits: a reference a completion picks is written as a reference, which each reader renders as an inline view of what it names.",
       "props": [
         {
           "name": "placeholder",
@@ -4247,14 +4247,14 @@
         },
         {
           "name": "speakers",
-          "doc": "The people of the conversation it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The view gives them, from the items the conversation holds; the drawer reads nothing of what the conversation is about to say who is in it.",
+          "doc": "The people of the conversation it writes into, newest first, offered first in its `@` drawer; the view gives them from what the conversation has, and the drawer reads nothing else.",
           "type": {
             "list": "principal"
           }
         },
         {
           "name": "people",
-          "doc": "Who can read what it writes into: whom its `@` drawer offers, under \"Members\". The system gives it to every rich input; given no one, the drawer offers the workspace's roster.",
+          "doc": "Who can read what it writes into: whom its `@` drawer offers; with no one, it offers the workspace's roster.",
           "type": {
             "list": "principal"
           }
@@ -4263,7 +4263,7 @@
       "events": [
         {
           "name": "submit",
-          "doc": "Enter was pressed: what was written is done (a composer's message is sent). With it, Enter sends rather than breaking the line; Shift+Enter still breaks it."
+          "doc": "Enter was pressed: what was written is done (a message is sent); with it, Enter sends and Shift+Enter breaks the line."
         }
       ],
       "bindings": [
@@ -4281,7 +4281,7 @@
     },
     {
       "name": "RichTextLine",
-      "doc": "One line of text, edited in place: a block editor's cell, a composer's message. It carries its text and its inline marks, and reports the keys that would carry the edit out of the line itself (Enter, Shift+Enter, Backspace at the start), so a host composing several lines can split or join them.",
+      "doc": "One line of text edited in place (a block editor's cell, a composer's message), with its inline marks, reporting the keys that end or break it so a host can split or join lines.",
       "props": [
         {
           "name": "placeholder",
@@ -4320,7 +4320,7 @@
         },
         {
           "name": "wrap",
-          "doc": "The line wraps to its width rather than scrolling across.",
+          "doc": "The line wraps to its width instead of scrolling.",
           "type": "bool"
         }
       ],
@@ -4355,11 +4355,11 @@
     },
     {
       "name": "Scroll",
-      "doc": "A body that scrolls under its column's fixed header: its content as tall as it is, the part of it the column has room for shown.",
+      "doc": "A body that scrolls under its column's fixed header, showing the part of the content the column has room for.",
       "props": [
         {
           "name": "follow_end",
-          "doc": "Open at the end of the content and stay there while it grows, unless the person scrolled away from the end: a conversation's transcript, whose newest line is last.",
+          "doc": "Open at the end of the content and stay there while it grows, unless the person scrolled away: a transcript, whose newest line is last.",
           "type": "bool"
         },
         {
@@ -4369,7 +4369,7 @@
         },
         {
           "name": "both",
-          "doc": "Scroll both ways: a 2D surface whose content is wider and taller than its column, such as a desk of strips. Takes precedence over `across`.",
+          "doc": "Scroll both ways, for a 2D surface wider and taller than its column (a board of strips); takes precedence over `across`.",
           "type": "bool"
         }
       ],
@@ -4387,7 +4387,7 @@
     },
     {
       "name": "Section",
-      "doc": "A group of related content under an optional title: rows of a list, fields, a figure. A collapsible section opens and closes under its title.",
+      "doc": "A group of related content under an optional title (a list's rows, fields, a figure); a collapsible one opens and closes under its title.",
       "props": [
         {
           "name": "title",
@@ -4404,7 +4404,7 @@
         },
         {
           "name": "motion",
-          "doc": "The pace its content arrives and leaves at, and its title's reveal: the theme's unless it says otherwise.",
+          "doc": "The pace the content arrives and leaves at, and its title's reveal: the theme's unless said.",
           "type": {
             "option": {
               "choice": {
@@ -4423,7 +4423,7 @@
       "slots": [
         {
           "name": "content",
-          "doc": "What it holds, in order.",
+          "doc": "The content, in order.",
           "accepts": "view",
           "many": true,
           "default": true
@@ -4432,7 +4432,7 @@
       "events": [
         {
           "name": "toggle",
-          "doc": "A collapsible section opened or closed; carries whether it is open now.",
+          "doc": "A collapsible section opened or closed: whether it is open now is the value.",
           "value": "bool"
         }
       ],
@@ -4452,7 +4452,7 @@
     },
     {
       "name": "ObjectHeader",
-      "doc": "The head of a detail view: an avatar or a glyph, the thing's name as a title and one caption line under it, \"Ada Lovelace\" over \"ada@example.org\", a password's site over its address.",
+      "doc": "The head of a detail view: an avatar or glyph, the thing's name and one caption line under it (\"Ada Lovelace\" over \"ada@example.org\").",
       "props": [
         {
           "name": "title",
@@ -4495,7 +4495,7 @@
     },
     {
       "name": "StatusLine",
-      "doc": "A status in a sentence: a dot in the status's colour and a caption beside it, \"Engine running\", \"3 containers stopped\". For a list's footer or a detail's state; it is never pressed.",
+      "doc": "A status as a sentence: a dot in the status's colour beside a caption (\"Engine running\", \"3 containers stopped\"), for a list's footer or a detail's state; it is never pressed.",
       "props": [
         {
           "name": "text",
@@ -4506,7 +4506,7 @@
         },
         {
           "name": "status",
-          "doc": "What state it says: `active` (running, connected, healthy) unless said, `warning` (needs attention soon), `error` (failed, or offline unexpectedly), `idle` (present but inactive).",
+          "doc": "What state it says: `active` (running, connected, healthy) unless said, `warning` (needs attention soon), `error` (failed or offline unexpectedly), `idle` (present but inactive).",
           "type": {
             "option": {
               "choice": {
@@ -4536,7 +4536,7 @@
     },
     {
       "name": "ShortcutRecorder",
-      "doc": "A keyboard shortcut as keycaps that are the control: press them and type the new chord. A reset appears while the chord differs from its default.",
+      "doc": "A keyboard shortcut as keycaps that are the control: pressing them records a new chord, with a reset while it differs from the default.",
       "props": [
         {
           "name": "default",
@@ -4569,7 +4569,7 @@
     },
     {
       "name": "SignalMeter",
-      "doc": "How strong a radio signal is (a Wi-Fi network, a mobile network), as four bars of rising height, one icon square in size. It names itself by its level: \"Strong signal\".",
+      "doc": "How strong a radio signal is (a Wi-Fi network, a mobile network), as four bars one icon square in size, naming itself by its level: \"Strong signal\".",
       "props": [
         {
           "name": "level",
@@ -4596,11 +4596,11 @@
     },
     {
       "name": "Skeleton",
-      "doc": "The shape of content still on its way, drawn where it will stand and at its size, so nothing moves when it arrives. It never shimmers, and it says \"Loading\" to assistive technology.",
+      "doc": "The shape of content still on its way, drawn where it will be and at its size so nothing moves when it arrives; it never shimmers and says \"Loading\" to assistive technology.",
       "props": [
         {
           "name": "shape",
-          "doc": "What it stands in for: `text` unless said.",
+          "doc": "What it previews: `text` unless said.",
           "type": {
             "option": {
               "choice": {
@@ -4665,7 +4665,7 @@
     },
     {
       "name": "Slider",
-      "doc": "A value along a track: a level, a volume, a share. Dragging the knob or pressing the track sets it, and the arrow keys step it; Shift drags finely. It reads its own value when said.",
+      "doc": "A value along a track (a level, a volume, a share), set by dragging the knob or pressing the track and stepped by the arrow keys, finely with Shift.",
       "props": [
         {
           "name": "label",
@@ -4709,7 +4709,7 @@
       "events": [
         {
           "name": "change",
-          "doc": "The person moved it: carries the value it is at now. What a slider over a value the view does not hold runs (a device's volume, changed by its own action), as its value is given rather than bound.",
+          "doc": "The person moved it: the value it is at now is the value.",
           "value": "float"
         }
       ],
@@ -4728,7 +4728,7 @@
     },
     {
       "name": "Spinner",
-      "doc": "Something under way whose length is not known: four dots turning. It holds still under reduced motion. Where the share done is known, a progress bar or ring says how far it is.",
+      "doc": "Something under way whose length is not known, four dots turning and holding still under reduced motion; a progress bar or ring says how far when the share is known.",
       "props": [
         {
           "name": "label",
@@ -4740,7 +4740,7 @@
         },
         {
           "name": "beside",
-          "doc": "Size it to one line of this text, for a spinner beside a status line. Unless said it stands alone at its own size.",
+          "doc": "Size it to one line of this text, for a spinner beside a status line; alone at its full size unless said.",
           "type": {
             "option": {
               "choice": {
@@ -4769,7 +4769,7 @@
     },
     {
       "name": "StatGroup",
-      "doc": "A set of stat tiles that reflows by width: all in one row when they fit, then half per row (a 2 by 2 for four), then one per row. The tiles are separated by space, never boxed.",
+      "doc": "Stat tiles that reflow by width: one row when they fit, then half per row (2 by 2 for four), then one per row; separated by space, never boxed.",
       "slots": [
         {
           "name": "tiles",
@@ -4787,7 +4787,7 @@
     },
     {
       "name": "StatTile",
-      "doc": "One number and what it measures, on the content ground: a dashboard's reading, a backup's size. A tile reads top to bottom: its label, the value with its unit, a note, which way it moved, and a sparkline of its recent readings. A tile that opens a detail is pressed.",
+      "doc": "One number and what it measures (a dashboard's reading, a backup's size), read top to bottom as a label, the value with its unit, a note, its trend and a sparkline; a tile that opens a detail is pressed.",
       "props": [
         {
           "name": "label",
@@ -4826,7 +4826,7 @@
         },
         {
           "name": "trend",
-          "doc": "Which way it moved: `up` unless said, when it has a change. Whether that is good is its tone, not the arrow.",
+          "doc": "Which way it moved: `up` unless said, when it has a change; its tone, not the arrow, says whether that is good.",
           "type": {
             "option": {
               "choice": {
@@ -7046,7 +7046,7 @@
         },
         {
           "name": "picture",
-          "doc": "What the tile shows: the theme's own sample of a setting.",
+          "doc": "What the tile shows: a sample of the setting from the theme.",
           "type": {
             "choice": {
               "name": "PictureKind",
@@ -7089,7 +7089,7 @@
     },
     {
       "name": "Fact",
-      "doc": "One fact of a row of facts: its text, and a glyph before it.",
+      "doc": "One fact of a row: its text, and a glyph before it.",
       "props": [
         {
           "name": "text",
@@ -7107,7 +7107,7 @@
         },
         {
           "name": "priority",
-          "doc": "How long it stays where the row is narrow: higher stays longer, and of equal ones the last gives way first.",
+          "doc": "How long it stays where the row is narrow: a higher one stays longer, and of equal ones the last gives way first.",
           "type": "int"
         }
       ],

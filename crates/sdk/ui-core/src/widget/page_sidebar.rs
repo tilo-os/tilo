@@ -1,16 +1,5 @@
-//! `PageSidebar` — a shared, reorderable page/slide preview rail: the PDF
-//! reader's page rail and the presentation editor's slide rail both drive
-//! this one widget. It owns the list geometry, scroll, drag-to-reorder
-//! (via [`DragController`]), a right-click menu, and an optional "add"
-//! affordance, emitting [`PageSidebarEvent`]s the host applies to its model.
-//!
-//! The widget does **not** know how to paint a page or slide — the host
-//! passes a thumbnail-draw closure — but draws everything else (frame,
-//! selection ring, index number, reflow gap, drag ghost, scrollbar, menu).
-//!
-//! The host is imperative (draws into a `Scene` each frame), so the primary
-//! API is [`PageSidebar::begin_frame`] / `render` / pointer-
-//! event methods; the [`Widget`] impl is a thin shim for the e2e harness.
+//! `PageSidebar` — a shared, reorderable page/slide preview rail: the PDF reader's page rail
+//! and the presentation editor's slide rail both drive this one widget.
 
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
@@ -47,10 +36,9 @@ pub enum PageSidebarEvent {
     Add,
 }
 
-/// Move the item at `from` to final index `to` in `v`, matching the
-/// `(from, to)` a [`DragController`] commit yields. A no-op when either index
-/// is out of range or they are equal. Shared so the reorder applied to the
-/// model is identical to the reflow the rail previewed.
+/// Move the item at `from` to final index `to` in `v`, matching the `(from, to)` a
+/// [`DragController`] commit yields. A no-op when either index is out of range or they are
+/// equal.
 pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
     if from == to || from >= v.len() || to >= v.len() {
         return;
@@ -75,42 +63,22 @@ struct Menu {
     hover: Option<usize>,
 }
 
-// Rail geometry. The rail lays out with a [`RailMetrics`] value: the
-// constants below are the spacing scale's defaults restated, on the 4 px
-// grid, and form [`RailMetrics::DEFAULT`] — what `begin_frame` uses for a
-// host whose layout pass has no `Theme` in hand. `begin_frame_with_theme`
-// reads the same values from `theme.tokens` ([`RailMetrics::from_theme`]).
-//
-//   PAD 12 (= s3), GAP 12 (= s3), NUM_GUTTER 24 (= s6), HEADER_H 32 (= s8),
-//   ADD_H 36, ADD_MARGIN 8 (= s2), MENU_W 184, MENU_ROW_H 32 (= s8),
-//   MENU_SEP_H 8 (= s2), MENU_PAD 8 (= s2), MENU_ROW_INSET 4 (= s1)
-//
-// SCROLLBAR_W 6 is the one off-grid value: it matches the toolkit's shared
-// scrollbar so the rail's own bar reads as the same control.
+// Rail geometry.
 const PAD: f64 = 12.0;
 const GAP: f64 = 12.0;
 const NUM_GUTTER: f64 = 24.0;
 const SCROLLBAR_W: f64 = 6.0;
-/// Inset of the scrollbar track from the rail's right edge.
 const SCROLLBAR_INSET: f64 = 2.0;
 const HEADER_H: f64 = 32.0;
 const ADD_H: f64 = 36.0;
-/// Gap under the add button, to the rail's bottom edge.
 const ADD_MARGIN: f64 = 8.0;
 const MENU_W: f64 = 184.0;
 const MENU_ROW_H: f64 = 32.0;
 const MENU_SEP_H: f64 = 8.0;
-/// Padding above the first and below the last menu row.
 const MENU_PAD: f64 = 8.0;
-/// Inset of a menu row (and of the menu from the rail's edges).
 const MENU_ROW_INSET: f64 = 4.0;
 
-/// The rail's geometry, on the spacing scale. [`RailMetrics::DEFAULT`]
-/// restates the scale as the constants above — what
-/// [`PageSidebar::begin_frame`] has always laid out with, for a host that
-/// runs its layout pass without a `Theme`. A host that has one calls
-/// [`PageSidebar::begin_frame_with_theme`] and the same values are read
-/// from `theme.tokens` instead, so a density change reaches the rail.
+/// The rail's geometry, on the spacing scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RailMetrics {
     /// Inset around the list and the header label (`spacing.s3`).
@@ -229,7 +197,6 @@ pub struct PageSidebar {
     list_top: f64,
     max_scroll: f64,
     add_rect: Rect,
-    /// Where the add button's glyph stands inside it, as the layout placed it.
     add_icon_rect: Rect,
     /// Where the add button's label stands inside it, as the layout placed it;
     /// empty when the button was too narrow for the words and shows its glyph
@@ -244,16 +211,13 @@ pub struct PageSidebar {
 
     scroll: f64,
     drag: DragController<usize>,
-    /// Index pressed this gesture (used to distinguish a click from a drag).
     press_idx: Option<usize>,
     last_pointer: Point,
     menu: Option<Menu>,
     pending: Vec<PageSidebarEvent>,
-    /// Pages that carry a mark (annotations, comments).
     marked: Vec<usize>,
     /// A reader's rail: pages select, never move, copy or go.
     read_only: bool,
-    /// Something droppable (a file, a page from elsewhere) is over the rail.
     drop_armed: bool,
     /// The dragged page is over a drop target of the host's own (a delete
     /// zone) that shows the drop itself, so no ghost is painted.
@@ -264,7 +228,6 @@ pub struct PageSidebar {
     dirty: bool,
 }
 
-/// The hairline that seats a page thumbnail on the rail.
 const PAGE_EDGE_ALPHA: u8 = 26;
 
 impl PageSidebar {
@@ -334,13 +297,10 @@ impl PageSidebar {
         self.ghost_hidden = hidden;
     }
 
-    /// Whether the rail shows itself as a drop target.
     pub fn is_drop_target_armed(&self) -> bool {
         self.drop_armed
     }
 
-    /// The pages that carry a mark (annotations, comments): a dot inside
-    /// the thumbnail's corner.
     pub fn set_marked(&mut self, pages: Vec<usize>) {
         self.dirty = true;
         self.marked = pages;
@@ -354,11 +314,6 @@ impl PageSidebar {
     }
 
     /// Show a bottom "add" button carrying `label` (e.g. "Import…", "New slide").
-    ///
-    /// A rail too narrow for the words shows the button's glyph alone and keeps
-    /// `label` as its name, for the tooltip and the accessibility tree (HIG: an
-    /// icon-only button is a square). A control never paints its label past its
-    /// own edge.
     #[must_use]
     pub fn with_add(mut self, label: impl Into<String>) -> Self {
         self.add_label = label.into();
@@ -377,16 +332,13 @@ impl PageSidebar {
         }
     }
 
-    /// Where the add button's label stands, as the layout placed it; empty
-    /// when the button shows its glyph alone because the words did not fit
-    /// inside it. A non-empty box always lies within
-    /// [`Self::add_button_rect`].
+    /// Where the add button's label stands, as the layout placed it; empty when the button
+    /// shows its glyph alone because the words did not fit inside it.
     #[must_use]
     pub fn add_label_rect(&self) -> Rect {
         self.add_label_rect
     }
 
-    /// Set false when the host already draws the panel chrome around the list.
     #[must_use]
     pub fn with_panel(mut self, draw_panel: bool) -> Self {
         self.draw_panel = draw_panel;
@@ -427,14 +379,12 @@ impl PageSidebar {
         self.max_scroll
     }
 
-    /// The live target index a held reorder drag would land at (`0..=count-1`),
-    /// or `None` when no drag is active. Passthrough of the shared
-    /// [`DragController`] so a host can preview / assert the drop row.
+    /// The live target index a held reorder drag would land at (`0..=count-1`), or `None` when
+    /// no drag is active.
     pub fn drag_insertion(&self) -> Option<usize> {
         self.drag.insertion()
     }
 
-    /// The original index of the slide being dragged, once the drag is active.
     pub fn drag_from(&self) -> Option<usize> {
         self.drag.from_index()
     }
@@ -458,11 +408,8 @@ impl PageSidebar {
         self.begin_frame(rect, count, current);
     }
 
-    /// Recompute list geometry for this frame and clamp the scroll. Call once
-    /// per frame before [`render`](Self::render) and before hit-testing.
-    /// Lays out with whatever [`RailMetrics`] the rail holds:
-    /// [`RailMetrics::DEFAULT`] unless [`Self::begin_frame_with_theme`] has
-    /// handed it the theme's.
+    /// Recompute list geometry for this frame and clamp the scroll. Call once per frame before
+    /// [`render`](Self::render) and before hit-testing.
     pub fn begin_frame(&mut self, rect: Rect, count: usize, current: usize) {
         self.rect = rect;
         self.count = count;
@@ -518,7 +465,6 @@ impl PageSidebar {
 
         self.place_add_face();
 
-        // Keep the drag gap pinned to the ghost as the list scrolls.
         self.drag.sync_insertion(&self.list_metrics());
     }
 
@@ -566,13 +512,11 @@ impl PageSidebar {
         (0..self.count).find(|&i| self.thumb_rect(i).contains(p))
     }
 
-    /// A left-button press at logical point `p`. Returns true when the rail
-    /// consumed it (so the host stops routing). Opens/uses the context menu,
-    /// the add button, or begins a select + potential reorder drag.
+    /// A left-button press at logical point `p`. Returns true when the rail consumed it (so the
+    /// host stops routing).
     pub fn on_press(&mut self, p: Point) -> bool {
         self.last_pointer = p;
 
-        // A menu is modal while open: a click either picks a row or dismisses.
         if let Some(menu) = self.menu.take() {
             for (act, row) in &menu.items {
                 if row.contains(p) {
@@ -580,7 +524,6 @@ impl PageSidebar {
                     return true;
                 }
             }
-            // click off the menu — swallow the dismiss.
             return true;
         }
 
@@ -599,7 +542,6 @@ impl PageSidebar {
             return true;
         }
 
-        // A click elsewhere in the rail column is still consumed by the panel.
         self.list_vp.contains(p) || (self.draw_panel && self.rect.contains(p))
     }
 
@@ -608,8 +550,6 @@ impl PageSidebar {
     pub fn on_right_press(&mut self, p: Point) -> bool {
         self.last_pointer = p;
         self.menu = None;
-        // A secondary press during a left press ends its pick-up: the page
-        // stays where it is and the left button's lift is no click.
         self.drag.cancel();
         self.press_idx = None;
         let Some(i) = self.thumb_at(p) else {
@@ -669,8 +609,6 @@ impl PageSidebar {
         !self.read_only && self.menu.is_none() && self.thumb_at(p).is_some()
     }
 
-    /// Escape: cancel a live drag or close the menu. Returns true if either
-    /// was in progress.
     pub fn on_escape(&mut self) -> bool {
         let cancelled = self.drag.cancel();
         self.menu.take().is_some() || cancelled
@@ -686,7 +624,6 @@ impl PageSidebar {
         }
         actions.push(MenuAction::Delete);
 
-        // Height: one separator sits before Delete.
         let h = f64_of_usize(actions.len()) * self.m.menu_row_h
             + self.m.menu_sep_h
             + 2.0 * self.m.menu_pad;
@@ -752,8 +689,6 @@ impl PageSidebar {
     ) where
         F: FnMut(&mut Scene, &mut TextRenderer, Affine, usize, Rect),
     {
-        // A rail that paints its own panel is the window's sidebar region:
-        // the framework's tier, and everything on it drawn for that ground.
         let region_theme;
         let theme = if self.draw_panel {
             crate::surface::region(
@@ -771,10 +706,6 @@ impl PageSidebar {
         let c = &theme.tokens.colors;
 
         if self.draw_panel {
-            // The header is a section label, sentence case, centred on its
-            // own measured line in the header band. A rail that names its own
-            // title keeps it; the rest say what they are in the window's
-            // language.
             let header = if self.header.is_empty() {
                 crate::i18n::widget_format("page-sidebar-title", &[])
             } else {
@@ -815,7 +746,6 @@ impl PageSidebar {
             }
             let shift = self.drag.item_shift(i, &metrics);
             let rect = shifted(self.thumb_rect(i), shift);
-            // Skip rows fully outside the viewport (cheap virtualisation).
             if rect.y1 < self.list_vp.y0 - 4.0 || rect.y0 > self.list_vp.y1 + 4.0 {
                 continue;
             }
@@ -844,8 +774,6 @@ impl PageSidebar {
             let radius = f64::from(theme.tokens.radii.control);
             crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.floating);
             thumb(scene, tr, base, from, ghost);
-            // The page you are moving carries your colour, as every drop
-            // and insertion indicator does.
             scene.stroke(
                 &Stroke::new(2.0),
                 base,
@@ -859,8 +787,6 @@ impl PageSidebar {
         self.draw_scrollbar(scene, base, theme);
 
         if self.drop_armed {
-            // Armed for a drop: the list is ringed in your colour, as every
-            // drop and insertion indicator is.
             let inset = f64::from(theme.tokens.spacing.s1);
             let radius = f64::from(theme.tokens.radii.control);
             scene.stroke(
@@ -900,9 +826,7 @@ impl PageSidebar {
         let travel = view_h - thumb_h;
         let t = (self.scroll / self.max_scroll).clamp(0.0, 1.0);
         let ty = track.y0 + travel * t;
-        // Capsules: the radius is half the bar's width, not a literal.
         let radius = SCROLLBAR_W / 2.0;
-        // The shared scrollbar tiers, so every rail's bar matches Scrollable's.
         scene.fill(
             Fill::NonZero,
             base,
@@ -957,8 +881,6 @@ impl PageSidebar {
 
         thumb(scene, tr, base, i, rect);
 
-        // Every page is seated on the rail by a hairline derived from the
-        // ground, following the thumbnail's corners.
         scene.stroke(
             &Stroke::new(1.0),
             base,
@@ -966,8 +888,6 @@ impl PageSidebar {
             None,
             &crate::surface::edge_outline(rect, radius),
         );
-        // A marked page (annotated, commented) carries a dot inside its own
-        // corner, in your colour.
         if self.marked.contains(&i) {
             let d = f64::from(theme.tokens.spacing.s2);
             let inset = f64::from(theme.tokens.spacing.s1) + d / 2.0;
@@ -988,8 +908,6 @@ impl PageSidebar {
             );
         }
 
-        // Right-aligned in the left gutter, one `s2` short of the
-        // thumbnail, vertically centred on the measured line.
         let label = format!("{}", i.saturating_add(1));
         let style = label_style(theme);
         let weight = if is_current {
@@ -1053,12 +971,9 @@ impl PageSidebar {
         );
     }
 
-    /// Where the add button's glyph and label stand, measured in the frame
-    /// theme's type: centred together while the words fit inside the button,
-    /// and the glyph alone (HIG: an icon-only button is a square) when the
-    /// rail is narrower than them. The label stays its name for the tooltip
-    /// and the accessibility tree either way. The layout places both, so a
-    /// tooltip read before the rail paints reads where they will stand.
+    /// Where the add button's glyph and label stand, measured in the frame theme's type:
+    /// centred together while the words fit inside the button, and the glyph alone (HIG: an
+    /// icon-only button is a square) when the rail is narrower than them.
     fn place_add_face(&mut self) {
         let r = self.add_rect;
         if !self.show_add || r.is_zero_area() {
@@ -1096,9 +1011,6 @@ impl PageSidebar {
             return;
         };
         let c = &theme.tokens.colors;
-        // A popover over content: `radii.control`, the floating-panel shadow
-        // shaped to its corners, hairline edge; rows are `radii.detail` details
-        // inside it, labels on the standard padding.
         let radius = f64::from(theme.tokens.radii.control);
         let rr = RoundedRect::from_rect(menu.rect, radius);
         crate::surface::shadow(
@@ -1240,7 +1152,6 @@ mod tests {
             let mut v = vec![0, 1, 2, 3];
             move_item(&mut v, 3, 0);
             assert_eq!(v, vec![3, 0, 1, 2]);
-            // out of range / equal are no-ops.
             let mut v = vec![0, 1];
             move_item(&mut v, 0, 0);
             assert_eq!(v, vec![0, 1]);
@@ -1248,12 +1159,6 @@ mod tests {
             assert_eq!(v, vec![0, 1]);
         }
 
-        // Case `themed_metrics_read_the_spacing_scale_the_constants_restate`.
-        // The themed metrics are the restated scale read from the tokens: the
-        // same numbers at the default density, except the add button, which
-        // becomes a bar button, and the menu width, which has no token. A
-        // themed frame lays the rail out with them; a plain frame keeps the
-        // defaults, so the existing hosts are untouched.
         {
             let theme = Theme::dark();
             let themed = RailMetrics::from_theme(&theme);
@@ -1350,7 +1255,6 @@ mod tests {
             assert!(s.on_escape());
             assert!(!s.is_dragging());
             assert!(!s.on_release());
-            // No reorder survives a cancel.
             assert!(
                 !s.take_events()
                     .iter()

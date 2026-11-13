@@ -18,7 +18,6 @@ pub(super) struct PaintedBar {
     parts: Option<crate::scene_parts::SectionParts>,
 }
 
-/// One person on one of a bar's tabs, as its pill draws them.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PersonSeen {
     tab: u64,
@@ -56,15 +55,11 @@ impl TabBar {
     }
 
     /// The words the bar painted in its last drawing, each at the place its ink stands: the
-    /// window's name in its tab, its location, a notice, the words its row's pickers show. No
-    /// widget lays them out, so nothing else reports them, and two of them drawn in one place
-    /// are two words a person cannot read.
+    /// window's name in its tab, its location, a notice, the words its row's pickers show.
     #[must_use]
     pub fn painted_labels(&self) -> Vec<crate::window_toolbar::BarLabel> {
         let mut labels = self.painted_labels.borrow().clone();
         labels.extend_from_slice(self.toolbar_row.painted_labels());
-        // The same words at the same place are one label: a bar crossing between two rows of
-        // slots paints the pair that leaves and the pair that comes in.
         let mut seen = std::collections::HashSet::new();
         labels.retain(|label| {
             seen.insert((
@@ -86,12 +81,9 @@ impl TabBar {
         presence: &PresenceCtx,
     ) {
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
-        // The words of the drawing about to be made replace the ones it replaces.
         self.painted_labels.borrow_mut().clear();
         self.busy_drawn =
             (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::motion::frame_now()));
-        // Guards one stale frame after a detach/insert mutates `tabs` outside the
-        // layout pass; next `apply_layout` fixes it.
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
@@ -100,14 +92,10 @@ impl TabBar {
         self.pill_faces = (0..self.tabs.len())
             .map(|i| self.fit_pill_faces(i, presence))
             .collect();
-        // Only pass with a TextRenderer — shapes every title up front.
         self.visible_titles = (0..self.tabs.len())
             .map(|i| self.visible_title(i, tr, theme))
             .collect();
 
-        // After a reorder/insert/remove, every surviving pill interpolates from
-        // its previous rect to `tab_rects[i]` on the list change's move; a brand-new
-        // tab (no snapshot) renders at target immediately.
         let layout_t = self.layout_anim_started.and_then(|t| {
             let elapsed = crate::time::now().saturating_duration_since(t);
             (elapsed < layout_anim())
@@ -118,8 +106,6 @@ impl TabBar {
         self.inserted_at.retain(|_, started| {
             crate::time::now().saturating_duration_since(*started) < fade_window
         });
-        // A selection move that has arrived is forgotten: the pills it was between stand at
-        // rest, and the strip asks for no more frames for it.
         if self.selection_move.is_some_and(|(_, _, started)| {
             crate::time::now().saturating_duration_since(started) >= fade_window
                 || !theme.motion().moves()
@@ -138,8 +124,6 @@ impl TabBar {
         self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_opened_by_chip(scene, transform, tr, theme);
         if self.window_controls {
-            // The window's own controls: one pill, and the app's History
-            // toggle standing on the window's ground before it.
             let now = crate::motion::frame_now();
             let motion = self.motion;
             for (control, _) in self.controls.iter() {
@@ -171,9 +155,6 @@ impl TabBar {
                 let rect = self.toolbar_row_rect();
                 self.toolbar_row.lay_out(rect);
             }
-            // The app's slots change on their own (a document's edited mark
-            // comes and goes with each save): a damage part held inside the
-            // bar, so they repaint the bar and not the window's lane.
             let area = self.rect.union(self.toolbar_row.row()).inflate(2.0, 2.0);
             let key = crate::scene_parts::PartKey::new("ui.window-toolbar-row", &self.group_id_tag);
             let row = &mut self.toolbar_row;
@@ -226,7 +207,6 @@ impl TabBar {
         );
     }
 
-    /// The bar's own state changed: what it draws may have.
     pub(super) fn touch(&mut self) {
         self.paint_epoch = self.paint_epoch.wrapping_add(1);
     }
@@ -254,7 +234,6 @@ impl TabBar {
         })
     }
 
-    /// The people on the bar's tabs, as its pills draw them.
     pub(super) fn people_seen(&self, presence: &PresenceCtx) -> Vec<PersonSeen> {
         let mut seen = Vec::new();
         for tab in &self.tabs {
@@ -327,12 +306,7 @@ impl TabBar {
         let ((), parts) = crate::scene_parts::record(&mut own, |own| {
             self.draw_fresh(own, transform, tr, theme, presence);
         });
-        // What this drawing shows, before the slots take their places again: a bar that re-places
-        // them under it keeps the drawing for no replay.
         let drawn = self.paint_epoch;
-        // Drawing measures the slots' labels: where that leaves the slots short of the room they
-        // need, they take their places again and the strip's "+" gives its up, so the bar settles
-        // instead of painting its next frame over a row it has since moved.
         if self.toolbar_row.take_measured() && self.strip_squeezes_slots() {
             self.lay_out_toolbar_row();
         }
@@ -341,8 +315,6 @@ impl TabBar {
         {
             self.fresh_draws = self.fresh_draws.saturating_add(1);
         }
-        // Read after the draw: drawing settles what it measures, and the
-        // pose of a busy arc it shows.
         let seen = self.people_seen(presence);
         self.painted = self.at_rest().then(|| PaintedBar {
             epoch: drawn,
@@ -385,8 +357,6 @@ impl TabBar {
                     std::f64::consts::TAU * 0.75,
                     0.0,
                 );
-                // Its own damage part: a turning arc repaints its square,
-                // not its pill.
                 let key = crate::scene_parts::PartKey::new("ui.tab-busy", id);
                 let bounds = vec![transform.transform_rect_bbox(rect.inflate(2.0, 2.0))];
                 crate::scene_parts::part(scene, key, bounds, |scene| {

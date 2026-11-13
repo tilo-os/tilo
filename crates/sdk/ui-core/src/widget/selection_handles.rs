@@ -1,19 +1,8 @@
-//! Selection handles for a canvas: the frame around what is selected, its
-//! resize handles at the corners and (once the frame is big enough on
-//! screen, or always with [`SelectionHandles::with_edges`]) at the middle of
-//! each edge, and its rotation handle above
-//! (unless [`SelectionHandles::without_rotation`]: a crop, a text box, a clip),
-//! drawn in your colour and hit-tested at a constant size on screen whatever
-//! the zoom.
-//!
-//! The frame may be turned (a rotated shape keeps a frame along its own
-//! sides), and every drag is answered in the frame's own axes.
-//!
-//! The frame owns no document state. A canvas keeps its selection, asks
-//! [`SelectionHandles::handle_at`] what a press landed on, and turns the drag
-//! into its own action with [`SelectionHandles::stretch_for`] or
-//! [`SelectionHandles::rotation_for`], so every edit still goes through the
-//! canvas's published vocabulary.
+//! Selection handles for a canvas: the frame around what is selected, its resize handles at the
+//! corners and (once the frame is big enough on screen, or always with
+//! [`SelectionHandles::with_edges`]) at the middle of each edge, and its rotation handle above
+//! (unless [`SelectionHandles::without_rotation`]: a crop, a text box, a clip), drawn in your
+//! colour and hit-tested at a constant size on screen whatever the zoom.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -38,7 +27,6 @@ pub enum ToolFeedback {
 }
 
 impl ToolFeedback {
-    /// Paint a screen-space boundary without changing the authored artwork.
     pub fn draw(self, scene: &mut Scene, path: &BezPath, theme: &Theme) {
         let colors = &theme.tokens.colors;
         let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
@@ -64,7 +52,6 @@ impl ToolFeedback {
     }
 }
 
-/// A grip on the selection frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
     TopLeft,
@@ -116,13 +103,11 @@ impl Handle {
         )
     }
 
-    /// Whether dragging this handle resizes along one axis only.
     #[must_use]
     pub fn is_edge(self) -> bool {
         Self::EDGES.contains(&self)
     }
 
-    /// Whether dragging the handle changes the width, the height.
     fn axes(self) -> (bool, bool) {
         match self {
             Self::Top | Self::Bottom => (false, true),
@@ -141,7 +126,6 @@ impl Handle {
         }
         let (u, v) = self.place();
         let direction = (v - 0.5).atan2(u - 0.5) + angle;
-        // Eighths of a turn, folded onto the four double-headed cursors.
         let eighth = (direction / std::f64::consts::FRAC_PI_4)
             .round()
             .rem_euclid(4.0);
@@ -162,13 +146,9 @@ impl Handle {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectionHandles {
     pub bounds: Rect,
-    /// Radians, clockwise on a y-down canvas.
     pub angle: f64,
-    /// The pointer target around each handle, in screen pixels.
     target: f64,
-    /// Whether the frame offers its rotation handle.
     rotation: bool,
-    /// Whether the edge handles show however small the frame is on screen.
     edges: bool,
 }
 
@@ -208,7 +188,6 @@ impl SelectionHandles {
         Self { angle, ..self }
     }
 
-    /// Frame space to content space.
     pub fn orientation(&self) -> Affine {
         Affine::rotate_about(self.angle, self.bounds.center())
     }
@@ -234,7 +213,6 @@ impl SelectionHandles {
         least >= self.target * 2.5
     }
 
-    /// The handles that can be grabbed at `zoom`, the rotation handle first.
     pub fn handles(&self, zoom: f64) -> impl Iterator<Item = Handle> {
         let edges = self.edges_shown(zoom);
         let rotation = self.rotation;
@@ -262,7 +240,6 @@ impl SelectionHandles {
         self.orientation() * self.local(handle, zoom)
     }
 
-    /// The handle under `point` (content coordinates), if any.
     pub fn handle_at(&self, point: Point, zoom: f64) -> Option<Handle> {
         let reach = self.target / 2.0 / zoom.max(1e-6);
         let mut best: Option<(f64, Handle)> = None;
@@ -280,10 +257,8 @@ impl SelectionHandles {
         self.bounds.contains(self.orientation().inverse() * point)
     }
 
-    /// The resize a drag of `handle` from `from` to `to` asks for, as an
-    /// affine in content space. The opposite side stays still, or the centre
-    /// with `from_centre`; `keep_aspect` scales both ways alike. A drag past
-    /// the anchor flips; the frame never collapses below half a unit.
+    /// The resize a drag of `handle` from `from` to `to` asks for, as an affine in content
+    /// space.
     pub fn stretch_for(
         &self,
         handle: Handle,
@@ -323,7 +298,6 @@ impl SelectionHandles {
         if keep_aspect {
             let uniform = match (along_x, along_y) {
                 (true, true) => {
-                    // The scale along the diagonal the pointer pulls.
                     let before = from - anchor;
                     let after = to - anchor;
                     after.dot(before) / before.hypot2().max(1e-12)
@@ -366,7 +340,6 @@ impl SelectionHandles {
         }
     }
 
-    /// The rotation a drag asks for, as an affine about the frame's centre.
     pub fn rotation_affine(&self, from: Point, to: Point, snap: bool) -> Affine {
         let degrees = self.rotation_for(from, to, snap);
         Affine::rotate_about(degrees.to_radians(), self.bounds.center())
@@ -402,8 +375,6 @@ impl SelectionHandles {
         outline.line_to(screen(Point::new(b.x0, b.y1)));
         outline.close_path();
         scene.stroke(&line, Affine::IDENTITY, accent, None, &outline);
-        // The rotation handle stands one target off the frame's top edge on
-        // screen, whatever the preview did to the frame.
         let top = screen(self.local(Handle::Top, zoom));
         let centre = screen(b.center());
         let away = top - centre;
@@ -419,7 +390,6 @@ impl SelectionHandles {
             .filter(|handle| *handle != Handle::Rotate)
         {
             let at = screen(self.local(handle, zoom));
-            // An edge grip is a bar along its edge; a corner grip a square.
             let size = match handle {
                 Handle::Top | Handle::Bottom => (grip * 1.6, grip * 0.7),
                 Handle::Left | Handle::Right => (grip * 0.7, grip * 1.6),
@@ -448,24 +418,19 @@ impl SelectionHandles {
     }
 }
 
-/// One end of a text selection a finger can take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextGrip {
     Start,
     End,
 }
 
-/// The grips of a text selection on a touchscreen: at its start a stem
-/// down the first selected line's leading edge with a knob above it, at
-/// its end a stem down the last line's trailing edge with a knob below,
-/// in the selection's accent. A finger drags either end; the knobs are hit
-/// at a constant target on screen whatever the zoom.
+/// The grips of a text selection on a touchscreen: at its start a stem down the first selected
+/// line's leading edge with a knob above it, at its end a stem down the last line's trailing
+/// edge with a knob below, in the selection's accent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGrips {
-    /// The first and the last selected line's box, on screen.
     start: Rect,
     end: Rect,
-    /// The pointer target around each knob, in screen pixels.
     target: f64,
 }
 
@@ -480,7 +445,6 @@ impl TextGrips {
         self.target * 0.2
     }
 
-    /// The centre of `grip`'s knob on screen.
     pub fn knob(&self, grip: TextGrip) -> Point {
         let r = self.radius();
         match grip {
@@ -489,8 +453,6 @@ impl TextGrips {
         }
     }
 
-    /// The lowest a grip's target reaches on screen: what floats below the
-    /// selection stands below this.
     pub fn reach_below(&self) -> f64 {
         self.knob(TextGrip::End).y + self.target / 2.0
     }
@@ -626,7 +588,6 @@ mod tests {
             centred * Point::new(200.0, 150.0),
             Point::new(300.0, 150.0)
         ));
-        // An edge stretches only its own axis.
         let edge = frame.stretch_for(
             Handle::Bottom,
             (Point::new(150.0, 150.0), Point::new(170.0, 200.0)),

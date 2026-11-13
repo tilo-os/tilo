@@ -5,7 +5,6 @@ use crate::widget::{MediaAspect, RowLeadingShape, RowShape};
 
 use super::{Skeleton, SkeletonShape};
 
-/// What kind of content a skeleton stands in for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SkeletonForm {
     /// Lines of body text.
@@ -29,12 +28,12 @@ crate::component::choice!(SkeletonForm, "SkeletonForm", {
     Page => "page",
 });
 
-/// The shape of content still on its way, drawn where it will stand and at its size, so nothing
-/// moves when it arrives. It never shimmers, and it says "Loading" to assistive technology.
+/// The shape of content still on its way, drawn where it will be and at its size so nothing
+/// moves when it arrives; it never shimmers and says "Loading" to assistive technology.
 #[derive(Component, Default)]
 #[component(name = "Skeleton", role = "Generic")]
 pub struct SkeletonProps {
-    /// What it stands in for: `text` unless said.
+    /// What it previews: `text` unless said.
     #[component(positional)]
     pub shape: Option<SkeletonForm>,
     /// How many lines: of text (3 unless said), or under a row's title (none unless said).
@@ -74,7 +73,6 @@ impl Described for Skeleton {
         Self::new(props.shape())
     }
 
-    /// The shape it stands in for changes where it stands, and the space it keeps with it.
     fn set_props(&mut self, props: SkeletonProps) -> bool {
         self.set_shape(props.shape());
         true

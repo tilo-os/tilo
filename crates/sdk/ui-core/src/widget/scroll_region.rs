@@ -1,13 +1,5 @@
-//! A scrolling viewport for a widget that paints its own content: a
-//! calculator's history, a chat transcript, a map's panel, a painted modal
-//! body ([`super::ModalLayout::body`]).
-//!
-//! The retained [`super::Scrollable`] scrolls a widget tree. A painted host
-//! has no tree to hand it, so it keeps a [`ScrollRegion`] instead: it tells
-//! the region its viewport and how big its content is, forwards its events,
-//! draws its content through [`ScrollRegion::paint`] (clipped and
-//! translated), and gets the same wheel, keyboard, drag, bar, idle fade and
-//! accessible scrolling every `Scrollable` has.
+//! A scrolling viewport for a widget that paints its own content: a calculator's history, a
+//! chat transcript, a map's panel, a painted modal body ([`super::ModalLayout::body`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -23,11 +15,8 @@ use super::scrollbar::{BarFade, PAGE_FRACTION, PressOutcome, ScrollMetrics, Scro
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 
-/// The offset along one axis that moves the least from `offset` to show
-/// `band` (content coordinates) in a viewport `view` long, kept in
-/// `0..=max`. Every painted list that reveals its armed row (a menu, a
-/// picker, a rail) scrolls by this, as [`ScrollRegion::scroll_into_view`]
-/// does.
+/// The offset along one axis that moves the least from `offset` to show `band` (content
+/// coordinates) in a viewport `view` long, kept in `0..=max`.
 #[must_use]
 pub(crate) fn reveal_offset(offset: f64, view: f64, band: std::ops::Range<f64>, max: f64) -> f64 {
     let target = if band.start < offset {
@@ -40,11 +29,9 @@ pub(crate) fn reveal_offset(offset: f64, view: f64, band: std::ops::Range<f64>, 
     target.clamp(0.0, max.max(0.0))
 }
 
-/// See the module docs.
 #[derive(Debug)]
 pub struct ScrollRegion {
     axis: ScrollAxis,
-    /// The whole region, bar lanes included.
     viewport: Rect,
     content: Vec2,
     offset: Vec2,
@@ -161,7 +148,6 @@ impl ScrollRegion {
         }
     }
 
-    /// A region that scrolls up and down.
     #[must_use]
     pub fn vertical() -> Self {
         Self::new(ScrollAxis::Vertical)
@@ -190,12 +176,10 @@ impl ScrollRegion {
         self
     }
 
-    /// Lay the bars over the content's trailing edge rather than in lanes
-    /// beside it, so the content keeps the region's whole width whether or
-    /// not it overflows: content that grows past the region (a list opening
-    /// in a panel) never narrows and reflows what was already there. For
-    /// content with its own padding at least a lane wide on that edge, which
-    /// the bar then sits in.
+    /// Lay the bars over the content's trailing edge rather than in lanes beside it, so the
+    /// content keeps the region's whole width whether or not it overflows: content that grows
+    /// past the region (a list opening in a panel) never narrows and reflows what was already
+    /// there.
     #[must_use]
     pub fn with_overlaid_bars(mut self) -> Self {
         self.overlaid_bars = true;
@@ -229,8 +213,6 @@ impl ScrollRegion {
         matches!(self.axis, ScrollAxis::Horizontal | ScrollAxis::Both)
     }
 
-    /// The region's rect (bar lanes included) for this layout, and the
-    /// theme its lanes and steps come from.
     pub fn set_viewport(&mut self, viewport: Rect, theme: &Theme) {
         let lane = if self.bars {
             f64::from(theme.tokens.metrics.scrollbar_gutter)
@@ -247,7 +229,6 @@ impl ScrollRegion {
         self.clamp();
     }
 
-    /// How big the content is, in the host's content coordinates.
     pub fn set_content_size(&mut self, width: f64, height: f64) {
         let content = Vec2::new(width.max(0.0), height.max(0.0));
         if self.content != content {
@@ -257,13 +238,11 @@ impl ScrollRegion {
         self.clamp();
     }
 
-    /// Whether the content is taller than the region.
     #[must_use]
     pub fn overflows_vertically(&self) -> bool {
         self.has_vertical() && self.content.y > self.viewport.height() + 0.5
     }
 
-    /// Whether the content is wider than the region.
     #[must_use]
     pub fn overflows_horizontally(&self) -> bool {
         self.has_horizontal() && self.content.x > self.viewport.width() + 0.5
@@ -293,13 +272,11 @@ impl ScrollRegion {
         rect
     }
 
-    /// The current offset (how far the content is scrolled).
     #[must_use]
     pub fn offset(&self) -> Vec2 {
         self.offset
     }
 
-    /// The furthest the content scrolls, per axis.
     #[must_use]
     pub fn max_offset(&self) -> Vec2 {
         let shown = self.content_rect();
@@ -347,12 +324,10 @@ impl ScrollRegion {
         self.clamp();
     }
 
-    /// Move to `offset` (clamped) the way a view moves to what it was asked
-    /// to show (a find's next match, a search hit opened): a short jump the
-    /// person just asked for glides there and a long one fades in at the
-    /// target; one nobody asked for, or under reduced motion, lands
-    /// ([`crate::motion::ScrollTo`]). The host steps it from its `update`
-    /// ([`Self::advance`]), as it does a glide.
+    /// Move to `offset` (clamped) the way a view moves to what it was asked to show (a find's
+    /// next match, a search hit opened): a short jump the person just asked for glides there
+    /// and a long one fades in at the target; one nobody asked for, or under reduced motion,
+    /// lands ([`crate::motion::ScrollTo`]).
     pub fn glide_to(&mut self, offset: Vec2) {
         let now = crate::motion::frame_now();
         let max = self.max_offset();
@@ -387,18 +362,10 @@ impl ScrollRegion {
         moved
     }
 
-    /// Move the offset so the viewport's lower edge falls in a gap between
-    /// `bands` (content coordinates) rather than cutting one through its
-    /// middle: a field list drawn edge to edge then always ends on a whole
-    /// field, never on half of one with the list's own empty sheet below it.
-    ///
-    /// `bands` are the fields, top down. Where the edge cuts a field the list
-    /// scrolls on until that field is whole — the fade at the edge already
-    /// said there was more to see — so the field is complete when the offset
-    /// reaches the content's end, as a list resting at its foot shows all of
-    /// its last field. An edge already in a gap is left alone, and so is one
-    /// no gap can be reached from: the person scrolling is not fought either
-    /// way.
+    /// Move the offset so the viewport's lower edge falls in a gap between `bands` (content
+    /// coordinates) rather than cutting one through its middle: a field list drawn edge to edge
+    /// then always ends on a whole field, never on half of one with the list's own empty sheet
+    /// below it.
     pub fn land_between(&mut self, bands: &[Rect]) {
         let shown = self.content_rect().height();
         let offset = self.offset.y;
@@ -457,15 +424,12 @@ impl ScrollRegion {
         }
     }
 
-    /// Where a point in the window falls in the content, for hit-testing.
     #[must_use]
     pub fn to_content(&self, point: Point) -> Point {
         let shown = self.content_rect();
         point - Vec2::new(shown.x0, shown.y0) + self.drawn_offset()
     }
 
-    /// The part of the content in view, in content coordinates (cull what
-    /// lies outside it).
     #[must_use]
     pub fn visible_content(&self) -> Rect {
         let shown = self.content_rect();
@@ -515,7 +479,6 @@ impl ScrollRegion {
         self.pointer_near || self.vbar.is_active() || self.hbar.is_active()
     }
 
-    /// The vertical thumb and its track, for a test that grabs one.
     #[cfg(test)]
     pub(crate) fn test_vertical_thumb(&self, theme: &Theme) -> Option<(Rect, Rect)> {
         let track = self.v_track(theme)?;
@@ -569,11 +532,9 @@ impl ScrollRegion {
         });
     }
 
-    /// From the host's `collect_damage`, on a frame whose content and
-    /// offset are as on screen: add the bars' tracks to `regions` when what
-    /// the bars paint changed since the frame on screen (a thumb fading out
-    /// or lighting up under the pointer). Without both frames noted, every
-    /// track either knows is added.
+    /// From the host's `collect_damage`, on a frame whose content and offset are as on screen:
+    /// add the bars' tracks to `regions` when what the bars paint changed since the frame on
+    /// screen (a thumb fading out or lighting up under the pointer).
     pub fn damage_changed_bars(&self, regions: &mut Vec<Rect>) {
         let drawing = self.shown.drawing();
         match (drawing.as_deref(), self.shown.presented()) {
@@ -588,16 +549,11 @@ impl ScrollRegion {
         }
     }
 
-    /// From the host's `collect_damage`, when nothing it paints in the
-    /// region changed since the frame on screen but the offset: offer the
-    /// scroll to a host that copies what stays on screen
-    /// ([`crate::scroll_copy::offer`]), and add the bars' tracks, where the
-    /// thumbs moved, to `regions`. `false` when the host does not copy, or
-    /// the frame shows the content in another clip or under another
-    /// transform, or the offset did not move: the host then damages the
-    /// region as it would without copies.
+    /// From the host's `collect_damage`, when nothing it paints in the region changed since the
+    /// frame on screen but the offset: offer the scroll to a host that copies what stays on
+    /// screen ([`crate::scroll_copy::offer`]), and add the bars' tracks, where the thumbs
+    /// moved, to `regions`.
     pub fn offer_copy<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> bool {
-        // Content fading in after a long jump is not where a copy finds it.
         if self.fade_drawn.get() < 1.0 || self.fade_shown < 1.0 {
             return false;
         }
@@ -629,7 +585,6 @@ impl ScrollRegion {
     ) {
         self.note_shown(transform, theme);
         let shown = self.content_rect();
-        // After a long jump the content fades in where it landed.
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -671,8 +626,6 @@ impl ScrollRegion {
         edges
     }
 
-    /// Paint the bars alone, for a host that clips and draws its content
-    /// itself.
     pub fn paint_bars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         self.corners
             .set(crate::widget::scrollbar::SurfaceCorners::seen(
@@ -723,18 +676,15 @@ impl ScrollRegion {
             || self.fade.fading_at(now, self.held(theme))
     }
 
-    /// Step a glide in progress to the frame's time, from the host's
-    /// `update`; returns whether the offset moved, which the host treats
-    /// as the scroll an event would have made (a copy, not a repaint). A
-    /// glide that meets the content's end stops there.
+    /// Step a glide in progress to the frame's time, from the host's `update`; returns whether
+    /// the offset moved, which the host treats as the scroll an event would have made (a copy,
+    /// not a repaint).
     pub fn advance(&mut self) -> bool {
         let now = crate::motion::frame_now();
-        // A fade-in after a long jump repaints its frames, as a scroll does.
         let fading = self.scroll_to.opacity(now) < 1.0 || self.fade_shown < 1.0;
         if self.scroll_to.target().is_some() {
             return self.follow_scroll_to(now) | fading;
         }
-        // The give springing back moves the content as a glide does.
         let giving = self.glide.give_needs_frame(now);
         if !self.glide.is_active() {
             return fading | giving;
@@ -752,14 +702,11 @@ impl ScrollRegion {
         moved
     }
 
-    /// Whether a glide is in progress.
     #[must_use]
     pub fn is_gliding(&self) -> bool {
         self.glide.is_active()
     }
 
-    /// The axis wheel motion glides along: the vertical one when the region
-    /// scrolls both ways.
     fn glides_vertically(&self) -> bool {
         self.has_vertical()
     }
@@ -777,10 +724,8 @@ impl ScrollRegion {
         self.focused = focused;
     }
 
-    /// Wheel and touchpad scrolling over the region, dragging and paging
-    /// with its bars, and Page Up/Down, Home/End and the arrows while the
-    /// host holds focus. Marks the event handled when it scrolled. Returns
-    /// whether the offset or the bars changed.
+    /// Wheel and touchpad scrolling over the region, dragging and paging with its bars, and
+    /// Page Up/Down, Home/End and the arrows while the host holds focus.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -796,7 +741,6 @@ impl ScrollRegion {
         )
     }
 
-    /// Retire a captured scrollbar gesture and its transient pointer feedback.
     pub fn cancel_interaction(&mut self) -> bool {
         let changed = self.vbar.release()
             | self.hbar.release()
@@ -806,7 +750,6 @@ impl ScrollRegion {
         changed
     }
 
-    /// The same input path for painted hosts without a retained widget tree.
     pub fn handle_window_event(
         &mut self,
         event: &WindowEvent,
@@ -859,7 +802,6 @@ impl ScrollRegion {
                 *handled = true;
                 self.cancel_interaction()
             }
-            // Ctrl+scroll zooms (`crate::content_zoom`): the window takes it.
             WindowEvent::MouseWheel { delta, phase, .. }
                 if self.viewport.contains(self.cursor)
                     && !crate::content_zoom::is_zoom_modifier(
@@ -867,7 +809,6 @@ impl ScrollRegion {
                         modifiers,
                     ) =>
             {
-                // The hand takes over a jump in progress from where it is drawn.
                 self.scroll_to.take_over(crate::motion::frame_now());
                 if let Some(moved) =
                     self.wheel_glide(delta, *phase, scale_factor, modifiers, theme, handled)
@@ -985,12 +926,9 @@ impl ScrollRegion {
         }
     }
 
-    /// Wheel motion along the axis the region glides on, through the
-    /// shared momentum: a notch moves at once and glides on, fingers move
-    /// the content 1:1 and a flick glides on after they lift. `None` for
-    /// motion across that axis (Shift+wheel sideways, a sideways swipe),
-    /// which moves the content directly. Marks the event handled when it
-    /// moved the content or started a glide; returns whether it moved.
+    /// Wheel motion along the axis the region glides on, through the shared momentum: a notch
+    /// moves at once and glides on, fingers move the content 1:1 and a flick glides on after
+    /// they lift.
     fn wheel_glide(
         &mut self,
         delta: &MouseScrollDelta,
@@ -1012,8 +950,6 @@ impl ScrollRegion {
             self.glide.stop();
             return None;
         }
-        // The momentum reads a wheel's vertical motion: a region that only
-        // scrolls sideways hands it the sideways motion in its place.
         let delta = if vertical {
             *delta
         } else {
@@ -1036,13 +972,11 @@ impl ScrollRegion {
         let step = match self.glide.wheel(&delta, phase, theme.reduce_motion) {
             crate::virtual_viewport::WheelStep::Scroll(step) => step,
             crate::virtual_viewport::WheelStep::Fling => {
-                // The glide moves the content in the frames that follow.
                 *handled = true;
                 return Some(false);
             }
             crate::virtual_viewport::WheelStep::Ignored => return Some(false),
         };
-        // A notch is the theme's line, not the momentum's own step.
         let step = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.line(),
             MouseScrollDelta::PixelDelta(_) => step,
@@ -1076,8 +1010,6 @@ impl ScrollRegion {
         })
     }
 
-    /// Apply an accessible scroll action: forward
-    /// `Widget::apply_primary_vertical_scroll`.
     pub fn apply_primary_vertical_scroll(
         &mut self,
         action: super::PrimaryScrollAction,
@@ -1330,7 +1262,6 @@ mod tests {
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
         let theme = Theme::dark();
         let mut region = region(100_000.0);
-        // A find's next match a view down glides there in whole pixels.
         with_monotonic_time(start, || {
             crate::motion::note_source(MotionSource::Keyboard);
             region.glide_to(Vec2::new(0.0, 300.0));
@@ -1343,7 +1274,6 @@ mod tests {
         });
         assert!(drawn > 0.0 && drawn < 300.0, "on its way: {drawn}");
         assert_eq!(drawn.fract(), 0.0, "in whole pixels, which copy");
-        // The wheel takes over from where it is drawn.
         with_monotonic_time(at(40), || {
             send(
                 &mut region,
@@ -1360,7 +1290,6 @@ mod tests {
         });
         assert_eq!(region.offset().y, drawn);
 
-        // Undisturbed, it arrives exactly.
         with_monotonic_time(at(1000), || {
             crate::motion::note_source(MotionSource::Keyboard);
             region.glide_to(Vec2::new(0.0, 500.0));
@@ -1370,8 +1299,6 @@ mod tests {
         });
         assert_eq!(region.offset().y, 500.0);
 
-        // Many views away it lands, fades in there, and offers no copy of
-        // the fading content.
         with_monotonic_time(at(2000), || {
             crate::motion::note_source(MotionSource::Keyboard);
             region.glide_to(Vec2::new(0.0, 50_000.0));
@@ -1383,7 +1310,6 @@ mod tests {
             assert!(region.needs_animation_frame(&theme));
         });
 
-        // A jump nobody's hand asked for lands.
         let mut calm = self::region(100_000.0);
         with_monotonic_time(at(5000), || {
             calm.glide_to(Vec2::new(0.0, 300.0));

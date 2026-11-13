@@ -5,9 +5,8 @@ use crate::widget::Tone;
 
 use super::{StackSize, TextStack};
 
-/// A title over a secondary line, with an optional third line under it, in fixed roles and at
-/// fixed gaps: a file's name over its folder, a person over their role. Each line is one line,
-/// cut short with an ellipsis; two facts never share a line.
+/// A title over a secondary line and an optional third (a file's name over its folder, a person
+/// over their role), each one line cut short with an ellipsis.
 #[derive(Component, Default)]
 #[component(name = "TextStack", role = "Group", label = "title")]
 pub struct TextStackProps {
@@ -45,7 +44,6 @@ impl Described for TextStack {
         stack
     }
 
-    /// Its lines change in place.
     fn set_props(&mut self, props: TextStackProps) -> bool {
         let size = if props.dense {
             StackSize::Dense

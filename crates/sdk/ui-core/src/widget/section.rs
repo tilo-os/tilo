@@ -1,23 +1,5 @@
 //! `Section`: a titled group of content on the ground, separated from the next group by space,
 //! never boxed.
-//!
-//! An intrinsic-height stack whose items sit `rhythm.sibling` apart, with consecutive
-//! [`ListRow`]s one list: edge to edge with no rule between them, badge columns sharing one
-//! width, and a run of selected rows one lift. The optional header carries the group's title
-//! (sentence case, `Heading` for a section of a page, `Subheading` inside one), a count, and one
-//! trailing text action ("Clear all", "Stage all"), `rhythm.related` above the first item. There
-//! is no subtitle: a description goes in the content only when it tells the person something
-//! they need to act on.
-//!
-//! **One content edge**: the title starts on the column's content edge like the rows' text, the
-//! action's label ends on the trailing edge with its hover lift bleeding past as a row's does,
-//! and the header is one fixed height whether or not it has an action.
-//!
-//! A [`Section::collapsible`] section is a disclosure: its header toggles the items with a
-//! pointer, Enter, Space or the arrow keys, and says whether it is expanded. [`StatusLine`] and
-//! [`ObjectHeader`] are the two non-interactive parts a section most often carries.
-//!
-//! [`ListRow`]: crate::widget::ListRow
 
 use crate::widget::DrawChild;
 use std::cell::Cell;
@@ -50,7 +32,6 @@ use crate::widget::{
     Text, Tone, Widget,
 };
 
-/// How prominent a section's title is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Level {
     /// A section of a page: `Heading`.
@@ -86,7 +67,6 @@ struct HeaderMetrics {
     gap: f64,
     count: TextStyle,
     count_pad: f64,
-    /// The action's label inset: the bleed its lift takes past the edge.
     action_pad: f64,
 }
 
@@ -154,7 +134,6 @@ fn paint_count(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
     );
 }
 
-/// A section's header row.
 pub struct SectionHeader {
     leading: Option<Element>,
     title: String,
@@ -186,7 +165,6 @@ impl SectionHeader {
         }
     }
 
-    /// How many items the section holds, in a quiet pill after the title.
     #[must_use]
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
@@ -199,8 +177,6 @@ impl SectionHeader {
         self.count
     }
 
-    /// One trailing text action that acts on the whole section. Its label
-    /// ends on the trailing edge.
     #[must_use]
     pub fn action(mut self, button: Button) -> Self {
         self.action = Some(button);
@@ -231,7 +207,6 @@ impl SectionHeader {
         Box::new(self.into_widget(None))
     }
 
-    /// The header's title.
     #[must_use]
     pub fn title(&self) -> &str {
         &self.title
@@ -295,12 +270,6 @@ pub fn band_height(theme: &Theme) -> f64 {
 /// The number a heading shows beside its words, when the number is worth reading: a heading of
 /// one row saying "1" restates the row standing under it, so it draws no count; two or more say
 /// how many, and a run the surface cut short says how many it left out even when that is one.
-/// `shown` is how many of them the heading stands over, `total` how many the surface holds
-/// where it holds more than it shows. `None` leaves the heading to its name alone.
-///
-/// What a heading counts, it counts as left to do: a list asks how many of the rows under it
-/// are still to do, so a row just finished takes its number down with it even while its row
-/// stands struck through ([`crate::widget::ListModel::done`]).
 #[must_use]
 pub fn heading_count(shown: usize, total: Option<usize>) -> Option<usize> {
     let total = total.unwrap_or(shown);
@@ -388,8 +357,6 @@ impl<'a> SectionHeaderFace<'a> {
         self
     }
 
-    /// The header's height: one small control's, or the title's wrapped
-    /// lines when they are taller.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
@@ -456,9 +423,6 @@ impl<'a> SectionHeaderFace<'a> {
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
         let header_h = m.height(first_line);
-        // Room past the header's own height is the finger's, where the box that holds it grew
-        // for a touch: it stands over the line, so a heading keeps its line the same distance
-        // from what it heads however tall the band a finger needs is.
         let own = header_h.max(f64::from(title_h));
         let down = foot(rect, own);
         let cy = rect.y0 + down + header_h / 2.0;
@@ -490,8 +454,6 @@ impl<'a> SectionHeaderFace<'a> {
                 self.tone.map_or(theme.text_dim, |tone| tone.colour(theme)),
             );
         }
-        // How a group's heading reads: its tone's colour, the quiet dim of a heading that
-        // names the rows under it, or the section's own ink.
         let ink = match (self.level, self.tone) {
             (_, Some(tone)) => tone.colour(theme),
             (Level::Group, None) => theme.text_dim,
@@ -511,7 +473,6 @@ impl<'a> SectionHeaderFace<'a> {
             paint_count(ctx, Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0), &label);
         }
         if let Some(count) = self.trailing_count {
-            // On the trailing edge, in the column the rows' facts end on.
             let label = count.to_string();
             let (w, h) = ctx.text.measure_style(&label, None, &m.count);
             let x = rect.x1 - f64::from(w);
@@ -536,7 +497,6 @@ impl<'a> SectionHeaderFace<'a> {
         }
     }
 
-    /// The header's heading node and, with an action, its button.
     pub fn accessibility(&self, rect: Rect) -> AccessNode {
         let mut node = AccessNode::new(Role::Label)
             .with_name(self.title)
@@ -607,7 +567,6 @@ impl Widget for CountPill {
         );
     }
 
-    /// A pill is laid out once it has a rect.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -621,7 +580,6 @@ impl Widget for CountPill {
     }
 }
 
-/// The disclosure chevron of a collapsible section's header.
 struct Chevron {
     expanded: Rc<Cell<bool>>,
     rect: Rect,
@@ -686,7 +644,6 @@ impl Widget for Chevron {
         self.presented = self.painted;
     }
 
-    /// A chevron is laid out once it has a rect.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -696,7 +653,6 @@ impl Widget for Chevron {
     }
 }
 
-/// The shared open state of a collapsible section.
 struct Disclosure {
     /// What the header is addressed by. It only shows what the page holds,
     /// so its binding is semantic, never an action on the app's resources.
@@ -742,8 +698,6 @@ struct HeaderRow {
 }
 
 impl HeaderRow {
-    /// Whether the hover, press or focus the header paints changed since
-    /// the last presented frame.
     fn own_paint_changed(&self) -> bool {
         self.disclosure.as_ref().map(|d| d.interaction) != self.presented.map(|(state, _)| state)
     }
@@ -869,7 +823,6 @@ impl Widget for HeaderRow {
                     width: percent(1.0_f32),
                     height: auto(),
                 },
-                // One height whether or not there is an action.
                 min_size: Size {
                     width: auto(),
                     height: length(crate::num::f32_of_f64(
@@ -883,7 +836,6 @@ impl Widget for HeaderRow {
             theme,
             map,
         );
-        // The title takes what is left and wraps; the action trails.
         if self.has_leading
             && let Some(&leading) = self.parts.nodes.first()
             && let Ok(style) = taffy.style(leading)
@@ -932,9 +884,6 @@ impl Widget for HeaderRow {
             if !self.has_trailing {
                 style.margin.left = auto();
             }
-            // A labelled plain button is laid out as its label (its lift
-            // reaches past it by its own padding), so it ends on the trailing
-            // edge as it is.
             let _ = taffy.set_style(trailing, style);
         }
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -942,8 +891,6 @@ impl Widget for HeaderRow {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // A part holding the pointer (its menu open) owns the input: the header's own
-        // disclosure does not take a press meant for the menu.
         let held = self
             .parts
             .children
@@ -955,7 +902,6 @@ impl Widget for HeaderRow {
         }
         let rect = self.parts.rect;
         let action = self.action_rect();
-        // The title names the header across a rebuild.
         let title = self.title.as_str();
         let Some(disclosure) = &mut self.disclosure else {
             return;
@@ -1117,8 +1063,6 @@ impl Widget for HeaderRow {
     }
 }
 
-/// An intrinsic-height group of content with an optional header. See the
-/// module docs.
 pub struct Section {
     parts: Parts,
     has_header: bool,
@@ -1127,22 +1071,14 @@ pub struct Section {
     header: Option<String>,
     expanded: Option<Rc<Cell<bool>>>,
     labels: crate::widget::property_list::PropertyColumn,
-    /// The width the section's dropdowns share.
     choosers: crate::widget::dropdown::ChooserColumn,
     /// The space laid out above each item: where a band on its way stands,
     /// and how far what follows it moves (`widget::Disclosing`).
     gaps: Vec<f64>,
-    /// Bands its view stopped building, drawn leaving.
     ghosts: crate::widget::Ghosts,
-    /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
-    /// The pace its bands arriving and leaving play at, when it says something other than the
-    /// theme's.
     feel: crate::motion::Feel,
-    /// Told whether the pointer is over the section.
     pointer: Option<Rc<Cell<bool>>>,
-    /// How its own items changed since the host last read it: inserted, removed or moved by
-    /// key in place.
     structure: crate::widget::StructureChange,
 }
 
@@ -1195,7 +1131,6 @@ impl Section {
             self.parts.children.iter().take(shown).map(|child| &**child),
             |index| gaps.get(index).copied().unwrap_or(0.0),
         );
-        // A band its view stopped building moves what followed it up.
         self.ghosts
             .shift(shifts, shown.min(self.parts.children.len()))
     }
@@ -1204,7 +1139,6 @@ impl Section {
         Self::new(items).with_header(SectionHeader::heading(title))
     }
 
-    /// Replace the header.
     #[must_use]
     pub fn with_header(mut self, header: SectionHeader) -> Self {
         self.header = Some(header.title.clone());
@@ -1233,10 +1167,8 @@ impl Section {
         }
     }
 
-    /// Make the section a disclosure: its header shows a chevron and
-    /// toggles the items with a pointer, the keyboard (Enter, Space, the
-    /// arrow keys) and assistive technology. Starts expanded; call after
-    /// [`Self::with_header`].
+    /// Make the section a disclosure: its header shows a chevron and toggles the items with a
+    /// pointer, the keyboard (Enter, Space, the arrow keys) and assistive technology.
     #[must_use]
     pub fn collapsible(self) -> Self {
         self.collapsible_with(true, None)
@@ -1268,8 +1200,6 @@ impl Section {
         let Some(title) = self.header.clone() else {
             return;
         };
-        // Rebuild the header around the disclosure, keeping its count and
-        // action.
         if self.has_header
             && let Some(first) = self.parts.children.first_mut()
             && let Some(row) = first
@@ -1322,19 +1252,16 @@ impl Section {
         self
     }
 
-    /// Whether a collapsible section shows its items.
     pub fn is_expanded(&self) -> bool {
         self.expanded.as_ref().is_none_or(|e| e.get())
     }
 
-    /// Open or close a collapsible section from the host.
     pub fn set_expanded(&mut self, expanded: bool) {
         if let Some(state) = &self.expanded {
             state.set(expanded);
         }
     }
 
-    /// The items shown: all of them, or only the header while collapsed.
     fn shown(&self) -> usize {
         if self.is_expanded() {
             self.parts.children.len()
@@ -1376,11 +1303,7 @@ impl Widget for Section {
         self.parts.rect
     }
 
-    // A section paints nothing of its own: what changed is what its rows
-    // changed, so a hover or a meter in one row does not repaint the group.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        // A band on its way moves every item after it, and the section is
-        // drawn taller by as much.
         if let Some(shifts) = self.follower_shifts() {
             let mut rect = self.parts.rect;
             rect.y1 += shifts.last().copied().unwrap_or(0.0).max(0.0);
@@ -1404,7 +1327,6 @@ impl Widget for Section {
         dirty
     }
 
-    /// Its items inserted, removed or moved by key, and what its parts describe.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         let mut change = std::mem::take(&mut self.structure);
         for child in &mut self.parts.children {
@@ -1424,9 +1346,6 @@ impl Widget for Section {
         let rhythm = &theme.tokens.spacing.rhythm;
         let node = self.parts.build(
             Style {
-                // One-column implicit Grid, as an intrinsic Column: every row
-                // is sized by its content, so the section's height is exact
-                // inside a scrolling stack.
                 display: taffy::Display::Grid,
                 grid_template_columns: vec![taffy::style_helpers::minmax(
                     length(0.0_f32),
@@ -1448,12 +1367,8 @@ impl Widget for Section {
             theme,
             map,
         );
-        // Each item's distance from the one above: `related` under the
-        // header (it belongs to its items), nothing between consecutive list
-        // rows (one list), `sibling` otherwise. A collapsed section lays out
-        // only its header.
-        // The section's property lists share one label column, and its
-        // dropdowns one width.
+        // Each item's distance from the one above: `related` under the header (it belongs to
+        // its items), nothing between consecutive list rows (one list), `sibling` otherwise.
         self.choosers.reset();
         for child in &mut self.parts.children {
             if let Some(list) = child
@@ -1498,7 +1413,6 @@ impl Widget for Section {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(taffy, node, origin);
-        // A band on its way stands out of the layout, in its slot.
         let shown = self.shown();
         let gaps = &self.gaps;
         crate::widget::place_bands(
@@ -1506,11 +1420,7 @@ impl Widget for Section {
             self.parts.rect,
             |index| gaps.get(index).copied().unwrap_or(0.0),
         );
-        // A band its view stopped building leaves where it stood.
         let shown = shown.min(self.parts.children.len());
-        // The room a band leaving gives back: its own space above it, or,
-        // first, the space above the item after it, which then comes first
-        // and has none.
         self.ghosts.find(
             "Section",
             &mut self.parts.children[..shown],
@@ -1533,7 +1443,6 @@ impl Widget for Section {
     ) {
         self.sync_rows(text, theme);
         let shown = self.shown();
-        // While a band moves, what follows it is drawn shifted by transform.
         let shifts = self.follower_shifts();
         for (index, child) in self.parts.children.iter_mut().take(shown).enumerate() {
             let dy = shifts
@@ -1552,8 +1461,6 @@ impl Widget for Section {
         self.ghosts.draw(scene, transform, shifts.as_deref());
     }
 
-    /// Frames while a band its view stopped building leaves, and one more
-    /// to draw it gone.
     fn needs_animation_frame(&self) -> bool {
         !self.ghosts.is_empty()
             || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
@@ -1564,8 +1471,6 @@ impl Widget for Section {
             || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
-    /// A section grows with a band moving in it, and so moves what follows
-    /// it.
     fn disclosing(&self) -> Option<crate::widget::Disclosing> {
         let shifts = self.follower_shifts()?;
         Some(crate::widget::Disclosing::Grows(
@@ -1621,7 +1526,6 @@ impl Widget for Section {
         }
     }
 
-    /// The items of a collapsed section too: they keep their nodes.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         for child in &self.parts.children {
             visitor(child.as_ref());
@@ -1651,8 +1555,6 @@ impl Section {
             .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
     }
 
-    /// Which items are list rows: list rows and disclosure rows, which sit
-    /// edge to edge as one list.
     fn row_flags(&mut self) -> Vec<bool> {
         self.parts
             .children
@@ -1669,7 +1571,6 @@ impl Section {
     /// adjacent selected rows, and one badge column.
     fn sync_rows(&mut self, text: &mut TextRenderer, theme: &Theme) {
         self.sync_row_join();
-        // Badge columns, per run of consecutive rows.
         let badges: Vec<Option<Option<String>>> = self
             .parts
             .children
@@ -1790,7 +1691,6 @@ pub struct StatusLine {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
-    /// What it says changed its size since the layout pass last placed it.
     layout_dirty: bool,
 }
 
@@ -1817,32 +1717,26 @@ impl StatusLine {
         }
     }
 
-    /// Running, connected, healthy.
     pub fn active(text: impl Into<String>) -> Self {
         Self::with(OwnedStatus::Active, text)
     }
 
-    /// Needs attention soon.
     pub fn warning(text: impl Into<String>) -> Self {
         Self::with(OwnedStatus::Warning, text)
     }
 
-    /// Failed or offline unexpectedly.
     pub fn error(text: impl Into<String>) -> Self {
         Self::with(OwnedStatus::Error, text)
     }
 
-    /// Present but inactive.
     pub fn idle(text: impl Into<String>) -> Self {
         Self::with(OwnedStatus::Idle, text)
     }
 
-    /// A person's presence, in their colour.
     pub fn presence(identity: impl Into<String>, text: impl Into<String>) -> Self {
         Self::with(OwnedStatus::Presence(identity.into()), text)
     }
 
-    /// Replace the sentence (a live count).
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.dirty = true;
         self.layout_dirty = true;
@@ -1864,7 +1758,6 @@ impl StatusLine {
         );
     }
 
-    /// Replace what it says with a status the line already holds.
     fn set_owned_status(&mut self, status: OwnedStatus, text: impl Into<String>) {
         self.dirty = true;
         self.status = status;
@@ -2002,9 +1895,7 @@ pub struct ObjectHeader {
     lead: Option<ObjectLead>,
     rect: Rect,
     metrics: Option<ObjectMetrics>,
-    /// What it says changed since the last frame drew it.
     dirty: bool,
-    /// What it says changed its size since the layout pass last placed it.
     layout_dirty: bool,
 }
 
@@ -2052,7 +1943,6 @@ impl ObjectHeader {
         }
     }
 
-    /// Another name, line under it and kind of thing before them, where the header stands.
     fn set_object(&mut self, title: String, caption: Option<String>, lead: Option<ObjectLead>) {
         self.dirty = true;
         self.layout_dirty = true;
@@ -2061,14 +1951,12 @@ impl ObjectHeader {
         self.lead = lead;
     }
 
-    /// One line under the name: an address, a URL, a kind.
     #[must_use]
     pub fn caption(mut self, caption: impl Into<String>) -> Self {
         self.caption = Some(caption.into());
         self
     }
 
-    /// A person's or account's avatar before the name.
     #[must_use]
     pub fn avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.lead = Some(ObjectLead::Avatar {
@@ -2088,7 +1976,6 @@ impl ObjectHeader {
         self
     }
 
-    /// A square avatar: an account or a site.
     #[must_use]
     pub fn square(mut self) -> Self {
         if let Some(ObjectLead::Avatar { square, .. }) = &mut self.lead {
@@ -2097,7 +1984,6 @@ impl ObjectHeader {
         self
     }
 
-    /// A kind of thing before the name.
     #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.lead = Some(ObjectLead::Icon(icon));

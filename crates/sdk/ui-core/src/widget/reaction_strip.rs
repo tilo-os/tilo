@@ -1,19 +1,5 @@
-//! The reaction strip: one pill per emoji people reacted with, its count beside it, and a trailing
-//! button to add one.
-//!
-//! Everything that takes reactions ([`tilo_resource::Reactions`]) shows them with this strip, so a
-//! reaction reads the same under a chat message, on a page and in a window's toolbar. Your own
-//! reaction is the chosen pill (the accent washed in, with an accent edge); a workspace emoji
-//! (`:name:`) is drawn as its picture from [`crate::workspace_emoji`] and as its `:name:` while
-//! the picture is not there. Pointing at a pill names who reacted. A pill arriving appears from its
-//! centre and a count changing cross-fades (`motion::Appear`, `motion::CrossFade`), both only once
-//! the strip is on screen and as reduced motion allows.
-//!
-//! Two ways in: **by hand**, [`ReactionStrip`] keeps one strip's motion and lays the pills out from
-//! an origin within a width ([`ReactionStrip::layout`], then [`ReactionStrip::paint`], `hit`,
-//! `tooltip_at`, `accessibility`; [`measure_height`] sizes a row first); **retained**,
-//! [`ReactionStripWidget`] places like any widget, reports a toggle as [`ReactionToggle`] and opens
-//! the shared emoji picker from its add button.
+//! The reaction strip: one pill per emoji people reacted with, its count beside it, and a
+//! trailing button to add one.
 
 use std::collections::HashMap;
 
@@ -35,7 +21,6 @@ use crate::widget::ChipStyle;
 mod retained;
 pub use retained::{ReactionStripWidget, ReactionToggle};
 
-/// What a point on the strip is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StripHit {
     /// A pill: react with its emoji, or take your reaction back.
@@ -44,16 +29,12 @@ pub enum StripHit {
     Add { anchor: Rect },
 }
 
-/// A strip's geometry in one theme: everything the text scale moves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripMetrics {
     height: f64,
     pad_x: f64,
-    /// Between a pill's emoji and its count.
     inner_gap: f64,
-    /// Between pills, and between rows.
     gap: f64,
-    /// The side of the box an emoji is drawn in.
     emoji: f64,
     count: TextStyle,
     icon: f64,
@@ -65,7 +46,6 @@ impl StripMetrics {
         let spacing = &theme.tokens.spacing;
         let count = theme.text(TextRole::Label).numeric();
         let line = f64::from(count.line_height_px());
-        // The selector height, grown with the label, as every pill.
         let height = f64::from(theme.tokens.metrics.selector_height)
             .max((line + 2.0 * f64::from(spacing.s1)).ceil());
         Self {
@@ -79,28 +59,22 @@ impl StripMetrics {
         }
     }
 
-    /// A pill's height.
     #[must_use]
     pub fn height(&self) -> f64 {
         self.height
     }
 }
 
-/// One laid-out pill.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripPill {
     pub emoji: String,
     pub count: usize,
-    /// You reacted with it yourself.
     pub mine: bool,
     pub rect: Rect,
-    /// Who reacted, first first.
     pub reactors: Vec<Reactor>,
-    /// Where its emoji is drawn.
     glyph: Rect,
 }
 
-/// The pills and the add button of one strip, laid out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StripLayout {
     pills: Vec<StripPill>,
@@ -228,7 +202,6 @@ pub fn measure_height(
 }
 
 impl StripLayout {
-    /// Everything laid out.
     #[must_use]
     pub fn bounds(&self) -> Rect {
         self.bounds
@@ -244,7 +217,6 @@ impl StripLayout {
         &self.pills
     }
 
-    /// The add button, when the person may react.
     #[must_use]
     pub fn add_rect(&self) -> Option<Rect> {
         self.add
@@ -288,7 +260,6 @@ impl StripLayout {
             .map(|(_, hit)| hit.clone())
     }
 
-    /// Every control with its face, pills first.
     fn faces(&self) -> Vec<(Rect, StripHit)> {
         self.pills
             .iter()
@@ -297,8 +268,6 @@ impl StripLayout {
             .collect()
     }
 
-    /// Every control with its target, pills first: a canvas host registers
-    /// them as its hit targets.
     #[must_use]
     pub fn targets(&self) -> Vec<(Rect, StripHit)> {
         if !self.can_react {
@@ -310,8 +279,6 @@ impl StripLayout {
             .collect()
     }
 
-    /// Everything a press can reach: the strip, and its controls' targets
-    /// where they grow past it.
     #[must_use]
     pub fn reach(&self) -> Rect {
         self.targets()
@@ -369,13 +336,11 @@ impl StripLayout {
     }
 }
 
-/// A pill's accessible value: how many reacted with its emoji.
 #[must_use]
 pub fn pill_count(count: usize) -> String {
     crate::i18n::widget_format("reaction-strip-count", &[("count", count.into())])
 }
 
-/// A pill's accessible name: what pressing it does.
 #[must_use]
 pub fn pill_name(emoji: &str, mine: bool) -> String {
     crate::i18n::widget_format(
@@ -444,7 +409,6 @@ fn who_reacted(pill: &StripPill, me: &str, name: &dyn Fn(&Reactor) -> String) ->
     }
 }
 
-/// How one pill moves: its arrival and its count.
 #[derive(Clone, Debug)]
 struct PillMotion {
     presence: crate::motion::Presence,
@@ -458,7 +422,6 @@ struct PillMotion {
 pub struct ReactionStrip {
     layout: StripLayout,
     motion: HashMap<String, PillMotion>,
-    /// Laid out before: pills from then on arrive.
     seen: bool,
 }
 
@@ -492,7 +455,6 @@ impl ReactionStrip {
         &self.layout
     }
 
-    /// Take a layout made elsewhere (a retained widget's measure).
     fn set_layout(&mut self, layout: StripLayout, motion: EffectiveMotion) {
         self.layout = layout;
         self.follow(motion);
@@ -531,19 +493,16 @@ impl ReactionStrip {
         self.seen = true;
     }
 
-    /// The last layout.
     #[must_use]
     pub fn laid_out(&self) -> &StripLayout {
         &self.layout
     }
 
-    /// See [`StripLayout::hit`].
     #[must_use]
     pub fn hit(&self, point: Point) -> Option<StripHit> {
         self.layout.hit(point)
     }
 
-    /// See [`StripLayout::tooltip_at`].
     #[must_use]
     pub fn tooltip_at(
         &self,
@@ -553,13 +512,11 @@ impl ReactionStrip {
         self.layout.tooltip_at(point, name)
     }
 
-    /// See [`StripLayout::accessibility`].
     #[must_use]
     pub fn accessibility(&self) -> Vec<AccessNode> {
         self.layout.accessibility()
     }
 
-    /// Whether a pill is still arriving or a count still changing.
     #[must_use]
     pub fn is_moving(&self) -> bool {
         let now = crate::motion::frame_now();
@@ -624,7 +581,6 @@ fn paint_ring(ctx: &mut PaintCtx<'_>, rect: Rect) {
     crate::widget::paint_focus_ring(ctx.scene, ctx.transform, rect, radius, ctx.theme);
 }
 
-/// The pill's body: the chip family's fill and edge.
 fn paint_body(ctx: &mut PaintCtx<'_>, rect: Rect, fill: Color, edge: Option<Color>) {
     let radius = f64::from(ctx.theme.tokens.radii.full).min(rect.height() / 2.0);
     ctx.scene.fill(
@@ -718,8 +674,6 @@ pub fn paint_emoji(ctx: &mut PaintCtx<'_>, rect: Rect, emoji: &str, style: &Text
         }
         return;
     }
-    // Emoji glyphs fill about four fifths of their em box. The rect is laid
-    // out from the theme already, so the size is final, not scaled again.
     let size = f32_of_f64((rect.height().min(rect.width()) * 0.82).max(8.0));
     let mut glyph = style.clone();
     glyph.size = size;

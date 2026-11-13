@@ -13,11 +13,8 @@ use vello::peniko::{Color, Fill};
 /// How far a tile that is on is lifted off its own floor, in surface steps:
 /// the same step a selected row takes.
 const ON_LIFT: f32 = 0.5;
-/// How much of the accent is washed into that lift. Enough for the tile to
-/// read as on beside one that is off at a glance, little enough that the
-/// label keeps body-text contrast and the tile never becomes a slab.
+/// How much of the accent is washed into that lift.
 const ON_TINT: f32 = 0.20;
-/// How much accent the half under the pointer adds on a tile that is on.
 const ON_HOVER_LIFT: f32 = 0.10;
 /// The hairline before a tile's chevron area on a tile that is on; one that
 /// is off keeps the primary ink at [`OFF_DIVIDER`].
@@ -28,24 +25,16 @@ const OFF_DIVIDER: f32 = 0.12;
 /// has a section, its chevron half (`expand`).
 #[derive(Clone, Copy, Debug)]
 pub struct QuickTileFace {
-    /// The whole tile.
     pub rect: Rect,
-    /// The switch half.
     pub main: Rect,
-    /// The chevron half, when the tile has a section.
     pub expand: Option<Rect>,
     pub on: bool,
-    /// The half under the pointer, if any.
     pub hovered: Option<Rect>,
-    /// The floor the tile stands on, which its on fill is tinted over.
     pub ground: Color,
-    /// The tile's corner radius.
     pub radius: f64,
 }
 
 impl QuickTileFace {
-    /// The tile's own fill: the floor its host painted, lifted and washed
-    /// with the accent when it is on.
     #[must_use]
     pub fn fill(&self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
@@ -89,7 +78,6 @@ impl QuickTileFace {
         }
     }
 
-    /// The tile's primary and secondary ink.
     #[must_use]
     pub fn ink(&self, theme: &Theme) -> (Color, Color) {
         let colors = &theme.tokens.colors;
@@ -104,8 +92,6 @@ impl QuickTileFace {
         }
     }
 
-    /// The glyph's ink: the accent on a tile that is on, the primary ink on
-    /// one that is off.
     #[must_use]
     pub fn glyph_ink(&self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;

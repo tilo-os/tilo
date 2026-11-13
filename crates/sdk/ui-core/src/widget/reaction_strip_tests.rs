@@ -6,7 +6,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::NamedKey;
 
-/// Lay `widget` out in a `width` wide column and draw it once.
 fn lay_out_and_draw(widget: &mut ReactionStripWidget, width: f32, theme: &Theme) {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let mut node_map = HashMap::new();

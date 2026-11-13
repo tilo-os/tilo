@@ -1,20 +1,5 @@
-//! `DisclosureRow`: a list row whose trailing chevron turns and whose body
-//! opens in place (`docs/design-language.md`, "Primitives").
-//!
-//! The row's height follows the body on the standard disclose motion
-//! ([`crate::motion::Disclose`]): the container grows and the content fades
-//! in as it is revealed; reduced motion lands at once. Rows that share a
-//! [`DisclosureGroup`] keep one open at a time: opening one closes the
-//! others.
-//!
-//! **Open across rebuilds.** A view that rebuilds its rows from fresh data
-//! (a list of devices read every few seconds) builds a new row each time; a
-//! row that kept its own openness would close under the person's pointer.
-//! Such a view keys its rows instead: [`DisclosureRow::keyed`] takes the
-//! row's [`DisclosureState`] from the group by a stable key (a device's
-//! address), so the rebuilt row is open where the last one was, mid-motion
-//! where it was moving, at the height its body last had. A lone row binds a
-//! [`DisclosureState`] the view keeps with [`DisclosureRow::with_state`].
+//! `DisclosureRow`: a list row whose trailing chevron turns and whose body opens in place
+//! (`docs/design-language.md`, "Primitives").
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -51,7 +36,6 @@ pub struct DisclosureState(Rc<RefCell<Openness>>);
 struct Openness {
     open: bool,
     reveal: Presence,
-    /// The body's laid-out height when fully open.
     body_height: f64,
     /// Opened or closed since it was made: a first-build default
     /// ([`DisclosureRow::opened`]) no longer applies.
@@ -63,13 +47,11 @@ struct Openness {
 }
 
 impl DisclosureState {
-    /// Closed, at rest.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Open, at rest.
     #[must_use]
     pub fn opened() -> Self {
         Self(Rc::new(RefCell::new(Openness {
@@ -81,7 +63,6 @@ impl DisclosureState {
         })))
     }
 
-    /// Whether the row is open (or opening).
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.0.borrow().open
@@ -94,7 +75,6 @@ impl DisclosureState {
         self.show(open, self.motion());
     }
 
-    /// The motion the row was last laid out under.
     fn motion(&self) -> EffectiveMotion {
         self.0.borrow().motion
     }
@@ -103,7 +83,6 @@ impl DisclosureState {
         self.0.borrow_mut().motion = motion;
     }
 
-    /// Open or close on the disclose motion. Returns whether it changed.
     fn show(&self, open: bool, motion: EffectiveMotion) -> bool {
         let mut state = self.0.borrow_mut();
         if state.open == open {
@@ -250,7 +229,6 @@ impl DisclosureGroup {
     }
 }
 
-/// What leads a row's title.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Leading {
     Icon(Icon),
@@ -258,9 +236,7 @@ enum Leading {
     Avatar { name: String, identity: String },
 }
 
-/// A row that opens its body in place.
 pub struct DisclosureRow {
-    /// A stable name to find the row by in tests and tools.
     id: Option<String>,
     title: String,
     secondary: String,
@@ -293,14 +269,10 @@ pub struct DisclosureRow {
     /// The row's height and whether its body was shut away, as the last
     /// layout laid them out ([`Self::reveal_layout`]).
     laid_reveal: (f32, bool),
-    /// The display the body's own layout gives it, while it is not shut.
     body_display: taffy::Display,
     dirty: bool,
-    /// Opened or shut since the layout pass last placed it.
     layout_dirty: bool,
-    /// The motion the person allows, from the last layout.
     motion: EffectiveMotion,
-    /// The pace its reveal plays at, when it says something other than the theme's.
     feel: crate::motion::Feel,
 }
 
@@ -360,14 +332,12 @@ impl DisclosureRow {
         self
     }
 
-    /// A stable name to find the row by in tests and tools.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// A secondary line under the title.
     #[must_use]
     pub fn secondary(mut self, text: impl Into<String>) -> Self {
         self.secondary = text.into();
@@ -382,15 +352,12 @@ impl DisclosureRow {
         self
     }
 
-    /// A quiet line at the far end of the title's line: who did the work and
-    /// when, read after the title.
     #[must_use]
     pub fn secondary_side(mut self, side: impl Into<String>) -> Self {
         self.side = side.into();
         self
     }
 
-    /// A leading person: who did the work this row stands for.
     #[must_use]
     pub fn avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.leading = Some(Leading::Avatar {
@@ -400,7 +367,6 @@ impl DisclosureRow {
         self
     }
 
-    /// A leading icon.
     #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.leading = Some(Leading::Icon(icon));
@@ -424,10 +390,8 @@ impl DisclosureRow {
         self
     }
 
-    /// Run with the openness the row just took, whenever the row itself
-    /// opens or closes (a press on its header, Enter or Space, an assistive
-    /// action). A view that records which rows the person opened keeps up
-    /// with the row instead of guessing.
+    /// Run with the openness the row just took, whenever the row itself opens or closes (a
+    /// press on its header, Enter or Space, an assistive action).
     #[must_use]
     pub fn on_open_toggle(mut self, told: impl FnMut(bool) + 'static) -> Self {
         self.on_open_toggle = Some(Box::new(told));
@@ -469,14 +433,11 @@ impl DisclosureRow {
         self
     }
 
-    /// Whether the row is open (or opening).
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.state.is_open()
     }
 
-    /// Open or close the row, on the disclose motion as the last input
-    /// asked for it.
     pub fn set_open(&mut self, open: bool) {
         if !self.state.show(open, self.motion) {
             return;
@@ -495,7 +456,6 @@ impl DisclosureRow {
         self.layout_dirty = true;
     }
 
-    /// Close if another row of the group opened.
     fn follow_group(&mut self) {
         let other_opened = self
             .group
@@ -512,7 +472,6 @@ impl DisclosureRow {
         f64::from(match lines {
             1 => m.row_single,
             2 => m.row_double,
-            // Each line past the second adds what the second added.
             _ => m.row_double + (m.row_double - m.row_single),
         })
     }
@@ -530,7 +489,6 @@ impl DisclosureRow {
         (crate::num::f32_of_f64(self.header_px + revealed), shut)
     }
 
-    /// The reveal moved on from where the last layout laid it.
     fn reveal_unlaid(&self) -> bool {
         self.laid_reveal != self.reveal_layout()
     }
@@ -618,8 +576,6 @@ impl DisclosureRow {
             text.x1 = start - gap;
         }
         if let Some(leading) = self.leading.as_ref() {
-            // Beside two lines the icon belongs to the title, not to the
-            // middle of the pair, where it reads as sitting low.
             let icon_cy = if self.face().lines() == 1 {
                 cy
             } else {
@@ -645,8 +601,6 @@ impl DisclosureRow {
             }
         }
         self.face().paint(ctx, text);
-        // The chevron turns a quarter, from pointing at the row's end to
-        // pointing down, with the reveal.
         let turn = Disclose::reveal(self.progress(), 1.0).turn;
         let centre = chevron.center();
         let rotated = ctx.transform
@@ -658,8 +612,6 @@ impl DisclosureRow {
             crate::widget::paint_focus_ring(ctx.scene, ctx.transform, outer, radius, theme);
         }
     }
-
-    /// Set by the list the row sits in: whether a rule runs under it.
 
     /// Play the row's reveal at `feel` rather than the theme's pace.
     #[must_use]
@@ -673,8 +625,6 @@ impl DisclosureRow {
         self.feel = feel;
     }
 
-    /// The rule under the row, from its text's edge to its end, like a list
-    /// row's.
     fn paint_separator(&self, ctx: &mut PaintCtx<'_>) {
         if !self.separator {
             return;
@@ -710,10 +660,9 @@ impl Widget for DisclosureRow {
         let icon = f64::from(theme.tokens.metrics.icon_control);
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         let header = self.header_height(theme);
-        // The row's own node holds the body and the trailing control, in the
-        // order `children` names them, so every walk that pairs widgets with
-        // layout nodes meets each where it is. The header is the row's top
-        // padding; the body follows it and is cut to what the reveal shows.
+        // The row's own node holds the body and the trailing control, in the order `children`
+        // names them, so every walk that pairs widgets with layout nodes meets each where it
+        // is.
         self.header_px = header;
         self.laid_reveal = self.reveal_layout();
         let (height, shut) = self.laid_reveal;
@@ -721,7 +670,6 @@ impl Widget for DisclosureRow {
         if let Ok(style) = taffy.style(body) {
             self.body_display = style.display;
             if shut {
-                // A closed body takes no room and no place on screen.
                 let mut style = style.clone();
                 style.display = taffy::Display::None;
                 let _ = taffy.set_style(body, style);
@@ -731,8 +679,6 @@ impl Widget for DisclosureRow {
         if let Some(control) = &mut self.trailing {
             let node = control.build_layout(taffy, theme, node_map);
             if let Ok(style) = taffy.style(node) {
-                // On the header's trailing edge, before the chevron; centred
-                // on the header in `apply_layout`.
                 let mut style = style.clone();
                 style.position = taffy::Position::Absolute;
                 style.inset = taffy::Rect {
@@ -754,7 +700,6 @@ impl Widget for DisclosureRow {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::length(height),
             },
-            // The body starts on the title's text column, not under the icon.
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(crate::num::f32_of_f64(Self::text_inset(
                     self.leading.as_ref(),
@@ -860,8 +805,6 @@ impl Widget for DisclosureRow {
             control.apply_layout(taffy, node, centre);
             self.trailing_rect = control.get_rect();
         }
-        // A host that lays out only what moved lays the next frame of the
-        // reveal out too, whether or not it runs this row's update first.
         if self.state.is_moving() {
             crate::widget::note_layout_moved();
         }
@@ -1022,7 +965,6 @@ impl Widget for DisclosureRow {
 
     fn needs_animation_frame(&self) -> bool {
         self.state.is_moving()
-            // One more frame lays out where the reveal landed.
             || self.reveal_unlaid()
             || self.body.needs_animation_frame()
             || self

@@ -1,15 +1,5 @@
 //! [`RichInput`] — a field to type rich text into, bound to a `RichText` value: a chat's
-//! composer (`rich_input(bind: draft)`). Its completion drawers are its own, the system's
-//! behaviour of every rich input, never declared by a view: `@` offers the people of the workspace,
-//! `:` the emoji, and the triggers the system gives sources for ([`RichInput::set_sources`]).
-//! What a drawer picks goes in as a reference, a run marked `mention` that the text's readers
-//! see as their own inline view of what it names, never as prose that happens to start with
-//! `@`.
-//!
-//! It is a [`RichTextLine`] in a field's chrome that wraps and grows, whose keys stay the
-//! field's own (no block editor takes Enter or the arrows), and that reports each
-//! edit as the rich text it now holds. A value set from elsewhere (cleared after sending) is
-//! shown when it differs from what the field last reported.
+//! composer (`rich_input(bind: draft)`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,9 +23,8 @@ use crate::widget::mention_picker::{self, MentionCandidate};
 use crate::widget::rich_text_line::RichTextLine;
 use crate::widget::{Decorator, EventCtx, Widget};
 
-/// A field to type rich text into, bound to the rich text it edits: each reference a
-/// completion picks is written as a reference, which every reader sees as their own inline
-/// view of what it names.
+/// A field that types rich text, bound to what it edits: a reference a completion picks is
+/// written as a reference, which each reader renders as an inline view of what it names.
 #[derive(Component)]
 #[component(name = "RichInput", role = "TextInput", label = "placeholder")]
 pub struct RichInputProps {
@@ -46,15 +35,15 @@ pub struct RichInputProps {
     pub placeholder: Option<String>,
     /// Whether it can be typed into now.
     pub enabled: bool,
-    /// The people of the conversation it writes into, newest first: whom its `@` drawer offers
-    /// first, under "In this conversation". The view gives them, from the items the conversation
-    /// holds; the drawer reads nothing of what the conversation is about to say who is in it.
+    /// The people of the conversation it writes into, newest first, offered first in its `@`
+    /// drawer; the view gives them from what the conversation has, and the drawer reads nothing
+    /// else.
     pub speakers: Vec<Person>,
-    /// Who can read what it writes into: whom its `@` drawer offers, under "Members". The
-    /// system gives it to every rich input; given no one, the drawer offers the workspace's roster.
+    /// Who can read what it writes into: whom its `@` drawer offers; with no one, it offers the
+    /// workspace's roster.
     pub people: Vec<Person>,
-    /// Enter was pressed: what was written is done (a composer's message is sent). With it,
-    /// Enter sends rather than breaking the line; Shift+Enter still breaks it.
+    /// Enter was pressed: what was written is done (a message is sent); with it, Enter sends
+    /// and Shift+Enter breaks the line.
     #[component(event)]
     pub submit: Event,
 }
@@ -75,12 +64,9 @@ impl Default for RichInputProps {
 /// The references picks wrote, waiting to be marked: each one's byte range and what it names.
 type Picked = Rc<RefCell<Vec<(std::ops::Range<usize>, String)>>>;
 
-/// See the [module docs](self).
 pub struct RichInput {
     line: RichTextLine,
     value: Bound<RichText>,
-    /// What the field last reported or was given: an equal value from the host changes
-    /// nothing.
     shown: RichText,
     /// How each reference written here reads, by the `mention` mark's value.
     views: Rc<RefCell<HashMap<String, InlineView>>>,
@@ -88,9 +74,7 @@ pub struct RichInput {
     /// The key its node has in the composed tree: what the host finds the field by, gives it
     /// the keyboard with, and sends its edits for.
     key: String,
-    /// The placeholder and the name the field was built with: a change builds it again.
     name: String,
-    /// The revision of the bound value last looked at.
     seen: u64,
     /// Whom its `@` drawer offers, as the system gave them.
     people: DrawerPeople,
@@ -174,11 +158,9 @@ impl DrawerPeople {
     }
 }
 
-/// How many of those who spoke last the drawer offers first (chat.md, "Completion drawers").
 const SPEAKERS: usize = 5;
 
 impl RichInput {
-    /// The field over `value`.
     #[must_use]
     pub fn new(key: &str, value: Bound<RichText>, placeholder: &str, name: &str) -> Self {
         let mut line = RichTextLine::new();
@@ -288,7 +270,6 @@ impl RichInput {
         self.shown = rich.clone();
     }
 
-    /// The rich text the field holds now.
     #[must_use]
     pub fn rich(&self) -> RichText {
         rich_of(self.line.value(), self.line.marks(), &self.views.borrow())
@@ -520,8 +501,6 @@ impl Decorator for RichInput {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The workspace says what each of the drawer's people is (an agent is marked as one) with
-        // the frame.
         if self.people.is_empty() && self.people_source.is_some() {
             self.people_source = None;
             self.offer();
@@ -533,7 +512,6 @@ impl Decorator for RichInput {
             .draw_child(scene, transform, text, theme, presence);
     }
 
-    /// The field's completion drawer floats above everything, as every field's does.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

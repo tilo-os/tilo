@@ -1,15 +1,7 @@
-//! Where a scroll view whose content offers detents comes to rest: after a
-//! drag, a fling or a wheel gesture ends, a key moves the view, or anything
-//! asks it to show something, it settles on one of the offsets its content
-//! reports ([`crate::widget::Widget::snap_points`]) rather than wherever the
-//! hand left it. A board on a phone is a page per lane; a board wide enough
-//! for its lanes side by side reports none and scrolls freely.
-//!
-//! The settle is the toolkit's own paged-strip motion
-//! ([`crate::motion::Snap`]): a release projects where the fling would have
-//! stopped ([`Snap::rest_for`]), picks the detent it heads for, and carries
-//! the release velocity into it, so a fling never turns back. Reduced motion
-//! puts the content on the detent at once.
+//! Where a scroll view whose content offers detents comes to rest: after a drag, a fling or a
+//! wheel gesture ends, a key moves the view, or anything asks it to show something, it settles
+//! on one of the offsets its content reports ([`crate::widget::Widget::snap_points`]) rather
+//! than wherever the hand left it.
 
 use vello::kurbo::Vec2;
 
@@ -22,16 +14,12 @@ use crate::widget::Scrollable;
 const SAME_DETENT_PX: f32 = 0.5;
 
 impl Scrollable {
-    /// Whether the content offers detents along an axis this view scrolls.
     pub(super) fn snaps(&self) -> bool {
         !self.snap_x.is_empty() || !self.snap_y.is_empty()
     }
 
-    /// Read the offsets the content offers along the axes this view scrolls,
-    /// in content coordinates, ascending and within what the view can show.
-    /// What the content reports is measured from its own leading edge; what
-    /// the view scrolls to is measured from the content's
-    /// ([`crate::widget::Widget::snap_points`]).
+    /// Read the offsets the content offers along the axes this view scrolls, in content
+    /// coordinates, ascending and within what the view can show.
     pub(super) fn collect_snap_points(&mut self) {
         let mut across = std::mem::take(&mut self.snap_x);
         let mut down = std::mem::take(&mut self.snap_y);
@@ -76,11 +64,9 @@ impl Scrollable {
         .map_or(offset, crate::num::f32_of_f64)
     }
 
-    /// `offset` taken to the detent nearest it, where that detent still shows
-    /// the rect at `at` by `size` in a `viewport` tall or wide view: what the
-    /// view is asked to show stays shown, from the detent it rests on. A rect
-    /// larger than the view cannot be shown whole from any detent, and keeps
-    /// the offset that moves it in view the least.
+    /// `offset` taken to the detent nearest it, where that detent still shows the rect at `at`
+    /// by `size` in a `viewport` tall or wide view: what the view is asked to show stays shown,
+    /// from the detent it rests on.
     pub(super) fn snap_showing(
         &self,
         points: &[f32],
@@ -148,7 +134,6 @@ impl Scrollable {
         let drawn = Vec2::new(f64::from(self.offset_x), f64::from(self.offset_y));
         self.glide.stop();
         if (target - drawn).hypot() < f64::from(SAME_DETENT_PX) {
-            // Already on the detent: nothing to settle, and nothing restarts.
             return;
         }
         match self
@@ -179,12 +164,10 @@ fn placed(points: &mut Vec<f32>, lead: f32, max: f32) {
     points.dedup_by(|a, b| (*a - *b).abs() < SAME_DETENT_PX);
 }
 
-/// The detent a release at `from`, moving at `velocity` (logical pixels per
-/// second along the axis), settles on: the one nearest where the fling
-/// projects ([`Snap::rest_for`]), never behind the way it was thrown, so a
-/// fling that is still moving never snaps the content back against it. A
-/// release slower than a fling (the fingers came to rest) settles on the
-/// nearest detent either way, so a small drag returns to the one it left.
+/// The detent a release at `from`, moving at `velocity` (logical pixels per second along the
+/// axis), settles on: the one nearest where the fling projects ([`Snap::rest_for`]), never
+/// behind the way it was thrown, so a fling that is still moving never snaps the content back
+/// against it.
 fn settle_on(points: &[f32], from: f64, velocity: f64, motion: EffectiveMotion) -> Option<f64> {
     if points.is_empty() {
         return None;

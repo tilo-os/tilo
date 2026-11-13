@@ -24,18 +24,12 @@ struct RouteState {
 /// screen back. Unknown names are rejected by [`RouteHandle::adopt_stack`].
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RouteSnapshot {
-    /// Older screens, oldest first.
     pub past: Vec<String>,
-    /// The screen that was showing.
     pub current: String,
-    /// Screens reachable with Forward, nearest last.
     pub future: Vec<String>,
 }
 
 /// A cloneable controller for one router's process-local route stack.
-///
-/// Route changes are presentation state: they do not mutate the app document,
-/// participate in collaboration, or create undo entries.
 #[derive(Clone, Debug)]
 pub struct RouteHandle {
     known: Rc<HashSet<String>>,
@@ -59,7 +53,6 @@ pub enum RouteError {
 }
 
 impl RouteHandle {
-    /// Create a navigation stack from a finite route registry.
     pub fn new<S, I, R>(initial: S, routes: I) -> Result<Self, RouteError>
     where
         S: Into<String>,
@@ -208,7 +201,6 @@ impl RouteHandle {
         }
     }
 
-    /// Export the history for a same-process-session reload.
     #[must_use]
     pub fn export_stack(&self) -> RouteSnapshot {
         let state = self.state.borrow();
@@ -256,11 +248,6 @@ impl RouteHandle {
 
     fn restore(&self, mut state: RouteState) {
         let mut current = self.state.borrow_mut();
-        // Rollback is part of the same owner-thread transition that already
-        // consumed a revision. Reuse that *new* revision for the prior stack
-        // instead of trying to allocate a second one: at `u64::MAX` the old
-        // child and restored route remain coherent, while future mutations
-        // still fail closed rather than wrapping.
         state.revision = current.revision;
         *current = state;
     }
@@ -293,10 +280,9 @@ pub struct Router {
 }
 
 impl Router {
-    /// Build the initial screen and retain the factory for later transitions.
-    ///
-    /// The factory receives the same handle that drives the host, allowing a
-    /// screen to bind buttons without global state.
+    /// Build the initial screen and retain the factory for later transitions. The factory
+    /// receives the same handle that drives the host, allowing a screen to bind buttons without
+    /// global state.
     pub fn new<S, I, R>(
         initial: S,
         routes: I,

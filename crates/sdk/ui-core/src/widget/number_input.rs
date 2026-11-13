@@ -1,19 +1,5 @@
 //! `NumberInput` — a compact, click-to-type numeric field with steppers: a number you can nudge
 //! with `−`/`+` or click and type directly, parsed, validated and clamped to a range.
-//!
-//! Two stepper buttons flank an embedded local-mode [`TextInput`]. Clicking the field focuses and
-//! pre-selects it; **Enter**, a stepper click, a click outside or blur all **commit** — parsing
-//! the leading number (tolerating a trailing unit like `px`), clamping to `[min, max]`, and
-//! reverting invalid text to the last good value.
-//!
-//! [`take_changed`](NumberInput::take_changed) polls a committed change for the owner to submit;
-//! [`set_value`](NumberInput::set_value) pushes one in silently; [`on_action`](NumberInput::on_action)
-//! routes each commit through an action, and [`from_state`](NumberInput::from_state) supplies typed
-//! process-local two-way binding. The field never writes the document.
-//!
-//! Automatic dimensions use a text-scaled compact minimum and grow to fit the formatted value,
-//! padding and steppers; [`NumberInput::with_size`] keeps an explicit allocation, and long values
-//! then scroll in the field. [`NumberStepperFace`] paints the same steppers for a painted host.
 
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
@@ -39,7 +25,6 @@ use winit::keyboard::{Key, NamedKey};
 /// Narrowest framed control at 1×. The stepper buttons are `height`-sized
 /// squares; the field takes the remainder.
 const DEFAULT_WIDTH: f64 = 140.0;
-/// Gap between the field and each stepper button.
 const GAP: f64 = 4.0;
 
 /// What goes between a number and its `unit` in `locale`: nothing before a
@@ -75,10 +60,7 @@ fn unit_joiner(locale: &str, unit: &str) -> &'static str {
     if spaced { "\u{a0}" } else { "" }
 }
 
-/// Parse the leading numeric portion of `s` into an `f64`. Tolerates a
-/// leading sign, one decimal point, and any trailing non-numeric suffix
-/// (so `"16 px"`, `"16px"`, `"-3.5%"` all parse to their number). Returns
-/// `None` when no digits lead the string.
+/// Parse the leading numeric portion of `s` into an `f64`.
 fn parse_leading_number(s: &str) -> Option<f64> {
     let s = s.trim();
     let mut end = 0usize;
@@ -113,12 +95,8 @@ fn parse_leading_number(s: &str) -> Option<f64> {
     s.get(..end).and_then(|leading| leading.parse::<f64>().ok())
 }
 
-/// `i64::MIN`/`MAX` as `f64` *literals* (not casts), so clamping into
-/// `i64`'s range below doesn't itself need a lossy-cast allow. `f64`
-/// can't represent `i64::MAX` exactly; the literal rounds up to the
-/// nearest representable value (`2^63`), which only makes the clamp
-/// very slightly more permissive at the top edge — irrelevant since the
-/// cast below saturates there regardless.
+/// `i64::MIN`/`MAX` as `f64` *literals* (not casts), so clamping into `i64`'s range below
+/// doesn't itself need a lossy-cast allow.
 const I64_MIN_AS_F64: f64 = -9_223_372_036_854_775_808.0;
 const I64_MAX_AS_F64: f64 = 9_223_372_036_854_775_807.0;
 
@@ -133,7 +111,6 @@ fn round_to_i64(v: f64) -> i64 {
     v.round().clamp(I64_MIN_AS_F64, I64_MAX_AS_F64) as i64
 }
 
-/// One of a stepper's two buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepperPart {
     Decrease,
@@ -141,15 +118,7 @@ pub enum StepperPart {
     Increase,
 }
 
-/// Immediate-mode number stepper: `−  value  +`, the face of a
-/// [`NumberInput`]. Inline (the default) it is the toolbar stepper of
-/// [`NumberInput::compact`], bare steppers either side of the value;
-/// [`Self::framed`] gives the secondary steppers of the framed control,
-/// whose value the host's field draws.
-///
-/// The steppers are squares of the rect's height at either end; read their
-/// geometry from [`Self::steppers`] and their pointer targets from
-/// [`Self::hit_rects`], so a painted host hit-tests what it painted.
+/// Immediate-mode number stepper: `− value +`, the face of a [`NumberInput`].
 #[derive(Clone, Copy, Debug)]
 pub struct NumberStepperFace<'a> {
     rect: Rect,
@@ -200,14 +169,12 @@ impl<'a> NumberStepperFace<'a> {
         self
     }
 
-    /// The button under the pointer.
     #[must_use]
     pub fn hovered(mut self, part: Option<StepperPart>) -> Self {
         self.hovered = part;
         self
     }
 
-    /// Unavailable: painted under the disabled alpha.
     #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
@@ -219,9 +186,8 @@ impl<'a> NumberStepperFace<'a> {
         size.height(theme)
     }
 
-    /// The width an inline stepper of `size` needs so each of `values`
-    /// fits between its steppers without the control changing width as it
-    /// steps. Pass the widest values it can show (`"00:00"` and `"Now"`).
+    /// The width an inline stepper of `size` needs so each of `values` fits between its
+    /// steppers without the control changing width as it steps.
     #[must_use]
     pub fn width(
         size: crate::widget::ControlSize,
@@ -249,15 +215,12 @@ impl<'a> NumberStepperFace<'a> {
         )
     }
 
-    /// The run between the steppers where the value sits.
     #[must_use]
     pub fn value_rect(&self) -> Rect {
         let (minus, plus) = self.steppers();
         Rect::new(minus.x1 + GAP, self.rect.y0, plus.x0 - GAP, self.rect.y1)
     }
 
-    /// Where a pointer presses each button: its face grown to the minimum
-    /// target about its centre.
     #[must_use]
     pub fn hit_rects(&self, theme: &Theme) -> (Rect, Rect) {
         let (minus, plus) = self.steppers();
@@ -296,7 +259,6 @@ impl<'a> NumberStepperFace<'a> {
             .hovered(self.hovered == Some(part) && !self.disabled)
     }
 
-    /// Paint the two steppers.
     pub fn paint_steppers(&self, ctx: &mut PaintCtx<'_>) {
         let (minus, plus) = self.steppers();
         for (rect, part) in [
@@ -313,8 +275,6 @@ impl<'a> NumberStepperFace<'a> {
         }
     }
 
-    /// Paint the value centred between the steppers, in the size's label
-    /// type with tabular figures.
     pub fn paint_value(&self, ctx: &mut PaintCtx<'_>) {
         let style = self.control_size.label_style(ctx.theme).numeric();
         let (w, h) = ctx.text.measure_style(self.value, None, &style);
@@ -331,7 +291,6 @@ impl<'a> NumberStepperFace<'a> {
         );
     }
 
-    /// Paint the whole stepper: the steppers and, inline, the value.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>) {
         if self.disabled {
             crate::widget::paint_disabled(ctx.scene, ctx.transform, &self.rect);
@@ -352,7 +311,6 @@ impl<'a> NumberStepperFace<'a> {
 )]
 pub struct NumberInput {
     id: String,
-    /// Fluent message id spoken for the composite control.
     accessible_name: Option<String>,
     /// Canonical value — the single source of truth. The embedded field's
     /// text is a *view* of this (re-synced on every commit); `value` is
@@ -360,7 +318,6 @@ pub struct NumberInput {
     value: f64,
     min: f64,
     max: f64,
-    /// Amount a single stepper press (or Arrow Up/Down) adds / subtracts.
     step: f64,
     /// Decimal places used to format the value for display. `0` renders an
     /// integer (font size, margins); `>0` renders a fixed-precision float
@@ -381,26 +338,21 @@ pub struct NumberInput {
     plus_rect: Rect,
     last_cursor: Point,
     is_focused: bool,
-    /// See [`ColorPicker`](crate::widget::ColorPicker)'s hex-input focus
-    /// dance: the embedded field isn't in the parent's `node_map`, so when
-    /// it asks for focus it sets *our* node id. We stash the request here
-    /// and redirect it onto the field inside `set_focus(true)`.
+    /// See [`ColorPicker`](crate::widget::ColorPicker)'s hex-input focus dance: the embedded
+    /// field isn't in the parent's `node_map`, so when it asks for focus it sets *our* node id.
     field_focus_pending: bool,
     minus_hover: bool,
     plus_hover: bool,
     /// One-shot record of the last *committed user change*, drained by
     /// [`take_changed`](NumberInput::take_changed).
     changed: Option<f64>,
-    /// Process-local state the committed value is kept in.
     binding: Option<BoxedBinding<f64>>,
     action: Option<ActionEmitter<f64>>,
-    /// What a committed value is reported to, as a component's binding path does.
     edits: Option<crate::component::Bound<f64>>,
     enabled: bool,
-    /// The control's height and the role of its value.
     control_size: crate::widget::ControlSize,
-    /// An inline stepper (`−  value  +`) with bare steppers and no field
-    /// frame, for toolbars (zoom, page, point size, copies).
+    /// An inline stepper (`− value +`) with bare steppers and no field frame, for toolbars
+    /// (zoom, page, point size, copies).
     compact: bool,
     /// The footprint and type seen in `build_layout`, for the measured width.
     minimum: Size<f32>,
@@ -462,11 +414,6 @@ impl NumberInput {
     }
 
     /// Create a true two-way binding to typed process-local numeric state.
-    ///
-    /// Committed typing, steppers, keyboard actions, and accessibility
-    /// actions update `state`; mutations through any clone update this field
-    /// on the next synchronization pass. [`Self::take_changed`] remains a
-    /// user-intent signal and does not report model synchronization.
     pub fn from_state(state: &crate::LocalState<f64>) -> Self {
         let (value, binding) = super::binding::local(state);
         Self {
@@ -488,7 +435,6 @@ impl NumberInput {
         self
     }
 
-    /// Amount a single stepper press (or Arrow Up / Down) moves the value.
     #[must_use]
     pub fn with_step(mut self, step: f64) -> Self {
         self.step = step;
@@ -504,10 +450,8 @@ impl NumberInput {
         self
     }
 
-    /// Show each value in the app's own words (a time stepper's "Now" or
-    /// "10:57"); `parse` reads what the person types back into a value
-    /// (`None` keeps the current one). The control is measured to hold every
-    /// formatted value in range.
+    /// Show each value in the app's own words (a time stepper's "Now" or "10:57"); `parse`
+    /// reads what the person types back into a value (`None` keeps the current one).
     #[must_use]
     pub fn with_value_format(
         mut self,
@@ -520,7 +464,6 @@ impl NumberInput {
         self
     }
 
-    /// Read typed text as a value: the app's parser, or the leading number.
     fn parse_text(&self, text: &str) -> Option<f64> {
         match &self.parser {
             Some(parse) => parse(text),
@@ -561,16 +504,14 @@ impl NumberInput {
         self
     }
 
-    /// An inline stepper: bare `−` and `+` icon buttons either side of the
-    /// value, no field frame, as wide as the widest value. Clicking the value
-    /// edits it in place. For toolbars: zoom, page, point size, copies.
+    /// An inline stepper: bare `−` and `+` icon buttons either side of the value, no field
+    /// frame, as wide as the widest value. Clicking the value edits it in place.
     #[must_use]
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
 
-    /// Route every committed numeric value through an exported action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
@@ -578,7 +519,6 @@ impl NumberInput {
         self
     }
 
-    /// Build-time enabled flag. A disabled field is inert and dimmed.
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
@@ -600,11 +540,8 @@ impl NumberInput {
         self.value
     }
 
-    /// Push a value in programmatically. Clamps and re-formats the
-    /// display, but does NOT report a change through
-    /// [`take_changed`](NumberInput::take_changed). A bound
-    /// [`crate::LocalState`] is updated immediately.
-    /// Mirrors [`TextInput::set_text`](crate::widget::TextInput::set_text).
+    /// Push a value in programmatically. Clamps and re-formats the display, but does NOT report
+    /// a change through [`take_changed`](NumberInput::take_changed).
     pub fn set_value(&mut self, v: f64) {
         self.dirty = true;
         self.value = v.clamp(self.min, self.max);
@@ -627,13 +564,11 @@ impl NumberInput {
         self.field.is_focused()
     }
 
-    /// The range it keeps its value within.
     #[must_use]
     pub fn range(&self) -> (f64, f64) {
         (self.min, self.max)
     }
 
-    /// Whether it is the inline toolbar form: bare steppers, no field frame.
     #[must_use]
     pub fn is_compact(&self) -> bool {
         self.compact
@@ -702,13 +637,9 @@ impl NumberInput {
         }
     }
 
-    /// Width this control needs so **every** value it can show fits — the
-    /// current value and the finite ends of its range, formatted with the
-    /// configured precision and suffix — beside its steppers. A host laying
-    /// its own rows (a font-size stepper in an inspector) reserves this
-    /// instead of guessing the field's type size; it is the same rule the
-    /// widget applies to itself in `adjust_layout_style`, so a slot
-    /// sized from it never clips a value the widget would have held.
+    /// Width this control needs so **every** value it can show fits — the current value and the
+    /// finite ends of its range, formatted with the configured precision and suffix — beside
+    /// its steppers.
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
         let padding = f32_of_f64(self.field.text_padding_x(theme));
@@ -723,19 +654,13 @@ impl NumberInput {
         f64::from(widest)
     }
 
-    /// Overwrite the embedded field's text with the canonical value's
-    /// formatted string.
     fn sync_field(&mut self) {
         self.dirty = true;
         let t = self.format_value();
         self.field.set_text(&t);
     }
 
-    /// Commit whatever is typed: parse the leading number, clamp, adopt
-    /// it. Records a change for the owner
-    /// ([`take_changed`](NumberInput::take_changed)) only when the value
-    /// actually moved; always re-syncs the display so invalid/out-of-range
-    /// text snaps back.
+    /// Commit whatever is typed: parse the leading number, clamp, adopt it.
     fn commit_local(&mut self) {
         if let Some(parsed) = self.parse_text(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
@@ -749,9 +674,8 @@ impl NumberInput {
         self.sync_field();
     }
 
-    /// Move the value by `delta` (one stepper press / arrow), clamping.
-    /// Records a change + pending write when it actually moves. The sum is
-    /// the decimal the value and step make, so tenths stay tenths.
+    /// Move the value by `delta` (one stepper press / arrow), clamping. Records a change +
+    /// pending write when it actually moves.
     fn step_by(&mut self, delta: f64) {
         let next = crate::num::snap_decimal(self.value + delta, &[self.value, delta])
             .clamp(self.min, self.max);
@@ -775,8 +699,6 @@ impl NumberInput {
         self.field.apply_layout_external(self.field_rect);
     }
 
-    /// The value's type: the field's body text, or the size's label role
-    /// with tabular figures when compact.
     fn value_style_in(&self, theme: &Theme) -> crate::text_render::TextStyle {
         if self.compact {
             self.control_size.label_style(theme).numeric()
@@ -785,8 +707,6 @@ impl NumberInput {
         }
     }
 
-    /// Where a pointer presses a stepper: its face grown to the minimum
-    /// target about its centre.
     fn stepper_hit(&self, stepper: Rect) -> Rect {
         self.interaction.minimum_target_rect(stepper)
     }
@@ -834,13 +754,9 @@ impl Widget for NumberInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // Don't clobber the field while the user is mid-edit; the model is
-        // adopted as soon as editing ends.
         if self.field.is_focused() {
             return;
         }
-        // A sync is a read of what the document holds, not a paint: only a
-        // pulled number the stepper was not already showing is one.
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(v) = binding.pull(state, root)
         {
@@ -899,7 +815,6 @@ impl Widget for NumberInput {
         };
         let mut style = current.clone();
         style.size.width = Dimension::length(width);
-        // Keep authored min/max constraints, including Manual's exact allocation.
         if style == *current {
             return false;
         }
@@ -923,9 +838,6 @@ impl Widget for NumberInput {
             crate::widget::paint_disabled(scene, transform, &self.rect);
         }
 
-        // --- Steppers: the shared stepper face, bare when compact. The value
-        // is the embedded field (its own chrome), or, compact and at rest,
-        // the bare value centred between the steppers ---
         let shown = self.format_value();
         let hovered = if self.minus_hover {
             Some(StepperPart::Decrease)
@@ -959,9 +871,6 @@ impl Widget for NumberInput {
             return;
         }
 
-        // Forward to the embedded field first (click-to-focus, typing, IME).
-        // The field isn't in the parent's node_map, so a focus request it
-        // makes sets *our* node id — redirect it onto the field in set_focus.
         let prev_focus = *ctx.focus_target;
         self.field.handle_event(event, ctx);
         if *ctx.focus_target != prev_focus && self.field_rect.contains(self.last_cursor) {
@@ -986,8 +895,6 @@ impl Widget for NumberInput {
                 ..
             } if *el == ElementState::Pressed => {
                 if self.minus_hover {
-                    // Commit any half-typed edit before stepping so the step
-                    // is relative to what the user last saw, then blur the field.
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
@@ -1004,8 +911,6 @@ impl Widget for NumberInput {
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if !self.field_rect.contains(self.last_cursor) && self.field.is_focused() {
-                    // Press landed outside the field while it was focused —
-                    // commit the typed value and release focus.
                     self.commit_local();
                     self.field.set_focus(false);
                 }
@@ -1036,7 +941,6 @@ impl Widget for NumberInput {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        // The embedded field drives its own selection drag capture.
         self.field.is_dragging()
     }
 
@@ -1086,10 +990,6 @@ impl Widget for NumberInput {
     fn set_focus(&mut self, focused: bool) {
         self.dirty = true;
         if focused {
-            // Route focus into the embedded field so it's immediately
-            // editable, however it arrived. A click in the field also
-            // pre-selects the value so the first keystroke replaces it;
-            // focus arriving any other way leaves the caret where it is.
             let via_field_click = self.field_focus_pending;
             self.field_focus_pending = false;
             self.is_focused = true;
@@ -1100,7 +1000,6 @@ impl Widget for NumberInput {
         } else {
             self.is_focused = false;
             if self.field.is_focused() {
-                // Blur commits the typed value for the owner to take.
                 self.commit_local();
                 self.field.set_focus(false);
             }
@@ -1342,10 +1241,6 @@ mod tests {
         }
 
         // Case `preferred_width_fits_the_widest_value_in_range`.
-        // `preferred_width` reserves room for the widest value the control can
-        // show — the ends of its range, formatted with precision and suffix —
-        // beside its two steppers, never less than the configured width. A host
-        // slot sized from it holds every value the widget itself would hold.
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
@@ -1376,7 +1271,6 @@ mod tests {
                 "preferred {preferred} should be the widest value's need rounded up, not more (required {required})"
             );
 
-            // A narrow range needs no more than the configured width.
             let compact = NumberInput::new(3.0).with_range(0.0, 9.0);
             assert_eq!(compact.preferred_width(&theme, &mut text), DEFAULT_WIDTH);
         }
@@ -1485,8 +1379,6 @@ mod tests {
                 .with_suffix("px");
             layout_at(&mut n, 0.0, 0.0);
 
-            // Focus the field (as a click would) and replace its text with an
-            // out-of-range value.
             n.field.set_focus(true);
             n.field.set_text("999");
             dispatch(&mut n, &named_key(NamedKey::Enter));
@@ -1516,8 +1408,6 @@ mod tests {
             assert_eq!(n.take_changed(), Some(24.0));
         }
 
-        // Case `invalid_text_reverts_and_reports_nothing`.
-        // Invalid text reverts to the last good value with no reported change.
         {
             let mut n = NumberInput::new(16.0).with_range(8.0, 72.0);
             layout_at(&mut n, 0.0, 0.0);
@@ -1535,7 +1425,6 @@ mod tests {
             n.field.set_focus(true);
             n.field.set_text("40");
 
-            // App moves focus elsewhere → set_focus(false) commits locally.
             Widget::set_focus(&mut n, false);
             assert_eq!(n.value(), 40.0, "blur committed the typed value");
             assert_eq!(n.take_changed(), Some(40.0));
@@ -1564,7 +1453,6 @@ mod tests {
             assert_eq!(n.value(), 72.0);
             assert_eq!(n.take_changed(), Some(72.0));
 
-            // Click + again: already at max → no move, no report.
             dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0, "clamped at max");
             assert_eq!(n.take_changed(), None, "no change when already clamped");
@@ -1576,8 +1464,6 @@ mod tests {
             assert_eq!(n.take_changed(), Some(70.0));
         }
 
-        // Case `arrow_keys_step_while_editing`.
-        // Arrow Up / Down while editing step the value.
         {
             let mut n = NumberInput::new(16.0).with_range(1.0, 100.0).with_step(1.0);
             layout_at(&mut n, 0.0, 0.0);
@@ -1686,7 +1572,6 @@ mod tests {
             assert!(node.state.focusable);
         }
 
-        // Case `perform_action_increment_and_setvalue`.
         {
             use crate::a11y::Action;
             let mut doc = AutoCommit::new();

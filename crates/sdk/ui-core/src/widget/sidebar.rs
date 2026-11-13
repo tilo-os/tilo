@@ -1,27 +1,6 @@
-//! `SidebarDrawer` — the headless sidebar controller for painted apps.
-//!
-//! A widget app uses [`crate::widget::NavShell`]; an app that paints its whole window itself holds
-//! a `SidebarDrawer` instead. The drawer owns the same decisions the shell makes, from the same
-//! metrics: docked beside the content while it fits above the content's minimum and the pane it
-//! leaves keeps a column's width ([`crate::widget::arrange::column_min_width`]), shrinking toward
-//! its own minimum first, the eased reveal, and the person's show/hide choice per size class. Too
-//! narrow to dock, a panel that asked for the push layout ([`SidebarDrawer::with_push`]: a list of
-//! rows the drawer would cover, as `NavShell` decides from the content's kind) takes turns with the
-//! content: open, the list fills the window ([`SidebarDrawer::is_push`]) and the toggle in the
-//! header row brings the content back, which is also where a choice in the list lands. Every other
-//! panel — a content-primary app ([`crate::widget::ContentKind::Document`]), an inspector, a video
-//! library beside the picture, an [`SidebarDrawer::overlay_only`] panel — floats as a drawer over
-//! the content. It is not modal and dims nothing: a press on the content beside it
-//! ([`SidebarDrawer::scrim_rect`]) puts it away. It hands back the resolved rects; the host paints
-//! the panel with [`SidebarDrawer::paint_panel`], the toggle with [`SidebarDrawer::draw_toggle`]
-//! and the rows with [`crate::chrome::paint_nav_row`].
-//!
-//! An inspector that asks for it ([`SidebarDrawer::sheet_when_narrow`]) rises as a sheet from the
-//! window's foot ([`crate::widget::BottomSheet`]) instead of floating, as `NavShell`'s inspector
-//! does, and the content above it stays live.
-//!
-//! Per frame: [`SidebarDrawer::tick`] once from the draw path, then [`SidebarDrawer::resolve`] with
-//! the outer rect; on the event path call `resolve` alone so hit-tests match the last paint.
+//! `SidebarDrawer` — the headless sidebar controller for painted apps. A widget app uses
+//! [`crate::widget::NavShell`]; an app that paints its whole window itself holds a
+//! `SidebarDrawer` instead.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -34,14 +13,10 @@ use crate::widget::{AuthoredExtent, SplitHandle, SplitOrientation, SplitRatio};
 
 mod sheet;
 
-/// The docked sidebar width every shell shares (`Metrics::sidebar_width`).
 pub const DEFAULT_DRAWER_DOCKED_WIDTH: f64 = Metrics::BASE.sidebar_width as f64;
-/// The overlay drawer width (`Metrics::drawer_width`).
 pub const DEFAULT_DRAWER_WIDTH: f64 = Metrics::BASE.drawer_width as f64;
-/// At or above this width the drawer docks (`Metrics::compact_breakpoint`).
 pub const DEFAULT_DRAWER_BREAKPOINT: f64 = Metrics::BASE.compact_breakpoint as f64;
 
-/// Which edge the drawer is anchored to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarSide {
     /// Anchored to the leading edge: a navigation sidebar.
@@ -50,8 +25,6 @@ pub enum SidebarSide {
     Right,
 }
 
-/// A collapsible sidebar or inspector for a painted app. See the module
-/// docs.
 #[derive(Clone, Debug)]
 pub struct SidebarDrawer {
     side: SidebarSide,
@@ -76,14 +49,12 @@ pub struct SidebarDrawer {
     float_inset: f64,
     flap: FlapState,
 
-    // --- resolved geometry (last `resolve`) ---
     outer: Rect,
     layout: SplitLayout,
     sidebar_rect: Rect,
     content_rect: Rect,
     scrim_rect: Rect,
 
-    // --- self-tick animation ---
     animating: bool,
 
     /// Never docks: a drawer over the content at every width.
@@ -91,7 +62,6 @@ pub struct SidebarDrawer {
     /// Too narrow to dock, the sidebar and the content take turns filling
     /// the window ([`Self::content_kind`]) instead of the sidebar floating.
     push: bool,
-    /// An icon rail stands beside the text list inside the drawer.
     with_rail: bool,
     /// `metrics.rail_width` of the theme last handed to [`Self::scale_for`],
     /// or the width its destinations' words need ([`Self::rail_labels`]).
@@ -153,7 +123,6 @@ impl Default for SidebarDrawer {
 }
 
 impl SidebarDrawer {
-    /// A leading navigation drawer, open when docked, at the shell metrics.
     pub fn new() -> Self {
         Self {
             side: SidebarSide::Left,
@@ -207,23 +176,17 @@ impl SidebarDrawer {
     pub fn right(self) -> Self {
         self.side(SidebarSide::Right)
     }
-    /// An authored dock width instead of the panel's own width beside the
-    /// content's minimum ([`Self::content_min_width`]). Prefer stating what
-    /// the content is: a threshold written down beside the panel's width and
-    /// the content it stands beside goes stale the moment either moves.
+    /// An authored dock width instead of the panel's own width beside the content's minimum
+    /// ([`Self::content_min_width`]).
     #[must_use]
     pub fn breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = AuthoredExtent::text(px);
         self.content_min = None;
         self
     }
-    /// Dock only while the content column keeps this authored minimum, and
-    /// never narrower than a column
-    /// ([`crate::widget::arrange::column_min_width`]): a pane below that is
-    /// a phone's screen, so the panel folds behind the bar's toggle instead
-    /// of standing beside it. The docked panel shrinks toward its minimum
-    /// width first. The actual sidebar and icon rail widths remain
-    /// independently scaled.
+    /// Dock only while the content column keeps this authored minimum, and never narrower than
+    /// a column ([`crate::widget::arrange::column_min_width`]): a pane below that is a phone's
+    /// screen, so the panel folds behind the bar's toggle instead of standing beside it.
     #[must_use]
     pub fn content_min_width(mut self, px: f64) -> Self {
         self.content_min = Some(ContentMinimum {
@@ -233,12 +196,7 @@ impl SidebarDrawer {
         self
     }
     /// Dock while the content keeps the minimum its kind needs
-    /// ([`crate::widget::ContentKind`]), as `NavShell` does. Narrower, the
-    /// panel floats as a drawer over the content ([`Self::is_overlay`]): a
-    /// panel that states no content kind never takes the window over as a
-    /// screen of its own. Content that cannot spare the width for a drawer
-    /// over it ([`crate::widget::ContentKind::List`]) keeps the panel on the
-    /// push layout instead ([`Self::is_push`], [`Self::with_push`]).
+    /// ([`crate::widget::ContentKind`]), as `NavShell` does.
     #[must_use]
     pub fn content_kind(mut self, kind: crate::widget::ContentKind) -> Self {
         self.push = kind == crate::widget::ContentKind::List;
@@ -248,11 +206,9 @@ impl SidebarDrawer {
         });
         self
     }
-    /// The content is a column in its own right — a page or a cheatsheet a
-    /// person keeps in view beside the panel — so the panel docks while it
-    /// fits beside that column at its own width ([`Self::panel_min_width`]),
-    /// and floats over it below that. The column then pans out of view
-    /// rather than becoming a phone width to make room for the panel.
+    /// The content is a column in its own right — a page or a cheatsheet a person keeps in view
+    /// beside the panel — so the panel docks while it fits beside that column at its own width
+    /// ([`Self::panel_min_width`]), and floats over it below that.
     #[must_use]
     pub fn content_is_column(self, min_width: f64) -> Self {
         self.content_min_width(min_width)
@@ -271,10 +227,8 @@ impl SidebarDrawer {
         });
         self
     }
-    /// The narrowest the docked panel shrinks to beside the content before
-    /// it floats: the panel's own minimum (`metrics.panel_min_width`) unless
-    /// it states another. Each panel is authored at 1×; the resolved width
-    /// follows [`Theme::responsive_scale`] like every other text-sized one.
+    /// The narrowest the docked panel shrinks to beside the content before it floats: the
+    /// panel's own minimum (`metrics.panel_min_width`) unless it states another.
     #[must_use]
     pub fn panel_min_width(mut self, px: f64) -> Self {
         self.panel_min_width = Some(AuthoredExtent::text(px));
@@ -314,7 +268,6 @@ impl SidebarDrawer {
         self.rail_width = AuthoredExtent::icon(px);
         self
     }
-    /// A summon-on-demand panel.
     #[must_use]
     pub fn closed(mut self) -> Self {
         self.flap = FlapState::closed_by_default();
@@ -327,26 +280,19 @@ impl SidebarDrawer {
         self.overlay_only = true;
         self
     }
-    /// An icon rail beside the text list in the one drawer (workspaces
-    /// beside a workspace's channels). The rail is `metrics.rail_width`
-    /// wide, following `ui_scale`; the drawer grows by it, and
-    /// [`Self::rail_rect`] and [`Self::list_rect`] split the panel.
+    /// An icon rail beside the text list in the one drawer (workspaces beside a workspace's
+    /// channels).
     #[must_use]
     pub fn with_rail(mut self) -> Self {
         self.with_rail = true;
         self
     }
-    /// The rail's destination captions: the rail grows with the text, up to
-    /// its cap, so its longest word shows whole rather than as a fragment
-    /// ([`crate::chrome::rail_width_fitting`]). Takes effect at the next
-    /// [`Self::scale_for`].
+    /// The rail's destination captions: the rail grows with the text, up to its cap, so its
+    /// longest word shows whole rather than as a fragment
+    /// ([`crate::chrome::rail_width_fitting`]).
     pub fn rail_labels(&mut self, labels: impl IntoIterator<Item = impl Into<String>>) {
         self.rail_labels = labels.into_iter().map(Into::into).collect();
     }
-
-    // --- dynamic setters (per-frame reconfig) -------------------------------
-    //
-    // Each keeps the sizing its builder chose (a rail stays a rail).
 
     pub fn set_docked_width(&mut self, px: f64) {
         self.docked_width = self.docked_width.with_px(px);
@@ -356,11 +302,9 @@ impl SidebarDrawer {
         self.content_min = None;
     }
 
-    /// Adopt the theme's scale so the authored breakpoint and the
-    /// text-sized widths grow by [`Theme::responsive_scale`], an icon rail by
-    /// `ui_scale` (HIG §9.6), and the overlay drawer floats inside the
-    /// theme's `s2`. Call it from the host's `build_layout` with the theme it
-    /// receives. Never called ⇒ authored geometry.
+    /// Adopt the theme's scale so the authored breakpoint and the text-sized widths grow by
+    /// [`Theme::responsive_scale`], an icon rail by `ui_scale` (HIG §9.6), and the overlay
+    /// drawer floats inside the theme's `s2`.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.responsive_scale = theme.responsive_scale();
         self.ui_scale = f64::from(theme.ui_scale);
@@ -389,8 +333,6 @@ impl SidebarDrawer {
     /// The icon rail's width inside the drawer ([`Self::with_rail`]), or 0.
     fn rail_column_width(&self) -> f64 {
         if self.with_rail {
-            // Before `scale_for` the base metric, scaled by the cached UI
-            // scale; after it, the theme's metric (already scaled).
             self.rail_column
         } else {
             0.0
@@ -411,8 +353,7 @@ impl SidebarDrawer {
     }
 
     /// The content's minimum as laid out: its own, and never narrower than a column
-    /// ([`crate::widget::arrange::column_min_width`]). A pane below a column's width is a
-    /// phone's screen, so the panel folds behind the bar's toggle instead of standing beside it.
+    /// ([`crate::widget::arrange::column_min_width`]).
     fn resolved_content_min(&self) -> Option<f64> {
         self.content_min.map(|minimum| {
             self.resolve_extent(minimum.extent).max(f64::from(
@@ -420,10 +361,9 @@ impl SidebarDrawer {
             ))
         })
     }
-    /// The narrowest the docked panel shrinks to before it stops docking:
-    /// its own minimum width ([`Self::panel_min_width`], or the docked width
-    /// where that is narrower, with the rail), never wider than it is. The
-    /// content's minimum is the column's, not the panel standing there.
+    /// The narrowest the docked panel shrinks to before it stops docking: its own minimum width
+    /// ([`Self::panel_min_width`], or the docked width where that is narrower, with the rail),
+    /// never wider than it is.
     fn narrowest_docked_width(&self) -> f64 {
         let docked = self.resolved_docked_width();
         if self.docked_width.sizing() == crate::widget::layout::ExtentSizing::Icon {
@@ -435,11 +375,8 @@ impl SidebarDrawer {
             .unwrap_or(self.resize_min_width);
         (own + self.rail_column_width()).min(docked)
     }
-    /// The docked panel's width in a window `extent` wide: its width, shrunk
-    /// toward [`Self::narrowest_docked_width`] while the content would get
-    /// less than its minimum. A content *column* ([`Self::content_is_column`])
-    /// pans out of view below that instead of the panel shrinking to a phone
-    /// beside it.
+    /// The docked panel's width in a window `extent` wide: its width, shrunk toward
+    /// [`Self::narrowest_docked_width`] while the content would get less than its minimum.
     fn docked_width_in(&self, extent: f64) -> f64 {
         let docked = self.resolved_docked_width();
         let Some(minimum) = self.resolved_content_min() else {
@@ -448,11 +385,9 @@ impl SidebarDrawer {
         let beside = extent - minimum;
         docked.min(beside).max(self.narrowest_docked_width())
     }
-    /// The docked width as laid out (with the rail, where it has one).
     pub fn resolved_docked_width(&self) -> f64 {
         self.resolve_extent(self.docked_width) + self.rail_column_width()
     }
-    /// The overlay width as laid out (text-sized, with the rail).
     pub fn resolved_overlay_width(&self) -> f64 {
         self.resolve_extent(self.overlay_width) + self.rail_column_width()
     }
@@ -478,12 +413,10 @@ impl SidebarDrawer {
     pub fn is_docked(&self) -> bool {
         self.layout == SplitLayout::Docked
     }
-    /// Too narrow to dock, a panel that asked for the push layout
-    /// ([`Self::with_push`], or content of a kind that keeps it) takes turns
-    /// with the content: open, the panel fills the window under the header
-    /// row as the sidebar region (no float, no shadow); closed, the content
-    /// does. It is still the overlay size class ([`Self::is_overlay`]): a
-    /// choice in the list closes it, and narrowing lands on the content.
+    /// Too narrow to dock, a panel that asked for the push layout ([`Self::with_push`], or
+    /// content of a kind that keeps it) takes turns with the content: open, the panel fills the
+    /// window under the header row as the sidebar region (no float, no shadow); closed, the
+    /// content does.
     pub fn is_push(&self) -> bool {
         self.is_overlay() && self.pushes()
     }
@@ -493,22 +426,16 @@ impl SidebarDrawer {
     pub fn is_open(&self) -> bool {
         self.flap.is_open(self.layout)
     }
-    /// Flip open/closed and remember the person's choice for this size
-    /// class.
     pub fn toggle(&mut self) {
         self.flap.toggle(self.layout);
     }
-    /// Force open (remembering the choice).
     pub fn open(&mut self) {
         self.flap.open();
     }
-    /// Force closed (scrim / Esc / a choice made in the drawer).
     pub fn close(&mut self) {
         self.flap.close();
     }
     /// Snap to `open` with NO animation — deterministic `--shots` / tests.
-    /// Before the first [`Self::resolve`] the snap is kept until the layout
-    /// is known, so it lands in the size class the drawer is shown in.
     pub fn snap(&mut self, open: bool) {
         if self.resolved_once {
             self.flap.snap(open);
@@ -535,7 +462,6 @@ impl SidebarDrawer {
     pub fn sidebar_rect(&self) -> Rect {
         self.sidebar_rect
     }
-    /// The usable area beside/under the drawer.
     pub fn content_rect(&self) -> Rect {
         self.content_rect
     }
@@ -557,7 +483,6 @@ impl SidebarDrawer {
             SidebarSide::Right => Rect::new(r.x1 - w, r.y0, r.x1, r.y1),
         }
     }
-    /// The text list inside the panel: the panel beside the rail.
     pub fn list_rect(&self) -> Rect {
         let rail = self.rail_rect();
         let r = self.sidebar_rect;
@@ -570,11 +495,8 @@ impl SidebarDrawer {
         }
     }
 
-    /// The window's header row across the top of `area`, with this drawer's
-    /// toggle in it: at the leading corner for a sidebar, the trailing one
-    /// for an inspector. A floating drawer then opens under the row, which
-    /// stays live. Paint the toggle with [`Self::paint_toggle`] and route
-    /// events to it with [`Self::handle_event`].
+    /// The window's header row across the top of `area`, with this drawer's toggle in it: at
+    /// the leading corner for a sidebar, the trailing one for an inspector.
     pub fn header(&mut self, area: Rect, theme: &Theme) -> crate::chrome::HeaderRowFace {
         self.header_with_history(area, theme, false)
     }
@@ -612,8 +534,6 @@ impl SidebarDrawer {
         self.toggle.conventions = conventions;
     }
 
-    /// What the toggle does now, for its name and tooltip, in the language the
-    /// window speaks.
     fn toggle_name(&self) -> String {
         let key = match (self.side, self.is_open()) {
             (SidebarSide::Left, true) => "window-toolbar-hide-sidebar",
@@ -624,11 +544,9 @@ impl SidebarDrawer {
         crate::i18n::I18nManager::lookup_plain(key)
     }
 
-    /// Route `event` to the drawer's own parts: the toggle (hover, a press
-    /// and release on it), `HostShortcut::Sidebar` for a sidebar, Escape
-    /// and a press on the scrim for an open floating drawer. Returns whether
-    /// the drawer took the event; call [`Self::resolve`] first so the rects
-    /// match the last paint.
+    /// Route `event` to the drawer's own parts: the toggle (hover, a press and release on it),
+    /// `HostShortcut::Sidebar` for a sidebar, Escape and a press on the scrim for an open
+    /// floating drawer.
     pub fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -738,8 +656,6 @@ impl SidebarDrawer {
         }
     }
 
-    /// Paint the toggle at its place in the header row, with the theme of
-    /// the ground it stands on.
     pub fn paint_toggle(
         &self,
         scene: &mut Scene,
@@ -806,9 +722,8 @@ impl SidebarDrawer {
         false
     }
 
-    /// Advance the reveal on the standard panel slide
-    /// ([`FlapState::advance`]). Call once per draw. Under reduced motion the
-    /// reveal lands at once. Returns whether it is still animating.
+    /// Advance the reveal on the standard panel slide ([`FlapState::advance`]). Call once per
+    /// draw. Under reduced motion the reveal lands at once.
     pub fn tick(&mut self, theme: &Theme) -> bool {
         let now = crate::motion::frame_now();
         self.animating = self.flap.advance(self.layout, now, theme.motion());
@@ -872,10 +787,6 @@ impl SidebarDrawer {
                 let full = self.docked_width_in(o.width()).min(o.width());
                 let rail = self.resolved_rail_width().min(full);
                 let inset = rail + (full - rail) * r;
-                // The content reflows once, at the wide end of the slide
-                // (`motion::PanelSlide`): while the sidebar moves it keeps
-                // the width it has with the sidebar shut and slides with
-                // the sidebar's edge, under the sidebar or the window edge.
                 let content_w = crate::motion::PanelSlide::content_width(
                     o.width() - inset,
                     o.width() - rail,
@@ -895,9 +806,6 @@ impl SidebarDrawer {
                 self.scrim_rect = Rect::ZERO;
             }
             SplitLayout::Overlay if self.pushes() => {
-                // One column at a time: the list slides in over the whole
-                // window under the header row, and the content stands under
-                // it at full width. Nothing beside the list to dismiss on.
                 self.content_rect = o;
                 let w = o.width();
                 let top = self.overlay_top(o);
@@ -907,7 +815,6 @@ impl SidebarDrawer {
             }
             SplitLayout::Overlay if self.rises_as_sheet() => self.place_sheet(o),
             SplitLayout::Overlay => {
-                // Content spans the full width; the drawer floats in over it.
                 self.content_rect = o;
                 let gap = self.float_inset;
                 let slide = self.flap.reveal();
@@ -937,12 +844,10 @@ impl SidebarDrawer {
         self.sync_resize();
     }
 
-    /// Whether the shared divider owns the current pointer drag.
     pub fn is_resizing(&self) -> bool {
         self.resize.is_dragging()
     }
 
-    /// Hover changes request a repaint without consuming pointer motion.
     pub fn take_resize_redraw(&mut self) -> bool {
         std::mem::take(&mut self.resize_redraw)
     }
@@ -1007,7 +912,6 @@ impl SidebarDrawer {
         }
     }
 
-    /// The shared separator's semantic door, available for a docked panel.
     pub fn resize_accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.resize_available().then(|| {
             let key = match self.side {
@@ -1023,7 +927,6 @@ impl SidebarDrawer {
         })
     }
 
-    /// Route the separator's ordinary accessibility/semantic action.
     pub fn perform_resize_action(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
         if target != self.resize_target() || !self.resize_available() {
             return false;
@@ -1039,14 +942,12 @@ impl SidebarDrawer {
         false
     }
 
-    /// The shared resize cursor for a docked sidebar or captured drag.
     pub fn resize_cursor(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.resize_available()
             .then(|| self.resize.cursor_shape(point))
             .flatten()
     }
 
-    /// Paint the existing shared divider using the sidebar's theme ground.
     pub fn paint_resize(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if self.resize_available() {
             self.resize.paint(
@@ -1085,12 +986,7 @@ impl SidebarDrawer {
         }
     }
 
-    /// Paint the panel the drawer's contents stand on and return the theme
-    /// to draw them with. Docked, it is the window region
-    /// (`Region::Sidebar`, or `Region::Inspector` for a trailing drawer)
-    /// with no radius and no shadow, and so is a push screen
-    /// ([`Self::is_push`]); as a floating drawer it is the floating
-    /// material with the panel radius and the floating shadow.
+    /// Paint the panel the drawer's contents stand on and return the theme to draw them with.
     pub fn paint_panel(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
         let rect = self.sidebar_rect;
         if let Some(sheet) = self.sheet.as_ref().filter(|_| self.rises_as_sheet()) {
@@ -1107,10 +1003,9 @@ impl SidebarDrawer {
         }
     }
 
-    /// Paint the floating drawer panel at `rect` for a host that lays its
-    /// panel out itself (a timeline's bin over the canvas): the floating
-    /// material, `radii.panel` and the floating shadow, as an open overlay
-    /// drawer. Returns the theme to draw the panel's contents with.
+    /// Paint the floating drawer panel at `rect` for a host that lays its panel out itself (a
+    /// timeline's bin over the canvas): the floating material, `radii.panel` and the floating
+    /// shadow, as an open overlay drawer.
     pub fn paint_panel_in(
         scene: &mut Scene,
         transform: Affine,
@@ -1120,10 +1015,9 @@ impl SidebarDrawer {
         paint_floating_drawer(scene, transform, rect, theme)
     }
 
-    /// Paint the show/hide control inside `rect`: the same Plain icon
-    /// button `NavShell` draws (`Icon::PanelLeft`, or `PanelRight` for a
-    /// trailing drawer), transparent at rest and lifted under the pointer.
-    /// Draw it with the theme of the ground it stands on.
+    /// Paint the show/hide control inside `rect`: the same Plain icon button `NavShell` draws
+    /// (`Icon::PanelLeft`, or `PanelRight` for a trailing drawer), transparent at rest and
+    /// lifted under the pointer.
     pub fn draw_toggle(
         &self,
         scene: &mut Scene,
@@ -1218,7 +1112,6 @@ mod tests {
                 "the panel and the content's column fit the window"
             );
             assert!(drawer.resize_accessibility().is_some());
-            // Asking for more gives the panel no more: what stands beside it is a column.
             let value = match side {
                 SidebarSide::Left => "90%",
                 SidebarSide::Right => "10%",
@@ -1421,13 +1314,10 @@ mod tests {
         let at = |drawer: &mut SidebarDrawer, width: f64| {
             drawer.resolve(Rect::new(0.0, 0.0, width, 800.0));
         };
-        // Wide: the panel at its width.
         let docked = drawer.resolved_docked_width();
         at(&mut drawer, docked + content_min + 100.0);
         assert!(drawer.is_docked());
         assert_eq!(drawer.sidebar_rect().width(), docked);
-        // Narrower: the panel shrinks before the layout changes, and the
-        // content keeps its minimum.
         at(&mut drawer, breakpoint + 10.0);
         assert!(drawer.is_docked());
         assert_eq!(drawer.content_rect().width(), content_min);
@@ -1439,7 +1329,6 @@ mod tests {
             0.0,
             "a closed drawer has no dismiss area"
         );
-        // Hysteresis: back to docked only past the band.
         let band = f64::from(m.layout_hysteresis);
         at(&mut drawer, breakpoint + band - 1.0);
         assert!(drawer.is_overlay(), "no flicker near the threshold");
@@ -1467,17 +1356,13 @@ mod tests {
         assert!(drawer.is_docked(), "a media grid keeps its sidebar at 600");
     }
 
-    /// Too narrow to dock, a panel that asked for the push layout takes
-    /// turns with the content instead of floating over it: the list fills
-    /// the window on the sidebar region, the content comes back with the
-    /// toggle. A content-primary app keeps its floating drawer, and so does
-    /// a panel that states no content kind — a video library beside the
-    /// picture is a drawer over it, never a screen that replaces it.
+    /// Too narrow to dock, a panel that asked for the push layout takes turns with the content
+    /// instead of floating over it: the list fills the window on the sidebar region, the
+    /// content comes back with the toggle.
     #[test]
     fn too_narrow_to_dock_the_list_and_the_content_take_turns() {
         let theme = Theme::dark();
         let window = Rect::new(0.0, 0.0, 360.0, 800.0);
-        // Both ways of asking for it: the kind, and the explicit builder.
         let mut pushes = vec![SidebarDrawer::new().content_kind(crate::widget::ContentKind::List)];
         pushes.extend([
             SidebarDrawer::new()
@@ -1554,8 +1439,6 @@ mod tests {
         assert!((drawer.sidebar_rect().width() - docked).abs() < 0.5);
         assert!((content.width() - (1400.0 - docked)).abs() < 0.5);
 
-        // Shrinking to the least it works at, then the column pans out of
-        // view under the panel rather than the column becoming a phone.
         let just_fits = Rect::new(0.0, 0.0, least + column, 800.0);
         drawer.resolve(just_fits);
         assert!(drawer.is_docked());
@@ -1768,7 +1651,6 @@ mod tests {
         }
     }
 
-    /// Route `event` to the drawer's own parts with a throwaway context.
     fn route(d: &mut SidebarDrawer, event: &winit::event::WindowEvent) -> bool {
         route_with(d, event, winit::event::Modifiers::default())
     }
@@ -1868,7 +1750,6 @@ mod tests {
         d.resolve(wide());
         assert!(d.is_overlay(), "never docks");
 
-        // A snap before the first resolve lands in the layout shown.
         let mut d = SidebarDrawer::new();
         d.snap(true);
         d.resolve(narrow());

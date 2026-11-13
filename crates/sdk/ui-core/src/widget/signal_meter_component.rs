@@ -13,8 +13,8 @@ crate::component::choice!(SignalLevel, "SignalLevel", {
     Strong => "strong",
 });
 
-/// How strong a radio signal is (a Wi-Fi network, a mobile network), as four bars of rising
-/// height, one icon square in size. It names itself by its level: "Strong signal".
+/// How strong a radio signal is (a Wi-Fi network, a mobile network), as four bars one icon
+/// square in size, naming itself by its level: "Strong signal".
 #[derive(Component, Default)]
 #[component(name = "SignalMeter", role = "Image")]
 pub struct SignalMeterProps {
@@ -30,7 +30,6 @@ impl Described for SignalMeter {
         Self::new(props.level)
     }
 
-    /// A stronger or weaker signal fills its bars where the meter stands.
     fn set_props(&mut self, props: SignalMeterProps) -> bool {
         self.set_level(props.level);
         true

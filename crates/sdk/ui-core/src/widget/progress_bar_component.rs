@@ -5,21 +5,21 @@ use crate::widget::{GaugeThresholds, Tone};
 
 use super::{BarFill, ProgressBar};
 
-/// How far something is: a transfer, an import, a sync. Without a value it is under way with no
-/// known end, a segment sliding across the track. A measured level (a disk, a quota) turns
-/// warning and then danger as it fills.
+/// How far something is (a transfer, an import, a sync): without a value a segment slides
+/// across the track with no known end, and a measured level (a disk, a quota) turns warning
+/// then danger as it fills.
 #[derive(Component, Default)]
 #[component(name = "ProgressBar", role = "ProgressBar", label = "label")]
 pub struct ProgressBarProps {
-    /// The share done, from 0 to 1. Without it the bar is under way with no known end.
+    /// The share done, from 0 to 1; without it the bar has no known end.
     #[component(positional)]
     pub value: Option<f64>,
-    /// What is under way ("Uploading"). A named bar announces its progress to assistive
-    /// technology without taking focus.
+    /// What is under way ("Uploading"); a named bar announces its progress without taking
+    /// focus.
     pub label: Option<String>,
     /// A status the fill means: a failed transfer stays danger.
     pub tone: Option<Tone>,
-    /// A measured level rather than progress: the fill turns warning, then danger, as it fills.
+    /// A measured level instead of progress: the fill turns warning, then danger, as it fills.
     pub level: bool,
     /// Where a level turns warning, from 0 to 1: 0.6 unless said.
     pub warning: Option<f64>,
@@ -59,7 +59,6 @@ impl Described for ProgressBar {
         bar
     }
 
-    /// A new share fills in place.
     fn set_props(&mut self, props: ProgressBarProps) -> bool {
         let fill = props.fill();
         if props.value.is_none() != self.indeterminate || fill != self.fill {

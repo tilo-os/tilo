@@ -1,17 +1,5 @@
-//! `Facts`: an ordered row of separate facts, each an optional mark and a
-//! text (`docs/design-language.md`, "Primitives"; "Words and structure").
-//!
-//! Facts are separate components laid out with space between them: a
-//! `related` gap between a fact's mark and its text and a `sibling` gap
-//! between facts. Nothing is joined into a string and there is no separator
-//! glyph — "12 files · 3 MB · Edited today" is three facts. When the row is
-//! too narrow, the lowest-priority fact goes first; the last one left
-//! elides its text.
-//!
-//! A fact's mark names a kind of thing (an icon) or says something is
-//! happening now (a dot in a [`Tone`]: an agent working, a person's colour).
-//!
-//! [`FactsFace`] is the immediate painter; [`Facts`] the retained widget.
+//! `Facts`: an ordered row of separate facts, each an optional mark and a text
+//! (`docs/design-language.md`, "Primitives"; "Words and structure").
 
 use std::collections::HashMap;
 
@@ -31,7 +19,6 @@ use crate::widget::{TaffyTreeExt, Tone, Widget};
 mod component;
 pub use component::{FactProps, FactsProps};
 
-/// What stands before a fact's text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FactMark {
     /// A glyph from the icon set: the kind of thing the fact names.
@@ -41,18 +28,14 @@ pub enum FactMark {
     Dot(Tone),
 }
 
-/// One fact: an optional mark and its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fact {
     pub mark: Option<FactMark>,
     pub text: String,
-    /// Higher stays longer when the row is narrow. Facts of equal priority
-    /// go last-first.
     pub priority: u8,
 }
 
 impl Fact {
-    /// A fact with no mark, at the default priority.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self {
@@ -81,7 +64,6 @@ impl Fact {
         }
     }
 
-    /// Keep this fact longer than lower-priority ones.
     #[must_use]
     pub fn priority(mut self, priority: u8) -> Self {
         self.priority = priority;
@@ -89,11 +71,9 @@ impl Fact {
     }
 }
 
-/// Geometry and type of a row of facts in one theme.
 struct FactsMetrics {
     style: TextStyle,
     icon: f64,
-    /// The dot a live fact is marked with: the size of a row's status dot.
     dot: f64,
     icon_gap: f64,
     gap: f64,
@@ -111,7 +91,6 @@ impl FactsMetrics {
         }
     }
 
-    /// How wide a fact's mark stands, gap included.
     fn mark_width(&self, mark: Option<FactMark>) -> f64 {
         match mark {
             Some(FactMark::Icon(_)) => self.icon + self.icon_gap,
@@ -126,7 +105,6 @@ impl FactsMetrics {
     }
 }
 
-/// A row of facts, borrowed.
 #[derive(Clone, Copy, Debug)]
 pub struct FactsFace<'a> {
     facts: &'a [Fact],
@@ -138,7 +116,6 @@ impl<'a> FactsFace<'a> {
         Self { facts }
     }
 
-    /// The width every fact takes at its natural size.
     #[must_use]
     pub fn natural_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let m = FactsMetrics::of(theme);
@@ -146,7 +123,6 @@ impl<'a> FactsFace<'a> {
         Self::width_of(&m, self.facts, &shown, text)
     }
 
-    /// The row's height: one caption line, or the icon if taller.
     #[must_use]
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let m = FactsMetrics::of(theme);
@@ -256,7 +232,6 @@ pub struct Facts {
     items: Vec<Fact>,
     rect: Rect,
     dirty: bool,
-    /// What it says changed its size since the layout pass last placed it.
     layout_dirty: bool,
     layout_theme: Theme,
 }
@@ -330,8 +305,7 @@ impl Widget for Facts {
         };
         // The solver rounds every edge onto the display's device pixels, so a row measured at
         // its text's exact width is handed a box up to a pixel narrower than that and the last
-        // fact elides a letter it has the room to draw ("1 he…" for "1 here"). Measure up onto
-        // that grid, so the box a fact is painted in is never narrower than its text.
+        // fact elides a letter it has the room to draw ("1 he…" for "1 here").
         let grid = crate::widget::device_scale();
         let width = if grid > 0.0 {
             crate::num::f32_of_f64((f64::from(width) * f64::from(grid)).ceil() / f64::from(grid))
@@ -401,14 +375,12 @@ mod tests {
         assert_eq!(face.shown_in(all, &mut text, &theme), vec![0, 1, 2]);
         // A little short: the size (priority 0) goes first.
         assert_eq!(face.shown_in(all - 1.0, &mut text, &theme), vec![0, 2]);
-        // Very short: only the highest priority is left, and it elides.
         assert_eq!(face.shown_in(10.0, &mut text, &theme), vec![0]);
     }
 
     /// A row of facts standing beside the chips it shares its line with is measured at its
     /// text's exact width, and the solver that places it rounds every edge onto the display's
-    /// device pixels. The row measured narrower than its text elides the last fact's last
-    /// letters: the desk's presence read "1 he…" for "1 here".
+    /// device pixels.
     #[test]
     fn a_row_measured_for_its_text_is_not_handed_a_box_that_shaves_it() {
         let theme = Theme::light();
@@ -434,7 +406,6 @@ mod tests {
                 },
                 &mut text,
             );
-            // What the solver places: the measured size rounded onto the device pixel grid.
             let grid = f64::from(crate::widget::device_scale());
             let boxed = f64::from(measured.width) * grid;
             let boxed = boxed.round() / grid;
@@ -480,8 +451,6 @@ mod tests {
         let facts = facts();
         let face = FactsFace::new(&facts);
         assert_eq!(face.spoken(), vec!["12 files", "3.4 MB", "Edited today"]);
-        // The gaps are the rhythm, not a glyph: the natural width is the
-        // facts plus two sibling gaps, nothing else.
         let m = FactsMetrics::of(&theme);
         let parts: f64 = facts.iter().map(|f| m.fact_width(f, &mut text)).sum();
         let gaps = 2.0 * f64::from(theme.tokens.spacing.rhythm.sibling);

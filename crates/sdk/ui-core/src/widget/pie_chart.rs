@@ -1,14 +1,6 @@
-//! Interactive pie and donut charts.
-//!
-//! The widget owns interaction geometry as well as painting, so pointer,
-//! keyboard/accessibility activation, tooltips and the rendered wedges always
-//! agree. Values may be updated without rebuilding the widget tree.
-//!
-//! Its height comes from the space it is given: the donut and its legend
-//! are one unit, centred, the donut as large as the room allows. The legend
-//! and the tooltip state a share the same way (whole percent), a slice can
-//! add a detail column to the legend (its size), and the tooltip never
-//! covers the legend.
+//! Interactive pie and donut charts. The widget owns interaction geometry as well as painting,
+//! so pointer, keyboard/accessibility activation, tooltips and the rendered wedges always
+//! agree.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -40,7 +32,6 @@ pub struct PieSlice {
     /// A column after the legend's label and share: the slice's size
     /// ("12.4 GB"). Empty for none.
     pub legend_detail: String,
-    /// Whether activation is meaningful. Inspection remains available when false.
     pub interactive: bool,
 }
 
@@ -57,8 +48,6 @@ impl PieSlice {
         }
     }
 
-    /// A detail column in the legend (the slice's size), aligned after the
-    /// label and its share.
     #[must_use]
     pub fn with_legend_detail(mut self, detail: impl Into<String>) -> Self {
         self.legend_detail = detail.into();
@@ -71,7 +60,6 @@ impl PieSlice {
         self
     }
 
-    /// Keep the slice visible and hover-inspectable without presenting a dead action.
     #[must_use]
     pub fn non_interactive(mut self) -> Self {
         self.interactive = false;
@@ -79,20 +67,15 @@ impl PieSlice {
     }
 }
 
-/// Visual configuration shared by pies and donuts.
 #[derive(Clone, Copy, Debug)]
 pub struct PieStyle {
     /// Hole radius divided by outer radius. `0` is a pie, `0.62` is a donut.
     pub inner_radius: f64,
-    /// Angular whitespace between adjacent slices, in radians.
     pub gap: f64,
     /// Rotation in radians; the default starts at twelve o'clock.
     pub start_angle: f64,
-    /// Distance the hovered wedge moves away from the centre.
     pub hover_offset: f64,
-    /// Outer padding kept available for hover lift and focus treatment.
     pub padding: f64,
-    /// Minimum width for the two-line inspector overlay.
     pub tooltip_min_width: f64,
     /// Fixed tooltip width. `None` sizes to content within available bounds.
     pub tooltip_width: Option<f64>,
@@ -149,23 +132,18 @@ pub struct PieMarks {
     style: PieStyle,
     center_title: String,
     center_subtitle: String,
-    /// Where the wedges go, as the layout placed them: the whole rect, less
-    /// the legend's area.
     chart_rect: Rect,
     /// The legend's entries as the layout placed them: the slice's index and
     /// its rect (swatch, label and share, then its detail column).
     legend_entries: Vec<(usize, Rect)>,
-    /// The legend's detail column, in the type it was placed in.
     legend_detail_w: f64,
     frame: PlotFrame<usize>,
     transition_from: Option<Vec<PieSlice>>,
     transition_started: Instant,
     reduce_motion: bool,
-    /// The chart names its slices in a legend beside or under it.
     legend: bool,
 }
 
-/// A responsive interactive pie or donut.
 pub type PieChart = Plot<PieMarks>;
 
 impl PieChart {
@@ -206,9 +184,8 @@ impl PieChart {
     pub fn hovered(&self) -> Option<&PieSlice> {
         self.marks.hovered()
     }
-    /// Name every slice in a legend (a swatch, its label and its share)
-    /// beside the chart when there is room, under it otherwise. The legend
-    /// and the wedges never overlap: the chart shrinks to make room.
+    /// Name every slice in a legend (a swatch, its label and its share) beside the chart when
+    /// there is room, under it otherwise.
     #[must_use]
     pub fn with_legend(mut self) -> Self {
         self.marks.legend = true;
@@ -275,7 +252,6 @@ impl PieMarks {
             crate::widget::chart_legend::measure(text, theme, labels.iter().map(String::as_str));
         let label_w = entries.iter().map(|e| e.width).fold(0.0, f64::max);
         for entry in &mut entries {
-            // Details line up in one column after the longest label.
             if detail_w > 0.0 {
                 entry.width = label_w + detail_w;
             }
@@ -285,7 +261,6 @@ impl PieMarks {
         let row = entries.first().map_or(0.0, |e| e.height);
         let side_room = rect.width() - rect.height().min(rect.width() * 0.6);
         if widest + gap <= side_room {
-            // Beside: the donut and one legend column, centred together.
             let diameter = (rect.width() - widest - gap).min(rect.height()).max(0.0);
             let unit = diameter + gap + widest;
             let x0 = (rect.center().x - unit / 2.0).max(rect.x0);
@@ -308,7 +283,6 @@ impl PieMarks {
                 .collect();
             (Rect::new(x0, rect.y0, x0 + diameter, rect.y1), items)
         } else {
-            // Under: wrapping rows, each centred, under the donut.
             let rows = crate::widget::chart_legend::wrap(&entries, rect.x0, rect.x1, 0.0, theme);
             let height = rows.iter().map(|r| r.y1).fold(0.0, f64::max);
             let diameter = (rect.height() - gap - height).min(rect.width()).max(0.0);
@@ -343,7 +317,6 @@ impl PieMarks {
         if !self.legend || self.slices.is_empty() {
             return diameter;
         }
-        // Lay out at the donut's height to see where the legend lands.
         let probe = Rect::new(0.0, 0.0, width, diameter);
         let (_, items) = self.legend_layout(text, theme, probe);
         let beside = items.first().is_some_and(|(_, r)| r.x0 > probe.center().x);
@@ -364,10 +337,8 @@ impl PieMarks {
         }
     }
 
-    /// Lay the donut and the legend out inside the frame's rect as one
-    /// centred unit, measured in the theme's own type. The layout runs this,
-    /// so a hover on a wedge or on the legend lands where the chart draws
-    /// them before it has painted, and again after the slices changed.
+    /// Lay the donut and the legend out inside the frame's rect as one centred unit, measured
+    /// in the theme's own type.
     fn place(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let (chart_rect, legend) = self.legend_layout(text, theme, self.frame.rect);
         self.chart_rect = chart_rect;
@@ -1127,7 +1098,6 @@ pub(crate) fn data_change_progress(elapsed: Duration) -> f64 {
     )
 }
 
-/// How long a chart's data change runs.
 pub(crate) fn data_change_time() -> Duration {
     crate::motion::ListChange::MOVE.settle_time(
         crate::motion::Direction::Enter,

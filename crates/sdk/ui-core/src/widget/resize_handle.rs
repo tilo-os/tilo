@@ -1,17 +1,5 @@
-//! `ResizeHandle` — the seam between two adjacent `WindowGroup`s inside
-//! a [`GroupRow`]: the slot that spaces them, and the thin rule painted in it.
-//!
-//! It resizes nothing itself. Which window a press on a seam resizes, and
-//! how, is one rule in [`super::edge_resize`], applied by the row: the seam
-//! is split between the two windows (the focused one owning all of it), and
-//! the owner's own edge lights up under the pointer. A seam that drove
-//! its left neighbour's width was how "grabbing Files' left edge resized the
-//! terminal beside it" came about, so the seam no longer drives anything.
-//!
-//! The widget is a zero-width flex item so the row's Taffy gap absorbs its
-//! footprint; its geometry is computed in `apply_layout` from the two
-//! neighbours' just-refreshed rects, keeping it in lockstep with the row's
-//! horizontal scroll without needing to know about scroll state.
+//! `ResizeHandle` — the seam between two adjacent `WindowGroup`s inside a [`GroupRow`]: the
+//! slot that spaces them, and the thin rule painted in it. It resizes nothing itself.
 
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -31,9 +19,8 @@ pub const HANDLE_VISIBLE_PX: f64 = 2.0;
 /// the strip's canvas (`GroupRow::usable_per_group`) has to step by this
 /// between adjacent groups.
 pub const HANDLE_SLOT_PX: f64 = 8.0;
-/// The seam's hit zone is the slot plus one grab zone of each neighbour
-/// (`RESIZE_HANDLE_PX` inside each window), so every window edge, seam or
-/// outer, has the same size of target. Half of the 20 px total each side.
+/// The seam's hit zone is the slot plus one grab zone of each neighbour (`RESIZE_HANDLE_PX`
+/// inside each window), so every window edge, seam or outer, has the same size of target.
 pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE_HANDLE_PX;
 
 /// The `GroupRow` constructs one per inter-group gap (N-1 handles for N

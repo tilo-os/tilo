@@ -1,7 +1,6 @@
-//! A scroll that only moves the view places only the rows near it: rows
-//! far away keep their boxes until they come near, and nothing that reads
-//! boxes (the copy's walk, the pointer) meets one that stands stale. A row
-//! that lays out again with a wider paint is found near the view from then.
+//! A scroll that only moves the view places only the rows near it: rows far away keep their
+//! boxes until they come near, and nothing that reads boxes (the copy's walk, the pointer)
+//! meets one that stands stale.
 
 #![allow(
     clippy::unwrap_used,
@@ -146,7 +145,6 @@ impl Rows {
         });
     }
 
-    /// The rows the copy's walk of the tree visits, with their boxes.
     fn walked(&self) -> Vec<Rect> {
         let mut out = Vec::new();
         self.scroll.for_each_child_in_clip(&mut |column| {
@@ -184,7 +182,6 @@ fn a_scroll_places_only_the_rows_near_the_view_and_walks_only_those() {
         );
     }
     assert_eq!(rows.row(100).y0, 0.0, "row 100 tops the view");
-    // The rows the view showed before were placed once more as they left.
     assert_eq!(rows.row(0).y0, -2_000.0);
     // Row 500 was never near the view: it keeps the box of the first
     // placement, which no walk and no pointer meets.
@@ -200,7 +197,6 @@ fn a_scroll_places_only_the_rows_near_the_view_and_walks_only_those() {
     );
     assert_eq!(rows.pointed[100].get(), 1, "a row in view is");
 
-    // Rows leaving the view are placed once more, where they now stand.
     rows.scroll_to(2_400.0);
     assert_eq!(rows.row(100).y0, -400.0, "row 100 left the view upwards");
     assert_eq!(rows.row(120).y0, 0.0);
@@ -233,7 +229,6 @@ fn a_row_whose_paint_grows_is_found_near_the_view_once_it_lays_out_again() {
 #[test]
 fn a_scroll_keeps_its_fraction_but_an_offset_from_another_scale_lands_whole() {
     let mut rows = rows(400);
-    // The content's origin as the rows the view shows stand.
     let origin = |rows: &Rows| rows.row(2).y0 - 2.0 * f64::from(ROW);
     // Part of a pixel: the content sits exactly where the scroll put it,
     // because the copy a host takes of it moves the pixels it showed by that
@@ -245,9 +240,6 @@ fn a_scroll_keeps_its_fraction_but_an_offset_from_another_scale_lands_whole() {
         f64::from(-part),
         "the content sits where the scroll put it"
     );
-    // The same offset on a display of another scale lands on a whole pixel of
-    // it: the offset is kept in logical pixels, and between that display's
-    // pixels every edge of the content would smear.
     {
         let _grid = crate::widget::enter_device_scale(2.0);
         rows.scroll_to(part);

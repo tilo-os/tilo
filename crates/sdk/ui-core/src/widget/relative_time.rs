@@ -1,10 +1,5 @@
 //! A moment as people read how long ago it was: `just now`, `2 min ago`, `3 hr ago`,
-//! `Yesterday`, `Sun`, `Jun 30`, or ahead, `in 3 min`. Read in the person's language and time
-//! zone; the calendar decides `Yesterday` (the previous local day), not a count of hours.
-//!
-//! [`RelativeTime`] shows one and says when its text next reads differently
-//! ([`Widget::next_wake_deadline`](crate::widget::Widget::next_wake_deadline)): the window
-//! sleeps until that instant, and nothing is formatted again before it.
+//! `Yesterday`, `Sun`, `Jun 30`, or ahead, `in 3 min`.
 
 use std::cell::Cell;
 
@@ -25,7 +20,6 @@ fn local(secs: i64) -> Option<NaiveDateTime> {
         .map(|at| at.with_timezone(&chrono::Local).naive_local())
 }
 
-/// The first local midnight after `secs`.
 fn next_midnight(secs: i64) -> Option<i64> {
     let day = local(secs)?.date().succ_opt()?;
     let midnight = day.and_hms_opt(0, 0, 0)?;
@@ -88,7 +82,6 @@ fn candidate(at: i64, now: i64) -> Option<i64> {
         } else {
             DAY
         };
-        // The next instant whose distance ahead is a whole number of steps; at the latest, `at`.
         let steps = ahead.saturating_sub(1) / step;
         return at.checked_sub(steps.checked_mul(step)?);
     }
@@ -96,8 +89,6 @@ fn candidate(at: i64, now: i64) -> Option<i64> {
     let midnight = next_midnight(now);
     if ago >= HOUR && then.date() != today.date() {
         let days = today.date().signed_duration_since(then.date()).num_days();
-        // A week back and further a list shows the date, which reads differently only once a
-        // new year has it carry its year.
         return if days < 7 {
             midnight
         } else if then.year() == today.year() {
@@ -133,9 +124,8 @@ pub fn next_change(at: i64, now: i64) -> Option<i64> {
     None
 }
 
-/// A moment shown as how long ago it was, or how far ahead: `2 min ago`, `Yesterday`, `in 3
-/// min`, in the person's language and time zone. It changes when what it says does, and wakes
-/// the window for nothing else.
+/// A moment as how long ago or how far ahead it was (`2 min ago`, `Yesterday`, `in 3 min`) in
+/// the person's language and time zone, changing only when its text does.
 #[derive(Clone, Component, Debug, Default, PartialEq)]
 #[component(name = "Time", role = "Label")]
 pub struct TimeProps {
@@ -144,15 +134,13 @@ pub struct TimeProps {
     pub at: Moment,
     /// What the text is, which sets its size and weight: `body` unless said.
     pub role: TextRole,
-    /// It stands beside the content it is about, in secondary ink: when a change was made.
+    /// Beside the content it is about, in secondary ink: when a change was made.
     pub secondary: bool,
-    /// The moment has already happened, as a message received or an entry logged: a moment the
-    /// reader's clock has not reached yet (the clock of the device that wrote it runs ahead)
-    /// reads `just now`, never ahead.
+    /// The moment has happened, as a received message or a logged entry: one the reader's clock
+    /// has not reached reads `just now`, never ahead.
     pub past: bool,
-    /// Show the time of day the moment falls at in the person's zone (`5:16 AM`), as a
-    /// conversation's transcript says when a message was sent, rather than how long ago it was:
-    /// the day it falls on is the transcript's divider, never this line.
+    /// Show the time of day in the person's zone (`5:16 AM`), as a transcript shows when a
+    /// message was sent; the day it falls on is the transcript's divider, never this line.
     pub clock: bool,
 }
 
@@ -163,7 +151,6 @@ pub struct RelativeTime {
     role: TextRole,
     secondary: bool,
     past: bool,
-    /// The time of day the moment falls at, not how long ago it was.
     clock: bool,
     /// When what it says next reads differently, in seconds since 1970.
     changes_at: Cell<Option<i64>>,
@@ -186,7 +173,6 @@ impl RelativeTime {
         time
     }
 
-    /// What it says now.
     #[must_use]
     pub fn label(&self) -> String {
         self.text.resolved_label()
@@ -248,12 +234,10 @@ impl Decorator for RelativeTime {
         followed || inner
     }
 
-    /// Its deadline is due: read the clock, and say whether what it shows changed.
     fn serve_deadline(&mut self, _now: Instant) -> bool {
         self.follow_clock()
     }
 
-    /// When what it says next changes, on the monotonic clock the window sleeps by.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let due = self.changes_at.get()?;
         let wait_ms = due
@@ -370,11 +354,9 @@ mod tests {
         let waits = with_wall(wall(at + 150), || wait(&time));
         assert_eq!(waits, Some(30));
         assert_eq!(next_change(at, at + 150), Some(at + 180));
-        // Before the deadline, a frame changes nothing.
         let early = with_wall(wall(at + 179), || time.follow_clock());
         assert!(!early, "nothing changes before the minute turns");
         assert_eq!(time.label(), "2 min ago");
-        // At it, the text moves on.
         let due = with_wall(wall(at + 180), || time.follow_clock());
         assert!(due);
         assert_eq!(time.label(), "3 min ago");
@@ -403,7 +385,6 @@ mod tests {
             None,
             "a clock time never changes, so nothing wakes for it"
         );
-        // Hours later, the same clock.
         assert!(!with_wall(wall(at + 9 * 3600), || time.follow_clock()));
         assert_eq!(time.label(), "5:16 PM");
     }
@@ -428,7 +409,6 @@ mod tests {
         let midnight = local_secs(30, (23, 59, 59)) + 1;
         assert_eq!(next_change(at, now), Some(midnight));
         assert_ne!(relative_text(at, midnight), "Yesterday");
-        // Earlier the same evening it read in hours, and turned to `Yesterday` at midnight.
         let evening = local_secs(29, (23, 30, 0));
         assert_eq!(relative_text(at, evening), "2 hr ago");
         assert_eq!(
@@ -448,7 +428,6 @@ mod tests {
     #[test]
     fn a_moment_that_has_happened_never_reads_ahead_of_the_reader() {
         let at = local_secs(30, (10, 0, 0));
-        // The device that wrote it runs five minutes ahead of the one reading it.
         let mut time = with_wall(wall(at), || widget_past(at + 300));
         assert_eq!(time.label(), "just now");
         // It still wakes when `just now` ends, and keeps saying it until the reader's clock

@@ -1,12 +1,5 @@
-//! A compact, visual keyboard-shortcut editor.
-//!
-//! The displayed keycaps are the control: click them, or focus them and press
-//! Enter/Space, then type the replacement chord. Escape cancels. A reset
-//! affordance is present only while the value differs from its default.
-//!
-//! The chord shown is a [`crate::LocalState`]; a recorded chord is offered to
-//! the action the recorder is bound to ([`ShortcutRecorder::on_action`]),
-//! which decides whether it is taken — the state then shows what was stored.
+//! A compact, visual keyboard-shortcut editor. The displayed keycaps are the control: click
+//! them, or focus them and press Enter/Space, then type the replacement chord. Escape cancels.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -37,7 +30,6 @@ pub struct ShortcutRecorder {
     stored: BoxedBinding<String>,
     /// Whether the chord shown was refused.
     rejected: Option<BoxedBinding<bool>>,
-    /// Where a recorded chord goes.
     action: Option<ActionEmitter<String>>,
     default: String,
     value: String,
@@ -48,17 +40,13 @@ pub struct ShortcutRecorder {
     capturing: bool,
     platform: PlatformConventions,
     interaction: InteractionEnvironment,
-    /// The width of the keycaps, or of the capture prompt while capturing,
-    /// measured with the text renderer.
     keys_width: f64,
     /// The geometry of the latest theme: the control's height, the reset
     /// button's edge and the gap before it.
     height: f64,
     reset_edge: f64,
     gap: f64,
-    /// The theme of the latest layout, for measuring the keycaps.
     layout_theme: Option<Theme>,
-    /// What a recorded chord is reported to, as a described component's binding path does.
     edits: Option<crate::component::Bound<String>>,
 
     /// Input or a new document value changed what this widget paints: it
@@ -118,13 +106,11 @@ impl ShortcutRecorder {
         self
     }
 
-    /// The chord it shows.
     #[must_use]
     pub fn chord(&self) -> &str {
         &self.value
     }
 
-    /// The chord its reset puts back.
     #[must_use]
     pub fn default_chord(&self) -> &str {
         &self.default
@@ -152,8 +138,6 @@ impl ShortcutRecorder {
         })
     }
 
-    /// The control's width: the keycaps (or the capture prompt), and the
-    /// reset button when it shows.
     fn content_width(&self) -> f64 {
         let reset = if self.value == self.default {
             0.0
@@ -174,9 +158,6 @@ impl ShortcutRecorder {
             text.measure_style(CAPTURE_PROMPT, None, &theme.text(TextRole::Label))
                 .0,
         );
-        // The control is as wide as what it shows: its keycaps, or the
-        // prompt while it captures. Room kept for the prompt beside short
-        // chords would leave their caps short of the column's edge.
         self.keys_width = if self.capturing { prompt } else { keys }.ceil();
     }
 
@@ -198,7 +179,6 @@ impl ShortcutRecorder {
     }
 }
 
-/// Shown in place of the keycaps while a new chord is being recorded.
 const CAPTURE_PROMPT: &str = "Type a shortcut";
 
 impl Widget for ShortcutRecorder {
@@ -221,9 +201,6 @@ impl Widget for ShortcutRecorder {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // A sync is a read of what the document holds, not a paint: only a
-        // pulled shortcut or rejection this recorder was not already showing
-        // is one.
         if let Pulled::Value(value) = self.stored.pull(state, root)
             && self.value != value
         {
@@ -299,8 +276,6 @@ impl Widget for ShortcutRecorder {
         let chord = self.chord_rect();
         let keycap = InputHint::keycap_height(theme);
         let top = chord.center().y - keycap / 2.0;
-        // The keycaps sit where an InputHint's would; hover, focus and
-        // capture draw their ring outward, round them.
         let ring = chord
             .with_origin(Point::new(chord.x0, top))
             .with_size((chord.width(), keycap))

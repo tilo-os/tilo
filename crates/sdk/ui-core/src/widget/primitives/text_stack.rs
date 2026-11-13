@@ -1,17 +1,5 @@
-//! `TextStack`: a title over a secondary line, with an optional tertiary
-//! line, in fixed roles and at fixed gaps (`docs/design-language.md`,
-//! "Primitives").
-//!
-//! | Line | Role | Ink |
-//! |---|---|---|
-//! | title | `Body` medium (`Label` medium when dense) | primary |
-//! | secondary | `Caption` | secondary |
-//! | tertiary | `Caption` | tertiary |
-//!
-//! Each line is one line, elided at its end. Two facts never share a line:
-//! a fact that is not the title goes on the secondary line, or into
-//! [`super::Facts`]. [`TextStackFace`] is the immediate painter a canvas
-//! host or another primitive uses; [`TextStack`] is the retained widget.
+//! `TextStack`: a title over a secondary line, with an optional tertiary line, in fixed roles
+//! and at fixed gaps (`docs/design-language.md`, "Primitives").
 
 use std::collections::HashMap;
 
@@ -30,15 +18,12 @@ use crate::widget::{TaffyTreeExt, Tone, Widget};
 mod component;
 pub use component::TextStackProps;
 
-/// The gap between two lines of a stack: half the tight step.
 fn line_gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.rhythm.tight) / 2.0
 }
 
-/// One line of words in a role, measured and centred on a point or aligned
-/// in a box: the bar's clock reading, a live activity's headline, an
-/// overlay's timer. It is the shared way to put a single string on a
-/// surface; a host never draws a bare text run of its own.
+/// One line of words in a role, measured and centred on a point or aligned in a box: the bar's
+/// clock reading, a live activity's headline, an overlay's timer.
 #[derive(Clone, Copy, Debug)]
 pub struct TextLineFace<'a> {
     text: &'a str,
@@ -59,7 +44,6 @@ pub enum TextLineAlign {
 }
 
 impl<'a> TextLineFace<'a> {
-    /// `text` in `style`, which carries the role's size and family.
     #[must_use]
     pub fn styled(text: &'a str, style: &'a TextStyle, role: TextRole) -> Self {
         Self {
@@ -78,7 +62,6 @@ impl<'a> TextLineFace<'a> {
         self
     }
 
-    /// Stand at the rect's leading edge rather than its centre.
     #[must_use]
     pub fn start(mut self) -> Self {
         self.align = TextLineAlign::Start;
@@ -92,7 +75,6 @@ impl<'a> TextLineFace<'a> {
         }
     }
 
-    /// The line's measured width and height in its style.
     #[must_use]
     pub fn measure(&self, text: &mut TextRenderer) -> (f64, f64) {
         let style = self.resolved();
@@ -128,10 +110,8 @@ impl<'a> TextLineFace<'a> {
     }
 }
 
-/// A block of wrapped text in one style, starting at its rect's leading top
-/// corner and wrapping to the rect's width: a reader's body, a page's
-/// paragraph, a note's prose. The shared way to paint running text on a
-/// surface a host owns; the host never draws it run by run.
+/// A block of wrapped text in one style, starting at its rect's leading top corner and wrapping
+/// to the rect's width: a reader's body, a page's paragraph, a note's prose.
 #[derive(Clone, Copy, Debug)]
 pub struct TextBlockFace<'a> {
     text: &'a str,
@@ -145,7 +125,6 @@ impl<'a> TextBlockFace<'a> {
         Self { text, style }
     }
 
-    /// The block's height at `width`.
     #[must_use]
     pub fn height(&self, text: &mut TextRenderer, width: f64) -> f64 {
         if self.text.is_empty() {
@@ -161,7 +140,6 @@ impl<'a> TextBlockFace<'a> {
         )
     }
 
-    /// Paint the block with its top-left at the rect's, wrapped to its width.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ink: vello::peniko::Color) {
         if self.text.is_empty() || rect.width() <= 0.0 {
             return;
@@ -177,7 +155,6 @@ impl<'a> TextBlockFace<'a> {
     }
 }
 
-/// How prominent a stack's title is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StackSize {
     /// A row's title: `Body` medium.
@@ -187,7 +164,6 @@ pub enum StackSize {
     Dense,
 }
 
-/// A text stack's lines, borrowed, and how to paint them.
 #[derive(Clone, Copy, Debug)]
 pub struct TextStackFace<'a> {
     title: &'a str,
@@ -196,12 +172,9 @@ pub struct TextStackFace<'a> {
     size: StackSize,
     /// The secondary line's status ink ([`Tone::Neutral`]: secondary ink).
     secondary_tone: Tone,
-    /// Type set at a scale of the surface's own (the lock screen's), in
-    /// place of the theme's roles.
     styles: Option<(&'a TextStyle, &'a TextStyle)>,
 }
 
-/// The styles and inks of a stack in one theme.
 struct StackStyles {
     title: TextStyle,
     caption: TextStyle,
@@ -255,14 +228,12 @@ impl<'a> TextStackFace<'a> {
         self
     }
 
-    /// The secondary line. An empty string shows no line.
     #[must_use]
     pub fn secondary(mut self, text: &'a str) -> Self {
         self.secondary = (!text.is_empty()).then_some(text);
         self
     }
 
-    /// The tertiary line. An empty string shows no line.
     #[must_use]
     pub fn tertiary(mut self, text: &'a str) -> Self {
         self.tertiary = (!text.is_empty()).then_some(text);
@@ -276,13 +247,11 @@ impl<'a> TextStackFace<'a> {
         self
     }
 
-    /// How many lines the stack shows.
     #[must_use]
     pub fn lines(&self) -> usize {
         1 + usize::from(self.secondary.is_some()) + usize::from(self.tertiary.is_some())
     }
 
-    /// The stack's height: its lines and the gaps between them.
     #[must_use]
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let styles = StackStyles::of(self, theme);
@@ -374,7 +343,6 @@ impl<'a> TextStackFace<'a> {
     }
 }
 
-/// A retained [`TextStackFace`].
 pub struct TextStack {
     title: String,
     secondary: String,
@@ -383,9 +351,7 @@ pub struct TextStack {
     secondary_tone: Tone,
     rect: Rect,
     dirty: bool,
-    /// What it says changed its size since the layout pass last placed it.
     layout_dirty: bool,
-    /// The theme the last layout was built with, for measuring.
     layout_theme: Theme,
 }
 
@@ -423,7 +389,6 @@ impl TextStack {
         self
     }
 
-    /// Replace the lines.
     pub fn set_lines(&mut self, title: &str, secondary: &str, tertiary: &str) {
         if self.title != title || self.secondary != secondary || self.tertiary != tertiary {
             title.clone_into(&mut self.title);
@@ -555,7 +520,6 @@ mod tests {
         assert_eq!(two.lines(), 2);
         assert_eq!(TextStackFace::new("A").secondary("").lines(), 1);
         assert_eq!(three.spoken(), "Wi-Fi, Home network, Connected yesterday");
-        // The dense title is shorter than the regular one.
         assert!(one.dense().height(&mut text, &theme) < h1);
     }
 }

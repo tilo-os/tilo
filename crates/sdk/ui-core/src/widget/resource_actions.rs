@@ -1,9 +1,5 @@
-//! Toolkit-owned host for a small app's typed resource/action surface.
-//!
-//! Apps provide their retained root, one discoverable resource, and an
-//! immediate operation closure. The host supplies the widget
-//! forwarding and invocation lifecycle; scaffolds do not need to copy that
-//! infrastructure into every new project.
+//! Toolkit-owned host for a small app's typed resource/action surface. Apps provide their
+//! retained root, one discoverable resource, and an immediate operation closure.
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -16,7 +12,6 @@ use crate::tilo_actions::{
 };
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
-/// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
 /// Build one resource with a unit operation.
@@ -79,7 +74,6 @@ pub trait ActionValue: Clone + Send + Sync + 'static {
     fn param_type() -> ParamType;
     fn into_json(self) -> serde_json::Value;
 
-    /// Decode a validated action argument.
     fn from_json(value: &serde_json::Value) -> Result<Self, String>;
 }
 
@@ -155,9 +149,6 @@ struct FormField {
 }
 
 /// One action whose arguments and live UI state are declared together.
-///
-/// This is intentionally an app-framework abstraction: controls, action
-/// discovery, external invocation, and local state all share one declaration.
 #[derive(Clone)]
 pub struct ActionForm {
     kind: String,
@@ -183,7 +174,6 @@ impl ActionForm {
         }
     }
 
-    /// Add a required action argument backed by live local state.
     #[must_use]
     pub fn field<T: ActionValue>(
         mut self,
@@ -219,8 +209,6 @@ impl ActionForm {
         )
     }
 
-    /// Bind one control's typed output while filling every other argument
-    /// from its current live state.
     pub fn binding<T: ActionValue>(&self, name: &str) -> Result<ActionBinding<T>, String> {
         let field = self
             .fields
@@ -253,8 +241,6 @@ impl ActionForm {
         .map_err(|error: ActionBindingError| error.to_string())
     }
 
-    /// A button binding that restores the values captured when the form was
-    /// declared.
     pub fn reset_binding(&self) -> Result<ActionBinding<()>, String> {
         ActionBinding::static_json_for(
             &self.resource(),
@@ -289,7 +275,6 @@ impl ActionForm {
     }
 }
 
-/// Mount a connected action form around its visible controls.
 pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
     let resource = form.resource();
     immediate(root, resource, move |payload| form.apply(payload))
@@ -297,7 +282,6 @@ pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
 
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
 
-/// Transparent retained root that publishes and executes one app resource.
 #[crate::component::not_a_component(framework, "hosts a resource's actions for the framework")]
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
@@ -306,7 +290,6 @@ pub struct ResourceActionHost {
     rect: Rect,
 }
 
-/// Wrap a root with a synchronous typed resource operation.
 pub fn immediate(
     root: Box<dyn Widget>,
     resource: ResourceSpec,

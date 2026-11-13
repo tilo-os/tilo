@@ -17,13 +17,12 @@ use crate::theme::Theme;
 use crate::widget::primitives::BarChipFace;
 use crate::widget::{TaffyTreeExt, Widget};
 
-/// One bar control that stands for people: their faces, a label and a press. A chip with faces
-/// opens who is here, an invite opens the host's own invite flow; a press reaches the view's
-/// `press` event, which is the same action the palette, scripts and agents invoke.
+/// A bar control for people: their faces, a label and a press, with faces opening who is here
+/// and an invite opening the host's invite flow.
 #[derive(Component, Default)]
 #[component(name = "BarChip", role = "Button", label = "name")]
 pub struct BarChipProps {
-    /// What the chip is for assistive technology (and its tooltip when it shows only a glyph).
+    /// The chip's name for assistive technology, and its tooltip when it shows only a glyph.
     #[component(required, positional)]
     pub name: String,
     /// The words beside the faces: "Editing", "Invite".
@@ -32,23 +31,22 @@ pub struct BarChipProps {
     pub icon: Option<Icon>,
     /// A trailing glyph: the chevron of a chip that opens a panel.
     pub trailing: Option<Icon>,
-    /// Who it stands for, in order: the faces it shows, then a count for everyone past them.
+    /// Who it shows, in order: their faces, then a count for everyone past them.
     pub who: Vec<Person>,
-    /// The chip's panel is open: it holds the whole lift.
+    /// The chip's panel is open: the chip is lifted as a whole.
     pub open: bool,
-    /// Keyboard focus. The ring shows only while focus is visible.
+    /// Keyboard focus; the ring shows only while focus is visible.
     pub focused: bool,
     /// The most the label may grow to before it elides.
     pub label_width: Option<f64>,
     /// A person whose presence colour washes the chip's body: who the state it says is about.
     pub tone: Option<Person>,
-    /// A press: the chip's own action.
+    /// A press: the chip's action.
     #[component(event)]
     pub press: Event,
 }
 
 impl BarChipProps {
-    /// The people as faces, in their identity's presence colour.
     fn faces(&self) -> Vec<Face<'_>> {
         self.who
             .iter()
@@ -69,9 +67,7 @@ pub struct BarChip {
     /// Pointer precision; a coarse pointer grows the face to the minimum
     /// target, as every other control does.
     interaction: crate::interaction::InteractionEnvironment,
-    /// The glyphs before the faces, in a run the painted face borrows.
     icon_run: Vec<Icon>,
-    /// What a press runs: the view intent or the exported action the props named.
     press: Option<Box<dyn FnMut()>>,
     rect: Rect,
     hovered: bool,
@@ -120,7 +116,6 @@ impl BarChip {
         chip
     }
 
-    /// Run what the chip's press does: the view's event, or its exported action.
     fn fire_press(&mut self) {
         if let Some(press) = &mut self.press {
             press();
@@ -133,7 +128,6 @@ impl BarChip {
         self.rect.contains(point)
     }
 
-    /// The chip's own rect.
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.rect
@@ -319,9 +313,6 @@ impl Described for BarChip {
     fn from_props(_key: &str, mut props: BarChipProps) -> Self {
         let press = std::mem::replace(&mut props.press, Event::None);
         let press = press.handler();
-        // A view intent queues on the host's intents each press; an exported
-        // action runs through its emitter. Either way the chip's `press` is
-        // what a person's press reaches.
         Self {
             icon_run: props.icon.into_iter().collect(),
             props,
@@ -385,7 +376,6 @@ mod touch_tests {
                 ..BarChipProps::default()
             },
         );
-        // A fine pointer keeps the bar's own control height.
         assert!((chip.face_height(&theme) - BarChipFace::height(&theme)).abs() < 1e-6);
         chip.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
         assert!(

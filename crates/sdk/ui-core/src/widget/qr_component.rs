@@ -4,10 +4,8 @@ use crate::component::{Component, Described};
 
 use super::QrWidget;
 
-/// A QR code of a payload, for a phone's camera to read: a pairing handshake, an invite.
-///
-/// Its payload may be private (a pairing secret): give `secret`, and it is left out of screenshots,
-/// recordings and screens, and never spoken by assistive technology.
+/// A QR code of a payload for a phone's camera to read (a pairing handshake, an invite); a
+/// private payload is left out of screenshots and screens and never spoken.
 #[derive(Component, Default)]
 #[component(name = "QrCode", role = "Image", label = "alt")]
 pub struct QrProps {
@@ -15,7 +13,7 @@ pub struct QrProps {
     #[component(required, positional)]
     #[component(data)]
     pub payload: String,
-    /// What scanning it means, as assistive technology announces it; "QR code" unless said.
+    /// What scanning it means, as assistive technology announces it: "QR code" unless said.
     pub alt: Option<String>,
     /// The payload is private pairing material: leave the code out of screenshots and
     /// recordings, and never speak it.

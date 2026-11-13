@@ -1,11 +1,4 @@
 //! Retained host for a platform/native child view.
-//!
-//! Unlike [`WebView`](super::WebView), which paints an offscreen engine frame,
-//! `NativeView` gives a backend the live parent [`winit::window::Window`]. A
-//! Win32 child HWND, Cocoa `NSView`, GTK widget, media surface, or another
-//! platform component can therefore remain native while participating in the
-//! toolkit's layout, focus, platform conventions, visibility, accessibility,
-//! and teardown lifecycle.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -23,7 +16,6 @@ use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
-/// Live parent-window context supplied before a native view is shown.
 pub struct NativeViewHost<'a> {
     window: Option<&'a winit::window::Window>,
     platform: PlatformConventions,
@@ -112,7 +104,6 @@ impl NativeViewGeometry {
     }
 }
 
-/// Event coordinates and modifiers already normalized by the toolkit host.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeViewInput {
     pub local_position: Option<Point>,
@@ -120,11 +111,8 @@ pub struct NativeViewInput {
     pub modifiers: winit::keyboard::ModifiersState,
 }
 
-/// App/platform implementation of one native child view.
-///
-/// `mount` is called once per successful attachment. `host_changed` follows
-/// scale-factor or host convention changes. `unmount` is guaranteed before
-/// the parent window is destroyed and is also called from `NativeView::drop`.
+/// App/platform implementation of one native child view. `mount` is called once per successful
+/// attachment. `host_changed` follows scale-factor or host convention changes.
 pub trait NativeViewBackend {
     /// Attach the child to the supplied parent-window context.
     ///
@@ -157,7 +145,6 @@ pub trait NativeViewBackend {
     }
 }
 
-/// Whether AccessKit or the native child owns this view's semantic subtree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeViewAccessibility {
     /// Export a named wrapper node through the toolkit accessibility tree.
@@ -259,9 +246,8 @@ impl NativeView {
         }
     }
 
-    /// Toolkit-rendered equivalent used when no live parent window exists or
-    /// native mounting fails. This keeps screenshots, remote/WASM builds, and
-    /// headless app tests useful without pretending to capture a child window.
+    /// Toolkit-rendered equivalent used when no live parent window exists or native mounting
+    /// fails.
     #[must_use]
     pub fn with_fallback(mut self, fallback: Element) -> Self {
         self.fallback = Some(fallback);
@@ -615,8 +601,6 @@ impl Widget for NativeView {
         match &self.accessibility {
             NativeViewAccessibility::Toolkit { name } => {
                 let node = crate::a11y::AccessNode::new(crate::a11y::Role::Group).with_name(name);
-                // A view that mounted says nothing beyond its name; one that
-                // did not says why.
                 let node = match self.mount_error.as_deref() {
                     Some(error) => node.with_description(error),
                     None => node,

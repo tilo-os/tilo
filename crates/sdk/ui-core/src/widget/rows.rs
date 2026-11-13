@@ -1,7 +1,6 @@
-//! What every keyed row list does alike: [`super::VirtualList`] (a list, a tree or a
-//! navigator) and [`super::DataTable`] all move the focus by the same keys, choose rows by the
-//! same gestures, count a double click the same way and glide to a revealed row the same way.
-//! Each list keeps only what its rows are (a flattened tree, a table's columns).
+//! What every keyed row list does alike: [`super::VirtualList`] (a list, a tree or a navigator)
+//! and [`super::DataTable`] all move the focus by the same keys, choose rows by the same
+//! gestures, count a double click the same way and glide to a revealed row the same way.
 
 use winit::keyboard::{Key, NamedKey};
 
@@ -9,7 +8,6 @@ use crate::selection::KeySelection;
 use crate::time::Instant;
 use crate::virtual_viewport::{ScrollAlignment, ScrollMomentum, SparseVirtualViewport};
 
-/// Where a navigation key moves a list's focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowStep {
     /// To this row.
@@ -43,10 +41,9 @@ pub(crate) fn is_select_all(key: &Key, toggle: bool) -> bool {
     toggle && matches!(key, Key::Character(text) if text.as_str().eq_ignore_ascii_case("a"))
 }
 
-/// A click, arrow or type-ahead choosing `key`: extend from the anchor to
-/// it (`extend`, rows in order from `key_at` between the anchor's and its
-/// index), toggle it (`toggle`), or choose it alone. A list that chooses one
-/// row at a time (`multi` false) always chooses it alone.
+/// A click, arrow or type-ahead choosing `key`: extend from the anchor to it (`extend`, rows in
+/// order from `key_at` between the anchor's and its index), toggle it (`toggle`), or choose it
+/// alone.
 pub(crate) fn choose<K>(
     selection: &mut KeySelection<K>,
     key: K,
@@ -75,7 +72,6 @@ pub(crate) fn choose<K>(
     }
 }
 
-/// The last click a list took, to tell a double click.
 pub(crate) struct Clicks<K> {
     last: Option<(K, Instant)>,
 }
@@ -113,7 +109,6 @@ impl<K: PartialEq> Clicks<K> {
         self.last = Some((key, crate::time::now()));
     }
 
-    /// Forget the last click.
     pub(crate) fn reset(&mut self) {
         self.last = None;
     }
@@ -124,9 +119,7 @@ impl<K: PartialEq> Clicks<K> {
 /// brings its rows in with.
 pub(crate) struct RowScroll {
     pub(crate) momentum: ScrollMomentum,
-    /// The motion toward a row a reveal was asked to show.
     pub(crate) to: crate::motion::ScrollTo,
-    /// Device pixels per logical pixel where the list last handled input.
     pub(crate) device_scale: f64,
     /// The rows' opacity in the latest draw and in the frame on screen:
     /// below 1 while they fade in after a long reveal.
@@ -147,12 +140,7 @@ impl Default for RowScroll {
 }
 
 impl RowScroll {
-    /// Start showing row `index` of `viewport`, `width` wide. A reveal the
-    /// person's hand or key just asked for (a search hit opened, a row
-    /// picked elsewhere) moves there ([`crate::motion::ScrollTo`]): a short
-    /// jump glides, a long one fades in at the row; one nobody asked for
-    /// lands at once. Returns the offset to land at, or `None` while gliding
-    /// (follow it with [`Self::follow`]).
+    /// Start showing row `index` of `viewport`, `width` wide.
     pub(crate) fn reveal<K: Clone + Eq + std::hash::Hash>(
         &mut self,
         viewport: &mut SparseVirtualViewport<K>,
@@ -162,7 +150,6 @@ impl RowScroll {
         now: Instant,
     ) -> Option<f64> {
         let drawn = viewport.offset();
-        // Where showing the row takes the list, from where it is going.
         if let Some(target) = self.to.target() {
             viewport.set_offset(target.y);
         }
@@ -187,13 +174,10 @@ impl RowScroll {
         Some(at.y)
     }
 
-    /// A reveal still moves, its rows still fade in, or the frame on screen
-    /// shows them faded.
     pub(crate) fn in_progress(&self) -> bool {
         self.to.target().is_some() || self.to.is_moving(crate::motion::frame_now()) || self.fading()
     }
 
-    /// The rows fade in, in the frame drawn or the one on screen.
     pub(crate) fn fading(&self) -> bool {
         self.fade_drawn < 1.0 || self.fade_shown < 1.0
     }

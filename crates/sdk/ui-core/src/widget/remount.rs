@@ -1,15 +1,4 @@
 //! Changing a widget's own children in the retained layout tree, in place.
-//!
-//! A structure change normally makes the host discard its whole Taffy tree,
-//! build every widget's layout again and solve it from scratch: every text is
-//! measured again, though one row came into a list. A widget that only mounts
-//! and unmounts children of its own, whose other widgets all stay alive,
-//! reports [`StructureChange::Children`](super::StructureChange::Children)
-//! instead and carries it out in [`Widget::remount_children`]
-//! through a [`Remount`]: the children it mounts are built into the retained
-//! tree, the ones it lets go are removed from it, and every other node keeps
-//! its identity and its cached layout. The host admits what was mounted and
-//! solves the tree again, which lays out only the nodes the change dirtied.
 
 use std::collections::HashMap;
 
@@ -44,12 +33,10 @@ impl<'a> Remount<'a> {
         }
     }
 
-    /// The tree, to read a node's layout or set a style.
     pub fn taffy(&mut self) -> &mut TaffyTree<()> {
         self.taffy
     }
 
-    /// The theme the tree is laid out with.
     #[must_use]
     pub fn theme(&self) -> &'a Theme {
         self.theme
@@ -103,7 +90,6 @@ impl<'a> Remount<'a> {
         self.taffy.set_children(parent, children)
     }
 
-    /// What was mounted, as (owner, child) pairs, and every node removed.
     pub(crate) fn finish(self) -> (Vec<(NodeId, NodeId)>, Vec<NodeId>) {
         (self.mounted, self.unmounted)
     }

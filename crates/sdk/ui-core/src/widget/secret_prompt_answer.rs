@@ -1,13 +1,6 @@
-//! How the line under a password prompt's fields answers.
-//!
-//! The asker owns whether an answer was accepted, refused or is still being
-//! checked; this is how the prompt shows a change of answer. It composes the
-//! toolkit's named motions rather than timing anything itself: the new line
-//! cross-fades in over the one it replaces, and a refusal also shakes the
-//! line sideways (`Attention::refuse`). Both are finite, so nothing keeps
-//! asking for frames once an answer has landed, and under reduced motion
-//! only the fade remains. An edit (typing takes an error down, Caps Lock)
-//! is not an answer: its line lands at once.
+//! How the line under a password prompt's fields answers. The asker owns whether an answer was
+//! accepted, refused or is still being checked; this is how the prompt shows a change of
+//! answer.
 
 use crate::time::Instant;
 
@@ -16,7 +9,6 @@ use crate::tokens::{EffectiveMotion, MotionSource};
 
 use super::NoticeTone;
 
-/// The line under the fields as shown: what it says and in which tone.
 pub(super) type Line = Option<(String, NoticeTone)>;
 
 /// The line at one instant: what it says now and at which opacity, the line
@@ -30,7 +22,6 @@ pub(super) struct AnswerPaint {
     pub dx: f64,
 }
 
-/// The answers one prompt has shown, timestamped as it paints.
 #[derive(Default)]
 pub(super) struct Answer {
     fade: Option<CrossFade<Line>>,
@@ -82,7 +73,6 @@ impl Answer {
             .max();
     }
 
-    /// The line to paint at `now`.
     pub(super) fn paint(&self, now: Instant) -> AnswerPaint {
         let Some(fade) = self.fade.as_ref() else {
             return AnswerPaint::default();
@@ -97,7 +87,6 @@ impl Answer {
         }
     }
 
-    /// Drop the deadline once the resting frame is painted.
     pub(super) fn rest_if_settled(&mut self, now: Instant) {
         if self.end.is_some_and(|end| now >= end) {
             self.end = None;

@@ -33,27 +33,19 @@ pub enum NotificationListControl {
 pub enum NotificationListRow {
     /// An app's heading.
     Group {
-        /// The app's verified id.
         key: String,
-        /// The app's display name.
         label: String,
         count: usize,
         expanded: bool,
     },
     Item {
-        /// Stable while the row is shown.
         key: String,
         title: String,
-        /// The app or system component that sent it.
         source: String,
-        /// How long ago it arrived.
         age: String,
         body: String,
-        /// Adds a rail beside the text.
         severity: Option<Tone>,
-        /// Indented under a group heading.
         grouped: bool,
-        /// Shows the hand-to-agent control.
         agent: bool,
     },
 }
@@ -78,13 +70,10 @@ pub struct NotificationRowControls {
     pub agent: Option<Rect>,
 }
 
-/// Hit-test rects from the last paint.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NotificationListLayout {
-    /// One per row on the page.
     pub rows: Vec<Rect>,
     pub controls: Vec<NotificationRowControls>,
-    /// Zero when the list does not page.
     pub newer: Rect,
     pub older: Rect,
     /// Zero unless the list was just cleared.
@@ -108,7 +97,6 @@ pub struct NotificationListView<'a> {
 }
 
 impl<'a> NotificationListView<'a> {
-    /// Shows `rows` from index `start`.
     #[must_use]
     pub fn new(rows: &'a [NotificationListRow], start: usize) -> Self {
         Self {
@@ -139,7 +127,6 @@ impl<'a> NotificationListView<'a> {
         self
     }
 
-    /// Draws the focus ring on this row.
     #[must_use]
     pub fn focused(mut self, index: Option<usize>) -> Self {
         self.focused = index;
@@ -152,7 +139,6 @@ impl<'a> NotificationListView<'a> {
         self
     }
 
-    /// Shows the cleared band with this label.
     #[must_use]
     pub fn cleared(mut self, label: Option<&'a str>) -> Self {
         self.cleared = label;
@@ -183,7 +169,6 @@ impl<'a> NotificationListView<'a> {
         start..self.rows.len().min(start.saturating_add(self.capacity))
     }
 
-    /// Dismiss at the trailing edge, hand-to-agent next to it.
     fn controls_in(row: Rect, theme: &Theme, with_agent: bool) -> NotificationRowControls {
         let size = f64::from(theme.tokens.metrics.icon_control);
         let related = f64::from(theme.tokens.spacing.rhythm.related);
@@ -290,7 +275,6 @@ impl<'a> NotificationListView<'a> {
         }
         let shown = layout.rows.len();
         if self.rows.len() > shown {
-            // Newer and older at the ends, the page position between them when it fits.
             let band_h = ButtonFace::height(ControlSize::Small, theme);
             let band = Rect::new(rect.x0, y, rect.x1, y + band_h);
             layout.newer = Rect::new(band.x0, band.y0, band.x0 + band.width() / 2.0, band.y1);
@@ -331,7 +315,6 @@ impl<'a> NotificationListView<'a> {
         layout
     }
 
-    /// Returns the band's rect.
     fn paint_cleared_band(&self, ctx: &mut PaintCtx<'_>, rect: Rect, y: f64) -> Rect {
         let theme = ctx.theme;
         let label = self.cleared.unwrap_or_default();
@@ -379,7 +362,6 @@ impl<'a> NotificationListView<'a> {
                 .hovered(self.cursor.is_some_and(|p| undo.contains(p)))
                 .focused(self.action_focus == Some(NotificationListControl::Undo)),
         );
-        // The band is one hit target; `control_at` checks undo first.
         undo
     }
 
@@ -434,7 +416,6 @@ fn icon_for(severity: Tone) -> Icon {
     }
 }
 
-/// Only warnings and errors get a rail.
 fn paint_severity_rail(ctx: &mut PaintCtx<'_>, row: Rect, tone: Tone) {
     let related = f64::from(ctx.theme.tokens.spacing.rhythm.related);
     let rail = Rect::new(row.x0, row.y0 + related, row.x0 + 3.0, row.y1 - related);

@@ -28,14 +28,8 @@ pub struct ReactionToggle {
     pub react: bool,
 }
 
-/// The reactions to one thing, as a widget: pills that toggle your own
-/// reaction, and an add button that asks for another emoji.
-///
-/// A toggle goes to the bound action ([`Self::on_action`]; a framework view
-/// binds it to the field's `react`/`unreact` edits) or to
-/// [`Self::on_toggle`], and is also kept for [`Self::take_toggles`]. The add
-/// button's press is kept for [`Self::take_add_request`] with where it is,
-/// for the host to open the emoji picker there.
+/// The reactions to one thing, as a widget: pills that toggle your own reaction, and an add
+/// button that asks for another emoji.
 pub struct ReactionStripWidget {
     groups: Vec<ReactionGroup>,
     me: String,
@@ -100,17 +94,14 @@ impl ReactionStripWidget {
         self
     }
 
-    /// How a reactor is named, where the strip stands.
     pub(crate) fn set_names(&mut self, names: impl Fn(&Reactor) -> String + 'static) {
         self.names = Rc::new(names);
     }
 
-    /// What a press reports, where the strip stands.
     pub(crate) fn set_on_toggle(&mut self, toggle: impl FnMut(ReactionToggle) + 'static) {
         self.on_toggle = Some(Box::new(toggle));
     }
 
-    /// The reactions shown, where the strip stands: who reacted changes and the strip stays.
     pub(crate) fn set_groups(&mut self, groups: Vec<ReactionGroup>) {
         self.groups = groups;
         self.metrics = None;
@@ -118,15 +109,12 @@ impl ReactionStripWidget {
         self.layout_dirty = true;
     }
 
-    /// Whether the person may react: without it the pills only show, and
-    /// there is no add button.
     #[must_use]
     pub fn can_react(mut self, can: bool) -> Self {
         self.set_can_react(can);
         self
     }
 
-    /// Whether the person may react, where the strip stands.
     pub(crate) fn set_can_react(&mut self, can: bool) {
         if self.can_react != can {
             self.can_react = can;
@@ -134,14 +122,12 @@ impl ReactionStripWidget {
         }
     }
 
-    /// Tell `toggle` each toggle.
     #[must_use]
     pub fn on_toggle(mut self, toggle: impl FnMut(ReactionToggle) + 'static) -> Self {
         self.on_toggle = Some(Box::new(toggle));
         self
     }
 
-    /// Invoke `binding` with each toggle.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<ReactionToggle>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
@@ -156,7 +142,6 @@ impl ReactionStripWidget {
         self
     }
 
-    /// Whether the add button's picker is open.
     #[must_use]
     pub fn is_picking(&self) -> bool {
         self.picker
@@ -179,18 +164,15 @@ impl ReactionStripWidget {
         }
     }
 
-    /// The strip as last laid out and drawn.
     #[must_use]
     pub fn strip(&self) -> &ReactionStrip {
         &self.strip
     }
 
-    /// The toggles asked for since the last call, oldest first.
     pub fn take_toggles(&mut self) -> Vec<ReactionToggle> {
         std::mem::take(&mut self.toggles)
     }
 
-    /// Where the add button was pressed, since the last call.
     pub fn take_add_request(&mut self) -> Option<Rect> {
         self.add_request.take()
     }
@@ -283,8 +265,6 @@ impl Widget for ReactionStripWidget {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    /// As wide as its pills within the room offered, as tall as the rows
-    /// they wrap onto.
     fn measure(
         &mut self,
         known: taffy::Size<Option<f32>>,
@@ -355,7 +335,6 @@ impl Widget for ReactionStripWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A strip described without saying who "you" are is the window's own participant's.
         if self.me.is_empty()
             && let Some(own) = presence.self_id()
         {
@@ -432,7 +411,6 @@ impl Widget for ReactionStripWidget {
             WindowEvent::CursorMoved { position, .. } => {
                 let point =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                // A control's target may grow past the strip to the input's minimum.
                 let reach = self.strip.laid_out().reach().union(self.rect);
                 let hover = reach.contains(point).then_some(point);
                 if hover != self.hover {

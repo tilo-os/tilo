@@ -3,8 +3,8 @@
 use super::Slider;
 use crate::component::{Bound, Component, Described, Event, Value};
 
-/// A value along a track: a level, a volume, a share. Dragging the knob or pressing the track
-/// sets it, and the arrow keys step it; Shift drags finely. It reads its own value when said.
+/// A value along a track (a level, a volume, a share), set by dragging the knob or pressing the
+/// track and stepped by the arrow keys, finely with Shift.
 #[derive(Component)]
 #[component(name = "Slider", role = "Slider", label = "label")]
 pub struct SliderProps {
@@ -23,9 +23,7 @@ pub struct SliderProps {
     pub shows_value: bool,
     /// Whether it can be moved now.
     pub enabled: bool,
-    /// The person moved it: carries the value it is at now. What a slider over a value the
-    /// view does not hold runs (a device's volume, changed by its own action), as its value
-    /// is given rather than bound.
+    /// The person moved it: the value it is at now is the value.
     #[component(event(value = f64))]
     pub change: Event,
 }

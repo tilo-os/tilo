@@ -112,7 +112,6 @@ impl Default for RadarStyle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// The inspected value: a series at an axis.
 pub struct Hovered {
     series: usize,
     axis: usize,
@@ -126,7 +125,6 @@ pub struct RadarMarks {
     toggles: chart_legend::SeriesToggles,
 }
 
-/// Series as polygons over radial axes (a spider chart).
 pub type RadarChart = Plot<RadarMarks>;
 
 impl RadarChart {

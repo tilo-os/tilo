@@ -5,16 +5,16 @@ use crate::tokens::TextRole;
 
 use super::Spinner;
 
-/// Something under way whose length is not known: four dots turning. It holds still under
-/// reduced motion. Where the share done is known, a progress bar or ring says how far it is.
+/// Something under way whose length is not known, four dots turning and holding still under
+/// reduced motion; a progress bar or ring says how far when the share is known.
 #[derive(Component, Default)]
 #[component(name = "Spinner", role = "Spinner", label = "label")]
 pub struct SpinnerProps {
     /// What is under way ("Loading messages"), as assistive technology names it.
     #[component(positional)]
     pub label: Option<String>,
-    /// Size it to one line of this text, for a spinner beside a status line. Unless said it
-    /// stands alone at its own size.
+    /// Size it to one line of this text, for a spinner beside a status line; alone at its full
+    /// size unless said.
     pub beside: Option<TextRole>,
 }
 

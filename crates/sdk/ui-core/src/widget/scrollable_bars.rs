@@ -26,8 +26,6 @@ impl Scrollable {
             && self.content_w > self.viewport_w + FIT_EPS
     }
 
-    /// Leaves room in the bottom-right corner when the horizontal bar is
-    /// also active.
     pub(super) fn vertical_track(&self) -> Option<Rect> {
         if !self.vbar_active() {
             return None;
@@ -169,7 +167,6 @@ impl Scrollable {
         if now < hold.next_at {
             return;
         }
-        // Reschedule first so a hold paused at the click point still ticks.
         if let Some(h) = &mut self.hold {
             h.next_at = deadline_after(now, HOLD_REPEAT_MS);
         }
@@ -207,7 +204,6 @@ impl Scrollable {
         }
     }
 
-    /// The edges more content can scroll in from, while edge fades are on.
     pub(super) fn faded_edges(&self) -> Vec<crate::surface::ContentEdge> {
         use crate::surface::ContentEdge;
         let mut edges = Vec::new();
@@ -260,7 +256,6 @@ impl Scrollable {
         if edges.is_empty() {
             return;
         }
-        // The content's own lanes: the bar's gutter is not content.
         let mut area = self.content_viewport_rect();
         if self.reserve_vertical {
             area.x1 -= f64::from(self.content_gutter);
@@ -284,7 +279,6 @@ impl Scrollable {
             return;
         }
         let radius = self.bar_thickness / 2.0;
-        // An idle overlay bar is just the thumb, like macOS/GNOME.
         let expanded = !self.overlay || self.bar_pinned();
         let track_color = crate::widget::scrollbar::track_color(theme).with_alpha_factor(opacity);
         for (track, thumb, active) in [
@@ -309,7 +303,6 @@ impl Scrollable {
                 );
             }
             if let Some(thumb) = thumb {
-                // Hover/drag/focus brightens the derived idle thumb.
                 let color = crate::widget::scrollbar::thumb_color(theme, active || self.focused)
                     .with_alpha_factor(opacity);
                 scene.fill(

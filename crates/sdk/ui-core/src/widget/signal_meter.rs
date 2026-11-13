@@ -1,15 +1,5 @@
-//! `SignalMeter`: how strong a radio signal is (a Wi-Fi network, a mobile
-//! network), as four bars of rising height.
-//!
-//! The bars the level reaches are filled in the accent ink; the rest are the
-//! muted track a progress bar's unfilled part is, so the meter reads on every
-//! material and in high contrast. The meter names itself by its level
-//! ("Strong signal"), the name a screen reader announces and the tooltip a
-//! list row shows for its leading column.
-//!
-//! [`SignalMeterFace`] paints the same meter into a rect for a host that
-//! paints immediately (a list row's leading column, the quick settings
-//! panel); [`SignalMeter`] is the retained widget, one icon square in size.
+//! `SignalMeter`: how strong a radio signal is (a Wi-Fi network, a mobile network), as four
+//! bars of rising height.
 
 use crate::i18n::widget_text;
 use std::collections::HashMap;
@@ -28,10 +18,8 @@ use crate::widget::{TaffyTreeExt, Widget};
 mod component;
 pub use component::SignalMeterProps;
 
-/// How many bars a meter has.
 pub const SIGNAL_BARS: u8 = 4;
 
-/// How strong a signal is: the level the meter fills to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SignalLevel {
     /// The strength is not known; no bar is filled.
@@ -69,7 +57,6 @@ impl SignalLevel {
         }
     }
 
-    /// The meter's name: "Strong signal", in the interface language.
     #[must_use]
     pub fn name(self) -> String {
         widget_text(match self {
@@ -117,7 +104,6 @@ impl SignalMeterFace {
         })
     }
 
-    /// Paint the meter into `rect`.
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -142,11 +128,9 @@ impl SignalMeterFace {
     }
 }
 
-/// The retained meter: one icon square in a row, named by its level.
 pub struct SignalMeter {
     level: SignalLevel,
     rect: Rect,
-    /// Its level changed since the last frame drew it.
     dirty: bool,
 }
 
@@ -160,7 +144,6 @@ impl SignalMeter {
         }
     }
 
-    /// The level it shows.
     #[must_use]
     pub const fn level(&self) -> SignalLevel {
         self.level

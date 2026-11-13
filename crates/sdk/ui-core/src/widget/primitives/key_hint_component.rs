@@ -4,9 +4,8 @@ use crate::component::{Component, Described};
 
 use super::{KeyHint, KeyHints};
 
-/// Shortcuts and what they do, side by side: each hint the drawn keycaps of a chord and its
-/// label ("Enter Save", "Esc Cancel"), in the person's own keyboard legends. Never a sentence
-/// with a separator glyph.
+/// Shortcuts and what they do, side by side, each hint the drawn keycaps of a chord and its
+/// label ("Enter Save") in the person's keyboard legends.
 #[derive(Component, Default)]
 #[component(name = "KeyHints", role = "Group")]
 pub struct KeyHintsProps {
@@ -36,14 +35,12 @@ impl Described for KeyHints {
         Self::new(hints(props.hints))
     }
 
-    /// The hints change where the strip stands.
     fn set_props(&mut self, props: KeyHintsProps) -> bool {
         self.set_hints(hints(props.hints));
         true
     }
 }
 
-/// The drawn keycaps of each hint, in the person's own legends.
 fn hints(props: Vec<KeyHintProps>) -> Vec<KeyHint> {
     props
         .into_iter()

@@ -1,13 +1,6 @@
-//! `RowMenu`: the More button at a row's trailing edge, holding the row's
-//! secondary actions (rename, forget, remove) in a menu, so a row carries
-//! one control of its own instead of a line of buttons.
-//!
-//! Each entry runs an exported resource action through
-//! an [`ActionEmitter`]: the host resolves its policy (and asks for
-//! confirmation where it must) before it runs, exactly as for a bound
-//! button, and an entry whose action the surface does not offer is shown
-//! disabled. Agents and assistive technology reach the same actions on the
-//! row's resource; the menu is how a pointer reaches them.
+//! `RowMenu`: the More button at a row's trailing edge, holding the row's secondary actions
+//! (rename, forget, remove) in a menu, so a row carries one control of its own instead of a
+//! line of buttons.
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -29,7 +22,6 @@ struct Entry {
     emitter: Option<ActionEmitter<()>>,
 }
 
-/// A row's More button and the menu of its secondary actions.
 #[crate::component::not_a_component(part, "a row's menu, from its `menu` slot")]
 pub struct RowMenu {
     menu: MenuButton,
@@ -134,7 +126,6 @@ impl RowMenu {
         self.menu.set_items(items);
     }
 
-    /// Emit the entry the menu ran, if one.
     fn run_chosen(&mut self) {
         if let Some(index) = self.chosen.take()
             && let Some(emitter) = self
@@ -278,8 +269,6 @@ mod tests {
         assert!(menu.take_control_invocation().is_none());
     }
 
-    /// An entry whose action the surface does not offer stays in the menu,
-    /// disabled, and queues nothing.
     #[test]
     fn an_entry_the_surface_does_not_offer_is_disabled() {
         let mut menu =

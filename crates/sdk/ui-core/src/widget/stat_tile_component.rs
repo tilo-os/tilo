@@ -12,9 +12,9 @@ crate::component::choice!(Trend, "Trend", {
     Flat => "flat",
 });
 
-/// One number and what it measures, on the content ground: a dashboard's reading, a backup's
-/// size. A tile reads top to bottom: its label, the value with its unit, a note, which way it
-/// moved, and a sparkline of its recent readings. A tile that opens a detail is pressed.
+/// One number and what it measures (a dashboard's reading, a backup's size), read top to bottom
+/// as a label, the value with its unit, a note, its trend and a sparkline; a tile that opens a
+/// detail is pressed.
 #[derive(Component, Default)]
 #[component(name = "StatTile", role = "Group", label = "label")]
 pub struct StatTileProps {
@@ -33,8 +33,8 @@ pub struct StatTileProps {
     pub note: Option<String>,
     /// How it changed, beside an arrow of its trend: "12% this week".
     pub change: Option<String>,
-    /// Which way it moved: `up` unless said, when it has a change. Whether that is good is its
-    /// tone, not the arrow.
+    /// Which way it moved: `up` unless said, when it has a change; its tone, not the arrow,
+    /// says whether that is good.
     pub trend: Option<Trend>,
     /// The state of what it measures, as a ticker down its leading edge: a failed backup is
     /// danger, a healthy tunnel success.
@@ -102,7 +102,6 @@ impl Described for StatTile {
         tile
     }
 
-    /// A new reading (its value, note, change and samples) is taken in place.
     fn set_props(&mut self, props: StatTileProps) -> bool {
         let same_shape = props.label == self.label
             && props.unit == self.unit
@@ -125,8 +124,8 @@ impl Described for StatTile {
     }
 }
 
-/// A set of stat tiles that reflows by width: all in one row when they fit, then half per row
-/// (a 2 by 2 for four), then one per row. The tiles are separated by space, never boxed.
+/// Stat tiles that reflow by width: one row when they fit, then half per row (2 by 2 for four),
+/// then one per row; separated by space, never boxed.
 #[derive(Component, Default)]
 #[component(name = "StatGroup", role = "Group")]
 pub struct StatGroupProps {
@@ -152,7 +151,6 @@ impl Described for StatGroup {
         Self::new(tiles)
     }
 
-    /// The same tiles take their new readings in place.
     fn set_props(&mut self, props: StatGroupProps) -> bool {
         if props.tiles.len() != self.tiles.len() {
             return false;

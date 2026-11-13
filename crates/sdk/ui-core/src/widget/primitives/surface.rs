@@ -1,21 +1,5 @@
-//! `Surface(level)`: one of the design language's five surface levels,
-//! painted with its edge and its shadow (`docs/design-language.md`,
-//! "Surfaces").
-//!
-//! | Level | Is | Edge | Shadow | Radius |
-//! |---|---|---|---|---|
-//! | [`SurfaceLevel::Ground`] | the desktop | — | — | none |
-//! | [`SurfaceLevel::Window`] | app content | the window edge | soft | `radii.tile` |
-//! | [`SurfaceLevel::Region`] | a sidebar, an inspector | none: the step separates | — | none (flush in its window) |
-//! | [`SurfaceLevel::Raised`] | a field well, a segmented track, an object | none | — | `radii.control` |
-//! | [`SurfaceLevel::Floating`] | a menu, popover, palette, sheet, tooltip | 1 px inner hairline | two layers | `radii.panel` |
-//!
-//! A child never paints a surface of its parent's level, and never a raised
-//! surface inside a raised one: a [`Surface`] nested in a surface of the
-//! same level paints no ground of its own (it stands on its parent's), so
-//! the rule holds by construction. Children ask [`SurfaceLevel::inner_radius`]
-//! for a radius concentric with the surface they sit in; they never pick
-//! one.
+//! `Surface(level)`: one of the design language's five surface levels, painted with its edge
+//! and its shadow (`docs/design-language.md`, "Surfaces").
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -100,9 +84,7 @@ thread_local! {
     static OPEN_LEVELS: RefCell<Vec<SurfaceLevel>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Paint `level` over `rect`: its shadow, its fill and its edge. Returns the
-/// theme a child standing on it paints with ([`Theme::on_ground`]): ink,
-/// lifts and the raised well re-measured against the level's fill.
+/// Paint `level` over `rect`: its shadow, its fill and its edge.
 pub fn paint_surface(
     scene: &mut Scene,
     transform: Affine,
@@ -145,11 +127,9 @@ pub fn paint_surface(
     theme.on_ground(fill)
 }
 
-/// A window card whose parts reach its edge: its shadow and its ground,
-/// `content` on that ground clipped to its shape, and its edge over the two,
-/// so a part filled to the outline (a window's bar at the head) never cuts the
-/// card's frame. Returns the theme a child on the card paints with, as
-/// [`paint_surface`] does for [`SurfaceLevel::Window`].
+/// A window card whose parts reach its edge: its shadow and its ground, `content` on that
+/// ground clipped to its shape, and its edge over the two, so a part filled to the outline (a
+/// window's bar at the head) never cuts the card's frame.
 pub fn paint_window_card(
     scene: &mut Scene,
     transform: Affine,
@@ -202,13 +182,9 @@ pub fn paint_window_card(
     on
 }
 
-/// A window card a person lifted off the desk, drawn in the shell's floating
-/// material: the panel ground and hairline a menu stands on and the two-layer
-/// lift under it, so the window reads as standing over the desk rather than as
-/// another window on it. `content` is clipped to the card's shape; the window's
-/// own edge is stroked around it by the caller, outside that clip, where a
-/// focused window's ring belongs. Returns the theme a child on the card paints
-/// with, as [`paint_window_card`] does.
+/// A window card a person lifted off the desk, drawn in the shell's floating material: the
+/// panel ground and hairline a menu stands on and the two-layer lift under it, so the window
+/// reads as standing over the desk rather than as another window on it.
 pub fn paint_floating_window_card(
     scene: &mut Scene,
     transform: Affine,
@@ -275,18 +251,13 @@ pub fn paint_document_sheet(
     );
 }
 
-/// The hairline at a document sheet's edge: measured against the window
-/// content the sheet stands on.
 fn sheet_edge(theme: &Theme) -> Color {
     crate::surface::edge_on(SurfaceLevel::Window.color(theme))
 }
 
-/// Paint the see-through material over `rect` at `radius`: half the panel
-/// ground over the blurred backdrop, its floating shadow outside it only (a
-/// shadow under the body would darken what shows through) and the floating
-/// hairline. Only for chrome over pixels the person is choosing
-/// (`docs/design-language.md`, "Material and transparency"). Returns the
-/// theme a child standing on it paints with.
+/// Paint the see-through material over `rect` at `radius`: half the panel ground over the
+/// blurred backdrop, its floating shadow outside it only (a shadow under the body would darken
+/// what shows through) and the floating hairline.
 pub fn paint_see_through(
     scene: &mut Scene,
     transform: Affine,
@@ -349,7 +320,6 @@ impl Surface {
         self
     }
 
-    /// The level this surface paints.
     #[must_use]
     pub fn level(&self) -> SurfaceLevel {
         self.level
@@ -547,10 +517,8 @@ mod tests {
     }
 }
 
-/// A region of a window laid out and drawn at another density
-/// ([`crate::tokens::Density`]): a data-heavy sidebar or list at compact
-/// while the rest of the window stays comfortable. Rows, rhythm and tables
-/// inside it take the region's density; controls and text keep their size.
+/// A region of a window laid out and drawn at another density ([`crate::tokens::Density`]): a
+/// data-heavy sidebar or list at compact while the rest of the window stays comfortable.
 #[crate::component::not_a_component(framework, "the framework sets each region's density")]
 pub struct DensityRegion {
     density: crate::tokens::Density,

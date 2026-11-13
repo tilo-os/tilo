@@ -25,7 +25,6 @@ fn show(d: &mut FrameHarness, level: usize) {
     d.relayout();
 }
 
-/// Whether the slide is drawing a page it replaced on its way out.
 fn leaving(d: &FrameHarness) -> bool {
     crate::widget::Widget::children(d.root::<Column>())
         .first()
@@ -95,9 +94,6 @@ fn a_page_rebuilt_where_it_stands_never_draws_a_second_page() {
     let later = start + crate::time::Duration::from_secs(2);
     with_monotonic_time(later, || {
         d.poll_frame().expect("the frame draws");
-        // The view builds its page again where it stands, as an app whose
-        // readings changed does: whatever it takes up from the build it
-        // replaces, a slide at rest shows one page.
         for _ in 0..2 {
             show(&mut d, 1);
             d.poll_frame().expect("the frame draws");
@@ -106,7 +102,6 @@ fn a_page_rebuilt_where_it_stands_never_draws_a_second_page() {
     });
 }
 
-/// The slide as a view places it: its props name the page and its level.
 fn props(level: i64, page: &str) -> PageSlideProps {
     PageSlideProps {
         key: "deck".to_owned(),
@@ -115,7 +110,6 @@ fn props(level: i64, page: &str) -> PageSlideProps {
     }
 }
 
-/// Build the view again from props, the way a view whose state changed does.
 fn show_props(d: &mut FrameHarness, props: PageSlideProps) {
     d.root_mut::<Column>().set_children(vec![
         Box::new(PageSlide::from_props("deck", props)),
@@ -152,8 +146,6 @@ fn a_slide_at_its_level_changes_where_it_stands_and_a_deeper_one_is_built_again(
         "it leaves its motion under the key its view gave it, so the slide built in its place \
          takes it up"
     );
-    // A different page at the same level (a list's item opened in the page the list showed)
-    // changes where it stands, and nothing moves.
     let slot = slide.slot_views(PAGE_SLOT).expect("the page is a slot");
     assert_eq!(slot.len(), 1);
     slot.replace(0, Box::new(Text::new("Second").with_id("next")));

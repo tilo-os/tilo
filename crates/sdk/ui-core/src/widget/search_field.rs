@@ -1,21 +1,5 @@
-//! `SearchField` — the in-content filter: a field with a leading magnifier,
-//! an editable [`TextInput`], a trailing clear button and a reserved slot for
-//! the match count.
-//!
-//! It narrows what a view already shows (a sidebar list, a table, a set of
-//! cards); it never searches the app. Searching is the platform's: Enter, or
-//! the "Search everywhere" action shown when nothing matches, hands the same
-//! query to the platform search ([`SearchRequest`]), and an app's search
-//! launcher is [`search_button`](crate::search::search_button), not a field.
-//!
-//! Bind a field to a list through the [`Filterable`] capability: the list
-//! narrows to the query and reports how many rows remain, which the field
-//! shows as "3 of 120". [`Filtered`] places a field above any content and
-//! wires both, with Ctrl+F focusing the field; a navigation shell's filter
-//! slot uses [`sync_filter`] the same way.
-//!
-//! Composes the toolkit's own [`TextInput`] so caret, selection, IME, and
-//! CRDT binding are shared.
+//! `SearchField` — the in-content filter: a field with a leading magnifier, an editable
+//! [`TextInput`], a trailing clear button and a reserved slot for the match count.
 
 use crate::i18n::widget_text;
 use crate::widget::ModelPath;
@@ -41,15 +25,12 @@ use crate::widget::text::centered_text_top;
 use crate::widget::{ControlSize, TaffyTreeExt};
 use crate::widget::{TextInput, TextInputKind, Widget};
 
-/// Leading gutter holding the magnifier, and the trailing clear gutter.
 const ICON_GUTTER: f64 = 32.0;
 const CLEAR_GUTTER: f64 = 28.0;
 const ICON_D: f64 = 16.0;
 const CLEAR_D: f64 = 14.0;
-/// Space between the trailing slot's text and the clear button or edge.
 const SLOT_PAD: f64 = 8.0;
 
-/// How many rows a filtered view shows out of how many it has.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FilterCount {
     pub shown: usize,
@@ -81,7 +62,6 @@ pub trait Filterable {
     /// and the platform search agree on what "matches" means.
     fn set_filter(&mut self, query: &str);
 
-    /// How many rows the current filter leaves, for the field's counter.
     fn filter_count(&self) -> Option<FilterCount> {
         None
     }
@@ -126,9 +106,7 @@ fn visit_filterable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Filt
         .any(|child| visit_filterable(child, visit))
 }
 
-/// Carry `field`'s edits to the [`Filterable`] in `content`: call after
-/// routing each event. The field shows the count the view reports, and its
-/// "Search everywhere" escalation narrows to the view's scope.
+/// Carry `field`'s edits to the [`Filterable`] in `content`: call after routing each event.
 pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
     if field.applied.as_deref() != Some(field.value()) {
         let query = field.value().to_owned();
@@ -145,7 +123,6 @@ pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
     }
 }
 
-/// A search-styled input: magnifier + editable text + count slot + clear.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent option or dirty marker (clearable, cleared, \
@@ -163,8 +140,6 @@ pub struct SearchField {
     cleared: bool,
     rect: Rect,
     clear_rect: Rect,
-    /// The "Search everywhere" action's hit rect and the face it is painted
-    /// as, when it shows.
     escalate_rect: Rect,
     escalate_face: Rect,
     last_cursor: Point,
@@ -176,7 +151,6 @@ pub struct SearchField {
     opener: SearchOpener,
     count: Option<FilterCount>,
     reserve_count: bool,
-    /// A scope token drawn before the text ("Only Inbox"), removable.
     scope_token: Option<String>,
     /// The glyph the token starts with: what it narrowed into, never a
     /// character baked into its text.
@@ -185,8 +159,6 @@ pub struct SearchField {
     /// The count's text in the trailing slot, placed by the layout (empty
     /// when there is none, or none fits).
     count_rect: Rect,
-    /// The prompt as the layout elided it to the room it has, and where the
-    /// layout put it.
     prompt_shown: Option<String>,
     prompt_rect: Rect,
     scope_cleared: bool,
@@ -202,8 +174,6 @@ pub struct SearchField {
     /// name:") while a step collects a value in it.
     prompt: Option<String>,
 
-    /// The theme the layout places with: painting is handed one every frame,
-    /// the layout is handed none.
     layout_theme: Theme,
     /// A count, token, prompt or placeholder changed since the layout last
     /// placed the controls. A change of the box or of the value alone shows in
@@ -226,10 +196,8 @@ impl SearchField {
         Self::with_input(TextInput::local())
     }
 
-    /// A search input bound to `state`: what the person types updates it,
-    /// and a change to it through any clone shows here, as
-    /// [`TextInput::from_state`] does for an ordinary field. A view that
-    /// filters a list as the query is typed reads it from the same state.
+    /// A search input bound to `state`: what the person types updates it, and a change to it
+    /// through any clone shows here, as [`TextInput::from_state`] does for an ordinary field.
     #[must_use]
     pub fn from_state(state: &crate::LocalState<String>) -> Self {
         Self::with_input(TextInput::from_state(state))
@@ -298,15 +266,12 @@ impl SearchField {
         self
     }
 
-    /// Escalate to the platform search of one part of the app instead of
-    /// the whole app.
     #[must_use]
     pub fn escalates_within(mut self, scope: ScopeDecl) -> Self {
         self.escalation = Some(SearchRequest::within(scope));
         self
     }
 
-    /// Reserve the trailing count slot even before a count is known.
     #[must_use]
     pub fn with_count_slot(mut self) -> Self {
         self.reserve_count = true;
@@ -325,16 +290,14 @@ impl SearchField {
         self.count
     }
 
-    /// Show a removable scope token before the text, e.g. "Only Inbox".
     pub fn set_scope_token(&mut self, token: Option<String>) {
         self.dirty = true;
         self.layout_dirty = true;
         self.scope_token = token;
     }
 
-    /// The glyph the scope token starts with: a chevron by default, since
-    /// the token names the scope the query was narrowed into. It is drawn by
-    /// the chip, so it is never a character in the token's text.
+    /// The glyph the scope token starts with: a chevron by default, since the token names the
+    /// scope the query was narrowed into.
     pub fn set_scope_token_icon(&mut self, icon: Icon) {
         self.dirty = true;
         self.layout_dirty = true;
@@ -378,10 +341,8 @@ impl SearchField {
         &self.placeholder
     }
 
-    /// Give the input the placeholder elided to the room it has, so a long
-    /// one ends in an ellipsis instead of running under the trailing slot.
-    /// The layout places it, in the type the frame measures with; painting
-    /// only paints the words it left.
+    /// Give the input the placeholder elided to the room it has, so a long one ends in an
+    /// ellipsis instead of running under the trailing slot.
     fn fit_placeholder(&mut self, fitted: &str) {
         if fitted != self.input.placeholder() {
             self.input.set_placeholder(fitted);
@@ -394,8 +355,6 @@ impl SearchField {
         self
     }
 
-    /// Binds the query to a CRDT string path, instead of the default
-    /// local-only buffer.
     #[must_use]
     pub fn bound(mut self, path: &str) -> Self {
         self.input = TextInput::new(vec![crate::presence::PathSegment::Field(path.to_owned())])
@@ -494,7 +453,6 @@ impl SearchField {
         self.input.text_review().map(|(caret, _)| caret)
     }
 
-    /// Goes through the shared text core, so caret/selection stay consistent.
     pub fn set_query(&mut self, text: &str) {
         self.dirty = true;
         self.input.set_text(text);
@@ -511,9 +469,7 @@ impl SearchField {
         self.input.set_focus(on);
     }
 
-    /// Whether the field holds the keyboard. Reads the text core directly:
-    /// callers that only ask where focus is (a container reporting its own
-    /// published state) do not pay for building an accessibility node.
+    /// Whether the field holds the keyboard.
     pub fn is_focused(&self) -> bool {
         self.input.is_focused()
     }
@@ -546,12 +502,10 @@ impl SearchField {
             .handle_chrome_pointer(event, scale_factor, modifiers)
     }
 
-    /// Select the current query for conventional Find/Search re-entry.
     pub fn select_all(&mut self) {
         self.input.select_all();
     }
 
-    /// Whether the query input owns an unfinished composition.
     pub fn is_composing(&self) -> bool {
         self.input.is_composing()
     }
@@ -572,7 +526,6 @@ impl SearchField {
         None
     }
 
-    /// Hand the current query to the platform search, as Enter does.
     pub fn escalate(&mut self) -> bool {
         let Some(request) = self.escalation.clone() else {
             return false;
@@ -611,7 +564,6 @@ impl SearchField {
         self.clearable && !self.input.value().is_empty()
     }
 
-    /// Narrow and idle: draw only the magnifier, as an icon button.
     fn collapsed(&self, theme: &Theme) -> bool {
         let threshold =
             ICON_GUTTER + self.trailing_gutter() + 3.0 * ControlSize::Regular.height(theme);
@@ -624,12 +576,8 @@ impl SearchField {
             && self.count.is_some_and(|count| count.shown == 0)
     }
 
-    /// Where the field's controls stand, from its box: the scope token, the
-    /// prompt, the room the text has, the count, "Search everywhere" and the
-    /// clear button. The layout runs this, so a frame read before the field is
-    /// drawn — a test, assistive technology, a press on a window that has laid
-    /// out and has not yet painted — finds them inside it rather than at the
-    /// window's origin.
+    /// Where the field's controls stand, from its box: the scope token, the prompt, the room
+    /// the text has, the count, "Search everywhere" and the clear button.
     fn place_controls(&mut self) {
         let theme = self.layout_theme.clone();
         let rect = self.rect;
@@ -699,7 +647,6 @@ impl SearchField {
         self.layout_dirty = false;
     }
 
-    /// Paint the scope token chip where the layout placed it.
     fn paint_scope_token(
         &self,
         scene: &mut Scene,
@@ -721,8 +668,6 @@ impl SearchField {
             .paint(scene, transform, text_renderer, theme);
     }
 
-    /// Paint the prompt where the layout placed it, in the words the layout
-    /// elided it to.
     fn paint_prompt(
         &self,
         scene: &mut Scene,
@@ -742,8 +687,6 @@ impl SearchField {
         text_renderer.draw_style(scene, shown, theme.text_dim, at, None, &style);
     }
 
-    /// Paint the trailing slot where the layout placed it: the count, and
-    /// "Search everywhere" left of it.
     fn paint_trailing_slot(
         &self,
         scene: &mut Scene,
@@ -751,8 +694,6 @@ impl SearchField {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // The count stays when nothing matches: "No matches" tells the person
-        // so in words.
         if let Some(count) = self.count
             && !self.count_rect.is_zero_area()
         {
@@ -802,7 +743,6 @@ enum Press {
     Field,
 }
 
-/// Where the layout puts a field's controls inside its box.
 struct Placed {
     scope_token: Rect,
     prompt_shown: Option<String>,
@@ -811,9 +751,7 @@ struct Placed {
     escalate_face: Rect,
     escalate_rect: Rect,
     clear: Rect,
-    /// The room the text has, past the token and the prompt.
     text_rect: Rect,
-    /// The placeholder elided to that room.
     placeholder: String,
 }
 
@@ -833,7 +771,6 @@ fn clear_icon_rect(rect: Rect) -> Rect {
     )
 }
 
-/// The clear button's hit target: its × and the margin a thumb wants.
 fn clear_hit_rect(rect: Rect) -> Rect {
     clear_icon_rect(rect).inflate(4.0, 4.0)
 }
@@ -1002,8 +939,6 @@ impl Widget for SearchField {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.input.build_layout(taffy, theme, node_map);
-        // The layout places the controls in this type; painting is handed the
-        // frame's own.
         self.layout_theme = theme.clone();
         let height = self.size.height(theme);
         // A fluid control: it asks for the row's width and, when the row
@@ -1027,10 +962,6 @@ impl Widget for SearchField {
                 width: percent(1.0_f32),
                 height: length(height as f32),
             },
-            // Its text scrolls inside it, so nothing of it stands past its
-            // own edge: a field squeezed below its width reports its box, not
-            // the text's extent, and a container holding it is not laid wider
-            // than the room it has.
             overflow: taffy::Point {
                 x: taffy::Overflow::Clip,
                 y: taffy::Overflow::Clip,
@@ -1072,8 +1003,6 @@ impl Widget for SearchField {
         }
         let radius = f64::from(theme.tokens.radii.control);
         if self.collapsed(theme) {
-            // The icon button: a square target at the leading edge, lifted
-            // on hover like any quiet control.
             let side = self.rect.height();
             let target = Rect::new(
                 self.rect.x0,
@@ -1095,9 +1024,6 @@ impl Widget for SearchField {
                 .draw_with_stroke(scene, transform, icon, theme.text_dim, 1.5);
             return;
         }
-        // A raised well with no edge, the caret its focus; embedded in a
-        // floating panel's header it takes neither fill nor outline: the
-        // panel is its surface.
         if !self.embedded {
             let shape = RoundedRect::from_rect(self.rect, radius);
             let fill = theme.tokens.colors.surfaces.raised;
@@ -1146,8 +1072,6 @@ impl Widget for SearchField {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
         }
-        // A field placed by `apply_layout_external` has no child node; the
-        // input only uses the node to report a focus target.
         let child_node = ctx
             .taffy
             .children(ctx.node_id)
@@ -1181,7 +1105,6 @@ impl Widget for SearchField {
                     return;
                 }
                 Press::Field => {
-                    // The collapsed icon button focuses the field.
                     if !self.input.is_focused() && self.input.value().is_empty() {
                         *ctx.focus_target = Some(child_node);
                     }
@@ -1311,10 +1234,8 @@ impl crate::widget::controls::ActionControls for SearchField {
     }
 }
 
-/// Content with a filter: a [`SearchField::filter`] in a band above the
-/// content, narrowing the first [`Filterable`] inside it. Ctrl+F (⌘F)
-/// focuses the field. A navigation shell's filter slot is the same field
-/// wired with [`sync_filter`].
+/// Content with a filter: a [`SearchField::filter`] in a band above the content, narrowing the
+/// first [`Filterable`] inside it. Ctrl+F (⌘F) focuses the field.
 #[crate::component::not_a_component(
     system,
     "no search fields in apps; the search button opens system search (AGENTS.md principle 3)"
@@ -1340,7 +1261,6 @@ impl Filtered {
         }
     }
 
-    /// Name what the field filters ("Filter people").
     #[must_use]
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.field.set_placeholder(placeholder);
@@ -1800,7 +1720,6 @@ mod tests {
             sf.scope_token_rect
         );
 
-        // A layout measuring in the default type would place a narrower chip.
         let plain = Theme::light();
         text.set_text_scale(plain.text_scale);
         text.apply_typography(&plain.tokens.typography);
