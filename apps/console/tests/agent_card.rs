@@ -6,9 +6,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-//! An agent's card: the resource Console publishes for each client, the card its face in the
-//! workspace's presence opens, and what that face asks of it (Stop, Revoke) reaching the agent door
-//! once the card has read the door.
+//! An agent's card: the resource Console publishes for each client, the card its face in
+//! the workspace's presence opens, and what that face asks of it (Stop, Revoke) reaching
+//! the agent door once the card has read the door.
 
 use serde_json::json;
 use tilo_console::{App, ConsoleEffect};
@@ -217,8 +217,8 @@ fn window_name(app: &mut TestApp<App>) -> Option<String> {
         .map(|location| location.label)
 }
 
-/// The card's window is named by what it shows: the agent's own name, where every place names its
-/// place, and never the app's twice.
+/// The card's window is named by what it shows: the agent's own name, where every place
+/// names its place, and never the app's twice.
 #[test]
 fn the_cards_window_is_named_by_the_agent() {
     let mut app = opened();

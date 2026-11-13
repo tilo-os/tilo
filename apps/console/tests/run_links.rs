@@ -6,8 +6,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-//! A run's address: the resource Console publishes for it, the view a link
-//! opens, and the link itself, round-tripping through the link grammar.
+//! A run's address: the resource Console publishes for it, the view a link opens, and the
+//! link itself, round-tripping through the link grammar.
 
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +28,6 @@ use ui::{RemoteActions, RemoteActionsGuard};
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";
-/// The run the console's answers carry: `r1`.
 const RUN: &str = "console.run:r1";
 
 fn english() {
@@ -39,8 +38,8 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
-/// Whether the window's bar carries the shell's way back: a run's page or an agent's card stands
-/// in place of its list.
+/// Whether the window's bar carries the shell's way back: a run's page or an agent's card
+/// takes the place of its list.
 fn shows_back(app: &mut TestApp<App>) -> bool {
     app.frame();
     ui::window_toolbar::declared().is_some_and(|bar| {
@@ -65,8 +64,7 @@ fn asked(app: &mut TestApp<App>) -> Vec<InvokeRequest> {
         .collect()
 }
 
-/// The request to `target` among `requests`; a missing one fails where the
-/// test names it.
+/// The request to `target` among `requests`; a missing one fails where the test names it.
 #[track_caller]
 fn find(requests: &[InvokeRequest], target: &RemoteActionTarget) -> InvokeRequest {
     requests
@@ -137,8 +135,8 @@ fn the_door() -> door::Door {
     }
 }
 
-/// A workspace host answering view lookups with its locator, announcing
-/// `entry` as the web page its links open.
+/// A workspace host answering view lookups with its locator, announcing `entry` as the web
+/// page its links open.
 struct Host {
     entry: Option<String>,
     asked: Mutex<Vec<CatalogueQuery>>,
@@ -204,8 +202,8 @@ fn published(app: &mut TestApp<App>, id: &str) -> ResourceSpec {
     find_in(&resources, id).unwrap_or_else(|| panic!("{id} is published"))
 }
 
-/// Open the console on a session whose runs read answers with `run`, or
-/// whose answers the caller gives.
+/// Open the console on a session whose runs read answers with `run`, or whose answers the
+/// caller gives.
 fn open() -> TestApp<App> {
     TestApp::<App>::for_person("ada").expect("open")
 }
@@ -268,8 +266,6 @@ fn a_run_is_published_as_its_address_with_a_primary_view_and_a_link() {
         ConsoleEffect::VIEW_RUN.id,
         "the view is opened by the effect that shows the run"
     );
-    // What a link's open reads: the open action carries the view, so a
-    // window that follows the link finds it and invokes it.
     let resources = app.harness().resources();
     let opened = ui::tilo_actions::door::survey(&resources)
         .into_iter()
@@ -323,8 +319,6 @@ fn opening_a_runs_view_shows_that_runs_page() {
 #[test]
 fn a_runs_link_parses_back_to_that_run() {
     english();
-    // The host is served before the window opens: the window's root keeps the
-    // host it started with.
     let (_host, _guard) = serve(Some(ENTRY));
     let mut app = open();
     let answer = app
@@ -340,8 +334,6 @@ fn a_runs_link_parses_back_to_that_run() {
     let entries = WebEntries::new(vec![WebEntry::new(ENTRY).unwrap()]);
     let link = Link::parse(url, &entries).unwrap();
     let target = &link.target;
-    // A run is read from the workspace's history, which the desktop's
-    // session serves, so its link opens the desktop at the run.
     assert_eq!(link.mode, Mode::Desktop, "{url}");
     assert_eq!(target.app, Some(AppId::new(App::ID)), "{url}");
     assert_eq!(
@@ -365,15 +357,12 @@ fn a_runs_link_parses_back_to_that_run() {
 #[test]
 fn a_runs_address_is_answered_before_the_history_read_lands() {
     english();
-    // A fresh window: its runs read has not answered, so no run is listed.
     let mut app = open();
     let requests = asked(&mut app);
     assert!(
         !requests.is_empty(),
         "a fresh window asks the history for its runs"
     );
-    // The run's address still resolves, as the link's open does before the
-    // read lands.
     app.call_on(RUN, ConsoleEffect::VIEW_RUN.id, json!({}))
         .expect("open the run a link names");
     assert!(
@@ -381,7 +370,6 @@ fn a_runs_address_is_answered_before_the_history_read_lands() {
         "the run's page opened, not every run"
     );
 
-    // The read lands: the page fills in, without the person navigating again.
     answer_reads(&mut app, &requests, vec![run()]);
     assert!(
         shows_back(&mut app),

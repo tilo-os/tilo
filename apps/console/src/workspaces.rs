@@ -1,5 +1,5 @@
-//! Workspaces: the person's workspaces the door reaches, whether they made
-//! them or an agent did, each one step from the full desktop.
+//! Workspaces: the person's workspaces the door reaches, whether they made them or an agent
+//! did, each one step from the full desktop.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -46,7 +46,6 @@ fn row(doors: &Doors, index: usize, workspace: &door::Workspace) -> Element {
     )
     .with_icon(Icon::ExternalLink)
     .on_view(move || doors.open_in_tilo(&href));
-    // The row is the workspace: its maker is a fact about it, in words.
     let mut row = ListRow::new(format!("console-workspace-{index}"), workspace.name.clone())
         .icon(Icon::LayoutGrid)
         .meta(ago(workspace.made_ms))

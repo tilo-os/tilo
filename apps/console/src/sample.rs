@@ -1,7 +1,6 @@
-//! What the screenshot scenarios show: a person whose two agents worked in
-//! their workspaces this afternoon, as the history and the agent door would
-//! serve it. A capture reaches no session; these are the answers its reads
-//! get instead. Never written into a real workspace.
+//! What the screenshot scenarios show: a person whose two agents worked in their workspaces
+//! this afternoon, as the history and the agent door would serve it. Never written into a
+//! real workspace.
 
 use ui::prelude::*;
 use ui::tilo_actions::remote::agent_door as door;
@@ -33,7 +32,6 @@ fn minutes_ago_ms(minutes: i64) -> i64 {
 
 const CLAUDE: &str = "agent:claude-code";
 const CODEX: &str = "agent:codex";
-/// The runs' names, as the door names each session and History each run.
 const CLAUDE_RUN: &str = "Claude Code #3";
 const CLAUDE_EARLIER: &str = "Claude Code #1";
 const CODEX_RUN: &str = "Codex #1";
@@ -75,8 +73,6 @@ fn target(app: &str, app_label: &str, id: &str, label: &str) -> wire::Target {
 
 fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wire::RunAction {
     let target = view.target().clone();
-    // A program that ran and a page that was opened changed no record: there
-    // is nothing of theirs to take back.
     let undoable = matches!(
         view,
         wire::ActionView::File { .. } | wire::ActionView::Record { .. }
@@ -96,9 +92,9 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
     }
 }
 
-/// A command Claude Code ran in the Storefront shell, as the shell's run record serves it: its last
-/// lines, the rest one read away, and how it ended `minutes_ago`, after `took_ms` (`None`: still
-/// running).
+/// A command Claude Code ran in the Storefront shell, as the shell's run record serves it:
+/// its last lines, the rest one read away, and how it ended `minutes_ago`, after `took_ms`
+/// (`None`: still running).
 fn command(
     run: &str,
     command: &str,
@@ -130,7 +126,6 @@ fn command(
     }
 }
 
-/// Everything the failing test run printed.
 const FAILING_TEST_OUTPUT: [&str; 14] = [
     "   Compiling signup v0.4.2 (~/storefront/signup)",
     "    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.81s",
@@ -163,8 +158,8 @@ fn line(side: wire::DiffSide, text: &str) -> wire::DiffLine {
     }
 }
 
-/// Claude Code's run, working now: a test it ran, a file it changed, the
-/// test again, and the page it opened.
+/// Claude Code's run, working now: a test it ran, a file it changed, the test again, and
+/// the page it opened.
 fn fix_run() -> wire::AgentRun {
     use wire::DiffSide::{Added, Both, Removed};
     wire::AgentRun {
@@ -419,7 +414,6 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav) {
         Some("workspaces") => nav.show(Place::Workspaces),
         Some("connect") => nav.show(Place::Connect),
         Some("usage") => nav.show(Place::Usage),
-        // The card of an agent at work, as its face in the workspace opens it.
         Some("agent-card") => nav.show_agent("Claude Code", None),
         _ => nav.show(Place::Agents),
     }

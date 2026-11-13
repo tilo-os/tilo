@@ -20,8 +20,7 @@ fn english() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-/// Whether the window says `text`, as a name, value or description a screen
-/// reader reads.
+/// Whether the window says `text`, as a name, value or description a screen reader reads.
 fn says(app: &mut TestApp<App>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         [node.label(), node.value(), node.description()]
@@ -78,7 +77,6 @@ fn every_scenario_shows_its_place_built_from_components() {
                 "console-action-4",
             ],
         ),
-        // The whole output of the failing run, read from its run record.
         ("command-output", &["console-action-0-output"]),
         (
             "workspaces",
@@ -167,7 +165,6 @@ fn a_program_or_a_page_offers_no_undo_and_a_stopped_agent_no_stop() {
         "a program that ran changed no record to take back"
     );
     assert!(!shows(&mut app, "console-action-3-undo"));
-    // Codex has no run open: its run is history, with nothing to stop.
     let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
     app.harness()
         .click_named("console-run-run:release-notes")
@@ -192,8 +189,7 @@ fn asked(app: &mut TestApp<App>) -> Vec<InvokeRequest> {
         .collect()
 }
 
-/// The request to `target` among `requests`; a missing one fails where the
-/// test names it.
+/// The request to `target` among `requests`; a missing one fails where the test names it.
 #[track_caller]
 fn find(requests: &[InvokeRequest], target: &RemoteActionTarget) -> InvokeRequest {
     requests
@@ -280,8 +276,7 @@ fn run() -> wire::AgentRun {
     }
 }
 
-/// The door, with the run History names "Claude Code #2" open through it
-/// or not.
+/// The door, with the run History names "Claude Code #2" open through it or not.
 fn the_door(open: bool) -> door::Door {
     door::Door {
         endpoint: "https://mcp.example".into(),
@@ -302,8 +297,8 @@ fn the_door(open: bool) -> door::Door {
     }
 }
 
-/// Open the console on a session that answers with `run` and a door where
-/// that run is `open` or not.
+/// Open the console on a session that answers with `run` and a door where that run is
+/// `open` or not.
 fn opened(open: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
@@ -397,8 +392,8 @@ fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
     );
 }
 
-/// The console open at Connect, its door listing one agent whose key does
-/// or does not operate web pages in Browser.
+/// The console open at Connect, its door listing one agent whose key does or does not
+/// operate web pages in Browser.
 fn connect(browser_pages: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
@@ -432,10 +427,9 @@ fn connect(browser_pages: bool) -> TestApp<App> {
     app
 }
 
-/// A key that operates web pages in Browser says so in the connected
-/// agents list, beside what it reaches; a key asked about every page action
-/// says nothing of it, and revoking the agent whose key does takes that key
-/// back at the door.
+/// A key that operates web pages in Browser says so in the connected agents list, beside
+/// what it reaches; a key asked about every page action says nothing of it, and revoking
+/// the agent whose key does takes that key back at the door.
 #[test]
 fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
     english();
@@ -465,7 +459,6 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
 fn revoking_a_grant_names_it_to_the_door() {
     english();
     let mut app = opened(true);
-    // Connect is the sidebar's third place.
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
     let connect = targets
         .iter()
@@ -490,9 +483,9 @@ fn revoking_a_grant_names_it_to_the_door() {
     assert_eq!(revoke.grant, "g1");
 }
 
-/// A run that is working says what it is doing now on its row, from the
-/// history's live read; once its session ended, the row names the agent
-/// again rather than a command that is no longer running.
+/// A run that is working says what it is doing now on its row, from the history's live
+/// read; once its session ended, the row names the agent again rather than a command that
+/// is no longer running.
 #[test]
 fn a_working_run_says_what_it_is_doing_now() {
     english();
@@ -505,9 +498,9 @@ fn a_working_run_says_what_it_is_doing_now() {
     assert!(!says(&mut app, "Running cargo test -p signup…"));
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[test]
 fn a_german_window_reads_the_catalogue() {
     let catalogue = &tilo_console::locales::CATALOG;

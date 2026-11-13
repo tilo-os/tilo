@@ -1,11 +1,11 @@
-//! What a person asks of an agent through Console's effects
-//! ([`ConsoleEffect`], the record's vocabulary in `console-model`): which
-//! agent an effect is about, and what it asks of it.
+//! What a person asks of an agent through Console's effects ([`ConsoleEffect`], the
+//! record's vocabulary in `console-model`): which agent an effect is about, and what it
+//! asks of it.
 
 pub use console_model::ConsoleEffect;
 
-/// What a person asked of an agent from outside its card, carried out once
-/// the card has read the runs and the door.
+/// What a person asked of an agent from outside its card, carried out once the card has
+/// read the runs and the door.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgentCommand {
     Stop,
@@ -14,8 +14,7 @@ pub(crate) enum AgentCommand {
     Revoke,
 }
 
-/// The agent `effect` is about and what it asks of it: `None` for a run's
-/// page.
+/// The agent `effect` is about and what it asks of it: `None` for a run's page.
 pub(crate) fn agent(effect: &ConsoleEffect) -> Option<(&str, Option<AgentCommand>)> {
     match effect {
         ConsoleEffect::ViewRun { .. } | ConsoleEffect::ViewConnect => None,

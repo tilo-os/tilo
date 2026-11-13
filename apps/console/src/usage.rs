@@ -1,5 +1,4 @@
-//! Usage: how long the agents' Linux machines ran. Nothing counts it yet;
-//! the place says what will show here once something does.
+//! Usage: how long the agents' Linux machines ran.
 
 use ui::icons::Icon;
 use ui::prelude::*;
