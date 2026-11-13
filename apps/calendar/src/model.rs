@@ -1284,6 +1284,18 @@ mod tests {
             assert!(!e.occurs_on(date(2026, 6, 16)));
         }
         {
+            // A repeating all-day event takes every day of each occurrence and none between.
+            let mut e = sample_event(date(2026, 6, 15));
+            e.all_day = true;
+            e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+            e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
+            e.recurrence = Recurrence::Weekly;
+            let taken: Vec<u32> = (12..=30)
+                .filter(|day| e.occurs_on(date(2026, 6, *day)))
+                .collect();
+            assert_eq!(taken, vec![15, 16, 17, 22, 23, 24, 29, 30]);
+        }
+        {
             let model = seed_demo(date(2026, 6, 15));
             let today = model.tasks_for(&ListSel::Today, date(2026, 6, 15));
             assert!(

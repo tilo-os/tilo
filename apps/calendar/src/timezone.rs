@@ -233,6 +233,40 @@ mod tests {
     }
 
     #[test]
+    fn a_span_through_the_fold_ends_on_the_pass_it_names() {
+        // 02:30 comes twice in Berlin that night: at 00:30 and at 01:30 UTC.
+        let (start, end) = (at((2026, 10, 25), 2, 45), at((2026, 10, 25), 2, 30));
+        let resolved =
+            |later| endpoint_utc("Europe/Berlin", end, later).map(|instant| instant.naive_utc());
+        assert_eq!(resolved(false), Some(at((2026, 10, 25), 0, 30)));
+        assert_eq!(resolved(true), Some(at((2026, 10, 25), 1, 30)));
+        // An end the clock shows before the start comes after it only on the second pass.
+        assert!(valid_span("Europe/Berlin", start, end, true));
+        assert!(!valid_span("Europe/Berlin", start, end, false));
+
+        // Outside a fold there is one pass, whichever is asked for.
+        let noon = at((2026, 6, 15), 12, 0);
+        let summer =
+            |later| endpoint_utc("Europe/Berlin", noon, later).map(|instant| instant.naive_utc());
+        assert_eq!(summer(false), Some(at((2026, 6, 15), 10, 0)));
+        assert_eq!(summer(true), summer(false));
+        assert!(valid_span("Europe/Berlin", noon, noon, false));
+        assert!(!valid_span(
+            "Europe/Berlin",
+            noon,
+            noon - Duration::minutes(1),
+            false
+        ));
+
+        // A floating time has no second pass, and no zone nobody knows has a span.
+        assert!(valid_span("floating", noon, noon, false));
+        assert!(!valid_span("floating", noon, noon, true));
+        assert!(!valid_span("floating", start, end, false));
+        assert!(!valid_span("Mars/Olympus", noon, noon, false));
+        assert_eq!(endpoint_utc("Mars/Olympus", noon, true), None);
+    }
+
+    #[test]
     fn windows_names_are_sorted_and_resolve() {
         let table = windows_zones::WINDOWS_ZONES;
         let folded = |name: &str| name.to_ascii_lowercase();
