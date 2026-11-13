@@ -1709,15 +1709,14 @@ impl AppCheck<'_> {
             let Some(resource) = listed_of(staged, &ty.id) else {
                 continue;
             };
-            // The window shows the item first, as a person's path does (a list's choice, a link): a
-            // named view opened over a window showing another item stages a screen nobody reaches,
-            // its list naming one thing and its page another.
+            // The window shows the item first, as a person's path does: a named view opened over a
+            // window showing another item stages a screen nobody reaches.
             staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
-        // The views a type's bar switches to beside the one it opens on, on a resource of the type:
-        // a project laid out as a board as well as the list it opens on.
+        // The views a type's bar switches to beside the one it opens on: a project laid out as a
+        // board as well as the list it opens on.
         let meta = self.meta;
         for (view, ty) in switch_views(meta) {
             if shows(&self.shown, &self.meta.app, &view.name) {
@@ -1726,9 +1725,7 @@ impl AppCheck<'_> {
             let Some(resource) = listed_of(staged, &ty.id) else {
                 continue;
             };
-            // The window shows the item first, as a person's path does (a list's choice, a link): a
-            // named view opened over a window showing another item stages a screen nobody reaches,
-            // its list naming one thing and its page another.
+            // The same: the item first, then the named view over it.
             staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
