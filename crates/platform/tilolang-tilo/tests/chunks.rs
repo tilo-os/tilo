@@ -507,7 +507,9 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
     assert_eq!(chunk_of(0), Some("0".to_owned()));
     assert_eq!(chunk_of(size - 1), Some("0".to_owned()));
     assert_eq!(chunk_of(size), Some("1".to_owned()));
+    assert_eq!(chunk_of(2 * size - 1), Some("1".to_owned()));
     assert_eq!(chunk_of(2 * size), Some("2".to_owned()));
+    assert_eq!(chunk_of(4999), Some("2".to_owned()));
     let card_ty = meta
         .types
         .iter()
@@ -551,6 +553,33 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
     let card_record = copy_in(&docs.chunks(), 2, &root, card_schema, &inserted[4899])
         .expect("the card is read in the last chunk");
     assert_eq!(card_record.chunk, 2);
+
+    // What was written is the card's new text, read back through the store; the card before it
+    // reads as it was made, and the changed card's row still names its chunk.
+    let id_of = |name: &str| {
+        meta.types
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let text = field_id(&meta, "Card", "text");
+    let read = |i: usize| {
+        let at = ResourceRef::root(&root, id_of("Board")).item(&inserted[i], id_of("Card"));
+        host.store().record_at(&at).unwrap().get(&text).cloned()
+    };
+    assert_eq!(read(4899), Some(DynValue::Text("changed".into())));
+    assert_eq!(read(4898), Some(DynValue::Text("t4898".into())));
+    let indexed = host.store().index_contents(BOARD_APP).unwrap();
+    assert_eq!(
+        indexed
+            .fields
+            .get(&(card, tilolang_tilo::index::CHUNK.to_owned()))
+            .cloned(),
+        Some("2".to_owned()),
+        "the card's row still names its chunk"
+    );
 }
 
 /// An insert the store plans for a chunk above the record's own leaves nothing open in that
