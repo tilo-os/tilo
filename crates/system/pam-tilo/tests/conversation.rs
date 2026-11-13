@@ -315,140 +315,116 @@ fn the_right_secret_signs_in_after_one_prompt() {
     );
 }
 
+/// One sign-in per row: what the daemon answers about the secret, who asked
+/// and what was typed, then the status the stack ends on and, where the row
+/// names it, the one thing the person is told. Each row was a test of its own
+/// and is named as that test was.
 #[test]
-fn a_wrong_secret_is_final_and_says_how_many_tries_are_left() {
-    let dir = tempfile::tempdir().unwrap();
-    let daemon = Daemon::start(
-        dir.path(),
-        verify_answer(json!({"ok": false, "error": "wrong", "tries_left": 4, "retry_in_s": 7200})),
-    );
-    let out = run(
-        dir.path(),
-        &daemon.socket,
-        SIGN_IN,
-        "ada",
-        &["000000"],
-        authenticate,
-    );
-    assert_eq!(
-        out.status, PAM_AUTH_ERR,
-        "the module after it must not get a say"
-    );
-    assert_eq!(
-        out.person.errors,
-        ["That isn't it. 4 tries left before a wait."]
-    );
+fn the_daemons_answer_to_a_secret_is_the_answer_of_the_stack() {
+    struct Row {
+        case: &'static str,
+        answer: Value,
+        user: &'static str,
+        typed: &'static str,
+        status: c_int,
+        told: Option<&'static str>,
+    }
+    let rows = [
+        Row {
+            // The module after it must not get a say.
+            case: "a_wrong_secret_is_final_and_says_how_many_tries_are_left",
+            answer: json!({"ok": false, "error": "wrong", "tries_left": 4, "retry_in_s": 7200}),
+            user: "ada",
+            typed: "000000",
+            status: PAM_AUTH_ERR,
+            told: Some("That isn't it. 4 tries left before a wait."),
+        },
+        Row {
+            case: "a_locked_out_tpm_says_when_to_try_again",
+            answer: json!({"ok": false, "error": "locked-out", "tries_left": 0, "retry_in_s": 7200}),
+            user: "ada",
+            typed: "123456",
+            status: PAM_MAXTRIES,
+            told: Some(
+                "Too many tries. The next try is possible in 120 min, or use the recovery key.",
+            ),
+        },
+        Row {
+            case: "asking_about_someone_else_is_refused",
+            answer: json!({"ok": false, "error": "not-permitted"}),
+            user: "bob",
+            typed: "123456",
+            status: PAM_PERM_DENIED,
+            told: None,
+        },
+        Row {
+            case: "a_daemon_that_cannot_answer_leaves_no_old_password_check_behind_it",
+            answer: json!({"ok": false, "error": "unavailable"}),
+            user: "ada",
+            typed: "123456",
+            status: PAM_AUTHINFO_UNAVAIL,
+            told: None,
+        },
+        Row {
+            case: "someone_the_daemon_does_not_know_is_left_to_the_rest_of_the_stack",
+            answer: json!({"ok": false, "error": "not-enrolled"}),
+            user: "ldap-user",
+            typed: "x",
+            status: PAM_SUCCESS,
+            told: None,
+        },
+    ];
+    for row in rows {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(dir.path(), verify_answer(row.answer));
+        let out = run(
+            dir.path(),
+            &daemon.socket,
+            SIGN_IN,
+            row.user,
+            &[row.typed],
+            authenticate,
+        );
+        assert_eq!(out.status, row.status, "{}", row.case);
+        if let Some(told) = row.told {
+            assert_eq!(out.person.errors, [told], "{}", row.case);
+        }
+    }
 }
 
+/// One phase of a stack per row, with no daemon behind the socket: the stack
+/// cannot answer, and nobody is asked for anything first. Each row was a test
+/// of its own and is named as that test was.
 #[test]
-fn a_locked_out_tpm_says_when_to_try_again() {
-    let dir = tempfile::tempdir().unwrap();
-    let daemon = Daemon::start(
-        dir.path(),
-        verify_answer(
-            json!({"ok": false, "error": "locked-out", "tries_left": 0, "retry_in_s": 7200}),
+fn without_the_daemon_nothing_is_asked_and_nothing_else_answers() {
+    let rows: [(&str, &str, fn(&Libpam) -> Phase); 2] = [
+        (
+            "without_the_daemon_nothing_else_checks_a_secret_and_nothing_is_asked",
+            SIGN_IN,
+            authenticate,
         ),
-    );
-    let out = run(
-        dir.path(),
-        &daemon.socket,
-        SIGN_IN,
-        "ada",
-        &["123456"],
-        authenticate,
-    );
-    assert_eq!(out.status, PAM_MAXTRIES);
-    assert_eq!(
-        out.person.errors,
-        ["Too many tries. The next try is possible in 120 min, or use the recovery key."]
-    );
-}
-
-#[test]
-fn asking_about_someone_else_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let daemon = Daemon::start(
-        dir.path(),
-        verify_answer(json!({"ok": false, "error": "not-permitted"})),
-    );
-    let out = run(
-        dir.path(),
-        &daemon.socket,
-        SIGN_IN,
-        "bob",
-        &["123456"],
-        authenticate,
-    );
-    assert_eq!(out.status, PAM_PERM_DENIED);
-}
-
-#[test]
-fn without_the_daemon_nothing_else_checks_a_secret_and_nothing_is_asked() {
-    let dir = tempfile::tempdir().unwrap();
-    let out = run(
-        dir.path(),
-        &dir.path().join("no-such-socket"),
-        SIGN_IN,
-        "ada",
-        &[],
-        authenticate,
-    );
-    assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL);
-    assert!(
-        out.person.prompts.is_empty(),
-        "the module asked before knowing it could check"
-    );
-}
-
-#[test]
-fn a_daemon_that_cannot_answer_leaves_no_old_password_check_behind_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let daemon = Daemon::start(
-        dir.path(),
-        verify_answer(json!({"ok": false, "error": "unavailable"})),
-    );
-    let out = run(
-        dir.path(),
-        &daemon.socket,
-        SIGN_IN,
-        "ada",
-        &["123456"],
-        authenticate,
-    );
-    assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL);
-}
-
-#[test]
-fn without_the_daemon_no_old_password_is_changed_either() {
-    let dir = tempfile::tempdir().unwrap();
-    let out = run(
-        dir.path(),
-        &dir.path().join("no-such-socket"),
-        PASSWORD,
-        "ada",
-        &[],
-        chauthtok,
-    );
-    assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL);
-    assert!(out.person.prompts.is_empty());
-}
-
-#[test]
-fn someone_the_daemon_does_not_know_is_left_to_the_rest_of_the_stack() {
-    let dir = tempfile::tempdir().unwrap();
-    let daemon = Daemon::start(
-        dir.path(),
-        verify_answer(json!({"ok": false, "error": "not-enrolled"})),
-    );
-    let out = run(
-        dir.path(),
-        &daemon.socket,
-        SIGN_IN,
-        "ldap-user",
-        &["x"],
-        authenticate,
-    );
-    assert_eq!(out.status, PAM_SUCCESS);
+        (
+            "without_the_daemon_no_old_password_is_changed_either",
+            PASSWORD,
+            chauthtok,
+        ),
+    ];
+    for (case, stack, phase) in rows {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(
+            dir.path(),
+            &dir.path().join("no-such-socket"),
+            stack,
+            "ada",
+            &[],
+            phase,
+        );
+        assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL, "{case}");
+        assert!(
+            out.person.prompts.is_empty(),
+            "{case}: the module asked before knowing it could check"
+        );
+    }
 }
 
 const GREETER: &str = "\
