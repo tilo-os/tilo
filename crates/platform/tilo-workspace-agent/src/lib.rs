@@ -148,6 +148,7 @@ pub struct Agent {
     pub spend_limit_micros: Option<u64>,
     /// What it spent on the last day its keeper counted.
     pub spent: Option<Spent>,
+    /// Whether it works here.
     pub state: AgentState,
     /// When it was made, in milliseconds since the Unix epoch.
     pub created_at: i64,
