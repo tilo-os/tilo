@@ -409,75 +409,258 @@ mod tests {
         app
     }
 
-    #[test]
-    fn customize_image_refuses_relative_paths() {
-        let arguments = |image: &str, psk: &str| {
-            serde_json::Map::from_iter([
-                ("image".to_owned(), serde_json::json!(image)),
-                ("wifi_ssid".to_owned(), serde_json::json!("studio")),
-                ("wifi_psk_file".to_owned(), serde_json::json!(psk)),
-                ("home_files".to_owned(), serde_json::json!([])),
-            ])
-        };
-        for (image, psk) in [("disk.raw", "/a/psk.txt"), ("/a/disk.raw", "psk.txt")] {
-            let error =
-                ImagerEffect::decode("customize-image", &arguments(image, psk)).unwrap_err();
+    tilo_test_env::scenario! {
+        fn the_customize_panel_edits_the_profile_through_checked_effects;
+
+        phase customize_image_refuses_relative_paths;
+        {
+            let arguments = |image: &str, psk: &str| {
+                serde_json::Map::from_iter([
+                    ("image".to_owned(), serde_json::json!(image)),
+                    ("wifi_ssid".to_owned(), serde_json::json!("studio")),
+                    ("wifi_psk_file".to_owned(), serde_json::json!(psk)),
+                    ("home_files".to_owned(), serde_json::json!([])),
+                ])
+            };
+            for (image, psk) in [("disk.raw", "/a/psk.txt"), ("/a/disk.raw", "psk.txt")] {
+                let error =
+                    ImagerEffect::decode("customize-image", &arguments(image, psk)).unwrap_err();
+                assert!(
+                    matches!(
+                        &error,
+                        ui::tilo_resource::EffectDecodeError::Argument { source, .. }
+                            if source.to_string().contains("absolute")
+                    ),
+                    "{error}"
+                );
+            }
             assert!(
-                matches!(
-                    &error,
-                    ui::tilo_resource::EffectDecodeError::Argument { source, .. }
-                        if source.to_string().contains("absolute")
-                ),
-                "{error}"
+                ImagerEffect::decode("customize-image", &arguments("/a/disk.raw", "/a/psk.txt"))
+                    .is_ok()
             );
         }
-        assert!(
-            ImagerEffect::decode("customize-image", &arguments("/a/disk.raw", "/a/psk.txt"))
-                .is_ok()
-        );
-    }
 
-    #[test]
-    fn assistive_profile_edits_reach_the_document() {
-        use ui::a11y::Action as AccessAction;
+        phase assistive_profile_edits_reach_the_document;
+        {
+            use ui::a11y::Action as AccessAction;
 
-        let mut app = customizing();
-        let perform =
-            |app: &mut ui::framework::testing::TestApp<SampleImager>, target: &str, value: &str| {
-                let id = target.replace(':', ".");
-                app.harness()
-                    .perform_named(&id, &AccessAction::SetValue(value.into()))
-                    .is_ok()
-            };
-        assert!(perform(
-            &mut app,
-            "imager:profile:hostname",
-            "accessible-host"
-        ));
-        assert_eq!(app.state().profile.hostname, "accessible-host");
-        for (target, chosen, expected) in [
-            ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
-            ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-            ("imager:profile:keyboard", "German (QWERTZ)", "de"),
-        ] {
-            assert!(perform(&mut app, target, chosen));
-            let profile = app.state().profile;
-            let actual = match target {
-                "imager:profile:locale" => profile.locale,
-                "imager:profile:timezone" => profile.timezone,
-                _ => profile.keyboard,
-            };
-            assert_eq!(actual, expected);
-        }
-        assert!(
-            !perform(
+            let mut app = customizing();
+            let perform =
+                |app: &mut ui::framework::testing::TestApp<SampleImager>, target: &str, value: &str| {
+                    let id = target.replace(':', ".");
+                    app.harness()
+                        .perform_named(&id, &AccessAction::SetValue(value.into()))
+                        .is_ok()
+                };
+            assert!(perform(
                 &mut app,
-                "imager:profile:timezone",
-                "Europe/Not_A_Real_Zone"
-            ),
-            "the shared chooser refuses a value outside its canonical catalog"
-        );
-        assert_eq!(app.state().profile.timezone, "Europe/Berlin");
+                "imager:profile:hostname",
+                "accessible-host"
+            ));
+            assert_eq!(app.state().profile.hostname, "accessible-host");
+            for (target, chosen, expected) in [
+                ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
+                ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
+                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+            ] {
+                assert!(perform(&mut app, target, chosen));
+                let profile = app.state().profile;
+                let actual = match target {
+                    "imager:profile:locale" => profile.locale,
+                    "imager:profile:timezone" => profile.timezone,
+                    _ => profile.keyboard,
+                };
+                assert_eq!(actual, expected);
+            }
+            assert!(
+                !perform(
+                    &mut app,
+                    "imager:profile:timezone",
+                    "Europe/Not_A_Real_Zone"
+                ),
+                "the shared chooser refuses a value outside its canonical catalog"
+            );
+            assert_eq!(app.state().profile.timezone, "Europe/Berlin");
+        }
+
+        phase a_collaborator_clearing_the_source_or_editing_any_field_is_shown;
+        {
+            let mut app = customizing();
+            app.merge_peer_edit(|doc| {
+                let mut peer = Imager::read(doc).unwrap();
+                peer.clear_source();
+                ui::tilo_resource::Fields::write_fields(&peer, doc, &automerge::ROOT).unwrap();
+                let profile = Imager::paths().profile;
+                for edit in [
+                    profile.wifi_ssid.replace("lab"),
+                    profile.enroll_local_identity.set(true),
+                ] {
+                    edit.apply_local(doc).unwrap();
+                }
+            });
+            let shown = app
+                .harness()
+                .with_widget_mut(|wizard: &mut ImagerApp| {
+                    (
+                        wizard.resource_source().cloned(),
+                        wizard.profile_for_test().wifi_ssid.clone(),
+                        wizard.profile_for_test().enroll_local_identity,
+                    )
+                })
+                .expect("the hosted wizard");
+            assert_eq!(shown, (None, "lab".to_owned(), true));
+        }
+
+        phase owner_ssh_key_effect_validates_and_stays_on_the_setup_machine;
+        {
+            let mut app = customizing();
+            let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
+            app.effect(&ImagerEffect::SetSshKey { value: key.into() })
+                .unwrap();
+            app.harness()
+                .with_widget_mut(|wizard: &mut ImagerApp| {
+                    assert_eq!(wizard.ssh_key_for_test(), key);
+                })
+                .expect("the hosted wizard");
+            assert!(
+                app.effect(&ImagerEffect::SetSshKey {
+                    value: "no-pty ssh-ed25519 invalid".into()
+                })
+                .is_err()
+            );
+            app.harness()
+                .with_widget_mut(|wizard: &mut ImagerApp| {
+                    assert_eq!(
+                        wizard.ssh_key_for_test(),
+                        key,
+                        "a rejected effect preserves the accepted key"
+                    );
+                })
+                .expect("the hosted wizard");
+            assert!(app.read_document(|doc| {
+                !String::from_utf8_lossy(&doc.clone().save()).contains("owner@example")
+            }));
+        }
+
+        phase profile_field_edits_check_their_values;
+        {
+            let mut app = customizing();
+            let profile = Imager::paths().profile;
+            app.call(
+                "field-edit",
+                serde_json::json!({ "edit": profile.filesystem.set(crate::model::Filesystem::Xfs) }),
+            )
+            .unwrap();
+            assert_eq!(
+                app.state().profile.filesystem,
+                crate::model::Filesystem::Xfs
+            );
+            let mut fat =
+                serde_json::to_value(profile.filesystem.set(crate::model::Filesystem::Xfs)).unwrap();
+            let text = fat.to_string().replace("\"xfs\"", "\"fat\"");
+            fat = serde_json::from_str(&text).unwrap();
+            assert!(
+                app.call("field-edit", serde_json::json!({ "edit": fat }))
+                    .is_err(),
+                "a filesystem the installer does not know is refused"
+            );
+            app.call(
+                "field-edit",
+                serde_json::json!({ "edit": profile.enroll_local_identity.set(true) }),
+            )
+            .unwrap();
+            assert!(app.state().profile.enroll_local_identity);
+            assert!(
+                app.call(
+                    "field-edit",
+                    serde_json::json!({ "edit": Imager::paths().source.set(None) })
+                )
+                .is_err(),
+                "only reviewing or clearing changes the image"
+            );
+            app.call("clear-source", serde_json::json!({})).unwrap();
+            assert!(app.state().source.is_none());
+            assert!(
+                app.call("clear-source", serde_json::json!({})).is_err(),
+                "nothing to clear"
+            );
+        }
+
+        phase malformed_enrollment_calls_preserve_the_enabled_choice_and_document;
+        {
+            let mut app = customizing();
+            let enroll = |on: bool| {
+                serde_json::to_value(Imager::paths().profile.enroll_local_identity.set(on))
+                    .expect("an edit is JSON")
+            };
+            app.call("field-edit", serde_json::json!({ "edit": enroll(true) }))
+                .unwrap();
+            assert!(app.state().profile.enroll_local_identity);
+            let enabled_document = app.read_document(|doc| doc.clone().save());
+            let with_value = |value: serde_json::Value| {
+                fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
+                    match json {
+                        serde_json::Value::Object(fields) => {
+                            for (key, field) in fields.iter_mut() {
+                                if key == "value" {
+                                    *field = value.clone();
+                                } else {
+                                    replace(field, value);
+                                }
+                            }
+                        }
+                        serde_json::Value::Array(items) => {
+                            for item in items {
+                                replace(item, value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let mut edit = enroll(false);
+                replace(&mut edit, &value);
+                serde_json::json!({ "edit": edit })
+            };
+            for arguments in [
+                serde_json::json!({}),
+                with_value(serde_json::json!("maybe")),
+                with_value(serde_json::json!("false")),
+                with_value(serde_json::Value::Null),
+                with_value(serde_json::json!(0)),
+                with_value(serde_json::json!([])),
+                with_value(serde_json::json!({})),
+                serde_json::json!({ "edit": enroll(false), "unexpected": true }),
+            ] {
+                let Err(error) = app.call("field-edit", arguments.clone()) else {
+                    panic!("{arguments}: invalid arguments must not create an enrollment edit");
+                };
+                assert!(
+                    matches!(
+                        error,
+                        ui::tilo_actions::DoorError::InvalidArguments(_)
+                            | ui::tilo_actions::DoorError::Failed(_)
+                    ),
+                    "{arguments}: {error}"
+                );
+                assert!(
+                    app.state().profile.enroll_local_identity,
+                    "{arguments}: rejected input turned enrollment off"
+                );
+                assert_eq!(
+                    app.read_document(|doc| doc.clone().save()),
+                    enabled_document,
+                    "{arguments}: rejected input mutated the document"
+                );
+            }
+            app.call("field-edit", serde_json::json!({ "edit": enroll(false) }))
+                .unwrap();
+            assert!(!app.state().profile.enroll_local_identity);
+            assert_ne!(
+                app.read_document(|doc| doc.clone().save()),
+                enabled_document,
+                "an explicit Boolean false must still edit the choice"
+            );
+        }
     }
 
     #[test]
@@ -531,34 +714,6 @@ mod tests {
         app.harness().type_text("german");
         app.harness().key("Enter");
         assert_eq!(app.state().profile.keyboard, "de");
-    }
-
-    #[test]
-    fn a_collaborator_clearing_the_source_or_editing_any_field_is_shown() {
-        let mut app = customizing();
-        app.merge_peer_edit(|doc| {
-            let mut peer = Imager::read(doc).unwrap();
-            peer.clear_source();
-            ui::tilo_resource::Fields::write_fields(&peer, doc, &automerge::ROOT).unwrap();
-            let profile = Imager::paths().profile;
-            for edit in [
-                profile.wifi_ssid.replace("lab"),
-                profile.enroll_local_identity.set(true),
-            ] {
-                edit.apply_local(doc).unwrap();
-            }
-        });
-        let shown = app
-            .harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| {
-                (
-                    wizard.resource_source().cloned(),
-                    wizard.profile_for_test().wifi_ssid.clone(),
-                    wizard.profile_for_test().enroll_local_identity,
-                )
-            })
-            .expect("the hosted wizard");
-        assert_eq!(shown, (None, "lab".to_owned(), true));
     }
 
     fn find<'a>(
@@ -638,213 +793,136 @@ mod tests {
         }
     }
 
-    #[test]
-    fn effects_choose_drives_report_status_and_export_the_plan() {
-        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
-        app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
-            .unwrap();
-        assert!(
-            app.effect(&ImagerEffect::ExportConfig).is_err(),
-            "no plan without a drive"
-        );
-        assert!(
-            app.effect(&ImagerEffect::ChooseDrive {
-                drive: "nvme0n1".into()
-            })
-            .is_err(),
-            "an internal disk is refused"
-        );
-        app.effect(&ImagerEffect::ChooseDrive {
-            drive: "sdb".into(),
-        })
-        .unwrap();
-        let exported = app.effect(&ImagerEffect::ExportConfig).unwrap();
-        assert!(
-            exported
-                .value
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .is_some_and(|text| text.contains("\"schema\": 1"))
-        );
-        let status = app.effect(&ImagerEffect::Status).unwrap();
-        assert_eq!(
-            status
-                .value
-                .as_ref()
-                .and_then(|value| value["phase"].as_str()),
-            Some("idle")
-        );
-        app.effect(&ImagerEffect::SetWifiPsk {
-            value: "hunter22".into(),
-        })
-        .unwrap();
-        assert!(
-            app.effect_on_confirmed(
-                "imager.target:demo-sandisk-ultra",
-                &ImagerEffect::Write {
-                    device: "/dev/sdb".into(),
-                    confirmation: "sdb".into(),
-                }
-            )
-            .is_err(),
-            "the write is refused without the privileged writer"
-        );
-        assert!(
-            app.read_document(
-                |doc| !String::from_utf8_lossy(&doc.clone().save()).contains("hunter22")
-            ),
-            "the passphrase never reaches the document"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_wizards_effects_choose_images_and_drives;
 
-    #[test]
-    fn owner_ssh_key_effect_validates_and_stays_on_the_setup_machine() {
-        let mut app = customizing();
-        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
-        app.effect(&ImagerEffect::SetSshKey { value: key.into() })
-            .unwrap();
-        app.harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| {
-                assert_eq!(wizard.ssh_key_for_test(), key);
-            })
-            .expect("the hosted wizard");
-        assert!(
-            app.effect(&ImagerEffect::SetSshKey {
-                value: "no-pty ssh-ed25519 invalid".into()
-            })
-            .is_err()
-        );
-        app.harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| {
-                assert_eq!(
-                    wizard.ssh_key_for_test(),
-                    key,
-                    "a rejected effect preserves the accepted key"
-                );
-            })
-            .expect("the hosted wizard");
-        assert!(app.read_document(|doc| {
-            !String::from_utf8_lossy(&doc.clone().save()).contains("owner@example")
-        }));
-    }
-
-    #[test]
-    fn profile_field_edits_check_their_values() {
-        let mut app = customizing();
-        let profile = Imager::paths().profile;
-        app.call(
-            "field-edit",
-            serde_json::json!({ "edit": profile.filesystem.set(crate::model::Filesystem::Xfs) }),
-        )
-        .unwrap();
-        assert_eq!(
-            app.state().profile.filesystem,
-            crate::model::Filesystem::Xfs
-        );
-        let mut fat =
-            serde_json::to_value(profile.filesystem.set(crate::model::Filesystem::Xfs)).unwrap();
-        let text = fat.to_string().replace("\"xfs\"", "\"fat\"");
-        fat = serde_json::from_str(&text).unwrap();
-        assert!(
-            app.call("field-edit", serde_json::json!({ "edit": fat }))
+        phase effects_choose_drives_report_status_and_export_the_plan;
+        {
+            let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+            app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
+                .unwrap();
+            assert!(
+                app.effect(&ImagerEffect::ExportConfig).is_err(),
+                "no plan without a drive"
+            );
+            assert!(
+                app.effect(&ImagerEffect::ChooseDrive {
+                    drive: "nvme0n1".into()
+                })
                 .is_err(),
-            "a filesystem the installer does not know is refused"
-        );
-        app.call(
-            "field-edit",
-            serde_json::json!({ "edit": profile.enroll_local_identity.set(true) }),
-        )
-        .unwrap();
-        assert!(app.state().profile.enroll_local_identity);
-        assert!(
-            app.call(
-                "field-edit",
-                serde_json::json!({ "edit": Imager::paths().source.set(None) })
-            )
-            .is_err(),
-            "only reviewing or clearing changes the image"
-        );
-        app.call("clear-source", serde_json::json!({})).unwrap();
-        assert!(app.state().source.is_none());
-        assert!(
-            app.call("clear-source", serde_json::json!({})).is_err(),
-            "nothing to clear"
-        );
-    }
-
-    #[test]
-    fn malformed_enrollment_calls_preserve_the_enabled_choice_and_document() {
-        let mut app = customizing();
-        let enroll = |on: bool| {
-            serde_json::to_value(Imager::paths().profile.enroll_local_identity.set(on))
-                .expect("an edit is JSON")
-        };
-        app.call("field-edit", serde_json::json!({ "edit": enroll(true) }))
+                "an internal disk is refused"
+            );
+            app.effect(&ImagerEffect::ChooseDrive {
+                drive: "sdb".into(),
+            })
             .unwrap();
-        assert!(app.state().profile.enroll_local_identity);
-        let enabled_document = app.read_document(|doc| doc.clone().save());
-        let with_value = |value: serde_json::Value| {
-            fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
-                match json {
-                    serde_json::Value::Object(fields) => {
-                        for (key, field) in fields.iter_mut() {
-                            if key == "value" {
-                                *field = value.clone();
-                            } else {
-                                replace(field, value);
-                            }
-                        }
-                    }
-                    serde_json::Value::Array(items) => {
-                        for item in items {
-                            replace(item, value);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut edit = enroll(false);
-            replace(&mut edit, &value);
-            serde_json::json!({ "edit": edit })
-        };
-        for arguments in [
-            serde_json::json!({}),
-            with_value(serde_json::json!("maybe")),
-            with_value(serde_json::json!("false")),
-            with_value(serde_json::Value::Null),
-            with_value(serde_json::json!(0)),
-            with_value(serde_json::json!([])),
-            with_value(serde_json::json!({})),
-            serde_json::json!({ "edit": enroll(false), "unexpected": true }),
-        ] {
-            let Err(error) = app.call("field-edit", arguments.clone()) else {
-                panic!("{arguments}: invalid arguments must not create an enrollment edit");
-            };
+            let exported = app.effect(&ImagerEffect::ExportConfig).unwrap();
             assert!(
-                matches!(
-                    error,
-                    ui::tilo_actions::DoorError::InvalidArguments(_)
-                        | ui::tilo_actions::DoorError::Failed(_)
-                ),
-                "{arguments}: {error}"
+                exported
+                    .value
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .is_some_and(|text| text.contains("\"schema\": 1"))
             );
-            assert!(
-                app.state().profile.enroll_local_identity,
-                "{arguments}: rejected input turned enrollment off"
-            );
+            let status = app.effect(&ImagerEffect::Status).unwrap();
             assert_eq!(
-                app.read_document(|doc| doc.clone().save()),
-                enabled_document,
-                "{arguments}: rejected input mutated the document"
+                status
+                    .value
+                    .as_ref()
+                    .and_then(|value| value["phase"].as_str()),
+                Some("idle")
+            );
+            app.effect(&ImagerEffect::SetWifiPsk {
+                value: "hunter22".into(),
+            })
+            .unwrap();
+            assert!(
+                app.effect_on_confirmed(
+                    "imager.target:demo-sandisk-ultra",
+                    &ImagerEffect::Write {
+                        device: "/dev/sdb".into(),
+                        confirmation: "sdb".into(),
+                    }
+                )
+                .is_err(),
+                "the write is refused without the privileged writer"
+            );
+            assert!(
+                app.read_document(
+                    |doc| !String::from_utf8_lossy(&doc.clone().save()).contains("hunter22")
+                ),
+                "the passphrase never reaches the document"
             );
         }
-        app.call("field-edit", serde_json::json!({ "edit": enroll(false) }))
-            .unwrap();
-        assert!(!app.state().profile.enroll_local_identity);
-        assert_ne!(
-            app.read_document(|doc| doc.clone().save()),
-            enabled_document,
-            "an explicit Boolean false must still edit the choice"
-        );
+
+        phase the_image_chooser_is_an_effect_whose_pick_is_reviewed;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let image = directory.path().join("plain.iso");
+            std::fs::write(&image, b"an image for the chooser test").unwrap();
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
+            app.effect(&ImagerEffect::ChooseImage).unwrap();
+            app.settle();
+            assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
+            assert_eq!(
+                app.state().source.map(|source| source.name),
+                Some("plain.iso".to_owned())
+            );
+            assert!(
+                app.effect(&ImagerEffect::CancelDownload).is_err(),
+                "no download runs"
+            );
+        }
+
+        phase a_drive_rows_write_chooses_that_drive_and_still_needs_its_name;
+        {
+            let mut app = customizing();
+            let resources = app.harness().resources();
+            let drive = find(&resources, "imager.target:demo-sandisk-ultra").unwrap();
+            let write = drive
+                .actions
+                .iter()
+                .find(|action| action.id == "write")
+                .unwrap();
+            assert!(
+                !write.contract.availability.is_available(),
+                "no privileged writer in tests"
+            );
+            assert!(matches!(
+                app.call_on(
+                    "imager.target:demo-sandisk-ultra",
+                    "write",
+                    serde_json::json!({})
+                ),
+                Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+            ));
+
+            let device = |name: &str| {
+                crate::model::sample_targets()
+                    .into_iter()
+                    .find(|target| target.name == name)
+                    .unwrap()
+                    .dev_path()
+            };
+            let chosen = app
+                .harness()
+                .with_widget_mut(|wizard: &mut ImagerApp| {
+                    wizard.forget_target_for_test();
+                    wizard.choose_for_write(&device("sdb"));
+                    let sdb = wizard.target().map(|target| target.name.clone());
+                    wizard.forget_target_for_test();
+                    wizard.choose_for_write(&device("nvme0n1"));
+                    (sdb, wizard.target().is_none())
+                })
+                .unwrap();
+            assert_eq!(
+                chosen,
+                (Some("sdb".to_owned()), true),
+                "the write chooses its removable drive, never an internal disk"
+            );
+        }
     }
 
     #[test]
@@ -929,76 +1007,6 @@ mod tests {
         assert!(<ImagerShell as ResourceApp>::FLAGS.is_empty());
         assert_eq!(<ImagerShell as ResourceApp>::scenarios(), WIZARD_SCENARIOS);
         assert_eq!(Flow::of_scenario(Some("installer-welcome")), Flow::Wizard);
-    }
-
-    #[test]
-    fn the_image_chooser_is_an_effect_whose_pick_is_reviewed() {
-        let directory = tempfile::tempdir().unwrap();
-        let image = directory.path().join("plain.iso");
-        std::fs::write(&image, b"an image for the chooser test").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
-        app.effect(&ImagerEffect::ChooseImage).unwrap();
-        app.settle();
-        assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
-        assert_eq!(
-            app.state().source.map(|source| source.name),
-            Some("plain.iso".to_owned())
-        );
-        assert!(
-            app.effect(&ImagerEffect::CancelDownload).is_err(),
-            "no download runs"
-        );
-    }
-
-    #[test]
-    fn a_drive_rows_write_chooses_that_drive_and_still_needs_its_name() {
-        let mut app = customizing();
-        let resources = app.harness().resources();
-        let drive = find(&resources, "imager.target:demo-sandisk-ultra").unwrap();
-        let write = drive
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .unwrap();
-        assert!(
-            !write.contract.availability.is_available(),
-            "no privileged writer in tests"
-        );
-        assert!(matches!(
-            app.call_on(
-                "imager.target:demo-sandisk-ultra",
-                "write",
-                serde_json::json!({})
-            ),
-            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
-        ));
-
-        let device = |name: &str| {
-            crate::model::sample_targets()
-                .into_iter()
-                .find(|target| target.name == name)
-                .unwrap()
-                .dev_path()
-        };
-        let chosen = app
-            .harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| {
-                wizard.forget_target_for_test();
-                wizard.choose_for_write(&device("sdb"));
-                let sdb = wizard.target().map(|target| target.name.clone());
-                wizard.forget_target_for_test();
-                wizard.choose_for_write(&device("nvme0n1"));
-                (sdb, wizard.target().is_none())
-            })
-            .unwrap();
-        assert_eq!(
-            chosen,
-            (Some("sdb".to_owned()), true),
-            "the write chooses its removable drive, never an internal disk"
-        );
     }
 }
 

@@ -197,135 +197,139 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn other_command_lines_are_left_alone() {
-        assert_eq!(parse(&args(&["--demo"])).unwrap(), None);
-    }
+    tilo_test_env::scenario! {
+        fn the_customize_image_command_line_is_parsed_checked_and_staged;
 
-    #[test]
-    fn parses_every_customization() {
-        let request = parse(&args(&[
-            "--customize-image",
-            "disk.raw",
-            "--hostname",
-            "tilo-board",
-            "--wifi-ssid",
-            "studio",
-            "--wifi-psk-file",
-            "psk.txt",
-            "--ssh-keys-file",
-            "keys.pub",
-            "--home-file",
-            "SETUP.md",
-            "--home-file",
-            "notes.txt",
-        ]))
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            request,
-            Request {
-                image: "disk.raw".into(),
-                hostname: Some("tilo-board".into()),
-                wifi_ssid: Some("studio".into()),
-                wifi_psk_file: Some("psk.txt".into()),
-                ssh_keys_file: Some("keys.pub".into()),
-                home_files: vec!["SETUP.md".into(), "notes.txt".into()],
-            }
-        );
-    }
+        phase other_command_lines_are_left_alone;
+        {
+            assert_eq!(parse(&args(&["--demo"])).unwrap(), None);
+        }
 
-    #[test]
-    fn refuses_a_passphrase_on_the_command_line() {
-        let error = parse(&args(&[
-            "--customize-image",
-            "disk.raw",
-            "--wifi-ssid",
-            "studio",
-            "--wifi-psk",
-            "correct-horse",
-        ]))
-        .unwrap_err();
-        assert!(error.contains("--wifi-psk-file"), "{error}");
-    }
+        phase parses_every_customization;
+        {
+            let request = parse(&args(&[
+                "--customize-image",
+                "disk.raw",
+                "--hostname",
+                "tilo-board",
+                "--wifi-ssid",
+                "studio",
+                "--wifi-psk-file",
+                "psk.txt",
+                "--ssh-keys-file",
+                "keys.pub",
+                "--home-file",
+                "SETUP.md",
+                "--home-file",
+                "notes.txt",
+            ]))
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                request,
+                Request {
+                    image: "disk.raw".into(),
+                    hostname: Some("tilo-board".into()),
+                    wifi_ssid: Some("studio".into()),
+                    wifi_psk_file: Some("psk.txt".into()),
+                    ssh_keys_file: Some("keys.pub".into()),
+                    home_files: vec!["SETUP.md".into(), "notes.txt".into()],
+                }
+            );
+        }
 
-    #[test]
-    fn refuses_a_network_without_its_passphrase_and_an_empty_request() {
-        let error = parse(&args(&[
-            "--customize-image",
-            "disk.raw",
-            "--wifi-ssid",
-            "studio",
-        ]))
-        .unwrap_err();
-        assert!(error.contains("go together"), "{error}");
-        let error = parse(&args(&["--customize-image", "disk.raw"])).unwrap_err();
-        assert!(error.contains("nothing to customize"), "{error}");
-        let error = parse(&args(&["--customize-image", "--hostname", "x"])).unwrap_err();
-        assert!(error.contains("disk image is missing"), "{error}");
-    }
+        phase refuses_a_passphrase_on_the_command_line;
+        {
+            let error = parse(&args(&[
+                "--customize-image",
+                "disk.raw",
+                "--wifi-ssid",
+                "studio",
+                "--wifi-psk",
+                "correct-horse",
+            ]))
+            .unwrap_err();
+            assert!(error.contains("--wifi-psk-file"), "{error}");
+        }
 
-    #[test]
-    fn only_a_regular_raw_image_is_a_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = check_target(dir.path()).unwrap_err();
-        assert!(error.contains("not a regular file"), "{error}");
-        let qcow2 = dir.path().join("disk.qcow2");
-        std::fs::write(&qcow2, b"QFI\xfb\0\0\0\x03").unwrap();
-        let error = check_target(&qcow2).unwrap_err();
-        assert!(error.contains("qemu-img convert"), "{error}");
-        let raw = dir.path().join("disk.raw");
-        std::fs::write(&raw, [0_u8; 1024]).unwrap();
-        check_target(&raw).unwrap();
-    }
+        phase refuses_a_network_without_its_passphrase_and_an_empty_request;
+        {
+            let error = parse(&args(&[
+                "--customize-image",
+                "disk.raw",
+                "--wifi-ssid",
+                "studio",
+            ]))
+            .unwrap_err();
+            assert!(error.contains("go together"), "{error}");
+            let error = parse(&args(&["--customize-image", "disk.raw"])).unwrap_err();
+            assert!(error.contains("nothing to customize"), "{error}");
+            let error = parse(&args(&["--customize-image", "--hostname", "x"])).unwrap_err();
+            assert!(error.contains("disk image is missing"), "{error}");
+        }
 
-    #[test]
-    fn the_passphrase_file_loses_its_trailing_newline() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("psk");
-        std::fs::write(&path, "correct-horse\n").unwrap();
-        assert_eq!(read_psk(&path).unwrap(), "correct-horse");
-    }
+        phase only_a_regular_raw_image_is_a_target;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let error = check_target(dir.path()).unwrap_err();
+            assert!(error.contains("not a regular file"), "{error}");
+            let qcow2 = dir.path().join("disk.qcow2");
+            std::fs::write(&qcow2, b"QFI\xfb\0\0\0\x03").unwrap();
+            let error = check_target(&qcow2).unwrap_err();
+            assert!(error.contains("qemu-img convert"), "{error}");
+            let raw = dir.path().join("disk.raw");
+            std::fs::write(&raw, [0_u8; 1024]).unwrap();
+            check_target(&raw).unwrap();
+        }
 
-    #[test]
-    fn stages_keys_and_home_files_by_their_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let keys = dir.path().join("keys.pub");
-        std::fs::write(
-            &keys,
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA a\n\
+        phase the_passphrase_file_loses_its_trailing_newline;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("psk");
+            std::fs::write(&path, "correct-horse\n").unwrap();
+            assert_eq!(read_psk(&path).unwrap(), "correct-horse");
+        }
+
+        phase stages_keys_and_home_files_by_their_names;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = dir.path().join("keys.pub");
+            std::fs::write(
+                &keys,
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA a\n\
              ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB b\n",
-        )
-        .unwrap();
-        let readme = dir.path().join("SETUP.md");
-        std::fs::write(&readme, "# Setup\n").unwrap();
-        let request = Request {
-            image: "disk.raw".into(),
-            ssh_keys_file: Some(keys),
-            home_files: vec![readme],
-            ..Request::default()
-        };
-        let staged = stage(&request, &InstallProfile::default()).unwrap();
-        let root = staged.path();
-        assert_eq!(
-            std::fs::read_to_string(root.join(crate::handoff::BRINGUP_SSH_KEY))
-                .unwrap()
-                .lines()
-                .count(),
-            2
-        );
-        assert_eq!(
-            std::fs::read(
-                root.join(crate::handoff::ACCOUNT_HOME_FILES)
-                    .join("SETUP.md")
             )
-            .unwrap(),
-            b"# Setup\n"
-        );
-        assert!(
-            !root.join("etc/hostname").exists(),
-            "the default hostname is kept"
-        );
-        std::fs::remove_dir_all(root).unwrap();
+            .unwrap();
+            let readme = dir.path().join("SETUP.md");
+            std::fs::write(&readme, "# Setup\n").unwrap();
+            let request = Request {
+                image: "disk.raw".into(),
+                ssh_keys_file: Some(keys),
+                home_files: vec![readme],
+                ..Request::default()
+            };
+            let staged = stage(&request, &InstallProfile::default()).unwrap();
+            let root = staged.path();
+            assert_eq!(
+                std::fs::read_to_string(root.join(crate::handoff::BRINGUP_SSH_KEY))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2
+            );
+            assert_eq!(
+                std::fs::read(
+                    root.join(crate::handoff::ACCOUNT_HOME_FILES)
+                        .join("SETUP.md")
+                )
+                .unwrap(),
+                b"# Setup\n"
+            );
+            assert!(
+                !root.join("etc/hostname").exists(),
+                "the default hostname is kept"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

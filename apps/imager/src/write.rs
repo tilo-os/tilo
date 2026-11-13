@@ -913,69 +913,279 @@ mod tests {
     use crate::model::{sample_source, sample_targets};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn begin_refuses_mismatched_oversized_forbidden_or_invalid_jobs() {
-        {
-            let mut original = sample_targets().remove(0);
-            original.stable_id = Some("usb-serial-123".into());
-            let mut renumbered = original.clone();
-            renumbered.name = "renumbered-device".into();
-            assert_eq!(target_lock_name(&original), target_lock_name(&renumbered));
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn the_writer_refuses_jobs_and_backends_it_cannot_run_truthfully;
 
-            original.stable_id = None;
-            renumbered.stable_id = None;
-            assert_ne!(target_lock_name(&original), target_lock_name(&renumbered));
+        phase begin_refuses_mismatched_oversized_forbidden_or_invalid_jobs;
+        {
+            {
+                let mut original = sample_targets().remove(0);
+                original.stable_id = Some("usb-serial-123".into());
+                let mut renumbered = original.clone();
+                renumbered.name = "renumbered-device".into();
+                assert_eq!(target_lock_name(&original), target_lock_name(&renumbered));
+
+                original.stable_id = None;
+                renumbered.stable_id = None;
+                assert_ne!(target_lock_name(&original), target_lock_name(&renumbered));
+            }
+
+            {
+                let r = req();
+                assert!(r.confirmation_matches("sdb"));
+                assert!(r.confirmation_matches("/dev/sdb"));
+                assert!(!r.confirmation_matches("sda"));
+                assert!(!r.confirmation_matches(""));
+                assert!(!r.confirmation_matches("nvme0n1"));
+            }
+
+            {
+                let r = req();
+                assert_eq!(begin_job(&r, "sda"), JobStart::ConfirmationMismatch);
+                assert_eq!(begin_job(&r, ""), JobStart::ConfirmationMismatch);
+            }
+
+            {
+                let mut r = req();
+                r.source.size = 40_000_000_000; // bigger than the 30 GB stick
+                assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
+            }
+
+            {
+                let mut r = req();
+                r.target.removable = false;
+                r.target.tran = Some("sata".into());
+                assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
+                r.target.removable = true;
+                r.target.is_system = true;
+                assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
+            }
+
+            {
+                let mut r = req();
+                r.profile.keyboard = "not-a-layout".into();
+                assert!(matches!(
+                    begin_job(&r, "sdb"),
+                    JobStart::InvalidProfile(message) if message.contains("Keyboard")
+                ));
+            }
+
+            {
+                let selected = req().target;
+                let mut replacement = selected.clone();
+                assert!(target_identity_matches(&selected, &replacement));
+                replacement.stable_id = Some("another-device".into());
+                assert!(!target_identity_matches(&selected, &replacement));
+                replacement = selected.clone();
+                replacement.is_system = true;
+                assert!(!target_identity_matches(&selected, &replacement));
+            }
         }
 
+        phase backend_selection_is_gated_and_never_simulates_writes;
         {
-            let r = req();
-            assert!(r.confirmation_matches("sdb"));
-            assert!(r.confirmation_matches("/dev/sdb"));
-            assert!(!r.confirmation_matches("sda"));
-            assert!(!r.confirmation_matches(""));
-            assert!(!r.confirmation_matches("nvme0n1"));
+            #[cfg(not(feature = "host-media-writer"))]
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("TILO_IMAGER_ALLOW_WRITE");
+                assert_eq!(WriteBackend::for_window(false), WriteBackend::Disabled);
+                assert!(!allow_write());
+            }
+
+            #[cfg(feature = "host-media-writer")]
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("TILO_IMAGER_ALLOW_WRITE");
+                assert_eq!(
+                    WriteBackend::for_window(false),
+                    WriteBackend::PrivilegedHelper
+                );
+                assert!(WriteBackend::for_window(false).is_available());
+            }
+
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("TILO_IMAGER_ALLOW_WRITE");
+                assert_eq!(
+                    WriteBackend::for_window(true),
+                    WriteBackend::PrivilegedHelper
+                );
+            }
+
+            #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("TILO_IMAGER_ALLOW_WRITE")
+                    .set("TILO_IMAGER_FLATPAK", "1");
+                assert_eq!(WriteBackend::for_window(false), WriteBackend::Udisks2);
+                assert!(!allow_write(), "the sandbox never gains direct /dev access");
+            }
+
+            {
+                assert!(!WriteBackend::Disabled.is_available());
+                assert!(WriteBackend::System.is_available());
+                assert!(WriteBackend::PrivilegedHelper.is_available());
+                assert!(WriteBackend::Udisks2.is_available());
+            }
+
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set("TILO_IMAGER_ALLOW_WRITE", "1");
+                assert!(allow_write());
+                assert_eq!(WriteBackend::for_window(false), WriteBackend::System);
+                env.remove("TILO_IMAGER_ALLOW_WRITE");
+                let expected = if cfg!(feature = "host-media-writer") {
+                    WriteBackend::PrivilegedHelper
+                } else {
+                    WriteBackend::Disabled
+                };
+                assert_eq!(WriteBackend::for_window(false), expected);
+            }
+
+            #[cfg(not(feature = "host-media-writer"))]
+            {
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("TILO_IMAGER_ALLOW_WRITE");
+                let r = req();
+                assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
+                let (start, rx, control) = spawn_job(r, "sdb", WriteBackend::for_window(false));
+                assert_eq!(start, JobStart::WriteDisabled);
+                assert!(rx.is_none());
+                assert!(control.is_none());
+            }
         }
 
+        phase privileged_helper_requests_are_secret_free_private_and_exact;
         {
-            let r = req();
-            assert_eq!(begin_job(&r, "sda"), JobStart::ConfirmationMismatch);
-            assert_eq!(begin_job(&r, ""), JobStart::ConfirmationMismatch);
-        }
+            {
+                let mut request = req();
+                request.profile.user.password = "account-secret".into();
+                request.profile.encryption_passphrase = "encryption-secret".into();
+                let encoded = serde_json::to_string(&request.without_secrets()).unwrap();
+                assert!(!encoded.contains("account-secret"));
+                assert!(!encoded.contains("encryption-secret"));
+                assert!(encoded.contains("\"password\":\"\""));
+                assert!(encoded.contains("\"encryption_passphrase\":\"\""));
+            }
 
-        {
-            let mut r = req();
-            r.source.size = 40_000_000_000; // bigger than the 30 GB stick
-            assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
-        }
+            {
+                #[cfg(target_os = "linux")]
+                use std::os::unix::fs::PermissionsExt;
 
-        {
-            let mut r = req();
-            r.target.removable = false;
-            r.target.tran = Some("sata".into());
-            assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
-            r.target.removable = true;
-            r.target.is_system = true;
-            assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
-        }
+                #[cfg(target_os = "linux")]
+                let mut env = tilo_test_env::ScopedEnv::new();
+                #[cfg(target_os = "linux")]
+                env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
+                let work = tempfile::Builder::new()
+                    .prefix("tilo-imager-write-")
+                    .tempdir()
+                    .unwrap();
+                let request_path = work.path().join("request.json");
+                let progress_path = work.path().join("progress.jsonl");
+                let cancel_path = work.path().join("cancel");
+                std::fs::write(&request_path, serde_json::to_vec(&req()).unwrap()).unwrap();
+                std::fs::write(&progress_path, []).unwrap();
+                #[cfg(target_os = "linux")]
+                {
+                    std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                    std::fs::set_permissions(&request_path, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                }
+                let args = vec![
+                    "imager".into(),
+                    WRITE_HELPER_ARG.into(),
+                    request_path.display().to_string(),
+                    progress_path.display().to_string(),
+                    "0".repeat(64),
+                    cancel_path.display().to_string(),
+                ];
+                let error = maybe_run_write_helper(&args).unwrap_err();
+                #[cfg(target_os = "linux")]
+                drop(env);
+                assert!(error.to_string().contains("changed after authorization"));
+                assert!(std::fs::read(progress_path).unwrap().is_empty());
+            }
 
-        {
-            let mut r = req();
-            r.profile.keyboard = "not-a-layout".into();
-            assert!(matches!(
-                begin_job(&r, "sdb"),
-                JobStart::InvalidProfile(message) if message.contains("Keyboard")
-            ));
-        }
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::PermissionsExt;
 
-        {
-            let selected = req().target;
-            let mut replacement = selected.clone();
-            assert!(target_identity_matches(&selected, &replacement));
-            replacement.stable_id = Some("another-device".into());
-            assert!(!target_identity_matches(&selected, &replacement));
-            replacement = selected.clone();
-            replacement.is_system = true;
-            assert!(!target_identity_matches(&selected, &replacement));
+                let mut env = tilo_test_env::ScopedEnv::new();
+                let work = tempfile::Builder::new()
+                    .prefix("tilo-imager-write-")
+                    .tempdir()
+                    .unwrap();
+                let request_path = work.path().join("request.json");
+                std::fs::write(&request_path, b"{}").unwrap();
+                std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+                env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
+
+                let error = read_linux_helper_request(&request_path).unwrap_err();
+
+                drop(env);
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert!(error.to_string().contains("not private"));
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                use std::os::unix::fs::symlink;
+
+                let mut env = tilo_test_env::ScopedEnv::new();
+                let work = tempfile::tempdir().unwrap();
+                let outside = work.path().join("outside");
+                let request = work.path().join("request.json");
+                std::fs::write(&outside, b"root-only payload").unwrap();
+                symlink(&outside, &request).unwrap();
+                std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+                env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
+
+                let error = read_linux_helper_request(&request).unwrap_err();
+
+                drop(env);
+                assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+            }
+
+            {
+                let work = tempfile::Builder::new()
+                    .prefix("tilo-imager-write-")
+                    .tempdir()
+                    .unwrap();
+                let progress_path = work.path().join("progress.jsonl");
+                std::fs::write(&progress_path, b"keep-me").unwrap();
+                let error = create_progress_output(&progress_path).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+                assert_eq!(std::fs::read(progress_path).unwrap(), b"keep-me");
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let source = tempfile::tempfile().unwrap();
+                let command = elevated_helper_command(
+                    Path::new("/opt/tilo-imager-bin"),
+                    Path::new("/tmp/request"),
+                    Path::new("/tmp/progress"),
+                    &"a".repeat(64),
+                    Path::new("/tmp/cancel"),
+                    source,
+                )
+                .unwrap();
+                assert_eq!(command.get_program(), "pkexec");
+                let args: Vec<_> = command.get_args().collect();
+                assert_eq!(args[0], "/opt/tilo-imager-bin");
+                assert_eq!(args[1], WRITE_HELPER_ARG);
+                assert_eq!(args.len(), 6);
+            }
+
+            {
+                assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
+                assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
+                assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[4] + '\"')"));
+                assert!(!WINDOWS_ELEVATION_SCRIPT.contains(r#"('\"' +"#));
+            }
         }
     }
 
@@ -1016,215 +1226,6 @@ mod tests {
             provision_migration_data: false,
             #[cfg(target_os = "linux")]
             offline_layout: None,
-        }
-    }
-
-    #[test]
-    fn backend_selection_is_gated_and_never_simulates_writes() {
-        #[cfg(not(feature = "host-media-writer"))]
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE");
-            assert_eq!(WriteBackend::for_window(false), WriteBackend::Disabled);
-            assert!(!allow_write());
-        }
-
-        #[cfg(feature = "host-media-writer")]
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE");
-            assert_eq!(
-                WriteBackend::for_window(false),
-                WriteBackend::PrivilegedHelper
-            );
-            assert!(WriteBackend::for_window(false).is_available());
-        }
-
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE");
-            assert_eq!(
-                WriteBackend::for_window(true),
-                WriteBackend::PrivilegedHelper
-            );
-        }
-
-        #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE")
-                .set("TILO_IMAGER_FLATPAK", "1");
-            assert_eq!(WriteBackend::for_window(false), WriteBackend::Udisks2);
-            assert!(!allow_write(), "the sandbox never gains direct /dev access");
-        }
-
-        {
-            assert!(!WriteBackend::Disabled.is_available());
-            assert!(WriteBackend::System.is_available());
-            assert!(WriteBackend::PrivilegedHelper.is_available());
-            assert!(WriteBackend::Udisks2.is_available());
-        }
-
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_IMAGER_ALLOW_WRITE", "1");
-            assert!(allow_write());
-            assert_eq!(WriteBackend::for_window(false), WriteBackend::System);
-            env.remove("TILO_IMAGER_ALLOW_WRITE");
-            let expected = if cfg!(feature = "host-media-writer") {
-                WriteBackend::PrivilegedHelper
-            } else {
-                WriteBackend::Disabled
-            };
-            assert_eq!(WriteBackend::for_window(false), expected);
-        }
-
-        #[cfg(not(feature = "host-media-writer"))]
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE");
-            let r = req();
-            assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
-            let (start, rx, control) = spawn_job(r, "sdb", WriteBackend::for_window(false));
-            assert_eq!(start, JobStart::WriteDisabled);
-            assert!(rx.is_none());
-            assert!(control.is_none());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn privileged_helper_requests_are_secret_free_private_and_exact() {
-        {
-            let mut request = req();
-            request.profile.user.password = "account-secret".into();
-            request.profile.encryption_passphrase = "encryption-secret".into();
-            let encoded = serde_json::to_string(&request.without_secrets()).unwrap();
-            assert!(!encoded.contains("account-secret"));
-            assert!(!encoded.contains("encryption-secret"));
-            assert!(encoded.contains("\"password\":\"\""));
-            assert!(encoded.contains("\"encryption_passphrase\":\"\""));
-        }
-
-        {
-            #[cfg(target_os = "linux")]
-            use std::os::unix::fs::PermissionsExt;
-
-            #[cfg(target_os = "linux")]
-            let mut env = tilo_test_env::ScopedEnv::new();
-            #[cfg(target_os = "linux")]
-            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
-            let work = tempfile::Builder::new()
-                .prefix("tilo-imager-write-")
-                .tempdir()
-                .unwrap();
-            let request_path = work.path().join("request.json");
-            let progress_path = work.path().join("progress.jsonl");
-            let cancel_path = work.path().join("cancel");
-            std::fs::write(&request_path, serde_json::to_vec(&req()).unwrap()).unwrap();
-            std::fs::write(&progress_path, []).unwrap();
-            #[cfg(target_os = "linux")]
-            {
-                std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700))
-                    .unwrap();
-                std::fs::set_permissions(&request_path, std::fs::Permissions::from_mode(0o600))
-                    .unwrap();
-            }
-            let args = vec![
-                "imager".into(),
-                WRITE_HELPER_ARG.into(),
-                request_path.display().to_string(),
-                progress_path.display().to_string(),
-                "0".repeat(64),
-                cancel_path.display().to_string(),
-            ];
-            let error = maybe_run_write_helper(&args).unwrap_err();
-            #[cfg(target_os = "linux")]
-            drop(env);
-            assert!(error.to_string().contains("changed after authorization"));
-            assert!(std::fs::read(progress_path).unwrap().is_empty());
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let work = tempfile::Builder::new()
-                .prefix("tilo-imager-write-")
-                .tempdir()
-                .unwrap();
-            let request_path = work.path().join("request.json");
-            std::fs::write(&request_path, b"{}").unwrap();
-            std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
-
-            let error = read_linux_helper_request(&request_path).unwrap_err();
-
-            drop(env);
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert!(error.to_string().contains("not private"));
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            use std::os::unix::fs::symlink;
-
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let work = tempfile::tempdir().unwrap();
-            let outside = work.path().join("outside");
-            let request = work.path().join("request.json");
-            std::fs::write(&outside, b"root-only payload").unwrap();
-            symlink(&outside, &request).unwrap();
-            std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
-
-            let error = read_linux_helper_request(&request).unwrap_err();
-
-            drop(env);
-            assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
-        }
-
-        {
-            let work = tempfile::Builder::new()
-                .prefix("tilo-imager-write-")
-                .tempdir()
-                .unwrap();
-            let progress_path = work.path().join("progress.jsonl");
-            std::fs::write(&progress_path, b"keep-me").unwrap();
-            let error = create_progress_output(&progress_path).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-            assert_eq!(std::fs::read(progress_path).unwrap(), b"keep-me");
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let source = tempfile::tempfile().unwrap();
-            let command = elevated_helper_command(
-                Path::new("/opt/tilo-imager-bin"),
-                Path::new("/tmp/request"),
-                Path::new("/tmp/progress"),
-                &"a".repeat(64),
-                Path::new("/tmp/cancel"),
-                source,
-            )
-            .unwrap();
-            assert_eq!(command.get_program(), "pkexec");
-            let args: Vec<_> = command.get_args().collect();
-            assert_eq!(args[0], "/opt/tilo-imager-bin");
-            assert_eq!(args[1], WRITE_HELPER_ARG);
-            assert_eq!(args.len(), 6);
-        }
-
-        {
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[4] + '\"')"));
-            assert!(!WINDOWS_ELEVATION_SCRIPT.contains(r#"('\"' +"#));
         }
     }
 
@@ -1334,222 +1335,543 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn media_profile_block_is_reserved_secret_free_and_verified() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn the_write_engine_reports_only_what_it_verified;
+
+        phase media_profile_block_is_reserved_secret_free_and_verified;
         {
-            let mut r = req();
-            r.source.installable = true;
-            r.source.size = r.target.size - PROFILE_BLOCK_SIZE as u64 + 1;
-            assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
+            {
+                let mut r = req();
+                r.source.installable = true;
+                r.source.size = r.target.size - PROFILE_BLOCK_SIZE as u64 + 1;
+                assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
+            }
+
+            {
+                let mut profile = InstallProfile {
+                    hostname: "studio".into(),
+                    ..InstallProfile::default()
+                };
+                profile.user.username = "ada".into();
+                profile.user.password = "account-secret".into();
+                profile.encryption_passphrase = "disk-secret".into();
+                let block = encode_profile_block(&profile).unwrap();
+                let text = String::from_utf8_lossy(&block);
+                assert!(text.contains(PROFILE_MAGIC));
+                assert!(text.contains("studio"));
+                assert!(!text.contains("account-secret"));
+                assert!(!text.contains("disk-secret"));
+
+                let target = tempfile::NamedTempFile::new().unwrap();
+                target
+                    .as_file()
+                    .set_len(PROFILE_BLOCK_SIZE as u64 * 2)
+                    .unwrap();
+                write_profile_block(target.path(), PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
+                let bytes = std::fs::read(target.path()).unwrap();
+                assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
+            }
+
+            {
+                let profile = InstallProfile {
+                    hostname: "bad host".into(),
+                    ..InstallProfile::default()
+                };
+                let error = encode_profile_block(&profile).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+                assert!(error.to_string().contains("Hostname"));
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let mut profile = InstallProfile {
+                    hostname: "studio".into(),
+                    keyboard: "de".into(),
+                    timezone: "Europe/Berlin".into(),
+                    ..InstallProfile::default()
+                };
+                profile.user.username = "ada".into();
+                profile.user.full_name = "Ada Example".into();
+                profile.user.password = "must-not-cross".into();
+
+                let work = tempfile::tempdir().unwrap();
+                let media = work.path().join("media.img");
+                let out = work.path().join("extracted");
+                std::fs::File::create(&media)
+                    .unwrap()
+                    .set_len(PROFILE_BLOCK_SIZE as u64 * 2)
+                    .unwrap();
+                write_profile_block(&media, PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
+
+                let extractor = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../os/usr/libexec/tilo-installer-profile-extract");
+                let status = std::process::Command::new(extractor)
+                    .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
+                    .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
+                    .env("TILO_INSTALLER_PROFILE_OUT_DIR", &out)
+                    .status_locked()
+                    .unwrap();
+                assert!(status.success());
+
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(out.join("profile.json")).unwrap()).unwrap();
+                assert_eq!(value["hostname"], "studio");
+                assert_eq!(value["username"], "ada");
+                assert_eq!(value["keyboard"], "de");
+                assert!(value.get("password").is_none());
+                assert!(
+                    !String::from_utf8_lossy(&std::fs::read(media).unwrap()).contains("must-not-cross")
+                );
+            }
+
+            {
+                let target = tmp_with(b"leave this target unchanged");
+                let before = std::fs::read(target.path()).unwrap();
+                let error = write_profile_block_bound(
+                    target.path(),
+                    before.len() as u64,
+                    &InstallProfile::default(),
+                    &|| true,
+                )
+                .unwrap_err();
+
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+                assert_eq!(std::fs::read(target.path()).unwrap(), before);
+            }
         }
 
+        phase write_engine_copies_verifies_and_reports_end_to_end;
         {
-            let mut profile = InstallProfile {
-                hostname: "studio".into(),
-                ..InstallProfile::default()
-            };
-            profile.user.username = "ada".into();
-            profile.user.password = "account-secret".into();
-            profile.encryption_passphrase = "disk-secret".into();
-            let block = encode_profile_block(&profile).unwrap();
-            let text = String::from_utf8_lossy(&block);
-            assert!(text.contains(PROFILE_MAGIC));
-            assert!(text.contains("studio"));
-            assert!(!text.contains("account-secret"));
-            assert!(!text.contains("disk-secret"));
+            {
+                let data = sample_bytes(CHUNK * 2 + 12345); // multi-chunk + a ragged tail
+                let src = tmp_with(&data);
+                let dst = tempfile::NamedTempFile::new().unwrap();
+                let mut last = 0u64;
+                let n = stream_copy(src.path(), dst.path(), |b| last = b).unwrap();
+                assert_eq!(n as usize, data.len());
+                assert_eq!(last, n, "final progress equals total bytes");
+                let back = std::fs::read(dst.path()).unwrap();
+                assert_eq!(back, data, "written bytes match the source exactly");
+            }
 
-            let target = tempfile::NamedTempFile::new().unwrap();
-            target
-                .as_file()
-                .set_len(PROFILE_BLOCK_SIZE as u64 * 2)
-                .unwrap();
-            write_profile_block(target.path(), PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
-            let bytes = std::fs::read(target.path()).unwrap();
-            assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
+            {
+                let data = sample_bytes(CHUNK + 999);
+                let src = tmp_with(&data);
+                let dst = tmp_with(&data);
+                assert_eq!(
+                    verify_readback(src.path(), dst.path(), data.len() as u64, |_| {}).unwrap(),
+                    None,
+                    "identical files verify clean"
+                );
+                let mut corrupt = data.clone();
+                let at = CHUNK + 100;
+                corrupt[at] ^= 0xFF;
+                let bad = tmp_with(&corrupt);
+                assert_eq!(
+                    verify_readback(src.path(), bad.path(), data.len() as u64, |_| {}).unwrap(),
+                    Some(at as u64),
+                    "the first differing byte offset is reported"
+                );
+            }
+
+            {
+                let data = sample_bytes(CHUNK * 3 + 4096);
+                let src = tmp_with(&data);
+                let dst = tempfile::NamedTempFile::new().unwrap();
+                let mut phases = Vec::new();
+                let mut last = Progress::default();
+                let result = run_job_paths(src.path(), dst.path(), data.len() as u64, |p| {
+                    if phases.last() != Some(&p.phase) {
+                        phases.push(p.phase);
+                    }
+                    last = p;
+                });
+                assert_eq!(result, JobResult::Verified);
+                assert!(result.is_success());
+                assert_eq!(std::fs::read(dst.path()).unwrap(), data);
+                assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
+                assert!((last.write_frac - 1.0).abs() < 1e-9);
+                assert!((last.verify_frac - 1.0).abs() < 1e-9);
+            }
+
+            {
+                let data = sample_bytes(CHUNK + 917);
+                let source = tmp_with(&data);
+                let mut target = tempfile::tempfile().unwrap();
+                let target_size = data.len() as u64 + PROFILE_BLOCK_SIZE as u64 + 4096;
+                target.set_len(target_size).unwrap();
+                let mut request = req();
+                request.source.path = source.path().to_string_lossy().into_owned();
+                request.source.size = data.len() as u64;
+                request.source.identity = SourceIdentity::from_file(source.as_file()).unwrap();
+                request.source.installable = true;
+                request.source.expected_sha256 = None;
+                request.target.size = target_size;
+
+                let mut phases = Vec::new();
+                let result = run_job_file_bound(&request, &mut target, &|| false, |progress| {
+                    if phases.last() != Some(&progress.phase) {
+                        phases.push(progress.phase);
+                    }
+                });
+
+                assert_eq!(result, JobResult::Verified);
+                assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
+                target.seek(SeekFrom::Start(0)).unwrap();
+                let mut written = vec![0_u8; data.len()];
+                target.read_exact(&mut written).unwrap();
+                assert_eq!(written, data);
+                target
+                    .seek(SeekFrom::Start(target_size - PROFILE_BLOCK_SIZE as u64))
+                    .unwrap();
+                let mut profile = vec![0_u8; PROFILE_BLOCK_SIZE];
+                target.read_exact(&mut profile).unwrap();
+                assert!(profile.starts_with(PROFILE_MAGIC.as_bytes()));
+            }
+
+            {
+                let data = sample_bytes(1024);
+                let src = tmp_with(&data);
+                let bad = std::path::Path::new("/proc/definitely/not/writable/imager.img");
+                let result = run_job_paths(src.path(), bad, data.len() as u64, |_| {});
+                assert!(matches!(result, JobResult::WriteFailed(_)));
+            }
+
+            {
+                assert!(macos_should_eject(&JobResult::Verified));
+                assert!(!macos_should_eject(&JobResult::WriteFailed(
+                    "device disconnected".into()
+                )));
+                assert!(!macos_should_eject(&JobResult::VerifyMismatch(42)));
+                assert!(!macos_should_eject(&JobResult::VerifyFailed(
+                    "read-back failed".into()
+                )));
+            }
         }
 
+        phase cooperative_cancel_and_revalidation_failures_never_claim_success;
         {
-            let profile = InstallProfile {
-                hostname: "bad host".into(),
-                ..InstallProfile::default()
-            };
-            let error = encode_profile_block(&profile).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-            assert!(error.to_string().contains("Hostname"));
+            {
+                let data = sample_bytes(CHUNK * 3);
+                let src = tmp_with(&data);
+                let dst = tempfile::NamedTempFile::new().unwrap();
+                let control = JobControl::new();
+                let signal = control.clone();
+                let mut phases = Vec::new();
+
+                let result = run_job_paths_bound(
+                    src.path(),
+                    dst.path(),
+                    data.len() as u64,
+                    None,
+                    None,
+                    &|| control.is_cancelled(),
+                    |progress| {
+                        phases.push(progress.phase);
+                        signal.cancel();
+                    },
+                );
+
+                assert_eq!(result, JobResult::Cancelled);
+                assert_eq!(phases, vec![JobPhase::Writing]);
+                assert_eq!(std::fs::metadata(dst.path()).unwrap().len(), CHUNK as u64);
+            }
+
+            {
+                let data = sample_bytes(CHUNK * 3);
+                let src = tmp_with(&data);
+                let dst = tempfile::NamedTempFile::new().unwrap();
+                let control = JobControl::new();
+                let signal = control.clone();
+                let mut saw_verify = false;
+
+                let result = run_job_paths_bound(
+                    src.path(),
+                    dst.path(),
+                    data.len() as u64,
+                    None,
+                    None,
+                    &|| control.is_cancelled(),
+                    |progress| {
+                        if progress.phase == JobPhase::Verifying {
+                            saw_verify = true;
+                            signal.cancel();
+                        }
+                    },
+                );
+
+                assert_eq!(result, JobResult::Cancelled);
+                assert!(saw_verify);
+            }
+
+            {
+                let mut request = req();
+                request.target.name = "tilo-test-device-that-cannot-exist".into();
+                let mut updates = Vec::new();
+
+                let result =
+                    run_system_job(&request, &|| false, |progress| updates.push(progress), None);
+
+                assert!(matches!(result, JobResult::WriteFailed(_)));
+                let terminal = updates.last().expect("terminal progress event");
+                assert_eq!(terminal.phase, JobPhase::Failed);
+                assert!(
+                    terminal.error.as_deref().is_some_and(|message| {
+                        message.contains("changed or was disconnected")
+                            && message.contains("Could not write")
+                    }),
+                    "the UI receives a useful cause even when writing never starts"
+                );
+            }
         }
 
-        #[cfg(target_os = "linux")]
+        phase write_source_must_stay_the_reviewed_file_and_digest;
         {
-            let mut profile = InstallProfile {
-                hostname: "studio".into(),
-                keyboard: "de".into(),
-                timezone: "Europe/Berlin".into(),
-                ..InstallProfile::default()
-            };
-            profile.user.username = "ada".into();
-            profile.user.full_name = "Ada Example".into();
-            profile.user.password = "must-not-cross".into();
+            {
+                let data = sample_bytes(4096);
 
-            let work = tempfile::tempdir().unwrap();
-            let media = work.path().join("media.img");
-            let out = work.path().join("extracted");
-            std::fs::File::create(&media)
-                .unwrap()
-                .set_len(PROFILE_BLOCK_SIZE as u64 * 2)
-                .unwrap();
-            write_profile_block(&media, PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
+                let truncated = tmp_with(&data[..2048]);
+                let truncated_dst = tempfile::NamedTempFile::new().unwrap();
+                let result = run_job_paths(truncated.path(), truncated_dst.path(), 4096, |_| {});
+                assert!(
+                    matches!(result, JobResult::WriteFailed(ref message) if message.contains("size changed"))
+                );
 
-            let extractor = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../os/usr/libexec/tilo-installer-profile-extract");
-            let status = std::process::Command::new(extractor)
-                .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
-                .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
-                .env("TILO_INSTALLER_PROFILE_OUT_DIR", &out)
-                .status_locked()
-                .unwrap();
-            assert!(status.success());
+                let grown = tmp_with(&data);
+                let grown_dst = tempfile::NamedTempFile::new().unwrap();
+                let result = run_job_paths(grown.path(), grown_dst.path(), 2048, |_| {});
+                assert!(
+                    matches!(result, JobResult::WriteFailed(ref message) if message.contains("size changed"))
+                );
+            }
 
-            let value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(out.join("profile.json")).unwrap()).unwrap();
-            assert_eq!(value["hostname"], "studio");
-            assert_eq!(value["username"], "ada");
-            assert_eq!(value["keyboard"], "de");
-            assert!(value.get("password").is_none());
-            assert!(
-                !String::from_utf8_lossy(&std::fs::read(media).unwrap()).contains("must-not-cross")
-            );
+            {
+                let data = sample_bytes(4096);
+                let root = tempfile::tempdir().unwrap();
+                let selected = root.path().join("selected.img");
+                std::fs::write(&selected, &data).unwrap();
+                let held = std::fs::File::open(&selected).unwrap();
+                let identity = SourceIdentity::from_file(&held)
+                    .unwrap()
+                    .expect("test platform exposes file identity");
+                std::fs::rename(&selected, root.path().join("reviewed.img")).unwrap();
+                std::fs::write(&selected, &data).unwrap();
+                let dst = tmp_with(b"leave destination untouched");
+
+                let result = run_job_paths_bound(
+                    &selected,
+                    dst.path(),
+                    data.len() as u64,
+                    Some(identity),
+                    None,
+                    &|| false,
+                    |_| panic!("a replaced source must not produce write progress"),
+                );
+                assert!(
+                    matches!(result, JobResult::WriteFailed(ref message) if message.contains("replaced"))
+                );
+                assert_eq!(
+                    std::fs::read(dst.path()).unwrap(),
+                    b"leave destination untouched"
+                );
+
+                let absent_destination = root.path().join("not-created.img");
+                let result = run_job_paths_bound(
+                    &selected,
+                    &absent_destination,
+                    data.len() as u64,
+                    Some(identity),
+                    None,
+                    &|| false,
+                    |_| panic!("a replaced source must not produce write progress"),
+                );
+                assert!(matches!(result, JobResult::WriteFailed(_)));
+                assert!(!absent_destination.exists());
+
+                let result = run_job_paths_bound(
+                    &root.path().join("reviewed.img"),
+                    dst.path(),
+                    data.len() as u64,
+                    Some(identity),
+                    None,
+                    &|| false,
+                    |_| {},
+                );
+                assert_eq!(result, JobResult::Verified);
+                assert_eq!(std::fs::read(dst.path()).unwrap(), data);
+            }
+
+            {
+                let data = sample_bytes(4096);
+                let reviewed = tmp_with(&data);
+                let replacement = tmp_with(&data);
+                let mut target = tmp_with(b"leave destination untouched");
+                target.as_file_mut().seek(SeekFrom::Start(7)).unwrap();
+                let mut request = req();
+                request.source.path = replacement.path().to_string_lossy().into_owned();
+                request.source.size = data.len() as u64;
+                request.source.identity = Some(
+                    SourceIdentity::from_file(reviewed.as_file())
+                        .unwrap()
+                        .expect("test platform exposes file identity"),
+                );
+                request.source.installable = false;
+
+                let result = run_job_file_bound(&request, target.as_file_mut(), &|| false, |_| {
+                    panic!("a replaced source must not produce write progress");
+                });
+
+                assert!(matches!(result, JobResult::WriteFailed(_)));
+                assert_eq!(target.as_file_mut().stream_position().unwrap(), 7);
+                assert_eq!(
+                    std::fs::read(target.path()).unwrap(),
+                    b"leave destination untouched"
+                );
+            }
+
+            {
+                let data = sample_bytes(4096);
+                let src = tmp_with(&data);
+                let dst = tmp_with(b"leave destination untouched");
+                let wrong_digest = "0".repeat(64);
+
+                let result = run_job_paths_bound(
+                    src.path(),
+                    dst.path(),
+                    data.len() as u64,
+                    SourceIdentity::from_file(src.as_file()).unwrap(),
+                    Some(&wrong_digest),
+                    &|| false,
+                    |_| {},
+                );
+                assert!(
+                    matches!(result, JobResult::WriteFailed(ref message) if message.contains("signed release catalog"))
+                );
+                assert_eq!(
+                    std::fs::read(dst.path()).unwrap(),
+                    b"leave destination untouched"
+                );
+            }
         }
 
+        phase handoff_apply_selects_root_partition_and_copies_onto_a_mounted_fixture;
         {
-            let target = tmp_with(b"leave this target unchanged");
-            let before = std::fs::read(target.path()).unwrap();
-            let error = write_profile_block_bound(
-                target.path(),
-                before.len() as u64,
-                &InstallProfile::default(),
-                &|| true,
-            )
-            .unwrap_err();
+            {
+                let lsblk = "\
+    /dev/loop7\n\
+    /dev/loop7p1 vfat\n\
+    /dev/loop7p2 btrfs\n\
+    /dev/loop7p3 swap\n";
+                assert_eq!(
+                    select_tilo_root_partition("/dev/loop7", lsblk).as_deref(),
+                    Some("/dev/loop7p2")
+                );
+            }
 
-            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-            assert_eq!(std::fs::read(target.path()).unwrap(), before);
-        }
-    }
+            {
+                let lsblk = "/dev/loop9 ext4\n";
+                assert_eq!(
+                    select_tilo_root_partition("/dev/loop9", lsblk).as_deref(),
+                    Some("/dev/loop9")
+                );
+                assert_eq!(
+                    select_tilo_root_partition("/dev/loop9", "/dev/loop9\n"),
+                    None
+                );
+            }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn write_engine_copies_verifies_and_reports_end_to_end() {
-        {
-            let data = sample_bytes(CHUNK * 2 + 12345); // multi-chunk + a ragged tail
-            let src = tmp_with(&data);
-            let dst = tempfile::NamedTempFile::new().unwrap();
-            let mut last = 0u64;
-            let n = stream_copy(src.path(), dst.path(), |b| last = b).unwrap();
-            assert_eq!(n as usize, data.len());
-            assert_eq!(last, n, "final progress equals total bytes");
-            let back = std::fs::read(dst.path()).unwrap();
-            assert_eq!(back, data, "written bytes match the source exactly");
-        }
+            assert!(root_listing_waits_for_filesystem_type(
+                "/dev/sda",
+                "/dev/sda\n/dev/sda1\n/dev/sda2 vfat\n"
+            ));
+            assert!(!root_listing_waits_for_filesystem_type(
+                "/dev/sda",
+                "/dev/sda\n/dev/sda1 vfat\n"
+            ));
 
-        {
-            let data = sample_bytes(CHUNK + 999);
-            let src = tmp_with(&data);
-            let dst = tmp_with(&data);
-            assert_eq!(
-                verify_readback(src.path(), dst.path(), data.len() as u64, |_| {}).unwrap(),
-                None,
-                "identical files verify clean"
-            );
-            let mut corrupt = data.clone();
-            let at = CHUNK + 100;
-            corrupt[at] ^= 0xFF;
-            let bad = tmp_with(&corrupt);
-            assert_eq!(
-                verify_readback(src.path(), bad.path(), data.len() as u64, |_| {}).unwrap(),
-                Some(at as u64),
-                "the first differing byte offset is reported"
-            );
-        }
+            {
+                let lsblk = "\
+    /dev/loop0\n\
+    /dev/loop0p1\n\
+    /dev/loop0p2 vfat\n\
+    /dev/loop0p3 btrfs\n";
+                assert_eq!(
+                    select_tilo_root_partition("/dev/loop0", lsblk).as_deref(),
+                    Some("/dev/loop0p3")
+                );
+            }
 
-        {
-            let data = sample_bytes(CHUNK * 3 + 4096);
-            let src = tmp_with(&data);
-            let dst = tempfile::NamedTempFile::new().unwrap();
-            let mut phases = Vec::new();
-            let mut last = Progress::default();
-            let result = run_job_paths(src.path(), dst.path(), data.len() as u64, |p| {
-                if phases.last() != Some(&p.phase) {
-                    phases.push(p.phase);
-                }
-                last = p;
-            });
-            assert_eq!(result, JobResult::Verified);
-            assert!(result.is_success());
-            assert_eq!(std::fs::read(dst.path()).unwrap(), data);
-            assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
-            assert!((last.write_frac - 1.0).abs() < 1e-9);
-            assert!((last.verify_frac - 1.0).abs() < 1e-9);
-        }
+            {
+                let lsblk = "\
+    /dev/sda\n\
+    /dev/sda1 vfat\n\
+    /dev/sda2 ext4\n\
+    /dev/sda3 btrfs\n";
+                assert_eq!(
+                    select_tilo_root_partition("/dev/sda", lsblk).as_deref(),
+                    Some("/dev/sda3")
+                );
+            }
 
-        {
-            let data = sample_bytes(CHUNK + 917);
-            let source = tmp_with(&data);
-            let mut target = tempfile::tempfile().unwrap();
-            let target_size = data.len() as u64 + PROFILE_BLOCK_SIZE as u64 + 4096;
-            target.set_len(target_size).unwrap();
-            let mut request = req();
-            request.source.path = source.path().to_string_lossy().into_owned();
-            request.source.size = data.len() as u64;
-            request.source.identity = SourceIdentity::from_file(source.as_file()).unwrap();
-            request.source.installable = true;
-            request.source.expected_sha256 = None;
-            request.target.size = target_size;
+            {
+                let lsblk = "\
+    /dev/sda\n\
+    /dev/sda1 vfat\n\
+    /dev/sda2 ext4 TILO_BOOT\n";
+                assert_eq!(select_tilo_root_partition("/dev/sda", lsblk), None);
+            }
 
-            let mut phases = Vec::new();
-            let result = run_job_file_bound(&request, &mut target, &|| false, |progress| {
-                if phases.last() != Some(&progress.phase) {
-                    phases.push(progress.phase);
-                }
-            });
+            {
+                let lsblk = "\
+    /dev/sda\n\
+    /dev/sda1 vfat\n\
+    /dev/sda2 ext4 TILO_BOOT\n\
+    /dev/sda3 btrfs\n";
+                assert_eq!(
+                    select_tilo_root_partition("/dev/sda", lsblk).as_deref(),
+                    Some("/dev/sda3")
+                );
+            }
 
-            assert_eq!(result, JobResult::Verified);
-            assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
-            target.seek(SeekFrom::Start(0)).unwrap();
-            let mut written = vec![0_u8; data.len()];
-            target.read_exact(&mut written).unwrap();
-            assert_eq!(written, data);
-            target
-                .seek(SeekFrom::Start(target_size - PROFILE_BLOCK_SIZE as u64))
-                .unwrap();
-            let mut profile = vec![0_u8; PROFILE_BLOCK_SIZE];
-            target.read_exact(&mut profile).unwrap();
-            assert!(profile.starts_with(PROFILE_MAGIC.as_bytes()));
-        }
+            {
+                let lsblk = "\
+    /dev/loop1\n\
+    /dev/loop10 btrfs\n\
+    /dev/loop1p1 btrfs\n";
+                assert_eq!(
+                    select_tilo_root_partition("/dev/loop1", lsblk).as_deref(),
+                    Some("/dev/loop1p1")
+                );
+            }
 
-        {
-            let data = sample_bytes(1024);
-            let src = tmp_with(&data);
-            let bad = std::path::Path::new("/proc/definitely/not/writable/imager.img");
-            let result = run_job_paths(src.path(), bad, data.len() as u64, |_| {});
-            assert!(matches!(result, JobResult::WriteFailed(_)));
-        }
+            {
+                let staged = tempfile::tempdir().unwrap();
+                let conn = staged.path().join("etc/NetworkManager/system-connections");
+                std::fs::create_dir_all(&conn).unwrap();
+                std::fs::write(conn.join("tilo-setup.nmconnection"), b"ssid=studio\n").unwrap();
+                std::fs::create_dir_all(staged.path().join("var/lib/tilo")).unwrap();
+                std::fs::write(staged.path().join("var/lib/tilo/device.key"), b"secret").unwrap();
 
-        {
-            assert!(macos_should_eject(&JobResult::Verified));
-            assert!(!macos_should_eject(&JobResult::WriteFailed(
-                "device disconnected".into()
-            )));
-            assert!(!macos_should_eject(&JobResult::VerifyMismatch(42)));
-            assert!(!macos_should_eject(&JobResult::VerifyFailed(
-                "read-back failed".into()
-            )));
+                let mnt = tempfile::tempdir().unwrap();
+                let etc = mnt.path().join("ostree/deploy/tilo/deploy/abcd.0/etc");
+                let var = mnt.path().join("ostree/deploy/tilo/var");
+                std::fs::create_dir_all(&etc).unwrap();
+                std::fs::create_dir_all(&var).unwrap();
+
+                apply_handoff_stage_onto_mounted_root(mnt.path(), staged.path()).unwrap();
+                assert_eq!(
+                    std::fs::read(
+                        etc.join("NetworkManager/system-connections/tilo-setup.nmconnection")
+                    )
+                    .unwrap(),
+                    b"ssid=studio\n"
+                );
+                assert_eq!(
+                    std::fs::read(var.join("lib/tilo/device.key")).unwrap(),
+                    b"secret"
+                );
+            }
         }
     }
 
@@ -1564,493 +1886,161 @@ mod tests {
         (0..n).map(|i| ((i * 31 + 7) % 251) as u8).collect()
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn cooperative_cancel_and_revalidation_failures_never_claim_success() {
-        {
-            let data = sample_bytes(CHUNK * 3);
-            let src = tmp_with(&data);
-            let dst = tempfile::NamedTempFile::new().unwrap();
-            let control = JobControl::new();
-            let signal = control.clone();
-            let mut phases = Vec::new();
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn a_disk_image_handoff_is_never_reported_without_its_mount;
 
-            let result = run_job_paths_bound(
-                src.path(),
-                dst.path(),
-                data.len() as u64,
-                None,
-                None,
-                &|| control.is_cancelled(),
-                |progress| {
-                    phases.push(progress.phase);
-                    signal.cancel();
-                },
-            );
-
-            assert_eq!(result, JobResult::Cancelled);
-            assert_eq!(phases, vec![JobPhase::Writing]);
-            assert_eq!(std::fs::metadata(dst.path()).unwrap().len(), CHUNK as u64);
-        }
-
-        {
-            let data = sample_bytes(CHUNK * 3);
-            let src = tmp_with(&data);
-            let dst = tempfile::NamedTempFile::new().unwrap();
-            let control = JobControl::new();
-            let signal = control.clone();
-            let mut saw_verify = false;
-
-            let result = run_job_paths_bound(
-                src.path(),
-                dst.path(),
-                data.len() as u64,
-                None,
-                None,
-                &|| control.is_cancelled(),
-                |progress| {
-                    if progress.phase == JobPhase::Verifying {
-                        saw_verify = true;
-                        signal.cancel();
-                    }
-                },
-            );
-
-            assert_eq!(result, JobResult::Cancelled);
-            assert!(saw_verify);
-        }
-
-        {
-            let mut request = req();
-            request.target.name = "tilo-test-device-that-cannot-exist".into();
-            let mut updates = Vec::new();
-
-            let result =
-                run_system_job(&request, &|| false, |progress| updates.push(progress), None);
-
-            assert!(matches!(result, JobResult::WriteFailed(_)));
-            let terminal = updates.last().expect("terminal progress event");
-            assert_eq!(terminal.phase, JobPhase::Failed);
-            assert!(
-                terminal.error.as_deref().is_some_and(|message| {
-                    message.contains("changed or was disconnected")
-                        && message.contains("Could not write")
-                }),
-                "the UI receives a useful cause even when writing never starts"
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn write_source_must_stay_the_reviewed_file_and_digest() {
-        {
-            let data = sample_bytes(4096);
-
-            let truncated = tmp_with(&data[..2048]);
-            let truncated_dst = tempfile::NamedTempFile::new().unwrap();
-            let result = run_job_paths(truncated.path(), truncated_dst.path(), 4096, |_| {});
-            assert!(
-                matches!(result, JobResult::WriteFailed(ref message) if message.contains("size changed"))
-            );
-
-            let grown = tmp_with(&data);
-            let grown_dst = tempfile::NamedTempFile::new().unwrap();
-            let result = run_job_paths(grown.path(), grown_dst.path(), 2048, |_| {});
-            assert!(
-                matches!(result, JobResult::WriteFailed(ref message) if message.contains("size changed"))
-            );
-        }
-
-        {
-            let data = sample_bytes(4096);
-            let root = tempfile::tempdir().unwrap();
-            let selected = root.path().join("selected.img");
-            std::fs::write(&selected, &data).unwrap();
-            let held = std::fs::File::open(&selected).unwrap();
-            let identity = SourceIdentity::from_file(&held)
-                .unwrap()
-                .expect("test platform exposes file identity");
-            std::fs::rename(&selected, root.path().join("reviewed.img")).unwrap();
-            std::fs::write(&selected, &data).unwrap();
-            let dst = tmp_with(b"leave destination untouched");
-
-            let result = run_job_paths_bound(
-                &selected,
-                dst.path(),
-                data.len() as u64,
-                Some(identity),
-                None,
-                &|| false,
-                |_| panic!("a replaced source must not produce write progress"),
-            );
-            assert!(
-                matches!(result, JobResult::WriteFailed(ref message) if message.contains("replaced"))
-            );
-            assert_eq!(
-                std::fs::read(dst.path()).unwrap(),
-                b"leave destination untouched"
-            );
-
-            let absent_destination = root.path().join("not-created.img");
-            let result = run_job_paths_bound(
-                &selected,
-                &absent_destination,
-                data.len() as u64,
-                Some(identity),
-                None,
-                &|| false,
-                |_| panic!("a replaced source must not produce write progress"),
-            );
-            assert!(matches!(result, JobResult::WriteFailed(_)));
-            assert!(!absent_destination.exists());
-
-            let result = run_job_paths_bound(
-                &root.path().join("reviewed.img"),
-                dst.path(),
-                data.len() as u64,
-                Some(identity),
-                None,
-                &|| false,
-                |_| {},
-            );
-            assert_eq!(result, JobResult::Verified);
-            assert_eq!(std::fs::read(dst.path()).unwrap(), data);
-        }
-
-        {
-            let data = sample_bytes(4096);
-            let reviewed = tmp_with(&data);
-            let replacement = tmp_with(&data);
-            let mut target = tmp_with(b"leave destination untouched");
-            target.as_file_mut().seek(SeekFrom::Start(7)).unwrap();
-            let mut request = req();
-            request.source.path = replacement.path().to_string_lossy().into_owned();
-            request.source.size = data.len() as u64;
-            request.source.identity = Some(
-                SourceIdentity::from_file(reviewed.as_file())
-                    .unwrap()
-                    .expect("test platform exposes file identity"),
-            );
-            request.source.installable = false;
-
-            let result = run_job_file_bound(&request, target.as_file_mut(), &|| false, |_| {
-                panic!("a replaced source must not produce write progress");
-            });
-
-            assert!(matches!(result, JobResult::WriteFailed(_)));
-            assert_eq!(target.as_file_mut().stream_position().unwrap(), 7);
-            assert_eq!(
-                std::fs::read(target.path()).unwrap(),
-                b"leave destination untouched"
-            );
-        }
-
-        {
-            let data = sample_bytes(4096);
-            let src = tmp_with(&data);
-            let dst = tmp_with(b"leave destination untouched");
-            let wrong_digest = "0".repeat(64);
-
-            let result = run_job_paths_bound(
-                src.path(),
-                dst.path(),
-                data.len() as u64,
-                SourceIdentity::from_file(src.as_file()).unwrap(),
-                Some(&wrong_digest),
-                &|| false,
-                |_| {},
-            );
-            assert!(
-                matches!(result, JobResult::WriteFailed(ref message) if message.contains("signed release catalog"))
-            );
-            assert_eq!(
-                std::fs::read(dst.path()).unwrap(),
-                b"leave destination untouched"
-            );
-        }
-    }
-
-    #[test]
-    fn handoff_apply_selects_root_partition_and_copies_onto_a_mounted_fixture() {
-        {
-            let lsblk = "\
-/dev/loop7\n\
-/dev/loop7p1 vfat\n\
-/dev/loop7p2 btrfs\n\
-/dev/loop7p3 swap\n";
-            assert_eq!(
-                select_tilo_root_partition("/dev/loop7", lsblk).as_deref(),
-                Some("/dev/loop7p2")
-            );
-        }
-
-        {
-            let lsblk = "/dev/loop9 ext4\n";
-            assert_eq!(
-                select_tilo_root_partition("/dev/loop9", lsblk).as_deref(),
-                Some("/dev/loop9")
-            );
-            assert_eq!(
-                select_tilo_root_partition("/dev/loop9", "/dev/loop9\n"),
-                None
-            );
-        }
-
-        assert!(root_listing_waits_for_filesystem_type(
-            "/dev/sda",
-            "/dev/sda\n/dev/sda1\n/dev/sda2 vfat\n"
-        ));
-        assert!(!root_listing_waits_for_filesystem_type(
-            "/dev/sda",
-            "/dev/sda\n/dev/sda1 vfat\n"
-        ));
-
-        {
-            let lsblk = "\
-/dev/loop0\n\
-/dev/loop0p1\n\
-/dev/loop0p2 vfat\n\
-/dev/loop0p3 btrfs\n";
-            assert_eq!(
-                select_tilo_root_partition("/dev/loop0", lsblk).as_deref(),
-                Some("/dev/loop0p3")
-            );
-        }
-
-        {
-            let lsblk = "\
-/dev/sda\n\
-/dev/sda1 vfat\n\
-/dev/sda2 ext4\n\
-/dev/sda3 btrfs\n";
-            assert_eq!(
-                select_tilo_root_partition("/dev/sda", lsblk).as_deref(),
-                Some("/dev/sda3")
-            );
-        }
-
-        {
-            let lsblk = "\
-/dev/sda\n\
-/dev/sda1 vfat\n\
-/dev/sda2 ext4 TILO_BOOT\n";
-            assert_eq!(select_tilo_root_partition("/dev/sda", lsblk), None);
-        }
-
-        {
-            let lsblk = "\
-/dev/sda\n\
-/dev/sda1 vfat\n\
-/dev/sda2 ext4 TILO_BOOT\n\
-/dev/sda3 btrfs\n";
-            assert_eq!(
-                select_tilo_root_partition("/dev/sda", lsblk).as_deref(),
-                Some("/dev/sda3")
-            );
-        }
-
-        {
-            let lsblk = "\
-/dev/loop1\n\
-/dev/loop10 btrfs\n\
-/dev/loop1p1 btrfs\n";
-            assert_eq!(
-                select_tilo_root_partition("/dev/loop1", lsblk).as_deref(),
-                Some("/dev/loop1p1")
-            );
-        }
-
+        phase installed_root_mount_failure_does_not_hide_the_handoff;
         {
             let staged = tempfile::tempdir().unwrap();
-            let conn = staged.path().join("etc/NetworkManager/system-connections");
-            std::fs::create_dir_all(&conn).unwrap();
-            std::fs::write(conn.join("tilo-setup.nmconnection"), b"ssid=studio\n").unwrap();
-            std::fs::create_dir_all(staged.path().join("var/lib/tilo")).unwrap();
-            std::fs::write(staged.path().join("var/lib/tilo/device.key"), b"secret").unwrap();
-
-            let mnt = tempfile::tempdir().unwrap();
-            let etc = mnt.path().join("ostree/deploy/tilo/deploy/abcd.0/etc");
-            let var = mnt.path().join("ostree/deploy/tilo/var");
-            std::fs::create_dir_all(&etc).unwrap();
-            std::fs::create_dir_all(&var).unwrap();
-
-            apply_handoff_stage_onto_mounted_root(mnt.path(), staged.path()).unwrap();
-            assert_eq!(
-                std::fs::read(
-                    etc.join("NetworkManager/system-connections/tilo-setup.nmconnection")
-                )
-                .unwrap(),
-                b"ssid=studio\n"
-            );
-            assert_eq!(
-                std::fs::read(var.join("lib/tilo/device.key")).unwrap(),
-                b"secret"
-            );
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn installed_root_mount_failure_does_not_hide_the_handoff() {
-        let staged = tempfile::tempdir().unwrap();
-        std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
-        let device = tempfile::NamedTempFile::new().unwrap();
-        let before = std::fs::read(device.path()).unwrap();
-        let error = copy_handoff_onto_installed_root("/dev/tilo-no-such-root", staged.path())
-            .expect_err("a missing installed root must fail the write");
-        assert!(
-            error.to_string().contains("could not mount"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(std::fs::read(device.path()).unwrap(), before);
-        assert!(
-            !before
-                .windows(20)
-                .any(|window| window == b"TILO_SETUP_HANDOFF")
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn disk_image_file_is_not_a_successful_slack_handoff_when_it_cannot_be_inspected() {
-        let staged = tempfile::tempdir().unwrap();
-        std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
-        let mut bytes = vec![0_u8; 520];
-        bytes[512..520].copy_from_slice(b"EFI PART");
-        let device = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(device.path(), &bytes).unwrap();
-        let error = handoff_when_root_was_not_found(device.path(), 520, 520, staged.path())
-            .expect_err("a GPT image that cannot be loop-mounted must fail");
-        assert!(
-            error.to_string().contains("were not applied"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(std::fs::read(device.path()).unwrap(), bytes);
-
-        let mut qcow = vec![0_u8; 16];
-        qcow[..4].copy_from_slice(b"QFI\xfb");
-        let qcow_file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(qcow_file.path(), &qcow).unwrap();
-        let error = handoff_when_root_was_not_found(qcow_file.path(), 16, 16, staged.path())
-            .expect_err("a qcow2 image that cannot be loop-mounted must fail");
-        assert!(
-            error.to_string().contains("were not applied"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(std::fs::read(qcow_file.path()).unwrap(), qcow);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_mountpoint_listing_means_the_disk_is_busy() {
-        assert!(!mountpoint_listing_is_busy(""));
-        assert!(!mountpoint_listing_is_busy("\n"));
-        assert!(mountpoint_listing_is_busy("/run/media/tilo\n"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn image_customization_does_not_fake_a_home_file_slack_success() {
-        let image = tempfile::NamedTempFile::new().unwrap();
-        let before = b"not-a-disk-image";
-        std::fs::write(image.path(), before).unwrap();
-        let staged = tempfile::tempdir().unwrap();
-        std::fs::create_dir(staged.path().join(crate::handoff::ACCOUNT_HOME_FILES)).unwrap();
-        std::fs::write(
-            staged
-                .path()
-                .join(crate::handoff::ACCOUNT_HOME_FILES)
-                .join("SETUP.md"),
-            b"private setup",
-        )
-        .unwrap();
-        let error = apply_handoff_stage_to_image_file(image.path(), staged.path())
-            .expect_err("a home-only request needs an installed root, not empty installer slack");
-        assert!(error.to_string().contains("installed"), "{error}");
-        assert_eq!(std::fs::read(image.path()).unwrap(), before);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn image_file_is_not_rejected_before_the_loop_mount() {
-        let staged = tempfile::tempdir().unwrap();
-        std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
-        let device = tempfile::NamedTempFile::new().unwrap();
-        let before = b"not-a-disk-image";
-        std::fs::write(device.path(), before).unwrap();
-        let mountpoint = tempfile::tempdir().unwrap();
-        let observed = std::cell::Cell::new(None);
-        let result = block_devices::installed_root::with_written_root_observed(
-            device.path(),
-            mountpoint.path(),
-            |mnt| apply_handoff_stage_onto_mounted_root(mnt, staged.path()),
-            |attached| observed.set(Some(attached)),
-        );
-        let attached = observed
-            .get()
-            .expect("a regular file must reach the loop attachment attempt");
-        if attached {
-            let error = result.expect_err("an attached file without partitions must fail closed");
-            assert!(error.to_string().contains("installed root"), "{error}");
-        } else {
+            std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+            let device = tempfile::NamedTempFile::new().unwrap();
+            let before = std::fs::read(device.path()).unwrap();
+            let error = copy_handoff_onto_installed_root("/dev/tilo-no-such-root", staged.path())
+                .expect_err("a missing installed root must fail the write");
             assert!(
-                matches!(result, Ok(false)),
-                "a failed loop attachment cannot report a copied root: {result:?}"
+                error.to_string().contains("could not mount"),
+                "unexpected error: {error}"
+            );
+            assert_eq!(std::fs::read(device.path()).unwrap(), before);
+            assert!(
+                !before
+                    .windows(20)
+                    .any(|window| window == b"TILO_SETUP_HANDOFF")
             );
         }
-        assert_eq!(std::fs::read(device.path()).unwrap(), before);
-    }
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn descriptor_writer_provisions_large_home_media_and_embeds_profile_in_gpt_gap() {
-        use std::os::unix::fs::FileExt;
-        let (_source_dir, source_path, source) = crate::media_layout::tests::disk();
-        source
-            .set_len(4 * 1024 * 1024)
-            .expect("exact installer fixture");
-        let mut target = tempfile::tempfile().expect("target fixture");
-        target
-            .set_len(64 * 1024 * 1024)
-            .expect("large media fixture");
-        let mut request = req();
-        request.source.path = source_path.to_string_lossy().into_owned();
-        request.source.size = 4 * 1024 * 1024;
-        request.source.identity = None;
-        request.source.expected_sha256 = None;
-        request.source.installable = true;
-        request.target.size = 64 * 1024 * 1024;
-        request.target.stable_id = Some("usb:fixture".into());
-        request.provision_migration_data = true;
-        assert_eq!(
-            run_job_file_bound(&request, &mut target, &|| false, |_| {}),
-            JobResult::Verified
-        );
-        let binding = crate::media_layout::binding(&target, request.target.size, "usb:fixture")
-            .expect("actual writer GPT");
-        let mut profile = vec![0; PROFILE_BLOCK_SIZE];
-        target
-            .read_exact_at(&mut profile, binding.profile_offset)
-            .expect("profile gap");
-        assert_eq!(
-            profile,
-            encode_profile_block(&request.profile).expect("canonical profile")
-        );
-        let mut boot = vec![0; 19];
-        target
-            .read_exact_at(&mut boot, 2048 * 512)
-            .expect("boot payload");
-        assert_eq!(boot, b"signed boot payload");
-        let mut old = vec![0; PROFILE_BLOCK_SIZE];
-        target
-            .read_exact_at(&mut old, request.target.size - PROFILE_BLOCK_SIZE as u64)
-            .expect("relocated backup");
-        assert_ne!(old, profile);
+
+        phase disk_image_file_is_not_a_successful_slack_handoff_when_it_cannot_be_inspected;
+        {
+            let staged = tempfile::tempdir().unwrap();
+            std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+            let mut bytes = vec![0_u8; 520];
+            bytes[512..520].copy_from_slice(b"EFI PART");
+            let device = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(device.path(), &bytes).unwrap();
+            let error = handoff_when_root_was_not_found(device.path(), 520, 520, staged.path())
+                .expect_err("a GPT image that cannot be loop-mounted must fail");
+            assert!(
+                error.to_string().contains("were not applied"),
+                "unexpected error: {error}"
+            );
+            assert_eq!(std::fs::read(device.path()).unwrap(), bytes);
+
+            let mut qcow = vec![0_u8; 16];
+            qcow[..4].copy_from_slice(b"QFI\xfb");
+            let qcow_file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(qcow_file.path(), &qcow).unwrap();
+            let error = handoff_when_root_was_not_found(qcow_file.path(), 16, 16, staged.path())
+                .expect_err("a qcow2 image that cannot be loop-mounted must fail");
+            assert!(
+                error.to_string().contains("were not applied"),
+                "unexpected error: {error}"
+            );
+            assert_eq!(std::fs::read(qcow_file.path()).unwrap(), qcow);
+        }
+
+        phase a_mountpoint_listing_means_the_disk_is_busy;
+        {
+            assert!(!mountpoint_listing_is_busy(""));
+            assert!(!mountpoint_listing_is_busy("\n"));
+            assert!(mountpoint_listing_is_busy("/run/media/tilo\n"));
+        }
+
+        phase image_customization_does_not_fake_a_home_file_slack_success;
+        {
+            let image = tempfile::NamedTempFile::new().unwrap();
+            let before = b"not-a-disk-image";
+            std::fs::write(image.path(), before).unwrap();
+            let staged = tempfile::tempdir().unwrap();
+            std::fs::create_dir(staged.path().join(crate::handoff::ACCOUNT_HOME_FILES)).unwrap();
+            std::fs::write(
+                staged
+                    .path()
+                    .join(crate::handoff::ACCOUNT_HOME_FILES)
+                    .join("SETUP.md"),
+                b"private setup",
+            )
+            .unwrap();
+            let error = apply_handoff_stage_to_image_file(image.path(), staged.path())
+                .expect_err("a home-only request needs an installed root, not empty installer slack");
+            assert!(error.to_string().contains("installed"), "{error}");
+            assert_eq!(std::fs::read(image.path()).unwrap(), before);
+        }
+
+        phase image_file_is_not_rejected_before_the_loop_mount;
+        {
+            let staged = tempfile::tempdir().unwrap();
+            std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+            let device = tempfile::NamedTempFile::new().unwrap();
+            let before = b"not-a-disk-image";
+            std::fs::write(device.path(), before).unwrap();
+            let mountpoint = tempfile::tempdir().unwrap();
+            let observed = std::cell::Cell::new(None);
+            let result = block_devices::installed_root::with_written_root_observed(
+                device.path(),
+                mountpoint.path(),
+                |mnt| apply_handoff_stage_onto_mounted_root(mnt, staged.path()),
+                |attached| observed.set(Some(attached)),
+            );
+            let attached = observed
+                .get()
+                .expect("a regular file must reach the loop attachment attempt");
+            if attached {
+                let error = result.expect_err("an attached file without partitions must fail closed");
+                assert!(error.to_string().contains("installed root"), "{error}");
+            } else {
+                assert!(
+                    matches!(result, Ok(false)),
+                    "a failed loop attachment cannot report a copied root: {result:?}"
+                );
+            }
+            assert_eq!(std::fs::read(device.path()).unwrap(), before);
+        }
+
+        phase descriptor_writer_provisions_large_home_media_and_embeds_profile_in_gpt_gap;
+        {
+            use std::os::unix::fs::FileExt;
+            let (_source_dir, source_path, source) = crate::media_layout::tests::disk();
+            source
+                .set_len(4 * 1024 * 1024)
+                .expect("exact installer fixture");
+            let mut target = tempfile::tempfile().expect("target fixture");
+            target
+                .set_len(64 * 1024 * 1024)
+                .expect("large media fixture");
+            let mut request = req();
+            request.source.path = source_path.to_string_lossy().into_owned();
+            request.source.size = 4 * 1024 * 1024;
+            request.source.identity = None;
+            request.source.expected_sha256 = None;
+            request.source.installable = true;
+            request.target.size = 64 * 1024 * 1024;
+            request.target.stable_id = Some("usb:fixture".into());
+            request.provision_migration_data = true;
+            assert_eq!(
+                run_job_file_bound(&request, &mut target, &|| false, |_| {}),
+                JobResult::Verified
+            );
+            let binding = crate::media_layout::binding(&target, request.target.size, "usb:fixture")
+                .expect("actual writer GPT");
+            let mut profile = vec![0; PROFILE_BLOCK_SIZE];
+            target
+                .read_exact_at(&mut profile, binding.profile_offset)
+                .expect("profile gap");
+            assert_eq!(
+                profile,
+                encode_profile_block(&request.profile).expect("canonical profile")
+            );
+            let mut boot = vec![0; 19];
+            target
+                .read_exact_at(&mut boot, 2048 * 512)
+                .expect("boot payload");
+            assert_eq!(boot, b"signed boot payload");
+            let mut old = vec![0; PROFILE_BLOCK_SIZE];
+            target
+                .read_exact_at(&mut old, request.target.size - PROFILE_BLOCK_SIZE as u64)
+                .expect("relocated backup");
+            assert_ne!(old, profile);
+        }
     }
 }

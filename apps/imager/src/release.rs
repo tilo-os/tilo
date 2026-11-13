@@ -1112,194 +1112,310 @@ mod tests {
         tilo_net::http::blocking_client().build().unwrap()
     }
 
-    #[test]
-    fn media_selection_matches_the_native_host_architecture_only() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn a_release_is_selected_for_the_architecture_it_was_built_for;
+
+        phase media_selection_matches_the_native_host_architecture_only;
         {
-            assert!(bundled_releases().is_ok());
+            {
+                assert!(bundled_releases().is_ok());
+            }
+
+            {
+                let releases =
+                    releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
+                assert_eq!(releases.len(), 1);
+                assert_eq!(releases[0].name, "Tilo aarch64");
+                assert!(releases[0].url.ends_with("tilo-aarch64.img.zst"));
+                assert_eq!(releases[0].image_sha256, "b".repeat(64));
+            }
+
+            {
+                let releases =
+                    releases_for_host(&catalog_with_both_architectures(), Ok(Some("x86_64"))).unwrap();
+                assert_eq!(releases.len(), 1);
+                assert_eq!(releases[0].name, "Tilo x86_64");
+            }
+
+            {
+                let mut catalog: serde_json::Value =
+                    serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+                catalog["releases"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|release| release["arch"] == "x86_64");
+                assert!(
+                    releases_for_host(&catalog.to_string(), Ok(Some("aarch64")))
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+
+            {
+                let catalog = catalog_with_both_architectures();
+                assert!(releases_for_host(&catalog, Ok(None)).unwrap().is_empty());
+                assert_eq!(
+                    releases_for_host(&catalog, Err("host detection failed".into())).unwrap_err(),
+                    "host detection failed"
+                );
+            }
+
+            {
+                let catalog = catalog_with_both_architectures();
+                for invalid in [
+                    catalog.replace("code.tilo.so", "untrusted.example"),
+                    catalog.replace(&"a".repeat(64), "invalid-digest"),
+                    catalog.replace("\"image_size\":64", "\"image_size\":0"),
+                ] {
+                    assert!(releases_for_host(&invalid, Ok(Some("aarch64"))).is_err());
+                }
+            }
         }
 
+        phase another_computers_architecture_selects_its_own_verified_payload;
         {
-            let releases =
-                releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
-            assert_eq!(releases.len(), 1);
-            assert_eq!(releases[0].name, "Tilo aarch64");
-            assert!(releases[0].url.ends_with("tilo-aarch64.img.zst"));
-            assert_eq!(releases[0].image_sha256, "b".repeat(64));
-        }
+            let catalog = catalog_with_both_architectures();
+            let arm = releases_for_arch(&catalog, "aarch64").unwrap();
+            assert_eq!(arm.len(), 1);
+            assert_eq!(arm[0].architecture, "aarch64");
+            assert_eq!(arm[0].image_sha256, "b".repeat(64));
+            let x86 = releases_for_arch(&catalog, "x86_64").unwrap();
+            assert_eq!(x86.len(), 1);
+            assert_eq!(x86[0].architecture, "x86_64");
 
-        {
-            let releases =
-                releases_for_host(&catalog_with_both_architectures(), Ok(Some("x86_64"))).unwrap();
-            assert_eq!(releases.len(), 1);
-            assert_eq!(releases[0].name, "Tilo x86_64");
-        }
+            assert!(bundled_releases_for_arch("aarch64").is_ok());
+            assert!(bundled_releases_for_arch("x86_64").is_ok());
+            assert!(bundled_releases_for_arch("i686").is_err());
+            assert!(bundled_releases_for_arch("riscv64").unwrap().is_empty());
 
-        {
-            let mut catalog: serde_json::Value =
-                serde_json::from_str(&catalog_with_both_architectures()).unwrap();
-            catalog["releases"]
+            let mut only_x86: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+            only_x86["releases"]
                 .as_array_mut()
                 .unwrap()
                 .retain(|release| release["arch"] == "x86_64");
             assert!(
-                releases_for_host(&catalog.to_string(), Ok(Some("aarch64")))
+                releases_for_arch(&only_x86.to_string(), "aarch64")
                     .unwrap()
                     .is_empty()
             );
+
+            let mut corrupt: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+            corrupt["releases"][1]["archive_sha256"] = serde_json::json!("not-a-digest");
+            assert!(releases_for_arch(&corrupt.to_string(), "x86_64").is_err());
         }
 
+        phase internal_selection_follows_the_target_architecture;
         {
-            let catalog = catalog_with_both_architectures();
-            assert!(releases_for_host(&catalog, Ok(None)).unwrap().is_empty());
-            assert_eq!(
-                releases_for_host(&catalog, Err("host detection failed".into())).unwrap_err(),
-                "host detection failed"
+            let entries = ["x86_64", "aarch64"].map(|arch| {
+                serde_json::json!({
+                    "purpose": "tilo-internal-installer",
+                    "layout": "internal-bundle-v2",
+                    "release_id": format!("release-{arch}"),
+                    "arch": arch,
+                    "manifest_url": format!("https://code.tilo.so/tilo/releases/download/{arch}/manifest.json"),
+                    "manifest_sha256": "a".repeat(64),
+                    "manifest_size": 128,
+                })
+            });
+            let catalog = serde_json::json!({
+                "schema": 1,
+                "tag": "imager-v1.0.0",
+                "releases": entries,
+            })
+            .to_string();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("internal-catalog.json");
+            std::fs::write(&path, catalog).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("TILO_STAGING_TEST_CATALOG", &path);
+
+            let arm = bundled_internal_releases_for_arch("aarch64").unwrap();
+            assert_eq!(arm.len(), 1);
+            assert_eq!(arm[0].architecture(), "aarch64");
+            assert_eq!(arm[0].release_id(), "release-aarch64");
+            let x86 = bundled_internal_releases_for_arch("x86_64").unwrap();
+            assert_eq!(x86.len(), 1);
+            assert_eq!(x86[0].architecture(), "x86_64");
+            assert!(bundled_internal_releases_for_arch("i686").is_err());
+            assert!(
+                bundled_internal_releases_for_arch("riscv64")
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                bundled_internal_releases_for_arch(if std::env::consts::ARCH == "aarch64" {
+                    "x86_64"
+                } else {
+                    "aarch64"
+                })
+                .is_ok()
             );
         }
 
+        phase target_policy_selection_is_architecture_bound_and_absent_until_published;
         {
-            let catalog = catalog_with_both_architectures();
-            for invalid in [
-                catalog.replace("code.tilo.so", "untrusted.example"),
-                catalog.replace(&"a".repeat(64), "invalid-digest"),
-                catalog.replace("\"image_size\":64", "\"image_size\":0"),
-            ] {
-                assert!(releases_for_host(&invalid, Ok(Some("aarch64"))).is_err());
+            assert_eq!(bundled_target_policy_for_arch("x86_64").unwrap(), None);
+            assert!(bundled_target_policy_for_arch("i686").is_err());
+            assert_eq!(bundled_target_policy_for_arch("riscv64").unwrap(), None);
+            let entry = |arch: &str| {
+                serde_json::json!({
+                    "purpose": "tilo-target-policy",
+                    "layout": "target-policy-bundle-v1",
+                    "release_id": "imager-v1.0.0",
+                    "arch": arch,
+                    "generation": 11,
+                    "target_uki_sha256": "b".repeat(64),
+                    "url": format!("https://code.tilo.so/releases/{arch}/target-policy.tar"),
+                    "archive_sha256": "c".repeat(64),
+                    "archive_size": 4096,
+                })
+            };
+            let catalog = serde_json::json!({
+                "schema": 1,
+                "tag": "imager-v1.0.0",
+                "releases": [entry("x86_64"), entry("aarch64")],
+            })
+            .to_string();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("target-policy-catalog.json");
+            std::fs::write(&path, &catalog).unwrap();
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment.set("TILO_STAGING_TEST_CATALOG", &path);
+
+            let x86 = bundled_target_policy_for_arch("x86_64").unwrap().unwrap();
+            assert_eq!(x86.generation, 11);
+            assert_eq!(x86.target_uki_sha256, [0xbb; 32]);
+            assert_eq!(
+                bundled_target_policy_for_arch("aarch64")
+                    .unwrap()
+                    .unwrap()
+                    .target_uki_sha256,
+                [0xbb; 32]
+            );
+
+            let mut duplicate: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+            duplicate["releases"]
+                .as_array_mut()
+                .unwrap()
+                .push(entry("x86_64"));
+            std::fs::write(&path, duplicate.to_string()).unwrap();
+            assert!(
+                bundled_target_policy_for_arch("x86_64").is_err(),
+                "two target policies for one architecture are ambiguous"
+            );
+        }
+
+        phase hardware_profiles_are_explicit_data_driven_and_provenance_bound;
+        {
+            {
+                let releases = releases_for_host(
+                    &catalog_with_hardware_variant().to_string(),
+                    Ok(Some("aarch64")),
+                )
+                .unwrap();
+                assert_eq!(releases.len(), 2);
+                assert_eq!(releases[0].hardware_profile, "generic");
+                assert_eq!(releases[1].hardware_profile, "lenovo-83ed");
+                assert_ne!(releases[0].selection_id(), releases[1].selection_id());
+                let board = releases[1].to_source();
+                assert!(board.name.contains("lenovo-83ed only"));
+                assert!(board.label.contains("lenovo-83ed"));
+                assert_eq!(
+                    board.expected_sha256.as_deref(),
+                    Some("c".repeat(64).as_str())
+                );
+                assert!(!releases[0].matches_source(&board));
+                assert!(releases[1].matches_source(&board));
+            }
+
+            {
+                let legacy =
+                    releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
+                assert_eq!(legacy[0].hardware_profile, "generic");
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["schema"] = 1.into();
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            }
+
+            {
+                let mut catalog: serde_json::Value =
+                    serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+                catalog["releases"][1]["provenance"] = serde_json::json!({
+                    "source_image_id": format!("sha256:{}", "d".repeat(64)),
+                    "input_qcow2_sha256": "e".repeat(64),
+                    "hardware_profile_sha256": null,
+                    "target_update_ref": null,
+                });
+                let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
+                assert_eq!(releases[0].hardware_profile, "generic");
+            }
+
+            {
+                for invalid in [
+                    serde_json::Value::Null,
+                    "".into(),
+                    "../board".into(),
+                    "Board".into(),
+                ] {
+                    let mut catalog = catalog_with_hardware_variant();
+                    catalog["releases"][2]["hardware_profile"] = invalid;
+                    assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+                }
+                for field in ["hardware_profile", "provenance"] {
+                    let mut catalog = catalog_with_hardware_variant();
+                    catalog["releases"][2]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(field);
+                    assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+                }
+                for field in [
+                    "source_image_id",
+                    "hardware_profile_sha256",
+                    "input_qcow2_sha256",
+                    "target_update_ref",
+                ] {
+                    let mut catalog = catalog_with_hardware_variant();
+                    catalog["releases"][2]["provenance"][field] = "untrusted".into();
+                    assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+                }
+                for origin in [
+                    "registry.tilo.so/tilo/tilo:gen7".to_owned(),
+                    format!("code.tilo.so/tilo/tilo@sha256:{}", "a".repeat(64)),
+                ] {
+                    let mut catalog = catalog_with_hardware_variant();
+                    catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
+                    assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_ok());
+                }
+                for origin in [
+                    "registry.tilo.so/tilo/tilo-vm:gen7",
+                    "registry.tilo.so/tilo/tilo:",
+                    "code.tilo.so/tilo/tilo@sha256:short",
+                    "example.org/tilo/tilo:gen7",
+                ] {
+                    let mut catalog = catalog_with_hardware_variant();
+                    catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
+                    assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+                }
+                let mut catalog = catalog_with_hardware_variant();
+                let duplicate = catalog["releases"][2].clone();
+                catalog["releases"].as_array_mut().unwrap().push(duplicate);
+                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            }
+
+            {
+                let mut catalog = catalog_with_hardware_variant();
+                catalog["releases"][2]["hardware_profile"] = "another-reviewed-board".into();
+                let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
+                assert!(
+                    releases[1]
+                        .to_source()
+                        .name
+                        .contains("another-reviewed-board only")
+                );
             }
         }
-    }
-
-    #[test]
-    fn another_computers_architecture_selects_its_own_verified_payload() {
-        let catalog = catalog_with_both_architectures();
-        let arm = releases_for_arch(&catalog, "aarch64").unwrap();
-        assert_eq!(arm.len(), 1);
-        assert_eq!(arm[0].architecture, "aarch64");
-        assert_eq!(arm[0].image_sha256, "b".repeat(64));
-        let x86 = releases_for_arch(&catalog, "x86_64").unwrap();
-        assert_eq!(x86.len(), 1);
-        assert_eq!(x86[0].architecture, "x86_64");
-
-        assert!(bundled_releases_for_arch("aarch64").is_ok());
-        assert!(bundled_releases_for_arch("x86_64").is_ok());
-        assert!(bundled_releases_for_arch("i686").is_err());
-        assert!(bundled_releases_for_arch("riscv64").unwrap().is_empty());
-
-        let mut only_x86: serde_json::Value = serde_json::from_str(&catalog).unwrap();
-        only_x86["releases"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|release| release["arch"] == "x86_64");
-        assert!(
-            releases_for_arch(&only_x86.to_string(), "aarch64")
-                .unwrap()
-                .is_empty()
-        );
-
-        let mut corrupt: serde_json::Value = serde_json::from_str(&catalog).unwrap();
-        corrupt["releases"][1]["archive_sha256"] = serde_json::json!("not-a-digest");
-        assert!(releases_for_arch(&corrupt.to_string(), "x86_64").is_err());
-    }
-
-    #[test]
-    fn internal_selection_follows_the_target_architecture() {
-        let entries = ["x86_64", "aarch64"].map(|arch| {
-            serde_json::json!({
-                "purpose": "tilo-internal-installer",
-                "layout": "internal-bundle-v2",
-                "release_id": format!("release-{arch}"),
-                "arch": arch,
-                "manifest_url": format!("https://code.tilo.so/tilo/releases/download/{arch}/manifest.json"),
-                "manifest_sha256": "a".repeat(64),
-                "manifest_size": 128,
-            })
-        });
-        let catalog = serde_json::json!({
-            "schema": 1,
-            "tag": "imager-v1.0.0",
-            "releases": entries,
-        })
-        .to_string();
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("internal-catalog.json");
-        std::fs::write(&path, catalog).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("TILO_STAGING_TEST_CATALOG", &path);
-
-        let arm = bundled_internal_releases_for_arch("aarch64").unwrap();
-        assert_eq!(arm.len(), 1);
-        assert_eq!(arm[0].architecture(), "aarch64");
-        assert_eq!(arm[0].release_id(), "release-aarch64");
-        let x86 = bundled_internal_releases_for_arch("x86_64").unwrap();
-        assert_eq!(x86.len(), 1);
-        assert_eq!(x86[0].architecture(), "x86_64");
-        assert!(bundled_internal_releases_for_arch("i686").is_err());
-        assert!(
-            bundled_internal_releases_for_arch("riscv64")
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            bundled_internal_releases_for_arch(if std::env::consts::ARCH == "aarch64" {
-                "x86_64"
-            } else {
-                "aarch64"
-            })
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn target_policy_selection_is_architecture_bound_and_absent_until_published() {
-        assert_eq!(bundled_target_policy_for_arch("x86_64").unwrap(), None);
-        assert!(bundled_target_policy_for_arch("i686").is_err());
-        assert_eq!(bundled_target_policy_for_arch("riscv64").unwrap(), None);
-        let entry = |arch: &str| {
-            serde_json::json!({
-                "purpose": "tilo-target-policy",
-                "layout": "target-policy-bundle-v1",
-                "release_id": "imager-v1.0.0",
-                "arch": arch,
-                "generation": 11,
-                "target_uki_sha256": "b".repeat(64),
-                "url": format!("https://code.tilo.so/releases/{arch}/target-policy.tar"),
-                "archive_sha256": "c".repeat(64),
-                "archive_size": 4096,
-            })
-        };
-        let catalog = serde_json::json!({
-            "schema": 1,
-            "tag": "imager-v1.0.0",
-            "releases": [entry("x86_64"), entry("aarch64")],
-        })
-        .to_string();
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("target-policy-catalog.json");
-        std::fs::write(&path, &catalog).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("TILO_STAGING_TEST_CATALOG", &path);
-
-        let x86 = bundled_target_policy_for_arch("x86_64").unwrap().unwrap();
-        assert_eq!(x86.generation, 11);
-        assert_eq!(x86.target_uki_sha256, [0xbb; 32]);
-        assert_eq!(
-            bundled_target_policy_for_arch("aarch64")
-                .unwrap()
-                .unwrap()
-                .target_uki_sha256,
-            [0xbb; 32]
-        );
-
-        let mut duplicate: serde_json::Value = serde_json::from_str(&catalog).unwrap();
-        duplicate["releases"]
-            .as_array_mut()
-            .unwrap()
-            .push(entry("x86_64"));
-        std::fs::write(&path, duplicate.to_string()).unwrap();
-        assert!(
-            bundled_target_policy_for_arch("x86_64").is_err(),
-            "two target policies for one architecture are ambiguous"
-        );
     }
 
     fn catalog_with_both_architectures() -> String {
@@ -1344,193 +1460,237 @@ mod tests {
         catalog
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn hardware_profiles_are_explicit_data_driven_and_provenance_bound() {
-        {
-            let releases = releases_for_host(
-                &catalog_with_hardware_variant().to_string(),
-                Ok(Some("aarch64")),
-            )
-            .unwrap();
-            assert_eq!(releases.len(), 2);
-            assert_eq!(releases[0].hardware_profile, "generic");
-            assert_eq!(releases[1].hardware_profile, "lenovo-83ed");
-            assert_ne!(releases[0].selection_id(), releases[1].selection_id());
-            let board = releases[1].to_source();
-            assert!(board.name.contains("lenovo-83ed only"));
-            assert!(board.label.contains("lenovo-83ed"));
-            assert_eq!(
-                board.expected_sha256.as_deref(),
-                Some("c".repeat(64).as_str())
-            );
-            assert!(!releases[0].matches_source(&board));
-            assert!(releases[1].matches_source(&board));
-        }
+    tilo_test_env::scenario! {
+        fn a_release_download_keeps_strict_sources_ranges_and_partials;
 
+        phase release_sources_keep_strict_digests_identity_and_trusted_redirects;
         {
-            let legacy =
-                releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
-            assert_eq!(legacy[0].hardware_profile, "generic");
-            let mut catalog = catalog_with_hardware_variant();
-            catalog["schema"] = 1.into();
-            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-        }
-
-        {
-            let mut catalog: serde_json::Value =
-                serde_json::from_str(&catalog_with_both_architectures()).unwrap();
-            catalog["releases"][1]["provenance"] = serde_json::json!({
-                "source_image_id": format!("sha256:{}", "d".repeat(64)),
-                "input_qcow2_sha256": "e".repeat(64),
-                "hardware_profile_sha256": null,
-                "target_update_ref": null,
-            });
-            let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
-            assert_eq!(releases[0].hardware_profile, "generic");
-        }
-
-        {
-            for invalid in [
-                serde_json::Value::Null,
-                "".into(),
-                "../board".into(),
-                "Board".into(),
-            ] {
-                let mut catalog = catalog_with_hardware_variant();
-                catalog["releases"][2]["hardware_profile"] = invalid;
-                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+            {
+                assert!(validate_digest(&"a".repeat(64)).is_ok());
+                assert!(validate_digest(&"z".repeat(64)).is_err());
+                assert!(validate_digest("abc").is_err());
             }
-            for field in ["hardware_profile", "provenance"] {
-                let mut catalog = catalog_with_hardware_variant();
-                catalog["releases"][2]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(field);
-                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+
+            {
+                let image = tempfile::NamedTempFile::new().unwrap();
+                let release = TiloRelease {
+                    name: "Tilo".into(),
+                    version: "1.0".into(),
+                    size: 1,
+                    channel: "stable".into(),
+                    architecture: "aarch64".into(),
+                    hardware_profile: "generic".into(),
+                    local_path: String::new(),
+                    url:
+                        "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                            .into(),
+                    archive_sha256: "a".repeat(64),
+                    archive_size: 1,
+                    image_sha256: "b".repeat(64),
+                    account_custody: None,
+                    home_archive: None,
+                applications: None,
+                    original_source: None,
+                };
+
+                let source = source_for(&release, image.path()).unwrap();
+                let expected = "b".repeat(64);
+                assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
+                assert!(source.identity.is_some());
+                assert_eq!(
+                    source.identity,
+                    crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
+                );
+                let missing = image.path().with_extension("missing");
+                assert!(source_for(&release, &missing).is_err());
             }
-            for field in [
-                "source_image_id",
-                "hardware_profile_sha256",
-                "input_qcow2_sha256",
-                "target_update_ref",
-            ] {
-                let mut catalog = catalog_with_hardware_variant();
-                catalog["releases"][2]["provenance"][field] = "untrusted".into();
-                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+
+            {
+                let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
+                assert!(same_origin(
+                    &reqwest::Url::parse("https://code.tilo.so/releases/file").unwrap(),
+                    &trusted
+                ));
+                assert!(!same_origin(
+                    &reqwest::Url::parse("https://code.tilo.so:444/releases/file").unwrap(),
+                    &trusted
+                ));
+                assert!(!same_origin(
+                    &reqwest::Url::parse("http://code.tilo.so/releases/file").unwrap(),
+                    &trusted
+                ));
             }
-            for origin in [
-                "registry.tilo.so/tilo/tilo:gen7".to_owned(),
-                format!("code.tilo.so/tilo/tilo@sha256:{}", "a".repeat(64)),
-            ] {
-                let mut catalog = catalog_with_hardware_variant();
-                catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
-                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_ok());
+        }
+
+        phase release_download_resumes_only_valid_ranges;
+        {
+            {
+                let payload = b"signed installer archive bytes";
+                let split = 9;
+                let (url, origin, requests, server) = serve(vec![
+                    HttpResponse {
+                        status: "200 OK",
+                        headers: vec![],
+                        body: payload[..split].to_vec(),
+                        advertised_size: Some(payload.len()),
+                    },
+                    HttpResponse {
+                        status: "206 Partial Content",
+                        headers: vec![format!(
+                            "Content-Range: bytes {split}-{}/{}",
+                            payload.len() - 1,
+                            payload.len()
+                        )],
+                        body: payload[split..].to_vec(),
+                        advertised_size: None,
+                    },
+                ]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                let client = test_client();
+
+                assert!(download_archive(&client, &url, &origin, &part, payload.len() as u64).is_err());
+                assert_eq!(fs::read(&part).unwrap(), payload[..split]);
+                download_archive(&client, &url, &origin, &part, payload.len() as u64).unwrap();
+                assert_eq!(fs::read(&part).unwrap(), payload);
+                server.join().unwrap();
+                let requests = requests.lock().unwrap();
+                assert!(!requests[0].contains("Range:"));
+                assert!(requests[1].contains(&format!("range: bytes={split}-")));
+                drop(requests);
             }
-            for origin in [
-                "registry.tilo.so/tilo/tilo-vm:gen7",
-                "registry.tilo.so/tilo/tilo:",
-                "code.tilo.so/tilo/tilo@sha256:short",
-                "example.org/tilo/tilo:gen7",
-            ] {
-                let mut catalog = catalog_with_hardware_variant();
-                catalog["releases"][2]["provenance"]["target_update_ref"] = origin.into();
-                assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-            }
-            let mut catalog = catalog_with_hardware_variant();
-            let duplicate = catalog["releases"][2].clone();
-            catalog["releases"].as_array_mut().unwrap().push(duplicate);
-            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
-        }
 
-        {
-            let mut catalog = catalog_with_hardware_variant();
-            catalog["releases"][2]["hardware_profile"] = "another-reviewed-board".into();
-            let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
-            assert!(
-                releases[1]
-                    .to_source()
-                    .name
-                    .contains("another-reviewed-board only")
-            );
-        }
-    }
-
-    #[test]
-    fn release_sources_keep_strict_digests_identity_and_trusted_redirects() {
-        {
-            assert!(validate_digest(&"a".repeat(64)).is_ok());
-            assert!(validate_digest(&"z".repeat(64)).is_err());
-            assert!(validate_digest("abc").is_err());
-        }
-
-        {
-            let image = tempfile::NamedTempFile::new().unwrap();
-            let release = TiloRelease {
-                name: "Tilo".into(),
-                version: "1.0".into(),
-                size: 1,
-                channel: "stable".into(),
-                architecture: "aarch64".into(),
-                hardware_profile: "generic".into(),
-                local_path: String::new(),
-                url:
-                    "https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
-                        .into(),
-                archive_sha256: "a".repeat(64),
-                archive_size: 1,
-                image_sha256: "b".repeat(64),
-                account_custody: None,
-                home_archive: None,
-            applications: None,
-                original_source: None,
-            };
-
-            let source = source_for(&release, image.path()).unwrap();
-            let expected = "b".repeat(64);
-            assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
-            assert!(source.identity.is_some());
-            assert_eq!(
-                source.identity,
-                crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
-            );
-            let missing = image.path().with_extension("missing");
-            assert!(source_for(&release, &missing).is_err());
-        }
-
-        {
-            let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
-            assert!(same_origin(
-                &reqwest::Url::parse("https://code.tilo.so/releases/file").unwrap(),
-                &trusted
-            ));
-            assert!(!same_origin(
-                &reqwest::Url::parse("https://code.tilo.so:444/releases/file").unwrap(),
-                &trusted
-            ));
-            assert!(!same_origin(
-                &reqwest::Url::parse("http://code.tilo.so/releases/file").unwrap(),
-                &trusted
-            ));
-        }
-    }
-
-    #[test]
-    fn release_download_resumes_only_valid_ranges() {
-        {
-            let payload = b"signed installer archive bytes";
-            let split = 9;
-            let (url, origin, requests, server) = serve(vec![
-                HttpResponse {
+            {
+                let payload = b"complete archive from a range-ignorant server";
+                let (url, origin, requests, server) = serve(vec![HttpResponse {
                     status: "200 OK",
                     headers: vec![],
-                    body: payload[..split].to_vec(),
-                    advertised_size: Some(payload.len()),
-                },
-                HttpResponse {
+                    body: payload.to_vec(),
+                    advertised_size: None,
+                }]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                fs::write(&part, &payload[..8]).unwrap();
+
+                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
+                assert_eq!(fs::read(&part).unwrap(), payload);
+                server.join().unwrap();
+                assert!(requests.lock().unwrap()[0].contains("range: bytes=8-"));
+            }
+
+            {
+                let payload = b"archive with authenticated final digest";
+                let split = 7;
+                let (url, origin, requests, server) = serve(vec![
+                    HttpResponse {
+                        status: "206 Partial Content",
+                        headers: vec![format!(
+                            "Content-Range: bytes {}-{}/{}",
+                            split + 1,
+                            payload.len() - 1,
+                            payload.len()
+                        )],
+                        body: payload[split..].to_vec(),
+                        advertised_size: None,
+                    },
+                    HttpResponse {
+                        status: "200 OK",
+                        headers: vec![],
+                        body: payload.to_vec(),
+                        advertised_size: None,
+                    },
+                ]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                fs::write(&part, &payload[..split]).unwrap();
+
+                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
+                assert_eq!(fs::read(&part).unwrap(), payload);
+                server.join().unwrap();
+                let requests = requests.lock().unwrap();
+                assert!(requests[0].contains(&format!("range: bytes={split}-")));
+                assert!(!requests[1].contains("Range:"));
+                assert!(!requests[1].contains("range:"));
+                drop(requests);
+            }
+
+            {
+                let payload = b"small complete archive";
+                let (url, origin, requests, server) = serve(vec![HttpResponse {
+                    status: "200 OK",
+                    headers: vec![],
+                    body: payload.to_vec(),
+                    advertised_size: None,
+                }]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                fs::write(&part, vec![b'x'; payload.len() + 1]).unwrap();
+
+                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
+                assert_eq!(fs::read(&part).unwrap(), payload);
+                server.join().unwrap();
+                assert!(!requests.lock().unwrap()[0].contains("range:"));
+            }
+        }
+
+        phase release_download_failures_and_cancellation_keep_the_partial;
+        {
+            {
+                let payload = b"partial archive survives";
+                let (url, origin, requests, server) = serve(vec![HttpResponse {
+                    status: "503 Service Unavailable",
+                    headers: vec![],
+                    body: b"later".to_vec(),
+                    advertised_size: None,
+                }]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                fs::write(&part, &payload[..6]).unwrap();
+
+                assert!(
+                    download_archive(&test_client(), &url, &origin, &part, payload.len() as u64)
+                        .is_err()
+                );
+                assert_eq!(fs::read(&part).unwrap(), payload[..6]);
+                server.join().unwrap();
+                assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
+            }
+
+            {
+                let payload = b"installer bytes with progress";
+                let (url, origin, _requests, server) = serve(vec![HttpResponse {
+                    status: "200 OK",
+                    headers: vec![],
+                    body: payload.to_vec(),
+                    advertised_size: None,
+                }]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                let mut events = Vec::new();
+
+                download_archive_observed(
+                    &test_client(),
+                    &url,
+                    &origin,
+                    &part,
+                    payload.len() as u64,
+                    &DownloadControl::default(),
+                    &mut |event| events.push(event),
+                )
+                .unwrap();
+
+                server.join().unwrap();
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    DownloadEvent::Downloading { received, total }
+                        if *received == payload.len() as u64 && *total == payload.len() as u64
+                )));
+            }
+
+            {
+                let payload = b"more authenticated installer bytes";
+                let split = 8;
+                let (url, origin, _requests, server) = serve(vec![HttpResponse {
                     status: "206 Partial Content",
                     headers: vec![format!(
                         "Content-Range: bytes {split}-{}/{}",
@@ -1539,183 +1699,28 @@ mod tests {
                     )],
                     body: payload[split..].to_vec(),
                     advertised_size: None,
-                },
-            ]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            let client = test_client();
+                }]);
+                let cache = tempfile::tempdir().unwrap();
+                let part = cache.path().join("installer.part");
+                fs::write(&part, &payload[..split]).unwrap();
+                let control = DownloadControl::default();
+                control.cancel();
 
-            assert!(download_archive(&client, &url, &origin, &part, payload.len() as u64).is_err());
-            assert_eq!(fs::read(&part).unwrap(), payload[..split]);
-            download_archive(&client, &url, &origin, &part, payload.len() as u64).unwrap();
-            assert_eq!(fs::read(&part).unwrap(), payload);
-            server.join().unwrap();
-            let requests = requests.lock().unwrap();
-            assert!(!requests[0].contains("Range:"));
-            assert!(requests[1].contains(&format!("range: bytes={split}-")));
-            drop(requests);
-        }
+                let error = download_archive_observed(
+                    &test_client(),
+                    &url,
+                    &origin,
+                    &part,
+                    payload.len() as u64,
+                    &control,
+                    &mut |_| {},
+                )
+                .unwrap_err();
 
-        {
-            let payload = b"complete archive from a range-ignorant server";
-            let (url, origin, requests, server) = serve(vec![HttpResponse {
-                status: "200 OK",
-                headers: vec![],
-                body: payload.to_vec(),
-                advertised_size: None,
-            }]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            fs::write(&part, &payload[..8]).unwrap();
-
-            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-            assert_eq!(fs::read(&part).unwrap(), payload);
-            server.join().unwrap();
-            assert!(requests.lock().unwrap()[0].contains("range: bytes=8-"));
-        }
-
-        {
-            let payload = b"archive with authenticated final digest";
-            let split = 7;
-            let (url, origin, requests, server) = serve(vec![
-                HttpResponse {
-                    status: "206 Partial Content",
-                    headers: vec![format!(
-                        "Content-Range: bytes {}-{}/{}",
-                        split + 1,
-                        payload.len() - 1,
-                        payload.len()
-                    )],
-                    body: payload[split..].to_vec(),
-                    advertised_size: None,
-                },
-                HttpResponse {
-                    status: "200 OK",
-                    headers: vec![],
-                    body: payload.to_vec(),
-                    advertised_size: None,
-                },
-            ]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            fs::write(&part, &payload[..split]).unwrap();
-
-            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-            assert_eq!(fs::read(&part).unwrap(), payload);
-            server.join().unwrap();
-            let requests = requests.lock().unwrap();
-            assert!(requests[0].contains(&format!("range: bytes={split}-")));
-            assert!(!requests[1].contains("Range:"));
-            assert!(!requests[1].contains("range:"));
-            drop(requests);
-        }
-
-        {
-            let payload = b"small complete archive";
-            let (url, origin, requests, server) = serve(vec![HttpResponse {
-                status: "200 OK",
-                headers: vec![],
-                body: payload.to_vec(),
-                advertised_size: None,
-            }]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            fs::write(&part, vec![b'x'; payload.len() + 1]).unwrap();
-
-            download_archive(&test_client(), &url, &origin, &part, payload.len() as u64).unwrap();
-            assert_eq!(fs::read(&part).unwrap(), payload);
-            server.join().unwrap();
-            assert!(!requests.lock().unwrap()[0].contains("range:"));
-        }
-    }
-
-    #[test]
-    fn release_download_failures_and_cancellation_keep_the_partial() {
-        {
-            let payload = b"partial archive survives";
-            let (url, origin, requests, server) = serve(vec![HttpResponse {
-                status: "503 Service Unavailable",
-                headers: vec![],
-                body: b"later".to_vec(),
-                advertised_size: None,
-            }]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            fs::write(&part, &payload[..6]).unwrap();
-
-            assert!(
-                download_archive(&test_client(), &url, &origin, &part, payload.len() as u64)
-                    .is_err()
-            );
-            assert_eq!(fs::read(&part).unwrap(), payload[..6]);
-            server.join().unwrap();
-            assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
-        }
-
-        {
-            let payload = b"installer bytes with progress";
-            let (url, origin, _requests, server) = serve(vec![HttpResponse {
-                status: "200 OK",
-                headers: vec![],
-                body: payload.to_vec(),
-                advertised_size: None,
-            }]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            let mut events = Vec::new();
-
-            download_archive_observed(
-                &test_client(),
-                &url,
-                &origin,
-                &part,
-                payload.len() as u64,
-                &DownloadControl::default(),
-                &mut |event| events.push(event),
-            )
-            .unwrap();
-
-            server.join().unwrap();
-            assert!(events.iter().any(|event| matches!(
-                event,
-                DownloadEvent::Downloading { received, total }
-                    if *received == payload.len() as u64 && *total == payload.len() as u64
-            )));
-        }
-
-        {
-            let payload = b"more authenticated installer bytes";
-            let split = 8;
-            let (url, origin, _requests, server) = serve(vec![HttpResponse {
-                status: "206 Partial Content",
-                headers: vec![format!(
-                    "Content-Range: bytes {split}-{}/{}",
-                    payload.len() - 1,
-                    payload.len()
-                )],
-                body: payload[split..].to_vec(),
-                advertised_size: None,
-            }]);
-            let cache = tempfile::tempdir().unwrap();
-            let part = cache.path().join("installer.part");
-            fs::write(&part, &payload[..split]).unwrap();
-            let control = DownloadControl::default();
-            control.cancel();
-
-            let error = download_archive_observed(
-                &test_client(),
-                &url,
-                &origin,
-                &part,
-                payload.len() as u64,
-                &control,
-                &mut |_| {},
-            )
-            .unwrap_err();
-
-            server.join().unwrap();
-            assert!(error.contains("cancelled"));
-            assert_eq!(fs::read(&part).unwrap(), payload[..split]);
+                server.join().unwrap();
+                assert!(error.contains("cancelled"));
+                assert_eq!(fs::read(&part).unwrap(), payload[..split]);
+            }
         }
     }
 }
@@ -1732,114 +1737,413 @@ mod internal_catalog_tests {
     fn catalog(entry: Value) -> String {
         json!({"schema":1,"tag":"imager-vtest","releases":[entry]}).to_string()
     }
-    #[test]
-    fn internal_catalog_entries_parse_strictly_and_separately_from_media() {
-        {
-            assert!(parse_catalog(&catalog(media())).is_ok());
-        }
+    tilo_test_env::scenario! {
+        fn the_internal_and_media_catalogs_parse_strictly;
 
+        phase internal_catalog_entries_parse_strictly_and_separately_from_media;
         {
-            let mut value = media();
-            value["purpose"] = json!("tilo-internal-installer");
-            value["layout"] = json!("internal-bundle-v2");
-            assert!(parse_catalog(&catalog(value)).is_err());
-        }
+            {
+                assert!(parse_catalog(&catalog(media())).is_ok());
+            }
 
-        {
-            let mut value = media();
-            value["unexpected"] = json!(true);
-            assert!(parse_catalog(&catalog(value)).is_err());
-            for (field, bad) in [
-                ("archive_sha256", json!("invalid")),
-                ("url", json!("https://evil.example/file")),
-                ("image_size", json!(0)),
-            ] {
+            {
                 let mut value = media();
-                value["arch"] = json!("aarch64");
-                value[field] = bad;
-                assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+                value["purpose"] = json!("tilo-internal-installer");
+                value["layout"] = json!("internal-bundle-v2");
+                assert!(parse_catalog(&catalog(value)).is_err());
+            }
+
+            {
+                let mut value = media();
+                value["unexpected"] = json!(true);
+                assert!(parse_catalog(&catalog(value)).is_err());
+                for (field, bad) in [
+                    ("archive_sha256", json!("invalid")),
+                    ("url", json!("https://evil.example/file")),
+                    ("image_size", json!(0)),
+                ] {
+                    let mut value = media();
+                    value["arch"] = json!("aarch64");
+                    value[field] = bad;
+                    assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+                }
+            }
+
+            {
+                let mut entry = internal(b"{}");
+                entry["release_id"] = json!("loop-test");
+                entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
+                let text =
+                    json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
+                let parsed = parse_catalog(&text).unwrap();
+                assert!(matches!(
+                    parsed.releases.as_slice(),
+                    [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
+                ));
+            }
+
+            {
+                let mut value = crate::setup::internal_bundle::tests::fixture();
+                value["release_id"] = json!("imager-v1.2.3");
+                let bytes = crate::setup::internal_bundle::tests::bytes(&value);
+                let mut entry = internal(&bytes);
+                entry["release_id"] = json!("imager-v1.2.3");
+                entry["manifest_url"] = json!(
+                    "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
+                );
+                let raw =
+                    json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
+                let catalog = parse_catalog(&raw).unwrap();
+                assert_eq!(
+                    media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
+                    1
+                );
+                let release = catalog
+                    .releases
+                    .into_iter()
+                    .find_map(|entry| match entry {
+                        CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
+                        CatalogRelease::Media(_) | CatalogRelease::TargetPolicy(_) => None,
+                    })
+                    .unwrap();
+                assert_eq!(release.release_id(), "imager-v1.2.3");
+                assert!(release.verify_manifest(&bytes).is_ok());
             }
         }
 
+        phase media_catalog_retains_strict_account_consumer_proof_bound_to_image;
         {
-            let mut entry = internal(b"{}");
-            entry["release_id"] = json!("loop-test");
-            entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
-            let text =
-                json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
-            let parsed = parse_catalog(&text).unwrap();
-            assert!(matches!(
-                parsed.releases.as_slice(),
-                [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
-            ));
-        }
-
-        {
-            let mut value = crate::setup::internal_bundle::tests::fixture();
-            value["release_id"] = json!("imager-v1.2.3");
-            let bytes = crate::setup::internal_bundle::tests::bytes(&value);
-            let mut entry = internal(&bytes);
-            entry["release_id"] = json!("imager-v1.2.3");
-            entry["manifest_url"] = json!(
-                "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
-            );
-            let raw =
-                json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
-            let catalog = parse_catalog(&raw).unwrap();
+            let mut value = media();
+            value["account_custody"] = json!({"schema":1,"protected_grant_protocol":1,
+                "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
+                "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
+                "runtime_version":"test-1","runtime_library":"lib/libruntime_dylib.so"});
+            let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+            assert_eq!(selected.len(), 1);
             assert_eq!(
-                media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
+                selected[0].image_sha256,
+                value["image_sha256"].as_str().unwrap()
+            );
+            assert_eq!(
+                selected[0]
+                    .account_custody
+                    .as_ref()
+                    .unwrap()
+                    .protected_grant_protocol,
                 1
             );
-            let release = catalog
-                .releases
-                .into_iter()
-                .find_map(|entry| match entry {
-                    CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
-                    CatalogRelease::Media(_) | CatalogRelease::TargetPolicy(_) => None,
-                })
-                .unwrap();
-            assert_eq!(release.release_id(), "imager-v1.2.3");
-            assert!(release.verify_manifest(&bytes).is_ok());
+            for (key, invalid) in [
+                ("schema", json!(2)),
+                ("protected_grant_protocol", json!(2)),
+                ("runtime_library", json!("../libruntime_dylib.so")),
+                ("unexpected", json!(true)),
+            ] {
+                let mut altered = value.clone();
+                altered["account_custody"][key] = invalid;
+                assert!(parse_catalog(&catalog(altered)).is_err());
+            }
+            assert!(
+                media_releases(parse_catalog(&catalog(media())).unwrap(), "x86_64")[0]
+                    .account_custody
+                    .is_none()
+            );
         }
-    }
-    #[test]
-    fn media_catalog_retains_strict_account_consumer_proof_bound_to_image() {
-        let mut value = media();
-        value["account_custody"] = json!({"schema":1,"protected_grant_protocol":1,
-            "credential_helper_sha256":"1".repeat(64),"runtime_root_hash":"2".repeat(64),
-            "runtime_probe_sha256":"3".repeat(64),"runtime_library_sha256":"4".repeat(64),
-            "runtime_version":"test-1","runtime_library":"lib/libruntime_dylib.so"});
-        let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
-        assert_eq!(selected.len(), 1);
-        assert_eq!(
-            selected[0].image_sha256,
-            value["image_sha256"].as_str().unwrap()
-        );
-        assert_eq!(
-            selected[0]
-                .account_custody
-                .as_ref()
-                .unwrap()
-                .protected_grant_protocol,
-            1
-        );
-        for (key, invalid) in [
-            ("schema", json!(2)),
-            ("protected_grant_protocol", json!(2)),
-            ("runtime_library", json!("../libruntime_dylib.so")),
-            ("unexpected", json!(true)),
-        ] {
-            let mut altered = value.clone();
-            altered["account_custody"][key] = invalid;
-            assert!(parse_catalog(&catalog(altered)).is_err());
-        }
-        assert!(
-            media_releases(parse_catalog(&catalog(media())).unwrap(), "x86_64")[0]
-                .account_custody
-                .is_none()
-        );
-    }
 
+        phase internal_entries_bind_manifest_bytes_release_and_architecture;
+        {
+            {
+                let bytes = crate::setup::internal_bundle::tests::bytes(
+                    &crate::setup::internal_bundle::tests::fixture(),
+                );
+                let value = internal(&bytes);
+                assert!(
+                    media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64")
+                        .is_empty()
+                );
+                let release = selection(value);
+                assert!(release.verify_manifest(&bytes).is_ok());
+                let mut longer = bytes.clone();
+                longer.push(b' ');
+                assert!(release.verify_manifest(&longer).is_err());
+                let mut changed_manifest = crate::setup::internal_bundle::tests::fixture();
+                changed_manifest["boot_binding"]["uki_sha256"] = json!("c".repeat(64));
+                let changed = crate::setup::internal_bundle::tests::bytes(&changed_manifest);
+                assert_eq!(changed.len(), bytes.len());
+                let valid = crate::setup::internal_bundle::validate_internal_bundle(&changed).unwrap();
+                assert_eq!(valid.release_id(), release.release_id());
+                assert_eq!(valid.architecture(), release.architecture());
+                assert!(release.verify_manifest(&changed).is_err());
+            }
+
+            {
+                let bytes = crate::setup::internal_bundle::tests::bytes(
+                    &crate::setup::internal_bundle::tests::fixture(),
+                );
+                for (key, value) in [
+                    ("release_id", json!("other-release")),
+                    ("arch", json!("aarch64")),
+                ] {
+                    let mut entry = internal(&bytes);
+                    entry[key] = value;
+                    assert!(
+                        selection(entry).verify_manifest(&bytes).is_err(),
+                        "accepted {key}"
+                    );
+                }
+            }
+
+            {
+                let mut tagged = media();
+                tagged["purpose"] = json!("removable-media");
+                tagged["layout"] = json!("whole-disk-image");
+                assert_eq!(
+                    media_releases(parse_catalog(&catalog(tagged.clone())).unwrap(), "x86_64").len(),
+                    1
+                );
+                for bad in [Value::Null, json!("unknown"), json!(true)] {
+                    let mut value = tagged.clone();
+                    value["purpose"] = bad;
+                    assert!(parse_catalog(&catalog(value)).is_err());
+                }
+                tagged.as_object_mut().unwrap().remove("layout");
+                assert!(parse_catalog(&catalog(tagged)).is_err());
+                let bytes = crate::setup::internal_bundle::tests::bytes(
+                    &crate::setup::internal_bundle::tests::fixture(),
+                );
+                for (field, bad) in [
+                    ("layout", json!("whole-disk-image")),
+                    ("layout", json!("internal-bundle-v1")),
+                    ("purpose", json!("internal-installer")),
+                    ("manifest_size", json!(65537)),
+                    ("manifest_sha256", json!("A".repeat(64))),
+                    ("purpose", json!("removable-media")),
+                    ("manifest_url", json!("https://code.tilo.so:444/manifest")),
+                ] {
+                    let mut value = internal(&bytes);
+                    value[field] = bad;
+                    assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+                }
+                assert!(bundled_internal_releases().unwrap().is_empty());
+                assert!(bundled_releases().unwrap().is_empty());
+                let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
+                assert!(parse_catalog(&raw).is_err());
+            }
+        }
+
+        phase catalog_representation_requires_objects_string_tags_and_unique_keys;
+        {
+            let bytes = crate::setup::internal_bundle::tests::bytes(
+                &crate::setup::internal_bundle::tests::fixture(),
+            );
+
+            let raw = catalog(media());
+            assert!(parse_catalog(&raw).is_ok());
+            let value: Value = serde_json::from_str(&raw).unwrap();
+            let array = positional_record(&value, "schema tag releases");
+            assert!(parse_catalog(&array.to_string()).is_err());
+
+            let mut tagged_media = media();
+            tagged_media["purpose"] = json!("removable-media");
+            tagged_media["layout"] = json!("whole-disk-image");
+            for (case, entry, fields) in [
+                (
+                    "media",
+                    tagged_media,
+                    "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
+                ),
+                (
+                    "internal",
+                    internal(&bytes),
+                    "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
+                ),
+            ] {
+                assert!(
+                    parse_catalog(&catalog(entry.clone())).is_ok(),
+                    "case {case}"
+                );
+                let array = positional_record(&entry, fields);
+                assert!(parse_catalog(&catalog(array)).is_err(), "case {case}");
+                let accepted: Vec<_> = ["purpose", "layout"]
+                    .into_iter()
+                    .filter(|field| {
+                        let mut value = entry.clone();
+                        value[*field] = json!({entry[*field].as_str().unwrap():null});
+                        parse_catalog(&catalog(value)).is_ok()
+                    })
+                    .collect();
+                assert!(
+                    accepted.is_empty(),
+                    "case {case}: accepted object-shaped tags: {accepted:?}"
+                );
+            }
+
+            for entry in [media(), internal(&bytes)] {
+                let raw = catalog(entry);
+                assert!(parse_catalog(&raw).is_ok());
+                for (marker, replacement) in [
+                    ("\"schema\":1", "\"schema\":1,\"schema\":1"),
+                    (
+                        "\"arch\":\"x86_64\"",
+                        "\"arch\":\"x86_64\",\"arch\":\"x86_64\"",
+                    ),
+                ] {
+                    let changed = raw.replacen(marker, replacement, 1);
+                    assert_ne!(changed, raw);
+                    assert!(parse_catalog(&changed).is_err());
+                }
+            }
+        }
+
+        phase zstd_frames_decode_back_to_back_frames_in_small_reads;
+        {
+            use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+            let first: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
+            let second = b"second frame".repeat(1000);
+            let mut archive = compress_to_vec(first.as_slice(), CompressionLevel::Fastest);
+            archive.extend(compress_to_vec(
+                second.as_slice(),
+                CompressionLevel::Fastest,
+            ));
+            let mut frames = ZstdFrames::new(BufReader::new(archive.as_slice()));
+            let mut expanded = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = frames.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                expanded.extend_from_slice(&chunk[..read]);
+            }
+            assert_eq!(expanded.len(), first.len() + second.len());
+            assert!(expanded.starts_with(&first) && expanded.ends_with(&second));
+            assert!(
+                ZstdFrames::new(BufReader::new(&b"not zstd"[..]))
+                    .read(&mut chunk)
+                    .is_err()
+            );
+        }
+
+        phase media_catalog_home_proof_is_strict_and_bound_to_selected_image;
+        {
+            let mut value = media();
+            let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+            assert!(
+                imager_backend::home_admission::require(legacy[0].home_archive.as_ref(), None).is_ok()
+            );
+            assert!(
+                imager_backend::home_admission::require(legacy[0].home_archive.as_ref(), Some(2))
+                    .is_err()
+            );
+            value["home_archive"] = json!({"schema":1,"archive_protocol":2,"seed_protocol":1,
+                "firstboot_user_sha256":"c".repeat(64),"seed_helper_sha256":"d".repeat(64),
+                "prepared_helper_sha256":"a".repeat(64),"tar_sha256":"b".repeat(64)});
+            let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+            assert_eq!(
+                selected[0].image_sha256,
+                value["image_sha256"].as_str().unwrap()
+            );
+            assert!(
+                imager_backend::home_admission::require(selected[0].home_archive.as_ref(), Some(2))
+                    .is_ok()
+            );
+            for bad in [
+                json!(null),
+                json!([]),
+                json!(true),
+                json!([
+                    1,
+                    2,
+                    1,
+                    "c".repeat(64),
+                    "d".repeat(64),
+                    "a".repeat(64),
+                    "b".repeat(64)
+                ]),
+            ] {
+                let mut altered = value.clone();
+                altered["home_archive"] = bad;
+                assert!(parse_catalog(&catalog(altered)).is_err());
+            }
+            for key in ["firstboot_user_sha256", "seed_helper_sha256"] {
+                let mut altered = value.clone();
+                altered["home_archive"][key] = json!("X".repeat(64));
+                assert!(parse_catalog(&catalog(altered)).is_err());
+            }
+            let mut altered = value.clone();
+            altered["home_archive"]["seed_protocol"] = json!(2);
+            assert!(parse_catalog(&catalog(altered)).is_err());
+            value["home_archive"]["archive_protocol"] = json!(1);
+            assert!(parse_catalog(&catalog(value)).is_err());
+        }
+
+        phase media_catalog_applications_proof_is_closed_and_exact_selected_image_bound;
+        {
+            let mut value = media();
+            let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+            assert!(
+                imager_backend::applications_admission::require(legacy[0].applications.as_ref(), None)
+                    .is_ok()
+            );
+            assert!(
+                imager_backend::applications_admission::require(
+                    legacy[0].applications.as_ref(),
+                    Some(2)
+                )
+                .is_err()
+            );
+            value["applications"] = json!({"schema":1,"subset_protocol":2,"prepared_helper_sha256":"a".repeat(64),"qualification_script_sha256":"b".repeat(64),"native_qualification_sha256":"c".repeat(64)});
+            let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
+            assert!(
+                imager_backend::applications_admission::require(
+                    selected[0].applications.as_ref(),
+                    Some(2)
+                )
+                .is_ok()
+            );
+            assert_eq!(
+                selected[0].image_sha256,
+                value["image_sha256"].as_str().unwrap()
+            );
+            for bad in [json!(null), json!([]), json!(true)] {
+                let mut changed = value.clone();
+                changed["applications"] = bad;
+                assert!(parse_catalog(&catalog(changed)).is_err());
+            }
+            for field in [
+                "prepared_helper_sha256",
+                "qualification_script_sha256",
+                "native_qualification_sha256",
+            ] {
+                let mut changed = value.clone();
+                changed["applications"][field] = json!("X".repeat(64));
+                assert!(parse_catalog(&catalog(changed)).is_err());
+            }
+            value["applications"]["subset_protocol"] = json!(1);
+            assert!(parse_catalog(&catalog(value)).is_err());
+        }
+
+        phase media_catalog_original_syntax_is_closed_and_bound_to_selected_architecture;
+        {
+            let mut entry = media();
+            let legacy = media_releases(parse_catalog(&catalog(entry.clone())).unwrap(), "x86_64");
+            assert!(legacy[0].original_source.is_none());
+            assert!(crate::setup::original_admission::require(None, Some(5)).is_err());
+            let proof = crate::setup::original_admission::syntax_fixture();
+            entry["original_source"] = serde_json::to_value(&proof).unwrap();
+            let selected = media_releases(parse_catalog(&catalog(entry.clone())).unwrap(), "x86_64");
+            assert_eq!(selected[0].original_source.as_ref(), Some(&proof));
+            for bad in [json!(null), json!([]), json!(true)] {
+                let mut changed = entry.clone();
+                changed["original_source"] = bad;
+                assert!(parse_catalog(&catalog(changed)).is_err());
+            }
+            let mut changed = entry.clone();
+            changed["original_source"]["capture_pins"]["arch"] = json!("aarch64");
+            assert!(parse_catalog(&catalog(changed)).is_err());
+            entry["original_source"]["qualified"] = json!(true);
+            assert!(parse_catalog(&catalog(entry)).is_err());
+        }
+    }
     fn internal(manifest: &[u8]) -> Value {
         json!({"purpose":"tilo-internal-installer","layout":"internal-bundle-v2",
             "release_id":"fixture-only","arch":"x86_64",
@@ -1857,86 +2161,6 @@ mod internal_catalog_tests {
             _ => panic!("internal entry became media"),
         }
     }
-    #[test]
-    fn internal_entries_bind_manifest_bytes_release_and_architecture() {
-        {
-            let bytes = crate::setup::internal_bundle::tests::bytes(
-                &crate::setup::internal_bundle::tests::fixture(),
-            );
-            let value = internal(&bytes);
-            assert!(
-                media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64")
-                    .is_empty()
-            );
-            let release = selection(value);
-            assert!(release.verify_manifest(&bytes).is_ok());
-            let mut longer = bytes.clone();
-            longer.push(b' ');
-            assert!(release.verify_manifest(&longer).is_err());
-            let mut changed_manifest = crate::setup::internal_bundle::tests::fixture();
-            changed_manifest["boot_binding"]["uki_sha256"] = json!("c".repeat(64));
-            let changed = crate::setup::internal_bundle::tests::bytes(&changed_manifest);
-            assert_eq!(changed.len(), bytes.len());
-            let valid = crate::setup::internal_bundle::validate_internal_bundle(&changed).unwrap();
-            assert_eq!(valid.release_id(), release.release_id());
-            assert_eq!(valid.architecture(), release.architecture());
-            assert!(release.verify_manifest(&changed).is_err());
-        }
-
-        {
-            let bytes = crate::setup::internal_bundle::tests::bytes(
-                &crate::setup::internal_bundle::tests::fixture(),
-            );
-            for (key, value) in [
-                ("release_id", json!("other-release")),
-                ("arch", json!("aarch64")),
-            ] {
-                let mut entry = internal(&bytes);
-                entry[key] = value;
-                assert!(
-                    selection(entry).verify_manifest(&bytes).is_err(),
-                    "accepted {key}"
-                );
-            }
-        }
-
-        {
-            let mut tagged = media();
-            tagged["purpose"] = json!("removable-media");
-            tagged["layout"] = json!("whole-disk-image");
-            assert_eq!(
-                media_releases(parse_catalog(&catalog(tagged.clone())).unwrap(), "x86_64").len(),
-                1
-            );
-            for bad in [Value::Null, json!("unknown"), json!(true)] {
-                let mut value = tagged.clone();
-                value["purpose"] = bad;
-                assert!(parse_catalog(&catalog(value)).is_err());
-            }
-            tagged.as_object_mut().unwrap().remove("layout");
-            assert!(parse_catalog(&catalog(tagged)).is_err());
-            let bytes = crate::setup::internal_bundle::tests::bytes(
-                &crate::setup::internal_bundle::tests::fixture(),
-            );
-            for (field, bad) in [
-                ("layout", json!("whole-disk-image")),
-                ("layout", json!("internal-bundle-v1")),
-                ("purpose", json!("internal-installer")),
-                ("manifest_size", json!(65537)),
-                ("manifest_sha256", json!("A".repeat(64))),
-                ("purpose", json!("removable-media")),
-                ("manifest_url", json!("https://code.tilo.so:444/manifest")),
-            ] {
-                let mut value = internal(&bytes);
-                value[field] = bad;
-                assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
-            }
-            assert!(bundled_internal_releases().unwrap().is_empty());
-            assert!(bundled_releases().unwrap().is_empty());
-            let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
-            assert!(parse_catalog(&raw).is_err());
-        }
-    }
     fn positional_record(value: &Value, fields: &str) -> Value {
         Value::Array(
             fields
@@ -1944,216 +2168,5 @@ mod internal_catalog_tests {
                 .map(|key| value[key].clone())
                 .collect(),
         )
-    }
-    #[test]
-    fn catalog_representation_requires_objects_string_tags_and_unique_keys() {
-        let bytes = crate::setup::internal_bundle::tests::bytes(
-            &crate::setup::internal_bundle::tests::fixture(),
-        );
-
-        let raw = catalog(media());
-        assert!(parse_catalog(&raw).is_ok());
-        let value: Value = serde_json::from_str(&raw).unwrap();
-        let array = positional_record(&value, "schema tag releases");
-        assert!(parse_catalog(&array.to_string()).is_err());
-
-        let mut tagged_media = media();
-        tagged_media["purpose"] = json!("removable-media");
-        tagged_media["layout"] = json!("whole-disk-image");
-        for (case, entry, fields) in [
-            (
-                "media",
-                tagged_media,
-                "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
-            ),
-            (
-                "internal",
-                internal(&bytes),
-                "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
-            ),
-        ] {
-            assert!(
-                parse_catalog(&catalog(entry.clone())).is_ok(),
-                "case {case}"
-            );
-            let array = positional_record(&entry, fields);
-            assert!(parse_catalog(&catalog(array)).is_err(), "case {case}");
-            let accepted: Vec<_> = ["purpose", "layout"]
-                .into_iter()
-                .filter(|field| {
-                    let mut value = entry.clone();
-                    value[*field] = json!({entry[*field].as_str().unwrap():null});
-                    parse_catalog(&catalog(value)).is_ok()
-                })
-                .collect();
-            assert!(
-                accepted.is_empty(),
-                "case {case}: accepted object-shaped tags: {accepted:?}"
-            );
-        }
-
-        for entry in [media(), internal(&bytes)] {
-            let raw = catalog(entry);
-            assert!(parse_catalog(&raw).is_ok());
-            for (marker, replacement) in [
-                ("\"schema\":1", "\"schema\":1,\"schema\":1"),
-                (
-                    "\"arch\":\"x86_64\"",
-                    "\"arch\":\"x86_64\",\"arch\":\"x86_64\"",
-                ),
-            ] {
-                let changed = raw.replacen(marker, replacement, 1);
-                assert_ne!(changed, raw);
-                assert!(parse_catalog(&changed).is_err());
-            }
-        }
-    }
-
-    #[test]
-    fn zstd_frames_decode_back_to_back_frames_in_small_reads() {
-        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
-        let first: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
-        let second = b"second frame".repeat(1000);
-        let mut archive = compress_to_vec(first.as_slice(), CompressionLevel::Fastest);
-        archive.extend(compress_to_vec(
-            second.as_slice(),
-            CompressionLevel::Fastest,
-        ));
-        let mut frames = ZstdFrames::new(BufReader::new(archive.as_slice()));
-        let mut expanded = Vec::new();
-        let mut chunk = [0_u8; 4096];
-        loop {
-            let read = frames.read(&mut chunk).unwrap();
-            if read == 0 {
-                break;
-            }
-            expanded.extend_from_slice(&chunk[..read]);
-        }
-        assert_eq!(expanded.len(), first.len() + second.len());
-        assert!(expanded.starts_with(&first) && expanded.ends_with(&second));
-        assert!(
-            ZstdFrames::new(BufReader::new(&b"not zstd"[..]))
-                .read(&mut chunk)
-                .is_err()
-        );
-    }
-    #[test]
-    fn media_catalog_home_proof_is_strict_and_bound_to_selected_image() {
-        let mut value = media();
-        let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
-        assert!(
-            imager_backend::home_admission::require(legacy[0].home_archive.as_ref(), None).is_ok()
-        );
-        assert!(
-            imager_backend::home_admission::require(legacy[0].home_archive.as_ref(), Some(2))
-                .is_err()
-        );
-        value["home_archive"] = json!({"schema":1,"archive_protocol":2,"seed_protocol":1,
-            "firstboot_user_sha256":"c".repeat(64),"seed_helper_sha256":"d".repeat(64),
-            "prepared_helper_sha256":"a".repeat(64),"tar_sha256":"b".repeat(64)});
-        let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
-        assert_eq!(
-            selected[0].image_sha256,
-            value["image_sha256"].as_str().unwrap()
-        );
-        assert!(
-            imager_backend::home_admission::require(selected[0].home_archive.as_ref(), Some(2))
-                .is_ok()
-        );
-        for bad in [
-            json!(null),
-            json!([]),
-            json!(true),
-            json!([
-                1,
-                2,
-                1,
-                "c".repeat(64),
-                "d".repeat(64),
-                "a".repeat(64),
-                "b".repeat(64)
-            ]),
-        ] {
-            let mut altered = value.clone();
-            altered["home_archive"] = bad;
-            assert!(parse_catalog(&catalog(altered)).is_err());
-        }
-        for key in ["firstboot_user_sha256", "seed_helper_sha256"] {
-            let mut altered = value.clone();
-            altered["home_archive"][key] = json!("X".repeat(64));
-            assert!(parse_catalog(&catalog(altered)).is_err());
-        }
-        let mut altered = value.clone();
-        altered["home_archive"]["seed_protocol"] = json!(2);
-        assert!(parse_catalog(&catalog(altered)).is_err());
-        value["home_archive"]["archive_protocol"] = json!(1);
-        assert!(parse_catalog(&catalog(value)).is_err());
-    }
-    #[test]
-    fn media_catalog_applications_proof_is_closed_and_exact_selected_image_bound() {
-        let mut value = media();
-        let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
-        assert!(
-            imager_backend::applications_admission::require(legacy[0].applications.as_ref(), None)
-                .is_ok()
-        );
-        assert!(
-            imager_backend::applications_admission::require(
-                legacy[0].applications.as_ref(),
-                Some(2)
-            )
-            .is_err()
-        );
-        value["applications"] = json!({"schema":1,"subset_protocol":2,"prepared_helper_sha256":"a".repeat(64),"qualification_script_sha256":"b".repeat(64),"native_qualification_sha256":"c".repeat(64)});
-        let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
-        assert!(
-            imager_backend::applications_admission::require(
-                selected[0].applications.as_ref(),
-                Some(2)
-            )
-            .is_ok()
-        );
-        assert_eq!(
-            selected[0].image_sha256,
-            value["image_sha256"].as_str().unwrap()
-        );
-        for bad in [json!(null), json!([]), json!(true)] {
-            let mut changed = value.clone();
-            changed["applications"] = bad;
-            assert!(parse_catalog(&catalog(changed)).is_err());
-        }
-        for field in [
-            "prepared_helper_sha256",
-            "qualification_script_sha256",
-            "native_qualification_sha256",
-        ] {
-            let mut changed = value.clone();
-            changed["applications"][field] = json!("X".repeat(64));
-            assert!(parse_catalog(&catalog(changed)).is_err());
-        }
-        value["applications"]["subset_protocol"] = json!(1);
-        assert!(parse_catalog(&catalog(value)).is_err());
-    }
-
-    #[test]
-    fn media_catalog_original_syntax_is_closed_and_bound_to_selected_architecture() {
-        let mut entry = media();
-        let legacy = media_releases(parse_catalog(&catalog(entry.clone())).unwrap(), "x86_64");
-        assert!(legacy[0].original_source.is_none());
-        assert!(crate::setup::original_admission::require(None, Some(5)).is_err());
-        let proof = crate::setup::original_admission::syntax_fixture();
-        entry["original_source"] = serde_json::to_value(&proof).unwrap();
-        let selected = media_releases(parse_catalog(&catalog(entry.clone())).unwrap(), "x86_64");
-        assert_eq!(selected[0].original_source.as_ref(), Some(&proof));
-        for bad in [json!(null), json!([]), json!(true)] {
-            let mut changed = entry.clone();
-            changed["original_source"] = bad;
-            assert!(parse_catalog(&catalog(changed)).is_err());
-        }
-        let mut changed = entry.clone();
-        changed["original_source"]["capture_pins"]["arch"] = json!("aarch64");
-        assert!(parse_catalog(&catalog(changed)).is_err());
-        entry["original_source"]["qualified"] = json!(true);
-        assert!(parse_catalog(&catalog(entry)).is_err());
     }
 }
