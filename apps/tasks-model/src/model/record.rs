@@ -240,7 +240,7 @@ impl Tracker {
     }
 
     /// Rename an issue: its title, as the board and its page show it.
-    #[action(item = issues, step = "edit", writes = issues)]
+    #[action(item = issues, field = "title", step = "edit", writes = issues)]
     pub fn rename(&mut self, issue: &Id, title: NonBlank) -> Result<(), Refusal> {
         let title = title.into_string();
         if title.chars().count() > crate::model::issue::MAX_TITLE_CHARS {
@@ -251,7 +251,7 @@ impl Tracker {
     }
 
     /// Rename the project or area `area`.
-    #[action(item = areas, step = "edit", writes = areas)]
+    #[action(item = areas, field = "name", step = "edit", writes = areas)]
     pub fn rename_area(&mut self, area: &Id, name: NonBlank) -> Result<(), Refusal> {
         let target = self.area_mut(area)?;
         if name.chars().count() > crate::model::tracker_area::MAX_NAME_CHARS {

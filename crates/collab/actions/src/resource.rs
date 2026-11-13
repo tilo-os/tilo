@@ -184,6 +184,21 @@ impl<I> ActionBinding<I> {
     pub fn address(&self) -> &ActionAddress {
         &self.address
     }
+
+    /// The same binding for a control whose value `J` maps to this one's
+    /// input: a field that reports each edit for a binding that takes the text.
+    #[must_use]
+    pub fn map_input<J>(self, map: impl Fn(J) -> I + Send + Sync + 'static) -> ActionBinding<J>
+    where
+        I: 'static,
+    {
+        let arguments = self.arguments;
+        ActionBinding {
+            address: self.address,
+            spec: self.spec,
+            arguments: Arc::new(move |input| arguments(map(input))),
+        }
+    }
 }
 
 impl ActionBinding<()> {

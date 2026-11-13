@@ -37,6 +37,8 @@ use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompleti
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_resource::TextEdit;
+use tilo_resource::text::splice_between;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::BlendMode;
@@ -271,6 +273,17 @@ enum DragUnit {
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
 
+/// Finds the text object a field shows in the document a sync reads.
+type LocateText = Box<dyn Fn(&AutoCommit) -> Option<ObjId>>;
+
+/// One committed edit of a field: what it held before and after. A binding takes the text it
+/// holds now ([`TextInput::on_action`]) or the splice between the two
+/// ([`TextInput::on_text_edit`]).
+struct Edited {
+    before: String,
+    after: String,
+}
+
 /// Complete committed-text runs for an unmasked single line. Decorations use
 /// byte ranges in that same text; IME insertion remaps them only for display.
 #[derive(Clone, Debug, Default)]
@@ -380,7 +393,7 @@ pub struct TextInput {
     /// App-local notification hook. The comparison value prevents cursor,
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
-    action: Option<ActionEmitter<String>>,
+    action: Option<ActionEmitter<Edited>>,
     last_notified_text: String,
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
@@ -445,6 +458,12 @@ pub struct TextInput {
     /// local for the owner to submit ([`Self::take_dirty`]); how
     /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
+    /// Finds the text object to show in the document each sync reads: a record's text field,
+    /// wherever the record keeps it now ([`Self::bound_at`]).
+    locate_text: Option<LocateText>,
+    /// The region and block an invocation's text anchor names this field's characters by
+    /// (`title` of issue `7d2b`): what it writes here is drawn as its writer's, with its caret.
+    written_at: Option<(String, String)>,
     /// Where the document stood, and what the field showed, when it last
     /// read the bound text: a sync over an unchanged document reads nothing.
     adopted: Option<preparation::Adopted>,
@@ -874,6 +893,8 @@ impl TextInput {
             gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
+            locate_text: None,
+            written_at: None,
             adopted: None,
             local_author: None,
             align: TextAlign::Left,
@@ -1015,6 +1036,12 @@ impl TextInput {
         }
     }
 
+    /// Who wrote each run of the bound text, as byte ranges of it and the writer's id: what the
+    /// field draws in each writer's colour.
+    pub fn authored_runs(&self) -> &[(std::ops::Range<usize>, String)] {
+        &self.authored
+    }
+
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
     pub fn bound_obj(&self) -> Option<&ObjId> {
         self.bound_text.as_ref()
@@ -1036,8 +1063,18 @@ impl TextInput {
         let text = state
             .text(&obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
+        // A collaborator's change moves the caret and selection with the text around them,
+        // as typing there would: what the person here was about to type stays where they were.
+        let (anchor, caret) = (self.core.anchor(), self.core.caret());
+        let (anchor, caret) = (
+            written::through_change(&self.text, &text, anchor),
+            written::through_change(&self.text, &text, caret),
+        );
         // Showing the document's text is not a user edit.
         self.adopt_model_text(text.clone());
+        if !self.core.has_preedit() {
+            self.core.set_selection(anchor, caret);
+        }
         self.adopt_authored(state, &obj, &text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
@@ -1776,7 +1813,22 @@ impl TextInput {
     /// an exported action with the complete current string as input.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(
+            binding.map_input(|edited: Edited| edited.after),
+        ));
+        self
+    }
+
+    /// Route each committed edit through `binding` as the splice it is ([`TextEdit::Splice`]):
+    /// where it writes, what it removes and what it inserts, so the write names its range (its
+    /// writer's caret and tint) and typing on in one word continues one undo step.
+    #[must_use]
+    pub fn on_text_edit(mut self, binding: tilo_actions::ActionBinding<TextEdit>) -> Self {
+        self.action = Some(ActionEmitter::new(binding.map_input(
+            |Edited { before, after }: Edited| {
+                splice_between(&before, &after).unwrap_or(TextEdit::ReplaceText { text: after })
+            },
+        )));
         self
     }
 
@@ -1784,10 +1836,11 @@ impl TextInput {
         if !self.dirty || self.last_notified_text == self.text {
             return;
         }
-        self.last_notified_text.clone_from(&self.text);
+        let before = std::mem::replace(&mut self.last_notified_text, self.text.clone());
         if let Some(action) = &mut self.action {
+            let after = self.text.clone();
             let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
-                action.emit(self.text.clone())
+                action.emit(Edited { before, after })
             });
         }
         // The field's own state stays the one a bound local edit reads: an
@@ -5470,6 +5523,15 @@ impl Widget for TextInput {
             // resurrect a secret after its owner clears an acknowledged save.
             // The edit marked its own measurement when it landed.
             self.dirty = false;
+        }
+        if let Some(locate) = &self.locate_text {
+            let located = locate(state);
+            if located != self.bound_text {
+                match located {
+                    Some(obj) => self.bind_text(obj),
+                    None => self.clear_text_binding(),
+                }
+            }
         }
         if self.bound_text.is_some() {
             let _ = self.adopt_bound_text(state);

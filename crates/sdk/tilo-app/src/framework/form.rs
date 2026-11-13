@@ -179,12 +179,14 @@ where
 
 /// Where a bound control's value lives: a field of the record, or a field
 /// of a form. See [`ViewCx::input`](super::ViewCx::input).
-pub enum Attached<V> {
-    /// A field of the record: shown from the state, changed by field edits.
+pub enum Attached<V, I = V> {
+    /// A field of the record at `path`: shown from the state, changed by
+    /// field edits the control's input `I` makes.
     Record {
         id: String,
         state: LocalState<V>,
-        binding: Option<Box<ActionBinding<V>>>,
+        binding: Option<Box<ActionBinding<I>>>,
+        path: Vec<tilo_resource::Segment>,
     },
     /// A field of a form: the control edits the local value itself.
     Local { id: String, state: LocalState<V> },

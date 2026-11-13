@@ -10,8 +10,27 @@ use super::TextInput;
 use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use automerge::{AutoCommit, ObjId};
 
 impl TextInput {
+    /// Show the text object `locate` finds in the document, found again on every sync: a
+    /// record's text field, with who wrote each run of it, a collaborator's edit landing
+    /// under the caret as they make it ([`Self::bind_text`]).
+    #[must_use]
+    pub fn bound_at(mut self, locate: impl Fn(&AutoCommit) -> Option<ObjId> + 'static) -> Self {
+        self.locate_text = Some(Box::new(locate));
+        self
+    }
+
+    /// Name this field's characters as an invocation's text anchor does: `region` (the field)
+    /// and `block` (the item holding it, empty for the record's own). What an invocation
+    /// writes there is drawn as its writer's, with its caret where the write ends.
+    #[must_use]
+    pub fn with_written_at(mut self, region: impl Into<String>, block: impl Into<String>) -> Self {
+        self.written_at = Some((region.into(), block.into()));
+        self
+    }
+
     /// The bytes of what the field holds that differ from what it held
     /// before the change, as the text's own offsets: what the change wrote.
     /// An empty range is where it removed text. With nothing known of before,
@@ -69,6 +88,7 @@ impl TextInput {
                 .collect();
             presence.draw_peer_authorship(scene, theme, &UserId(author.clone()), &bands);
         }
+        self.draw_invocations_written(scene, transform, text_renderer, theme, presence);
         let (Some((identity, _)), Some((start, end))) = (&self.change, self.written_span()) else {
             return;
         };
@@ -116,5 +136,94 @@ impl TextInput {
                 self.rect.x1,
             ),
         );
+    }
+}
+
+impl TextInput {
+    /// What an invocation writes into this field, named by its text anchor
+    /// ([`Self::with_written_at`]): the characters glow in its writer's colour and its caret
+    /// stands where they end, the marks a body's line shows of an agent's write. The caret is
+    /// the action's mark: the activity rail does not name it a second time.
+    fn draw_invocations_written(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        let Some((region, block)) = &self.written_at else {
+            return;
+        };
+        let now = crate::time::now();
+        for interaction in presence.visible_interactions(now) {
+            let Some((start, end)) =
+                crate::presence::written_in(&interaction, Some(region), block, &self.text)
+            else {
+                continue;
+            };
+            let Some(alpha) = presence.interaction_fade(interaction.invocation, now) else {
+                continue;
+            };
+            let user = UserId(interaction.actor.id.clone());
+            let bands: Vec<(Rect, f32)> = self
+                .selection_rects(theme, start, end)
+                .into_iter()
+                .map(|band| (transform.transform_rect_bbox(band), alpha))
+                .collect();
+            presence.draw_peer_typing(scene, theme, &user, &bands);
+            presence.note_shown(interaction.invocation);
+            presence.note_drawn(interaction.invocation, now);
+            let name = presence.interaction_status_label_written(&interaction);
+            presence.draw_action_caret_labeled_in(
+                scene,
+                theme,
+                text_renderer,
+                transform,
+                &user,
+                &name,
+                crate::presence::LabeledCaret::within(self.caret_rect(theme, end), self.rect.y0)
+                    .among(
+                        self.selection_rects(theme, 0, self.text.len()),
+                        self.rect.x1,
+                    ),
+            );
+        }
+    }
+}
+
+/// Where byte `at` of `old` stands in `new`, the one span where the two differ being someone
+/// else's edit: before it, it stays; after it, it moves with the text; inside it, it lands at
+/// the end of what they wrote.
+pub(super) fn through_change(old: &str, new: &str, at: usize) -> usize {
+    if old == new {
+        return at;
+    }
+    let prefix = old
+        .char_indices()
+        .zip(new.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or_else(|| old.len().min(new.len()), |((index, _), _)| index);
+    let (old_rest, new_rest) = (
+        old.get(prefix..).unwrap_or_default(),
+        new.get(prefix..).unwrap_or_default(),
+    );
+    let suffix = old_rest
+        .chars()
+        .rev()
+        .zip(new_rest.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    let (old_end, new_end) = (
+        old.len().saturating_sub(suffix),
+        new.len().saturating_sub(suffix),
+    );
+    if at <= prefix {
+        at
+    } else if at >= old_end {
+        new_end.saturating_add(at.saturating_sub(old_end))
+    } else {
+        new_end
     }
 }

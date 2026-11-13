@@ -68,7 +68,9 @@ impl BlockEditor {
         // own caret here draws no second one.
         let mut acting: Vec<crate::permissions::UserId> = Vec::new();
         for interaction in ctx.presence.visible_interactions(now) {
-            let Some((start, end)) = written_in(&interaction, &b.id, line.value()) else {
+            let Some((start, end)) =
+                crate::presence::written_in(&interaction, None, &b.id, line.value())
+            else {
                 continue;
             };
             let Some(alpha) = ctx.presence.interaction_fade(interaction.invocation, now) else {
@@ -191,27 +193,4 @@ impl BlockEditor {
             .filter(|glyphs| glyphs.width() > 0.0 && glyphs.height() > 0.0)
             .collect()
     }
-}
-
-/// The characters of the block `block` an invocation writes, as byte offsets
-/// in `text`: the `Text` range its anchor names for that block, counted in
-/// characters because a place counts them that way.
-fn written_in(
-    interaction: &tilo_actions::SemanticInteraction,
-    block: &str,
-    text: &str,
-) -> Option<(usize, usize)> {
-    let tilo_actions::InteractionAnchor::Text { ranges, .. } = &interaction.anchor else {
-        return None;
-    };
-    let range = ranges.iter().find(|range| range.block == block)?;
-    let chars = text.chars().count();
-    let start = usize::try_from(range.start).ok()?.min(chars);
-    let end = usize::try_from(range.end).ok()?.min(chars).max(start);
-    let byte = |index: usize| {
-        text.char_indices()
-            .nth(index)
-            .map_or(text.len(), |(byte, _)| byte)
-    };
-    Some((byte(start), byte(end)))
 }
