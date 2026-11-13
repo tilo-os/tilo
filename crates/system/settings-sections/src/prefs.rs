@@ -1,7 +1,44 @@
 //! The shared **system-preferences store** — durable per-user device and
 //! session preferences the Settings panes own.
 //!
+//! Preferences the rest of the system reads (system sounds, night light,
+//! pointer behaviour, update policy), one typed section each.
+//!
 //! # The document (a format contract, not a crate dependency)
+//!
+//! Preferences live in the **same** settings document the region store uses
+//! (`settings_store::Store`), namespaced by domain so each section grows
+//! independently and unrelated writers never collide:
+//!
+//! ```json
+//! {
+//!   "version": 1,
+//!   "locale":  { … },                       // owned by region.rs
+//!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
+//!   "display": { "auto_brightness": false, "night_light": false },
+//!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
+//!                "pointer_speed": 0.5, "key_repeat": 0.5,
+//!                "keyboard_layout": "us" },
+//!   "updates": { "auto": true, "last_checked": "Never" },
+//!   "appearance": { "theme": "Dark", "high_contrast": false,
+//!                   "reduce_motion": false, "text_scale": 1.0, "ui_scale": 1.0 },
+//!   "notifications": { "do_not_disturb": false, "show_banners": true,
+//!                      "show_previews": true, "play_sounds": true,
+//!                      "show_on_lock_screen": false },
+//!   "accessibility": { "large_cursor": false, "cursor_size": 24,
+//!                      "screen_reader": false, "on_screen_keyboard": "auto",
+//!                      "sticky_keys": false, "slow_keys": false,
+//!                      "bounce_keys": false, "bounce_keys_delay_ms": 300,
+//!                      "bounce_keys_alert": false, "mouse_keys": false,
+//!                      "visual_alerts": false }
+//! }
+//! ```
+//!
+//! # Non-destructive writes
+//!
+//! Each section is stored on its own and keeps every key it does not name,
+//! so a pane that changes one preference never clobbers another pane's — or
+//! the region store's, or the compositor's — keys.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
