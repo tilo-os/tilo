@@ -391,92 +391,96 @@ mod tests {
         }
     }
 
-    #[test]
-    fn verification_requires_an_observable_payload_tree_even_without_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let package = fixture_with_collection(tmp.path(), &Collection::from_entries([]));
-        std::fs::remove_dir_all(&package.payload_root).unwrap();
-        let error = verify(&package, &package.payload_root).unwrap_err();
-        assert!(matches!(error, IntegrityError::Read { path, source }
-            if path == package.payload_root && source.kind() == std::io::ErrorKind::NotFound));
+    tilo_test_env::scenario! {
+        fn payload_integrity_is_verified;
 
-        std::fs::write(&package.payload_root, b"not a directory").unwrap();
-        assert!(matches!(verify(&package, &package.payload_root),
-            Err(IntegrityError::Read { path, .. }) if path == package.payload_root));
-    }
+        phase verification_requires_an_observable_payload_tree_even_without_files;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let package = fixture_with_collection(tmp.path(), &Collection::from_entries([]));
+            std::fs::remove_dir_all(&package.payload_root).unwrap();
+            let error = verify(&package, &package.payload_root).unwrap_err();
+            assert!(matches!(error, IntegrityError::Read { path, source }
+                if path == package.payload_root && source.kind() == std::io::ErrorKind::NotFound));
 
-    #[test]
-    fn verification_names_every_changed_payload_file() {
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let package = fixture(tmp.path());
-            let report = verify(&package, &package.payload_root).unwrap();
-            assert!(report.is_intact(), "{report:?}");
-            assert_eq!(report.files_checked, 2);
-            assert!(report.unexpected.is_empty());
+            std::fs::write(&package.payload_root, b"not a directory").unwrap();
+            assert!(matches!(verify(&package, &package.payload_root),
+                Err(IntegrityError::Read { path, .. }) if path == package.payload_root));
         }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let package = fixture(tmp.path());
-            std::fs::write(package.payload_root.join("bin/app"), b"tampered").unwrap();
-            let report = verify(&package, &package.payload_root).unwrap();
-            assert_eq!(report.faults, vec![FileFault::Modified("bin/app".into())]);
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let package = fixture(tmp.path());
-            std::fs::remove_file(package.payload_root.join("data.txt")).unwrap();
-            std::fs::write(package.payload_root.join("extra.so"), b"?").unwrap();
-            let report = verify(&package, &package.payload_root).unwrap();
-            assert_eq!(report.faults, vec![FileFault::Missing("data.txt".into())]);
-            assert_eq!(report.unexpected, vec!["extra.so".to_string()]);
-        }
-    }
 
-    #[test]
-    fn the_install_record_itself_is_under_integrity() {
+        phase verification_names_every_changed_payload_file;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut package = fixture(tmp.path());
-            package.package_id_hex = hex::encode([0u8; 32]);
-            let err = verify(&package, &package.payload_root.clone())
-                .expect_err("the record does not describe that package id");
-            assert!(matches!(err, IntegrityError::RootIdMismatch));
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let package = fixture(tmp.path());
+                let report = verify(&package, &package.payload_root).unwrap();
+                assert!(report.is_intact(), "{report:?}");
+                assert_eq!(report.files_checked, 2);
+                assert!(report.unexpected.is_empty());
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let package = fixture(tmp.path());
+                std::fs::write(package.payload_root.join("bin/app"), b"tampered").unwrap();
+                let report = verify(&package, &package.payload_root).unwrap();
+                assert_eq!(report.faults, vec![FileFault::Modified("bin/app".into())]);
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let package = fixture(tmp.path());
+                std::fs::remove_file(package.payload_root.join("data.txt")).unwrap();
+                std::fs::write(package.payload_root.join("extra.so"), b"?").unwrap();
+                let report = verify(&package, &package.payload_root).unwrap();
+                assert_eq!(report.faults, vec![FileFault::Missing("data.txt".into())]);
+                assert_eq!(report.unexpected, vec!["extra.so".to_string()]);
+            }
         }
+
+        phase the_install_record_itself_is_under_integrity;
         {
-            let tmp = tempfile::tempdir().unwrap();
-            let package = fixture(tmp.path());
-            let forged =
-                Collection::from_entries([("bin/app".to_string(), BlobHash::of(b"tampered"))]);
-            std::fs::write(record_dir(&package).join(COLLECTION_FILE), forged.encode()).unwrap();
-            let err =
-                verify(&package, &package.payload_root).expect_err("covered by the signature");
-            assert!(matches!(err, IntegrityError::CollectionMismatch));
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut package = fixture(tmp.path());
-            let detached = detached_record_dir(tmp.path(), &package.id);
-            std::fs::create_dir_all(detached.parent().unwrap()).unwrap();
-            std::fs::rename(record_dir(&package), &detached).unwrap();
-            let payload = tmp.path().join("payloads/so.tilo.example");
-            std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
-            std::fs::rename(&package.payload_root, &payload).unwrap();
-            std::fs::copy(detached.join(MANIFEST_FILE), payload.join(MANIFEST_FILE)).unwrap();
-            package.payload_root = payload.clone();
-            package.manifest_path = payload.join(MANIFEST_FILE);
-            let report = verify(&package, &payload).unwrap();
-            assert!(
-                report.is_intact() && report.unexpected.is_empty(),
-                "{report:?}"
-            );
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut package = fixture(tmp.path());
-            package.manifest_path = tmp.path().join("elsewhere/manifest.toml");
-            let err = verify(&package, &package.payload_root.clone()).expect_err("no record");
-            assert!(matches!(err, IntegrityError::NoRecord(_)));
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut package = fixture(tmp.path());
+                package.package_id_hex = hex::encode([0u8; 32]);
+                let err = verify(&package, &package.payload_root.clone())
+                    .expect_err("the record does not describe that package id");
+                assert!(matches!(err, IntegrityError::RootIdMismatch));
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let package = fixture(tmp.path());
+                let forged =
+                    Collection::from_entries([("bin/app".to_string(), BlobHash::of(b"tampered"))]);
+                std::fs::write(record_dir(&package).join(COLLECTION_FILE), forged.encode()).unwrap();
+                let err =
+                    verify(&package, &package.payload_root).expect_err("covered by the signature");
+                assert!(matches!(err, IntegrityError::CollectionMismatch));
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut package = fixture(tmp.path());
+                let detached = detached_record_dir(tmp.path(), &package.id);
+                std::fs::create_dir_all(detached.parent().unwrap()).unwrap();
+                std::fs::rename(record_dir(&package), &detached).unwrap();
+                let payload = tmp.path().join("payloads/so.tilo.example");
+                std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
+                std::fs::rename(&package.payload_root, &payload).unwrap();
+                std::fs::copy(detached.join(MANIFEST_FILE), payload.join(MANIFEST_FILE)).unwrap();
+                package.payload_root = payload.clone();
+                package.manifest_path = payload.join(MANIFEST_FILE);
+                let report = verify(&package, &payload).unwrap();
+                assert!(
+                    report.is_intact() && report.unexpected.is_empty(),
+                    "{report:?}"
+                );
+            }
+            {
+                let tmp = tempfile::tempdir().unwrap();
+                let mut package = fixture(tmp.path());
+                package.manifest_path = tmp.path().join("elsewhere/manifest.toml");
+                let err = verify(&package, &package.payload_root.clone()).expect_err("no record");
+                assert!(matches!(err, IntegrityError::NoRecord(_)));
+            }
         }
     }
 }

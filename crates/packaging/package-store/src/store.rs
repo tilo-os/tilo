@@ -1504,26 +1504,112 @@ mod eviction_plan_tests {
         false
     }
 
-    #[test]
-    fn plan_eviction_never_picks_a_running_app() {
-        let index = UsageIndex::new(vec![
-            row("so.tilo.running", 1, false, &[(1, 1_000)]),
-            row("so.tilo.idle", 5, false, &[(2, 1_000)]),
-        ]);
-        let running = BTreeSet::from(["so.tilo.running".to_string()]);
-        assert_eq!(
-            plan_eviction(&index, 1, &BTreeSet::new(), |id| running.contains(id)),
-            vec!["so.tilo.idle"],
-            "the least recently used app is running, so it stays over the cap"
-        );
-        assert_eq!(
-            plan_eviction(&index, 1, &running, |id| {
-                assert_ne!(id, "so.tilo.running", "a kept app is not asked about");
-                false
-            }),
-            vec!["so.tilo.idle"],
-            "a kept app stays without asking whether it runs"
-        );
+    tilo_test_env::scenario! {
+        fn eviction_plans;
+
+        phase plan_eviction_never_picks_a_running_app;
+        {
+            let index = UsageIndex::new(vec![
+                row("so.tilo.running", 1, false, &[(1, 1_000)]),
+                row("so.tilo.idle", 5, false, &[(2, 1_000)]),
+            ]);
+            let running = BTreeSet::from(["so.tilo.running".to_string()]);
+            assert_eq!(
+                plan_eviction(&index, 1, &BTreeSet::new(), |id| running.contains(id)),
+                vec!["so.tilo.idle"],
+                "the least recently used app is running, so it stays over the cap"
+            );
+            assert_eq!(
+                plan_eviction(&index, 1, &running, |id| {
+                    assert_ne!(id, "so.tilo.running", "a kept app is not asked about");
+                    false
+                }),
+                vec!["so.tilo.idle"],
+                "a kept app stays without asking whether it runs"
+            );
+        }
+
+        phase plan_eviction_counts_shared_blobs_once;
+        {
+            // a and b each own 100 bytes and share a 300-byte library.
+            let index = UsageIndex::new(vec![
+                row("so.tilo.a", 1, false, &[(1, 100), (9, 300)]),
+                row("so.tilo.b", 2, false, &[(2, 100), (9, 300)]),
+            ]);
+            assert_eq!(
+                index.disk_usage().total_bytes,
+                500,
+                "the library counts once"
+            );
+            assert_eq!(index.disk_usage().tried_bytes, 800, "each row's own bytes");
+            // Evicting a frees only its own 100 bytes: b still holds the library.
+            assert_eq!(
+                plan_eviction(&index, 450, &BTreeSet::new(), none),
+                vec!["so.tilo.a"]
+            );
+            assert_eq!(
+                plan_eviction(&index, 400, &BTreeSet::new(), none),
+                vec!["so.tilo.a"]
+            );
+            // 400 left after a is still over 399, and b then frees 400.
+            assert_eq!(
+                plan_eviction(&index, 399, &BTreeSet::new(), none),
+                vec!["so.tilo.a", "so.tilo.b"]
+            );
+            assert!(
+                plan_eviction(&index, 500, &BTreeSet::new(), none).is_empty(),
+                "already under the cap"
+            );
+            assert!(
+                plan_eviction(&index, 500, &BTreeSet::new(), |id| panic!(
+                    "{id} was asked about"
+                ))
+                .is_empty(),
+                "under the cap no row is asked whether it runs"
+            );
+            assert!(
+                plan_eviction(&index, 0, &BTreeSet::new(), none).is_empty(),
+                "0 disables the sweep"
+            );
+        }
+
+        phase plan_eviction_never_picks_pinned;
+        {
+            let index = UsageIndex::new(vec![
+                row("so.tilo.kept", 0, true, &[(1, 1_000)]),
+                row("so.tilo.tried", 5, false, &[(2, 1_000)]),
+            ]);
+            assert_eq!(
+                plan_eviction(&index, 1, &BTreeSet::new(), none),
+                vec!["so.tilo.tried"],
+                "the oldest row is pinned, and the cap is never met, yet it stays"
+            );
+        }
+
+        phase plan_eviction_is_lru;
+        {
+            let mut loose = row("so.tilo.legacy", 20, false, &[]);
+            loose.loose_bytes = 50;
+            let index = UsageIndex::new(vec![
+                row("so.tilo.newest", 30, false, &[(1, 100)]),
+                row("so.tilo.oldest", 10, false, &[(2, 100)]),
+                loose,
+            ]);
+            assert_eq!(index.disk_usage().total_bytes, 250);
+            assert_eq!(
+                plan_eviction(&index, 150, &BTreeSet::new(), none),
+                vec!["so.tilo.oldest"]
+            );
+            assert_eq!(
+                plan_eviction(&index, 100, &BTreeSet::new(), none),
+                vec!["so.tilo.oldest", "so.tilo.legacy"],
+                "a row without a record frees its whole tree"
+            );
+            assert_eq!(
+                plan_eviction(&index, 1, &BTreeSet::new(), none),
+                vec!["so.tilo.oldest", "so.tilo.legacy", "so.tilo.newest"]
+            );
+        }
     }
 
     fn row(id: &str, last_used: u64, pinned: bool, blobs: &[(u8, u64)]) -> UsageRow {
@@ -1537,88 +1623,6 @@ mod eviction_plan_tests {
                 .collect(),
             loose_bytes: 0,
         }
-    }
-
-    #[test]
-    fn plan_eviction_counts_shared_blobs_once() {
-        // a and b each own 100 bytes and share a 300-byte library.
-        let index = UsageIndex::new(vec![
-            row("so.tilo.a", 1, false, &[(1, 100), (9, 300)]),
-            row("so.tilo.b", 2, false, &[(2, 100), (9, 300)]),
-        ]);
-        assert_eq!(
-            index.disk_usage().total_bytes,
-            500,
-            "the library counts once"
-        );
-        assert_eq!(index.disk_usage().tried_bytes, 800, "each row's own bytes");
-        // Evicting a frees only its own 100 bytes: b still holds the library.
-        assert_eq!(
-            plan_eviction(&index, 450, &BTreeSet::new(), none),
-            vec!["so.tilo.a"]
-        );
-        assert_eq!(
-            plan_eviction(&index, 400, &BTreeSet::new(), none),
-            vec!["so.tilo.a"]
-        );
-        // 400 left after a is still over 399, and b then frees 400.
-        assert_eq!(
-            plan_eviction(&index, 399, &BTreeSet::new(), none),
-            vec!["so.tilo.a", "so.tilo.b"]
-        );
-        assert!(
-            plan_eviction(&index, 500, &BTreeSet::new(), none).is_empty(),
-            "already under the cap"
-        );
-        assert!(
-            plan_eviction(&index, 500, &BTreeSet::new(), |id| panic!(
-                "{id} was asked about"
-            ))
-            .is_empty(),
-            "under the cap no row is asked whether it runs"
-        );
-        assert!(
-            plan_eviction(&index, 0, &BTreeSet::new(), none).is_empty(),
-            "0 disables the sweep"
-        );
-    }
-
-    #[test]
-    fn plan_eviction_never_picks_pinned() {
-        let index = UsageIndex::new(vec![
-            row("so.tilo.kept", 0, true, &[(1, 1_000)]),
-            row("so.tilo.tried", 5, false, &[(2, 1_000)]),
-        ]);
-        assert_eq!(
-            plan_eviction(&index, 1, &BTreeSet::new(), none),
-            vec!["so.tilo.tried"],
-            "the oldest row is pinned, and the cap is never met, yet it stays"
-        );
-    }
-
-    #[test]
-    fn plan_eviction_is_lru() {
-        let mut loose = row("so.tilo.legacy", 20, false, &[]);
-        loose.loose_bytes = 50;
-        let index = UsageIndex::new(vec![
-            row("so.tilo.newest", 30, false, &[(1, 100)]),
-            row("so.tilo.oldest", 10, false, &[(2, 100)]),
-            loose,
-        ]);
-        assert_eq!(index.disk_usage().total_bytes, 250);
-        assert_eq!(
-            plan_eviction(&index, 150, &BTreeSet::new(), none),
-            vec!["so.tilo.oldest"]
-        );
-        assert_eq!(
-            plan_eviction(&index, 100, &BTreeSet::new(), none),
-            vec!["so.tilo.oldest", "so.tilo.legacy"],
-            "a row without a record frees its whole tree"
-        );
-        assert_eq!(
-            plan_eviction(&index, 1, &BTreeSet::new(), none),
-            vec!["so.tilo.oldest", "so.tilo.legacy", "so.tilo.newest"]
-        );
     }
 }
 
@@ -1699,94 +1703,97 @@ type = "gui"
         )?)
     }
 
-    #[test]
-    fn precommit_flush_failure_preserves_selection_and_reopenable_payload() {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let root = tempfile::tempdir()?;
-            let store = PackageStore::at(root.path());
-            let first = archive("1.0.0")?;
-            let selected = store.install(
-                first.as_slice(),
-                |_| {
-                    Ok(Admission {
-                        pinned: true,
-                        ..Admission::default()
-                    })
-                },
-                None,
-            )?;
-            let before = std::fs::read(store.layout().registry())?;
-            let replacement = archive("2.0.0")?;
-            let mut barrier_reached = false;
-            let result = store.install_with_flush(
-                replacement.as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-                |content| {
-                    barrier_reached = true;
-                    assert_eq!(std::fs::read(store.layout().registry())?, before);
-                    content::flush(content)?;
-                    Err(StoreError::Content(
-                        "injected precommit flush failure".into(),
-                    ))
-                },
-            );
-            assert!(barrier_reached);
-            assert!(
-                matches!(result, Err(StoreError::Content(reason)) if reason == "injected precommit flush failure")
-            );
-            assert_eq!(std::fs::read(store.layout().registry())?, before);
-            drop(store);
-            let reopened = PackageStore::at(root.path());
-            let registry = reopened.registry()?;
-            let row = registry
-                .find("so.tilo.flush-test")
-                .ok_or("selection disappeared")?;
-            assert_eq!(row.package_id(), selected.package.package_id());
-            assert_eq!(row.version, "1.0.0");
-            assert!(row.pinned);
-            assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
-            let installed =
-                reopened.install(replacement.as_slice(), |_| Ok(Admission::default()), None)?;
-            assert_eq!(installed.package.version, "2.0.0");
-            assert!(installed.package.pinned);
-            assert!(
-                crate::integrity::verify(&installed.package, &installed.package.payload_root)?
-                    .is_intact()
-            );
-            // A fresh session must see the durable content, not only its previous
-            // runtime's cache. An identical reinstall uses all existing blobs.
-            let repeated = PackageStore::at(root.path()).install(
-                replacement.as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-            )?;
-            assert_eq!(repeated.blobs_already_stored, repeated.blobs);
-            assert!(
-                crate::integrity::verify(&repeated.package, &repeated.package.payload_root)?
-                    .is_intact()
-            );
-            Ok(())
-        })();
-        assert!(result.is_ok(), "{result:?}");
-    }
+    tilo_test_env::scenario! {
+        fn install_sessions_commit_or_keep_the_selection;
 
-    #[test]
-    fn installing_a_package_syncs_its_blobs_once() {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let identity = SigningIdentity::generate();
-            let payload = tempfile::tempdir()?;
-            std::fs::create_dir(payload.path().join("bin"))?;
-            std::fs::write(payload.path().join("bin/app"), vec![7; 4096])?;
-            std::fs::create_dir(payload.path().join("share"))?;
-            for index in 0..40_u32 {
-                std::fs::write(
-                    payload.path().join(format!("share/{index}.txt")),
-                    format!("file {index}").repeat(64),
+        phase precommit_flush_failure_preserves_selection_and_reopenable_payload;
+        {
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let root = tempfile::tempdir()?;
+                let store = PackageStore::at(root.path());
+                let first = archive("1.0.0")?;
+                let selected = store.install(
+                    first.as_slice(),
+                    |_| {
+                        Ok(Admission {
+                            pinned: true,
+                            ..Admission::default()
+                        })
+                    },
+                    None,
                 )?;
-            }
-            let manifest = Manifest::from_toml_str(&format!(
-                r#"
+                let before = std::fs::read(store.layout().registry())?;
+                let replacement = archive("2.0.0")?;
+                let mut barrier_reached = false;
+                let result = store.install_with_flush(
+                    replacement.as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                    |content| {
+                        barrier_reached = true;
+                        assert_eq!(std::fs::read(store.layout().registry())?, before);
+                        content::flush(content)?;
+                        Err(StoreError::Content(
+                            "injected precommit flush failure".into(),
+                        ))
+                    },
+                );
+                assert!(barrier_reached);
+                assert!(
+                    matches!(result, Err(StoreError::Content(reason)) if reason == "injected precommit flush failure")
+                );
+                assert_eq!(std::fs::read(store.layout().registry())?, before);
+                drop(store);
+                let reopened = PackageStore::at(root.path());
+                let registry = reopened.registry()?;
+                let row = registry
+                    .find("so.tilo.flush-test")
+                    .ok_or("selection disappeared")?;
+                assert_eq!(row.package_id(), selected.package.package_id());
+                assert_eq!(row.version, "1.0.0");
+                assert!(row.pinned);
+                assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
+                let installed =
+                    reopened.install(replacement.as_slice(), |_| Ok(Admission::default()), None)?;
+                assert_eq!(installed.package.version, "2.0.0");
+                assert!(installed.package.pinned);
+                assert!(
+                    crate::integrity::verify(&installed.package, &installed.package.payload_root)?
+                        .is_intact()
+                );
+                // A fresh session must see the durable content, not only its previous
+                // runtime's cache. An identical reinstall uses all existing blobs.
+                let repeated = PackageStore::at(root.path()).install(
+                    replacement.as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                )?;
+                assert_eq!(repeated.blobs_already_stored, repeated.blobs);
+                assert!(
+                    crate::integrity::verify(&repeated.package, &repeated.package.payload_root)?
+                        .is_intact()
+                );
+                Ok(())
+            })();
+            assert!(result.is_ok(), "{result:?}");
+        }
+
+        phase installing_a_package_syncs_its_blobs_once;
+        {
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let identity = SigningIdentity::generate();
+                let payload = tempfile::tempdir()?;
+                std::fs::create_dir(payload.path().join("bin"))?;
+                std::fs::write(payload.path().join("bin/app"), vec![7; 4096])?;
+                std::fs::create_dir(payload.path().join("share"))?;
+                for index in 0..40_u32 {
+                    std::fs::write(
+                        payload.path().join(format!("share/{index}.txt")),
+                        format!("file {index}").repeat(64),
+                    )?;
+                }
+                let manifest = Manifest::from_toml_str(&format!(
+                    r#"
 [package]
 id = "so.tilo.sync-test"
 version = "1.0.0"
@@ -1804,131 +1811,132 @@ mode = "off"
 bin = "bin/app"
 type = "gui"
 "#,
-                hex::encode(identity.public_key_bytes())
-            ))?;
-            let packed = pack(payload.path(), &manifest, &identity)?;
-            let archive = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed))?;
-            let root = tempfile::tempdir()?;
-            let store = PackageStore::at(root.path());
-            let mut syncs = None;
-            let installed = store.install_with_flush(
-                archive.as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-                |content| {
-                    syncs = Some(content.write_syncs());
-                    content::flush(content)
-                },
-            )?;
-            assert_eq!(installed.blobs, 41);
-            assert_eq!(installed.blobs_already_stored, 0);
-            assert_eq!(syncs, Some(1), "blob writes before the commit");
-            Ok(())
-        })();
-        assert!(result.is_ok(), "{result:?}");
-    }
+                    hex::encode(identity.public_key_bytes())
+                ))?;
+                let packed = pack(payload.path(), &manifest, &identity)?;
+                let archive = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed))?;
+                let root = tempfile::tempdir()?;
+                let store = PackageStore::at(root.path());
+                let mut syncs = None;
+                let installed = store.install_with_flush(
+                    archive.as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                    |content| {
+                        syncs = Some(content.write_syncs());
+                        content::flush(content)
+                    },
+                )?;
+                assert_eq!(installed.blobs, 41);
+                assert_eq!(installed.blobs_already_stored, 0);
+                assert_eq!(syncs, Some(1), "blob writes before the commit");
+                Ok(())
+            })();
+            assert!(result.is_ok(), "{result:?}");
+        }
 
-    #[test]
-    fn postcommit_gc_failure_keeps_committed_selection() {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let root = tempfile::tempdir()?;
-            let store = PackageStore::at(root.path());
-            let first = archive("1.0.0")?;
-            let selected = store.install(first.as_slice(), |_| Ok(Admission::default()), None)?;
-            std::fs::remove_file(
-                store
-                    .layout()
-                    .meta_dir(selected.package.package_id().ok_or("missing id")?)
-                    .join(crate::layout::COLLECTION_FILE),
-            )?;
-            let replacement = archive("2.0.0")?;
-            // Keep an additional registry row referencing the corrupt old record,
-            // so GC must reject it even after the replacement retires that tree.
-            let mut registry = store.registry()?;
-            let mut corrupt = selected.package;
-            corrupt.id = "so.tilo.corrupt-record".into();
-            registry.upsert(corrupt);
-            registry.save(&store.layout().registry())?;
-            let result = store.install_with_flush(
-                replacement.as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-                content::flush,
-            );
-            assert!(
-                matches!(result, Err(StoreError::CorruptPackage(id, _)) if id == "so.tilo.corrupt-record")
-            );
-            let reopened = PackageStore::at(root.path());
-            let registry = reopened.registry()?;
-            let row = registry
-                .find("so.tilo.flush-test")
-                .ok_or("committed selection disappeared")?;
-            assert_eq!(row.version, "2.0.0");
-            assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
-            Ok(())
-        })();
-        assert!(result.is_ok(), "{result:?}");
-    }
+        phase postcommit_gc_failure_keeps_committed_selection;
+        {
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let root = tempfile::tempdir()?;
+                let store = PackageStore::at(root.path());
+                let first = archive("1.0.0")?;
+                let selected = store.install(first.as_slice(), |_| Ok(Admission::default()), None)?;
+                std::fs::remove_file(
+                    store
+                        .layout()
+                        .meta_dir(selected.package.package_id().ok_or("missing id")?)
+                        .join(crate::layout::COLLECTION_FILE),
+                )?;
+                let replacement = archive("2.0.0")?;
+                // Keep an additional registry row referencing the corrupt old record,
+                // so GC must reject it even after the replacement retires that tree.
+                let mut registry = store.registry()?;
+                let mut corrupt = selected.package;
+                corrupt.id = "so.tilo.corrupt-record".into();
+                registry.upsert(corrupt);
+                registry.save(&store.layout().registry())?;
+                let result = store.install_with_flush(
+                    replacement.as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                    content::flush,
+                );
+                assert!(
+                    matches!(result, Err(StoreError::CorruptPackage(id, _)) if id == "so.tilo.corrupt-record")
+                );
+                let reopened = PackageStore::at(root.path());
+                let registry = reopened.registry()?;
+                let row = registry
+                    .find("so.tilo.flush-test")
+                    .ok_or("committed selection disappeared")?;
+                assert_eq!(row.version, "2.0.0");
+                assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
+                Ok(())
+            })();
+            assert!(result.is_ok(), "{result:?}");
+        }
 
-    #[test]
-    fn final_close_failure_reports_the_committed_selection() {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let root = tempfile::tempdir()?;
-            let store = PackageStore::at(root.path());
-            let tapp = archive("1.0.0")?;
-            let mut actual_close_completed = false;
-            let result = store.install_with_hooks(
-                tapp.as_slice(),
-                |_| Ok(Admission::default()),
-                None,
-                content::flush,
-                |installed, closed| {
-                    assert!(
-                        closed.is_ok(),
-                        "actual store.close must run before fault injection"
-                    );
-                    actual_close_completed = true;
-                    close_install_result(
-                        installed,
-                        Err(StoreError::Content("injected close RPC failure".into())),
-                    )
-                },
-            );
-            assert!(actual_close_completed);
-            drop(store);
-            let reopened = PackageStore::at(root.path());
-            let registry = reopened.registry()?;
-            let row = registry
-                .find("so.tilo.flush-test")
-                .ok_or("committed selection disappeared")?;
-            assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
-            let Err(error) = result else {
-                panic!("a final close error must be returned");
-            };
-            let message = error.to_string();
-            assert!(message.contains(&row.id));
-            assert!(message.contains(&row.version));
-            assert!(message.contains(&row.package_id_hex));
-            assert!(message.contains("selected"));
-            assert!(message.contains("injected close RPC failure"));
-            match error {
-                StoreError::CommittedSelection {
-                    id,
-                    version,
-                    root,
-                    source,
-                } => {
-                    assert_eq!(id, row.id);
-                    assert_eq!(version, row.version);
-                    assert_eq!(root, row.package_id_hex);
-                    assert!(
-                        matches!(*source, StoreError::Content(reason) if reason == "injected close RPC failure")
-                    );
+        phase final_close_failure_reports_the_committed_selection;
+        {
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                let root = tempfile::tempdir()?;
+                let store = PackageStore::at(root.path());
+                let tapp = archive("1.0.0")?;
+                let mut actual_close_completed = false;
+                let result = store.install_with_hooks(
+                    tapp.as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                    content::flush,
+                    |installed, closed| {
+                        assert!(
+                            closed.is_ok(),
+                            "actual store.close must run before fault injection"
+                        );
+                        actual_close_completed = true;
+                        close_install_result(
+                            installed,
+                            Err(StoreError::Content("injected close RPC failure".into())),
+                        )
+                    },
+                );
+                assert!(actual_close_completed);
+                drop(store);
+                let reopened = PackageStore::at(root.path());
+                let registry = reopened.registry()?;
+                let row = registry
+                    .find("so.tilo.flush-test")
+                    .ok_or("committed selection disappeared")?;
+                assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
+                let Err(error) = result else {
+                    panic!("a final close error must be returned");
+                };
+                let message = error.to_string();
+                assert!(message.contains(&row.id));
+                assert!(message.contains(&row.version));
+                assert!(message.contains(&row.package_id_hex));
+                assert!(message.contains("selected"));
+                assert!(message.contains("injected close RPC failure"));
+                match error {
+                    StoreError::CommittedSelection {
+                        id,
+                        version,
+                        root,
+                        source,
+                    } => {
+                        assert_eq!(id, row.id);
+                        assert_eq!(version, row.version);
+                        assert_eq!(root, row.package_id_hex);
+                        assert!(
+                            matches!(*source, StoreError::Content(reason) if reason == "injected close RPC failure")
+                        );
+                    }
+                    other => panic!("missing committed selection context: {other}"),
                 }
-                other => panic!("missing committed selection context: {other}"),
-            }
-            Ok(())
-        })();
-        assert!(result.is_ok(), "{result:?}");
+                Ok(())
+            })();
+            assert!(result.is_ok(), "{result:?}");
+        }
     }
 }

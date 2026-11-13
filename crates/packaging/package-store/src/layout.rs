@@ -157,76 +157,80 @@ mod tests {
     use super::*;
     use crate::dev_env::dev_override_from;
 
-    #[test]
-    fn system_store_overrides_are_gated() {
+    tilo_test_env::scenario! {
+        fn the_store_layout;
+
+        phase system_store_overrides_are_gated;
         {
-            for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
+            {
+                for name in [SYSTEM_DIR_ENV, SYSTEM_PAYLOAD_DIR_ENV] {
+                    assert_eq!(
+                        dev_override_from(false, name, Some("/tmp/attacker-store".into())),
+                        None,
+                        "{name}"
+                    );
+                    assert_eq!(
+                        dev_override_from(true, name, Some("/dev/store".into())),
+                        Some("/dev/store".into()),
+                        "{name}"
+                    );
+                }
+                let gated = dev_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
                 assert_eq!(
-                    dev_override_from(false, name, Some("/tmp/attacker-store".into())),
-                    None,
-                    "{name}"
+                    system_data_dir_from(gated, false),
+                    Some(PathBuf::from(SYSTEM_DATA_DIR)),
+                    "a release build reads the image's store whatever the environment says",
                 );
+                assert_eq!(system_data_dir_from(None, true), None);
                 assert_eq!(
-                    dev_override_from(true, name, Some("/dev/store".into())),
-                    Some("/dev/store".into()),
-                    "{name}"
+                    system_data_dir_from(Some("/dev/store".into()), true),
+                    Some(PathBuf::from("/dev/store"))
                 );
             }
-            let gated = dev_override_from(false, SYSTEM_DIR_ENV, Some("/tmp/attacker".into()));
-            assert_eq!(
-                system_data_dir_from(gated, false),
-                Some(PathBuf::from(SYSTEM_DATA_DIR)),
-                "a release build reads the image's store whatever the environment says",
-            );
-            assert_eq!(system_data_dir_from(None, true), None);
-            assert_eq!(
-                system_data_dir_from(Some("/dev/store".into()), true),
-                Some(PathBuf::from("/dev/store"))
-            );
+            {
+                // The isolation rule the shell's fixture tests depend on: setting only
+                // TILO_APPS_DATA_DIR means "the store is exactly here" — otherwise a
+                // test asserting a package count would pass on a dev box and fail
+                // inside a Tilo image where /usr/share/tilo-apps is populated.
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.remove("TILO_APPS_SYSTEM_DIR")
+                    .set("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture");
+                assert_eq!(system_data_dir(), None);
+                assert_eq!(
+                    default_user_root(),
+                    Some(PathBuf::from("/tmp/tilo-apps-fixture"))
+                );
+
+                env.set("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system");
+                assert_eq!(
+                    system_data_dir(),
+                    Some(PathBuf::from("/tmp/tilo-apps-system"))
+                );
+
+                env.remove("TILO_APPS_DATA_DIR")
+                    .remove("TILO_APPS_SYSTEM_DIR");
+                assert_eq!(
+                    system_data_dir(),
+                    Some(PathBuf::from(SYSTEM_DATA_DIR)),
+                    "production reads the image's store",
+                );
+            }
         }
+
+        phase a_payload_tree_is_recognised_by_its_package_id;
         {
-            // The isolation rule the shell's fixture tests depend on: setting only
-            // TILO_APPS_DATA_DIR means "the store is exactly here" — otherwise a
-            // test asserting a package count would pass on a dev box and fail
-            // inside a Tilo image where /usr/share/tilo-apps is populated.
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_APPS_SYSTEM_DIR")
-                .set("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture");
-            assert_eq!(system_data_dir(), None);
+            let layout = Layout::new("/store");
+            let id = PackageId::from_bytes([7; 32]);
+            assert_eq!(layout.materialised_id(&layout.payload(id)), Some(id));
+            assert_eq!(layout.materialised_id(&layout.meta_dir(id)), None);
             assert_eq!(
-                default_user_root(),
-                Some(PathBuf::from("/tmp/tilo-apps-fixture"))
+                layout.materialised_id(Path::new("/store/payloads/so.tilo.app")),
+                None
             );
-
-            env.set("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system");
             assert_eq!(
-                system_data_dir(),
-                Some(PathBuf::from("/tmp/tilo-apps-system"))
-            );
-
-            env.remove("TILO_APPS_DATA_DIR")
-                .remove("TILO_APPS_SYSTEM_DIR");
-            assert_eq!(
-                system_data_dir(),
-                Some(PathBuf::from(SYSTEM_DATA_DIR)),
-                "production reads the image's store",
+                layout.manifest(id),
+                layout.meta_dir(id).join("manifest.toml")
             );
         }
-    }
-
-    #[test]
-    fn a_payload_tree_is_recognised_by_its_package_id() {
-        let layout = Layout::new("/store");
-        let id = PackageId::from_bytes([7; 32]);
-        assert_eq!(layout.materialised_id(&layout.payload(id)), Some(id));
-        assert_eq!(layout.materialised_id(&layout.meta_dir(id)), None);
-        assert_eq!(
-            layout.materialised_id(Path::new("/store/payloads/so.tilo.app")),
-            None
-        );
-        assert_eq!(
-            layout.manifest(id),
-            layout.meta_dir(id).join("manifest.toml")
-        );
     }
 }

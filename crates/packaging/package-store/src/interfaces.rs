@@ -170,106 +170,110 @@ collab = "optional@1"
 system = "required@2"
 "#;
 
-    #[test]
-    fn a_package_fits_only_the_versions_the_image_serves() {
-        let manifest = Manifest::from_toml_str(SETTINGS).unwrap();
-        let os = |system: u32, runtime: u32| {
-            parse_interfaces(&format!(
-                "[interfaces]\nsystem = {system}\nruntime = {runtime}\n\n\
+    tilo_test_env::scenario! {
+        fn interface_versions_are_judged;
+
+        phase a_package_fits_only_the_versions_the_image_serves;
+        {
+            let manifest = Manifest::from_toml_str(SETTINGS).unwrap();
+            let os = |system: u32, runtime: u32| {
+                parse_interfaces(&format!(
+                    "[interfaces]\nsystem = {system}\nruntime = {runtime}\n\n\
                  [runtime]\nservices = [\"collab\"]\n"
-            ))
-            .unwrap()
-        };
+                ))
+                .unwrap()
+            };
 
-        let older = unmet(Some(&os(1, 1)), &manifest);
-        assert_eq!(older.len(), 1);
-        assert_eq!(
-            older[0].to_string(),
-            "system@2 (this system provides system@1)"
-        );
-        assert!(unmet(Some(&os(2, 1)), &manifest).is_empty());
-        let runtime_moved = unmet(Some(&os(2, 2)), &manifest);
-        assert_eq!(
-            runtime_moved[0].to_string(),
-            "collab@1 (this system provides collab@2)"
-        );
-        assert!(tilo_app_package::interfaces::package_is_behind(
-            &runtime_moved
-        ));
-        assert!(unmet(None, &manifest).is_empty());
-    }
-
-    #[test]
-    fn declarations_are_read_strictly_and_absence_is_not_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("system-interfaces.toml");
-        assert!(read_interfaces(&path).unwrap().is_none());
-
-        std::fs::write(&path, "[interfaces]\nsystem = 1\n").unwrap();
-        let provided = read_interfaces(&path).unwrap().unwrap();
-        assert_eq!(provided.version("system"), Some(1));
-
-        for bad in [
-            "system = 1\n",
-            "[interfaces]\nsystem = [1]\n",
-            "[interfaces]\nsystem = [1, 2]\n",
-            "[interfaces]\nsystem = 0\n",
-            "[interfaces]\n\"Sys tem\" = 1\n",
-            "[interfaces]\nsystem = \"1\"\n",
-            "[interfaces]\nsystem = 1\n[runtime]\nservices = [\"collab\"]\n",
-            "[interfaces]\nruntime = 1\nsystem = 1\n[runtime]\nservices = [\"system\"]\n",
-        ] {
-            std::fs::write(&path, bad).unwrap();
-            assert!(read_interfaces(&path).is_err(), "{bad:?} parsed");
-        }
-    }
-
-    #[test]
-    fn an_installed_row_is_judged_by_its_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = dir.path().join("manifest.toml");
-        std::fs::write(&manifest, SETTINGS).unwrap();
-        let old_os = parse_interfaces("[interfaces]\nsystem = 1\n").unwrap();
-        assert_eq!(unmet_at(Some(&old_os), &manifest).len(), 2);
-        assert!(unmet_at(Some(&old_os), &dir.path().join("missing.toml")).is_empty());
-    }
-
-    /// An installed package is judged by the formats this build reads, not
-    /// by the one it writes: the store's apps are still published at
-    /// package format 1, and such a record is current. A record at a format
-    /// this build does not read was installed by another Tilo build, and is
-    /// behind or ahead like an app built for another interface version.
-    #[test]
-    fn an_installed_record_is_judged_by_the_formats_this_build_reads() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = dir.path().join("manifest.toml");
-        std::fs::write(&manifest, SETTINGS).unwrap();
-        let os = parse_interfaces("[interfaces]\nsystem = 2\n").unwrap();
-        let current = unmet_at(Some(&os), &manifest).len();
-        let root = |format: u32| {
-            let mut bytes = b"TLOPKG\0\0".to_vec();
-            bytes.extend(format.to_le_bytes());
-            bytes.resize(tilo_app_package::SIGNED_ROOT_LEN, 0);
-            bytes
-        };
-        let signed = dir.path().join(crate::layout::SIGNED_ROOT_FILE);
-        for format in tilo_app_package::tapp::READABLE_FORMATS {
-            std::fs::write(&signed, root(format)).unwrap();
+            let older = unmet(Some(&os(1, 1)), &manifest);
+            assert_eq!(older.len(), 1);
             assert_eq!(
-                unmet_at(Some(&os), &manifest).len(),
-                current,
-                "format {format} is read"
+                older[0].to_string(),
+                "system@2 (this system provides system@1)"
+            );
+            assert!(unmet(Some(&os(2, 1)), &manifest).is_empty());
+            let runtime_moved = unmet(Some(&os(2, 2)), &manifest);
+            assert_eq!(
+                runtime_moved[0].to_string(),
+                "collab@1 (this system provides collab@2)"
+            );
+            assert!(tilo_app_package::interfaces::package_is_behind(
+                &runtime_moved
+            ));
+            assert!(unmet(None, &manifest).is_empty());
+        }
+
+        phase declarations_are_read_strictly_and_absence_is_not_an_error;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("system-interfaces.toml");
+            assert!(read_interfaces(&path).unwrap().is_none());
+
+            std::fs::write(&path, "[interfaces]\nsystem = 1\n").unwrap();
+            let provided = read_interfaces(&path).unwrap().unwrap();
+            assert_eq!(provided.version("system"), Some(1));
+
+            for bad in [
+                "system = 1\n",
+                "[interfaces]\nsystem = [1]\n",
+                "[interfaces]\nsystem = [1, 2]\n",
+                "[interfaces]\nsystem = 0\n",
+                "[interfaces]\n\"Sys tem\" = 1\n",
+                "[interfaces]\nsystem = \"1\"\n",
+                "[interfaces]\nsystem = 1\n[runtime]\nservices = [\"collab\"]\n",
+                "[interfaces]\nruntime = 1\nsystem = 1\n[runtime]\nservices = [\"system\"]\n",
+            ] {
+                std::fs::write(&path, bad).unwrap();
+                assert!(read_interfaces(&path).is_err(), "{bad:?} parsed");
+            }
+        }
+
+        phase an_installed_row_is_judged_by_its_manifest;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = dir.path().join("manifest.toml");
+            std::fs::write(&manifest, SETTINGS).unwrap();
+            let old_os = parse_interfaces("[interfaces]\nsystem = 1\n").unwrap();
+            assert_eq!(unmet_at(Some(&old_os), &manifest).len(), 2);
+            assert!(unmet_at(Some(&old_os), &dir.path().join("missing.toml")).is_empty());
+        }
+
+        phase an_installed_record_is_judged_by_the_formats_this_build_reads;
+        // An installed package is judged by the formats this build reads, not
+        // by the one it writes: the store's apps are still published at
+        // package format 1, and such a record is current. A record at a format
+        // this build does not read was installed by another Tilo build, and is
+        // behind or ahead like an app built for another interface version.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = dir.path().join("manifest.toml");
+            std::fs::write(&manifest, SETTINGS).unwrap();
+            let os = parse_interfaces("[interfaces]\nsystem = 2\n").unwrap();
+            let current = unmet_at(Some(&os), &manifest).len();
+            let root = |format: u32| {
+                let mut bytes = b"TLOPKG\0\0".to_vec();
+                bytes.extend(format.to_le_bytes());
+                bytes.resize(tilo_app_package::SIGNED_ROOT_LEN, 0);
+                bytes
+            };
+            let signed = dir.path().join(crate::layout::SIGNED_ROOT_FILE);
+            for format in tilo_app_package::tapp::READABLE_FORMATS {
+                std::fs::write(&signed, root(format)).unwrap();
+                assert_eq!(
+                    unmet_at(Some(&os), &manifest).len(),
+                    current,
+                    "format {format} is read"
+                );
+            }
+            let newer = tilo_app_package::TAPP_FORMAT_VERSION + 1;
+            std::fs::write(&signed, root(newer)).unwrap();
+            let unmet = unmet_at(Some(&os), &manifest);
+            assert_eq!(unmet.len(), current + 1);
+            let format = unmet.last().unwrap();
+            assert_eq!(format.requirement, format!("package@{newer}"));
+            assert_eq!(
+                format.behind(),
+                tilo_app_package::interfaces::Behind::System
             );
         }
-        let newer = tilo_app_package::TAPP_FORMAT_VERSION + 1;
-        std::fs::write(&signed, root(newer)).unwrap();
-        let unmet = unmet_at(Some(&os), &manifest);
-        assert_eq!(unmet.len(), current + 1);
-        let format = unmet.last().unwrap();
-        assert_eq!(format.requirement, format!("package@{newer}"));
-        assert_eq!(
-            format.behind(),
-            tilo_app_package::interfaces::Behind::System
-        );
     }
 }

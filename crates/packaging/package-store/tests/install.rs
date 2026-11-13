@@ -73,284 +73,600 @@ impl BlobFetcher for CountingFetcher<'_> {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn installs_materialise_the_tree_and_share_unchanged_blobs() {
+tilo_test_env::scenario! {
+    fn installs_and_updates;
+
+    phase installs_materialise_the_tree_and_share_unchanged_blobs;
     {
-        let identity = SigningIdentity::generate();
-        let files = v1_files();
-        let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &files);
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-
-        let installed = install(&store, &packed);
-        let row = &installed.package;
-        assert_eq!(row.id, "so.tilo.demo");
-        assert_eq!(row.version, "1.0.0");
-        assert_eq!(row.package_id(), Some(packed.id()));
-        assert_eq!(row.payload_root, store.layout().payload(packed.id()));
-        assert_eq!(
-            std::fs::read(&row.manifest_path).unwrap(),
-            packed.meta.manifest_bytes,
-            "the launcher reads the signed manifest bytes"
-        );
-
-        let expected: BTreeMap<String, Vec<u8>> = files
-            .iter()
-            .map(|(rel, content)| ((*rel).to_string(), content.clone()))
-            .collect();
-        assert_eq!(tree(&row.payload_root), expected);
-
-        #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = |rel: &str| {
-                std::fs::metadata(row.payload_root.join(rel))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777
-            };
-            assert_eq!(mode("bin/app"), 0o555, "the entrypoint is executable");
-            assert_eq!(mode("share/icon.png"), 0o444, "payload files are read-only");
-        }
+            let identity = SigningIdentity::generate();
+            let files = v1_files();
+            let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &files);
+            let root = scratch();
+            let store = PackageStore::at(root.path());
 
-        let listed = store.registry().unwrap();
-        assert_eq!(listed.entries(), std::slice::from_ref(row));
-        let report = package_store::integrity::verify(row, &row.payload_root).unwrap();
-        assert!(
-            report.is_intact() && report.unexpected.is_empty(),
-            "{report:?}"
-        );
-        assert!(
-            !root.path().join("payloads").exists(),
-            "no second unpacked copy is kept"
-        );
-    }
-    {
-        let identity = SigningIdentity::generate();
-        let (_p1, v1) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
-        let (_p2, v2) = package(&identity, "so.tilo.demo", "1.1.0", &v2_files());
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-
-        let first = install(&store, &v1);
-        assert_eq!(first.blobs, 3);
-        assert_eq!(first.blobs_already_stored, 0);
-
-        let second = install(&store, &v2);
-        assert_eq!(second.blobs, 4);
-        assert_eq!(
-            second.blobs_already_stored, 2,
-            "the unchanged icon and strings were already in the store"
-        );
-        assert_eq!(
-            second.replaced.as_ref().map(|row| row.version.as_str()),
-            Some("1.0.0")
-        );
-        assert!(
-            !first.package.payload_root.exists(),
-            "the replaced version's tree is gone"
-        );
-        assert_eq!(store.registry().unwrap().entries().len(), 1);
-
-        // Only v2's blobs remain; v1's old binary was collected.
-        let mut stored: Vec<BlobHash> = Vec::new();
-        for file in content_files(root.path()) {
-            let name = file.file_stem().unwrap().to_str().unwrap().to_string();
-            stored.push(BlobHash::from_hex(&name).unwrap());
-        }
-        let old_binary = BlobHash::of(&bytes(1, 300_000));
-        assert!(!stored.contains(&old_binary), "v1's binary was evicted");
-        assert!(stored.contains(&BlobHash::of(&bytes(3, 310_000))));
-
-        // Where the filesystem can share extents, the materialised file is a
-        // clone of the store's file rather than a second copy.
-        if reflinks_supported(root.path()) {
-            let icon = BlobHash::of(&bytes(2, 120_000));
-            let stored_icon = root
-                .path()
-                .join("content/data")
-                .join(format!("{}.data", icon.to_hex()));
-            let materialised = second.package.payload_root.join("share/icon.png");
+            let installed = install(&store, &packed);
+            let row = &installed.package;
+            assert_eq!(row.id, "so.tilo.demo");
+            assert_eq!(row.version, "1.0.0");
+            assert_eq!(row.package_id(), Some(packed.id()));
+            assert_eq!(row.payload_root, store.layout().payload(packed.id()));
             assert_eq!(
-                share_extents(&stored_icon, &materialised),
-                Some(true),
-                "the materialised icon shares extents with the stored blob"
+                std::fs::read(&row.manifest_path).unwrap(),
+                packed.meta.manifest_bytes,
+                "the launcher reads the signed manifest bytes"
+            );
+
+            let expected: BTreeMap<String, Vec<u8>> = files
+                .iter()
+                .map(|(rel, content)| ((*rel).to_string(), content.clone()))
+                .collect();
+            assert_eq!(tree(&row.payload_root), expected);
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = |rel: &str| {
+                    std::fs::metadata(row.payload_root.join(rel))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777
+                };
+                assert_eq!(mode("bin/app"), 0o555, "the entrypoint is executable");
+                assert_eq!(mode("share/icon.png"), 0o444, "payload files are read-only");
+            }
+
+            let listed = store.registry().unwrap();
+            assert_eq!(listed.entries(), std::slice::from_ref(row));
+            let report = package_store::integrity::verify(row, &row.payload_root).unwrap();
+            assert!(
+                report.is_intact() && report.unexpected.is_empty(),
+                "{report:?}"
+            );
+            assert!(
+                !root.path().join("payloads").exists(),
+                "no second unpacked copy is kept"
+            );
+        }
+        {
+            let identity = SigningIdentity::generate();
+            let (_p1, v1) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+            let (_p2, v2) = package(&identity, "so.tilo.demo", "1.1.0", &v2_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+
+            let first = install(&store, &v1);
+            assert_eq!(first.blobs, 3);
+            assert_eq!(first.blobs_already_stored, 0);
+
+            let second = install(&store, &v2);
+            assert_eq!(second.blobs, 4);
+            assert_eq!(
+                second.blobs_already_stored, 2,
+                "the unchanged icon and strings were already in the store"
+            );
+            assert_eq!(
+                second.replaced.as_ref().map(|row| row.version.as_str()),
+                Some("1.0.0")
+            );
+            assert!(
+                !first.package.payload_root.exists(),
+                "the replaced version's tree is gone"
+            );
+            assert_eq!(store.registry().unwrap().entries().len(), 1);
+
+            // Only v2's blobs remain; v1's old binary was collected.
+            let mut stored: Vec<BlobHash> = Vec::new();
+            for file in content_files(root.path()) {
+                let name = file.file_stem().unwrap().to_str().unwrap().to_string();
+                stored.push(BlobHash::from_hex(&name).unwrap());
+            }
+            let old_binary = BlobHash::of(&bytes(1, 300_000));
+            assert!(!stored.contains(&old_binary), "v1's binary was evicted");
+            assert!(stored.contains(&BlobHash::of(&bytes(3, 310_000))));
+
+            // Where the filesystem can share extents, the materialised file is a
+            // clone of the store's file rather than a second copy.
+            if reflinks_supported(root.path()) {
+                let icon = BlobHash::of(&bytes(2, 120_000));
+                let stored_icon = root
+                    .path()
+                    .join("content/data")
+                    .join(format!("{}.data", icon.to_hex()));
+                let materialised = second.package.payload_root.join("share/icon.png");
+                assert_eq!(
+                    share_extents(&stored_icon, &materialised),
+                    Some(true),
+                    "the materialised icon shares extents with the stored blob"
+                );
+            }
+        }
+        {
+            let identity = SigningIdentity::generate();
+            let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            let first = install(&store, &packed);
+            let damaged = first.package.payload_root.join("share/strings.ftl");
+            std::fs::remove_file(&damaged).unwrap();
+            let again = install(&store, &packed);
+            assert_eq!(again.blobs_already_stored, 3);
+            assert!(damaged.exists());
+            assert!(
+                package_store::integrity::verify(&again.package, &again.package.payload_root)
+                    .unwrap()
+                    .is_intact()
             );
         }
     }
-    {
-        let identity = SigningIdentity::generate();
-        let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-        let first = install(&store, &packed);
-        let damaged = first.package.payload_root.join("share/strings.ftl");
-        std::fs::remove_file(&damaged).unwrap();
-        let again = install(&store, &packed);
-        assert_eq!(again.blobs_already_stored, 3);
-        assert!(damaged.exists());
-        assert!(
-            package_store::integrity::verify(&again.package, &again.package.payload_root)
-                .unwrap()
-                .is_intact()
-        );
-    }
-}
 
-#[test]
-fn thin_packages_fetch_only_missing_blobs_and_verify_them() {
+    phase thin_packages_fetch_only_missing_blobs_and_verify_them;
+    {
+        {
+            let identity = SigningIdentity::generate();
+            let (_p1, v1) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+            let (_p2, v2) = package(&identity, "so.tilo.demo", "1.1.0", &v2_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            install(&store, &v1);
+
+            let thin = thin_tapp(&v2);
+            assert!(
+                thin.len() < 16 * 1024,
+                "thin package is {} bytes",
+                thin.len()
+            );
+            let fetcher = CountingFetcher {
+                source: &v2,
+                asked: std::sync::Mutex::new(Vec::new()),
+            };
+            let installed = store
+                .install(thin.as_slice(), admit_all, Some(&fetcher))
+                .unwrap();
+            let mut asked = fetcher.asked.into_inner().unwrap();
+            asked.sort();
+            let mut changed = vec![
+                BlobHash::of(&bytes(3, 310_000)),
+                BlobHash::of(&bytes(4, 90_000)),
+            ];
+            changed.sort();
+            assert_eq!(asked, changed, "only the changed and added files travel");
+            assert_eq!(installed.blobs_fetched, 2);
+            assert_eq!(installed.blobs_already_stored, 2);
+            let report =
+                package_store::integrity::verify(&installed.package, &installed.package.payload_root)
+                    .unwrap();
+            assert!(report.is_intact(), "{report:?}");
+        }
+        {
+            let identity = SigningIdentity::generate();
+            let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            let error = store
+                .install(thin_tapp(&packed).as_slice(), admit_all, None)
+                .unwrap_err();
+            assert!(
+                matches!(&error, StoreError::MissingBlobs(missing) if missing.len() == 3),
+                "{error}"
+            );
+            assert!(store.registry().unwrap().is_empty());
+        }
+        {
+            struct Liar;
+            impl BlobFetcher for Liar {
+                fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> std::io::Result<()> {
+                    for hash in hashes {
+                        sink.accept(hash, 4, &mut &b"evil"[..])?;
+                    }
+                    Ok(())
+                }
+            }
+            let identity = SigningIdentity::generate();
+            let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            assert!(
+                store
+                    .install(thin_tapp(&packed).as_slice(), admit_all, Some(&Liar))
+                    .is_err()
+            );
+            assert!(store.registry().unwrap().is_empty());
+        }
+        {
+            let identity = SigningIdentity::generate();
+            let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            let error = store
+                .install(
+                    full_tapp(&packed).as_slice(),
+                    |_meta| Err("publisher is not trusted".to_string()),
+                    None,
+                )
+                .unwrap_err();
+            assert!(matches!(error, StoreError::Refused(_)), "{error}");
+            assert!(store.registry().unwrap().is_empty());
+            assert!(
+                content_files(root.path()).is_empty(),
+                "admission runs before any payload byte is stored"
+            );
+        }
+    }
+
+    phase a_leased_payload_outlives_its_update_and_goes_after_release;
     {
         let identity = SigningIdentity::generate();
-        let (_p1, v1) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
-        let (_p2, v2) = package(&identity, "so.tilo.demo", "1.1.0", &v2_files());
+        let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+        let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
         let root = scratch();
         let store = PackageStore::at(root.path());
         install(&store, &v1);
-
-        let thin = thin_tapp(&v2);
+        let old = installed(&store, "so.tilo.a");
+        // A launch chose v1 and has not mounted it yet when the update lands.
+        let launch = package_store::lease::hold_payload_in(store.layout(), &old.payload_root)
+            .unwrap()
+            .expect("a tree of this store is leased");
+        install(&store, &v2);
         assert!(
-            thin.len() < 16 * 1024,
-            "thin package is {} bytes",
-            thin.len()
-        );
-        let fetcher = CountingFetcher {
-            source: &v2,
-            asked: std::sync::Mutex::new(Vec::new()),
-        };
-        let installed = store
-            .install(thin.as_slice(), admit_all, Some(&fetcher))
-            .unwrap();
-        let mut asked = fetcher.asked.into_inner().unwrap();
-        asked.sort();
-        let mut changed = vec![
-            BlobHash::of(&bytes(3, 310_000)),
-            BlobHash::of(&bytes(4, 90_000)),
-        ];
-        changed.sort();
-        assert_eq!(asked, changed, "only the changed and added files travel");
-        assert_eq!(installed.blobs_fetched, 2);
-        assert_eq!(installed.blobs_already_stored, 2);
-        let report =
-            package_store::integrity::verify(&installed.package, &installed.package.payload_root)
-                .unwrap();
-        assert!(report.is_intact(), "{report:?}");
-    }
-    {
-        let identity = SigningIdentity::generate();
-        let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-        let error = store
-            .install(thin_tapp(&packed).as_slice(), admit_all, None)
-            .unwrap_err();
-        assert!(
-            matches!(&error, StoreError::MissingBlobs(missing) if missing.len() == 3),
-            "{error}"
-        );
-        assert!(store.registry().unwrap().is_empty());
-    }
-    {
-        struct Liar;
-        impl BlobFetcher for Liar {
-            fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> std::io::Result<()> {
-                for hash in hashes {
-                    sink.accept(hash, 4, &mut &b"evil"[..])?;
-                }
-                Ok(())
-            }
-        }
-        let identity = SigningIdentity::generate();
-        let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-        assert!(
-            store
-                .install(thin_tapp(&packed).as_slice(), admit_all, Some(&Liar))
-                .is_err()
-        );
-        assert!(store.registry().unwrap().is_empty());
-    }
-    {
-        let identity = SigningIdentity::generate();
-        let (_payload, packed) = package(&identity, "so.tilo.demo", "1.0.0", &v1_files());
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-        let error = store
-            .install(
-                full_tapp(&packed).as_slice(),
-                |_meta| Err("publisher is not trusted".to_string()),
-                None,
-            )
-            .unwrap_err();
-        assert!(matches!(error, StoreError::Refused(_)), "{error}");
-        assert!(store.registry().unwrap().is_empty());
-        assert!(
-            content_files(root.path()).is_empty(),
-            "admission runs before any payload byte is stored"
-        );
-    }
-}
-
-#[test]
-fn removal_evicts_unreferenced_blobs_and_honours_pins() {
-    {
-        let identity = SigningIdentity::generate();
-        let shared = bytes(7, 200_000);
-        let a_files = BTreeMap::from([
-            ("bin/app", bytes(5, 150_000)),
-            ("share/lib.so", shared.clone()),
-        ]);
-        let b_files = BTreeMap::from([
-            ("bin/app", bytes(6, 150_000)),
-            ("share/lib.so", shared.clone()),
-        ]);
-        let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &a_files);
-        let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &b_files);
-        let root = scratch();
-        let store = PackageStore::at(root.path());
-        install(&store, &a);
-        let installed_b = install(&store, &b);
-        assert_eq!(
-            installed_b.blobs_already_stored, 1,
-            "the library both apps ship is stored once"
-        );
-        assert_eq!(content_files(root.path()).len(), 3);
-
-        let removed = store.remove("so.tilo.a", false).unwrap();
-        assert_eq!(removed.evicted_blobs, 1, "only a's own binary goes");
-        let shared_hex = BlobHash::of(&shared).to_hex();
-        assert!(
-            content_files(root.path()).iter().any(|path| path
-                .file_stem()
+            package_store::integrity::verify(&old, &old.payload_root)
                 .unwrap()
-                .to_string_lossy()
-                == shared_hex)
+                .is_intact(),
+            "the launch still finds the whole tree it chose"
         );
-        assert!(!store.layout().payload(a.id()).exists());
-        let row_b = installed(&store, "so.tilo.b");
+        let collected = store.collect_orphans(&nothing_mounted()).unwrap();
+        assert_eq!(collected.kept_in_use, vec![old.payload_root.clone()]);
+        assert!(old.payload_root.exists());
+        drop(launch);
+        let collected = store.collect_orphans(&nothing_mounted()).unwrap();
+        assert!(!old.payload_root.exists(), "{collected:?}");
+        assert!(!old.manifest_path.exists());
         assert!(
-            package_store::integrity::verify(&row_b, &row_b.payload_root)
+            !store
+                .layout()
+                .lease(package_store::layout::parse_id_hex(&old.package_id_hex).unwrap())
+                .exists(),
+            "the lease file goes with its tree"
+        );
+        assert!(
+            std::fs::read_dir(store.layout().tmp())
+                .unwrap()
+                .next()
+                .is_none(),
+            "nothing is left in staging"
+        );
+        let current = installed(&store, "so.tilo.a");
+        assert!(
+            package_store::integrity::verify(&current, &current.payload_root)
                 .unwrap()
                 .is_intact()
         );
-
-        store.remove("so.tilo.b", false).unwrap();
-        assert!(content_files(root.path()).is_empty());
     }
+
+    phase an_unheld_update_retires_the_old_tree_at_once;
     {
         let identity = SigningIdentity::generate();
-        let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
-        let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &v2_files());
+        let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+        let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        install(&store, &v1);
+        let old = installed(&store, "so.tilo.a");
+        drop(package_store::lease::hold_payload_in(store.layout(), &old.payload_root).unwrap());
+        install(&store, &v2);
+        assert!(!old.payload_root.exists());
+        assert!(!old.manifest_path.exists());
+    }
+
+    phase explicit_cohort_install_preserves_held_packages_and_existing_pins;
+    {
+        let identity = SigningIdentity::generate();
+        let (_first_tree, first) = package(&identity, "so.tilo.demo", "0.1.73018", &v1_files());
+        let (_next_tree, next) = package(&identity, "so.tilo.demo", "0.1.0", &v2_files());
         let root = scratch();
         let store = PackageStore::at(root.path());
         store
             .install(
-                full_tapp(&a).as_slice(),
+                full_tapp(&first).as_slice(),
+                |_| {
+                    Ok(Admission {
+                        held: true,
+                        pinned: true,
+                        ..Admission::default()
+                    })
+                },
+                None,
+            )
+            .unwrap();
+        let original_registry = std::fs::read(store.layout().registry()).unwrap();
+        let result = store
+            .install_preserving_hold(full_tapp(&next).as_slice(), admit_all, None)
+            .unwrap();
+        assert!(
+            matches!(result, package_store::InstallSelection::Preserved(ref row) if row.package_id() == Some(first.id())),
+            "an automatic cohort update must preserve an explicitly held package"
+        );
+        assert_eq!(
+            std::fs::read(store.layout().registry()).unwrap(),
+            original_registry
+        );
+        assert_eq!(
+            store
+                .registry()
+                .unwrap()
+                .find("so.tilo.demo")
+                .unwrap()
+                .package_id(),
+            Some(first.id())
+        );
+        store
+            .update_row("so.tilo.demo", |row| row.held = false)
+            .unwrap();
+        let installed = store
+            .install_preserving_hold(full_tapp(&next).as_slice(), admit_all, None)
+            .unwrap();
+        let package_store::InstallSelection::Installed(installed) = installed else {
+            panic!("the nonheld signed cohort package must be installed");
+        };
+        assert_eq!(installed.package.package_id(), Some(next.id()));
+        assert!(installed.package.pinned);
+        assert!(!installed.package.held);
+        assert_eq!(installed.replaced.unwrap().package_id(), Some(first.id()));
+    }
+
+    phase a_manifest_cannot_name_its_own_id_as_an_earlier_one;
+    {
+        let publisher = SigningIdentity::generate();
+        let mut manifest = crate::support::manifest(&publisher, "so.tilo.tasks", "1.0.0");
+        manifest.package.previously = vec!["so.tilo.tasks".to_owned()];
+        assert!(tilo_app_package::validate::validate_manifest(&manifest).is_err());
+    }
+
+    phase only_the_developer_sessions_own_builds_install_above_the_distribution_limit;
+    {
+        use package_store::size_limit::{
+            DEVELOPER_PUBLISHERS_FILE_ENV, app_size_limit_among, developer_publishers_from,
+        };
+        // An app one byte over the distribution limit, as a developer session's
+        // build for speed is, signed by the session's key and by another.
+        let developer = SigningIdentity::generate();
+        let stranger = SigningIdentity::generate();
+        let over = usize::try_from(tilo_app_package::MAX_APP_TAPP_BYTES).unwrap() + 1;
+        let files = BTreeMap::from([("bin/app", bytes(9, over))]);
+        let (_own_dir, own) = package(&developer, "so.tilo.big", "1.0.0", &files);
+        let (_other_dir, other) = package(&stranger, "so.tilo.big", "1.0.0", &files);
+        let root = scratch();
+        let list = root.path().join("publishers.txt");
+        std::fs::write(
+            &list,
+            format!("{}\n", hex::encode(developer.public_key_bytes())),
+        )
+        .unwrap();
+        let refused = |result: Result<package_store::Installed, StoreError>| matches!(result, Err(StoreError::Payload(reason)) if reason.contains("materializes"));
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove(DEVELOPER_PUBLISHERS_FILE_ENV);
+            let store = PackageStore::at(root.path().join("plain"));
+            assert!(refused(store.install(
+                full_tapp(&own).as_slice(),
+                admit_all,
+                None
+            )));
+        }
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
+            let store = PackageStore::at(root.path().join("session"));
+            assert!(refused(store.install(
+                full_tapp(&other).as_slice(),
+                admit_all,
+                None
+            )));
+        }
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
+            let store = PackageStore::at(root.path().join("session"));
+            let installed = install(&store, &own);
+            assert_eq!(installed.package.id, "so.tilo.big");
+        }
+        {
+            let shipped = developer_publishers_from(package_store::dev_env::dev_override_from(
+                false,
+                DEVELOPER_PUBLISHERS_FILE_ENV,
+                Some(list.clone().into_os_string()),
+            ));
+            assert!(shipped.is_empty());
+            assert_eq!(
+                app_size_limit_among(&own.meta, &shipped),
+                Some(tilo_app_package::MAX_APP_TAPP_BYTES)
+            );
+            let session = developer_publishers_from(Some(list.into_os_string()));
+            assert_eq!(
+                app_size_limit_among(&own.meta, &session),
+                Some(tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES)
+            );
+            assert_eq!(
+                app_size_limit_among(&other.meta, &session),
+                Some(tilo_app_package::MAX_APP_TAPP_BYTES)
+            );
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    fn removal_and_collection;
+
+    phase removal_evicts_unreferenced_blobs_and_honours_pins;
+    {
+        {
+            let identity = SigningIdentity::generate();
+            let shared = bytes(7, 200_000);
+            let a_files = BTreeMap::from([
+                ("bin/app", bytes(5, 150_000)),
+                ("share/lib.so", shared.clone()),
+            ]);
+            let b_files = BTreeMap::from([
+                ("bin/app", bytes(6, 150_000)),
+                ("share/lib.so", shared.clone()),
+            ]);
+            let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &a_files);
+            let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &b_files);
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            install(&store, &a);
+            let installed_b = install(&store, &b);
+            assert_eq!(
+                installed_b.blobs_already_stored, 1,
+                "the library both apps ship is stored once"
+            );
+            assert_eq!(content_files(root.path()).len(), 3);
+
+            let removed = store.remove("so.tilo.a", false).unwrap();
+            assert_eq!(removed.evicted_blobs, 1, "only a's own binary goes");
+            let shared_hex = BlobHash::of(&shared).to_hex();
+            assert!(
+                content_files(root.path()).iter().any(|path| path
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    == shared_hex)
+            );
+            assert!(!store.layout().payload(a.id()).exists());
+            let row_b = installed(&store, "so.tilo.b");
+            assert!(
+                package_store::integrity::verify(&row_b, &row_b.payload_root)
+                    .unwrap()
+                    .is_intact()
+            );
+
+            store.remove("so.tilo.b", false).unwrap();
+            assert!(content_files(root.path()).is_empty());
+        }
+        {
+            let identity = SigningIdentity::generate();
+            let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+            let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &v2_files());
+            let root = scratch();
+            let store = PackageStore::at(root.path());
+            store
+                .install(
+                    full_tapp(&a).as_slice(),
+                    |_| {
+                        Ok(Admission {
+                            pinned: true,
+                            ..Admission::default()
+                        })
+                    },
+                    None,
+                )
+                .unwrap();
+            install(&store, &b);
+            assert!(matches!(
+                store.remove("so.tilo.a", false),
+                Err(StoreError::Pinned(_))
+            ));
+            let swept = store.sweep(1).unwrap();
+            assert_eq!(swept, vec!["so.tilo.b".to_string()]);
+            assert!(store.registry().unwrap().find("so.tilo.a").is_some());
+            store.remove("so.tilo.a", true).unwrap();
+            assert!(store.registry().unwrap().is_empty());
+        }
+    }
+
+    phase orphaned_trees_go_unless_a_running_app_has_them_mounted;
+    {
+        let identity = SigningIdentity::generate();
+        let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        install(&store, &a);
+        // Trees a crash between a commit and retiring the replaced version left,
+        // one of them still mounted by the app that ran it.
+        let packages = store.layout().packages();
+        let orphan = |seed: u8| {
+            let id = tilo_app_package::PackageId::from_bytes([seed; 32]);
+            let tree = store.layout().payload(id);
+            std::fs::create_dir_all(tree.join("bin")).unwrap();
+            std::fs::write(tree.join("bin/app"), bytes(seed, 1000)).unwrap();
+            std::fs::create_dir_all(store.layout().meta_dir(id)).unwrap();
+            tree
+        };
+        let (gone, running) = (orphan(1), orphan(2));
+        std::fs::create_dir_all(packages.join("not-a-package")).unwrap();
+        let mut mounts = package_store::mounts::Mounts::default();
+        mounts.add_mountinfo(&format!(
+            "700 1 0:31 {} /usr/share/tilo-apps/so.tilo.old ro - ext4 /dev/sda1 rw\n",
+            running.display()
+        ));
+        let collected = store
+            .collect_orphans(&package_store::mounts::InUse::known(mounts))
+            .unwrap();
+        assert!(!gone.exists() && !gone.with_extension("pkg").exists());
+        assert_eq!(collected.removed.len(), 2, "{collected:?}");
+        assert_eq!(collected.removed_bytes, 1000);
+        assert_eq!(collected.kept_in_use, vec![running.clone()]);
+        assert!(running.exists(), "a mounted tree stays");
+        assert!(
+            packages.join("not-a-package").exists(),
+            "only package trees"
+        );
+        let row = installed(&store, "so.tilo.a");
+        assert!(
+            package_store::integrity::verify(&row, &row.payload_root)
+                .unwrap()
+                .is_intact(),
+            "an installed package is untouched"
+        );
+        let collected = store
+            .collect_orphans(&package_store::mounts::InUse::known(
+                package_store::mounts::Mounts::default(),
+            ))
+            .unwrap();
+        assert!(!running.exists(), "{collected:?}");
+        // A mount table that cannot be read keeps everything.
+        orphan(3);
+        let collected = store
+            .collect_orphans(&package_store::mounts::InUse::unknown("test"))
+            .unwrap();
+        assert!(collected.removed.is_empty(), "{collected:?}");
+    }
+
+    phase sweep_removes_lru_until_under_cap_in_one_gc;
+    {
+        let identity = SigningIdentity::generate();
+        let shared = bytes(40, 200_000);
+        let own = |seed: u8| bytes(seed, 100_000);
+        let (_pp, p) = package(
+            &identity,
+            "so.tilo.p",
+            "1.0.0",
+            &BTreeMap::from([("bin/app", own(41))]),
+        );
+        let (_pa, a) = package(
+            &identity,
+            "so.tilo.a",
+            "1.0.0",
+            &BTreeMap::from([("bin/app", own(42)), ("share/lib.so", shared.clone())]),
+        );
+        let (_pb, b) = package(
+            &identity,
+            "so.tilo.b",
+            "1.0.0",
+            &BTreeMap::from([("bin/app", own(43)), ("share/lib.so", shared)]),
+        );
+        let (_pc, c) = package(
+            &identity,
+            "so.tilo.c",
+            "1.0.0",
+            &BTreeMap::from([("bin/app", own(44))]),
+        );
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        store
+            .install(
+                full_tapp(&p).as_slice(),
                 |_| {
                     Ok(Admission {
                         pinned: true,
@@ -360,143 +676,159 @@ fn removal_evicts_unreferenced_blobs_and_honours_pins() {
                 None,
             )
             .unwrap();
-        install(&store, &b);
-        assert!(matches!(
-            store.remove("so.tilo.a", false),
-            Err(StoreError::Pinned(_))
-        ));
-        let swept = store.sweep(1).unwrap();
-        assert_eq!(swept, vec!["so.tilo.b".to_string()]);
-        assert!(store.registry().unwrap().find("so.tilo.a").is_some());
-        store.remove("so.tilo.a", true).unwrap();
-        assert!(store.registry().unwrap().is_empty());
-    }
-}
+        for (packed, last_used) in [(&a, 10), (&b, 20), (&c, 30)] {
+            let installed = store
+                .install(full_tapp(packed).as_slice(), admit_all, None)
+                .unwrap();
+            store
+                .update_row(&installed.package.id, |row| row.last_used = last_used)
+                .unwrap();
+        }
+        store
+            .update_row("so.tilo.p", |row| row.last_used = 0)
+            .unwrap();
+        let before = store.disk_usage().unwrap();
+        assert_eq!(
+            before.total_bytes,
+            4 * 100_000 + 200_000,
+            "the library counts once"
+        );
+        assert_eq!(before.pinned_bytes, 100_000);
+        assert_eq!(content_files(root.path()).len(), 5);
 
-#[test]
-fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
-    let identity = SigningIdentity::generate();
-    let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    install(&store, &a);
-    // Trees a crash between a commit and retiring the replaced version left,
-    // one of them still mounted by the app that ran it.
-    let packages = store.layout().packages();
-    let orphan = |seed: u8| {
-        let id = tilo_app_package::PackageId::from_bytes([seed; 32]);
-        let tree = store.layout().payload(id);
-        std::fs::create_dir_all(tree.join("bin")).unwrap();
-        std::fs::write(tree.join("bin/app"), bytes(seed, 1000)).unwrap();
-        std::fs::create_dir_all(store.layout().meta_dir(id)).unwrap();
-        tree
-    };
-    let (gone, running) = (orphan(1), orphan(2));
-    std::fs::create_dir_all(packages.join("not-a-package")).unwrap();
-    let mut mounts = package_store::mounts::Mounts::default();
-    mounts.add_mountinfo(&format!(
-        "700 1 0:31 {} /usr/share/tilo-apps/so.tilo.old ro - ext4 /dev/sda1 rw\n",
-        running.display()
-    ));
-    let collected = store
-        .collect_orphans(&package_store::mounts::InUse::known(mounts))
+        // Evicting a frees only its own binary while b still ships the library,
+        // so b must go too; c, newer, stays, and so does the pinned p.
+        let removed = store.sweep(before.total_bytes - 250_000).unwrap();
+        assert_eq!(
+            removed,
+            vec!["so.tilo.a".to_string(), "so.tilo.b".to_string()]
+        );
+        let registry = store.registry().unwrap();
+        let left: Vec<&str> = registry
+            .entries()
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(left, vec!["so.tilo.p", "so.tilo.c"]);
+        assert_eq!(store.disk_usage().unwrap().total_bytes, 200_000);
+        assert!(!store.layout().payload(a.id()).exists());
+        assert!(!store.layout().payload(b.id()).exists());
+        // The sweep collected garbage before returning: nothing is left over.
+        assert_eq!(content_files(root.path()).len(), 2);
+        assert_eq!(store.collect_garbage().unwrap(), 0);
+        for row in registry.entries() {
+            assert!(
+                package_store::integrity::verify(row, &row.payload_root)
+                    .unwrap()
+                    .is_intact()
+            );
+        }
+        assert!(store.sweep(200_000).unwrap().is_empty());
+    }
+
+    phase an_update_keeps_the_apps_last_use_for_eviction;
+    // An update arrives in the background, so it is not a use: the app the
+    // person last opened weeks ago is still the one the size sweep evicts
+    // first, even when it was updated after one they opened yesterday.
+    {
+        let identity = SigningIdentity::generate();
+        let (_old, old) = package(&identity, "so.tilo.unused", "1.0.0", &v1_files());
+        let (_new, new) = package(&identity, "so.tilo.unused", "2.0.0", &v2_files());
+        let (_daily, daily) = package(&identity, "so.tilo.daily", "1.0.0", &v1_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        install(&store, &old);
+        store
+            .update_row("so.tilo.unused", |row| row.last_used = 10)
+            .unwrap();
+        install(&store, &daily);
+        store
+            .update_row("so.tilo.daily", |row| row.last_used = 20)
+            .unwrap();
+
+        let updated = install(&store, &new);
+        assert_eq!(updated.package.version, "2.0.0");
+        assert_eq!(
+            updated.package.last_used, 10,
+            "the update kept the last use"
+        );
+        let registry = store.registry().unwrap();
+        let row = registry.find("so.tilo.unused").unwrap();
+        assert_eq!(row.last_used, 10, "the stored row kept it too");
+
+        assert_eq!(
+            store.sweep(1).unwrap().first().map(String::as_str),
+            Some("so.tilo.unused"),
+            "the app opened least recently goes first, updated or not"
+        );
+    }
+
+    phase disk_usage_does_not_verify_signatures;
+    {
+        let identity = SigningIdentity::generate();
+        let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        install(&store, &a);
+        let before = store.disk_usage().unwrap();
+        assert!(before.total_bytes > 0);
+
+        let signed_root = store
+            .layout()
+            .meta_dir(a.id())
+            .join(package_store::layout::SIGNED_ROOT_FILE);
+        let mut corrupted = std::fs::read(&signed_root).unwrap();
+        *corrupted.last_mut().unwrap() ^= 0x01;
+        make_writable(&signed_root);
+        std::fs::write(&signed_root, &corrupted).unwrap();
+
+        // Accounting reads the collection; it never replays the signature.
+        assert_eq!(store.disk_usage().unwrap(), before);
+        let row = installed(&store, "so.tilo.a");
+        assert!(matches!(
+            package_store::integrity::verify(&row, &row.payload_root),
+            Err(package_store::integrity::IntegrityError::RootIdMismatch)
+        ));
+        assert_eq!(store.sweep(1).unwrap(), vec!["so.tilo.a".to_string()]);
+        assert!(content_files(root.path()).is_empty());
+    }
+
+    phase gc_refuses_when_a_collection_is_unreadable;
+    {
+        let identity = SigningIdentity::generate();
+        let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+        let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &v2_files());
+        let root = scratch();
+        let store = PackageStore::at(root.path());
+        install(&store, &a);
+        install(&store, &b);
+        let stored = content_files(root.path()).len();
+
+        std::fs::remove_file(
+            store
+                .layout()
+                .meta_dir(a.id())
+                .join(package_store::layout::COLLECTION_FILE),
+        )
         .unwrap();
-    assert!(!gone.exists() && !gone.with_extension("pkg").exists());
-    assert_eq!(collected.removed.len(), 2, "{collected:?}");
-    assert_eq!(collected.removed_bytes, 1000);
-    assert_eq!(collected.kept_in_use, vec![running.clone()]);
-    assert!(running.exists(), "a mounted tree stays");
-    assert!(
-        packages.join("not-a-package").exists(),
-        "only package trees"
-    );
-    let row = installed(&store, "so.tilo.a");
-    assert!(
-        package_store::integrity::verify(&row, &row.payload_root)
-            .unwrap()
-            .is_intact(),
-        "an installed package is untouched"
-    );
-    let collected = store
-        .collect_orphans(&package_store::mounts::InUse::known(
-            package_store::mounts::Mounts::default(),
-        ))
-        .unwrap();
-    assert!(!running.exists(), "{collected:?}");
-    // A mount table that cannot be read keeps everything.
-    orphan(3);
-    let collected = store
-        .collect_orphans(&package_store::mounts::InUse::unknown("test"))
-        .unwrap();
-    assert!(collected.removed.is_empty(), "{collected:?}");
+
+        // b's own blobs are garbage once it goes, but a's can no longer be told
+        // apart from them, so nothing is evicted.
+        assert!(matches!(
+            store.remove("so.tilo.b", false),
+            Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
+        ));
+        assert_eq!(content_files(root.path()).len(), stored);
+        assert!(matches!(
+            store.collect_garbage(),
+            Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
+        ));
+        assert_eq!(content_files(root.path()).len(), stored);
+    }
 }
 
 fn nothing_mounted() -> package_store::mounts::InUse {
     package_store::mounts::InUse::known(package_store::mounts::Mounts::default())
-}
-
-#[test]
-fn a_leased_payload_outlives_its_update_and_goes_after_release() {
-    let identity = SigningIdentity::generate();
-    let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
-    let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    install(&store, &v1);
-    let old = installed(&store, "so.tilo.a");
-    // A launch chose v1 and has not mounted it yet when the update lands.
-    let launch = package_store::lease::hold_payload_in(store.layout(), &old.payload_root)
-        .unwrap()
-        .expect("a tree of this store is leased");
-    install(&store, &v2);
-    assert!(
-        package_store::integrity::verify(&old, &old.payload_root)
-            .unwrap()
-            .is_intact(),
-        "the launch still finds the whole tree it chose"
-    );
-    let collected = store.collect_orphans(&nothing_mounted()).unwrap();
-    assert_eq!(collected.kept_in_use, vec![old.payload_root.clone()]);
-    assert!(old.payload_root.exists());
-    drop(launch);
-    let collected = store.collect_orphans(&nothing_mounted()).unwrap();
-    assert!(!old.payload_root.exists(), "{collected:?}");
-    assert!(!old.manifest_path.exists());
-    assert!(
-        !store
-            .layout()
-            .lease(package_store::layout::parse_id_hex(&old.package_id_hex).unwrap())
-            .exists(),
-        "the lease file goes with its tree"
-    );
-    assert!(
-        std::fs::read_dir(store.layout().tmp())
-            .unwrap()
-            .next()
-            .is_none(),
-        "nothing is left in staging"
-    );
-    let current = installed(&store, "so.tilo.a");
-    assert!(
-        package_store::integrity::verify(&current, &current.payload_root)
-            .unwrap()
-            .is_intact()
-    );
-}
-
-#[test]
-fn an_unheld_update_retires_the_old_tree_at_once() {
-    let identity = SigningIdentity::generate();
-    let (_p1, v1) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
-    let (_p2, v2) = package(&identity, "so.tilo.a", "2.0.0", &v2_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    install(&store, &v1);
-    let old = installed(&store, "so.tilo.a");
-    drop(package_store::lease::hold_payload_in(store.layout(), &old.payload_root).unwrap());
-    install(&store, &v2);
-    assert!(!old.payload_root.exists());
-    assert!(!old.manifest_path.exists());
 }
 
 #[test]
@@ -539,196 +871,10 @@ fn abandoned_staging_is_swept_and_held_replaced_trees_stay() {
     );
 }
 
-#[test]
-fn explicit_cohort_install_preserves_held_packages_and_existing_pins() {
-    let identity = SigningIdentity::generate();
-    let (_first_tree, first) = package(&identity, "so.tilo.demo", "0.1.73018", &v1_files());
-    let (_next_tree, next) = package(&identity, "so.tilo.demo", "0.1.0", &v2_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    store
-        .install(
-            full_tapp(&first).as_slice(),
-            |_| {
-                Ok(Admission {
-                    held: true,
-                    pinned: true,
-                    ..Admission::default()
-                })
-            },
-            None,
-        )
-        .unwrap();
-    let original_registry = std::fs::read(store.layout().registry()).unwrap();
-    let result = store
-        .install_preserving_hold(full_tapp(&next).as_slice(), admit_all, None)
-        .unwrap();
-    assert!(
-        matches!(result, package_store::InstallSelection::Preserved(ref row) if row.package_id() == Some(first.id())),
-        "an automatic cohort update must preserve an explicitly held package"
-    );
-    assert_eq!(
-        std::fs::read(store.layout().registry()).unwrap(),
-        original_registry
-    );
-    assert_eq!(
-        store
-            .registry()
-            .unwrap()
-            .find("so.tilo.demo")
-            .unwrap()
-            .package_id(),
-        Some(first.id())
-    );
-    store
-        .update_row("so.tilo.demo", |row| row.held = false)
-        .unwrap();
-    let installed = store
-        .install_preserving_hold(full_tapp(&next).as_slice(), admit_all, None)
-        .unwrap();
-    let package_store::InstallSelection::Installed(installed) = installed else {
-        panic!("the nonheld signed cohort package must be installed");
-    };
-    assert_eq!(installed.package.package_id(), Some(next.id()));
-    assert!(installed.package.pinned);
-    assert!(!installed.package.held);
-    assert_eq!(installed.replaced.unwrap().package_id(), Some(first.id()));
-}
-
 /// Make `path` writable by its owner; the store may write records read-only.
 fn make_writable(path: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
-}
-
-#[test]
-fn sweep_removes_lru_until_under_cap_in_one_gc() {
-    let identity = SigningIdentity::generate();
-    let shared = bytes(40, 200_000);
-    let own = |seed: u8| bytes(seed, 100_000);
-    let (_pp, p) = package(
-        &identity,
-        "so.tilo.p",
-        "1.0.0",
-        &BTreeMap::from([("bin/app", own(41))]),
-    );
-    let (_pa, a) = package(
-        &identity,
-        "so.tilo.a",
-        "1.0.0",
-        &BTreeMap::from([("bin/app", own(42)), ("share/lib.so", shared.clone())]),
-    );
-    let (_pb, b) = package(
-        &identity,
-        "so.tilo.b",
-        "1.0.0",
-        &BTreeMap::from([("bin/app", own(43)), ("share/lib.so", shared)]),
-    );
-    let (_pc, c) = package(
-        &identity,
-        "so.tilo.c",
-        "1.0.0",
-        &BTreeMap::from([("bin/app", own(44))]),
-    );
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    store
-        .install(
-            full_tapp(&p).as_slice(),
-            |_| {
-                Ok(Admission {
-                    pinned: true,
-                    ..Admission::default()
-                })
-            },
-            None,
-        )
-        .unwrap();
-    for (packed, last_used) in [(&a, 10), (&b, 20), (&c, 30)] {
-        let installed = store
-            .install(full_tapp(packed).as_slice(), admit_all, None)
-            .unwrap();
-        store
-            .update_row(&installed.package.id, |row| row.last_used = last_used)
-            .unwrap();
-    }
-    store
-        .update_row("so.tilo.p", |row| row.last_used = 0)
-        .unwrap();
-    let before = store.disk_usage().unwrap();
-    assert_eq!(
-        before.total_bytes,
-        4 * 100_000 + 200_000,
-        "the library counts once"
-    );
-    assert_eq!(before.pinned_bytes, 100_000);
-    assert_eq!(content_files(root.path()).len(), 5);
-
-    // Evicting a frees only its own binary while b still ships the library,
-    // so b must go too; c, newer, stays, and so does the pinned p.
-    let removed = store.sweep(before.total_bytes - 250_000).unwrap();
-    assert_eq!(
-        removed,
-        vec!["so.tilo.a".to_string(), "so.tilo.b".to_string()]
-    );
-    let registry = store.registry().unwrap();
-    let left: Vec<&str> = registry
-        .entries()
-        .iter()
-        .map(|row| row.id.as_str())
-        .collect();
-    assert_eq!(left, vec!["so.tilo.p", "so.tilo.c"]);
-    assert_eq!(store.disk_usage().unwrap().total_bytes, 200_000);
-    assert!(!store.layout().payload(a.id()).exists());
-    assert!(!store.layout().payload(b.id()).exists());
-    // The sweep collected garbage before returning: nothing is left over.
-    assert_eq!(content_files(root.path()).len(), 2);
-    assert_eq!(store.collect_garbage().unwrap(), 0);
-    for row in registry.entries() {
-        assert!(
-            package_store::integrity::verify(row, &row.payload_root)
-                .unwrap()
-                .is_intact()
-        );
-    }
-    assert!(store.sweep(200_000).unwrap().is_empty());
-}
-
-/// An update arrives in the background, so it is not a use: the app the
-/// person last opened weeks ago is still the one the size sweep evicts
-/// first, even when it was updated after one they opened yesterday.
-#[test]
-fn an_update_keeps_the_apps_last_use_for_eviction() {
-    let identity = SigningIdentity::generate();
-    let (_old, old) = package(&identity, "so.tilo.unused", "1.0.0", &v1_files());
-    let (_new, new) = package(&identity, "so.tilo.unused", "2.0.0", &v2_files());
-    let (_daily, daily) = package(&identity, "so.tilo.daily", "1.0.0", &v1_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    install(&store, &old);
-    store
-        .update_row("so.tilo.unused", |row| row.last_used = 10)
-        .unwrap();
-    install(&store, &daily);
-    store
-        .update_row("so.tilo.daily", |row| row.last_used = 20)
-        .unwrap();
-
-    let updated = install(&store, &new);
-    assert_eq!(updated.package.version, "2.0.0");
-    assert_eq!(
-        updated.package.last_used, 10,
-        "the update kept the last use"
-    );
-    let registry = store.registry().unwrap();
-    let row = registry.find("so.tilo.unused").unwrap();
-    assert_eq!(row.last_used, 10, "the stored row kept it too");
-
-    assert_eq!(
-        store.sweep(1).unwrap().first().map(String::as_str),
-        Some("so.tilo.unused"),
-        "the app opened least recently goes first, updated or not"
-    );
 }
 
 /// A package of `id` that declares it was published as `previously` before.
@@ -793,146 +939,4 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
     let fresh = scratch();
     let store = PackageStore::at(fresh.path());
     install(&store, &tasks);
-}
-
-#[test]
-fn a_manifest_cannot_name_its_own_id_as_an_earlier_one() {
-    let publisher = SigningIdentity::generate();
-    let mut manifest = crate::support::manifest(&publisher, "so.tilo.tasks", "1.0.0");
-    manifest.package.previously = vec!["so.tilo.tasks".to_owned()];
-    assert!(tilo_app_package::validate::validate_manifest(&manifest).is_err());
-}
-
-#[test]
-fn disk_usage_does_not_verify_signatures() {
-    let identity = SigningIdentity::generate();
-    let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    install(&store, &a);
-    let before = store.disk_usage().unwrap();
-    assert!(before.total_bytes > 0);
-
-    let signed_root = store
-        .layout()
-        .meta_dir(a.id())
-        .join(package_store::layout::SIGNED_ROOT_FILE);
-    let mut corrupted = std::fs::read(&signed_root).unwrap();
-    *corrupted.last_mut().unwrap() ^= 0x01;
-    make_writable(&signed_root);
-    std::fs::write(&signed_root, &corrupted).unwrap();
-
-    // Accounting reads the collection; it never replays the signature.
-    assert_eq!(store.disk_usage().unwrap(), before);
-    let row = installed(&store, "so.tilo.a");
-    assert!(matches!(
-        package_store::integrity::verify(&row, &row.payload_root),
-        Err(package_store::integrity::IntegrityError::RootIdMismatch)
-    ));
-    assert_eq!(store.sweep(1).unwrap(), vec!["so.tilo.a".to_string()]);
-    assert!(content_files(root.path()).is_empty());
-}
-
-#[test]
-fn gc_refuses_when_a_collection_is_unreadable() {
-    let identity = SigningIdentity::generate();
-    let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
-    let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &v2_files());
-    let root = scratch();
-    let store = PackageStore::at(root.path());
-    install(&store, &a);
-    install(&store, &b);
-    let stored = content_files(root.path()).len();
-
-    std::fs::remove_file(
-        store
-            .layout()
-            .meta_dir(a.id())
-            .join(package_store::layout::COLLECTION_FILE),
-    )
-    .unwrap();
-
-    // b's own blobs are garbage once it goes, but a's can no longer be told
-    // apart from them, so nothing is evicted.
-    assert!(matches!(
-        store.remove("so.tilo.b", false),
-        Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
-    ));
-    assert_eq!(content_files(root.path()).len(), stored);
-    assert!(matches!(
-        store.collect_garbage(),
-        Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
-    ));
-    assert_eq!(content_files(root.path()).len(), stored);
-}
-
-#[test]
-fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit() {
-    use package_store::size_limit::{
-        DEVELOPER_PUBLISHERS_FILE_ENV, app_size_limit_among, developer_publishers_from,
-    };
-    // An app one byte over the distribution limit, as a developer session's
-    // build for speed is, signed by the session's key and by another.
-    let developer = SigningIdentity::generate();
-    let stranger = SigningIdentity::generate();
-    let over = usize::try_from(tilo_app_package::MAX_APP_TAPP_BYTES).unwrap() + 1;
-    let files = BTreeMap::from([("bin/app", bytes(9, over))]);
-    let (_own_dir, own) = package(&developer, "so.tilo.big", "1.0.0", &files);
-    let (_other_dir, other) = package(&stranger, "so.tilo.big", "1.0.0", &files);
-    let root = scratch();
-    let list = root.path().join("publishers.txt");
-    std::fs::write(
-        &list,
-        format!("{}\n", hex::encode(developer.public_key_bytes())),
-    )
-    .unwrap();
-    let refused = |result: Result<package_store::Installed, StoreError>| matches!(result, Err(StoreError::Payload(reason)) if reason.contains("materializes"));
-    {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(DEVELOPER_PUBLISHERS_FILE_ENV);
-        let store = PackageStore::at(root.path().join("plain"));
-        assert!(refused(store.install(
-            full_tapp(&own).as_slice(),
-            admit_all,
-            None
-        )));
-    }
-    {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
-        let store = PackageStore::at(root.path().join("session"));
-        assert!(refused(store.install(
-            full_tapp(&other).as_slice(),
-            admit_all,
-            None
-        )));
-    }
-    {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
-        let store = PackageStore::at(root.path().join("session"));
-        let installed = install(&store, &own);
-        assert_eq!(installed.package.id, "so.tilo.big");
-    }
-    {
-        let shipped = developer_publishers_from(package_store::dev_env::dev_override_from(
-            false,
-            DEVELOPER_PUBLISHERS_FILE_ENV,
-            Some(list.clone().into_os_string()),
-        ));
-        assert!(shipped.is_empty());
-        assert_eq!(
-            app_size_limit_among(&own.meta, &shipped),
-            Some(tilo_app_package::MAX_APP_TAPP_BYTES)
-        );
-        let session = developer_publishers_from(Some(list.into_os_string()));
-        assert_eq!(
-            app_size_limit_among(&own.meta, &session),
-            Some(tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES)
-        );
-        assert_eq!(
-            app_size_limit_among(&other.meta, &session),
-            Some(tilo_app_package::MAX_APP_TAPP_BYTES)
-        );
-    }
 }

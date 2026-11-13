@@ -404,91 +404,151 @@ mod tests {
         )
     }
 
-    #[test]
-    fn system_and_user_stores_merge_into_one_catalog() {
+    tilo_test_env::scenario! {
+        fn the_catalog_lists_its_stores;
+
+        phase system_and_user_stores_merge_into_one_catalog;
         {
-            // The preinstalled case: an image ships a system registry and the user
-            // never installed anything. The palette must still have something to list.
-            let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
-            let user = tempfile::tempdir().unwrap();
-            let catalog = catalog(system.path(), user.path());
-            let all = catalog.list().unwrap();
-            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-            assert_eq!(ids, vec!["so.tilo.notes", "so.tilo.calculator"]);
-            assert!(all.iter().all(|row| row.system && !row.user_managed()));
-            let found = catalog.find("so.tilo.notes").unwrap().unwrap();
-            assert!(found.payload_root.starts_with(system.path()));
-        }
-        {
-            let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
-            let user = store_with(&["so.tilo.notes", "so.tilo.mine"]);
-            let all = catalog(system.path(), user.path()).list().unwrap();
-            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-            assert_eq!(
-                ids,
-                vec!["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"],
-                "one row per id: the shadowed system entry must not appear twice",
-            );
-            let notes = all.iter().find(|e| e.id == "so.tilo.notes").unwrap();
-            assert!(notes.payload_root.starts_with(user.path()));
-            assert!(notes.user_managed());
-            let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
-            assert!(calc.payload_root.starts_with(system.path()));
-        }
-        {
-            let system = tempfile::tempdir().expect("system registry");
-            let user = tempfile::tempdir().expect("user registry");
-            let relocated = tempfile::tempdir().expect("relocated payload");
-            let payload = relocated.path().join("payloads/dev.tilo.chat");
-            std::fs::create_dir_all(&payload).unwrap();
-            let manifest = payload.join("manifest.toml");
-            std::fs::write(&manifest, "").unwrap();
-            std::fs::write(
-            system.path().join("registry.toml"),
-            "[[entry]]\nid='dev.tilo.chat'\npayload_root='/usr/lib/tilo-apps/payloads/dev.tilo.chat'\nmanifest_path='/usr/lib/tilo-apps/payloads/dev.tilo.chat/manifest.toml'\n",
-        )
-        .unwrap();
-            let catalog = Catalog::at(
-                user.path(),
-                Some(SystemStore {
-                    data_dir: system.path().to_path_buf(),
-                    payload_dir: relocated.path().to_path_buf(),
-                    interfaces: None,
-                }),
-            );
-            let entry = catalog
-                .find("dev.tilo.chat")
-                .expect("registry readable")
-                .expect("chat installed");
-            assert_eq!(entry.payload_root, payload);
-            assert_eq!(entry.manifest_path, manifest);
-        }
-        {
-            // A plain dev machine has no /usr/share/tilo-apps — that reads as
-            // "nothing preinstalled", not a failure hiding the user's own installs.
-            let system = tempfile::tempdir().unwrap();
-            let user = store_with(&["so.tilo.mine"]);
-            let all = catalog(system.path(), user.path()).list().unwrap();
-            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-            assert_eq!(ids, vec!["so.tilo.mine"]);
-        }
-        {
-            let system = tempfile::tempdir().unwrap();
-            let outside = tempfile::tempdir().unwrap();
-            std::fs::write(
+            {
+                // The preinstalled case: an image ships a system registry and the user
+                // never installed anything. The palette must still have something to list.
+                let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
+                let user = tempfile::tempdir().unwrap();
+                let catalog = catalog(system.path(), user.path());
+                let all = catalog.list().unwrap();
+                let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+                assert_eq!(ids, vec!["so.tilo.notes", "so.tilo.calculator"]);
+                assert!(all.iter().all(|row| row.system && !row.user_managed()));
+                let found = catalog.find("so.tilo.notes").unwrap().unwrap();
+                assert!(found.payload_root.starts_with(system.path()));
+            }
+            {
+                let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
+                let user = store_with(&["so.tilo.notes", "so.tilo.mine"]);
+                let all = catalog(system.path(), user.path()).list().unwrap();
+                let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+                assert_eq!(
+                    ids,
+                    vec!["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"],
+                    "one row per id: the shadowed system entry must not appear twice",
+                );
+                let notes = all.iter().find(|e| e.id == "so.tilo.notes").unwrap();
+                assert!(notes.payload_root.starts_with(user.path()));
+                assert!(notes.user_managed());
+                let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
+                assert!(calc.payload_root.starts_with(system.path()));
+            }
+            {
+                let system = tempfile::tempdir().expect("system registry");
+                let user = tempfile::tempdir().expect("user registry");
+                let relocated = tempfile::tempdir().expect("relocated payload");
+                let payload = relocated.path().join("payloads/dev.tilo.chat");
+                std::fs::create_dir_all(&payload).unwrap();
+                let manifest = payload.join("manifest.toml");
+                std::fs::write(&manifest, "").unwrap();
+                std::fs::write(
                 system.path().join("registry.toml"),
-                format!(
-                    "[[entry]]\nid = 'so.tilo.x'\npayload_root = {:?}\nmanifest_path = {:?}\n",
-                    outside.path().display().to_string(),
-                    outside.path().display().to_string()
-                ),
+                "[[entry]]\nid='dev.tilo.chat'\npayload_root='/usr/lib/tilo-apps/payloads/dev.tilo.chat'\nmanifest_path='/usr/lib/tilo-apps/payloads/dev.tilo.chat/manifest.toml'\n",
             )
             .unwrap();
+                let catalog = Catalog::at(
+                    user.path(),
+                    Some(SystemStore {
+                        data_dir: system.path().to_path_buf(),
+                        payload_dir: relocated.path().to_path_buf(),
+                        interfaces: None,
+                    }),
+                );
+                let entry = catalog
+                    .find("dev.tilo.chat")
+                    .expect("registry readable")
+                    .expect("chat installed");
+                assert_eq!(entry.payload_root, payload);
+                assert_eq!(entry.manifest_path, manifest);
+            }
+            {
+                // A plain dev machine has no /usr/share/tilo-apps — that reads as
+                // "nothing preinstalled", not a failure hiding the user's own installs.
+                let system = tempfile::tempdir().unwrap();
+                let user = store_with(&["so.tilo.mine"]);
+                let all = catalog(system.path(), user.path()).list().unwrap();
+                let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+                assert_eq!(ids, vec!["so.tilo.mine"]);
+            }
+            {
+                let system = tempfile::tempdir().unwrap();
+                let outside = tempfile::tempdir().unwrap();
+                std::fs::write(
+                    system.path().join("registry.toml"),
+                    format!(
+                        "[[entry]]\nid = 'so.tilo.x'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                        outside.path().display().to_string(),
+                        outside.path().display().to_string()
+                    ),
+                )
+                .unwrap();
+                let user = tempfile::tempdir().unwrap();
+                assert!(matches!(
+                    catalog(system.path(), user.path()).list(),
+                    Err(CatalogError::Escapes { .. })
+                ));
+            }
+        }
+
+        phase a_long_lived_catalog_reads_the_system_registry_once;
+        {
+            let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
             let user = tempfile::tempdir().unwrap();
+            let long_lived = catalog(system.path(), user.path());
+            let ids = |rows: Vec<InstalledPackage>| -> Vec<String> {
+                rows.into_iter().map(|row| row.id).collect()
+            };
+            assert_eq!(
+                ids(long_lived.list().unwrap()),
+                ["so.tilo.notes", "so.tilo.calculator"]
+            );
+
+            // Were the system registry read again, this would now fail to parse.
+            std::fs::write(system.path().join("registry.toml"), "[[entry]]\nid = 3\n").unwrap();
+            let mine = store_with(&["so.tilo.mine"]);
+            std::fs::copy(
+                mine.path().join("registry.toml"),
+                user.path().join("registry.toml"),
+            )
+            .unwrap();
+            assert_eq!(
+                ids(long_lived.list().unwrap()),
+                ["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"]
+            );
+            assert!(long_lived.find("so.tilo.calculator").unwrap().is_some());
+
             assert!(matches!(
                 catalog(system.path(), user.path()).list(),
-                Err(CatalogError::Escapes { .. })
+                Err(CatalogError::Registry(RegistryError::Parse { .. }))
             ));
+        }
+
+        phase the_environment_names_the_stores;
+        {
+            let user = store_with(&["so.tilo.alpha", "so.tilo.beta"]);
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_APPS_SYSTEM_DIR")
+                .set("TILO_APPS_DATA_DIR", user.path());
+            let all = list_installed().unwrap();
+            let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, vec!["so.tilo.alpha", "so.tilo.beta"]);
+            assert!(find_installed("so.tilo.beta").unwrap().is_some());
+            assert!(find_installed("nothing").unwrap().is_none());
+        }
+
+        phase display_names_come_from_the_last_id_component;
+        {
+            assert_eq!(
+                display_name_for_package_id("so.tilo.text-editor"),
+                "Text Editor"
+            );
+            assert_eq!(display_name_for_package_id("calc"), "Calc");
+            assert_eq!(display_name_for_package_id("so.tilo.a_b"), "A B");
         }
     }
 
@@ -517,39 +577,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_long_lived_catalog_reads_the_system_registry_once() {
-        let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
-        let user = tempfile::tempdir().unwrap();
-        let long_lived = catalog(system.path(), user.path());
-        let ids = |rows: Vec<InstalledPackage>| -> Vec<String> {
-            rows.into_iter().map(|row| row.id).collect()
-        };
-        assert_eq!(
-            ids(long_lived.list().unwrap()),
-            ["so.tilo.notes", "so.tilo.calculator"]
-        );
-
-        // Were the system registry read again, this would now fail to parse.
-        std::fs::write(system.path().join("registry.toml"), "[[entry]]\nid = 3\n").unwrap();
-        let mine = store_with(&["so.tilo.mine"]);
-        std::fs::copy(
-            mine.path().join("registry.toml"),
-            user.path().join("registry.toml"),
-        )
-        .unwrap();
-        assert_eq!(
-            ids(long_lived.list().unwrap()),
-            ["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"]
-        );
-        assert!(long_lived.find("so.tilo.calculator").unwrap().is_some());
-
-        assert!(matches!(
-            catalog(system.path(), user.path()).list(),
-            Err(CatalogError::Registry(RegistryError::Parse { .. }))
-        ));
-    }
-
     fn versioned_store(rows: &[(&str, &str, bool)]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();
@@ -570,183 +597,164 @@ mod tests {
         tmp
     }
 
-    #[test]
-    fn the_newer_copy_of_an_image_app_runs_unless_the_user_held_one() {
-        let system = versioned_store(&[
-            ("so.tilo.settings", "0.1.10", false),
-            ("so.tilo.notes", "0.1.10", false),
-            ("so.tilo.files", "0.1.10", false),
-            ("so.tilo.clocks", "0.1.10", false),
-        ]);
-        let user = versioned_store(&[
-            ("so.tilo.settings", "0.1.12", false),
-            // The image has since shipped a newer one.
-            ("so.tilo.notes", "0.1.9", false),
-            ("so.tilo.files", "0.1.8", true),
-        ]);
-        let catalog = catalog(system.path(), user.path());
-        let running = |id: &str| {
-            let row = catalog.find(id).unwrap().unwrap();
-            (row.version, row.system)
-        };
-        assert_eq!(running("so.tilo.settings"), ("0.1.12".into(), false));
-        assert_eq!(
-            running("so.tilo.notes"),
-            ("0.1.10".into(), true),
-            "an image update is not hidden behind an older user copy",
-        );
-        assert_eq!(running("so.tilo.files"), ("0.1.8".into(), false));
-        assert_eq!(running("so.tilo.clocks"), ("0.1.10".into(), true));
-        let ids: Vec<String> = catalog.list().unwrap().into_iter().map(|r| r.id).collect();
-        assert_eq!(
-            ids,
-            [
-                "so.tilo.settings",
-                "so.tilo.notes",
-                "so.tilo.files",
-                "so.tilo.clocks"
-            ],
-            "one row per app, in the image's order",
-        );
+    tilo_test_env::scenario! {
+        fn an_image_app_and_its_user_copy;
 
-        let superseded: Vec<String> = catalog
-            .superseded()
-            .unwrap()
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
-        assert_eq!(superseded, ["so.tilo.notes"]);
+        phase the_newer_copy_of_an_image_app_runs_unless_the_user_held_one;
+        {
+            let system = versioned_store(&[
+                ("so.tilo.settings", "0.1.10", false),
+                ("so.tilo.notes", "0.1.10", false),
+                ("so.tilo.files", "0.1.10", false),
+                ("so.tilo.clocks", "0.1.10", false),
+            ]);
+            let user = versioned_store(&[
+                ("so.tilo.settings", "0.1.12", false),
+                // The image has since shipped a newer one.
+                ("so.tilo.notes", "0.1.9", false),
+                ("so.tilo.files", "0.1.8", true),
+            ]);
+            let catalog = catalog(system.path(), user.path());
+            let running = |id: &str| {
+                let row = catalog.find(id).unwrap().unwrap();
+                (row.version, row.system)
+            };
+            assert_eq!(running("so.tilo.settings"), ("0.1.12".into(), false));
+            assert_eq!(
+                running("so.tilo.notes"),
+                ("0.1.10".into(), true),
+                "an image update is not hidden behind an older user copy",
+            );
+            assert_eq!(running("so.tilo.files"), ("0.1.8".into(), false));
+            assert_eq!(running("so.tilo.clocks"), ("0.1.10".into(), true));
+            let ids: Vec<String> = catalog.list().unwrap().into_iter().map(|r| r.id).collect();
+            assert_eq!(
+                ids,
+                [
+                    "so.tilo.settings",
+                    "so.tilo.notes",
+                    "so.tilo.files",
+                    "so.tilo.clocks"
+                ],
+                "one row per app, in the image's order",
+            );
 
-        let layers = catalog.layers("so.tilo.notes").unwrap();
-        assert_eq!(layers.user.as_ref().unwrap().version, "0.1.9");
-        assert_eq!(layers.image.as_ref().unwrap().version, "0.1.10");
-        assert_eq!(layers.running(), layers.image.as_ref());
-        let layers = catalog.layers("so.tilo.settings").unwrap();
-        assert_eq!(layers.running(), layers.user.as_ref());
-        assert_eq!(catalog.layers("so.tilo.none").unwrap(), Layers::default());
-    }
+            let superseded: Vec<String> = catalog
+                .superseded()
+                .unwrap()
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+            assert_eq!(superseded, ["so.tilo.notes"]);
 
-    #[test]
-    fn a_user_copy_the_os_cannot_serve_never_runs_over_the_image() {
-        let system = versioned_store(&[("so.tilo.settings", "0.1.10", false)]);
-        let user = versioned_store(&[("so.tilo.settings", "0.2.0", false)]);
-        let manifest = |store: &Path, system_version: u32| {
-            std::fs::write(
-                store.join("payloads/so.tilo.settings/manifest.toml"),
-                format!(
-                    "[package]\nid = 'so.tilo.settings'\nversion = '0'\nkind = 'app'\n\
+            let layers = catalog.layers("so.tilo.notes").unwrap();
+            assert_eq!(layers.user.as_ref().unwrap().version, "0.1.9");
+            assert_eq!(layers.image.as_ref().unwrap().version, "0.1.10");
+            assert_eq!(layers.running(), layers.image.as_ref());
+            let layers = catalog.layers("so.tilo.settings").unwrap();
+            assert_eq!(layers.running(), layers.user.as_ref());
+            assert_eq!(catalog.layers("so.tilo.none").unwrap(), Layers::default());
+        }
+
+        phase a_user_copy_the_os_cannot_serve_never_runs_over_the_image;
+        {
+            let system = versioned_store(&[("so.tilo.settings", "0.1.10", false)]);
+            let user = versioned_store(&[("so.tilo.settings", "0.2.0", false)]);
+            let manifest = |store: &Path, system_version: u32| {
+                std::fs::write(
+                    store.join("payloads/so.tilo.settings/manifest.toml"),
+                    format!(
+                        "[package]\nid = 'so.tilo.settings'\nversion = '0'\nkind = 'app'\n\
                      [publisher]\nidentity = 'ed25519:{zero}'\nsignature = ''\n\
                      [sandbox]\nnamespaces = []\nseccomp = 'tilo-default'\nlandlock = 'strict'\n\
                      [sandbox.net]\nmode = 'off'\n\
                      [sandbox.services]\nsystem = 'required@{system_version}'\n",
-                    zero = "0".repeat(64)
-                ),
+                        zero = "0".repeat(64)
+                    ),
+                )
+                .unwrap();
+            };
+            manifest(system.path(), 1);
+            manifest(user.path(), 2);
+            let on_os = |served: u32| {
+                Catalog::at(
+                    user.path(),
+                    Some(SystemStore {
+                        data_dir: system.path().to_path_buf(),
+                        payload_dir: system.path().join("lib"),
+                        interfaces: Some(ProvidedInterfaces::new([("system", served)], [])),
+                    }),
+                )
+            };
+
+            let newer_os = on_os(2);
+            let row = newer_os.find("so.tilo.settings").unwrap().unwrap();
+            assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
+            assert!(
+                newer_os
+                    .layers("so.tilo.settings")
+                    .unwrap()
+                    .user_unmet
+                    .is_empty()
+            );
+
+            // On an OS that serves system@1 the image's copy runs instead,
+            // and the reason is there to show.
+            let older_os = on_os(1);
+            let row = older_os.find("so.tilo.settings").unwrap().unwrap();
+            assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
+            let layers = older_os.layers("so.tilo.settings").unwrap();
+            assert_eq!(layers.running(), layers.image.as_ref());
+            assert_eq!(
+                layers.user_unmet[0].to_string(),
+                "system@2 (this system provides system@1)"
+            );
+            assert_eq!(layers.user.as_ref().unwrap().version, "0.2.0");
+
+            // A rollback hold does not override the contract either.
+            let held = versioned_store(&[("so.tilo.settings", "0.2.0", true)]);
+            manifest(held.path(), 2);
+            let catalog = Catalog::at(held.path(), older_os.system().cloned());
+            let row = catalog.find("so.tilo.settings").unwrap().unwrap();
+            assert!(row.system);
+
+            std::fs::write(user.path().join("registry.toml"), "").unwrap();
+            for os in [on_os(1), on_os(2)] {
+                let row = os.find("so.tilo.settings").unwrap().unwrap();
+                assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
+            }
+        }
+
+        phase a_user_copy_without_its_runtime_never_runs_over_the_image;
+        {
+            let system = versioned_store(&[("so.tilo.notes", "0.1.10", false)]);
+            let user = versioned_store(&[("so.tilo.notes", "0.2.0", false)]);
+            let registry = user.path().join("registry.toml");
+            let rows = std::fs::read_to_string(&registry).unwrap();
+            std::fs::write(
+                &registry,
+                rows.replace("[[entry]]\n", "[[entry]]\nruntime = 'tilo-runtime/new'\n"),
             )
             .unwrap();
-        };
-        manifest(system.path(), 1);
-        manifest(user.path(), 2);
-        let on_os = |served: u32| {
-            Catalog::at(
-                user.path(),
-                Some(SystemStore {
-                    data_dir: system.path().to_path_buf(),
-                    payload_dir: system.path().join("lib"),
-                    interfaces: Some(ProvidedInterfaces::new([("system", served)], [])),
-                }),
-            )
-        };
+            let on = |installed: fn(&str) -> bool| {
+                catalog(system.path(), user.path()).with_runtimes(installed)
+            };
 
-        let newer_os = on_os(2);
-        let row = newer_os.find("so.tilo.settings").unwrap().unwrap();
-        assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
-        assert!(
-            newer_os
-                .layers("so.tilo.settings")
-                .unwrap()
-                .user_unmet
-                .is_empty()
-        );
+            // The image the update was made for: the update runs.
+            let newer = on(|runtime| runtime == "tilo-runtime/new");
+            let row = newer.find("so.tilo.notes").unwrap().unwrap();
+            assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
 
-        // On an OS that serves system@1 the image's copy runs instead,
-        // and the reason is there to show.
-        let older_os = on_os(1);
-        let row = older_os.find("so.tilo.settings").unwrap().unwrap();
-        assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
-        let layers = older_os.layers("so.tilo.settings").unwrap();
-        assert_eq!(layers.running(), layers.image.as_ref());
-        assert_eq!(
-            layers.user_unmet[0].to_string(),
-            "system@2 (this system provides system@1)"
-        );
-        assert_eq!(layers.user.as_ref().unwrap().version, "0.2.0");
-
-        // A rollback hold does not override the contract either.
-        let held = versioned_store(&[("so.tilo.settings", "0.2.0", true)]);
-        manifest(held.path(), 2);
-        let catalog = Catalog::at(held.path(), older_os.system().cloned());
-        let row = catalog.find("so.tilo.settings").unwrap().unwrap();
-        assert!(row.system);
-
-        std::fs::write(user.path().join("registry.toml"), "").unwrap();
-        for os in [on_os(1), on_os(2)] {
-            let row = os.find("so.tilo.settings").unwrap().unwrap();
+            // Rolled back to an image without that runtime: the image's copy
+            // runs, and the update stays for when the runtime is back.
+            let older = on(|_| false);
+            let row = older.find("so.tilo.notes").unwrap().unwrap();
             assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
+            assert_eq!(older.list().unwrap()[0].version, "0.1.10");
+            let layers = older.layers("so.tilo.notes").unwrap();
+            assert!(layers.user_runtime_missing);
+            assert_eq!(layers.user.unwrap().version, "0.2.0");
+            assert!(older.superseded().unwrap().is_empty());
         }
-    }
-
-    #[test]
-    fn a_user_copy_without_its_runtime_never_runs_over_the_image() {
-        let system = versioned_store(&[("so.tilo.notes", "0.1.10", false)]);
-        let user = versioned_store(&[("so.tilo.notes", "0.2.0", false)]);
-        let registry = user.path().join("registry.toml");
-        let rows = std::fs::read_to_string(&registry).unwrap();
-        std::fs::write(
-            &registry,
-            rows.replace("[[entry]]\n", "[[entry]]\nruntime = 'tilo-runtime/new'\n"),
-        )
-        .unwrap();
-        let on = |installed: fn(&str) -> bool| {
-            catalog(system.path(), user.path()).with_runtimes(installed)
-        };
-
-        // The image the update was made for: the update runs.
-        let newer = on(|runtime| runtime == "tilo-runtime/new");
-        let row = newer.find("so.tilo.notes").unwrap().unwrap();
-        assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
-
-        // Rolled back to an image without that runtime: the image's copy
-        // runs, and the update stays for when the runtime is back.
-        let older = on(|_| false);
-        let row = older.find("so.tilo.notes").unwrap().unwrap();
-        assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
-        assert_eq!(older.list().unwrap()[0].version, "0.1.10");
-        let layers = older.layers("so.tilo.notes").unwrap();
-        assert!(layers.user_runtime_missing);
-        assert_eq!(layers.user.unwrap().version, "0.2.0");
-        assert!(older.superseded().unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_environment_names_the_stores() {
-        let user = store_with(&["so.tilo.alpha", "so.tilo.beta"]);
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_APPS_SYSTEM_DIR")
-            .set("TILO_APPS_DATA_DIR", user.path());
-        let all = list_installed().unwrap();
-        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["so.tilo.alpha", "so.tilo.beta"]);
-        assert!(find_installed("so.tilo.beta").unwrap().is_some());
-        assert!(find_installed("nothing").unwrap().is_none());
-    }
-
-    #[test]
-    fn display_names_come_from_the_last_id_component() {
-        assert_eq!(
-            display_name_for_package_id("so.tilo.text-editor"),
-            "Text Editor"
-        );
-        assert_eq!(display_name_for_package_id("calc"), "Calc");
-        assert_eq!(display_name_for_package_id("so.tilo.a_b"), "A B");
     }
 }
