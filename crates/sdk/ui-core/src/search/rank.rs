@@ -57,36 +57,40 @@ pub fn result_relevance(query: &str, result: &SearchResult) -> i32 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tiers_order_exact_prefix_word_and_infix_matches() {
-        assert_eq!(match_tier("dune", "dune"), Some(MatchTier::Exact));
-        assert_eq!(match_tier("dune", "dune notes"), Some(MatchTier::Prefix));
-        assert_eq!(
-            match_tier("dune", "the-dune-notes.md"),
-            Some(MatchTier::WordPrefix)
-        );
-        assert_eq!(match_tier("dune", "redundant"), None);
-        assert_eq!(match_tier("dunda", "redundant"), Some(MatchTier::Contains));
-        // Too short to be a remembered fragment: only word starts count.
-        assert_eq!(match_tier("dun", "redundant"), None);
-        assert_eq!(match_tier("", "anything"), None);
-        assert_eq!(
-            match_tier("dun", "redundant dune"),
-            Some(MatchTier::WordPrefix)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn matches_rank_by_tier_and_by_the_field_they_hit;
 
-    #[test]
-    fn relevance_prefers_a_title_hit_over_a_subtitle_hit() {
-        let title = SearchResult::new("Apps", "Calculator", "a");
-        let subtitle =
-            SearchResult::new("Files", "Draft", "f").with_subtitle("Quarterly calculator notes");
-        assert!(result_relevance("calculator", &title) > result_relevance("calculator", &subtitle));
-        assert!(result_relevance("calculator", &subtitle) > 0);
-        assert_eq!(result_relevance("", &title), 0);
-        assert_eq!(
-            result_relevance("CRÈME", &SearchResult::new("Notes", "Crème brûlée", "n")),
-            result_relevance("creme", &SearchResult::new("Notes", "Crème brûlée", "n"))
-        );
+        phase tiers_order_exact_prefix_word_and_infix_matches;
+        {
+            assert_eq!(match_tier("dune", "dune"), Some(MatchTier::Exact));
+            assert_eq!(match_tier("dune", "dune notes"), Some(MatchTier::Prefix));
+            assert_eq!(
+                match_tier("dune", "the-dune-notes.md"),
+                Some(MatchTier::WordPrefix)
+            );
+            assert_eq!(match_tier("dune", "redundant"), None);
+            assert_eq!(match_tier("dunda", "redundant"), Some(MatchTier::Contains));
+            // Too short to be a remembered fragment: only word starts count.
+            assert_eq!(match_tier("dun", "redundant"), None);
+            assert_eq!(match_tier("", "anything"), None);
+            assert_eq!(
+                match_tier("dun", "redundant dune"),
+                Some(MatchTier::WordPrefix)
+            );
+        }
+
+        phase relevance_prefers_a_title_hit_over_a_subtitle_hit;
+        {
+            let title = SearchResult::new("Apps", "Calculator", "a");
+            let subtitle =
+                SearchResult::new("Files", "Draft", "f").with_subtitle("Quarterly calculator notes");
+            assert!(result_relevance("calculator", &title) > result_relevance("calculator", &subtitle));
+            assert!(result_relevance("calculator", &subtitle) > 0);
+            assert_eq!(result_relevance("", &title), 0);
+            assert_eq!(
+                result_relevance("CRÈME", &SearchResult::new("Notes", "Crème brûlée", "n")),
+                result_relevance("creme", &SearchResult::new("Notes", "Crème brûlée", "n"))
+            );
+        }
     }
 }

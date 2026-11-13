@@ -197,19 +197,17 @@ mod tests {
         SearchResult::new(kind, title, id)
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn the_registry_merges_ranks_and_budgets_provider_results() {
-        // phase: empty_registry_returns_nothing
+    tilo_test_env::scenario! {
+        fn the_registry_merges_ranks_and_budgets_provider_results;
+
+        phase empty_registry_returns_nothing;
         {
             let reg = SearchRegistry::new();
             assert!(reg.query("anything").is_empty());
             assert_eq!(reg.provider_count(), 0);
         }
-        // phase: merges_results_from_multiple_providers
+
+        phase merges_results_from_multiple_providers;
         {
             let mut reg = SearchRegistry::new();
             reg.register_fn("Contacts", |_q| vec![r("Contacts", "Alice", "c:1")]);
@@ -221,7 +219,8 @@ mod tests {
             assert!(titles.contains(&"Alice"));
             assert!(titles.contains(&"alice.txt"));
         }
-        // phase: ranks_stronger_title_match_first_across_providers
+
+        phase ranks_stronger_title_match_first_across_providers;
         {
             let mut reg = SearchRegistry::new();
             // A weak match from the first-registered provider, an exact-prefix match from
@@ -234,7 +233,8 @@ mod tests {
                 "prefix match outranks scattered, across providers"
             );
         }
-        // phase: provider_bias_floats_pinned_results
+
+        phase provider_bias_floats_pinned_results;
         {
             let mut reg = SearchRegistry::new();
             reg.register_fn("Contacts", |_q| {
@@ -246,7 +246,8 @@ mod tests {
             let out = reg.query("zed");
             assert_eq!(out[0].action_id, "c:z", "the biased result leads");
         }
-        // phase: exact_title_beats_provider_bias_and_subtitle_only_matches
+
+        phase exact_title_beats_provider_bias_and_subtitle_only_matches;
         {
             let mut reg = SearchRegistry::new();
             reg.register_fn("Files", |_q| {
@@ -259,7 +260,8 @@ mod tests {
             });
             assert_eq!(reg.query("calculator")[0].title, "Calculator");
         }
-        // phase: canonical_action_aliases_collapse_across_providers
+
+        phase canonical_action_aliases_collapse_across_providers;
         {
             let address = tilo_actions::ActionAddress::new("notes.note:1", "open");
             let mut reg = SearchRegistry::new();
@@ -271,7 +273,8 @@ mod tests {
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].action_address(), Some(address));
         }
-        // phase: limited_query_pushes_a_materialisation_budget_into_each_provider
+
+        phase limited_query_pushes_a_materialisation_budget_into_each_provider;
         {
             use std::cell::Cell;
             use std::rc::Rc;
@@ -302,7 +305,8 @@ mod tests {
             assert_eq!(reg.query_limited("row", 3).len(), 3);
             assert_eq!(observed.get(), 12);
         }
-        // phase: struct_provider_registers_and_queries
+
+        phase struct_provider_registers_and_queries;
         {
             struct Fixed;
             impl SearchProvider for Fixed {
@@ -320,9 +324,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn grouping_orders_groups_by_best_result_and_caps_floods() {
-        // phase: grouping_orders_groups_by_best_result
+    tilo_test_env::scenario! {
+        fn grouping_orders_groups_by_best_result_and_caps_floods;
+
+        phase grouping_orders_groups_by_best_result;
         {
             let mut reg = SearchRegistry::new();
             // Files only weakly matches ("cal" scattered through the name); Apps has the
@@ -334,7 +339,8 @@ mod tests {
             assert_eq!(groups[0].kind, "Apps", "the group with the best hit leads");
             assert_eq!(groups[1].kind, "Files");
         }
-        // phase: grouping_keeps_ranked_order_within_a_group
+
+        phase grouping_keeps_ranked_order_within_a_group;
         {
             let mut reg = SearchRegistry::new();
             reg.register_fn("Apps", |_q| {
@@ -351,7 +357,8 @@ mod tests {
             );
             assert_eq!(groups[0].results[1].title, "Terminal Calculator");
         }
-        // phase: per_group_cap_limits_flood
+
+        phase per_group_cap_limits_flood;
         {
             let mut reg = SearchRegistry::new();
             reg.register_fn("Files", |_q| {

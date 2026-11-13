@@ -1180,9 +1180,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catalog_provider_answers_within_budgets_or_is_empty() {
-        // phase: catalog_provider_answers_from_the_retained_catalogue_within_budgets
+    tilo_test_env::scenario! {
+        fn catalog_provider_answers_within_budgets_or_is_empty;
+
+        phase catalog_provider_answers_from_the_retained_catalogue_within_budgets;
         {
             let catalog = catalog_rows(40);
             let provider = Retained {
@@ -1208,7 +1209,8 @@ mod tests {
             catalog.remove("row:0");
             assert!(!provider.action_directory_cursor_is_current(&next));
         }
-        // phase: catalog_provider_can_spend_no_more_inspections_than_results
+
+        phase catalog_provider_can_spend_no_more_inspections_than_results;
         {
             let catalog = catalog_rows(40);
             let generous = Retained {
@@ -1223,7 +1225,8 @@ mod tests {
             assert_eq!(frugal.search_limited("abcde", 2).len(), 2);
             assert_eq!(frugal.search_page(&"row".into(), None, 2, 5).inspected, 2);
         }
-        // phase: catalog_provider_without_a_catalogue_is_empty_and_has_no_generation
+
+        phase catalog_provider_without_a_catalogue_is_empty_and_has_no_generation;
         {
             let provider = Retained {
                 catalog: None,
@@ -1236,9 +1239,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn open_resource_search_indexes_nested_resources_within_hard_budgets() {
-        // phase: open_resource_search_indexes_nested_resources_and_prefers_view_actions
+    tilo_test_env::scenario! {
+        fn open_resource_search_indexes_nested_resources_within_hard_budgets;
+
+        phase open_resource_search_indexes_nested_resources_and_prefers_view_actions;
         {
             let nested =
                 tilo_actions::ResourceSpec::new("note:launch", "notes.note", "Launch plan")
@@ -1313,7 +1317,8 @@ mod tests {
                 ("Report.pdf", Some("Documents"))
             );
         }
-        // phase: open_resource_search_pages_with_hard_budgets
+
+        phase open_resource_search_pages_with_hard_budgets;
         {
             let resources = (0..20)
                 .map(|index| {
@@ -1423,9 +1428,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn results_and_action_addresses_are_built_without_changing_legacy_shape() {
-        // phase: canonical_action_address_round_trips_without_changing_legacy_shape
+    tilo_test_env::scenario! {
+        fn results_and_action_addresses_are_built_without_changing_legacy_shape;
+
+        phase canonical_action_address_round_trips_without_changing_legacy_shape;
         {
             let address = ActionAddress::new("contacts.contact:ada", "open");
             let hit = SearchResult::for_action("Contacts", "Ada", address.clone());
@@ -1434,7 +1440,8 @@ mod tests {
             let legacy = SearchResult::new("Contacts", "Ada", "contact:ada");
             assert_eq!(legacy.action_address(), None);
         }
-        // phase: result_builders_populate_fields
+
+        phase result_builders_populate_fields;
         {
             let r = SearchResult::new("Contacts", "Alice Ng", "contact:42")
                 .with_subtitle("alice@example.com")
@@ -1449,9 +1456,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn queries_fold_unicode_and_stop_at_the_input_ceiling() {
-        // phase: bounded_query_normalization_keeps_unicode_case_matching
+    tilo_test_env::scenario! {
+        fn queries_fold_unicode_and_stop_at_the_input_ceiling;
+
+        phase bounded_query_normalization_keeps_unicode_case_matching;
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
@@ -1466,7 +1474,8 @@ mod tests {
             assert_eq!(page.results.len(), 1);
             assert_eq!(page.inspected, 1);
         }
-        // phase: oversized_query_stops_before_index_work_or_materialisation
+
+        phase oversized_query_stops_before_index_work_or_materialisation;
         {
             // Every record contains the whole query, so any index work would find them;
             // `inspected == 0` proves the rejection came first.
@@ -1494,9 +1503,10 @@ mod tests {
         SearchResult::for_action("Documents", title, ActionAddress::new(resource_id, "open"))
     }
 
-    #[test]
-    fn the_incremental_catalogue_discovers_late_records_in_bounded_pages() {
-        // phase: incremental_catalog_finds_unique_resource_beyond_one_hundred_thousand
+    tilo_test_env::scenario! {
+        fn the_incremental_catalogue_discovers_late_records_in_bounded_pages;
+
+        phase incremental_catalog_finds_unique_resource_beyond_one_hundred_thousand;
         {
             let catalog = SearchCatalog::new("Documents");
             for index in 0..100_001 {
@@ -1524,7 +1534,8 @@ mod tests {
             assert_eq!(page.inspected, 1, "only the match is materialised");
             assert_eq!(catalog.stats().records, 100_001);
         }
-        // phase: adversarial_exact_verification_can_continue_in_fixed_work_pages
+
+        phase adversarial_exact_verification_can_continue_in_fixed_work_pages;
         {
             let catalog = SearchCatalog::new("Documents");
             for index in 0..1_000 {
@@ -1560,7 +1571,8 @@ mod tests {
             assert_eq!(found.len(), 1);
             assert_eq!(found[0].title, "Target");
         }
-        // phase: catalogue_clamps_hostile_page_budgets_without_truncating_discovery
+
+        phase catalogue_clamps_hostile_page_budgets_without_truncating_discovery;
         {
             let catalog = SearchCatalog::new("Documents");
             for index in 0..1_000 {
@@ -1583,9 +1595,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_incremental_catalogue_refuses_reuse_and_tracks_generations() {
-        // phase: catalog_edits_and_deletes_only_change_incremental_generation
+    tilo_test_env::scenario! {
+        fn the_incremental_catalogue_refuses_reuse_and_tracks_generations;
+
+        phase catalog_edits_and_deletes_only_change_incremental_generation;
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
@@ -1623,7 +1636,8 @@ mod tests {
             assert!(provider.search_limited("new", 4).is_empty());
             assert_eq!(catalog.stats().records, 0);
         }
-        // phase: catalogue_rejects_legacy_or_mismatched_activation
+
+        phase catalogue_rejects_legacy_or_mismatched_activation;
         {
             let catalog = SearchCatalog::new("Documents");
             assert_eq!(
@@ -1643,7 +1657,8 @@ mod tests {
                 Err(SearchCatalogError::ResourceAddressMismatch)
             );
         }
-        // phase: catalogue_refuses_generation_reuse_without_partial_mutation
+
+        phase catalogue_refuses_generation_reuse_without_partial_mutation;
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
@@ -1669,7 +1684,8 @@ mod tests {
             assert_eq!(catalog.stats().records, 1);
             assert_eq!(catalog.stats().generation, u64::MAX);
         }
-        // phase: catalogue_refuses_browse_ordinal_reuse_without_inserting
+
+        phase catalogue_refuses_browse_ordinal_reuse_without_inserting;
         {
             let catalog = SearchCatalog::new("Documents");
             catalog.inner.write_recover().next_browse_ordinal = u64::MAX;
@@ -1707,81 +1723,125 @@ mod tests {
         (results, inspected)
     }
 
-    #[test]
-    fn weighted_fields_order_a_page_by_the_shared_ranker() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records([
-                SearchRecord::new("document:a", catalog_hit("document:a", "Travel notes"))
-                    .field("Travel notes", FieldWeight::TITLE)
-                    .field("an atlas of old roads", FieldWeight::BODY),
-                record("document:b", "Atlas Press catalogue"),
-                record("document:c", "Atlas"),
-            ])
-            .unwrap();
-        let titles: Vec<_> = catalog
-            .query_page("atlas", None, 8, 8)
-            .results
-            .into_iter()
-            .map(|hit| hit.title)
-            .collect();
-        assert_eq!(titles, ["Atlas", "Atlas Press catalogue", "Travel notes"]);
-        // Fields never match across their boundary.
-        assert!(
-            catalog
-                .query_page("notes an", None, 8, 8)
-                .results
-                .is_empty()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn catalogue_queries_match_folded_words_and_rank_by_field;
 
-    #[test]
-    fn legacy_rows_keep_their_candidate_order() {
-        let catalog = SearchCatalog::new("Documents");
-        for (id, text) in [("document:1", "xx atlas"), ("document:2", "atlas")] {
+        phase weighted_fields_order_a_page_by_the_shared_ranker;
+        {
+            let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                .replace_all_records([
+                    SearchRecord::new("document:a", catalog_hit("document:a", "Travel notes"))
+                        .field("Travel notes", FieldWeight::TITLE)
+                        .field("an atlas of old roads", FieldWeight::BODY),
+                    record("document:b", "Atlas Press catalogue"),
+                    record("document:c", "Atlas"),
+                ])
                 .unwrap();
+            let titles: Vec<_> = catalog
+                .query_page("atlas", None, 8, 8)
+                .results
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect();
+            assert_eq!(titles, ["Atlas", "Atlas Press catalogue", "Travel notes"]);
+            // Fields never match across their boundary.
+            assert!(
+                catalog
+                    .query_page("notes an", None, 8, 8)
+                    .results
+                    .is_empty()
+            );
         }
-        let ids: Vec<_> = catalog
-            .query_page("atlas", None, 8, 8)
-            .results
-            .into_iter()
-            .map(|hit| hit.action_address().unwrap().resource)
-            .collect();
-        assert_eq!(ids, ["document:1", "document:2"]);
-    }
 
-    #[test]
-    fn folding_finds_accented_and_compatibility_spellings() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records([
-                record("document:a", "Crème brûlée"),
-                record("document:b", "Ｔｏｋｙｏ"),
-            ])
-            .unwrap();
-        assert_eq!(
-            catalog.query_page("creme brulee", None, 8, 8).results.len(),
-            1
-        );
-        assert_eq!(catalog.query_page("CRÈME", None, 8, 8).results.len(), 1);
-        assert_eq!(catalog.query_page("tokyo", None, 8, 8).results.len(), 1);
-    }
+        phase legacy_rows_keep_their_candidate_order;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            for (id, text) in [("document:1", "xx atlas"), ("document:2", "atlas")] {
+                catalog
+                    .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                    .unwrap();
+            }
+            let ids: Vec<_> = catalog
+                .query_page("atlas", None, 8, 8)
+                .results
+                .into_iter()
+                .map(|hit| hit.action_address().unwrap().resource)
+                .collect();
+            assert_eq!(ids, ["document:1", "document:2"]);
+        }
 
-    #[test]
-    fn cjk_titles_are_found_by_an_inner_word() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records([
-                record("document:a", "東京都の地図"),
-                record("document:b", "大阪の地図"),
-            ])
-            .unwrap();
-        let hits = catalog.query_page("東京", None, 8, 8).results;
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "東京都の地図");
-        assert_eq!(catalog.query_page("地図", None, 8, 8).results.len(), 2);
+        phase folding_finds_accented_and_compatibility_spellings;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records([
+                    record("document:a", "Crème brûlée"),
+                    record("document:b", "Ｔｏｋｙｏ"),
+                ])
+                .unwrap();
+            assert_eq!(
+                catalog.query_page("creme brulee", None, 8, 8).results.len(),
+                1
+            );
+            assert_eq!(catalog.query_page("CRÈME", None, 8, 8).results.len(), 1);
+            assert_eq!(catalog.query_page("tokyo", None, 8, 8).results.len(), 1);
+        }
+
+        phase cjk_titles_are_found_by_an_inner_word;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records([
+                    record("document:a", "東京都の地図"),
+                    record("document:b", "大阪の地図"),
+                ])
+                .unwrap();
+            let hits = catalog.query_page("東京", None, 8, 8).results;
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].title, "東京都の地図");
+            assert_eq!(catalog.query_page("地図", None, 8, 8).results.len(), 2);
+        }
+
+        phase a_query_that_is_a_term_elsewhere_still_finds_it_inside_words;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            for (id, text) in [
+                ("document:1", "needle.rs"),
+                ("document:2", "contains-needle-here"),
+            ] {
+                catalog
+                    .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                    .unwrap();
+            }
+            let page = catalog.query_page("needle", None, 8, 8);
+            assert_eq!(
+                page.results.len(),
+                2,
+                "`needle` is a word of one record and inside a word of the other"
+            );
+        }
+
+        phase interior_query_terms_narrow_the_candidates;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records((0..500).map(|index| {
+                    let title = if index == 499 {
+                        "alpha rare-token omega".to_string()
+                    } else {
+                        format!("alpha rare-token-{index} omega")
+                    };
+                    record(&format!("document:{index:03}"), &title)
+                }))
+                .unwrap();
+            let page = catalog.query_page("pha rare-token ome", None, 4, 4);
+            assert_eq!(page.results.len(), 1);
+            assert_eq!(
+                page.inspected, 1,
+                "the interior term's posting is the candidate list"
+            );
+        }
     }
 
     struct Paragraphs {
@@ -1821,185 +1881,198 @@ mod tests {
         record(&id, &format!("Document {index}")).body(body)
     }
 
-    #[test]
-    fn a_late_body_only_hit_is_reachable_through_the_shared_helper() {
-        let (catalog, hit) = crate::search::testing::assert_late_hit_reachable(
-            |corpus| {
-                let catalog = SearchCatalog::new("Documents");
-                catalog
-                    .replace_all_records(corpus.map(|row| {
-                        body_record(
-                            row.index,
-                            vec!["An ordinary opening paragraph.".to_string(), row.text],
-                        )
-                    }))
-                    .unwrap();
-                catalog
-            },
-            3_000,
-        );
-        assert_eq!(hit.title, "Paragraph 1", "the hit names the paragraph");
-        let stats = catalog.stats();
-        assert_eq!(stats.body_records, 3_000);
-    }
+    tilo_test_env::scenario! {
+        fn body_text_is_searched_after_the_fields_and_never_stale;
 
-    #[test]
-    fn body_hits_follow_field_hits_and_skip_records_already_found() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records([
-                record("document:title", "Harbour lights").body(SearchBody::new(Arc::new(
-                    "harbour lights again".to_string(),
-                ))),
-                body_record(1, vec!["the harbour lights at dusk".to_string()]),
-            ])
-            .unwrap();
-        let (hits, _) = drain(&catalog, "harbour lights", 1);
-        let titles: Vec<_> = hits.iter().map(|hit| hit.title.as_str()).collect();
-        assert_eq!(titles, ["Harbour lights", "Paragraph 0"]);
-    }
-
-    #[test]
-    fn a_match_late_in_a_huge_body_is_found() {
-        let mut prose = "lorem ipsum ".repeat(50_000);
-        prose.push_str("violet-tail");
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records([body_record(0, vec![prose.clone()])])
-            .unwrap();
-        let (hits, inspected) = drain(&catalog, "violet-tail", 4);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(inspected, 1);
-    }
-
-    #[test]
-    fn body_words_out_of_order_do_not_match() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records(
-                (0..40).map(|index| body_record(index, vec!["cat dog g ca".to_string()])),
-            )
-            .unwrap();
-        let (hits, inspected) = drain(&catalog, "dog cat", 7);
-        assert!(hits.is_empty());
-        assert_eq!(inspected, 0);
-        assert_eq!(drain(&catalog, "dog g ca", 7).0.len(), 40);
-    }
-
-    #[test]
-    fn body_cursors_go_stale_with_the_catalogue() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records(
-                (0..8).map(|index| body_record(index, vec!["shared words".to_string()])),
-            )
-            .unwrap();
-        let first = catalog.query_page("shared", None, 2, 2);
-        let cursor = first.next.expect("more bodies to verify");
-        assert!(catalog.cursor_is_current(&cursor));
-        catalog
-            .upsert_record(record("document:new", "Other"))
-            .unwrap();
-        assert!(!catalog.cursor_is_current(&cursor));
-        let (hits, _) = drain(&catalog, "shared", 3);
-        assert_eq!(hits.len(), 8);
-    }
-
-    #[test]
-    fn unchanged_bodies_are_not_mutations() {
-        let body = SearchBody::new(Arc::new("the long unchanged chapter".to_string()));
-        let first = SearchCatalog::new("Documents");
-        first
-            .replace_all_records([record("document:a", "A").body(body.clone())])
-            .unwrap();
-        let rebuilt = SearchCatalog::new("Documents");
-        rebuilt
-            .replace_all_records([
-                record("document:a", "A").body(body.clone()),
-                record("document:b", "B"),
-            ])
-            .unwrap();
-        let reused = rebuilt
-            .inner
-            .read()
-            .unwrap()
-            .entries
-            .values()
-            .next()
-            .unwrap()
-            .body
-            .clone()
-            .unwrap();
-        assert!(reused.shares_source_with(&body));
-        assert_eq!(drain(&rebuilt, "unchanged", 8).0.len(), 1);
-        let generation = rebuilt.stats().generation;
-        rebuilt
-            .upsert_record(record("document:a", "A").body(body))
-            .unwrap();
-        assert_eq!(rebuilt.stats().generation, generation);
-    }
-
-    #[test]
-    fn detached_copies_extend_without_touching_the_original() {
-        let catalog = SearchCatalog::new("Actions");
-        catalog
-            .replace_all_records([record("document:a", "Open")])
-            .unwrap();
-        let session = catalog.detached();
-        let address = ActionAddress::new("document:a", "share");
-        session
-            .upsert_record(
-                SearchRecord::new(
-                    address.encode(),
-                    SearchResult::for_action("Actions", "Share", address.clone()),
-                )
-                .field("Share", FieldWeight::TITLE),
-            )
-            .unwrap();
-        assert!(session.contains(&address.encode()));
-        assert_eq!(session.query_page("share", None, 8, 8).results.len(), 1);
-        assert!(catalog.query_page("share", None, 8, 8).results.is_empty());
-        assert_eq!(catalog.stats().records, 1);
-    }
-
-    #[test]
-    fn a_query_that_is_a_term_elsewhere_still_finds_it_inside_words() {
-        let catalog = SearchCatalog::new("Documents");
-        for (id, text) in [
-            ("document:1", "needle.rs"),
-            ("document:2", "contains-needle-here"),
-        ] {
-            catalog
-                .upsert_record(text_record(id, text, catalog_hit(id, text)))
-                .unwrap();
+        phase a_late_body_only_hit_is_reachable_through_the_shared_helper;
+        {
+            let (catalog, hit) = crate::search::testing::assert_late_hit_reachable(
+                |corpus| {
+                    let catalog = SearchCatalog::new("Documents");
+                    catalog
+                        .replace_all_records(corpus.map(|row| {
+                            body_record(
+                                row.index,
+                                vec!["An ordinary opening paragraph.".to_string(), row.text],
+                            )
+                        }))
+                        .unwrap();
+                    catalog
+                },
+                3_000,
+            );
+            assert_eq!(hit.title, "Paragraph 1", "the hit names the paragraph");
+            let stats = catalog.stats();
+            assert_eq!(stats.body_records, 3_000);
         }
-        let page = catalog.query_page("needle", None, 8, 8);
-        assert_eq!(
-            page.results.len(),
-            2,
-            "`needle` is a word of one record and inside a word of the other"
-        );
+
+        phase body_hits_follow_field_hits_and_skip_records_already_found;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records([
+                    record("document:title", "Harbour lights").body(SearchBody::new(Arc::new(
+                        "harbour lights again".to_string(),
+                    ))),
+                    body_record(1, vec!["the harbour lights at dusk".to_string()]),
+                ])
+                .unwrap();
+            let (hits, _) = drain(&catalog, "harbour lights", 1);
+            let titles: Vec<_> = hits.iter().map(|hit| hit.title.as_str()).collect();
+            assert_eq!(titles, ["Harbour lights", "Paragraph 0"]);
+        }
+
+        phase a_match_late_in_a_huge_body_is_found;
+        {
+            let mut prose = "lorem ipsum ".repeat(50_000);
+            prose.push_str("violet-tail");
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records([body_record(0, vec![prose.clone()])])
+                .unwrap();
+            let (hits, inspected) = drain(&catalog, "violet-tail", 4);
+            assert_eq!(hits.len(), 1);
+            assert_eq!(inspected, 1);
+        }
+
+        phase body_words_out_of_order_do_not_match;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records(
+                    (0..40).map(|index| body_record(index, vec!["cat dog g ca".to_string()])),
+                )
+                .unwrap();
+            let (hits, inspected) = drain(&catalog, "dog cat", 7);
+            assert!(hits.is_empty());
+            assert_eq!(inspected, 0);
+            assert_eq!(drain(&catalog, "dog g ca", 7).0.len(), 40);
+        }
+
+        phase body_cursors_go_stale_with_the_catalogue;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records(
+                    (0..8).map(|index| body_record(index, vec!["shared words".to_string()])),
+                )
+                .unwrap();
+            let first = catalog.query_page("shared", None, 2, 2);
+            let cursor = first.next.expect("more bodies to verify");
+            assert!(catalog.cursor_is_current(&cursor));
+            catalog
+                .upsert_record(record("document:new", "Other"))
+                .unwrap();
+            assert!(!catalog.cursor_is_current(&cursor));
+            let (hits, _) = drain(&catalog, "shared", 3);
+            assert_eq!(hits.len(), 8);
+        }
+
+        phase unchanged_bodies_are_not_mutations;
+        {
+            let body = SearchBody::new(Arc::new("the long unchanged chapter".to_string()));
+            let first = SearchCatalog::new("Documents");
+            first
+                .replace_all_records([record("document:a", "A").body(body.clone())])
+                .unwrap();
+            let rebuilt = SearchCatalog::new("Documents");
+            rebuilt
+                .replace_all_records([
+                    record("document:a", "A").body(body.clone()),
+                    record("document:b", "B"),
+                ])
+                .unwrap();
+            let reused = rebuilt
+                .inner
+                .read()
+                .unwrap()
+                .entries
+                .values()
+                .next()
+                .unwrap()
+                .body
+                .clone()
+                .unwrap();
+            assert!(reused.shares_source_with(&body));
+            assert_eq!(drain(&rebuilt, "unchanged", 8).0.len(), 1);
+            let generation = rebuilt.stats().generation;
+            rebuilt
+                .upsert_record(record("document:a", "A").body(body))
+                .unwrap();
+            assert_eq!(rebuilt.stats().generation, generation);
+        }
     }
 
-    #[test]
-    fn interior_query_terms_narrow_the_candidates() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records((0..500).map(|index| {
-                let title = if index == 499 {
-                    "alpha rare-token omega".to_string()
-                } else {
-                    format!("alpha rare-token-{index} omega")
-                };
-                record(&format!("document:{index:03}"), &title)
-            }))
-            .unwrap();
-        let page = catalog.query_page("pha rare-token ome", None, 4, 4);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(
-            page.inspected, 1,
-            "the interior term's posting is the candidate list"
-        );
+    tilo_test_env::scenario! {
+        fn a_catalogue_changes_only_by_what_a_copy_or_sync_changed;
+
+        phase detached_copies_extend_without_touching_the_original;
+        {
+            let catalog = SearchCatalog::new("Actions");
+            catalog
+                .replace_all_records([record("document:a", "Open")])
+                .unwrap();
+            let session = catalog.detached();
+            let address = ActionAddress::new("document:a", "share");
+            session
+                .upsert_record(
+                    SearchRecord::new(
+                        address.encode(),
+                        SearchResult::for_action("Actions", "Share", address.clone()),
+                    )
+                    .field("Share", FieldWeight::TITLE),
+                )
+                .unwrap();
+            assert!(session.contains(&address.encode()));
+            assert_eq!(session.query_page("share", None, 8, 8).results.len(), 1);
+            assert!(catalog.query_page("share", None, 8, 8).results.is_empty());
+            assert_eq!(catalog.stats().records, 1);
+        }
+
+        phase a_sync_indexes_only_what_changed_and_an_unchanged_one_nothing;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            let snapshot = |changed: Option<usize>| {
+                (0..1_000).map(move |id| sync_record(id, usize::from(changed == Some(id))))
+            };
+            catalog.replace_all_records(snapshot(None)).unwrap();
+            let generation = catalog.stats().generation;
+            let touched =
+                |records: Vec<SearchRecord>| catalog.inner.write().unwrap().sync(records).unwrap();
+            assert_eq!(touched(snapshot(None).collect()), 0);
+            assert_eq!(
+                catalog.stats().generation,
+                generation,
+                "cursors stay current"
+            );
+            assert_eq!(touched(snapshot(Some(500)).collect()), 1);
+            assert_eq!(catalog.stats().generation, generation + 1);
+            let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
+            records.pop();
+            records.insert(0, sync_record(5_000, 0));
+            assert_eq!(touched(records), 2);
+            let first = catalog.query_page("", None, 1, 1);
+            assert_eq!(
+                first.results[0].action_address().unwrap().resource,
+                "document:5000",
+                "the new first record browses first"
+            );
+        }
+
+        phase a_refused_sync_changes_nothing;
+        {
+            let catalog = SearchCatalog::new("Documents");
+            catalog
+                .replace_all_records([record("document:a", "A"), record("document:b", "B")])
+                .unwrap();
+            let before = catalog.stats();
+            assert_eq!(
+                catalog.sync_records([record("document:a", "A"), record("document:a", "again")]),
+                Err(SearchCatalogError::DuplicateResourceId)
+            );
+            assert_eq!(catalog.stats(), before);
+            assert!(!catalog.query_page("b", None, 8, 8).results.is_empty());
+        }
     }
 
     /// A small deterministic generator, so a failure replays exactly.
@@ -2092,50 +2165,5 @@ mod tests {
             assert_eq!(catalog.stats().records, snapshot.len());
             assert_eq!(answers(&catalog), answers(&bulk), "step {step}");
         }
-    }
-
-    #[test]
-    fn a_sync_indexes_only_what_changed_and_an_unchanged_one_nothing() {
-        let catalog = SearchCatalog::new("Documents");
-        let snapshot = |changed: Option<usize>| {
-            (0..1_000).map(move |id| sync_record(id, usize::from(changed == Some(id))))
-        };
-        catalog.replace_all_records(snapshot(None)).unwrap();
-        let generation = catalog.stats().generation;
-        let touched =
-            |records: Vec<SearchRecord>| catalog.inner.write().unwrap().sync(records).unwrap();
-        assert_eq!(touched(snapshot(None).collect()), 0);
-        assert_eq!(
-            catalog.stats().generation,
-            generation,
-            "cursors stay current"
-        );
-        assert_eq!(touched(snapshot(Some(500)).collect()), 1);
-        assert_eq!(catalog.stats().generation, generation + 1);
-        let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
-        records.pop();
-        records.insert(0, sync_record(5_000, 0));
-        assert_eq!(touched(records), 2);
-        let first = catalog.query_page("", None, 1, 1);
-        assert_eq!(
-            first.results[0].action_address().unwrap().resource,
-            "document:5000",
-            "the new first record browses first"
-        );
-    }
-
-    #[test]
-    fn a_refused_sync_changes_nothing() {
-        let catalog = SearchCatalog::new("Documents");
-        catalog
-            .replace_all_records([record("document:a", "A"), record("document:b", "B")])
-            .unwrap();
-        let before = catalog.stats();
-        assert_eq!(
-            catalog.sync_records([record("document:a", "A"), record("document:a", "again")]),
-            Err(SearchCatalogError::DuplicateResourceId)
-        );
-        assert_eq!(catalog.stats(), before);
-        assert!(!catalog.query_page("b", None, 8, 8).results.is_empty());
     }
 }

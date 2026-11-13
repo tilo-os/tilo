@@ -357,77 +357,81 @@ impl SearchRow {
 mod tests {
     use super::*;
 
-    #[test]
-    fn builders_fill_only_their_own_shape() {
-        let message = SearchRow::message("Ada", "Invoice")
-            .snippet("Attached is March")
-            .date("Tue")
-            .unread(true)
-            .line(4);
-        assert_eq!(
-            message.spoken(),
-            "Unread, Ada, Invoice, Tue, Attached is March"
-        );
-        let hit = SearchRow::file_hit("src/main.rs", "fn main() {}")
-            .line(3)
-            .matched(3..7);
-        assert_eq!(hit.location().as_deref(), Some("src/main.rs:3"));
-        let SearchRow::FileHit { matched, .. } = &hit else {
-            unreachable!()
-        };
-        assert_eq!(matched.clone(), Some(3..7));
-        let bad = SearchRow::file_hit("a", "é").matched(0..1);
-        assert!(matches!(bad, SearchRow::FileHit { matched: None, .. }));
-        let media = SearchRow::media("Talk").byline("Conf").duration("12:04");
-        assert_eq!(media.spoken(), "Talk, Conf, 12:04");
-    }
+    tilo_test_env::scenario! {
+        fn a_search_row_fills_its_own_shape_and_addresses_its_item;
 
-    /// A row that restates the query says so, so every palette draws it without setting
-    /// off spans of the person's own words; an ordinary command row matches as it always
-    /// did.
-    #[test]
-    fn a_row_that_restates_the_query_declares_itself() {
-        let echo = SearchRow::echoing_query();
-        let SearchRow::Command(row) = &echo else {
-            panic!("an echo is a command row");
-        };
-        assert!(row.echoes_query);
-        assert!(!CommandRow::default().echoes_query);
-    }
+        phase builders_fill_only_their_own_shape;
+        {
+            let message = SearchRow::message("Ada", "Invoice")
+                .snippet("Attached is March")
+                .date("Tue")
+                .unread(true)
+                .line(4);
+            assert_eq!(
+                message.spoken(),
+                "Unread, Ada, Invoice, Tue, Attached is March"
+            );
+            let hit = SearchRow::file_hit("src/main.rs", "fn main() {}")
+                .line(3)
+                .matched(3..7);
+            assert_eq!(hit.location().as_deref(), Some("src/main.rs:3"));
+            let SearchRow::FileHit { matched, .. } = &hit else {
+                unreachable!()
+            };
+            assert_eq!(matched.clone(), Some(3..7));
+            let bad = SearchRow::file_hit("a", "é").matched(0..1);
+            assert!(matches!(bad, SearchRow::FileHit { matched: None, .. }));
+            let media = SearchRow::media("Talk").byline("Conf").duration("12:04");
+            assert_eq!(media.spoken(), "Talk, Conf, 12:04");
+        }
 
-    #[test]
-    fn an_item_row_addresses_the_item_it_is() {
-        let row = SearchRow::item("so.tilo.notes", "notes.notebook.pages", "page-7");
-        assert_eq!(row.item_app(), Some("so.tilo.notes"));
-        assert_eq!(
-            row.item_resource().as_deref(),
-            Some("notes.notebook/pages/page-7")
-        );
-        assert_eq!(row.spoken(), "", "the result's title speaks for it");
-        assert_eq!(row.location(), None);
-        assert_eq!(
-            SearchRow::item("so.tilo.notes", "no-dot", "x").item_resource(),
-            None,
-            "a kind with no collection names no item"
-        );
-        assert_eq!(SearchRow::message("Ada", "Hi").item_resource(), None);
-    }
+        phase a_row_that_restates_the_query_declares_itself;
+        // A row that restates the query says so, so every palette draws it without setting
+        // off spans of the person's own words; an ordinary command row matches as it always
+        // did.
+        {
+            let echo = SearchRow::echoing_query();
+            let SearchRow::Command(row) = &echo else {
+                panic!("an echo is a command row");
+            };
+            assert!(row.echoes_query);
+            assert!(!CommandRow::default().echoes_query);
+        }
 
-    #[test]
-    fn an_item_row_is_read_from_the_resource_it_names() {
-        assert_eq!(
-            SearchRow::item_of("so.tilo.notes", "notes.notebook/pages/page-7"),
-            Some(SearchRow::item(
-                "so.tilo.notes",
-                "notes.notebook.pages",
-                "page-7"
-            ))
-        );
-        assert_eq!(
-            SearchRow::item_of("so.tilo.notes", "notes.notebook"),
-            None,
-            "a whole notebook is no item"
-        );
-        assert_eq!(SearchRow::item_of("so.tilo.notes", "page-7"), None);
+        phase an_item_row_addresses_the_item_it_is;
+        {
+            let row = SearchRow::item("so.tilo.notes", "notes.notebook.pages", "page-7");
+            assert_eq!(row.item_app(), Some("so.tilo.notes"));
+            assert_eq!(
+                row.item_resource().as_deref(),
+                Some("notes.notebook/pages/page-7")
+            );
+            assert_eq!(row.spoken(), "", "the result's title speaks for it");
+            assert_eq!(row.location(), None);
+            assert_eq!(
+                SearchRow::item("so.tilo.notes", "no-dot", "x").item_resource(),
+                None,
+                "a kind with no collection names no item"
+            );
+            assert_eq!(SearchRow::message("Ada", "Hi").item_resource(), None);
+        }
+
+        phase an_item_row_is_read_from_the_resource_it_names;
+        {
+            assert_eq!(
+                SearchRow::item_of("so.tilo.notes", "notes.notebook/pages/page-7"),
+                Some(SearchRow::item(
+                    "so.tilo.notes",
+                    "notes.notebook.pages",
+                    "page-7"
+                ))
+            );
+            assert_eq!(
+                SearchRow::item_of("so.tilo.notes", "notes.notebook"),
+                None,
+                "a whole notebook is no item"
+            );
+            assert_eq!(SearchRow::item_of("so.tilo.notes", "page-7"), None);
+        }
     }
 }

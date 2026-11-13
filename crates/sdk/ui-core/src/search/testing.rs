@@ -129,15 +129,17 @@ mod tests {
         catalog
     }
 
-    #[test]
-    fn the_late_hit_corpus_puts_the_needle_only_in_the_last_record_a_catalogue_finds() {
-        // phase: a_catalogue_backed_provider_finds_the_last_record
+    tilo_test_env::scenario! {
+        fn the_late_hit_corpus_puts_the_needle_only_in_the_last_record_a_catalogue_finds;
+
+        phase a_catalogue_backed_provider_finds_the_last_record;
         {
             let (catalog, hit) = assert_late_hit_reachable(|corpus| catalogue(corpus, ""), 3_000);
             assert_eq!(hit.title, "Document 2999");
             assert_eq!(catalog.stats().records, 3_000);
         }
-        // phase: only_the_last_row_carries_the_needle
+
+        phase only_the_last_row_carries_the_needle;
         {
             let rows: Vec<_> = Corpus { next: 0, len: 4 }.collect();
             assert_eq!(rows.len(), 4);

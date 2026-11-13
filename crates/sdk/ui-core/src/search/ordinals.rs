@@ -136,56 +136,60 @@ mod tests {
         ordinals.windows(2).all(|pair| pair[0] < pair[1])
     }
 
-    #[test]
-    fn a_fresh_snapshot_is_numbered_a_gap_apart() {
-        assert_eq!(plan(&[None, None, None]), Some(vec![GAP, gap(2), gap(3)]));
-    }
+    tilo_test_env::scenario! {
+        fn ordinals_keep_what_is_in_order_and_fit_the_rest_between;
 
-    #[test]
-    fn records_in_order_keep_their_ordinals_and_new_ones_go_between() {
-        let held = [Some(GAP), None, Some(gap(2)), Some(gap(3)), None];
-        let planned = plan(&held).unwrap();
-        assert!(increasing(&planned));
-        assert_eq!(planned[0], GAP);
-        assert_eq!(planned[2], gap(2));
-        assert_eq!(planned[3], gap(3));
-        assert!(planned[1] > GAP && planned[1] < gap(2));
-        assert!(planned[4] > gap(3));
-    }
+        phase a_fresh_snapshot_is_numbered_a_gap_apart;
+        {
+            assert_eq!(plan(&[None, None, None]), Some(vec![GAP, gap(2), gap(3)]));
+        }
 
-    #[test]
-    fn a_moved_record_takes_a_new_ordinal_and_the_rest_keep_theirs() {
-        let held = [Some(gap(4)), Some(GAP), Some(gap(2)), Some(gap(3))];
-        let planned = plan(&held).unwrap();
-        assert!(increasing(&planned));
-        assert_eq!(&planned[1..], &[GAP, gap(2), gap(3)]);
-    }
+        phase records_in_order_keep_their_ordinals_and_new_ones_go_between;
+        {
+            let held = [Some(GAP), None, Some(gap(2)), Some(gap(3)), None];
+            let planned = plan(&held).unwrap();
+            assert!(increasing(&planned));
+            assert_eq!(planned[0], GAP);
+            assert_eq!(planned[2], gap(2));
+            assert_eq!(planned[3], gap(3));
+            assert!(planned[1] > GAP && planned[1] < gap(2));
+            assert!(planned[4] > gap(3));
+        }
 
-    #[test]
-    fn a_crowded_gap_frees_its_neighbours() {
-        // Nothing fits between 4 and 5: the neighbours move apart.
-        let held = [Some(0), Some(4), None, None, Some(5), Some(GAP)];
-        let planned = plan(&held).unwrap();
-        assert!(increasing(&planned));
-        assert_eq!(planned[0], 0);
-        assert_eq!(planned[5], GAP);
-    }
+        phase a_moved_record_takes_a_new_ordinal_and_the_rest_keep_theirs;
+        {
+            let held = [Some(gap(4)), Some(GAP), Some(gap(2)), Some(gap(3))];
+            let planned = plan(&held).unwrap();
+            assert!(increasing(&planned));
+            assert_eq!(&planned[1..], &[GAP, gap(2), gap(3)]);
+        }
 
-    #[test]
-    fn inserting_before_the_first_record_fits_below_it() {
-        let held = [None, Some(GAP), Some(gap(2))];
-        assert_eq!(
-            plan(&held).unwrap(),
-            [(GAP >> 1).checked_sub(1).unwrap(), GAP, gap(2)]
-        );
-        let held = [None, None, Some(0), Some(GAP)];
-        let planned = plan(&held).unwrap();
-        assert!(increasing(&planned));
-        assert_eq!(planned[3], GAP);
-    }
+        phase a_crowded_gap_frees_its_neighbours;
+        {
+            // Nothing fits between 4 and 5: the neighbours move apart.
+            let held = [Some(0), Some(4), None, None, Some(5), Some(GAP)];
+            let planned = plan(&held).unwrap();
+            assert!(increasing(&planned));
+            assert_eq!(planned[0], 0);
+            assert_eq!(planned[5], GAP);
+        }
 
-    #[test]
-    fn a_record_at_the_end_of_the_ordinal_space_is_renumbered() {
-        assert_eq!(plan(&[Some(u64::MAX), None]), Some(vec![GAP, gap(2)]));
+        phase inserting_before_the_first_record_fits_below_it;
+        {
+            let held = [None, Some(GAP), Some(gap(2))];
+            assert_eq!(
+                plan(&held).unwrap(),
+                [(GAP >> 1).checked_sub(1).unwrap(), GAP, gap(2)]
+            );
+            let held = [None, None, Some(0), Some(GAP)];
+            let planned = plan(&held).unwrap();
+            assert!(increasing(&planned));
+            assert_eq!(planned[3], GAP);
+        }
+
+        phase a_record_at_the_end_of_the_ordinal_space_is_renumbered;
+        {
+            assert_eq!(plan(&[Some(u64::MAX), None]), Some(vec![GAP, gap(2)]));
+        }
     }
 }

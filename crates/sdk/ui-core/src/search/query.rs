@@ -231,49 +231,53 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn declared_tokens_become_filters_and_the_rest_stays_text() {
-        let query = SearchQuery::parse(
-            "parse Language:rust tag:\"two words\" http://x 12:30",
-            &facets(),
-        );
-        assert_eq!(query.text(), "parse http://x 12:30");
-        assert_eq!(
-            query.filters(),
-            [
-                FacetFilter::new("language", "rust"),
-                FacetFilter::new("tag", "two words")
-            ]
-        );
-        assert!(query.admits("language", &["Rust"]));
-        assert!(!query.admits("language", &["go"]));
-        assert!(
-            query.admits("source", &["anything"]),
-            "an unfiltered key admits all"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_query_parses_facet_tokens_and_narrows_by_scope;
 
-    #[test]
-    fn an_empty_or_repeated_token_adds_nothing() {
-        let query = SearchQuery::parse("language: language:go language:go", &facets());
-        assert_eq!(query.text(), "language:");
-        assert_eq!(query.filters(), [FacetFilter::new("language", "go")]);
-        let picked = query.with_filter(FacetFilter::new("language", "go"));
-        assert_eq!(picked.filters().len(), 1);
-    }
+        phase declared_tokens_become_filters_and_the_rest_stays_text;
+        {
+            let query = SearchQuery::parse(
+                "parse Language:rust tag:\"two words\" http://x 12:30",
+                &facets(),
+            );
+            assert_eq!(query.text(), "parse http://x 12:30");
+            assert_eq!(
+                query.filters(),
+                [
+                    FacetFilter::new("language", "rust"),
+                    FacetFilter::new("tag", "two words")
+                ]
+            );
+            assert!(query.admits("language", &["Rust"]));
+            assert!(!query.admits("language", &["go"]));
+            assert!(
+                query.admits("source", &["anything"]),
+                "an unfiltered key admits all"
+            );
+        }
 
-    #[test]
-    fn a_scope_narrows_by_resource_path() {
-        let query = SearchQuery::new("x").within("folder:inbox");
-        assert!(query.in_scope("folder:inbox/msg:1"));
-        assert!(!query.in_scope("folder:sent/msg:1"));
-        assert!(SearchQuery::new("x").in_scope("anything"));
-    }
+        phase an_empty_or_repeated_token_adds_nothing;
+        {
+            let query = SearchQuery::parse("language: language:go language:go", &facets());
+            assert_eq!(query.text(), "language:");
+            assert_eq!(query.filters(), [FacetFilter::new("language", "go")]);
+            let picked = query.with_filter(FacetFilter::new("language", "go"));
+            assert_eq!(picked.filters().len(), 1);
+        }
 
-    #[test]
-    fn facet_value_labels_fall_back_to_the_value() {
-        let facets = facets();
-        assert_eq!(facets[0].value_label("RUST"), "Rust");
-        assert_eq!(facets[0].value_label("zig"), "zig");
+        phase a_scope_narrows_by_resource_path;
+        {
+            let query = SearchQuery::new("x").within("folder:inbox");
+            assert!(query.in_scope("folder:inbox/msg:1"));
+            assert!(!query.in_scope("folder:sent/msg:1"));
+            assert!(SearchQuery::new("x").in_scope("anything"));
+        }
+
+        phase facet_value_labels_fall_back_to_the_value;
+        {
+            let facets = facets();
+            assert_eq!(facets[0].value_label("RUST"), "Rust");
+            assert_eq!(facets[0].value_label("zig"), "zig");
+        }
     }
 }

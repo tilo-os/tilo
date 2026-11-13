@@ -423,152 +423,156 @@ impl SearchOpener {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_asked_action_round_trips_and_names_its_address() {
-        let request = SearchRequest::asking(
-            ScopeDecl::new("tasks.tracker/issues/1", "This issue"),
-            "link-note",
-        );
-        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
-        assert_eq!(
-            SearchRequest::decode(&request.encode().payload).unwrap(),
-            request
-        );
-        assert_eq!(
-            request.asked(),
-            Some(tilo_actions::ActionAddress::new(
-                "tasks.tracker/issues/1",
-                "link-note"
-            ))
-        );
-        assert_eq!(SearchRequest::this_app().asked(), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_search_request_round_trips_and_names_what_it_asks;
 
-    #[test]
-    fn an_offered_action_round_trips_and_a_malformed_offer_is_none() {
-        let request = SearchRequest::offering(
-            "bot.add",
-            [("entry", "so.tilo.bots.standup"), ("version", "1.2.0")],
-        );
-        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
-        assert_eq!(
-            SearchRequest::decode(&request.encode().payload).unwrap(),
-            request
-        );
-        let invocation = open_search_binding(&request).invoke(()).unwrap();
-        let carried = SearchRequest::from_invocation(&invocation).unwrap();
-        let offer = carried.offer.expect("the offer travels with the request");
-        assert_eq!(offer.action, "bot.add");
-        assert_eq!(offer.arguments["entry"], "so.tilo.bots.standup");
-        assert_eq!(offer.arguments["version"], "1.2.0");
+        phase an_asked_action_round_trips_and_names_its_address;
+        {
+            let request = SearchRequest::asking(
+                ScopeDecl::new("tasks.tracker/issues/1", "This issue"),
+                "link-note",
+            );
+            assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+            assert_eq!(
+                SearchRequest::decode(&request.encode().payload).unwrap(),
+                request
+            );
+            assert_eq!(
+                request.asked(),
+                Some(tilo_actions::ActionAddress::new(
+                    "tasks.tracker/issues/1",
+                    "link-note"
+                ))
+            );
+            assert_eq!(SearchRequest::this_app().asked(), None);
+        }
 
-        let mut arguments = SearchRequest::this_app().arguments();
-        arguments.insert(OFFER_PARAM.into(), "{not json".into());
-        assert_eq!(
-            SearchRequest::from_arguments(&arguments),
-            SearchRequest::this_app()
-        );
-    }
+        phase an_offered_action_round_trips_and_a_malformed_offer_is_none;
+        {
+            let request = SearchRequest::offering(
+                "bot.add",
+                [("entry", "so.tilo.bots.standup"), ("version", "1.2.0")],
+            );
+            assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+            assert_eq!(
+                SearchRequest::decode(&request.encode().payload).unwrap(),
+                request
+            );
+            let invocation = open_search_binding(&request).invoke(()).unwrap();
+            let carried = SearchRequest::from_invocation(&invocation).unwrap();
+            let offer = carried.offer.expect("the offer travels with the request");
+            assert_eq!(offer.action, "bot.add");
+            assert_eq!(offer.arguments["entry"], "so.tilo.bots.standup");
+            assert_eq!(offer.arguments["version"], "1.2.0");
 
-    #[test]
-    fn a_request_round_trips_through_arguments_payload_and_binding() {
-        let request =
-            SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice");
-        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
-        assert_eq!(
-            SearchRequest::decode(&request.encode().payload).unwrap(),
-            request
-        );
-        assert_eq!(
-            SearchRequest::decode(b"null").unwrap(),
-            SearchRequest::this_app()
-        );
-        assert_eq!(
-            SearchRequest::decode(b"").unwrap(),
-            SearchRequest::this_app()
-        );
+            let mut arguments = SearchRequest::this_app().arguments();
+            arguments.insert(OFFER_PARAM.into(), "{not json".into());
+            assert_eq!(
+                SearchRequest::from_arguments(&arguments),
+                SearchRequest::this_app()
+            );
+        }
 
-        let invocation = open_search_binding(&request).invoke(()).unwrap();
-        assert_eq!(
-            SearchRequest::from_invocation(&invocation),
-            Some(request.clone())
-        );
-        assert_eq!(open_search_invocation(&request), invocation);
+        phase a_request_round_trips_through_arguments_payload_and_binding;
+        {
+            let request =
+                SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice");
+            assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+            assert_eq!(
+                SearchRequest::decode(&request.encode().payload).unwrap(),
+                request
+            );
+            assert_eq!(
+                SearchRequest::decode(b"null").unwrap(),
+                SearchRequest::this_app()
+            );
+            assert_eq!(
+                SearchRequest::decode(b"").unwrap(),
+                SearchRequest::this_app()
+            );
 
-        let resource = search_resource();
-        let open = resource.actions.first().unwrap();
-        let built = open.build_json(&request.arguments()).unwrap();
-        assert_eq!(SearchRequest::decode(&built.payload).unwrap(), request);
-        assert!(matches!(
-            open.input(),
-            tilo_actions::ActionInput::Immediate(Some(_))
-        ));
-        assert!(ActionBinding::unit_for(&resource, SEARCH_ACTION).is_ok());
-    }
+            let invocation = open_search_binding(&request).invoke(()).unwrap();
+            assert_eq!(
+                SearchRequest::from_invocation(&invocation),
+                Some(request.clone())
+            );
+            assert_eq!(open_search_invocation(&request), invocation);
 
-    #[test]
-    fn a_search_on_a_resource_round_trips_and_keeps_its_row_selected() {
-        let request = SearchRequest::on("note.3", "Quarterly review");
-        assert_eq!(
-            request.anchored(),
-            Some(&Anchor {
-                resource: "note.3".into(),
-                query: "Quarterly review".into(),
-            })
-        );
-        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
-        assert_eq!(
-            SearchRequest::decode(&request.encode().payload).unwrap(),
-            request
-        );
-        let invocation = open_search_binding(&request).invoke(()).unwrap();
-        assert_eq!(
-            SearchRequest::from_invocation(&invocation).and_then(|r| r.anchored().cloned()),
-            request.anchor
-        );
+            let resource = search_resource();
+            let open = resource.actions.first().unwrap();
+            let built = open.build_json(&request.arguments()).unwrap();
+            assert_eq!(SearchRequest::decode(&built.payload).unwrap(), request);
+            assert!(matches!(
+                open.input(),
+                tilo_actions::ActionInput::Immediate(Some(_))
+            ));
+            assert!(ActionBinding::unit_for(&resource, SEARCH_ACTION).is_ok());
+        }
 
-        assert!(
-            SearchRequest {
-                anchor: Some(Anchor {
+        phase a_search_on_a_resource_round_trips_and_keeps_its_row_selected;
+        {
+            let request = SearchRequest::on("note.3", "Quarterly review");
+            assert_eq!(
+                request.anchored(),
+                Some(&Anchor {
                     resource: "note.3".into(),
-                    query: String::new(),
-                }),
-                ..SearchRequest::this_app()
-            }
-            .anchored()
-            .is_none()
-        );
-        assert!(SearchRequest::this_app().anchored().is_none());
+                    query: "Quarterly review".into(),
+                })
+            );
+            assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+            assert_eq!(
+                SearchRequest::decode(&request.encode().payload).unwrap(),
+                request
+            );
+            let invocation = open_search_binding(&request).invoke(()).unwrap();
+            assert_eq!(
+                SearchRequest::from_invocation(&invocation).and_then(|r| r.anchored().cloned()),
+                request.anchor
+            );
 
-        let mut arguments = SearchRequest::this_app().arguments();
-        arguments.insert(ANCHOR_PARAM.into(), "{not json".into());
-        assert_eq!(
-            SearchRequest::from_arguments(&arguments),
-            SearchRequest::this_app()
-        );
-    }
+            assert!(
+                SearchRequest {
+                    anchor: Some(Anchor {
+                        resource: "note.3".into(),
+                        query: String::new(),
+                    }),
+                    ..SearchRequest::this_app()
+                }
+                .anchored()
+                .is_none()
+            );
+            assert!(SearchRequest::this_app().anchored().is_none());
 
-    #[test]
-    fn scopes_contain_their_own_path_only() {
-        assert!(scope_contains("a", "a/b"));
-        let inbox = ScopeDecl::new("folder:inbox", "Inbox");
-        assert!(inbox.contains("folder:inbox"));
-        assert!(inbox.contains("folder:inbox/msg:12"));
-        assert!(!inbox.contains("folder:inboxes"));
-        assert!(!inbox.contains("folder:sent/msg:12"));
-    }
+            let mut arguments = SearchRequest::this_app().arguments();
+            arguments.insert(ANCHOR_PARAM.into(), "{not json".into());
+            assert_eq!(
+                SearchRequest::from_arguments(&arguments),
+                SearchRequest::this_app()
+            );
+        }
 
-    #[test]
-    fn the_opener_latches_one_request() {
-        let mut opener = SearchOpener::new();
-        assert!(opener.take().is_none());
-        opener.open(SearchRequest::this_app().with_query("x"));
-        assert!(opener.is_pending());
-        let invocation = opener.take().unwrap();
-        assert_eq!(
-            SearchRequest::from_invocation(&invocation).and_then(|r| r.query),
-            Some("x".into())
-        );
-        assert!(opener.take().is_none());
+        phase scopes_contain_their_own_path_only;
+        {
+            assert!(scope_contains("a", "a/b"));
+            let inbox = ScopeDecl::new("folder:inbox", "Inbox");
+            assert!(inbox.contains("folder:inbox"));
+            assert!(inbox.contains("folder:inbox/msg:12"));
+            assert!(!inbox.contains("folder:inboxes"));
+            assert!(!inbox.contains("folder:sent/msg:12"));
+        }
+
+        phase the_opener_latches_one_request;
+        {
+            let mut opener = SearchOpener::new();
+            assert!(opener.take().is_none());
+            opener.open(SearchRequest::this_app().with_query("x"));
+            assert!(opener.is_pending());
+            let invocation = opener.take().unwrap();
+            assert_eq!(
+                SearchRequest::from_invocation(&invocation).and_then(|r| r.query),
+                Some("x".into())
+            );
+            assert!(opener.take().is_none());
+        }
     }
 }

@@ -94,33 +94,37 @@ impl Scope {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_widest_search_is_the_one_that_answers_what_is_not_a_name() {
-        assert_eq!(Scope::default(), Scope::Workspace);
-        assert!(Scope::Workspace.answers());
-        assert!(Scope::Everywhere.answers());
-        assert!(Scope::Everywhere.everywhere());
-        assert!(!Scope::Workspace.everywhere());
-        assert!(!Scope::InApp(AppScope::front()).answers());
-        assert!(!Scope::WindowGroup(Some(3)).answers());
-    }
+    tilo_test_env::scenario! {
+        fn a_scope_names_how_wide_a_search_is;
 
-    #[test]
-    fn an_app_scope_names_the_app_and_the_part_of_it() {
-        let part = ScopeDecl::new("folder:inbox", "Inbox");
-        let scope = AppScope::of("so.tilo.mail").within(part.clone());
-        assert_eq!(scope.app.as_deref(), Some("so.tilo.mail"));
-        assert_eq!(scope.part, Some(part));
-        assert_eq!(AppScope::front(), AppScope::default());
-        assert_eq!(
-            AppScope::front().named("so.tilo.notes").app.as_deref(),
-            Some("so.tilo.notes")
-        );
-    }
+        phase the_widest_search_is_the_one_that_answers_what_is_not_a_name;
+        {
+            assert_eq!(Scope::default(), Scope::Workspace);
+            assert!(Scope::Workspace.answers());
+            assert!(Scope::Everywhere.answers());
+            assert!(Scope::Everywhere.everywhere());
+            assert!(!Scope::Workspace.everywhere());
+            assert!(!Scope::InApp(AppScope::front()).answers());
+            assert!(!Scope::WindowGroup(Some(3)).answers());
+        }
 
-    #[test]
-    fn a_window_group_scope_names_the_group_a_hit_opens_in() {
-        assert_eq!(Scope::WindowGroup(Some(7)).window_group(), Some(7));
-        assert_eq!(Scope::Workspace.window_group(), None);
+        phase an_app_scope_names_the_app_and_the_part_of_it;
+        {
+            let part = ScopeDecl::new("folder:inbox", "Inbox");
+            let scope = AppScope::of("so.tilo.mail").within(part.clone());
+            assert_eq!(scope.app.as_deref(), Some("so.tilo.mail"));
+            assert_eq!(scope.part, Some(part));
+            assert_eq!(AppScope::front(), AppScope::default());
+            assert_eq!(
+                AppScope::front().named("so.tilo.notes").app.as_deref(),
+                Some("so.tilo.notes")
+            );
+        }
+
+        phase a_window_group_scope_names_the_group_a_hit_opens_in;
+        {
+            assert_eq!(Scope::WindowGroup(Some(7)).window_group(), Some(7));
+            assert_eq!(Scope::Workspace.window_group(), None);
+        }
     }
 }
