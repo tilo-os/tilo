@@ -9,7 +9,6 @@ use ui::tilo_resource::Resource as _;
 /// Outside a call, a voice channel offers joining it, not its controls:
 /// search and menus must not offer turning a camera on with no call to show
 /// it in, and an agent is told why.
-#[test]
 fn a_calls_own_controls_are_unavailable_until_you_join_it() {
     use ui::tilo_actions::Availability;
     let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -450,7 +449,6 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     assert!(messages(&mut app).is_empty());
 }
 
-#[test]
 fn a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else() {
     let app = TestApp::<ChatShell>::new().unwrap();
     let state = app.state();
@@ -499,7 +497,6 @@ fn root_action(app: &mut TestApp<ChatShell>, id: &str) -> ui::tilo_actions::Acti
     find(&app.harness().resources(), id).unwrap_or_else(|| panic!("the Chat root publishes {id}"))
 }
 
-#[test]
 fn the_root_offers_call_starts_with_and_without_the_camera() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     for (id, label) in [
@@ -519,7 +516,6 @@ fn the_root_offers_call_starts_with_and_without_the_camera() {
 /// What the package manifest offers while Chat is closed is what the running
 /// app publishes on its root, with the same label, kind and confirmation, so
 /// launching it from the catalogue lands on a real action.
-#[test]
 fn the_actions_the_manifest_offers_while_closed_are_published() {
     use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
     use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
@@ -557,7 +553,19 @@ fn the_actions_the_manifest_offers_while_closed_are_published() {
     }
 }
 
+/// What a chat nobody wrote in yet holds and publishes.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
 #[test]
+fn a_fresh_chat_publishes_its_channels_calls_and_offers() {
+    crate::testing::cases!(
+        a_calls_own_controls_are_unavailable_until_you_join_it,
+        a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else,
+        the_root_offers_call_starts_with_and_without_the_camera,
+        the_actions_the_manifest_offers_while_closed_are_published,
+    );
+}
+
 fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     app.call("start-call", serde_json::json!({})).unwrap();
@@ -709,7 +717,6 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     );
 }
 
-#[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
     let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -974,7 +981,6 @@ fn stopping_shared_context_wakes_the_native_presentation() {
 
 /// A file another step handed over posts by its content address: described
 /// from its bytes where it is posted, and refused when it is not here.
-#[test]
 fn a_handed_over_file_posts_as_a_file() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let _ = general(&app);
@@ -1015,7 +1021,6 @@ fn a_handed_over_file_posts_as_a_file() {
 /// member's device) shows in a window that is only being watched: its
 /// arrival in the window's store wakes the window, so the window's own
 /// frames show it, with no input and no frame forced to sync.
-#[test]
 fn a_message_another_replica_posts_shows_without_input() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     crate::testing::mounted_post(&mut app, "c_chat", "hello from here");
@@ -1103,7 +1108,6 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
 
 /// A past version reads through the `read` door and draws in the chat's own
 /// view with the channel as it was named then.
-#[test]
 fn a_past_version_reads_and_shows_its_channel() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     app.call(
@@ -1131,6 +1135,20 @@ fn a_past_version_reads_and_shows_its_channel() {
     assert!(
         texts.iter().any(|text| text.contains("kumquat-parade")),
         "{texts:?}"
+    );
+}
+
+/// What reaches a mounted chat through its actions and its record.
+/// Each case was a test of its own, on a fixture of its own; a failure
+/// names the cases that failed.
+#[test]
+fn calls_files_versions_history_and_other_replicas_reach_the_window_through_its_door() {
+    crate::testing::cases!(
+        start_call_through_the_door_makes_a_voice_channel_and_joins_it,
+        history_entries_render_as_the_apps_sentences,
+        a_handed_over_file_posts_as_a_file,
+        a_message_another_replica_posts_shows_without_input,
+        a_past_version_reads_and_shows_its_channel,
     );
 }
 
