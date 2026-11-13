@@ -10,8 +10,6 @@ trait Policy {
     fn members(&self) -> &BTreeMap<String, Role>;
     fn grants(&self) -> &[Grant];
     fn identity(&self) -> &GovernedIdentity;
-    /// The rows of this policy that did not decode.
-    fn damaged(&self) -> &crate::workspace::policy::Damaged;
     /// The role `person` acts with in `workspace`: none for a stranger or a
     /// blocked member.
     fn role(&self, workspace: &str, person: &str) -> Option<Role> {
@@ -32,15 +30,6 @@ trait Policy {
 }
 fn key_text(key: &[u8; 32]) -> String {
     hex::encode(key)
-}
-/// Why `person` holds no role here: a row of their access that did not read
-/// back, which is theirs to know, or none at all.
-fn absence(damaged: &crate::workspace::policy::Damaged, person: &str) -> MembershipError {
-    if damaged.hides(person) {
-        MembershipError::UnreadableAccess
-    } else {
-        MembershipError::NoMembership
-    }
 }
 /// A current member's role, and the bound on it when its device is a
 /// delegate.
@@ -82,7 +71,7 @@ fn current<'peer, P: Policy>(
     let person = key_text(&cert.user_public_key);
     let role = policy
         .role(&peer.workspace, person.as_str())
-        .ok_or_else(|| absence(policy.damaged(), person.as_str()))?;
+        .ok_or(MembershipError::NoMembership)?;
     // A delegate acts with its person's authority bounded by its own: an
     // agent by the agent preset, a bot by its derived grant in the workspace's
     // policy. Neither governs the workspace, and neither rises above an Editor.
@@ -112,7 +101,7 @@ pub(in crate::state) fn foreign(cert: &tilo_user_identity::DeviceCert, origin: &
     cert.capabilities.foreign && cert.device_public_key != *origin
 }
 struct LegacyPolicy<'a> {
-    data: &'a crate::cached_document::PolicyData,
+    data: &'a tilo_action_policy::WorkspacePolicy,
     identity: &'a GovernedIdentity,
 }
 impl Policy for LegacyPolicy<'_> {
@@ -128,9 +117,6 @@ impl Policy for LegacyPolicy<'_> {
     fn identity(&self) -> &GovernedIdentity {
         self.identity
     }
-    fn damaged(&self) -> &crate::workspace::policy::Damaged {
-        &self.data.damaged
-    }
 }
 pub(in crate::state) fn legacy(
     peer: &PeerCore,
@@ -138,7 +124,7 @@ pub(in crate::state) fn legacy(
     now: SystemTime,
 ) -> Result<(Role, Option<Bound>), MembershipError> {
     current(peer, source, now, |workspace| {
-        let data = workspace.policy();
+        let data = workspace.workspace_policy(&peer.workspace);
         let key = key_text(source);
         // Decoded once per document state, not on every lookup.
         let identity = workspace

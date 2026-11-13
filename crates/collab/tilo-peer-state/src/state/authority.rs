@@ -220,11 +220,12 @@ impl StatePeer {
             return false;
         }
         let person = hex::encode(cert.user_public_key);
-        let policy = doc.policy();
         cert.user_public_key == self.core.owner
             || identity.has_admission()
-            || policy.members.contains_key(&person)
-            || policy.damaged.members.contains(&person)
+            || doc
+                .workspace_policy(&self.core.workspace)
+                .members
+                .contains_key(&person)
     }
 
     /// The certificates a replica built from a join answer needs beside this

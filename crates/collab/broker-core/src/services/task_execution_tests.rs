@@ -1,5 +1,5 @@
 use super::{NativeTaskActionRequirement, TrackerRun};
-use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::turn::Looked;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
@@ -151,13 +151,21 @@ fn admitted_fixture(
             .map(|bytes| automerge::Change::from_bytes(bytes).unwrap()),
     )
     .unwrap();
-    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
-    doc.put(
-        &members,
-        hex::encode(starter.user_public_key),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+    // The governor, the workspace's owner, signs the starter in.
+    let op = tilo_peer_state::members::SignedMembershipOp::signed(
+        &governor,
+        &key,
+        tilo_peer_state::members::heads(&tilo_peer_state::members::ops(&doc)),
+        tilo_clock::unix_now_ns(),
+        tilo_peer_state::members::MembershipOpCommand::Project {
+            changes: vec![tilo_action_policy::Change::AddMember {
+                person: hex::encode(starter.user_public_key),
+                role,
+            }],
+        },
     )
     .unwrap();
+    tilo_peer_state::members::put_op(&mut doc, &op).unwrap();
     doc.commit();
     let mut peer = StatePeer::new(workspace, governor, roster, RevocationList::new(), now).unwrap();
     peer.install_seed(
@@ -265,7 +273,7 @@ impl NativeTaskActionRequirement {
         let doc = peer
             .admitted_workspace()
             .ok_or("tracker action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+        let policy = tilo_peer_state::workspace::policy_of(doc, workspace);
         let binding = &self.binding;
         let run = TrackerRun {
             issue: binding.task_id.clone(),
@@ -559,10 +567,8 @@ fn a_run_takes_its_starters_changes_whatever_its_agent_holds() {
         let denied = requirement.check_run(&peer, workspace, now).unwrap_err();
         assert!(denied.contains("not allowed"), "{denied}");
 
-        let policy = tilo_desktop_model::projection::workspace_policy_of(
-            peer.admitted_workspace().unwrap(),
-            workspace,
-        );
+        let policy =
+            tilo_peer_state::workspace::policy_of(peer.admitted_workspace().unwrap(), workspace);
         let own = tilo_action_policy::Authority::person(policy.party_of(Subject::agent("scribe")))
             .decide(
                 &action_node(workspace, &requirement),

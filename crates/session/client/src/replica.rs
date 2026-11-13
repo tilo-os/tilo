@@ -31,7 +31,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
-use tilo_desktop_model::projection::workspace_members;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
@@ -277,7 +276,7 @@ impl Replicas {
             let doc = peer.admitted_workspace();
             Ok((
                 peer.workspace_id().to_owned(),
-                doc.and_then(workspace_members),
+                doc.and_then(tilo_peer_state::members::people),
             ))
         })?
         .ok()

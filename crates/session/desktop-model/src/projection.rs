@@ -47,13 +47,9 @@ pub const WORKSPACE_WRITE_REFUSALS_KEY: &str = "write_refusals_v1";
 pub const WORKSPACE_AUTOMATIONS_KEY: &str = "automations_v1";
 /// Key a workspace document stores its named grant sets under, by lowercase name.
 pub const WORKSPACE_PRESETS_KEY: &str = "presets_v1";
-/// Key of the map from member person id to the role preset they hold.
-pub const WORKSPACE_MEMBERS_KEY: &str = "members";
-/// Key of the map from member person id to when the workspace admitted them,
-/// Unix milliseconds (JSON bytes). Written once by the admitting authority.
-pub const WORKSPACE_MEMBERS_JOINED_KEY: &str = "members_joined_v1";
-/// Key of the map from grant id to the grant (JSON bytes).
-pub const WORKSPACE_GRANTS_KEY: &str = "grants";
+/// The prefix of the workspace document keys holding its signed membership
+/// operations, each operation's id in hex after it and a `/`.
+pub const WORKSPACE_MEMBERS_KEY: &str = "members_v3";
 /// Key of the map from sandbox capability id to the capability (JSON bytes).
 pub const WORKSPACE_SANDBOX_KEY: &str = "sandbox";
 /// Key a workspace document stores its schedule claims under.
@@ -99,18 +95,6 @@ pub fn project_workspace_shortcuts(
         if !unchanged {
             doc.put(&map, shortcut.id(), ScalarValue::Bytes(blob))?;
         }
-    }
-    Ok(())
-}
-
-/// Make the map at `key` hold exactly `entries` (key → JSON bytes), writing
-/// only what changed. A missing map is created only when there is something
-/// to write.
-/// The map at `key`, created empty when there is none.
-fn ensure_map(doc: &mut AutoCommit, key: &str) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-    if doc.get(&ROOT, key)?.is_none() {
-        doc.put_object(&ROOT, key, ObjType::Map)?;
     }
     Ok(())
 }
@@ -240,90 +224,6 @@ pub fn workspace_door_of(doc: &AutoCommit) -> tilo_action_policy::DoorPolicy {
         ScalarValue::Bytes(bytes) => serde_json::from_slice(bytes).unwrap_or_default(),
         _ => tilo_action_policy::DoorPolicy::default(),
     }
-}
-
-/// Project a workspace's authority: its owner, each member's role and every grant.
-///
-/// # Errors
-///
-/// The document's error when a value cannot be written.
-pub fn project_workspace_policy(
-    doc: &mut AutoCommit,
-    policy: &tilo_action_policy::WorkspacePolicy,
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-
-    match &policy.owner {
-        Some(owner) => {
-            doc.put_str_if_changed(&ROOT, WORKSPACE_OWNER_KEY, owner)?;
-        }
-        None => {
-            if doc.get(&ROOT, WORKSPACE_OWNER_KEY).ok().flatten().is_some() {
-                doc.delete(&ROOT, WORKSPACE_OWNER_KEY)?;
-            }
-        }
-    }
-    let members = policy
-        .members
-        .iter()
-        .filter_map(|(person, role)| Some((person.clone(), serde_json::to_vec(role).ok()?)))
-        .collect();
-    // The workspace's members and grants are always present, if empty: readers
-    // of the workspace's security basis require both.
-    ensure_map(doc, WORKSPACE_MEMBERS_KEY)?;
-    ensure_map(doc, WORKSPACE_GRANTS_KEY)?;
-    project_blob_map(doc, WORKSPACE_MEMBERS_KEY, members)?;
-    let joined = policy
-        .joined
-        .iter()
-        .filter_map(|(person, at)| Some((person.clone(), serde_json::to_vec(at).ok()?)))
-        .collect();
-    project_blob_map(doc, WORKSPACE_MEMBERS_JOINED_KEY, joined)?;
-    let grants = policy
-        .grants
-        .iter()
-        .filter_map(|grant| {
-            Some((
-                grant.id.as_str().to_owned(),
-                serde_json::to_vec(grant).ok()?,
-            ))
-        })
-        .collect();
-    project_blob_map(doc, WORKSPACE_GRANTS_KEY, grants)
-}
-
-/// The authority a workspace document records for `workspace`. Values that do not
-/// decode are skipped; grants on another workspace's nodes are dropped.
-pub fn workspace_policy_of(
-    doc: &AutoCommit,
-    workspace: &str,
-) -> tilo_action_policy::WorkspacePolicy {
-    use automerge::{ROOT, ReadDoc};
-
-    let owner = doc
-        .get(&ROOT, WORKSPACE_OWNER_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_string().ok());
-    let members = blob_map_of(doc, WORKSPACE_MEMBERS_KEY)
-        .into_iter()
-        .collect();
-    let joined = blob_map_of(doc, WORKSPACE_MEMBERS_JOINED_KEY)
-        .into_iter()
-        .collect();
-    let grants = blob_map_of(doc, WORKSPACE_GRANTS_KEY)
-        .into_iter()
-        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
-        .filter(|grant| grant.node.workspace_id() == Some(workspace))
-        .collect();
-    tilo_action_policy::WorkspacePolicy {
-        workspace: workspace.to_owned(),
-        owner,
-        members,
-        joined,
-        grants,
-    }
-    .with_current_roles()
 }
 
 /// Project a workspace's sandbox capabilities, by id.
@@ -675,83 +575,11 @@ pub fn apply_admitted_workspace(
     Ok(changed || renamed || reshortcut || reprofiled)
 }
 
-/// The people the workspace `doc` governs lists as its owner and members, by
-/// person id: who still holds what they made on its desktop
-/// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
-/// heard yet), so nothing is taken as released before the list arrives.
-#[must_use]
-pub fn workspace_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<String>> {
-    use automerge::{ROOT, ReadDoc};
-    let owner = doc
-        .get(&ROOT, WORKSPACE_OWNER_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_string().ok());
-    let people: std::collections::BTreeSet<String> =
-        blob_map_of::<serde_json::Value>(doc, WORKSPACE_MEMBERS_KEY)
-            .into_iter()
-            .map(|(person, _)| person)
-            .chain(owner)
-            .collect();
-    (!people.is_empty()).then_some(people)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::AppKind;
     use tilo_automerge::ApplyIncoming;
-
-    /// A grant given and revoked in a workspace is what the workspace document holds:
-    /// the grant is in it under its id while it stands, gone once revoked,
-    /// signed by whoever gave it, and with it a member's role preset.
-    #[test]
-    fn a_grant_and_its_revocation_are_what_the_workspace_document_carries() {
-        use tilo_action_policy::{Answer, Grant, KindSet, Level, Subject, TreePath};
-
-        let mut policy = tilo_action_policy::WorkspacePolicy::new("r", "owner");
-        let mut doc = AutoCommit::new();
-        project_workspace_policy(&mut doc, &policy).expect("projected");
-        let roles = workspace_policy_of(&doc, "r");
-        assert_eq!(roles.owner.as_deref(), Some("owner"));
-        assert!(
-            roles
-                .grants
-                .iter()
-                .any(|grant| grant.subject == Subject::role(tilo_action_policy::Role::Editor)),
-            "a workspace document carries its roles' presets"
-        );
-
-        let grant = Grant::new(
-            "bob-mail",
-            Subject::person("bob"),
-            TreePath::workspace("r")
-                .app("mail")
-                .any(Level::Resource)
-                .any(Level::Action),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Subject::person("owner"),
-        );
-        policy.grants.push(grant.clone());
-        project_workspace_policy(&mut doc, &policy).expect("projected");
-        let held = workspace_policy_of(&doc, "r");
-        let recorded = held
-            .grants
-            .iter()
-            .find(|held| held.id == grant.id)
-            .expect("the workspace document carries the grant");
-        assert_eq!(recorded, &grant);
-        assert_eq!(recorded.granted_by, Subject::person("owner"));
-
-        policy.grants.retain(|held| held.id != grant.id);
-        project_workspace_policy(&mut doc, &policy).expect("projected");
-        let revoked = workspace_policy_of(&doc, "r");
-        assert!(
-            revoked.grants.iter().all(|held| held.id != grant.id),
-            "a revoked grant leaves the workspace document"
-        );
-    }
 
     #[test]
     fn a_bound_instance_survives_the_owner_re_sending_its_placeholder() {

@@ -56,38 +56,24 @@ fn read_error(error: ReadError<ImportError>) -> ImportError {
 }
 struct Inputs {
     identities: BTreeMap<String, GovernedIdentity>,
-    /// The workspace's members, by person key.
-    members: std::collections::BTreeSet<String>,
 }
 fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, ImportError> {
     let mut identities = BTreeMap::new();
-    let mut members = std::collections::BTreeSet::new();
     read::visit_governance_entries(workspace, |entry| {
-        match entry {
-            GovernanceEntry::Identity { key, bytes } => {
-                // Exact historical winner/ignore traversal. Decode every
-                // identity before checking any receipt, key, certificate or
-                // revocation.
-                let value = GovernedIdentity::decode(bytes).map_err(ImportError::Row)?;
-                let key = work.text(key)?;
-                work.tree::<String, GovernedIdentity>()?;
-                identities.insert(key, value);
-            }
-            GovernanceEntry::Member { key, .. } => {
-                let key = work.text(key)?;
-                work.tree::<String, ()>()?;
-                members.insert(key);
-            }
-            _ => {}
+        if let GovernanceEntry::Identity { key, bytes } = entry {
+            // Exact historical winner/ignore traversal. Decode every
+            // identity before checking any receipt, key, certificate or
+            // revocation.
+            let value = GovernedIdentity::decode(bytes).map_err(ImportError::Row)?;
+            let key = work.text(key)?;
+            work.tree::<String, GovernedIdentity>()?;
+            identities.insert(key, value);
         }
         Ok(())
     })
     .map_err(read_error)?;
     receipts_checked(workspace, None, work)?;
-    Ok(Inputs {
-        identities,
-        members,
-    })
+    Ok(Inputs { identities })
 }
 /// Where a workspace keeps its invitation receipts, by invitation.
 const RECEIPTS: &str = "invitation_receipts_v1";
@@ -294,6 +280,7 @@ pub(in crate::state) fn legacy(
 ) -> Result<LegacyImport, ImportError> {
     let mut work = Work::unlimited();
     let inputs = inputs(&LegacyRead(workspace), &mut work)?;
+    let members = crate::members::replay_declared(workspace).members;
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
     let changed = apply(
@@ -301,7 +288,7 @@ pub(in crate::state) fn legacy(
             .identities
             .iter()
             .map(|(id, identity)| (id.as_str(), identity)),
-        &|person| inputs.members.contains(person),
+        &|person| members.contains_key(person),
         original,
         &mut certificates,
         &mut revocations,
@@ -356,12 +343,12 @@ pub(in crate::state) fn cached(
         }
     }
     workspace.receipts_checked();
-    let policy = workspace.policy();
+    let members = crate::members::replay_declared(workspace).members;
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
     let changed = apply(
         identities,
-        &|person| policy.members.contains_key(person) || policy.damaged.members.contains(person),
+        &|person| members.contains_key(person),
         original,
         &mut certificates,
         &mut revocations,

@@ -32,13 +32,6 @@ use tilo_automerge::ReadTyped as _;
 pub struct WorkspaceGovernance {
     /// The structural owner's person key (`owner`).
     pub owner: Option<String>,
-    /// `members.*`: JSON role blobs keyed by person.
-    pub members: BTreeMap<String, Vec<u8>>,
-    /// `members_joined_v1.*`: when the workspace admitted each member, Unix
-    /// milliseconds as JSON, keyed by person.
-    pub members_joined: BTreeMap<String, Vec<u8>>,
-    /// `grants.*`: JSON `Grant` blobs keyed by grant id.
-    pub grants: BTreeMap<String, Vec<u8>>,
     /// `sandbox.*`: JSON sandbox `CapOverride` blobs keyed by id.
     pub sandbox: BTreeMap<String, Vec<u8>>,
     /// `peers.*`: self-asserted display names keyed by device key.
@@ -59,9 +52,6 @@ impl WorkspaceGovernance {
     fn absent() -> Self {
         Self {
             owner: None,
-            members: BTreeMap::new(),
-            members_joined: BTreeMap::new(),
-            grants: BTreeMap::new(),
             sandbox: BTreeMap::new(),
             peers: BTreeMap::new(),
             identities: BTreeMap::new(),
@@ -74,21 +64,11 @@ impl WorkspaceGovernance {
 }
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-/// The workspace's authority as `doc`'s rows record it
-/// ([`tilo_desktop_model::projection::workspace_policy_of`]), read as
-/// [`policy::read`] reads them: from the last states read, with what the
-/// changes since wrote read again, or whole (and counted so,
-/// [`crate::governance_work`]).
+/// The workspace's authority: its membership as the operations its document
+/// holds make it ([`crate::members::replay`]).
 #[must_use]
 pub fn policy_of(doc: &AutoCommit, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
-    let policy = policy::read(doc).workspace_policy(workspace);
-    #[cfg(test)]
-    assert_eq!(
-        policy,
-        tilo_desktop_model::projection::workspace_policy_of(doc, workspace),
-        "the governance reading gives the workspace's authority its rows record"
-    );
-    policy
+    crate::members::replay(doc, workspace)
 }
 pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     let Some(doc) = doc else {
@@ -100,17 +80,6 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     let result = read::visit_governance_entries(&read::LegacyRead(doc), |entry| {
         match entry {
             read::GovernanceEntry::Owner(value) => governance.owner = Some(value.to_owned()),
-            read::GovernanceEntry::Grant { key, bytes } => {
-                governance.grants.insert(key.to_owned(), bytes.to_vec());
-            }
-            read::GovernanceEntry::Member { key, bytes } => {
-                governance.members.insert(key.to_owned(), bytes.to_vec());
-            }
-            read::GovernanceEntry::MemberJoined { key, bytes } => {
-                governance
-                    .members_joined
-                    .insert(key.to_owned(), bytes.to_vec());
-            }
             read::GovernanceEntry::Sandbox { key, bytes } => {
                 governance.sandbox.insert(key.to_owned(), bytes.to_vec());
             }
@@ -673,15 +642,14 @@ pub fn refusal_slices_kept(
 
 /// What one who only reads a workspace may still change in it: their own effect
 /// receipts and history anchors ([`effect_slices_kept`]), their own write
-/// refusals ([`refusal_slices_kept`]), its grants, as the shares they give
-/// ([`share`], decided as membership), and the membership operations they hold
+/// refusals ([`refusal_slices_kept`]), and the membership operations they hold
+/// (the shares they give among them)
 /// — an operation is its author's, and one who only reads hands on what others
 /// signed without admitting it.
-const READER_WRITES: [&str; 5] = [
+const READER_WRITES: [&str; 4] = [
     EFFECT_RECEIPTS,
     EFFECT_HISTORY,
     WRITE_REFUSALS,
-    "grants",
     crate::members::MEMBERS_KEY,
 ];
 

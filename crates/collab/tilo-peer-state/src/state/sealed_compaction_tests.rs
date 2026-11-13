@@ -58,14 +58,12 @@ fn fixture() -> Fixture {
         &seed_workspace(WORKSPACE, &authority, &roster).unwrap(),
     )
     .unwrap();
-    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(
+    crate::members::op::tests_support::set_member(
         &mut workspace,
-        &caps,
-        editor_cert.user_public_key,
+        &(owner.clone(), authority.clone()),
+        &hex::encode(editor_cert.user_public_key),
         Role::Editor,
-    )
-    .unwrap();
+    );
     let workspace_changes = workspace
         .get_changes(&[])
         .iter()

@@ -166,7 +166,7 @@ impl StatePeer {
         let cx = tilo_action_policy::Context::at_time(now);
         let device = hex::encode(caller.device_public_key);
         let grants = crate::workspace::share::share_grants(
-            (self.core.workspace_doc.as_deref(), &member.policy),
+            &member.policy,
             (&member.person, &device, &authority, &cx),
             share,
             node,

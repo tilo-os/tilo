@@ -89,38 +89,10 @@ pub(crate) type IdentityViews = std::collections::BTreeMap<
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PolicyData {
     pub owner: Option<String>,
-    pub members: std::collections::BTreeMap<String, tilo_action_policy::Role>,
-    /// When each member was admitted, Unix milliseconds.
-    pub joined: std::collections::BTreeMap<String, u64>,
-    pub grants: Vec<tilo_action_policy::Grant>,
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
     /// The self-asserted display name beside each device row, keyed like
     /// `identities`.
     pub names: std::collections::BTreeMap<String, String>,
-    /// The rows that did not decode, so the grants and roles above are missing
-    /// from them and a person shut out by that is told so.
-    pub damaged: crate::workspace::policy::Damaged,
-}
-impl PolicyData {
-    /// The workspace's authority as recorded: owner, members and the grants on
-    /// `workspace`'s nodes.
-    pub(crate) fn workspace_policy(&self, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
-        #[cfg(test)]
-        WORKSPACE_POLICIES.with(|count| count.set(count.get().saturating_add(1)));
-        tilo_action_policy::WorkspacePolicy {
-            workspace: workspace.to_owned(),
-            owner: self.owner.clone(),
-            members: self.members.clone(),
-            joined: self.joined.clone(),
-            grants: self
-                .grants
-                .iter()
-                .filter(|grant| grant.node.workspace_id() == Some(workspace))
-                .cloned()
-                .collect(),
-        }
-        .with_current_roles()
-    }
 }
 impl From<AutoCommit> for CachedDocument {
     fn from(doc: AutoCommit) -> Self {
@@ -184,9 +156,11 @@ impl CachedDocument {
     /// governs: built once per document state, not on every member's
     /// lookup.
     pub(crate) fn workspace_policy(&self, workspace: &str) -> &tilo_action_policy::WorkspacePolicy {
-        let policy = self
-            .workspace_policy
-            .get_or_init(|| self.policy().workspace_policy(workspace));
+        let policy = self.workspace_policy.get_or_init(|| {
+            #[cfg(test)]
+            WORKSPACE_POLICIES.with(|count| count.set(count.get().saturating_add(1)));
+            crate::members::replay(&self.doc, workspace)
+        });
         debug_assert_eq!(
             policy.workspace, workspace,
             "a document governs one workspace"

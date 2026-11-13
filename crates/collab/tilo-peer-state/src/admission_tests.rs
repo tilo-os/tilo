@@ -2,6 +2,11 @@ use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::{Signer as _, SigningKey};
+use tilo_action_policy::Change;
+
+mod editor;
+use editor::owner_signs;
+pub(crate) use editor::{other_owner, seeded_editor};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
@@ -107,7 +112,6 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
     reason = "one cached policy followed through expiry, removal and replacement"
 )]
 fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
-    use automerge::ReadDoc;
     use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     let (key, cert, _, other, now) = fixtures();
     let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -116,32 +120,29 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         &seed_workspace(workspace_id, &cert, &[cert.clone(), other.clone()]).unwrap(),
     )
     .unwrap();
-    doc.put(ROOT, "owner", "another-person").unwrap();
-    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    let owner = other_owner();
+    doc.put(ROOT, "owner", hex::encode(owner.1.user_public_key))
+        .unwrap();
     let person = hex::encode(cert.user_public_key);
-    doc.put(
-        &members,
-        person.as_str(),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
-    )
-    .unwrap();
     // A time-limited hold on undoable changes, rechecked at every decision.
-    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
     let hold = Grant::new(
         "hold",
         Subject::Person(person.clone()),
         TreePath::workspace(workspace_id),
         KindSet::UNDOABLE,
         Answer::Deny,
-        Subject::person("another-person"),
+        Subject::person(hex::encode(other_owner().1.user_public_key)),
     )
     .with_lifetime(Lifetime::Until(2_001_000));
-    doc.put(
-        &grants,
-        "hold",
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&hold).unwrap()),
-    )
-    .unwrap();
+    let editor = collab_types::Role::Editor;
+    let changes = vec![
+        Change::AddMember {
+            person: person.clone(),
+            role: editor,
+        },
+        Change::Grant(hold),
+    ];
+    owner_signs(&mut doc, &owner, now, changes);
     let changes = doc
         .get_changes(&[])
         .into_iter()
@@ -185,7 +186,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
             )
     );
     let old = peer.clone();
-    doc.delete(&members, person.as_str()).unwrap();
+    owner_signs(&mut doc, &owner, now, vec![Change::RemoveMember { person }]);
     let changes = doc
         .get_changes(&[])
         .into_iter()
@@ -354,49 +355,6 @@ fn source_workspace_signature_and_aged_checkpoint_fail_closed() {
             .is_err()
     );
     assert!(receiver.rows().is_empty());
-}
-/// [`seeded`], with the workspace owned by another person and the fixture's
-/// person an Editor of it: a member whose grants a governor can narrow.
-pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
-    let (a, ac, b, bc, now) = fixtures();
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut doc = crate::workspace::candidate(
-        None,
-        &seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
-    )
-    .unwrap();
-    doc.put(ROOT, "owner", "another-person").unwrap();
-    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
-    doc.put(
-        &members,
-        hex::encode(bc.user_public_key).as_str(),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
-    )
-    .unwrap();
-    let workspace_changes = doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect();
-    let mut native = StatePeer::new(
-        workspace,
-        ac.clone(),
-        vec![ac, bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    native
-        .install_seed(
-            SeedState {
-                workspace_changes,
-                documents: vec![],
-            },
-            &a,
-            now,
-        )
-        .unwrap();
-    (native, a, b, bc, now)
 }
 
 /// Invite a second person into `peer` as an Editor with one device, as the

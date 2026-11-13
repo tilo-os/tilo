@@ -8,12 +8,28 @@ use collab_types::signer::DeviceSigner;
 
 impl StatePeer {
     /// Write the governance change `doc` holds as `key`'s device, and take it in
-    /// as every member will.
+    /// as every member will ([`Self::write_membership`] with no membership
+    /// change).
+    pub(super) fn write_governance(
+        &mut self,
+        doc: CachedDocument,
+        before: &[automerge::ChangeHash],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.write_membership(doc, before, key, now, None)
+    }
+
+    /// Write the governance change `doc` holds, and `membership`, the change
+    /// to the workspace's membership this device makes with it, as `key`'s
+    /// device, and take it in as every member will.
     ///
-    /// The parts of the workspace's governance the change moves are recorded as
-    /// this device's operation, so every receiver judges each by its author's
-    /// role ([`crate::workspace::membership`]): a part this device's role does
-    /// not permit is refused here, by the same admission that receives it.
+    /// The membership change is this device's operation on the log every
+    /// device replays ([`crate::members::replay`]), and a change its grants do
+    /// not allow is refused here rather than written for other devices to
+    /// discard. The other parts of the workspace's governance the change moves
+    /// are recorded as an operation naming them, so every receiver judges each
+    /// by its author's role ([`crate::workspace::membership`]).
     #[cfg_attr(
         test,
         expect(
@@ -21,14 +37,30 @@ impl StatePeer {
             reason = "a test's every governance write checks the narrowed row diff against the whole one"
         )
     )]
-    pub(super) fn write_governance(
+    pub(super) fn write_membership(
         &mut self,
         mut doc: CachedDocument,
         before: &[automerge::ChangeHash],
         key: &dyn DeviceSigner,
         now: SystemTime,
+        membership: Option<crate::members::MembershipOpCommand>,
     ) -> Result<bool, String> {
-        let rows = {
+        // A change that writes no operation leaves the membership as it was.
+        let written = doc.get_changes(before);
+        crate::members::replay::carry(before, &doc, &written, &self.core.workspace);
+        // The membership change goes first: the media policy is rebound to the
+        // membership it leaves.
+        let unrecorded = doc.get_heads();
+        // An admission names the device row it writes itself
+        // ([`workspace::membership::admit_operations`]).
+        let admits = matches!(
+            membership,
+            Some(crate::members::MembershipOpCommand::Admit { .. })
+        );
+        if let Some(membership) = membership {
+            self.record_membership(&mut doc, key, now, membership)?;
+        }
+        let mut rows = {
             let held = self
                 .core
                 .workspace_doc
@@ -42,9 +74,6 @@ impl StatePeer {
             }
             // Only what the change wrote can differ from what is held.
             let written = doc.get_changes(before);
-            // A change that leaves what the membership is read from as it
-            // was leaves the membership as it was.
-            crate::members::replay::carry(before, &doc, &written, &self.core.workspace);
             let rows = crate::workspace::changed_rows_by(held, &doc, &written, false);
             // Every governance write a test makes checks the narrowed
             // reading against the whole one.
@@ -56,17 +85,13 @@ impl StatePeer {
             );
             rows
         };
-        self.record_membership(&mut doc, key, now)?;
-        let membership_recorded = doc.get_heads();
+        if admits {
+            rows.retain(|row| *row != crate::workspace::GovernanceRow::Identities);
+        }
         self.record_governance(&mut doc, rows, key, now)?;
-        // The operation naming the rows the change moved moves no membership.
-        let governance_recorded = doc.get_changes(&membership_recorded);
-        crate::members::replay::carry(
-            &membership_recorded,
-            &doc,
-            &governance_recorded,
-            &self.core.workspace,
-        );
+        // The operations are written on top of every head the state held.
+        let recorded = doc.get_changes(&unrecorded);
+        crate::members::replay::carry(&unrecorded, &doc, &recorded, &self.core.workspace);
         let changes = doc
             .get_changes(before)
             .into_iter()
@@ -83,70 +108,67 @@ impl StatePeer {
         )?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
-    /// Record this device's membership change as an operation on the log every
-    /// device replays, and project the log back into the document's rows.
-    ///
-    /// The owner's device starts the log: a workspace with no document yet
-    /// begins at an operation naming the membership it holds now. After that
-    /// every change is an operation carrying the steps this device made, and a
-    /// change its grants do not allow is refused here rather than written for
-    /// other devices to discard.
-    pub(super) fn record_membership(
+
+    /// Write `changes` to the workspace's membership as `key`'s device, and
+    /// take them in as every member will. Whether the workspace changed: no
+    /// change writes nothing.
+    pub(super) fn write_changes(
+        &mut self,
+        mut doc: CachedDocument,
+        changes: Vec<tilo_action_policy::Change>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if changes.is_empty() {
+            return Ok(false);
+        }
+        doc.set_actor(self.workspace_actor_of(key));
+        let before = doc.get_heads();
+        self.write_membership(
+            doc,
+            &before,
+            key,
+            now,
+            Some(crate::members::MembershipOpCommand::Project { changes }),
+        )
+    }
+
+    /// Record `command`, this device's membership change, as an operation on
+    /// the log every device replays. A change its grants do not allow is
+    /// refused here.
+    fn record_membership(
         &self,
         doc: &mut CachedDocument,
         key: &dyn DeviceSigner,
         now: SystemTime,
+        command: crate::members::MembershipOpCommand,
     ) -> Result<(), String> {
-        use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
+        use crate::members::{self, SignedMembershipOp};
         let workspace = self.core.workspace.clone();
-        let target = members::rows(doc, &workspace);
-        let old = self.core.workspace_doc.as_deref();
-        let live = old.is_some_and(|old| members::holds_genesis(old, &workspace));
         let cert = self
             .certificate(&key.device_public_key(), now)
             .map_err(|error| error.to_string())?;
-        let owner = cert.user_public_key == self.core.owner;
-        if !live {
-            if owner && old.is_none() {
-                let op = members::genesis_op(cert, key, &target, now_ns(now))?;
-                members::put_op(doc, &op)?;
-            }
-            return Ok(());
-        }
-        // What the log already gives this document, its rows and receipts
-        // included, is what the change is written on top of: an invitation's
-        // receipt admits its joiner and a removal takes that admission back
-        // without an operation, so where the log already says what the document
-        // says, nothing is written.
-        let held = members::replay(doc, &workspace);
-        if held == target {
-            return Ok(());
-        }
-        let steps = members::steps(&held, &target)
-            .map_err(|error| format!("the membership change is not a step to write: {error}"))?;
-        if steps.is_empty() {
-            return Err(members::unwritten(&held, &target));
-        }
         let op = SignedMembershipOp::signed(
             cert,
             key,
             members::heads_of(doc, &workspace),
             now_ns(now),
-            MembershipOpCommand::Project { changes: steps },
+            command,
         )?;
-        members::put_op(doc, &op)?;
-        if members::replay(doc, &workspace) != target {
-            return Err(members::refusal(&held, &target, &op));
+        if let Some(why) = members::refused(doc, &members::replay(doc, &workspace), &op) {
+            return Err(format!(
+                "the membership change is not this device's to make, as device {} of {}: {why}",
+                hex::encode(op.author.device_public_key),
+                op.person(),
+            ));
         }
-        members::materialise(doc, &target)?;
+        members::put_op(doc, &op)?;
         Ok(())
     }
 
     /// Record the governance rows `doc` moved as this device's operation, so
     /// every receiver judges each by its author's role
-    /// ([`crate::workspace::membership`]). A workspace whose log does not start
-    /// yet has no operations to name anything with, and its rows govern as they
-    /// did before the log.
+    /// ([`crate::workspace::membership`]).
     pub(super) fn record_governance(
         &self,
         doc: &mut CachedDocument,
@@ -156,7 +178,7 @@ impl StatePeer {
     ) -> Result<(), String> {
         use crate::members::{self, MembershipOpCommand, SignedMembershipOp};
         let workspace = self.core.workspace.clone();
-        if rows.is_empty() || !members::starts(doc, &workspace) {
+        if rows.is_empty() {
             return Ok(());
         }
         rows.sort_unstable();

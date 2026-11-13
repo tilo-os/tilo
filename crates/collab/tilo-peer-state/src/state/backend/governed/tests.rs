@@ -33,7 +33,7 @@ fn original_import(
             }
         }
     }
-    let members = workspace::governance_of(Some(doc)).members;
+    let members = crate::members::replay_declared(doc).members;
     for (id, identity) in identities {
         let has_admission = identity.has_admission();
         let cert = identity.device_cert;

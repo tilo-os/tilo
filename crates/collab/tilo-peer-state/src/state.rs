@@ -6,7 +6,7 @@ use crate::admission::{
 use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, workspace};
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
     ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
@@ -510,64 +510,6 @@ fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String>
         .map_err(err)?
         .map(|(_, id)| id)
         .ok_or_else(|| format!("governed {key} missing"))
-}
-
-/// Record `user_public_key`'s role in the workspace's `members` map.
-pub(crate) fn put_member(
-    doc: &mut AutoCommit,
-    members: &automerge::ObjId,
-    user_public_key: [u8; 32],
-    role: Role,
-) -> Result<(), String> {
-    doc.put(
-        members,
-        hex::encode(user_public_key),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).map_err(err)?),
-    )
-    .map_err(err)
-}
-
-/// The workspace key recording when each member was admitted: person hex →
-/// JSON Unix milliseconds.
-pub(crate) const MEMBERS_JOINED: &str = "members_joined_v1";
-
-/// Record that the workspace admitted `user_public_key` at `at_ms` (Unix
-/// milliseconds), unless it already holds a time for them: a member's
-/// admission time is written once and kept through role changes and later
-/// device admissions.
-pub(crate) fn put_member_joined_once(
-    doc: &mut AutoCommit,
-    user_public_key: [u8; 32],
-    at_ms: u64,
-) -> Result<(), String> {
-    let joined = match doc.get(ROOT, MEMBERS_JOINED).map_err(err)? {
-        Some((automerge::Value::Object(ObjType::Map), id)) => id,
-        Some(_) => return Err(format!("governed {MEMBERS_JOINED} is not a map")),
-        None => doc
-            .put_object(ROOT, MEMBERS_JOINED, ObjType::Map)
-            .map_err(err)?,
-    };
-    let person = hex::encode(user_public_key);
-    if doc.get(&joined, person.as_str()).map_err(err)?.is_some() {
-        return Ok(());
-    }
-    doc.put(
-        &joined,
-        person,
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&at_ms).map_err(err)?),
-    )
-    .map_err(err)
-}
-
-/// Forget when `person` was admitted, as they leave the workspace.
-pub(crate) fn delete_member_joined(doc: &mut AutoCommit, person: &str) -> Result<(), String> {
-    let Some((_, joined)) = doc.get(ROOT, MEMBERS_JOINED).map_err(err)? else {
-        return Ok(());
-    };
-    if doc.get(&joined, person).map_err(err)?.is_some() {
-        doc.delete(&joined, person).map_err(err)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

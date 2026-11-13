@@ -2901,3 +2901,77 @@ async fn a_room_names_its_own_host_to_every_member() {
     assert_eq!(served.len(), 1, "the governor is named once");
     relay.shutdown().await;
 }
+
+/// Membership as the workspace's signed log makes it, on the relay that hosts
+/// it: a new workspace holds its owner alone, a person who joins through the
+/// door is a member, one removed is gone and comes back through a new
+/// invitation, and a member's copy of the workspace reaches the membership
+/// the relay holds.
+#[tokio::test]
+async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Plans").await.unwrap().workspace;
+    let live = |members: &[tilo_peer_state::GovernedMember], person: [u8; 32]| {
+        members
+            .iter()
+            .any(|member| member.user_public_key == person && !member.removed)
+    };
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .all(|member| member.user_public_key == cert.user_public_key || member.removed),
+        "a new workspace is its owner's alone: {members:?}"
+    );
+
+    let (guest_key, guest) = guest_device();
+    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 31).await;
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(live(&members, guest.user_public_key), "{members:?}");
+
+    // A member's copy, sent the workspace as it stands, holds the same people.
+    let (relay_policy, copy_policy) = {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let governed = state.lock().await;
+        let held = governed.peer().admitted_workspace().unwrap().clone();
+        let mut copy = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut copy, held.clone().get_changes(&[]))
+            .unwrap();
+        (
+            tilo_peer_state::workspace::policy_of(&held, &workspace),
+            tilo_peer_state::workspace::policy_of(&copy, &workspace),
+        )
+    };
+    assert_eq!(relay_policy, copy_policy);
+    assert!(
+        relay_policy
+            .members
+            .contains_key(&hex::encode(guest.user_public_key))
+    );
+
+    workspaces
+        .remove_member(
+            &workspace,
+            &cert,
+            RemoveMemberRequest {
+                request_id: [32; 32],
+                user_public_key: guest.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(!live(&members, guest.user_public_key), "{members:?}");
+
+    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 33).await;
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        live(&members, guest.user_public_key),
+        "a new invitation admits them again: {members:?}"
+    );
+    drop(workspaces);
+    relay.shutdown().await;
+}
