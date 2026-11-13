@@ -1,6 +1,6 @@
-//! Limits: an OOM kills only the job, a fork bomb is contained, a daemon
-//! never outlives its job, quotas apply where the filesystem enforces them.
-//! These need a delegated cgroup; without one each prints why and passes.
+//! Limits: an OOM kills only the job, a fork bomb is contained, a daemon never outlives its job,
+//! quotas apply where the filesystem enforces them. These need a delegated cgroup; without one each
+//! prints why and passes.
 
 use std::io::Read;
 use std::os::fd::AsFd;
@@ -11,13 +11,10 @@ use tilo_sandbox::job::{JobSpec, Launch, Mount, Root, Tmp};
 use crate::needs_sandbox;
 use crate::support::pipe;
 
-/// A `Direct` provider in a fresh cgroup of the test's own, or why the host
-/// won't allow one.
-///
-/// A cgroup hands its children controllers only while it holds no processes
-/// (the host's root aside), so the test's own cgroup, which holds at least
-/// this process, rarely can. The fresh cgroup is made instead under the
-/// closest cgroup at or above it that already hands its children the memory
+/// A `Direct` provider in a fresh cgroup of the test's own, or why the host won't allow one. A
+/// cgroup hands its children controllers only while it holds no processes (the host's root aside),
+/// so the test's own cgroup, which holds at least this process, rarely can. The fresh cgroup is
+/// made instead under the closest cgroup at or above it that already hands its children the memory
 /// and pids controllers: a delegated one.
 fn provider() -> Result<(Direct, Tree), String> {
     let mount = std::path::Path::new("/sys/fs/cgroup");
@@ -52,8 +49,7 @@ fn provider() -> Result<(Direct, Tree), String> {
     Ok((direct, tree))
 }
 
-/// A test's cgroup subtree, removed when dropped (its job cgroups are
-/// removed by theirs).
+/// A test's cgroup subtree, removed when dropped (its job cgroups are removed by theirs).
 struct Tree(std::path::PathBuf);
 
 impl Drop for Tree {
@@ -94,9 +90,9 @@ fn an_oom_kills_only_the_job() {
         .create("oom", &limits)
         .expect("a job cgroup where the controllers are delegated");
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
-    // Touch far more than the limit; memory.oom.group ends the whole job.
-    // Grow until the kernel kills the job for memory; shell arithmetic in a
-    // string keeps a huge value live without needing python.
+    // Touch far more than the limit; memory.oom.group ends the whole job. Grow until the kernel
+    // kills the job for memory; shell arithmetic in a string keeps a huge value live without
+    // needing python.
     spec.argv = [
         "/bin/sh",
         "-c",
@@ -129,8 +125,8 @@ fn a_job_of_a_worker_shielded_from_the_oom_killer_stays_killable() {
         eprintln!("skipped: shielding the worker from the OOM killer takes root");
         return;
     }
-    // As a host may shield a runner: then a job at its memory limit would
-    // hang there, as nothing in its cgroup could be killed.
+    // As a host may shield a runner: then a job at its memory limit would hang there, as nothing in
+    // its cgroup could be killed.
     std::fs::write("/proc/self/oom_score_adj", "-1000").unwrap();
     let (status, out) = crate::support::run(|s| {
         crate::support::shell(s, "cat /proc/self/oom_score_adj");
@@ -175,7 +171,6 @@ fn a_fork_bomb_is_contained_and_the_runner_survives() {
     let _ = out_r.read_to_string(&mut out);
 }
 
-/// The command line of process `pid`, its arguments space-separated.
 fn command_line(pid: u32) -> String {
     std::fs::read(format!("/proc/{pid}/cmdline"))
         .map(|bytes| String::from_utf8_lossy(&bytes).replace('\0', " "))
@@ -190,8 +185,8 @@ fn cgroup_kill_removes_a_daemon_the_job_left_running() {
         .create("daemon", &Limits::default())
         .expect("a job cgroup where the controllers are delegated");
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
-    // A setsid sleeper in a session of its own, the sort of listener a test
-    // leaves behind, beside a command that keeps running.
+    // A setsid sleeper in a session of its own, the sort of listener a test leaves behind, beside a
+    // command that keeps running.
     spec.argv = [
         "/bin/sh",
         "-c",
@@ -228,8 +223,8 @@ fn a_daemon_ends_with_the_command_that_left_it() {
         .create("left", &Limits::default())
         .expect("a job cgroup where the controllers are delegated");
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
-    // The command returns at once, leaving a setsid sleeper behind: the job's
-    // PID namespace ends with its init, and everything in it with that.
+    // The command returns at once, leaving a setsid sleeper behind: the job's PID namespace ends
+    // with its init, and everything in it with that.
     spec.argv = [
         "/bin/sh",
         "-c",

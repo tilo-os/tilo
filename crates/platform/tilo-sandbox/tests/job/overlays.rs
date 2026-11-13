@@ -1,6 +1,6 @@
-//! Overlays of several layers: the top one wins, whiteouts and opaque
-//! directories of a layer hide what lies below it, what the job writes goes
-//! to its own upper layer only, and read-only layers can't be written.
+//! Overlays of several layers: the top one wins, whiteouts and opaque directories of a layer hide
+//! what lies below it, what the job writes goes to its own upper layer only, and read-only layers
+//! can't be written.
 
 use std::path::{Path, PathBuf};
 
@@ -9,7 +9,6 @@ use tilo_sandbox::job::{JobSpec, Launch, Mount, MountKind, Root, SpawnError};
 use crate::needs_sandbox;
 use crate::support::{run, shell};
 
-/// A directory with `files` (path, contents) in it.
 fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = root.join(name);
     for (path, contents) in files {
@@ -21,7 +20,6 @@ fn layer(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
-/// An upper and a work directory under `root/name`.
 fn writes(root: &Path, name: &str) -> (PathBuf, PathBuf) {
     let (upper, work) = (root.join(name).join("upper"), root.join(name).join("work"));
     std::fs::create_dir_all(&upper).unwrap();
@@ -29,8 +27,8 @@ fn writes(root: &Path, name: &str) -> (PathBuf, PathBuf) {
     (upper, work)
 }
 
-/// Whether overlays mount here at all: a job's overlay needs user extended
-/// attributes on the filesystem under the test's temporary directory.
+/// Whether overlays mount here at all: a job's overlay needs user extended attributes on the
+/// filesystem under the test's temporary directory.
 fn overlays_work(root: &Path) -> bool {
     let lower = layer(root, "probe-lower", &[]);
     let (upper, work) = writes(root, "probe");
@@ -164,8 +162,6 @@ fn one_read_only_layer_is_refused() {
     assert!(matches!(err, Some(SpawnError::Invalid(_))), "{err:?}");
 }
 
-/// An image's layers as a job's root: the top layer's file hides the lower's, the mount points
-/// the job needs go into its own upper, and the root itself can't be written.
 #[test]
 fn a_root_of_layers_shows_the_top_layer_and_cant_be_written() {
     needs_sandbox!();
@@ -173,8 +169,6 @@ fn a_root_of_layers_shows_the_top_layer_and_cant_be_written() {
     if !overlays_work(dir.path()) {
         return;
     }
-    // The host's /usr is bound in for a shell; the base layer links into it as a merged-/usr
-    // image does.
     let base = layer(
         dir.path(),
         "base",
@@ -201,8 +195,6 @@ fn a_root_of_layers_shows_the_top_layer_and_cant_be_written() {
     spec.mount(Mount::read_only("/usr", "/usr"));
     shell(
         &mut spec,
-        // The refused redirection's own message goes to the subshell's stderr, which is
-        // silenced: `cmd > /new 2>/dev/null` would print it, since `> /new` fails first.
         "cat /etc/hello /etc/only-base; if (echo x > /new) 2>/dev/null; then echo wrote; fi",
     );
     let (mut out_r, out_w) = crate::support::pipe();

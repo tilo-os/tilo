@@ -1,11 +1,9 @@
-//! Idmapped mounts for a job with host ids of its own ([`IdBlock`]): the
-//! worker clones each host path it binds into the job as a detached mount on
-//! which the files' owner shows as the job's user, and hands the job the
-//! mount to attach (`move_mount`).
+//! Idmapped mounts for a job with host ids of its own ([`IdBlock`]): the worker clones each host
+//! path it binds into the job as a detached mount on which the files' owner shows as the job's
+//! user, and hands the job the mount to attach (`move_mount`).
 //!
-//! Idmapping a mount takes `CAP_SYS_ADMIN` in the user namespace of the
-//! filesystem, the host's, so the worker does it before the job starts,
-//! not the job itself.
+//! Idmapping a mount takes `CAP_SYS_ADMIN` in the user namespace of the filesystem, the host's, so
+//! the worker does it before the job starts, not the job itself.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -18,8 +16,6 @@ use std::sync::{Mutex, PoisonError};
 use super::sys;
 use crate::job::spec::{IdBlock, IdMap};
 
-/// The ids an idmapped mount translates: the files' owner on the host, the
-/// job's own id in its namespace, and the job's block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Translation {
     owner_uid: u32,
@@ -42,16 +38,13 @@ impl Translation {
     }
 }
 
-/// The map of an idmapped mount, as `uid_map` takes it: every id on disk
-/// below `count` shows as the job's id of the same number (host id
-/// `first + k`), so files and ACL entries of any of the job's users keep
-/// their owner across jobs; but the files' owner on the host shows as the
-/// job's own id (`inside`), and the id `inside` on disk takes the owner's
-/// place, so the map stays one to one. An owner at or past `count` takes
-/// `inside`'s place, which then has no mapping.
+/// The map of an idmapped mount, as `uid_map` takes it: every id on disk below `count` shows as the
+/// job's id of the same number (host id `first + k`), so files and ACL entries of any of the job's
+/// users keep their owner across jobs; but the files' owner on the host shows as the job's own id
+/// (`inside`), and the id `inside` on disk takes the owner's place, so the map stays one to one. An
+/// owner at or past `count` takes `inside`'s place, which then has no mapping.
 fn map_lines(owner: u32, inside: u32, first: u32, count: u32) -> String {
     use std::fmt::Write as _;
-    // (disk id, host id, length), in order of disk id.
     let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
     let identity = |from: u32, to: u32, ranges: &mut Vec<(u32, u32, u32)>| {
         if from < to {
@@ -61,8 +54,7 @@ fn map_lines(owner: u32, inside: u32, first: u32, count: u32) -> String {
     if owner == inside {
         identity(0, count, &mut ranges);
     } else {
-        // The ids on disk that leave the identity: `owner` (if in range)
-        // and `inside`.
+        // The ids on disk that leave the identity: `owner` (if in range) and `inside`.
         let mut special = vec![inside];
         if owner < count {
             special.push(owner);
@@ -92,17 +84,14 @@ fn map_lines(owner: u32, inside: u32, first: u32, count: u32) -> String {
     lines
 }
 
-/// User namespaces that carry each translation, kept for the process's
-/// life: a worker reuses its blocks, so there are a few per block at most.
+/// User namespaces that carry each translation, kept for the process's life: a worker reuses its
+/// blocks, so there are a few per block at most.
 static NAMESPACES: Mutex<Option<HashMap<Translation, OwnedFd>>> = Mutex::new(None);
 
-/// A user namespace whose map translates the files' owner into the job's
-/// host ids, as `MOUNT_ATTR_IDMAP` takes it: an id on disk is read as an id
-/// inside the namespace and shown as the host id it maps to.
-///
-/// # Errors
-/// When `ids` has no block, the block overflows, or the namespace can't be
-/// made (the caller lacks `CAP_SETUID`/`CAP_SETGID`).
+/// A user namespace whose map translates the files' owner into the job's host ids, as
+/// `MOUNT_ATTR_IDMAP` takes it: an id on disk is read as an id inside the namespace and shown as
+/// the host id it maps to. # Errors When `ids` has no block, the block overflows, or the namespace
+/// can't be made (the caller lacks `CAP_SETUID`/`CAP_SETGID`).
 pub fn namespace(ids: &IdMap) -> io::Result<OwnedFd> {
     let block = ids
         .block
@@ -121,15 +110,11 @@ pub fn namespace(ids: &IdMap) -> io::Result<OwnedFd> {
     Ok(copy)
 }
 
-/// A user namespace for the job's system files (its image or the host's
-/// `/usr` and `/etc`): every id on disk below the block's `count` shows as
-/// the same id in the job, so root's files are root's there too, whatever
-/// the job's own id. The files of [`namespace`] show as the job's own,
-/// which suits its work but not what it runs: a program checking that a
-/// system file is root's (a loader, a setuid helper) would find the job's.
-///
-/// # Errors
-/// As [`namespace`].
+/// A user namespace for the job's system files (its image or the host's `/usr` and `/etc`): every
+/// id on disk below the block's `count` shows as the same id in the job, so root's files are root's
+/// there too, whatever the job's own id. The files of [`namespace`] show as the job's own, which
+/// suits its work but not what it runs: a program checking that a system file is root's (a loader,
+/// a setuid helper) would find the job's. # Errors As [`namespace`].
 pub fn system_namespace(ids: &IdMap) -> io::Result<OwnedFd> {
     namespace(&IdMap {
         outside_uid: ids.inside_uid,
@@ -138,8 +123,7 @@ pub fn system_namespace(ids: &IdMap) -> io::Result<OwnedFd> {
     })
 }
 
-/// Start a process in a new user namespace, map it, keep the namespace,
-/// end the process.
+/// Start a process in a new user namespace, map it, keep the namespace, end the process.
 fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
     let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
     let args = sys::CloneArgs {
@@ -147,8 +131,8 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
         exit_signal: bits(libc::SIGCHLD),
         ..sys::CloneArgs::default()
     };
-    // SAFETY: clone3 without CLONE_VM, like fork; the child only waits for
-    // its signal (pause is async-signal-safe) and never returns.
+    // SAFETY: clone3 without CLONE_VM, like fork; the child only waits for its signal (pause is
+    // async-signal-safe) and never returns.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_clone3,
@@ -186,16 +170,12 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
     made
 }
 
-/// A detached copy of the mount tree at `path` (submounts included), with
-/// the translation of `userns` where one is given, private (nothing the job
-/// mounts beneath it reaches the host's tree). The caller opens it, so the
-/// job binds it without resolving `path` itself: it may not be able to reach
-/// it, as a block of host ids of its own can't enter a directory only its
-/// owner may.
-///
-/// # Errors
-/// When the filesystem can't be idmapped (`EINVAL`), or the kernel is older
-/// than 5.12 (`ENOSYS`).
+/// A detached copy of the mount tree at `path` (submounts included), with the translation of
+/// `userns` where one is given, private (nothing the job mounts beneath it reaches the host's
+/// tree). The caller opens it, so the job binds it without resolving `path` itself: it may not be
+/// able to reach it, as a block of host ids of its own can't enter a directory only its owner may.
+/// # Errors When the filesystem can't be idmapped (`EINVAL`), or the kernel is older than 5.12
+/// (`ENOSYS`).
 pub fn tree(path: &Path, userns: Option<BorrowedFd<'_>>) -> io::Result<OwnedFd> {
     let c = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::other("a path with a NUL byte"))?;
@@ -226,8 +206,7 @@ pub fn tree(path: &Path, userns: Option<BorrowedFd<'_>>) -> io::Result<OwnedFd> 
             .unwrap_or_default(),
         ..sys::MountAttr::default()
     };
-    // SAFETY: a descriptor we own, an empty path, and a live structure of
-    // the size passed.
+    // SAFETY: a descriptor we own, an empty path, and a live structure of the size passed.
     let rc = unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,
