@@ -349,6 +349,7 @@ name = "containerfile-sources"
 inputs = [
   "os/", ".containerignore", ".cargo/", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
   "apps", "crates", "dist", "examples", "vendor", "vendor/zlink-macros/", "keys/release/",
+  "sdk/python/native", "sdk/typescript/native",
   "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
   "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
   "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",

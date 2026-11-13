@@ -10,6 +10,7 @@ import re
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -22,9 +23,19 @@ SPEC = importlib.util.spec_from_file_location(
 )
 assert SPEC and SPEC.loader
 checker = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = checker
 SPEC.loader.exec_module(checker)
 
 AUDIT = 'Pattern::new(\n    "raw_paint",\n    r"scene\\.fill\\(",\n    "raw paint",\n),\n'
+
+# What the tree's own scans read, walked rather than asked of git: the suite also
+# runs on copies of the tree that are no repository.
+SKIPPED = {"vendor", "target", "dist", "node_modules"}
+SOURCES = sorted(
+    path
+    for path in REPO.rglob("*.rs")
+    if not SKIPPED.intersection(path.relative_to(REPO).parts)
+)
 
 
 def drawing(marker: bool) -> str:
@@ -286,33 +297,25 @@ class MarkerRuleTests(unittest.TestCase):
         # The ratchet owns the marker grammar (`support::ratchet::allow_marker`)
         # and this check mirrors it: a marker that stops parsing here would be one
         # this check silently lets go, so the suite fails as soon as one does.
-        listed = subprocess.check_output(
-            ["git", "-C", str(REPO), "grep", "-l", "-E",
-             "ratchet-allow[(]|allow-breakpoint:|allow-socket-path:", "--", "*.rs"],
-            text=True,
-        ).splitlines()
         markers = 0
         inline = dict.fromkeys(checker.INLINE, 0)
-        for path in listed:
-            if path.startswith("vendor/"):
-                continue
-            text = (REPO / path).read_text(encoding="utf-8", errors="replace")
+        for path in SOURCES:
+            text = path.read_text(encoding="utf-8", errors="replace")
             for number, line in enumerate(text.splitlines(), 1):
                 # A line written as a marker: prose about one (`//!`) is not.
                 if not re.match(r"\s*//\s+ratchet-allow\(", line):
                     continue
                 markers += 1
                 self.assertIsNotNone(
-                    checker.marker_keys(line), f"{path}:{number} is no marker this check reads"
+                    checker.marker_keys(line),
+                    f"{path.relative_to(REPO).as_posix()}:{number} is no marker this check reads",
                 )
         self.assertGreater(markers, 0, "the tree holds no ratchet marker to read")
         # The inline markers are the checks' own patterns, so what matters is that
         # a line carrying one is an allowance of the code beside it -- unless it
         # sits in a `#[cfg(test)]` item, where no check counts a hit.
-        for path in listed:
-            if path.startswith("vendor/"):
-                continue
-            lines = (REPO / path).read_text(encoding="utf-8", errors="replace").splitlines()
+        for path in SOURCES:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             found = {(a.family, a.index) for a in checker.allowances(lines)}
             tests = checker._test_items(lines)
             for index, line in enumerate(lines):
@@ -334,12 +337,8 @@ class MarkerRuleTests(unittest.TestCase):
         marker this check does not read is one a trimming pass may take without
         a word, and the run that needs it fails far from that commit."""
         found = dict.fromkeys(checker.READERS, 0)
-        for path in subprocess.check_output(
-            ["git", "-C", str(REPO), "ls-files", "--", "*.rs"], text=True
-        ).splitlines():
-            if path.startswith("vendor/"):
-                continue
-            lines = (REPO / path).read_text(encoding="utf-8", errors="replace").splitlines()
+        for path in SOURCES:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             read = {(allowance.family, allowance.marker) for allowance in checker.allowances(lines)}
             for index, line in enumerate(lines):
                 rest = line.lstrip()

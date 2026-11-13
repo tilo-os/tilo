@@ -105,7 +105,10 @@ def closure_items(directories: Iterable[str], indent: str) -> list[str]:
 
 
 def regenerate(
-    text: str, directories: set[str], report_drift: bool = True
+    text: str,
+    directories: set[str],
+    report_drift: bool = True,
+    edges: str = DEFAULT_EDGES,
 ) -> tuple[str, list[Violation]]:
     """``text`` with every block's generated region filled from the closure.
 
@@ -143,8 +146,8 @@ def regenerate(
             violations.append(
                 Violation(
                     number,
-                    "generated closure is not current: run "
-                    "tools/policy/check_workflow_package_paths.py --write <package> <workflow>",
+                    f"generated closure is not current: run tools/policy/"
+                    f"check_workflow_package_paths.py --edges {edges} --write <package> <workflow>",
                 )
             )
         edits.append((begins[0] + 1, ends[0], items))
@@ -287,7 +290,7 @@ def audit(
         for directory in sorted(directories)
         if not any(pattern_covers(directory, pattern) for pattern in patterns)
     ]
-    return violations + regenerate(workflow_text, directories)[1]
+    return violations + regenerate(workflow_text, directories, edges=edges)[1]
 
 
 def load_metadata(root: Path) -> dict[str, Any]:
@@ -339,7 +342,9 @@ def main() -> int:
                 directories = dependency_directories(
                     metadata, ROOT, package, edges=args.edges
                 )
-                regenerated, violations = regenerate(text, directories, report_drift=False)
+                regenerated, violations = regenerate(
+                    text, directories, report_drift=False, edges=args.edges
+                )
                 if regenerated != text:
                     (ROOT / workflow).write_text(regenerated, encoding="utf-8")
                     print(f"{workflow}: generated {len(directories)} dependency paths")
