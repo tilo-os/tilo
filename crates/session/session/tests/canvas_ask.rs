@@ -1198,6 +1198,8 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     });
     assert_eq!(moved.1, iy, "it stands at the inbox's line: {moved:?}");
     assert!(moved.0 > ix, "to the inbox's right: {moved:?} against {ix}");
+}
+
 /// The page a place draws names the workspace's agent by the name its keeper gave it as soon as
 /// the name exists, never staying on Chat's fallback word for an agent it was not told the name
 /// of.
