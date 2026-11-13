@@ -380,8 +380,12 @@ pub enum Residency {
     /// Metadata is present, but no payload bytes are promised locally.
     NotResident,
     /// Some, but not all, payload bytes are present.
-    Partial { resident_bytes: u64 },
-    Resident { bytes: u64 },
+    Partial {
+        resident_bytes: u64,
+    },
+    Resident {
+        bytes: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

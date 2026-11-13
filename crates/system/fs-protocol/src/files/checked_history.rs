@@ -204,7 +204,10 @@ pub const HISTORY_JOB_CANCEL: &[u8] = b"cancel";
 pub enum HistoryJobStateV1 {
     /// `done` of `total` verified bytes are local. `total` is 0 until every
     /// manifest involved is known.
-    Hydrating { done: u64, total: u64 },
+    Hydrating {
+        done: u64,
+        total: u64,
+    },
     /// Every byte is local: repeat the request to commit it.
     Ready,
     Failed,
