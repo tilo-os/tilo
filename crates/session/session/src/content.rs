@@ -57,7 +57,7 @@ pub(crate) struct Plane {
     inbound: SyncSender<Inbound>,
     /// The store of each record the session keeps itself, by workspace and app
     /// ([`Plane::store`]).
-    kept_stores: Mutex<HashMap<(String, String), ContentStore>>,
+    kept: Mutex<HashMap<(String, String), Arc<Kept>>>,
 }
 
 impl Plane {
@@ -87,7 +87,7 @@ impl Plane {
             shelf,
             peers,
             inbound,
-            kept_stores: Mutex::default(),
+            kept: Mutex::default(),
         })
     }
 
@@ -130,18 +130,39 @@ impl Plane {
     /// The store is the same one for the workspace and app every time: a session lends it to the
     /// services whose records it keeps (`tilo_service::Service::lend_content`) on every pass.
     pub(crate) fn store(&self, workspace: &str, app: &str) -> ContentStore {
+        let kept = self.kept_record(workspace, app);
+        ContentStore::from_backend(kept as Arc<dyn tilo_content::ContentBackend>).sealing()
+    }
+
+    /// Seal what the record of `app` in `workspace` keeps under `secret`, the content secret its
+    /// members hold: the same bytes stored twice are then one item under one reference, as a
+    /// window's record content is, and whoever keeps the ciphertext holds no key.
+    pub(crate) fn seal_under(
+        &self,
+        workspace: &str,
+        app: &str,
+        secret: Option<tilo_seal::SymmetricKey>,
+    ) {
+        let Some(secret) = secret else {
+            return;
+        };
+        *self.kept_record(workspace, app).secret.lock_recover() = Some(secret);
+    }
+
+    /// The store of the record of `app` in `workspace`, as the session keeps it: the same one for
+    /// the workspace and app every time.
+    fn kept_record(&self, workspace: &str, app: &str) -> Arc<Kept> {
         let scope = (workspace.to_owned(), app.to_owned());
-        if let Some(store) = self.kept_stores.lock_recover().get(&scope) {
-            return store.clone();
+        if let Some(kept) = self.kept.lock_recover().get(&scope) {
+            return Arc::clone(kept);
         }
-        let on = CrdtRoute::app(app, workspace);
-        let store = ContentStore::from_backend(Arc::new(Kept {
+        let kept = Arc::new(Kept {
             route: Arc::clone(&self.route),
-            on,
-        }))
-        .sealing();
-        self.kept_stores.lock_recover().insert(scope, store.clone());
-        store
+            on: CrdtRoute::app(app, workspace),
+            secret: Mutex::default(),
+        });
+        self.kept.lock_recover().insert(scope, Arc::clone(&kept));
+        kept
     }
 
     /// The bytes this device keeps of `app` 's content in `workspace` under `hash` (lower-case
@@ -482,6 +503,9 @@ impl WorkspaceMedia for Media {
 struct Kept {
     route: Arc<RouteContent>,
     on: CrdtRoute,
+    /// The content secret of the members who read the record, once the engine holds it
+    /// ([`Plane::seal_under`]).
+    secret: Mutex<Option<tilo_seal::SymmetricKey>>,
 }
 
 impl tilo_content::ContentBackend for Kept {
@@ -544,6 +568,10 @@ impl tilo_content::ContentBackend for Kept {
     /// workspace the record is in.
     fn workspace_scoped(&self) -> bool {
         true
+    }
+
+    fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
+        self.secret.lock_recover().clone()
     }
 
     fn max_item_bytes(&self) -> usize {

@@ -16,6 +16,29 @@ use crate::Error;
 /// drawing is read this often all the same.
 const KEEP_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The content secret the members of the workspace `workspace` hold for the record of `app`, as
+/// this device's engine keeps it: `None` until the keys reach it, when each part is sealed under a
+/// fresh key instead.
+fn secret_of(
+    engine: &crate::engine::Engine,
+    workspace: tilo_desktop_model::WorkspaceId,
+    app: &str,
+) -> Option<tilo_seal::SymmetricKey> {
+    match engine.seal_keys(workspace, app, "") {
+        Ok(crate::engine::SealKeys::Here(keys)) => keys.record_content_secret().ok(),
+        Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
+        Err(error) => {
+            // A session that takes no part in the collaboration plane keeps no channel of its
+            // own: what it stores is sealed under a fresh key until it does.
+            tilo_failure::ignored!(
+                "a session with no channel service seals each part under a key of its own",
+                tracing::debug!(%error, %app, "no content secret for a record the session keeps")
+            );
+            None
+        }
+    }
+}
+
 impl Session {
     /// How long this pass may sleep: no longer than `timeout` , and no longer than the next thing
     /// that is due on a clock of its own — a held direction repeating, or a profile the owner asked
@@ -77,7 +100,8 @@ impl Session {
 
     /// Keep each record the services keep themselves in the content store of the workspace it
     /// stands in: the session's own records' large parts are offered on their routes, where the
-    /// workspace's devices fetch them ([`crate::content::Plane::store`]).
+    /// workspace's devices fetch them, sealed under the secret its members hold
+    /// ([`crate::content::Plane::store`]).
     fn lend_record_content(&self, services: &mut tilo_service::Services) {
         let Some(workspace) = self
             .shared
@@ -86,8 +110,15 @@ impl Session {
         else {
             return;
         };
+        let front = tilo_desktop_model::WorkspaceId::parse(&workspace);
+        let engine = self.shared.engine.as_deref();
         let content = &self.content;
-        services.lend_content(&mut |app| content.store(&workspace, app));
+        services.lend_content(&mut |app| {
+            if let (Some(id), Some(engine)) = (front, engine) {
+                content.seal_under(&workspace, app, secret_of(engine, id, app));
+            }
+            content.store(&workspace, app)
+        });
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and
