@@ -23,7 +23,6 @@ use std::time::Duration;
 
 use crate::api::{self, Client, Reach};
 
-/// The most one answer may be.
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
 
 #[derive(Subcommand)]
@@ -167,17 +166,14 @@ pub(crate) fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -
     }
 }
 
-/// A field of `value` as text: empty when it is not there.
 fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
 }
 
-/// `value` as JSON on one line.
 fn compact(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_default()
 }
 
-/// Print `typed` as the API gave it when `json`, else `said`.
 fn show(json: bool, typed: &Value, said: &str) -> ExitCode {
     if json {
         println!(
@@ -234,7 +230,6 @@ async fn workspace_id(client: &Client, named: &str) -> Result<String> {
         })
 }
 
-/// One workspace as a line: its name, its id, and where it lives.
 fn workspace_line(row: &Value) -> String {
     let mut line = format!("{} (id {}", text(row, "name"), text(row, "id"));
     if let Some(host) = row.get("host").and_then(Value::as_str) {
@@ -247,7 +242,6 @@ fn workspace_line(row: &Value) -> String {
     line
 }
 
-/// `row`'s `field` as a date, or `none` when it is not there.
 fn when(row: &Value, field: &str, none: &str) -> String {
     row.get(field)
         .and_then(Value::as_u64)
@@ -477,7 +471,6 @@ pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
     })
 }
 
-/// The bytes of `content`, written to `output` or standard output.
 fn write_content(
     json: bool,
     content: &str,
@@ -681,7 +674,6 @@ fn export(path: &Path, name: Option<&str>, json: bool) -> Result<ExitCode> {
     Ok(show(json, &typed, &said))
 }
 
-/// Write `file` at `path`, readable by this account only, replacing what is
 /// there.
 fn write_key_file(path: &Path, file: &tilo_api::direct::KeyFile) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -815,10 +807,8 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    /// The workspace the fake API answers with.
     const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
 
-    /// What the fake API answers for one request.
     fn answer(request: &test_http::Request) -> Option<test_http::Reply> {
         let json_reply = |status: u16, body: Value| {
             Some(
@@ -857,13 +847,11 @@ mod tests {
         }
     }
 
-    /// A fake API server that answers the routes above, and keeps what it
     /// was sent.
     fn fake_api() -> test_http::Responder {
         test_http::Responder::handle(answer)
     }
 
-    /// Every command below reaches the same key, at whatever server its
     /// `Reach` names.
     fn keyed() -> tilo_test_env::ScopedEnv {
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -871,7 +859,6 @@ mod tests {
         env
     }
 
-    /// The hosted commands are the API's routes: every one of them a call of
     /// `docs/developers/api.md`, with the headers it takes.
     #[test]
     fn the_hosted_commands_are_the_apis_routes() {

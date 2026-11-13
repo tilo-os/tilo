@@ -23,15 +23,10 @@ use tilo_actions::ActionKind;
 use tilo_actions::field_type::{FieldType, NamedType, TypeField};
 use tilo_actions::surface::{Surface, VerbSurface};
 
-/// Where `--lang python` writes its types without `--out`.
 pub const PYTHON_OUT: &str = "tilo_types";
-/// Where `--lang ts` writes its types without `--out`.
 pub const TYPESCRIPT_OUT: &str = "tilo-types";
-/// Where `--lang openapi` writes the API's description without `--out`.
 pub const OPENAPI_OUT: &str = ".";
-/// The file `--lang openapi` writes.
 const OPENAPI_FILE: &str = "openapi.json";
-/// An app's surface, and its manifest, in the app's directory.
 const SURFACE_FILE: &str = "surface.toml";
 const MANIFEST_FILE: &str = "tilo-app.toml";
 
@@ -57,7 +52,6 @@ const OWN: [&str; 16] = [
     "has",
 ];
 
-/// The words a Python name may not be.
 const PYTHON_WORDS: [&str; 36] = [
     "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
     "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda",
@@ -95,8 +89,6 @@ pub enum Lang {
     Openapi,
 }
 
-/// One app whose types are generated: its id, what people call it, and the bytes of its
-/// `surface.toml`.
 #[derive(Clone, Debug)]
 pub struct App {
     pub id: String,
@@ -104,7 +96,6 @@ pub struct App {
     pub surface: String,
 }
 
-/// `tilo sdk gen`.
 pub fn generate(reach: crate::api::Reach<'_>, workspace: Option<&str>, cmd: SdkCmd) -> ExitCode {
     let SdkCmd::Gen { lang, out, check } = cmd;
     let apps = match surfaces(reach, workspace) {
@@ -152,8 +143,6 @@ pub fn generate(reach: crate::api::Reach<'_>, workspace: Option<&str>, cmd: SdkC
     }
 }
 
-/// The apps whose types are generated: the ones installed in `workspace`, or else the ones of
-/// the checkout this runs in.
 fn surfaces(reach: crate::api::Reach<'_>, workspace: Option<&str>) -> Result<Vec<App>> {
     match workspace {
         Some(workspace) => crate::hosted::surfaces(reach, workspace),
@@ -161,7 +150,6 @@ fn surfaces(reach: crate::api::Reach<'_>, workspace: Option<&str>) -> Result<Vec
     }
 }
 
-/// The apps of a checkout's `apps` directory: each with a manifest and a committed surface.
 fn committed(apps: &Path) -> Result<Vec<App>> {
     let dirs = std::fs::read_dir(apps).with_context(|| {
         format!(
@@ -190,7 +178,6 @@ struct Package {
     name: String,
 }
 
-/// The app of the directory `dir`: its manifest's id and name, and its `surface.toml`.
 fn app_of(dir: &Path) -> Result<App> {
     let read = |name: &str| {
         let path = dir.join(name);
@@ -205,7 +192,6 @@ fn app_of(dir: &Path) -> Result<App> {
     })
 }
 
-/// Write `files` under `out`, or with `check` say whether what is there already is them.
 fn land(out: &Path, files: &[(PathBuf, String)], check: bool) -> Result<ExitCode> {
     let mut changed = Vec::new();
     for (name, text) in files {
@@ -238,9 +224,6 @@ fn land(out: &Path, files: &[(PathBuf, String)], check: bool) -> Result<ExitCode
     Ok(ExitCode::SUCCESS)
 }
 
-// -- what a surface says ----------------------------------------------------
-
-/// One app's types: the records and enums its fields name, and a class per resource kind.
 struct Types {
     declarations: Vec<Declaration>,
     classes: Vec<Class>,
@@ -252,7 +235,6 @@ enum Declaration {
         doc: String,
         fields: Vec<Member>,
     },
-    /// An enum: the cases it has, with the fields of each.
     Cases {
         name: String,
         doc: String,
@@ -260,9 +242,7 @@ enum Declaration {
     },
 }
 
-/// One resource kind, as the SDK's class.
 struct Class {
-    /// Its type name (`PdfDocument`), and the kind it is (`pdf.document`).
     name: String,
     kind: String,
     label: String,
@@ -270,14 +250,11 @@ struct Class {
     actions: Vec<Action>,
 }
 
-/// A field, or a field of a record: its name, type, and what the app calls it.
 struct Member {
-    /// Its name in the SDK's language, and the app's own when they differ.
     name: String,
     wire: String,
     ty: Ty,
     title: String,
-    /// A read-only field of a resource: the SDK reads it and has no setter for it.
     readonly: bool,
 }
 
@@ -300,7 +277,6 @@ struct Param {
     required: bool,
 }
 
-/// A type as the SDK's languages write it; a named one is a record or enum of the app's.
 enum Ty {
     Any,
     Text,
@@ -314,11 +290,8 @@ enum Ty {
     Named(String),
 }
 
-/// How a surface names the types it declares: each name is written under a name of its own
-/// when another surface of the app declares it differently.
 type Names = BTreeMap<String, String>;
 
-/// The types one app publishes.
 fn types_of(app: &App) -> Result<Types> {
     let file = SurfaceFile::parse(app.surface.as_bytes())
         .map_err(|error| anyhow!("{}: {error}", app.id))?;
@@ -436,7 +409,6 @@ impl Types {
     }
 }
 
-/// The name `named` is already declared under, and whether it is declared the same.
 fn names_of(declared: &BTreeMap<String, NamedType>, named: &NamedType) -> Option<(String, bool)> {
     declared
         .iter()
@@ -444,7 +416,6 @@ fn names_of(declared: &BTreeMap<String, NamedType>, named: &NamedType) -> Option
         .map(|(name, known)| (name.clone(), known == named))
 }
 
-/// The types of a surface, read as the SDK writes them.
 struct Resolver<'a> {
     names: &'a Names,
     kinds: &'a BTreeMap<String, String>,
@@ -528,7 +499,6 @@ fn camel(name: &str) -> String {
         .collect()
 }
 
-/// The verbs only the platform invokes: a host's creation, and a bound control's edits.
 fn platform_verb(verb: &VerbSurface) -> bool {
     matches!(
         verb.id.as_str(),
@@ -583,12 +553,10 @@ fn member(wire: &str) -> (String, String) {
     (wire.replace('-', "_"), wire.to_owned())
 }
 
-/// `read-form-fields` as Python names it: `read_form_fields`.
 fn snake(id: &str) -> String {
     id.replace(['-', '.', ':'], "_")
 }
 
-/// `read-form-fields` as TypeScript names it: `readFormFields`.
 fn camel_method(id: &str) -> String {
     let mut out = String::new();
     for (index, word) in id.split(['-', '.', ':']).enumerate() {
@@ -605,9 +573,6 @@ fn camel_method(id: &str) -> String {
     out
 }
 
-// -- the two languages ------------------------------------------------------
-
-/// One app's files: the module its types are written in (`pdf-viewer` is `pdf_viewer`).
 fn module_name(id: &str) -> String {
     let last = id.rsplit('.').next().unwrap_or(id);
     let name: String = last
@@ -627,12 +592,10 @@ fn module_name(id: &str) -> String {
     }
 }
 
-/// The name an app goes by in a path: its id's last segment (`pdf-viewer`).
 fn app_path(app: &App) -> &str {
     app.id.rsplit('.').next().unwrap_or(&app.id)
 }
 
-/// What people call the app, with its id.
 fn title_of(app: &App) -> String {
     if app.title.is_empty() {
         app.id.clone()
@@ -689,8 +652,6 @@ fn typescript_type(ty: &Ty) -> String {
     }
 }
 
-/// `text` as one line a docstring or comment holds: its words, with the marks that would end
-/// the comment left out.
 fn one_line(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -700,7 +661,6 @@ fn one_line(text: &str) -> String {
         .replace('\\', "/")
 }
 
-/// A field's own words, as a trailing comment.
 fn comment(title: &str) -> String {
     let title = one_line(title);
     if title.is_empty() {
@@ -710,7 +670,6 @@ fn comment(title: &str) -> String {
     }
 }
 
-/// A docstring, indented by `indent`, when there is something to say.
 fn doc(out: &mut String, text: &str, indent: usize) {
     let text = one_line(text);
     if text.is_empty() {
@@ -720,7 +679,6 @@ fn doc(out: &mut String, text: &str, indent: usize) {
     let _ = writeln!(out, "{pad}\"\"\"{text}\"\"\"");
 }
 
-/// A comment block: each line of `lines` after ` * `, an empty line as ` *`.
 fn comment_block(out: &mut String, lines: &[&str]) {
     out.push_str("/**\n");
     for line in lines {
@@ -733,7 +691,6 @@ fn comment_block(out: &mut String, lines: &[&str]) {
     out.push_str(" */\n");
 }
 
-/// A Python name for `name`: the words a name may not be take a trailing `_`.
 fn python_name(name: &str) -> String {
     let mut name = name.to_owned();
     if PYTHON_WORDS.contains(&name.as_str()) {
@@ -745,8 +702,6 @@ fn python_name(name: &str) -> String {
     name
 }
 
-/// The fields of a class or record, as the SDK writes them: the first of a name, and a note
-/// for each one after it that the app declares differently.
 fn distinct(fields: &[Member]) -> Vec<(&Member, bool)> {
     let mut seen: Vec<String> = Vec::new();
     fields
@@ -767,6 +722,7 @@ fn distinct(fields: &[Member]) -> Vec<(&Member, bool)> {
 /// The API's description (`openapi.json`), its `runAction` typed per action of `apps`.
 ///
 /// # Errors
+///
 /// An app's surface is not one.
 pub fn openapi_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let apps: Vec<tilo_api::v1::openapi::App> = apps

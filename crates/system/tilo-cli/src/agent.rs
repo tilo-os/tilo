@@ -1241,7 +1241,6 @@ pub fn answers(program: &Path, args: &[String]) -> Result<Answers, String> {
     answer
 }
 
-// ---------------------------------------------------------------------------
 // Configuration files
 //
 // An agent tool's file is the person's: other servers, their own settings
@@ -1249,7 +1248,6 @@ pub fn answers(program: &Path, args: &[String]) -> Result<Answers, String> {
 // reads as much of the file as finds the place for it and writes back
 // everything else untouched. A file whose shape Tilo cannot place the server
 // in is a file it leaves alone: the agent then adds the server itself.
-// ---------------------------------------------------------------------------
 
 /// `text` split at `at`: what lies before it, and what lies from it on.
 fn split(text: &str, at: usize) -> (&str, &str) {
@@ -1761,9 +1759,7 @@ fn value_end(text: &str, start: usize) -> Option<usize> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // The agents
-// ---------------------------------------------------------------------------
 
 /// An agent `tilo login` found running it.
 #[derive(Clone, Debug, PartialEq, Eq)]

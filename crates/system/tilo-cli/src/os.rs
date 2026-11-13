@@ -22,7 +22,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-/// Where development images live.
 pub const DEV_REPOSITORY: &str = "registry.tilo.so/tilo/tilo-vm";
 
 /// The bootc this runs. Overridable so the flow can be exercised against a
@@ -34,18 +33,13 @@ pub fn bootc_program() -> String {
 /// What the machine is, read from the booted image and bootc.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// `/usr/lib/tilo/image-flavour` says `dev`.
     pub development: bool,
-    /// The board the image was built for (`hardware-profile.json`'s `id`).
     pub board: Option<String>,
-    /// The image bootc follows: (transport, reference).
     pub follows: Option<(String, String)>,
-    /// The image the machine runs now.
     pub booted: Option<String>,
 }
 
 impl Facts {
-    /// The image's own files under `root` (`/` on a machine).
     pub fn read_image(root: &Path) -> Self {
         let development = std::fs::read_to_string(root.join("usr/lib/tilo/image-flavour"))
             .is_ok_and(|flavour| flavour.trim() == "dev");
@@ -85,20 +79,15 @@ impl Facts {
     }
 }
 
-/// What `tilo os upgrade` will do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
-    /// A production image: the signed update route, which knows its own
     /// image.
     Signed,
-    /// Move onto another image: `bootc switch <image>`.
     Switch(String),
-    /// Fetch the newest build of the image already followed: `bootc upgrade`.
     Upgrade(String),
 }
 
 impl Plan {
-    /// bootc's words for it (after `bootc`).
     pub fn bootc_words(&self) -> Vec<String> {
         match self {
             Self::Signed => Vec::new(),
@@ -229,7 +218,6 @@ impl Failure {
         Self::Other(last.to_owned())
     }
 
-    /// The sentence `tilo` ends with.
     pub fn sentence(&self) -> String {
         match self {
             Self::UpToDate(text) => text.clone(),
@@ -262,11 +250,9 @@ pub struct ProgressView {
     last_line: Option<Instant>,
     /// The last download state: (bytes, total, layers done, layers total, layers cached).
     download: Option<(u64, u64, u64, u64, u64)>,
-    /// The stage last named.
     stage: Option<String>,
 }
 
-/// A size as people read it.
 pub fn human_size(bytes: u64) -> String {
     if bytes >= 1_000_000_000 {
         let tenths = bytes / 100_000_000;
@@ -293,7 +279,6 @@ impl ProgressView {
         }
     }
 
-    /// One JSON line from bootc; what to print for it, if anything.
     pub fn line(&mut self, json: &str, now: Instant) -> Option<String> {
         let event: Value = serde_json::from_str(json.trim()).ok()?;
         let number = |key: &str| event.get(key).and_then(Value::as_u64).unwrap_or(0);

@@ -1,24 +1,16 @@
-//! `tilo login <code>` and `tilo mcp`: this computer as one of the person's
-//! devices, for the agent that runs here.
+//! `tilo login <code>` and `tilo mcp`: this computer as one of the person's devices, for the agent
+//! that runs here.
 //!
-//! The code is the short one the person's browser tab shows (`K7Q-MX2P`),
-//! in the prompt it copies for their agent. `tilo login` resolves it at the
-//! site's home host (`tilo_relay_protocol::login_code`), and tells that tab
-//! each step as it does it:
+//! The code is the short one the person's browser tab shows (`K7Q-MX2P`), in the prompt it copies
+//! for their agent. `tilo login` resolves it at the site's home host
+//! (`tilo_relay_protocol::login_code`) and tells that tab each step as it does it: it makes a
+//! device key here, asks the workspace's host to have the person's root (which only the tab holds)
+//! certify it, keeps the key and certificate in this account's state directory, adds Tilo's tools
+//! to the agent and enters the workspace the link names as the person. A tab with no identity yet
+//! asks a computer that is already one of the person's devices to vouch for it.
 //!
-//! - **Setting up**: the code names the tab's pairing link. Logging in makes
-//!   a device key here, asks the workspace's host to have the person's root
-//!   (which only the tab holds) certify it, and keeps the key and its
-//!   certificate in this account's state directory. No root is ever here.
-//!   It adds Tilo's tools to the agent running it, and enters the workspace
-//!   the link names, as the person: the tab shows the agent present there.
-//! - **Signing in**: a tab with no identity yet asks a computer that is
-//!   already a device of the person to vouch for it. This device claims the
-//!   code for the person, and the person's stand-in on the host approves
-//!   that tab.
-//!
-//! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under
-//! the name `tilo`, acting as that device.
+//! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under the name `tilo`, acting
+//! as that device.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -105,28 +97,18 @@ pub(crate) fn device_dir() -> Result<PathBuf> {
         .join("tilo/device"))
 }
 
-/// What a login keeps beside the device key: public material only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
-    /// The site whose tab copied the code (`https://tilo.sh/`).
     pub site: String,
-    /// The workspace's host (`https://eu1.tilo.sh`).
     pub host_origin: String,
-    /// The workspace the device entered.
     pub workspace: String,
-    /// Its name, when its host lists it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
-    /// The person, hex user root.
     pub user: String,
-    /// The agent that runs here.
     pub agent: String,
-    /// This device's label, as the person's devices list it.
     pub label: String,
-    /// This device's certificate, postcard as hex.
     pub cert: String,
-    /// The host's certificate, pinned, postcard as hex.
     pub host_cert: String,
 }
 
@@ -182,7 +164,6 @@ pub fn store(dir: &std::path::Path, key: &SigningKey, device: &Device) -> Result
     Ok(())
 }
 
-/// The device kept in `dir`, if this computer logged in.
 pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
     use std::os::unix::fs::PermissionsExt as _;
     let key_path = dir.join("key");
@@ -206,11 +187,8 @@ pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
 /// followed it, so the agent's own confirmation reaches that tab.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
-    /// The tab's report, as its host knows it.
     pub report: String,
-    /// The host that tab asks.
     pub host_origin: String,
-    /// Whether that tab was told Tilo's tools are added.
     #[serde(default)]
     pub tools_added: bool,
     /// Whether this computer entered the workspace, and the tab was not told
@@ -269,12 +247,10 @@ pub(crate) fn report_tools_added() {
     let _ = store_pending(&dir, &pending);
 }
 
-/// Whether this computer logged in (`tilo login`).
 pub fn logged_in() -> bool {
     device_dir().is_ok_and(|dir| dir.join("key").exists())
 }
 
-/// This computer's name, as a device label says it.
 pub(crate) fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
