@@ -10,6 +10,10 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "indices into the few hundred probe heights of one pane"
+)]
 
 use std::path::Path;
 
@@ -84,13 +88,25 @@ impl Harness {
     }
 }
 
+/// How many probe heights the first pass of [`row_center`] steps over: 12 px, less than
+/// a row is tall.
+const ROW_SEARCH_STRIDE: usize = 4;
+
+/// The centre of row `index` of `dir`'s listing: the middle of the probe heights, one
+/// every 3 px down the content pane, at which a click in a window of its own selects
+/// that row alone. A row answers clicks in one band of the pane (the view asks which
+/// row's rectangle holds the point), so the band is found by a hit inside it and by
+/// halving towards its two edges, not by a click at every height above and inside it.
 pub fn row_center(dir: &Path, index: usize) -> Point {
     let content = Harness::new(dir).w.debug_content_rect();
     let x = content.center().x;
-    let mut hits: Vec<f64> = Vec::new();
-    let ys = std::iter::successors(Some(content.y0 + 2.0), |&y| Some(y + 3.0))
-        .take_while(|&y| y < content.y1);
-    for y in ys {
+    let ys: Vec<f64> = std::iter::successors(Some(content.y0 + 2.0), |&y| Some(y + 3.0))
+        .take_while(|&y| y < content.y1)
+        .collect();
+    let hit = |at: usize| {
+        let Some(&y) = ys.get(at) else {
+            return false;
+        };
         let mut h = Harness::new(dir);
         h.move_cursor(Point::new(x, y));
         h.press();
@@ -99,16 +115,47 @@ pub fn row_center(dir: &Path, index: usize) -> Point {
             let state = h.w.state();
             (state.selected_indices(), state.current_path())
         };
-        if selected == vec![index] && shown == dir {
-            hits.push(y);
-        } else if !hits.is_empty() {
-            break;
-        }
-    }
+        selected == vec![index] && shown == dir
+    };
+    // A band narrower than the stride is still found, by trying every height.
+    let found = (0..ys.len())
+        .step_by(ROW_SEARCH_STRIDE)
+        .find(|&at| hit(at))
+        .or_else(|| (0..ys.len()).find(|&at| hit(at)));
     assert!(
-        !hits.is_empty(),
+        found.is_some(),
         "row {index} was never hit while probing the content pane"
     );
-    let mid = hits[hits.len() / 2];
-    Point::new(x, mid)
+    let found = found.unwrap();
+
+    // The band's first height lies after the miss one stride above the hit.
+    let mut first = found;
+    let mut above = found
+        .checked_sub(ROW_SEARCH_STRIDE)
+        .map_or(0, |miss| miss + 1);
+    while above < first {
+        let mid = above + (first - above) / 2;
+        if hit(mid) {
+            first = mid;
+        } else {
+            above = mid + 1;
+        }
+    }
+    // Its last height lies before the first miss a stride at a time below the hit.
+    let mut last = found;
+    let mut below = found + ROW_SEARCH_STRIDE;
+    while hit(below) {
+        last = below;
+        below += ROW_SEARCH_STRIDE;
+    }
+    while below - last > 1 {
+        let mid = last + (below - last) / 2;
+        if hit(mid) {
+            last = mid;
+        } else {
+            below = mid;
+        }
+    }
+    // The middle of the band's heights, `first..=last`.
+    Point::new(x, ys[first + (last - first + 1) / 2])
 }
