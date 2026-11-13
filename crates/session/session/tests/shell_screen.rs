@@ -44,6 +44,9 @@ fn session() -> (Session, String) {
 
 /// The session with the shell, on one display `width` by `height` , and the notes [`notebook`]
 /// keeps.
+/// The window's own menu in the pill of its bar, as every strip's window names it.
+const WINDOW_MENU: &str = "This window";
+
 fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
     let session = crate::common::headless_on(
@@ -394,8 +397,7 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
         );
     }
     // Under the window's bar: the bar is its tabs and the controls, and the app's body stands below
-    // it rather than on its line. The window's menu is the first of its controls, named for the
-    // window it is the menu of.
+    // it rather than on its line, under the window's own menu in its bar.
     let controls = window_menu(&session, &shown).expect("the window's controls stand");
     assert!(
         title.1 >= controls.1 + controls.3,
@@ -515,13 +517,13 @@ fn window_within(
 }
 
 /// Where the menu of the window the shell shows as `name` stands on the standard display: the
-/// first of the window's own controls in its one bar, named for the window it is the menu of. Of
-/// the controls by that name it is the one standing in the window's frame at an icon's size: the
-/// smallest of them, where a tab of that name is as wide as its title.
+/// window's own menu in the pill of its one bar ("This window", `window_controls`). Every strip's
+/// window carries one by that name, so it is the one standing in the window's frame at an icon's
+/// size.
 fn window_menu(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
     let frame = window_frame(session, name)?;
     session
-        .shell_controls(name)
+        .shell_controls(WINDOW_MENU)
         .into_iter()
         .filter(|&(x, y, w, h)| {
             let (across, down) = (x + w / 2.0, y + h / 2.0);
@@ -667,8 +669,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
         placed > u64::try_from(i64::MAX).unwrap(),
         "the desk's ids do not fit an integer: {placed}"
     );
-    // The window's own controls stand in its one bar: its menu, named for the window it is the
-    // menu of, its maximize and its close.
+    // The window's own controls stand in its one bar: its menu, its maximize and its close.
     let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the window's controls", |session| {
         window_menu(session, &shown).is_some() && on_screen(session, "Close").is_some()

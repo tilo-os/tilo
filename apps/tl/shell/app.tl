@@ -58,8 +58,11 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
-    /// The desk styles the installed apps offer: each a view of the arrangement, listed by its
-    /// own words. The person's choice names one of them in `Viewing.style`.
+    /// The applications installed on this device: what the launcher lists and opens.
+    apps: Collection<App>
+    /// The desk styles every installed package offers, as the session publishes them: each
+    /// a view of the arrangement (`shell.md` §6), listed by its own words. The person's choice
+    /// names one of them in `Viewing.style`.
     styles: Collection<DeskStyle>
 }
 
@@ -84,6 +87,21 @@ type DeskStyle (origin: session.desk_style) {
     /// Why the style does not load, in the words it failed with, when it does not; empty when
     /// it does.
     reason: Text
+}
+
+/// An application installed on this device, as the launcher lists it: its package id, its name in
+/// the person's language, the glyph it shows, and how it opens.
+type App (origin: session.application) {
+    /// Its package id, which `open_app` names it by.
+    key: Text merge register
+    /// Its name in the person's interface language.
+    name: Text merge register
+    /// The glyph it shows, by the platform icon's kebab-case name.
+    icon: Text merge register
+    /// Its category (`work`, `media`, `play`, `system`), empty when it named none.
+    category: Text merge register
+    /// What it is for, in a few words; empty when it offers none.
+    description: Text merge register
 }
 
 /// A workspace on this device.

@@ -42,7 +42,7 @@ use crate::{Placement, WidgetHost};
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session name one desk.
 pub use tilo_session_core::shell::{
-    ARRANGEMENT_RESOURCE, AgentReading, ArrangementPlaceReading, ArrangementReading,
+    ARRANGEMENT_RESOURCE, AgentReading, AppReading, ArrangementPlaceReading, ArrangementReading,
     ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading,
     CHROME_RESOURCE, DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading,
     NoticeReading, ORIGIN, PersonReading, RoomReading, SHELL_APP, SHELL_RECORD, ScreenEdges,
@@ -460,6 +460,7 @@ pub struct SessionOrigin {
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
+    apps: BTreeMap<String, Kept<AppReading>>,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -485,6 +486,7 @@ impl SessionOrigin {
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
             tray: BTreeMap::new(),
+            apps: BTreeMap::new(),
         }
     }
 
@@ -636,6 +638,26 @@ impl SessionOrigin {
                         ("key", text(&item.key)),
                         ("title", text(&item.title)),
                         ("menu", Value::Bool(item.menu)),
+                    ]
+                },
+            ));
+        }
+        // The installed applications: what the launcher lists and opens.
+        if let (Ok(ty), Some(collection)) = (kind("application"), field(desk, "apps")) {
+            writes.extend(sync_items(
+                &mut self.apps,
+                &reading.apps,
+                root,
+                &collection,
+                ty,
+                |app| app.key.clone(),
+                |app| {
+                    vec![
+                        ("key", text(&app.key)),
+                        ("name", text(&app.name)),
+                        ("icon", text(&app.icon)),
+                        ("category", text(&app.category)),
+                        ("description", text(&app.description)),
                     ]
                 },
             ));

@@ -1823,17 +1823,11 @@
           ]
         },
         {
-          "id": "show-invite",
-          "label": "Open the invite sheet on a workspace: where a link into it is made, the part it brings",
-          "description": "Open the invite sheet on a workspace: where a link into it is made, the part it brings someone in at picked and the links that still work taken back. An app shares what it shows by asking this, so it offers the one sheet the bar's invite button opens.",
+          "id": "show-connect",
+          "label": "Show how an agent or another computer connects as the person: the setup their own card's",
+          "description": "Show how an agent or another computer connects as the person: the setup their own card's \"Connect an agent or computer\" opens. An app that lists what acts as them offers adding to it this way.",
           "kind": "outside",
-          "params": [
-            {
-              "name": "workspace",
-              "required": false,
-              "type": "text"
-            }
-          ]
+          "params": []
         },
         {
           "id": "cancel-invitation",
@@ -1891,6 +1885,40 @@
               "name": "surface",
               "required": true,
               "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "notify",
+          "label": "Tell the person something, as an app's `notify` does",
+          "description": "Tell the person something, as an app's `notify` does. It rises as a banner over the desk and waits in the centre until they dismiss it: the one way a script, an agent or the REPL posts the same notice an app's `notify` does, so what they say reaches the person the same way.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "title",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "body",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "from",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "kind",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },

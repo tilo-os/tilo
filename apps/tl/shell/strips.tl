@@ -200,11 +200,6 @@ view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
 /// shows one — and the place in front fills everything under it. A strip holding nothing is an
 /// empty window, saying so.
 ///
-/// The window's own menu in its pill lists the place's actions (`window_controls`), so the
-/// place's header row keeps its title, its own buttons and the room the pill needs, and gives
-/// way its door: one bar shows one "…", as the desk's bar does when it lists the window in
-/// front's commands (`lists_actions`).
-///
 /// The style's own setting `strips_tabs` (`chrome.tl`) says whether a strip of several places
 /// shows its tab bar: off, the place in front fills the window alone and the others stay a tab
 /// of it in the record, reached by the window's menu, for a person who wants the room.
@@ -213,9 +208,13 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
-    ui.WindowFrame(name: window_name(shown), focused: in_front, lists_actions: true) {
+    ui.WindowFrame(
+        name: window_name(shown),
+        focused: in_front,
+        lists_actions: lists_the_shown(shown),
+    ) {
         controls: {
-            window_controls(a, v, s, shown, in_front)
+            window_controls(a, v, s, shown, in_front, lists)
         }
         tabs: {
             if placed.len() > 1 and shell.strips_tabs {
@@ -265,33 +264,25 @@ action show_place(v: Viewing, strip: Text, place: session.Place) {
     session.activate(place: place)
 }
 
-/// A window's own controls, in the pill at the trailing end of its one bar: the window's menu
-/// (its width, coming to the front, and the place's pin and row), maximize or restore, and
-/// close. Three controls whatever the place holds, so the pill still fits a window on a phone;
-/// nothing about the place but its close stands in the bar of its own. Each is one arranging
-/// action of the session's, so a press and an agent change the desk the same way, and none of
-/// them ever asks for a bar of its own.
-///
-/// The menu is the window's one door: it lists the commands of the place it shows after its own
-/// arranging ones, so the place's header row gives way its door (`WindowFrame`'s
-/// `lists_actions`). One bar shows one "…", whichever of the two keeps it, and every command
-/// the place offers stays reachable in it, named as its own view names it.
+/// A window's own controls, in the pill at the trailing end of its one bar: the window's own
+/// actions (`window_actions`), the window's menu (its width, coming to the front, and the
+/// place's pin and row), maximize or restore, and close. Each is one action of the session's or
+/// the app's, so a press and an agent change the desk the same way, and none of them ever asks
+/// for a bar of its own. The app's own menu gives way where the desk's bar already lists the
+/// window in front's actions (`listed`), so every action stands once.
 view window_controls(
     a: Arrangement,
     v: Viewing,
     s: ArrangementStrip,
     shown: Option<ArrangementPlace>,
     in_front: Bool,
+    listed: Bool,
 ) {
-    let subject = placed_resource(shown?.record ?? "")
     row(gap: .tight, align: .center) {
-        ui.MenuButton(
-            window_name(shown),
-            icon: .more_horizontal,
-            icon_only: true,
-            role: .plain,
-            subject: subject,
-        ) {
+        if let p = shown {
+            window_actions(p, listed)
+        }
+        ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: width_of(s.width) == .narrow) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
             }
@@ -373,12 +364,52 @@ view window_controls(
     }
 }
 
-/// A place's own controls: its pinned mark, its pin, its move to another row, and its close.
-/// Outside the well, so a press there is the shell's and one on the well is the app's. The
-/// canvas's framed places carry these alone: they are not a strip's window, so its width and
-/// its way to the front are not theirs.
-view place_controls(a: Arrangement, p: ArrangementPlace) {
+/// Whether the window's own bar lists the resource's actions in the shell's one menu: the
+/// shell's `window_actions` menu while the desk's bar lists none (`listed`), and always when the
+/// place shows a record at all. The frame is told this (`ui.WindowFrame(lists_actions:)`), so
+/// the app's own header keeps its title and the shell's controls alone and every action stands
+/// once, in the one list the person reaches.
+fn lists_the_place(p: ArrangementPlace) -> Bool {
+    if let r = placed_resource(p.record) { true } else { false }
+}
+
+/// [`lists_the_place`] for a window that may show nothing: a strip holding no place lists none.
+fn lists_the_shown(p: Option<ArrangementPlace>) -> Bool {
+    if let shown = p { lists_the_place(shown) } else { false }
+}
+
+/// A window's own commands in its bar: what the resource the window shows publishes as actions
+/// on itself, behind one menu of the window's bar, which the host fills from the declarations.
+/// The list is the one `actions(r)` answers — what the agent's tools and the REPL see for the
+/// same resource — so a command pressed here runs the same broker call an agent runs, and one
+/// that needs confirmation goes through the system's sheet as it does from any other menu. A
+/// place that shows no record this store holds (a foreign window) offers none, and the bar
+/// keeps the shell's own controls alone.
+///
+/// `listed` says another bar already lists them for the window in front (the traditional
+/// desktop's `action_bar`, `bar_lists_actions`): the window's bar then keeps only the shell's
+/// controls, so every action stands once.
+view window_actions(p: ArrangementPlace, listed: Bool) {
+    if not listed {
+        if let r = placed_resource(p.record) {
+            ui.MenuButton(
+                "Window actions",
+                icon: .app_window,
+                icon_only: true,
+                role: .plain,
+                subject: r,
+            )
+        }
+    }
+}
+
+/// A place's own controls: its own actions, its pinned mark, its pin, its move to another row,
+/// and its close. Outside the well, so a press there is the shell's and one on the well is the
+/// app's. The canvas's framed places carry these alone: they are not a strip's window, so its
+/// width and its way to the front are not theirs.
+view place_controls(a: Arrangement, p: ArrangementPlace, listed: Bool) {
     row(gap: .tight, align: .center) {
+        window_actions(p, listed)
         if p.pinned {
             ui.Button("Pin place", icon: .pin, icon_only: true, toggled: true, role: .plain) {
                 on press: session.pin(place: the_place(p.key), pinned: false)

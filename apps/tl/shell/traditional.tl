@@ -86,19 +86,21 @@ view desktop_frame(
 /// holds its own actions, and the frame puts its controls at that header's end, so a window has
 /// one bar, never the shell's stacked on the app's. A foreign window stands in its well, under
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
-/// reaches the app. `lists`: the desk's bar lists the window's actions (`bar_lists_actions`), so
-/// the frame tells the window's bar to keep its title and the shell's controls alone, the actions
-/// standing once in the desk's bar's menu.
+/// reaches the app. The frame tells the window's bar to keep its title and the shell's controls
+/// alone (`lists_actions`), the window's own actions standing in the shell's one menu: the frame's
+/// `Window actions` where the desk's bar lists none, else the desk's bar
+/// (`bar_lists_actions`). `lists`: the desk's bar already lists them, so the frame's menu gives
+/// way, and every action stands once.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
         focused: focused,
-        lists_actions: lists,
+        lists_actions: lists_the_place(p),
         carries: p.record,
         fill,
     ) {
         controls: {
-            frame_buttons(a, p)
+            frame_buttons(a, p, focused and lists)
         }
         body: {
             place_view(p, fill)
@@ -116,11 +118,14 @@ fn place_title(p: ArrangementPlace) -> Text {
     } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
 }
 
-/// A frame's controls: the way to carry the place to another row, and close. Each is one
-/// arranging action of the session's (`shell:arrangement`), so a press, a shortcut and an agent
-/// change the place the same way.
-view frame_buttons(a: Arrangement, p: ArrangementPlace) {
+/// A frame's controls: the window's own actions, the way to carry the place to another row, and
+/// close. Each is one action of the app's or one arranging action of the session's
+/// (`shell:arrangement`), so a press, a shortcut and an agent change it the same way. Where the
+/// desk's bar already lists the window in front's actions (`lists`), the frame's own bar keeps
+/// the shell's controls alone, so every action stands once.
+view frame_buttons(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     row(gap: .tight, align: .center) {
+        window_actions(p, lists)
         if a.rows.len() > 1 {
             ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .bar) {
                 for r in a.rows {

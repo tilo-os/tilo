@@ -153,6 +153,8 @@ mod no_locale_leaks;
 mod origin_connector;
 #[path = "overlays.rs"]
 mod overlays;
+#[path = "overlays_styles.rs"]
+mod overlays_styles;
 #[path = "owner_door.rs"]
 mod owner_door;
 #[path = "palette_captures.rs"]
@@ -239,6 +241,8 @@ mod visual_alerts;
 mod vpn;
 #[path = "wifi_continuity.rs"]
 mod wifi_continuity;
+#[path = "window_bar_actions.rs"]
+mod window_bar_actions;
 #[path = "window_menu.rs"]
 mod window_menu;
 #[path = "window_menu_probe.rs"]
