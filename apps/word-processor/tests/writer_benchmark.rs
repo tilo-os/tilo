@@ -702,17 +702,12 @@ fn pdf_formats(
     Ok(format!("drawn: {}", seen.join(", ")))
 }
 
-#[test]
-fn writer_agent_benchmark_qualifies_against_the_reference() {
-    let mut receipt = Receipt::default();
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().to_owned();
-
-    let mut typed = typed_arm(&mut receipt);
-    let typed_frame = typed.harness().render_rgba();
-    keep_frame(&mut typed, "typed-arm");
+fn differs_from_a_blank_document(
+    typed_frame: &[u8],
+    receipt: &mut Receipt,
+) -> Result<String, String> {
     let blank_frame = open().harness().render_rgba();
-    let drawn = frame_difference(&blank_frame, &typed_frame).and_then(|share| {
+    frame_difference(&blank_frame, typed_frame).and_then(|share| {
         receipt.measure("editor_drawn_share", share);
         if share >= MIN_DRAWN {
             Ok(format!(
@@ -725,7 +720,38 @@ fn writer_agent_benchmark_qualifies_against_the_reference() {
                 share * 100.0
             ))
         }
-    });
+    })
+}
+
+/// The frame of the page the plan draws without its italic: what the control for
+/// [`same_picture`] compares with the frame of the page the whole plan drew.
+fn frame_missing_one_format() -> Vec<u8> {
+    let mut unformatted = open();
+    let without_italic: Vec<_> = plan()
+        .into_iter()
+        .filter(|(id, arguments)| !(*id == "set-format" && arguments["name"] == "em"))
+        .collect();
+    assert!(run(&mut unformatted, &without_italic).is_empty());
+    unformatted.harness().render_rgba()
+}
+
+#[test]
+fn writer_agent_benchmark_qualifies_against_the_reference() {
+    let mut receipt = Receipt::default();
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().to_owned();
+
+    let mut typed = typed_arm(&mut receipt);
+    let typed_frame = typed.harness().render_rgba();
+    keep_frame(&mut typed, "typed-arm");
+    // The control for `same_picture`, not a qualification: it measures into a receipt of its own.
+    let missing_a_format = same_picture(
+        "difference",
+        &typed_frame,
+        &frame_missing_one_format(),
+        &mut Receipt::default(),
+    );
+    let drawn = differs_from_a_blank_document(&typed_frame, &mut receipt);
     receipt.record("visual.editor_draws_the_document", drawn);
 
     let mut input = input_arm(&mut receipt);
@@ -809,6 +835,10 @@ fn writer_agent_benchmark_qualifies_against_the_reference() {
         .map(|q| format!("{}: {}", q.id, q.observed))
         .collect();
     assert!(failed.is_empty(), "unqualified:\n{}", failed.join("\n"));
+    assert!(
+        missing_a_format.is_err(),
+        "a page missing one format is the same picture: {missing_a_format:?}"
+    );
 }
 
 #[test]
@@ -828,24 +858,4 @@ fn a_document_that_misses_the_reference_is_not_qualified() {
             .is_err_and(|why| why.contains("first difference at paragraph 0")),
         "an unstyled title alone is not the report: {verdict:?}"
     );
-}
-
-#[test]
-fn a_page_missing_one_format_is_not_the_same_picture() {
-    let mut whole = open();
-    assert!(run(&mut whole, &plan()).is_empty());
-    let mut unformatted = open();
-    let without_italic: Vec<_> = plan()
-        .into_iter()
-        .filter(|(id, arguments)| !(*id == "set-format" && arguments["name"] == "em"))
-        .collect();
-    assert!(run(&mut unformatted, &without_italic).is_empty());
-    let mut receipt = Receipt::default();
-    let verdict = same_picture(
-        "difference",
-        &whole.harness().render_rgba(),
-        &unformatted.harness().render_rgba(),
-        &mut receipt,
-    );
-    assert!(verdict.is_err(), "{verdict:?}");
 }
