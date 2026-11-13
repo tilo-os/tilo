@@ -66,21 +66,38 @@ pub fn source_catalogue_keeping(meta: &PackageMeta, committed: &str) -> String {
     if refined.is_empty() {
         return generated;
     }
+    let blocks: Vec<&str> = generated
+        .split("\n\n")
+        .map(|block| {
+            message_key(block)
+                .and_then(|key| refined.iter().find(|(k, _)| k == key))
+                .map_or(block, |(_, kept)| kept.as_str())
+        })
+        .collect();
+    joined(&blocks)
+}
+
+/// `blocks` as one catalogue: a blank line between them, one newline at the end, nothing when no
+/// block is left.
+fn joined<S: AsRef<str>>(blocks: &[S]) -> String {
     let mut out = String::new();
-    for block in generated.split("\n\n") {
-        let key = block
-            .lines()
-            .find(|line| line.starts_with("d-"))
-            .and_then(|line| line.split(" = ").next());
-        match key.and_then(|key| refined.iter().find(|(k, _)| k == key)) {
-            Some((_, kept)) => out.push_str(kept),
-            None => out.push_str(block),
-        }
+    for block in blocks {
+        out.push_str(block.as_ref());
         out.push_str("\n\n");
     }
     out.truncate(out.trim_end().len());
-    out.push('\n');
+    if !out.is_empty() {
+        out.push('\n');
+    }
     out
+}
+
+/// The message key `block` of a catalogue holds: the id of its first line that is a message.
+fn message_key(block: &str) -> Option<&str> {
+    block
+        .lines()
+        .find(|line| line.starts_with("d-"))
+        .and_then(|line| line.split(" = ").next())
 }
 
 /// The messages of `catalogue` under a [`REFINED`] comment, by key, each with its comment.
@@ -89,13 +106,10 @@ fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
         .split("\n\n")
         .filter(|block| block.lines().any(|line| line.trim() == REFINED))
         .filter_map(|block| {
-            let key = block
-                .lines()
-                .find(|line| line.starts_with("d-"))?
-                .split(" = ")
-                .next()?
-                .to_owned();
-            Some((key, block.trim_matches('\n').to_owned()))
+            Some((
+                message_key(block)?.to_owned(),
+                block.trim_matches('\n').to_owned(),
+            ))
         })
         .collect()
 }
@@ -162,15 +176,75 @@ pub fn word(catalogue: &str, key: &str) -> Option<String> {
     None
 }
 
-/// The keys `translation` has that `source` does not: words whose source changed or went, so
-/// their translation is never shown.
+/// The keys `one` has that `two` does not.
+fn keys_only_in(one: &str, two: &str) -> Vec<String> {
+    let other = keys(two);
+    keys(one)
+        .into_iter()
+        .filter(|key| !other.contains(key))
+        .collect()
+}
+
+/// The keys `translation` has that `source` does not: words the source has no message for (its
+/// key changed or went), so their translation is never shown.
 #[must_use]
 pub fn stale_keys(source: &str, translation: &str) -> Vec<String> {
-    let known = keys(source);
-    keys(translation)
-        .into_iter()
-        .filter(|key| !known.contains(key))
-        .collect()
+    keys_only_in(translation, source)
+}
+
+/// The keys `before` has that `after` does not: the words a package stopped saying, which its
+/// translations drop when the source catalogue is written.
+#[must_use]
+pub fn gone_keys(before: &str, after: &str) -> Vec<String> {
+    keys_only_in(before, after)
+}
+
+/// `translation` without the words `gone` names: a message the source stopped saying goes whole,
+/// with its comments; an attribute it stopped saying goes from the message that keeps the rest,
+/// the lines its selector continues on with it. Every other word stays as its translator wrote it,
+/// and so does every key `gone` does not name.
+#[must_use]
+pub fn pruned(translation: &str, gone: &[String]) -> String {
+    let mut blocks: Vec<String> = Vec::new();
+    for block in translation.split("\n\n") {
+        let message = message_key(block);
+        if message.is_some_and(|message| gone.iter().any(|key| key == message)) {
+            continue;
+        }
+        let mut kept: Vec<&str> = Vec::new();
+        // Inside a dropped attribute: how many braces its value still holds open.
+        let mut open = 0;
+        for line in block.lines() {
+            if open > 0 {
+                open += braces(line);
+                continue;
+            }
+            let attribute = line
+                .strip_prefix(char::is_whitespace)
+                .and_then(|rest| rest.trim_start().strip_prefix('.'))
+                .and_then(|attribute| attribute.split_once(" = "));
+            if let Some((attribute, _)) = attribute
+                && message.is_some_and(|message| gone.contains(&format!("{message}.{attribute}")))
+            {
+                open = braces(line);
+                continue;
+            }
+            kept.push(line);
+        }
+        if !kept.is_empty() {
+            blocks.push(kept.join("\n"));
+        }
+    }
+    joined(&blocks)
+}
+
+/// How many braces `line` opens: a value that opens a selector keeps its word until they close.
+fn braces(line: &str) -> i32 {
+    line.chars().fold(0, |open, c| match c {
+        '{' => open + 1,
+        '}' => open - 1,
+        _ => open,
+    })
 }
 
 /// Why `words` read as code rather than as the words a person says, if they do: a name keeps
@@ -424,8 +498,8 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        pattern, reads_as_code, refined_blocks, source_catalogue, stale_keys, summary, variable,
-        views_named_as_code,
+        gone_keys, pattern, pruned, reads_as_code, refined_blocks, source_catalogue, stale_keys,
+        summary, variable, views_named_as_code,
     };
     use crate::meta::{PackageMeta, ViewMeta};
 
@@ -551,6 +625,25 @@ mod tests {
             "d-a = Eingang\n    .w-new = { $n } neu\n    .w-unread = ungelesen\n\nd-gone = Weg\n";
         assert_eq!(stale_keys(source, translation), ["d-a.w-unread", "d-gone"]);
         assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
+    }
+
+    /// A translation has every word of its source and no more: writing the source catalogue
+    /// drops the words it stopped saying — a message whole, with its comments and attributes, an
+    /// attribute alone with the lines its selector continues on — and keeps every word it still
+    /// says, and every word the source never had, which is its translator's to fix.
+    #[test]
+    fn pruning_a_translation_drops_the_words_its_source_stopped_saying() {
+        let before = "d-a = Inbox\n    .doc = Mail.\n    .w-new = { $n } new\n\nd-b = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-c = Title\n    .doc = A title.\n";
+        let after = "d-a = Inbox\n    .doc = Mail.\n\nd-c = Title\n";
+        let gone = gone_keys(before, after);
+        assert_eq!(gone, ["d-a.w-new", "d-b", "d-b.noun", "d-c.doc"]);
+        let translation = "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n    .w-new = { $n } neu\n\nd-b = Notizen\n    .noun = { $count ->\n        [one] Notizbuch\n       *[other] Notizbücher\n    }\n\nd-c = Titel\n    .doc = { $n ->\n        [one] Ein Titel\n       *[other] Titel\n}\n";
+        assert_eq!(
+            pruned(translation, &gone),
+            "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n\nd-c = Titel\n"
+        );
+        let own = "d-a = Eingang\n\nd-zzzzzzzz = Etwas\n";
+        assert_eq!(pruned(own, &gone), own);
     }
 
     #[test]

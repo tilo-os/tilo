@@ -182,7 +182,7 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     );
                     current = false;
                 }
-                // A translation of words the source no longer has is never shown.
+                // A translation of words the source has no message for is never shown.
                 let source = crate::source::catalogue(b);
                 for (locale, text) in crate::source::read_locales(&b.dir)? {
                     if locale == crate::messages::SOURCE_LOCALE {
@@ -191,7 +191,7 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     let stale = crate::messages::stale_keys(&source, &text);
                     if !stale.is_empty() {
                         eprintln!(
-                            "{}: locales/{locale}.ftl translates words the source no longer has: {}; translate the words under their current keys (see locales/en-US.ftl) and remove these",
+                            "{}: locales/{locale}.ftl translates words the source does not have: {}; translate the words under the message's key (see locales/en-US.ftl) and remove these",
                             b.dir.display(),
                             stale.join(", ")
                         );

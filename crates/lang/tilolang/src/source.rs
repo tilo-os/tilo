@@ -422,17 +422,28 @@ pub fn compile_dirs(
 ///
 /// # Errors
 /// The lock cannot be written.
+/// Where a package keeps the catalogue of `locale`: `locales/<locale>.ftl`.
+#[must_use]
+pub fn locale_path(dir: &Path, locale: &str) -> PathBuf {
+    dir.join(crate::messages::LOCALES_DIR)
+        .join(format!("{locale}.ftl"))
+}
+
 /// Where a package keeps its source catalogue: `locales/en-US.ftl`.
 #[must_use]
 pub fn catalogue_path(dir: &Path) -> PathBuf {
-    dir.join(crate::messages::LOCALES_DIR)
-        .join(format!("{}.ftl", crate::messages::SOURCE_LOCALE))
+    locale_path(dir, crate::messages::SOURCE_LOCALE)
+}
+
+/// The package's committed source catalogue, empty when it has none.
+fn committed_catalogue(dir: &Path) -> String {
+    std::fs::read_to_string(catalogue_path(dir)).unwrap_or_default()
 }
 
 /// The package's source catalogue as its source says it should read.
 #[must_use]
 pub fn catalogue(built: &BuiltPackage) -> String {
-    let committed = std::fs::read_to_string(catalogue_path(&built.dir)).unwrap_or_default();
+    let committed = committed_catalogue(&built.dir);
     crate::messages::source_catalogue_keeping(&built.compiled.meta, &committed)
 }
 
@@ -442,16 +453,38 @@ pub fn catalogue_current(built: &BuiltPackage) -> bool {
     std::fs::read_to_string(catalogue_path(&built.dir)).is_ok_and(|old| old == catalogue(built))
 }
 
-/// Writes the package's source catalogue; `true` when it changed.
+/// Writes the package's source catalogue, and drops from its translations the words the source
+/// stopped saying (a translation has every word of its source and no more); `true` when the
+/// source catalogue changed.
+///
+/// # Errors
+/// A catalogue cannot be written.
 pub fn write_catalogue(built: &BuiltPackage) -> Result<bool, String> {
     if catalogue_current(built) {
         return Ok(false);
     }
     let path = catalogue_path(&built.dir);
+    let before = committed_catalogue(&built.dir);
+    let after = catalogue(built);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, catalogue(built)).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(&path, &after).map_err(|e| format!("{}: {e}", path.display()))?;
+    let gone = crate::messages::gone_keys(&before, &after);
+    if gone.is_empty() {
+        return Ok(true);
+    }
+    for (locale, text) in read_locales(&built.dir)? {
+        if locale == crate::messages::SOURCE_LOCALE {
+            continue;
+        }
+        let kept = crate::messages::pruned(&text, &gone);
+        if kept == text {
+            continue;
+        }
+        let path = locale_path(&built.dir, &locale);
+        std::fs::write(&path, kept).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
     Ok(true)
 }
 
