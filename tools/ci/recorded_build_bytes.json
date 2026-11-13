@@ -285,7 +285,6 @@
   "tilo-location": {"libraries": 4166214, "tests": 4516240},
   "tilo-lock": {"libraries": 85775, "tests": 3018512},
   "tilo-lock-screen": {"libraries": 0, "tests": 717604304},
-  "tilo-lockdown-policy": {"libraries": 1340930, "tests": 5509944},
   "tilo-mail-engine": {"libraries": 0, "tests": 2852040},
   "tilo-media": {"libraries": 62979749, "tests": 198242264},
   "tilo-messaging-protocol": {"libraries": 66936177, "tests": 760714600},

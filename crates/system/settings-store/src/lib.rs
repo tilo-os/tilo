@@ -101,6 +101,7 @@ pub mod keyboard_shortcuts;
 pub mod keyboard_sources;
 #[cfg(feature = "watch")]
 pub mod live;
+pub mod lockdown;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod paste_shortcut;

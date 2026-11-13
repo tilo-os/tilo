@@ -456,7 +456,6 @@ members = [
     "crates/session/session-record",
     "crates/session/session-logging",
     "crates/session/sheets",
-    "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
     "crates/session/bluetooth-agent",
