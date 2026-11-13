@@ -381,8 +381,8 @@ schema version and **refuse** rather than guess:
 - `~/.local/state/tilo/desk.automerge` — the desktop's workspace tree. A file from
   a newer schema is left untouched, the session starts from a default tree, and a
   notification that does not auto-dismiss says so with the path. Silently
-  replacing your workspaces with a demo tree is indistinguishable from having lost
-  them, which is what used to happen.
+  replacing your workspaces with a demo tree would be indistinguishable from
+  losing them.
 - `state.automerge` — every app's document. Same rule: refuse, preserve, say so.
 
 So the honest sequence after rolling back across a schema change is: the older

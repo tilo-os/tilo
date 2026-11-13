@@ -245,42 +245,14 @@ window, with no session, as a plain client of that compositor. `--busy N` keeps 
 CPU-bound processes running, so a run shows the loop under load too, and every sample
 prints the load average it saw.
 
-In a session, medians of 5 runs on 2026-10-27, headless on lavapipe, laptop load average
-around 12:
-
-| Loop | Median | Runs |
-|---|---|---|
-| App, save to the app's first frame of the new build | 47 ms | 48, 279, 46, 47, 46 ms |
-| App, save to the compositor's next frame of the app | 54 ms | 67, 299, 53, 54, 53 ms |
-| Runtime, edit to the restarted app's first frame | 68.4 s | 38.2, 97.9, 89.5, 68.4, 58.6 s |
-| Runtime, of which the build | 63.6 s | 35.1, 95.6, 81.9, 63.6, 57.0 s |
-| Runtime, after the build: bake, install, restart | 3.1 s | |
-
-On this desktop, saving the script's copy of `apps/tl/tasks` in `tilolang dev OUT/src/tasks
---search OUT/src`, medians of 5 runs on 2026-11-02, in the same session, laptop load
-average around 23 (the host is shared):
-
-| Desktop loop | Save to the app's frame | Of which: the tool's build | Of which: read to draw | Save to the presented frame |
-|---|---|---|---|---|
-| Warm saves, load 23.2 | 31 ms | 14 ms | 11 ms | 43 ms |
-| First save after start, load 23.2 | 38 ms | 22 ms | 12 ms | 69 ms |
-| Warm saves, 8 CPU-bound processes more, load 25.4 | 36 ms | 24 ms | 12 ms | 69 ms |
-
-The tool reported each as `built in 14 ms, published in 15 ms; the running app takes it
-with its state`, and the app logged `draws build 2 at <ms>, 11 ms after it arrived`. The
-first save is the app's first take-over, so its module is interpreted and drawn for the
-first time; every warm save takes the build in place with its state.
-
-Before, with cargo debug builds of the tool and the runtime, the same loop took 174 ms at
-the median from the save to the app's frame and 274 ms to the presented frame (load 34);
-a debug tool on a `fast` runtime still took 122 ms (load 21). The tool's build and the
-app's read to draw were each several times what they are now, and a local build staged a
-payload, packed a `.tapp` and signed it for nothing, then read the platform's packages
-again on every build.
+The script reports each save as `built in <ms>, published in <ms>; the running app takes
+it with its state`, and the app logs when it drew the new build. The first save after a
+start is the app's first take-over, so its module is interpreted and drawn for the first
+time; every warm save takes the build in place with its state.
 
 In the app loop, compiling and packing take 1 to 2 ms. `tilo-install` takes
 140 to 170 ms, but the app takes the build as soon as the install commits its
-registry row, before the installer has finished. The one slow run was an install
+registry row, before the installer has finished. A slow run is normally an install
 that waited on the disk.
 
 - **The app loop** is timed from the save to two points:
@@ -291,8 +263,6 @@ that waited on the disk.
 
   The second adds the app's rendering of the frame, its hand-over and the compositor's
   presentation: 12 ms at the median here, since a changed placeholder repaints little.
-  The session table above is from before these rows: its second row is the compositor's
-  own frame counter, which added 7 ms then.
 - **The runtime loop** is timed end to end: from the edit of a runtime source, through
   the build, the bake, the install and the restart, to the restarted app's first
   presented frame.
