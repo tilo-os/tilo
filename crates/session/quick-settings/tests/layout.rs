@@ -219,6 +219,7 @@ fn every_section_opens_under_its_tile() {
             QsSection::PowerMode,
             "qs-section-power-mode",
         ),
+        ("qs-tile-vpn", QsSection::Vpn, "qs-section-vpn"),
     ] {
         open_details(&mut app, tile);
         assert_eq!(
