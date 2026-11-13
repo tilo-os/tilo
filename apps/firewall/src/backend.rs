@@ -423,39 +423,40 @@ mod tests {
     use super::*;
     use crate::model::{Proto, Target, ZoneKind};
 
-    #[test]
-    fn apply_includes_each_zones_default_policy_before_reload() {
-        for (target, wire_target) in [
-            (Target::Default, "default"),
-            (Target::Accept, "ACCEPT"),
-            (Target::Drop, "DROP"),
-            (Target::Reject, "%%REJECT%%"),
-        ] {
-            let mut config = crate::sample::sample_config();
-            config.zone_mut(ZoneKind::Public).unwrap().target = target;
-            let mut backend = Backend::new();
-            backend.plan_only(&config).unwrap();
-            let expected =
-                format!("firewall-cmd --permanent --zone=public --set-target={wire_target}");
-            let policy = backend
-                .last_plan()
-                .iter()
-                .position(|line| line == &expected)
-                .expect("applying a policy must send it to firewalld");
-            let reload = backend
-                .last_plan()
-                .iter()
-                .position(|line| line == "firewall-cmd --reload")
-                .unwrap();
-            assert!(policy < reload);
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Planned changes become the right firewall-cmd invocations (fast paths, rich rules as
+        /// one argument).
+        fn plan_translates_changes_into_firewall_cmd_invocations;
 
-    /// Planned changes become the right firewall-cmd invocations (fast paths, rich rules as
-    /// one argument).
-    #[test]
-    fn plan_translates_changes_into_firewall_cmd_invocations() {
-        // --- phase: plan_sets_default_zone_and_reloads ---
+        phase apply_includes_each_zones_default_policy_before_reload;
+        {
+            for (target, wire_target) in [
+                (Target::Default, "default"),
+                (Target::Accept, "ACCEPT"),
+                (Target::Drop, "DROP"),
+                (Target::Reject, "%%REJECT%%"),
+            ] {
+                let mut config = crate::sample::sample_config();
+                config.zone_mut(ZoneKind::Public).unwrap().target = target;
+                let mut backend = Backend::new();
+                backend.plan_only(&config).unwrap();
+                let expected =
+                    format!("firewall-cmd --permanent --zone=public --set-target={wire_target}");
+                let policy = backend
+                    .last_plan()
+                    .iter()
+                    .position(|line| line == &expected)
+                    .expect("applying a policy must send it to firewalld");
+                let reload = backend
+                    .last_plan()
+                    .iter()
+                    .position(|line| line == "firewall-cmd --reload")
+                    .unwrap();
+                assert!(policy < reload);
+            }
+        }
+
+        phase plan_sets_default_zone_and_reloads;
         {
             let cfg = crate::sample::sample_config();
             let plan = plan_commands(&cfg);
@@ -467,7 +468,7 @@ mod tests {
             assert_eq!(plan.last().unwrap(), "firewall-cmd --reload");
         }
 
-        // --- phase: allow_port_anywhere_uses_add_port_fastpath ---
+        phase allow_port_anywhere_uses_add_port_fastpath;
         {
             let s = rich_rule(
                 "public",
@@ -484,7 +485,7 @@ mod tests {
             );
         }
 
-        // --- phase: deny_with_source_uses_rich_rule ---
+        phase deny_with_source_uses_rich_rule;
         {
             let s = rich_rule(
                 "public",
@@ -501,7 +502,7 @@ mod tests {
             assert!(s.contains("reject"));
         }
 
-        // --- phase: service_allow_with_source_is_rich_rule ---
+        phase service_allow_with_source_is_rich_rule;
         {
             let s = rich_rule(
                 "work",
@@ -514,7 +515,7 @@ mod tests {
             assert!(s.contains("192.168.0.0/16"));
         }
 
-        // --- phase: masquerade_zone_emits_add_masquerade ---
+        phase masquerade_zone_emits_add_masquerade;
         {
             let mut z = Zone::new(ZoneKind::External, Target::Default);
             z.masquerade = true;
@@ -526,7 +527,7 @@ mod tests {
             );
         }
 
-        // --- phase: rich_rule_is_one_argument_at_execution_time ---
+        phase rich_rule_is_one_argument_at_execution_time;
         {
             let invocation = rule_invocation(
                 "public",
@@ -542,7 +543,7 @@ mod tests {
             assert!(invocation.args[2].starts_with("--add-rich-rule=rule family="));
         }
 
-        // --- phase: planning_never_executes ---
+        phase planning_never_executes;
         {
             let cfg = crate::sample::sample_config();
             let mut backend = Backend::new();
@@ -569,11 +570,12 @@ public (active)
 \trule family=\"ipv4\" port port=\"23\" protocol=\"tcp\" reject
 ";
 
-    /// firewalld list-all output, rich rules and targets parse faithfully, skipping what
-    /// cannot be represented.
-    #[test]
-    fn parse_reads_firewalld_output_faithfully() {
-        // --- phase: parse_list_all_reads_real_zone_fields ---
+    tilo_test_env::scenario! {
+        /// firewalld list-all output, rich rules and targets parse faithfully, skipping what
+        /// cannot be represented.
+        fn parse_reads_firewalld_output_faithfully;
+
+        phase parse_list_all_reads_real_zone_fields;
         {
             let z = parse_list_all(ZoneKind::Public, LIST_ALL);
             assert_eq!(z.target, Target::Default);
@@ -607,7 +609,7 @@ public (active)
                 && r.action == Action::Deny));
         }
 
-        // --- phase: parse_rich_rule_service_accept_with_source ---
+        phase parse_rich_rule_service_accept_with_source;
         {
             let r = parse_rich_rule(
             "rule family=\"ipv4\" source address=\"10.8.0.0/24\" service name=\"cockpit\" accept",
@@ -618,13 +620,13 @@ public (active)
             assert_eq!(r.source, "10.8.0.0/24");
         }
 
-        // --- phase: parse_rich_rule_skips_unrepresentable ---
+        phase parse_rich_rule_skips_unrepresentable;
         {
             assert!(parse_rich_rule("rule family=\"ipv4\" masquerade").is_none());
             assert!(parse_rich_rule("  services: ssh").is_none());
         }
 
-        // --- phase: parse_target_maps_firewalld_strings ---
+        phase parse_target_maps_firewalld_strings;
         {
             assert_eq!(parse_target("ACCEPT"), Target::Accept);
             assert_eq!(parse_target("DROP"), Target::Drop);

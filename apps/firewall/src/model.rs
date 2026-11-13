@@ -815,10 +815,11 @@ impl ServiceCatalog {
 mod tests {
     use super::*;
 
-    /// The config splits rule counts and lists every zone in order.
-    #[test]
-    fn config_model_counts_rules_and_lists_zones() {
-        // --- phase: rule_counts_split_allow_deny ---
+    tilo_test_env::scenario! {
+        /// The config splits rule counts and lists every zone in order.
+        fn config_model_counts_rules_and_lists_zones;
+
+        phase rule_counts_split_allow_deny;
         {
             let mut z = Zone::new(ZoneKind::Public, Target::Default);
             z.rules.push(Rule::new(
@@ -837,7 +838,7 @@ mod tests {
             assert_eq!(z.rule_counts(), (1, 1));
         }
 
-        // --- phase: all_zones_present_in_order ---
+        phase all_zones_present_in_order;
         {
             assert_eq!(ZoneKind::ALL.len(), 9);
             assert_eq!(ZoneKind::ALL[0], ZoneKind::Drop);
@@ -845,11 +846,12 @@ mod tests {
         }
     }
 
-    /// Matcher labels are stable, an empty source reads as anywhere, and unsafe input is
-    /// rejected.
-    #[test]
-    fn rule_matchers_label_stably_and_inputs_validate() {
-        // --- phase: matcher_labels_are_stable ---
+    tilo_test_env::scenario! {
+        /// Matcher labels are stable, an empty source reads as anywhere, and unsafe input is
+        /// rejected.
+        fn rule_matchers_label_stably_and_inputs_validate;
+
+        phase matcher_labels_are_stable;
         {
             assert_eq!(Matcher::Service("https".into()).label(), "https");
             assert_eq!(
@@ -862,7 +864,7 @@ mod tests {
             );
         }
 
-        // --- phase: empty_source_reads_as_anywhere ---
+        phase empty_source_reads_as_anywhere;
         {
             let r = Rule::new(Matcher::Service("ssh".into()), Action::Allow, "");
             assert_eq!(r.source_label(), "anywhere");
@@ -870,7 +872,7 @@ mod tests {
             assert_eq!(r2.source_label(), "10.0.0.0/8");
         }
 
-        // --- phase: firewall_input_validation_rejects_unsafe_values ---
+        phase firewall_input_validation_rejects_unsafe_values;
         {
             assert!(validate_port("1").is_ok());
             assert!(validate_port("8000-8080").is_ok());

@@ -372,37 +372,41 @@ mod tests {
 {"MESSAGE":"IN=wlan0 OUT= MAC=00:11 SRC=198.51.100.2 DST=192.168.1.4 LEN=84 PROTO=ICMP TYPE=8 DROP=1","__REALTIME_TIMESTAMP":"1792918424528049"}
 {"MESSAGE":"ordinary kernel message","__REALTIME_TIMESTAMP":"1792918425528049"}"#;
 
-    #[test]
-    fn drops_group_by_rule_and_count_their_sources() {
-        let report = parse(RECORDS, 60);
-        assert_eq!(report.total, 3);
-        assert_eq!(report.groups.len(), 2);
-        let tcp = &report.groups[0];
-        assert_eq!(tcp.action, "DROP");
-        assert_eq!(tcp.protocol, "tcp");
-        assert_eq!(tcp.port.as_deref(), Some("5900"));
-        assert_eq!(tcp.packets, 2);
-        assert_eq!(tcp.sources, 2);
-        assert_eq!(tcp.title(), "Drop TCP port 5900");
-        assert_eq!(tcp.sources_label(), "from 2 addresses");
-        assert_eq!(tcp.buckets.iter().sum::<u32>(), 2);
-    }
+    tilo_test_env::scenario! {
+        fn the_blocked_report_counts_what_the_journal_recorded;
 
-    #[test]
-    fn a_record_without_a_source_is_counted_and_disclosed() {
-        let report = parse(
-            r#"{"MESSAGE":"IN=wlan0 OUT= MAC=00:11 LEN=60 PROTO=TCP DPT=22 DROP=1","__REALTIME_TIMESTAMP":"1792918422528049"}"#,
-            60,
-        );
-        assert_eq!(report.total, 1);
-        assert!(report.note.is_some());
-    }
+        phase drops_group_by_rule_and_count_their_sources;
+        {
+            let report = parse(RECORDS, 60);
+            assert_eq!(report.total, 3);
+            assert_eq!(report.groups.len(), 2);
+            let tcp = &report.groups[0];
+            assert_eq!(tcp.action, "DROP");
+            assert_eq!(tcp.protocol, "tcp");
+            assert_eq!(tcp.port.as_deref(), Some("5900"));
+            assert_eq!(tcp.packets, 2);
+            assert_eq!(tcp.sources, 2);
+            assert_eq!(tcp.title(), "Drop TCP port 5900");
+            assert_eq!(tcp.sources_label(), "from 2 addresses");
+            assert_eq!(tcp.buckets.iter().sum::<u32>(), 2);
+        }
 
-    #[test]
-    fn an_empty_window_is_a_measured_zero_with_no_groups() {
-        let report = parse("{\"MESSAGE\":\"ordinary message\"}", 15);
-        assert_eq!(report.total, 0);
-        assert!(report.groups.is_empty());
-        assert!(report.note.is_none());
+        phase a_record_without_a_source_is_counted_and_disclosed;
+        {
+            let report = parse(
+                r#"{"MESSAGE":"IN=wlan0 OUT= MAC=00:11 LEN=60 PROTO=TCP DPT=22 DROP=1","__REALTIME_TIMESTAMP":"1792918422528049"}"#,
+                60,
+            );
+            assert_eq!(report.total, 1);
+            assert!(report.note.is_some());
+        }
+
+        phase an_empty_window_is_a_measured_zero_with_no_groups;
+        {
+            let report = parse("{\"MESSAGE\":\"ordinary message\"}", 15);
+            assert_eq!(report.total, 0);
+            assert!(report.groups.is_empty());
+            assert!(report.note.is_none());
+        }
     }
 }
