@@ -3277,6 +3277,127 @@ fn creation_inputs_are_validated_and_printed_safely() {
     }
 }
 
+/// Every rule of a package name and of an app id, a row each: the name becomes a directory and a
+/// crate and the id a namespace, so what passes here is written to disk.
+#[test]
+fn package_names_and_app_ids_are_held_to_every_rule() {
+    for (name, valid) in [
+        ("a", true),
+        ("reading-list", true),
+        ("app2", true),
+        ("a-1-b", true),
+        ("trailing-", false),
+        ("2fast", false),
+        ("snake_case", false),
+        ("caf\u{e9}", false),
+        ("dotted.name", false),
+        ("nested/name", false),
+        ("..", false),
+    ] {
+        let expected = if valid {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid package name {name:?}; use lowercase ASCII letters, digits, and single hyphens"
+            ))
+        };
+        assert_eq!(
+            validate_package_name(name).map_err(|error| error.to_string()),
+            expected,
+            "{name:?}"
+        );
+        // A name that passes gets a default id that passes too, in and out of the workspace.
+        if valid {
+            for workspace_member in [false, true] {
+                let id = default_app_id(name, workspace_member);
+                assert!(validate_app_id(&id).is_ok(), "{name:?} gets {id:?}");
+            }
+        }
+    }
+    assert_eq!(default_app_id("a-1-b", false), "local.dev.a.1.b");
+    assert_eq!(default_app_id("a-1-b", true), "so.tilo.a.1.b");
+
+    for (id, valid) in [
+        ("local.dev.reading-list", true),
+        ("so.tilo.notes", true),
+        ("org.example.team.app2", true),
+        ("", false),
+        ("bad-id", false),
+        ("two.parts", false),
+        ("empty..part", false),
+        ("trailing.dot.", false),
+        (".leading.dot", false),
+        ("org.example.two words", false),
+        ("org.example.snake_case", false),
+        ("org.example.nested/name", false),
+    ] {
+        let expected = if valid {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid app id {id:?}; use at least three dot-separated DNS-style components"
+            ))
+        };
+        assert_eq!(
+            validate_app_id(id).map_err(|error| error.to_string()),
+            expected,
+            "{id:?}"
+        );
+    }
+}
+
+/// The three destinations `new` refuses, each with its own error, as a preview and for real,
+/// and none of them touched.
+#[test]
+fn a_destination_that_is_taken_or_climbs_is_refused_and_left_as_it_was() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("file");
+    std::fs::write(&file, "kept").unwrap();
+    let taken = temp.path().join("taken");
+    std::fs::create_dir(&taken).unwrap();
+    std::fs::write(taken.join("notes.txt"), "kept").unwrap();
+    let climbing = taken.join("../climbing");
+    for (destination, expected) in [
+        (
+            &file,
+            format!(
+                "destination {} already exists and is not a directory",
+                file.display()
+            ),
+        ),
+        (
+            &taken,
+            format!("destination {} is not empty", taken.display()),
+        ),
+        (
+            &climbing,
+            format!("destination must not contain `..`: {}", climbing.display()),
+        ),
+    ] {
+        for dry_run in [true, false] {
+            let mut new_app = request(destination.clone());
+            new_app.dry_run = dry_run;
+            let error = create_app(new_app).unwrap_err();
+            assert_eq!(error.to_string(), expected, "dry run: {dry_run}");
+        }
+    }
+    let entries = |dir: &Path| {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(entries(temp.path()), ["file", "taken"]);
+    assert_eq!(entries(&taken), ["notes.txt"]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "kept");
+    assert_eq!(
+        std::fs::read_to_string(taken.join("notes.txt")).unwrap(),
+        "kept"
+    );
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
