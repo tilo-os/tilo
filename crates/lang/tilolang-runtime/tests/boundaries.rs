@@ -614,6 +614,52 @@ view deck(d: Deck) {
         assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
     }
 
+    /// However long the list (no row, one, more than a few): none is built before the host
+    /// shows it, there is no row past its end, and each row shown runs once.
+    #[test]
+    fn a_list_of_any_length_builds_no_row_before_it_is_shown() {
+        for n in [0, 1, 25] {
+            let rows = Rows::new(n);
+            let mut view = rows.view("lazy");
+            let list = list_key(&view);
+            assert_eq!(view.list_len(&list), Some(n), "{n} items");
+            let opened = view.stats();
+            assert_eq!(
+                opened.renders, 1,
+                "{n} items: no row ran before it was shown"
+            );
+            assert_eq!(opened.boundaries, 1, "{n} items: {opened:?}");
+            assert_eq!(view.tree().count(), 1, "{n} items: {:?}", view.tree());
+            if let Some(end) = n.checked_sub(1) {
+                let final_row = view.row_key(&list, end).unwrap();
+                assert!(
+                    final_row.ends_with(&format!("/{}", rows.items[end].id_string())),
+                    "{n} items: {final_row}"
+                );
+            }
+            assert_eq!(view.row_key(&list, n), None, "{n} items");
+            assert!(
+                view.row(&list, n).unwrap().is_none(),
+                "{n} items: a row past the end was built"
+            );
+            assert_eq!(
+                view.stats().renders,
+                1,
+                "{n} items: asking past the end ran a row"
+            );
+
+            for i in 0..n {
+                let row = view.row(&list, i).unwrap().unwrap();
+                assert_eq!(titles(row), [format!("item {i}")], "{n} items");
+            }
+            assert_eq!(
+                view.stats().renders,
+                u64::try_from(n + 1).unwrap(),
+                "{n} items: each row shown ran once"
+            );
+        }
+    }
+
     #[test]
     fn a_rows_argument_from_outside_its_item_reaches_the_row() {
         // The rows of the list are the same items, and the row view's other argument changed:
