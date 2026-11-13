@@ -95,76 +95,80 @@ mod tests {
             .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')?.parse().ok())
     }
 
-    #[test]
-    fn both_expiries_and_the_generation_are_gauges_alerts_can_read() {
-        let body = render_parts(
-            Some(ChannelTerm {
-                generation: 2,
-                expires_at_unix: 1_795_266_000,
-            }),
-            SnapshotState::Verified {
-                expires_at_unix: 1_792_700_000,
-            },
-        );
-        assert_eq!(
-            sample(
-                &body,
-                "tilo_registry_channel_authorization_expires_at_seconds"
-            ),
-            Some(1_795_266_000)
-        );
-        assert_eq!(
-            sample(&body, "tilo_registry_channel_authorization_generation"),
-            Some(2)
-        );
-        assert_eq!(
-            sample(&body, "tilo_registry_snapshot_expires_at_seconds"),
-            Some(1_792_700_000)
-        );
-        assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(1));
-        for name in [
-            "tilo_registry_channel_authorization_expires_at_seconds",
-            "tilo_registry_channel_authorization_generation",
-            "tilo_registry_snapshot_expires_at_seconds",
-            "tilo_registry_snapshot_verified",
-        ] {
+    tilo_test_env::scenario! {
+        fn registry_metrics;
+
+        phase both_expiries_and_the_generation_are_gauges_alerts_can_read;
+        {
+            let body = render_parts(
+                Some(ChannelTerm {
+                    generation: 2,
+                    expires_at_unix: 1_795_266_000,
+                }),
+                SnapshotState::Verified {
+                    expires_at_unix: 1_792_700_000,
+                },
+            );
             assert_eq!(
-                body.matches(&format!("# TYPE {name} gauge\n")).count(),
-                1,
-                "{name}"
+                sample(
+                    &body,
+                    "tilo_registry_channel_authorization_expires_at_seconds"
+                ),
+                Some(1_795_266_000)
+            );
+            assert_eq!(
+                sample(&body, "tilo_registry_channel_authorization_generation"),
+                Some(2)
+            );
+            assert_eq!(
+                sample(&body, "tilo_registry_snapshot_expires_at_seconds"),
+                Some(1_792_700_000)
+            );
+            assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(1));
+            for name in [
+                "tilo_registry_channel_authorization_expires_at_seconds",
+                "tilo_registry_channel_authorization_generation",
+                "tilo_registry_snapshot_expires_at_seconds",
+                "tilo_registry_snapshot_verified",
+            ] {
+                assert_eq!(
+                    body.matches(&format!("# TYPE {name} gauge\n")).count(),
+                    1,
+                    "{name}"
+                );
+            }
+        }
+
+        phase the_authorization_is_reported_even_when_no_snapshot_verifies;
+        {
+            // When the channel lapsed and nothing verifies, the renewal is what the operator needs to
+            // see.
+            let body = render_parts(
+                Some(ChannelTerm {
+                    generation: 1,
+                    expires_at_unix: 1_792_587_897,
+                }),
+                SnapshotState::Refused,
+            );
+            assert_eq!(
+                sample(
+                    &body,
+                    "tilo_registry_channel_authorization_expires_at_seconds"
+                ),
+                Some(1_792_587_897)
+            );
+            assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(0));
+            assert_eq!(
+                sample(&body, "tilo_registry_snapshot_expires_at_seconds"),
+                None
             );
         }
-    }
 
-    #[test]
-    fn the_authorization_is_reported_even_when_no_snapshot_verifies() {
-        // When the channel lapsed and nothing verifies, the renewal is what the operator needs to
-        // see.
-        let body = render_parts(
-            Some(ChannelTerm {
-                generation: 1,
-                expires_at_unix: 1_792_587_897,
-            }),
-            SnapshotState::Refused,
-        );
-        assert_eq!(
-            sample(
-                &body,
-                "tilo_registry_channel_authorization_expires_at_seconds"
-            ),
-            Some(1_792_587_897)
-        );
-        assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(0));
-        assert_eq!(
-            sample(&body, "tilo_registry_snapshot_expires_at_seconds"),
-            None
-        );
-    }
-
-    #[test]
-    fn an_owner_signed_registry_reports_no_channel() {
-        let body = render_parts(None, SnapshotState::Missing);
-        assert!(!body.contains("channel_authorization"));
-        assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(0));
+        phase an_owner_signed_registry_reports_no_channel;
+        {
+            let body = render_parts(None, SnapshotState::Missing);
+            assert!(!body.contains("channel_authorization"));
+            assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(0));
+        }
     }
 }

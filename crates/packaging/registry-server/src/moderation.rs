@@ -1157,217 +1157,221 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_entry_at_its_version_limit_drops_only_superseded_versions() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let official = ArtifactHosts::default();
-        let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
-        let version = |n: usize, architecture: &str| {
-            let mut v = entry(&key, 1).versions[0].clone();
-            v.version = format!("1.{n}");
-            v.tapp_mut().unwrap().target.architecture = architecture.into();
-            if architecture == "aarch64" {
-                v.tapp_mut().unwrap().target.isa = "aarch64".into();
-            }
-            v
-        };
-        // A full entry: one old aarch64 release and x86_64 releases 1..limit.
-        let mut current = entry(&key, 1);
-        current.versions = std::iter::once(version(0, "aarch64"))
-            .chain((1..limit).map(|n| version(n, "x86_64")))
-            .collect();
+    tilo_test_env::scenario! {
+        fn version_history_per_target;
 
-        // A new x86_64 release drops the oldest superseded x86_64 one.
-        let mut next = current.clone();
-        next.versions.retain(|v| v.version != "1.1");
-        next.versions.push(version(limit, "x86_64"));
-        assert_eq!(next.versions.len(), limit);
-        assert!(validate_version_history(&next, Some(&current), &official).is_ok());
-
-        // Dropping a target's only release is still removing history.
-        let mut lost = current.clone();
-        lost.versions
-            .retain(|v| v.tapp().unwrap().target.architecture != "aarch64");
-        lost.versions.push(version(limit, "x86_64"));
-        assert!(matches!(
-            validate_version_history(&lost, Some(&current), &official),
-            Err(ModerationError::VersionHistoryRemoved { .. })
-        ));
-
-        // Below the limit, retention drops versions with enough newer ones of their target and
-        // channel left.
-        let mut short = current.clone();
-        short
-            .versions
-            .retain(|v| v.version != "1.1" && v.version != "1.2");
-        short.versions.push(version(limit, "x86_64"));
-        assert!(validate_version_history(&short, Some(&current), &official).is_ok());
-    }
-
-    #[test]
-    fn retention_never_drops_the_newest_versions_of_a_target() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let official = ArtifactHosts::default();
-        let floor = registry_types::retention::MIN_RETAINED_PER_CHANNEL;
-        let version = |n: usize| {
-            let mut v = entry(&key, 1).versions[0].clone();
-            v.version = format!("1.{n}");
-            v
-        };
-        let mut current = entry(&key, 1);
-        current.versions = (1..=floor + 1).map(version).collect();
-
-        // The oldest has `floor` newer versions: it may go.
-        let mut oldest = current.clone();
-        oldest.versions.remove(0);
-        assert!(validate_version_history(&oldest, Some(&current), &official).is_ok());
-
-        // The next one has one fewer: dropping it removes history.
-        let mut recent = current.clone();
-        recent.versions.remove(1);
-        assert!(matches!(
-            validate_version_history(&recent, Some(&current), &official),
-            Err(ModerationError::VersionHistoryRemoved { .. })
-        ));
-
-        // A newer pre-release does not count toward a release's channel.
-        let mut current = entry(&key, 1);
-        current.versions = vec![version(1)];
-        let mut next = current.clone();
-        next.versions = (1..=floor)
-            .map(|n| {
-                let mut v = version(2);
-                v.version = format!("1.2.0-dev.{n}");
-                v
-            })
-            .collect();
-        assert!(matches!(
-            validate_version_history(&next, Some(&current), &official),
-            Err(ModerationError::VersionHistoryRemoved { .. })
-        ));
-    }
-
-    #[test]
-    fn submissions_keep_append_only_per_target_history() {
+        phase an_entry_at_its_version_limit_drops_only_superseded_versions;
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let mut current = entry(&key, 42);
-            current.versions[0].version = "0.1.42+gnew".into();
-
-            let mut stale = current.clone();
-            let mut stale_x86 = stale.versions[0].clone();
-            stale_x86.version = "0.1.41+gold".into();
-            stale.versions.push(stale_x86);
             let official = ArtifactHosts::default();
-            assert!(matches!(
-                validate_version_history(&stale, Some(&current), &official),
-                Err(ModerationError::VersionNotNewer { version, current, .. })
-                    if version == "0.1.41+gold" && current == "0.1.42+gnew"
-            ));
-
-            let mut reused = current.clone();
-            reused.versions[0].version = "0.1.42+gdifferent".into();
-            assert!(matches!(
-                validate_version_history(&reused, Some(&current), &official),
-                Err(ModerationError::VersionIdentityReused { .. })
-            ));
-
-            let mut new_target = current.clone();
-            let mut arm = new_target.versions[0].clone();
-            arm.version = "0.1.1+garm".into();
-            arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
-            arm.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
-            new_target.versions.push(arm);
-            assert!(validate_version_history(&new_target, Some(&current), &official).is_ok());
-        }
-        {
-            let (_dir, service) = setup();
-            let first = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let other = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let first_pending = service
-                .submit(change(&first, EntryAction::Add, 10), 100)
-                .unwrap();
-            assert!(matches!(
-                service.submit(change(&first, EntryAction::Add, 11), 101),
-                Err(ModerationError::VersionHistoryRemoved { .. })
-            ));
-            service
-                .submit(append_change(&first, &first_pending.change, 11), 101)
-                .unwrap();
-            assert_eq!(
-                service
-                    .pending("so.tilo.editor")
-                    .unwrap()
-                    .unwrap()
-                    .change
-                    .entry
-                    .updated_at_unix,
-                11
-            );
-            assert!(matches!(
-                service.submit(change(&other, EntryAction::Add, 12), 102),
-                Err(ModerationError::PendingOwnedByAnotherPublisher(_))
-            ));
-        }
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let mut aggregate = entry(&key, 10);
-            let mut arm = aggregate.versions[0].clone();
-            let target = &mut arm.tapp_mut().unwrap().target;
-            target.architecture = "aarch64".into();
-            target.isa = "aarch64-v8.2".into();
-            aggregate.versions.push(arm);
-            sign_entry(&mut aggregate, &key);
-            let request = sign_change_request(EntryAction::Add, aggregate, &key);
-            let pending = service.submit(request, 100).unwrap();
-            assert_eq!(pending.change.entry.versions.len(), 2);
-            assert!(matches!(
-                service.submit(change(&key, EntryAction::Add, 11), 101),
-                Err(ModerationError::VersionHistoryRemoved { .. })
-            ));
-            assert_eq!(service.pending("so.tilo.editor").unwrap(), Some(pending));
-        }
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let request = change(&key, EntryAction::Add, 10);
-            let first = service.submit(request.clone(), 100).unwrap();
-            let retry = service.submit(request, 999).unwrap();
-
-            assert_eq!(retry, first);
-            assert_eq!(service.pending_submissions().unwrap(), vec![first]);
-        }
-    }
-
-    #[test]
-    fn android_versions_are_a_separate_target_history() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let current = entry(&key, 42);
-        let official = ArtifactHosts::default();
-        let mut with_android = current.clone();
-        for (architecture, isa) in [("aarch64", "aarch64"), ("x86_64", "x86_64")] {
-            let mut android = with_android.versions[0].clone();
-            android.version = "0.0.1".into();
-            android.tapp_mut().unwrap().target = registry_types::RegistryTarget {
-                platform: registry_types::ANDROID_PLATFORM.into(),
-                architecture: architecture.into(),
-                isa: isa.into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
-                interfaces: Vec::new(),
+            let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
+            let version = |n: usize, architecture: &str| {
+                let mut v = entry(&key, 1).versions[0].clone();
+                v.version = format!("1.{n}");
+                v.tapp_mut().unwrap().target.architecture = architecture.into();
+                if architecture == "aarch64" {
+                    v.tapp_mut().unwrap().target.isa = "aarch64".into();
+                }
+                v
             };
-            with_android.versions.push(android);
-        }
-        assert!(validate_version_history(&with_android, Some(&current), &official).is_ok());
+            // A full entry: one old aarch64 release and x86_64 releases 1..limit.
+            let mut current = entry(&key, 1);
+            current.versions = std::iter::once(version(0, "aarch64"))
+                .chain((1..limit).map(|n| version(n, "x86_64")))
+                .collect();
 
-        for (architecture, isa) in [("armv7", "armv7"), ("aarch64", "")] {
-            let mut bad = with_android.clone();
-            bad.versions[1].tapp_mut().unwrap().target.architecture = architecture.into();
-            bad.versions[1].tapp_mut().unwrap().target.isa = isa.into();
+            // A new x86_64 release drops the oldest superseded x86_64 one.
+            let mut next = current.clone();
+            next.versions.retain(|v| v.version != "1.1");
+            next.versions.push(version(limit, "x86_64"));
+            assert_eq!(next.versions.len(), limit);
+            assert!(validate_version_history(&next, Some(&current), &official).is_ok());
+
+            // Dropping a target's only release is still removing history.
+            let mut lost = current.clone();
+            lost.versions
+                .retain(|v| v.tapp().unwrap().target.architecture != "aarch64");
+            lost.versions.push(version(limit, "x86_64"));
             assert!(matches!(
-                validate_version_history(&bad, Some(&current), &official),
-                Err(ModerationError::UnsupportedPackageTarget { .. })
+                validate_version_history(&lost, Some(&current), &official),
+                Err(ModerationError::VersionHistoryRemoved { .. })
             ));
+
+            // Below the limit, retention drops versions with enough newer ones of their target and
+            // channel left.
+            let mut short = current.clone();
+            short
+                .versions
+                .retain(|v| v.version != "1.1" && v.version != "1.2");
+            short.versions.push(version(limit, "x86_64"));
+            assert!(validate_version_history(&short, Some(&current), &official).is_ok());
+        }
+
+        phase retention_never_drops_the_newest_versions_of_a_target;
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let official = ArtifactHosts::default();
+            let floor = registry_types::retention::MIN_RETAINED_PER_CHANNEL;
+            let version = |n: usize| {
+                let mut v = entry(&key, 1).versions[0].clone();
+                v.version = format!("1.{n}");
+                v
+            };
+            let mut current = entry(&key, 1);
+            current.versions = (1..=floor + 1).map(version).collect();
+
+            // The oldest has `floor` newer versions: it may go.
+            let mut oldest = current.clone();
+            oldest.versions.remove(0);
+            assert!(validate_version_history(&oldest, Some(&current), &official).is_ok());
+
+            // The next one has one fewer: dropping it removes history.
+            let mut recent = current.clone();
+            recent.versions.remove(1);
+            assert!(matches!(
+                validate_version_history(&recent, Some(&current), &official),
+                Err(ModerationError::VersionHistoryRemoved { .. })
+            ));
+
+            // A newer pre-release does not count toward a release's channel.
+            let mut current = entry(&key, 1);
+            current.versions = vec![version(1)];
+            let mut next = current.clone();
+            next.versions = (1..=floor)
+                .map(|n| {
+                    let mut v = version(2);
+                    v.version = format!("1.2.0-dev.{n}");
+                    v
+                })
+                .collect();
+            assert!(matches!(
+                validate_version_history(&next, Some(&current), &official),
+                Err(ModerationError::VersionHistoryRemoved { .. })
+            ));
+        }
+
+        phase submissions_keep_append_only_per_target_history;
+        {
+            {
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let mut current = entry(&key, 42);
+                current.versions[0].version = "0.1.42+gnew".into();
+
+                let mut stale = current.clone();
+                let mut stale_x86 = stale.versions[0].clone();
+                stale_x86.version = "0.1.41+gold".into();
+                stale.versions.push(stale_x86);
+                let official = ArtifactHosts::default();
+                assert!(matches!(
+                    validate_version_history(&stale, Some(&current), &official),
+                    Err(ModerationError::VersionNotNewer { version, current, .. })
+                        if version == "0.1.41+gold" && current == "0.1.42+gnew"
+                ));
+
+                let mut reused = current.clone();
+                reused.versions[0].version = "0.1.42+gdifferent".into();
+                assert!(matches!(
+                    validate_version_history(&reused, Some(&current), &official),
+                    Err(ModerationError::VersionIdentityReused { .. })
+                ));
+
+                let mut new_target = current.clone();
+                let mut arm = new_target.versions[0].clone();
+                arm.version = "0.1.1+garm".into();
+                arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
+                arm.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
+                new_target.versions.push(arm);
+                assert!(validate_version_history(&new_target, Some(&current), &official).is_ok());
+            }
+            {
+                let (_dir, service) = setup();
+                let first = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let other = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let first_pending = service
+                    .submit(change(&first, EntryAction::Add, 10), 100)
+                    .unwrap();
+                assert!(matches!(
+                    service.submit(change(&first, EntryAction::Add, 11), 101),
+                    Err(ModerationError::VersionHistoryRemoved { .. })
+                ));
+                service
+                    .submit(append_change(&first, &first_pending.change, 11), 101)
+                    .unwrap();
+                assert_eq!(
+                    service
+                        .pending("so.tilo.editor")
+                        .unwrap()
+                        .unwrap()
+                        .change
+                        .entry
+                        .updated_at_unix,
+                    11
+                );
+                assert!(matches!(
+                    service.submit(change(&other, EntryAction::Add, 12), 102),
+                    Err(ModerationError::PendingOwnedByAnotherPublisher(_))
+                ));
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let mut aggregate = entry(&key, 10);
+                let mut arm = aggregate.versions[0].clone();
+                let target = &mut arm.tapp_mut().unwrap().target;
+                target.architecture = "aarch64".into();
+                target.isa = "aarch64-v8.2".into();
+                aggregate.versions.push(arm);
+                sign_entry(&mut aggregate, &key);
+                let request = sign_change_request(EntryAction::Add, aggregate, &key);
+                let pending = service.submit(request, 100).unwrap();
+                assert_eq!(pending.change.entry.versions.len(), 2);
+                assert!(matches!(
+                    service.submit(change(&key, EntryAction::Add, 11), 101),
+                    Err(ModerationError::VersionHistoryRemoved { .. })
+                ));
+                assert_eq!(service.pending("so.tilo.editor").unwrap(), Some(pending));
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let request = change(&key, EntryAction::Add, 10);
+                let first = service.submit(request.clone(), 100).unwrap();
+                let retry = service.submit(request, 999).unwrap();
+
+                assert_eq!(retry, first);
+                assert_eq!(service.pending_submissions().unwrap(), vec![first]);
+            }
+        }
+
+        phase android_versions_are_a_separate_target_history;
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let current = entry(&key, 42);
+            let official = ArtifactHosts::default();
+            let mut with_android = current.clone();
+            for (architecture, isa) in [("aarch64", "aarch64"), ("x86_64", "x86_64")] {
+                let mut android = with_android.versions[0].clone();
+                android.version = "0.0.1".into();
+                android.tapp_mut().unwrap().target = registry_types::RegistryTarget {
+                    platform: registry_types::ANDROID_PLATFORM.into(),
+                    architecture: architecture.into(),
+                    isa: isa.into(),
+                    runtime: Some("tilo-runtime/2026.07".into()),
+                    interfaces: Vec::new(),
+                };
+                with_android.versions.push(android);
+            }
+            assert!(validate_version_history(&with_android, Some(&current), &official).is_ok());
+
+            for (architecture, isa) in [("armv7", "armv7"), ("aarch64", "")] {
+                let mut bad = with_android.clone();
+                bad.versions[1].tapp_mut().unwrap().target.architecture = architecture.into();
+                bad.versions[1].tapp_mut().unwrap().target.isa = isa.into();
+                assert!(matches!(
+                    validate_version_history(&bad, Some(&current), &official),
+                    Err(ModerationError::UnsupportedPackageTarget { .. })
+                ));
+            }
         }
     }
 
@@ -1401,437 +1405,437 @@ mod tests {
         assert!(!ArtifactHosts::default().allows("http://127.0.0.1:8787/artifacts/ab.tapp"));
     }
 
-    #[test]
-    fn rejection_refuses_a_replaced_review_but_preserves_exact_feedback() {
-        let (_dir, service) = setup();
-        let key = SigningKey::from_bytes(&[23; 32]);
-        let candidate = service
-            .submit(change(&key, EntryAction::Add, 10), 100)
-            .unwrap();
-        let replacement = service
-            .submit(append_change(&key, &candidate.change, 11), 101)
-            .unwrap();
-        assert_ne!(
-            candidate.review_id().unwrap(),
-            replacement.review_id().unwrap()
-        );
-        assert!(
-            matches!(service.reject_reviewed(&candidate, "Owner", "Old feedback", 102),
-            Err(ModerationError::PendingChanged(id)) if id == candidate.submission_id)
-        );
-        assert_eq!(
-            service.pending(&candidate.submission_id).unwrap(),
-            Some(replacement.clone())
-        );
-        assert!(
-            service
-                .storage
-                .load_review(&submission_review_id(&candidate))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            service
-                .storage
-                .load_entry(&candidate.submission_id)
-                .unwrap()
-                .is_none()
-        );
-        let feedback = "Please revise the sandbox; keep the \"notes\" app accessible.";
-        let result = service
-            .reject_reviewed(&replacement, "Owner", feedback, 103)
-            .unwrap();
-        assert_eq!(result.reason, feedback);
-        assert_eq!(result.reviewer, "Owner");
-        assert_eq!(result.subject, ReviewSubject::Submission(replacement));
-        assert!(service.pending(&candidate.submission_id).unwrap().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn moderation_decisions;
 
-    #[test]
-    fn rejection_clears_the_exact_malformed_request_without_authorizing_it() {
-        let (_dir, service) = setup();
-        let key = SigningKey::from_bytes(&[24; 32]);
-        let original = service
-            .submit(change(&key, EntryAction::Add, 10), 100)
-            .unwrap();
-        let mut malformed = original.clone();
-        malformed.change.publisher_signature_hex = "not a signature".into();
-        service.storage.save_pending(&malformed).unwrap();
-        assert_ne!(
-            original.review_id().unwrap(),
-            malformed.review_id().unwrap()
-        );
-        assert!(matches!(
-            service.reject_reviewed(&original, "Owner", "Stale", 101),
-            Err(ModerationError::PendingChanged(_))
-        ));
-        let result = service
-            .reject_reviewed(&malformed, "Owner", "Invalid signature", 102)
-            .unwrap();
-        assert_eq!(result.subject, ReviewSubject::Submission(malformed));
-        assert!(service.pending(&original.submission_id).unwrap().is_none());
-        assert!(
-            service
-                .storage
-                .load_entry(&original.submission_id)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn approval_rechecks_the_reviewed_state_and_is_replay_safe() {
+        phase rejection_refuses_a_replaced_review_but_preserves_exact_feedback;
         {
             let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let pending = service
+            let key = SigningKey::from_bytes(&[23; 32]);
+            let candidate = service
                 .submit(change(&key, EntryAction::Add, 10), 100)
                 .unwrap();
+            let replacement = service
+                .submit(append_change(&key, &candidate.change, 11), 101)
+                .unwrap();
+            assert_ne!(
+                candidate.review_id().unwrap(),
+                replacement.review_id().unwrap()
+            );
+            assert!(
+                matches!(service.reject_reviewed(&candidate, "Owner", "Old feedback", 102),
+                Err(ModerationError::PendingChanged(id)) if id == candidate.submission_id)
+            );
+            assert_eq!(
+                service.pending(&candidate.submission_id).unwrap(),
+                Some(replacement.clone())
+            );
+            assert!(
+                service
+                    .storage
+                    .load_review(&submission_review_id(&candidate))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                service
+                    .storage
+                    .load_entry(&candidate.submission_id)
+                    .unwrap()
+                    .is_none()
+            );
+            let feedback = "Please revise the sandbox; keep the \"notes\" app accessible.";
+            let result = service
+                .reject_reviewed(&replacement, "Owner", feedback, 103)
+                .unwrap();
+            assert_eq!(result.reason, feedback);
+            assert_eq!(result.reviewer, "Owner");
+            assert_eq!(result.subject, ReviewSubject::Submission(replacement));
+            assert!(service.pending(&candidate.submission_id).unwrap().is_none());
+        }
+
+        phase rejection_clears_the_exact_malformed_request_without_authorizing_it;
+        {
+            let (_dir, service) = setup();
+            let key = SigningKey::from_bytes(&[24; 32]);
+            let original = service
+                .submit(change(&key, EntryAction::Add, 10), 100)
+                .unwrap();
+            let mut malformed = original.clone();
+            malformed.change.publisher_signature_hex = "not a signature".into();
+            service.storage.save_pending(&malformed).unwrap();
+            assert_ne!(
+                original.review_id().unwrap(),
+                malformed.review_id().unwrap()
+            );
             assert!(matches!(
-                service.approve(&pending, "m", "", 101, &PublisherAllowlist::empty()),
-                Err(ModerationError::Verification(
-                    VerifyError::PublisherNotAllowed
-                ))
+                service.reject_reviewed(&original, "Owner", "Stale", 101),
+                Err(ModerationError::PendingChanged(_))
             ));
-            service.storage.save_entry(&pending.change.entry).unwrap(); // simulated crash after apply
-            let review = service
-                .approve(&pending, "m", "", 102, &allow(&key))
+            let result = service
+                .reject_reviewed(&malformed, "Owner", "Invalid signature", 102)
                 .unwrap();
-            assert_eq!(review.decision, ReviewDecision::Approved);
-            assert!(service.pending("so.tilo.editor").unwrap().is_none());
-            assert_eq!(
-                service.storage.load_review(&review.review_id).unwrap(),
-                Some(review)
-            );
-        }
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let reviewed = service
-                .submit(change(&key, EntryAction::Add, 10), 100)
-                .unwrap();
-            service
-                .submit(append_change(&key, &reviewed.change, 11), 101)
-                .unwrap();
-
-            assert!(matches!(
-                service.approve(&reviewed, "m", "", 102, &allow(&key)),
-                Err(ModerationError::PendingChanged(package)) if package == "so.tilo.editor"
-            ));
+            assert_eq!(result.subject, ReviewSubject::Submission(malformed));
+            assert!(service.pending(&original.submission_id).unwrap().is_none());
             assert!(
                 service
                     .storage
-                    .load_entry("so.tilo.editor")
+                    .load_entry(&original.submission_id)
                     .unwrap()
                     .is_none()
             );
         }
+
+        phase approval_rechecks_the_reviewed_state_and_is_replay_safe;
+        {
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let pending = service
+                    .submit(change(&key, EntryAction::Add, 10), 100)
+                    .unwrap();
+                assert!(matches!(
+                    service.approve(&pending, "m", "", 101, &PublisherAllowlist::empty()),
+                    Err(ModerationError::Verification(
+                        VerifyError::PublisherNotAllowed
+                    ))
+                ));
+                service.storage.save_entry(&pending.change.entry).unwrap(); // simulated crash after apply
+                let review = service
+                    .approve(&pending, "m", "", 102, &allow(&key))
+                    .unwrap();
+                assert_eq!(review.decision, ReviewDecision::Approved);
+                assert!(service.pending("so.tilo.editor").unwrap().is_none());
+                assert_eq!(
+                    service.storage.load_review(&review.review_id).unwrap(),
+                    Some(review)
+                );
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let reviewed = service
+                    .submit(change(&key, EntryAction::Add, 10), 100)
+                    .unwrap();
+                service
+                    .submit(append_change(&key, &reviewed.change, 11), 101)
+                    .unwrap();
+
+                assert!(matches!(
+                    service.approve(&reviewed, "m", "", 102, &allow(&key)),
+                    Err(ModerationError::PendingChanged(package)) if package == "so.tilo.editor"
+                ));
+                assert!(
+                    service
+                        .storage
+                        .load_entry("so.tilo.editor")
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let first = service
+                    .submit(change_for(&key, "so.tilo.a", 10), 100)
+                    .unwrap();
+                let second = service
+                    .submit(change_for(&key, "so.tilo.b", 10), 100)
+                    .unwrap();
+                service
+                    .approve(&first, "auto", "", 101, &allow(&key))
+                    .unwrap();
+
+                let transaction = service.storage.lock_snapshot().unwrap();
+                let reviews = service
+                    .approve_batch_in_transaction(
+                        &transaction,
+                        &[first, second],
+                        "auto",
+                        "",
+                        102,
+                        &allow(&key),
+                    )
+                    .unwrap();
+                drop(transaction);
+                assert_eq!(reviews.len(), 2);
+                assert!(service.pending_submissions().unwrap().is_empty());
+                assert!(service.storage.load_entry("so.tilo.a").unwrap().is_some());
+                assert!(service.storage.load_entry("so.tilo.b").unwrap().is_some());
+            }
+        }
+
+        phase delete_and_restore_requests_are_moderated;
+        {
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let mut public = entry(&key, 10);
+                sign_entry(&mut public, &key);
+                service.storage.save_entry(&public).unwrap();
+                service
+                    .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
+                    .unwrap();
+                let review = service
+                    .reject("so.tilo.editor", "m", "revoked", 101)
+                    .unwrap();
+                assert_eq!(review.decision, ReviewDecision::Rejected);
+                assert!(
+                    service
+                        .storage
+                        .load_entry("so.tilo.editor")
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let mut public = entry(&key, 10);
+                sign_entry(&mut public, &key);
+                service.storage.save_entry(&public).unwrap();
+                let pending = service
+                    .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
+                    .unwrap();
+                let review = service
+                    .approve(&pending, "m", "withdrawn", 101, &allow(&key))
+                    .unwrap();
+                assert_eq!(review.decision, ReviewDecision::Approved);
+                assert!(
+                    service
+                        .storage
+                        .load_entry("so.tilo.editor")
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let mut public = entry(&key, 10);
+                sign_entry(&mut public, &key);
+                service.storage.save_entry(&public).unwrap();
+                service
+                    .quarantine("so.tilo.editor", "m", "hold", 100)
+                    .unwrap();
+                assert!(matches!(
+                    service.restore_quarantined(
+                        "so.tilo.editor",
+                        "m",
+                        "",
+                        101,
+                        &PublisherAllowlist::empty()
+                    ),
+                    Err(ModerationError::PublisherNoLongerAllowed(_))
+                ));
+                service
+                    .restore_quarantined("so.tilo.editor", "m", "", 102, &allow(&key))
+                    .unwrap();
+                assert!(
+                    service
+                        .storage
+                        .load_entry("so.tilo.editor")
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+
+        phase promotion_recovery_keeps_newer_submissions_reachable;
+        {
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let selected = service
+                    .submit(change(&key, EntryAction::Add, 10), 100)
+                    .unwrap();
+                let candidate = registry_types::SignedRegistrySnapshot {
+                    protocol: registry_types::PACKAGE_FORMAT_VERSION,
+                    sequence: 1,
+                    issued_at_unix: 101,
+                    expires_at_unix: 201,
+                    previous_snapshot_hash_hex: String::new(),
+                    moderation_head_hex: String::new(),
+                    publishers: Vec::new(),
+                    entries: vec![selected.change.entry.clone()],
+                    owner_signature_hex: "test fixture".into(),
+                    channel_authorization: None,
+                };
+                service
+                    .storage
+                    .save_promotion_transaction(&PromotionJournal {
+                        publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                        reviewer: "auto".into(),
+                        reason: "first party".into(),
+                        submissions: vec![selected.clone()],
+                        candidate_snapshot: candidate,
+                    })
+                    .unwrap();
+
+                // A submit arriving after a crash sees the durable journal. It must not replace the
+                // selected slot and make the journal unreplayable.
+                let successor = service
+                    .submit(append_change(&key, &selected.change, 11), 102)
+                    .unwrap();
+                assert_eq!(
+                    service.pending(&selected.submission_id).unwrap(),
+                    Some(selected.clone())
+                );
+                assert_eq!(
+                    service
+                        .storage
+                        .load_deferred_pending(&selected.submission_id)
+                        .unwrap(),
+                    Some(successor.clone())
+                );
+
+                let transaction = service.storage.lock_snapshot().unwrap();
+                let reviews = service
+                    .approve_batch_in_transaction(
+                        &transaction,
+                        std::slice::from_ref(&selected),
+                        "auto",
+                        "first party",
+                        103,
+                        &allow(&key),
+                    )
+                    .unwrap();
+                service
+                    .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
+                    .unwrap();
+                drop(transaction);
+
+                assert_eq!(reviews.len(), 1);
+                assert_eq!(
+                    service.storage.load_entry(&selected.submission_id).unwrap(),
+                    Some(selected.change.entry)
+                );
+                assert_eq!(
+                    service.pending(&successor.submission_id).unwrap(),
+                    Some(successor)
+                );
+                assert!(
+                    service
+                        .storage
+                        .load_deferred_pending(&selected.submission_id)
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    service
+                        .storage
+                        .load_promotion_transaction()
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            {
+                let (_dir, service) = setup();
+                let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let selected = service
+                    .submit(change(&key, EntryAction::Add, 10), 100)
+                    .unwrap();
+                let candidate = registry_types::SignedRegistrySnapshot {
+                    protocol: registry_types::PACKAGE_FORMAT_VERSION,
+                    sequence: 1,
+                    issued_at_unix: 101,
+                    expires_at_unix: 201,
+                    previous_snapshot_hash_hex: String::new(),
+                    moderation_head_hex: String::new(),
+                    publishers: Vec::new(),
+                    entries: vec![selected.change.entry.clone()],
+                    owner_signature_hex: "test fixture".into(),
+                    channel_authorization: None,
+                };
+                service
+                    .storage
+                    .save_promotion_transaction(&PromotionJournal {
+                        publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                        reviewer: "auto".into(),
+                        reason: "first party".into(),
+                        submissions: vec![selected.clone()],
+                        candidate_snapshot: candidate,
+                    })
+                    .unwrap();
+                service
+                    .storage
+                    .save_staged_promotion(&StagedPromotion {
+                        publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                        collected_at_unix: 100,
+                        submissions: vec![selected.clone()],
+                        artifacts: Vec::new(),
+                    })
+                    .unwrap();
+
+                let transaction = service.storage.lock_snapshot().unwrap();
+                service
+                    .approve_batch_in_transaction(
+                        &transaction,
+                        std::slice::from_ref(&selected),
+                        "auto",
+                        "first party",
+                        102,
+                        &allow(&key),
+                    )
+                    .unwrap();
+                let mut successor_entry = selected.change.entry.clone();
+                successor_entry.versions.extend(entry(&key, 11).versions);
+                successor_entry.updated_at_unix = 11;
+                successor_entry.signature_hex.clear();
+                let successor_change = sign_change_request(EntryAction::Update, successor_entry, &key);
+                let submitter_service = service.clone();
+                let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+                let submitter = std::thread::spawn(move || {
+                    ready_tx.send(()).unwrap();
+                    submitter_service.submit(successor_change, 103).unwrap()
+                });
+                ready_rx.recv().unwrap();
+
+                service
+                    .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
+                    .unwrap();
+                assert!(
+                    service
+                        .storage
+                        .load_promotion_transaction()
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(service.storage.load_staged_promotion().unwrap().is_none());
+                drop(transaction);
+
+                let successor = submitter.join().unwrap();
+                assert_eq!(
+                    service.pending(&successor.submission_id).unwrap(),
+                    Some(successor)
+                );
+            }
+        }
+
+        phase a_bot_version_needs_its_program_uploaded;
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let first = service
-                .submit(change_for(&key, "so.tilo.a", 10), 100)
-                .unwrap();
-            let second = service
-                .submit(change_for(&key, "so.tilo.b", 10), 100)
-                .unwrap();
-            service
-                .approve(&first, "auto", "", 101, &allow(&key))
-                .unwrap();
-
-            let transaction = service.storage.lock_snapshot().unwrap();
-            let reviews = service
-                .approve_batch_in_transaction(
-                    &transaction,
-                    &[first, second],
-                    "auto",
-                    "",
-                    102,
-                    &allow(&key),
-                )
-                .unwrap();
-            drop(transaction);
-            assert_eq!(reviews.len(), 2);
-            assert!(service.pending_submissions().unwrap().is_empty());
-            assert!(service.storage.load_entry("so.tilo.a").unwrap().is_some());
-            assert!(service.storage.load_entry("so.tilo.b").unwrap().is_some());
-        }
-    }
-
-    #[test]
-    fn delete_and_restore_requests_are_moderated() {
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let mut public = entry(&key, 10);
-            sign_entry(&mut public, &key);
-            service.storage.save_entry(&public).unwrap();
-            service
-                .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
-                .unwrap();
-            let review = service
-                .reject("so.tilo.editor", "m", "revoked", 101)
-                .unwrap();
-            assert_eq!(review.decision, ReviewDecision::Rejected);
+            let hash = "ab".repeat(32);
+            let mut entry = entry(&key, 100);
+            entry.kind = registry_types::EntryKind::Bot;
+            entry.versions = vec![registry_types::RegistryVersion {
+                version: "0.1.0".into(),
+                released_at_unix: 1,
+                artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
+                    program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
+                    program_blake3_hex: hash,
+                    program_size_bytes: 10,
+                    requires: registry_types::BotRequirements::default(),
+                }),
+            }];
+            sign_entry(&mut entry, &key);
+            let change = sign_change_request(EntryAction::Add, entry, &key);
+            let error = service.submit(change, 200).unwrap_err();
             assert!(
-                service
-                    .storage
-                    .load_entry("so.tilo.editor")
-                    .unwrap()
-                    .is_some()
+                matches!(error, ModerationError::BotProgram { .. }),
+                "{error}"
             );
         }
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let mut public = entry(&key, 10);
-            sign_entry(&mut public, &key);
-            service.storage.save_entry(&public).unwrap();
-            let pending = service
-                .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
-                .unwrap();
-            let review = service
-                .approve(&pending, "m", "withdrawn", 101, &allow(&key))
-                .unwrap();
-            assert_eq!(review.decision, ReviewDecision::Approved);
-            assert!(
-                service
-                    .storage
-                    .load_entry("so.tilo.editor")
-                    .unwrap()
-                    .is_none()
-            );
-        }
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let mut public = entry(&key, 10);
-            sign_entry(&mut public, &key);
-            service.storage.save_entry(&public).unwrap();
-            service
-                .quarantine("so.tilo.editor", "m", "hold", 100)
-                .unwrap();
-            assert!(matches!(
-                service.restore_quarantined(
-                    "so.tilo.editor",
-                    "m",
-                    "",
-                    101,
-                    &PublisherAllowlist::empty()
-                ),
-                Err(ModerationError::PublisherNoLongerAllowed(_))
-            ));
-            service
-                .restore_quarantined("so.tilo.editor", "m", "", 102, &allow(&key))
-                .unwrap();
-            assert!(
-                service
-                    .storage
-                    .load_entry("so.tilo.editor")
-                    .unwrap()
-                    .is_some()
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn promotion_recovery_keeps_newer_submissions_reachable() {
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let selected = service
-                .submit(change(&key, EntryAction::Add, 10), 100)
-                .unwrap();
-            let candidate = registry_types::SignedRegistrySnapshot {
-                protocol: registry_types::PACKAGE_FORMAT_VERSION,
-                sequence: 1,
-                issued_at_unix: 101,
-                expires_at_unix: 201,
-                previous_snapshot_hash_hex: String::new(),
-                moderation_head_hex: String::new(),
-                publishers: Vec::new(),
-                entries: vec![selected.change.entry.clone()],
-                owner_signature_hex: "test fixture".into(),
-                channel_authorization: None,
-            };
-            service
-                .storage
-                .save_promotion_transaction(&PromotionJournal {
-                    publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
-                    reviewer: "auto".into(),
-                    reason: "first party".into(),
-                    submissions: vec![selected.clone()],
-                    candidate_snapshot: candidate,
-                })
-                .unwrap();
-
-            // A submit arriving after a crash sees the durable journal. It must not replace the
-            // selected slot and make the journal unreplayable.
-            let successor = service
-                .submit(append_change(&key, &selected.change, 11), 102)
-                .unwrap();
-            assert_eq!(
-                service.pending(&selected.submission_id).unwrap(),
-                Some(selected.clone())
-            );
-            assert_eq!(
-                service
-                    .storage
-                    .load_deferred_pending(&selected.submission_id)
-                    .unwrap(),
-                Some(successor.clone())
-            );
-
-            let transaction = service.storage.lock_snapshot().unwrap();
-            let reviews = service
-                .approve_batch_in_transaction(
-                    &transaction,
-                    std::slice::from_ref(&selected),
-                    "auto",
-                    "first party",
-                    103,
-                    &allow(&key),
-                )
-                .unwrap();
-            service
-                .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
-                .unwrap();
-            drop(transaction);
-
-            assert_eq!(reviews.len(), 1);
-            assert_eq!(
-                service.storage.load_entry(&selected.submission_id).unwrap(),
-                Some(selected.change.entry)
-            );
-            assert_eq!(
-                service.pending(&successor.submission_id).unwrap(),
-                Some(successor)
-            );
-            assert!(
-                service
-                    .storage
-                    .load_deferred_pending(&selected.submission_id)
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(
-                service
-                    .storage
-                    .load_promotion_transaction()
-                    .unwrap()
-                    .is_none()
-            );
-        }
-        {
-            let (_dir, service) = setup();
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let selected = service
-                .submit(change(&key, EntryAction::Add, 10), 100)
-                .unwrap();
-            let candidate = registry_types::SignedRegistrySnapshot {
-                protocol: registry_types::PACKAGE_FORMAT_VERSION,
-                sequence: 1,
-                issued_at_unix: 101,
-                expires_at_unix: 201,
-                previous_snapshot_hash_hex: String::new(),
-                moderation_head_hex: String::new(),
-                publishers: Vec::new(),
-                entries: vec![selected.change.entry.clone()],
-                owner_signature_hex: "test fixture".into(),
-                channel_authorization: None,
-            };
-            service
-                .storage
-                .save_promotion_transaction(&PromotionJournal {
-                    publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
-                    reviewer: "auto".into(),
-                    reason: "first party".into(),
-                    submissions: vec![selected.clone()],
-                    candidate_snapshot: candidate,
-                })
-                .unwrap();
-            service
-                .storage
-                .save_staged_promotion(&StagedPromotion {
-                    publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
-                    collected_at_unix: 100,
-                    submissions: vec![selected.clone()],
-                    artifacts: Vec::new(),
-                })
-                .unwrap();
-
-            let transaction = service.storage.lock_snapshot().unwrap();
-            service
-                .approve_batch_in_transaction(
-                    &transaction,
-                    std::slice::from_ref(&selected),
-                    "auto",
-                    "first party",
-                    102,
-                    &allow(&key),
-                )
-                .unwrap();
-            let mut successor_entry = selected.change.entry.clone();
-            successor_entry.versions.extend(entry(&key, 11).versions);
-            successor_entry.updated_at_unix = 11;
-            successor_entry.signature_hex.clear();
-            let successor_change = sign_change_request(EntryAction::Update, successor_entry, &key);
-            let submitter_service = service.clone();
-            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-            let submitter = std::thread::spawn(move || {
-                ready_tx.send(()).unwrap();
-                submitter_service.submit(successor_change, 103).unwrap()
-            });
-            ready_rx.recv().unwrap();
-
-            service
-                .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
-                .unwrap();
-            assert!(
-                service
-                    .storage
-                    .load_promotion_transaction()
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(service.storage.load_staged_promotion().unwrap().is_none());
-            drop(transaction);
-
-            let successor = submitter.join().unwrap();
-            assert_eq!(
-                service.pending(&successor.submission_id).unwrap(),
-                Some(successor)
-            );
-        }
-    }
-
-    #[test]
-    fn a_bot_version_needs_its_program_uploaded() {
-        let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let hash = "ab".repeat(32);
-        let mut entry = entry(&key, 100);
-        entry.kind = registry_types::EntryKind::Bot;
-        entry.versions = vec![registry_types::RegistryVersion {
-            version: "0.1.0".into(),
-            released_at_unix: 1,
-            artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
-                program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
-                program_blake3_hex: hash,
-                program_size_bytes: 10,
-                requires: registry_types::BotRequirements::default(),
-            }),
-        }];
-        sign_entry(&mut entry, &key);
-        let change = sign_change_request(EntryAction::Add, entry, &key);
-        let error = service.submit(change, 200).unwrap_err();
-        assert!(
-            matches!(error, ModerationError::BotProgram { .. }),
-            "{error}"
-        );
     }
 }

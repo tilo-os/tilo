@@ -2013,40 +2013,418 @@ mod tests {
         }
     }
 
-    /// A payload blob and its compressed twin are checked against their name the first time they
-    /// are served, not on every download, and a missing one costs no check at all.
-    #[test]
-    fn served_objects_are_checked_once_per_stored_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut storage = Storage::open(dir.path()).unwrap();
-        storage.checked = std::sync::Arc::new(checked::CheckedFiles::settling_for(
-            std::time::Duration::ZERO,
-        ));
-        let bytes = b"a reviewed payload blob".repeat(64);
-        let hash = tilo_app_package::BlobHash::of(&bytes);
-        atomic_write(&storage.payload_dir().join(hash.to_hex()), &bytes).unwrap();
-        storage.write_payload_twin(&hash, &bytes).unwrap();
+    tilo_test_env::scenario! {
+        fn registry_storage;
 
-        let missing = tilo_app_package::BlobHash::of(b"never stored").to_hex();
-        assert_eq!(storage.load_payload_blob(&missing).unwrap(), None);
-        assert_eq!(storage.load_payload_twin(&missing).unwrap(), None);
-        assert_eq!(storage.object_checks(), 0);
+        phase served_objects_are_checked_once_per_stored_file;
+        // A payload blob and its compressed twin are checked against their name the first time they
+        // are served, not on every download, and a missing one costs no check at all.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut storage = Storage::open(dir.path()).unwrap();
+            storage.checked = std::sync::Arc::new(checked::CheckedFiles::settling_for(
+                std::time::Duration::ZERO,
+            ));
+            let bytes = b"a reviewed payload blob".repeat(64);
+            let hash = tilo_app_package::BlobHash::of(&bytes);
+            atomic_write(&storage.payload_dir().join(hash.to_hex()), &bytes).unwrap();
+            storage.write_payload_twin(&hash, &bytes).unwrap();
 
-        for _ in 0..5 {
+            let missing = tilo_app_package::BlobHash::of(b"never stored").to_hex();
+            assert_eq!(storage.load_payload_blob(&missing).unwrap(), None);
+            assert_eq!(storage.load_payload_twin(&missing).unwrap(), None);
+            assert_eq!(storage.object_checks(), 0);
+
+            for _ in 0..5 {
+                assert_eq!(
+                    storage
+                        .load_payload_blob(&hash.to_hex())
+                        .unwrap()
+                        .as_deref(),
+                    Some(bytes.as_slice())
+                );
+                assert!(storage.load_payload_twin(&hash.to_hex()).unwrap().is_some());
+            }
             assert_eq!(
-                storage
-                    .load_payload_blob(&hash.to_hex())
-                    .unwrap()
-                    .as_deref(),
-                Some(bytes.as_slice())
+                storage.object_checks(),
+                2,
+                "one check each for the blob and its twin"
             );
-            assert!(storage.load_payload_twin(&hash.to_hex()).unwrap().is_some());
         }
-        assert_eq!(
-            storage.object_checks(),
-            2,
-            "one check each for the blob and its twin"
-        );
+
+        phase entries_and_identity_round_trip_through_the_storage_layout;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let s = Storage::open(dir.path()).unwrap();
+                assert!(s.root.join("entries").is_dir());
+                assert!(s.root.join("pending").is_dir());
+                assert!(s.root.join("deferred-pending").is_dir());
+                assert!(s.root.join("reviews").is_dir());
+                assert!(s.root.join("quarantined").is_dir());
+                assert!(s.root.join("snapshots").is_dir());
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let s = Storage::open(dir.path()).unwrap();
+                let e = sample_entry("so.tilo.editor");
+                s.save_entry(&e).unwrap();
+                let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
+                assert_eq!(back, e);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let s = Storage::open(dir.path()).unwrap();
+                assert!(s.load_entry("nope").unwrap().is_none());
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let s = Storage::open(dir.path()).unwrap();
+                s.save_entry(&sample_entry("so.tilo.a")).unwrap();
+                s.save_entry(&sample_entry("so.tilo.b")).unwrap();
+                let mut ids: Vec<String> = s
+                    .load_entries()
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| e.package_id)
+                    .collect();
+                ids.sort();
+                assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let s = Storage::open(dir.path()).unwrap();
+                s.save_entry(&sample_entry("so.tilo.a")).unwrap();
+                assert!(s.delete_entry("so.tilo.a").unwrap());
+                assert!(!s.delete_entry("so.tilo.a").unwrap());
+                assert!(s.load_entry("so.tilo.a").unwrap().is_none());
+            }
+            {
+                assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
+                // A slash gets escaped so it can't escape the entries/ directory.
+                assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let s = Storage::open(dir.path()).unwrap();
+                let ident = ServerIdentity {
+                    owner_pubkey_hex: "cc".repeat(32),
+                    name: "Tilo Official".into(),
+                    description: "The default registry".into(),
+                    base_url: "https://apps.tilo.so".into(),
+                };
+                s.save_identity(&ident).unwrap();
+                let back = s.load_identity().unwrap();
+                assert_eq!(back, ident);
+            }
+        }
+
+        phase staged_packages_stay_readable_for_thin_installs;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                let identity = tilo_app_package::SigningIdentity::generate();
+                let payload = dir.path().join("payload");
+                std::fs::create_dir_all(payload.join("bin")).unwrap();
+                std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
+                let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+                "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
+             [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
+             [entrypoint]\nbin = \"bin/editor\"\ntype = \"gui\"\n",
+                hex::encode(identity.public_key_bytes())
+            ))
+            .unwrap();
+                let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+                let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+                let digest = blake3::hash(&bytes).to_hex().to_string();
+                storage.save_staged_artifact(&digest, &bytes).unwrap();
+
+                let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
+                assert_eq!(
+                    storage.load_payload_blob(&blob).unwrap().as_deref(),
+                    Some(&b"#!/bin/true\n"[..])
+                );
+                assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
+                assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
+
+                let root = packed.meta.id.to_hex();
+                let thin = storage.load_thin_package(&root).unwrap().unwrap();
+                assert_eq!(
+                    thin,
+                    tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap()
+                );
+                assert_eq!(storage.load_thin_package(&"0".repeat(64)).unwrap(), None);
+                assert_eq!(storage.load_thin_package("../x").unwrap(), None);
+                std::fs::write(
+                    dir.path()
+                        .join("thin-packages")
+                        .join(format!("{}.tapp", "1".repeat(64))),
+                    &thin,
+                )
+                .unwrap();
+                assert!(storage.load_thin_package(&"1".repeat(64)).is_err());
+
+                let imported = storage.import_artifact(&bytes).unwrap();
+                assert_eq!(imported, digest);
+                assert_eq!(
+                    storage.load_artifact(&digest).unwrap().as_deref(),
+                    Some(bytes.as_slice())
+                );
+                assert!(storage.import_artifact(b"not a package").is_err());
+                assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
+
+                let staged = dir.path().join("staged-artifacts");
+                let root_file = staged.join(format!("{digest}.root"));
+                assert_eq!(std::fs::read_to_string(&root_file).unwrap(), root);
+                std::fs::remove_file(&root_file).unwrap();
+                std::fs::write(staged.join(format!("{digest}.tapp")), &bytes).unwrap();
+                let opaque = b"bytes that are no package".to_vec();
+                let opaque_digest = blake3::hash(&opaque).to_hex().to_string();
+                storage
+                    .save_staged_artifact(&opaque_digest, &opaque)
+                    .unwrap();
+                assert_eq!(storage.compact_staged_artifacts().unwrap(), 1);
+                assert!(root_file.exists());
+                assert!(!staged.join(format!("{digest}.tapp")).exists());
+                assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
+                assert_eq!(
+                    storage.load_staged_artifact(&opaque_digest).unwrap(),
+                    opaque
+                );
+                storage.save_staged_artifact(&digest, &bytes).unwrap();
+                assert!(storage.save_staged_artifact(&digest, &opaque).is_err());
+
+                let blob_file = dir.path().join("payload-blobs").join(&blob);
+                let aside = dir.path().join("blob-aside");
+                std::fs::rename(&blob_file, &aside).unwrap();
+                assert!(storage.load_staged_artifact(&digest).is_err());
+                std::fs::rename(&aside, &blob_file).unwrap();
+
+                let report = storage
+                    .lock_snapshot()
+                    .unwrap()
+                    .prune_unreferenced()
+                    .unwrap();
+                assert_eq!(
+                    (
+                        report.staged_artifacts,
+                        report.thin_packages,
+                        report.payload_blobs,
+                        report.payload_twins
+                    ),
+                    (2, 2, 1, 1)
+                );
+                assert!(report.bytes > 0);
+                assert_eq!(storage.find_staged_artifact(&digest).unwrap(), None);
+                assert_eq!(storage.load_payload_blob(&blob).unwrap(), None);
+                assert!(
+                    !dir.path()
+                        .join("payload-blobs")
+                        .join(format!("{blob}.zst"))
+                        .exists(),
+                    "a twin goes with its blob"
+                );
+                assert_eq!(storage.load_thin_package(&root).unwrap(), None);
+            }
+            {
+                let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
+                    "submission_id": "so.tilo.editor",
+                    "version": "1.0.0",
+                    "blake3_hex": "ab".repeat(32),
+                }))
+                .unwrap();
+                assert_eq!(artifact.target, None);
+            }
+        }
+
+        phase snapshot_chain_transactions_are_crash_safe_and_monotonic;
+        {
+            {
+                for crash_point in ["intent", "archive", "pointer"] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let storage = Storage::open(dir.path()).unwrap();
+                    let candidate = snapshot(1, String::new(), crash_point);
+                    let body = serde_json::to_vec_pretty(&candidate).unwrap();
+                    atomic_write(&storage.snapshot_transaction_path(), &body).unwrap();
+                    if matches!(crash_point, "archive" | "pointer") {
+                        storage.archive_snapshot(&candidate).unwrap();
+                    }
+                    if crash_point == "pointer" {
+                        atomic_write(&storage.snapshot_path(), &body).unwrap();
+                    }
+
+                    let writer = storage.lock_snapshot().unwrap();
+                    assert_eq!(writer.recover().unwrap(), Some(candidate.clone()));
+                    assert_eq!(writer.current().unwrap(), Some(candidate.clone()));
+                    assert_eq!(writer.sequence(1).unwrap(), Some(candidate));
+                    drop(writer);
+                    assert!(!storage.snapshot_transaction_path().exists());
+                }
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+                let mut threads = Vec::new();
+                for marker in ["so.tilo.a", "so.tilo.b"] {
+                    let storage = storage.clone();
+                    let barrier = barrier.clone();
+                    threads.push(std::thread::spawn(move || {
+                        barrier.wait();
+                        let writer = storage.lock_snapshot().unwrap();
+                        let current = writer.current().unwrap();
+                        let (sequence, previous) =
+                            current.as_ref().map_or((1, String::new()), |head| {
+                                (
+                                    head.sequence.checked_add(1).unwrap(),
+                                    registry_types::snapshot_hash(head).unwrap(),
+                                )
+                            });
+                        writer
+                            .publish(&snapshot(sequence, previous, marker))
+                            .unwrap();
+                    }));
+                }
+                barrier.wait();
+                for thread in threads {
+                    thread.join().unwrap();
+                }
+                let first = storage.load_snapshot_sequence(1).unwrap().unwrap();
+                let second = storage.load_snapshot_sequence(2).unwrap().unwrap();
+                assert_eq!(
+                    second.previous_snapshot_hash_hex,
+                    registry_types::snapshot_hash(&first).unwrap()
+                );
+                assert_eq!(storage.load_snapshot().unwrap(), Some(second));
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                let wrong = snapshot(2, String::new(), "wrong");
+                let hash = registry_types::snapshot_hash(&wrong).unwrap();
+                let path = storage.snapshot_history_path(1, &hash).unwrap();
+                atomic_write(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
+                assert!(matches!(
+                    storage.load_snapshot_sequence(1),
+                    Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
+                ));
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                let writer = storage.lock_snapshot().unwrap();
+                let first = snapshot(1, String::new(), "first");
+                writer.publish(&first).unwrap();
+                let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
+                writer.publish(&second).unwrap();
+                let stale = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "stale");
+                assert!(writer.publish(&stale).is_err());
+                assert!(!storage.snapshot_transaction_path().exists());
+                assert_eq!(writer.current().unwrap(), Some(second));
+                drop(writer);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                let writer = storage.lock_snapshot().unwrap();
+                let first = snapshot(1, String::new(), "first");
+                writer.publish(&first).unwrap();
+                let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
+                writer.publish(&second).unwrap();
+                writer.archive_current(&first).unwrap();
+                assert_eq!(writer.current().unwrap(), Some(second));
+                drop(writer);
+            }
+        }
+
+        phase compaction_keeps_a_bounded_linked_suffix_and_refuses_broken_chains;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let writer = storage.lock_snapshot().unwrap();
+            let mut chain = Vec::new();
+            let mut previous = String::new();
+            for sequence in 1..=20_u64 {
+                let next = snapshot(sequence, previous, "so.tilo.chain");
+                previous = registry_types::snapshot_hash(&next).unwrap();
+                chain.push(next);
+            }
+            // A history whose links do not match is never pruned.
+            for member in &chain {
+                let mut member = member.clone();
+                if member.sequence == 3 {
+                    member.previous_snapshot_hash_hex = "ee".repeat(32);
+                }
+                storage.archive_snapshot(&member).unwrap();
+            }
+            atomic_write(
+                &storage.snapshot_path(),
+                &serde_json::to_vec(&chain[19]).unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                writer.compact_history(),
+                Err(StorageError::Parse(message)) if message.contains("broken at sequence 3")
+            ));
+            assert_eq!(storage.history_members().unwrap().len(), 20);
+            assert!(storage.history_compaction().unwrap().is_none());
+
+            for entry in std::fs::read_dir(storage.root.join("snapshots")).unwrap() {
+                std::fs::remove_file(entry.unwrap().path()).unwrap();
+            }
+            for member in &chain {
+                storage.archive_snapshot(member).unwrap();
+            }
+            let report = writer.compact_history().unwrap();
+            assert_eq!(report.pruned, 20 - SNAPSHOT_HISTORY_RETAINED);
+            assert_eq!(report.retained, SNAPSHOT_HISTORY_RETAINED);
+            let through = u64::try_from(20 - SNAPSHOT_HISTORY_RETAINED).unwrap();
+            assert_eq!(report.through_sequence, through);
+            let record = storage.history_compaction().unwrap().unwrap();
+            let pruned_head = &chain[usize::try_from(through - 1).unwrap()];
+            assert_eq!(
+                record.through_snapshot_hash_hex,
+                registry_types::snapshot_hash(pruned_head).unwrap()
+            );
+            assert_eq!(
+                record.through_snapshot_hash_hex,
+                chain[usize::try_from(through).unwrap()].previous_snapshot_hash_hex
+            );
+            assert!(storage.load_snapshot_sequence(through).unwrap().is_none());
+            assert!(
+                storage
+                    .load_snapshot_sequence(through + 1)
+                    .unwrap()
+                    .is_some()
+            );
+            // A pruned sequence can never be archived again.
+            assert!(storage.archive_snapshot(&chain[0]).is_err());
+
+            // A run that crashed after writing its record finishes removal.
+            let stale = &chain[usize::try_from(through - 1).unwrap()];
+            let hash = registry_types::snapshot_hash(stale).unwrap();
+            atomic_write(
+                &storage
+                    .snapshot_history_path(stale.sequence, &hash)
+                    .unwrap(),
+                &serde_json::to_vec(stale).unwrap(),
+            )
+            .unwrap();
+            let report = writer.compact_history().unwrap();
+            assert_eq!(report.pruned, 1);
+            assert_eq!(report.retained, SNAPSHOT_HISTORY_RETAINED);
+
+            // Without the pointer the channel cannot restart at sequence 1.
+            std::fs::remove_file(storage.snapshot_path()).unwrap();
+            assert!(matches!(
+                writer.publish(&snapshot(1, String::new(), "so.tilo.restart")),
+                Err(StorageError::Parse(message)) if message.contains("compacted through")
+            ));
+            drop(writer);
+        }
     }
 
     fn snapshot(sequence: u64, previous: String, marker: &str) -> SignedRegistrySnapshot {
@@ -2062,383 +2440,5 @@ mod tests {
             owner_signature_hex: marker.to_string(),
             channel_authorization: None,
         }
-    }
-
-    #[test]
-    fn entries_and_identity_round_trip_through_the_storage_layout() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let s = Storage::open(dir.path()).unwrap();
-            assert!(s.root.join("entries").is_dir());
-            assert!(s.root.join("pending").is_dir());
-            assert!(s.root.join("deferred-pending").is_dir());
-            assert!(s.root.join("reviews").is_dir());
-            assert!(s.root.join("quarantined").is_dir());
-            assert!(s.root.join("snapshots").is_dir());
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let s = Storage::open(dir.path()).unwrap();
-            let e = sample_entry("so.tilo.editor");
-            s.save_entry(&e).unwrap();
-            let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
-            assert_eq!(back, e);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let s = Storage::open(dir.path()).unwrap();
-            assert!(s.load_entry("nope").unwrap().is_none());
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let s = Storage::open(dir.path()).unwrap();
-            s.save_entry(&sample_entry("so.tilo.a")).unwrap();
-            s.save_entry(&sample_entry("so.tilo.b")).unwrap();
-            let mut ids: Vec<String> = s
-                .load_entries()
-                .unwrap()
-                .into_iter()
-                .map(|e| e.package_id)
-                .collect();
-            ids.sort();
-            assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let s = Storage::open(dir.path()).unwrap();
-            s.save_entry(&sample_entry("so.tilo.a")).unwrap();
-            assert!(s.delete_entry("so.tilo.a").unwrap());
-            assert!(!s.delete_entry("so.tilo.a").unwrap());
-            assert!(s.load_entry("so.tilo.a").unwrap().is_none());
-        }
-        {
-            assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
-            // A slash gets escaped so it can't escape the entries/ directory.
-            assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let s = Storage::open(dir.path()).unwrap();
-            let ident = ServerIdentity {
-                owner_pubkey_hex: "cc".repeat(32),
-                name: "Tilo Official".into(),
-                description: "The default registry".into(),
-                base_url: "https://apps.tilo.so".into(),
-            };
-            s.save_identity(&ident).unwrap();
-            let back = s.load_identity().unwrap();
-            assert_eq!(back, ident);
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn staged_packages_stay_readable_for_thin_installs() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let storage = Storage::open(dir.path()).unwrap();
-            let identity = tilo_app_package::SigningIdentity::generate();
-            let payload = dir.path().join("payload");
-            std::fs::create_dir_all(payload.join("bin")).unwrap();
-            std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
-            let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
-            "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
-             [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
-             [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
-             [sandbox.net]\nmode = \"off\"\n\
-             [entrypoint]\nbin = \"bin/editor\"\ntype = \"gui\"\n",
-            hex::encode(identity.public_key_bytes())
-        ))
-        .unwrap();
-            let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
-            let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-            let digest = blake3::hash(&bytes).to_hex().to_string();
-            storage.save_staged_artifact(&digest, &bytes).unwrap();
-
-            let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
-            assert_eq!(
-                storage.load_payload_blob(&blob).unwrap().as_deref(),
-                Some(&b"#!/bin/true\n"[..])
-            );
-            assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
-            assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
-
-            let root = packed.meta.id.to_hex();
-            let thin = storage.load_thin_package(&root).unwrap().unwrap();
-            assert_eq!(
-                thin,
-                tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap()
-            );
-            assert_eq!(storage.load_thin_package(&"0".repeat(64)).unwrap(), None);
-            assert_eq!(storage.load_thin_package("../x").unwrap(), None);
-            std::fs::write(
-                dir.path()
-                    .join("thin-packages")
-                    .join(format!("{}.tapp", "1".repeat(64))),
-                &thin,
-            )
-            .unwrap();
-            assert!(storage.load_thin_package(&"1".repeat(64)).is_err());
-
-            let imported = storage.import_artifact(&bytes).unwrap();
-            assert_eq!(imported, digest);
-            assert_eq!(
-                storage.load_artifact(&digest).unwrap().as_deref(),
-                Some(bytes.as_slice())
-            );
-            assert!(storage.import_artifact(b"not a package").is_err());
-            assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
-
-            let staged = dir.path().join("staged-artifacts");
-            let root_file = staged.join(format!("{digest}.root"));
-            assert_eq!(std::fs::read_to_string(&root_file).unwrap(), root);
-            std::fs::remove_file(&root_file).unwrap();
-            std::fs::write(staged.join(format!("{digest}.tapp")), &bytes).unwrap();
-            let opaque = b"bytes that are no package".to_vec();
-            let opaque_digest = blake3::hash(&opaque).to_hex().to_string();
-            storage
-                .save_staged_artifact(&opaque_digest, &opaque)
-                .unwrap();
-            assert_eq!(storage.compact_staged_artifacts().unwrap(), 1);
-            assert!(root_file.exists());
-            assert!(!staged.join(format!("{digest}.tapp")).exists());
-            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
-            assert_eq!(
-                storage.load_staged_artifact(&opaque_digest).unwrap(),
-                opaque
-            );
-            storage.save_staged_artifact(&digest, &bytes).unwrap();
-            assert!(storage.save_staged_artifact(&digest, &opaque).is_err());
-
-            let blob_file = dir.path().join("payload-blobs").join(&blob);
-            let aside = dir.path().join("blob-aside");
-            std::fs::rename(&blob_file, &aside).unwrap();
-            assert!(storage.load_staged_artifact(&digest).is_err());
-            std::fs::rename(&aside, &blob_file).unwrap();
-
-            let report = storage
-                .lock_snapshot()
-                .unwrap()
-                .prune_unreferenced()
-                .unwrap();
-            assert_eq!(
-                (
-                    report.staged_artifacts,
-                    report.thin_packages,
-                    report.payload_blobs,
-                    report.payload_twins
-                ),
-                (2, 2, 1, 1)
-            );
-            assert!(report.bytes > 0);
-            assert_eq!(storage.find_staged_artifact(&digest).unwrap(), None);
-            assert_eq!(storage.load_payload_blob(&blob).unwrap(), None);
-            assert!(
-                !dir.path()
-                    .join("payload-blobs")
-                    .join(format!("{blob}.zst"))
-                    .exists(),
-                "a twin goes with its blob"
-            );
-            assert_eq!(storage.load_thin_package(&root).unwrap(), None);
-        }
-        {
-            let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
-                "submission_id": "so.tilo.editor",
-                "version": "1.0.0",
-                "blake3_hex": "ab".repeat(32),
-            }))
-            .unwrap();
-            assert_eq!(artifact.target, None);
-        }
-    }
-
-    #[test]
-    fn snapshot_chain_transactions_are_crash_safe_and_monotonic() {
-        {
-            for crash_point in ["intent", "archive", "pointer"] {
-                let dir = tempfile::tempdir().unwrap();
-                let storage = Storage::open(dir.path()).unwrap();
-                let candidate = snapshot(1, String::new(), crash_point);
-                let body = serde_json::to_vec_pretty(&candidate).unwrap();
-                atomic_write(&storage.snapshot_transaction_path(), &body).unwrap();
-                if matches!(crash_point, "archive" | "pointer") {
-                    storage.archive_snapshot(&candidate).unwrap();
-                }
-                if crash_point == "pointer" {
-                    atomic_write(&storage.snapshot_path(), &body).unwrap();
-                }
-
-                let writer = storage.lock_snapshot().unwrap();
-                assert_eq!(writer.recover().unwrap(), Some(candidate.clone()));
-                assert_eq!(writer.current().unwrap(), Some(candidate.clone()));
-                assert_eq!(writer.sequence(1).unwrap(), Some(candidate));
-                drop(writer);
-                assert!(!storage.snapshot_transaction_path().exists());
-            }
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let storage = Storage::open(dir.path()).unwrap();
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-            let mut threads = Vec::new();
-            for marker in ["so.tilo.a", "so.tilo.b"] {
-                let storage = storage.clone();
-                let barrier = barrier.clone();
-                threads.push(std::thread::spawn(move || {
-                    barrier.wait();
-                    let writer = storage.lock_snapshot().unwrap();
-                    let current = writer.current().unwrap();
-                    let (sequence, previous) =
-                        current.as_ref().map_or((1, String::new()), |head| {
-                            (
-                                head.sequence.checked_add(1).unwrap(),
-                                registry_types::snapshot_hash(head).unwrap(),
-                            )
-                        });
-                    writer
-                        .publish(&snapshot(sequence, previous, marker))
-                        .unwrap();
-                }));
-            }
-            barrier.wait();
-            for thread in threads {
-                thread.join().unwrap();
-            }
-            let first = storage.load_snapshot_sequence(1).unwrap().unwrap();
-            let second = storage.load_snapshot_sequence(2).unwrap().unwrap();
-            assert_eq!(
-                second.previous_snapshot_hash_hex,
-                registry_types::snapshot_hash(&first).unwrap()
-            );
-            assert_eq!(storage.load_snapshot().unwrap(), Some(second));
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let storage = Storage::open(dir.path()).unwrap();
-            let wrong = snapshot(2, String::new(), "wrong");
-            let hash = registry_types::snapshot_hash(&wrong).unwrap();
-            let path = storage.snapshot_history_path(1, &hash).unwrap();
-            atomic_write(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
-            assert!(matches!(
-                storage.load_snapshot_sequence(1),
-                Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
-            ));
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let storage = Storage::open(dir.path()).unwrap();
-            let writer = storage.lock_snapshot().unwrap();
-            let first = snapshot(1, String::new(), "first");
-            writer.publish(&first).unwrap();
-            let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
-            writer.publish(&second).unwrap();
-            let stale = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "stale");
-            assert!(writer.publish(&stale).is_err());
-            assert!(!storage.snapshot_transaction_path().exists());
-            assert_eq!(writer.current().unwrap(), Some(second));
-            drop(writer);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let storage = Storage::open(dir.path()).unwrap();
-            let writer = storage.lock_snapshot().unwrap();
-            let first = snapshot(1, String::new(), "first");
-            writer.publish(&first).unwrap();
-            let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
-            writer.publish(&second).unwrap();
-            writer.archive_current(&first).unwrap();
-            assert_eq!(writer.current().unwrap(), Some(second));
-            drop(writer);
-        }
-    }
-
-    #[test]
-    fn compaction_keeps_a_bounded_linked_suffix_and_refuses_broken_chains() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(dir.path()).unwrap();
-        let writer = storage.lock_snapshot().unwrap();
-        let mut chain = Vec::new();
-        let mut previous = String::new();
-        for sequence in 1..=20_u64 {
-            let next = snapshot(sequence, previous, "so.tilo.chain");
-            previous = registry_types::snapshot_hash(&next).unwrap();
-            chain.push(next);
-        }
-        // A history whose links do not match is never pruned.
-        for member in &chain {
-            let mut member = member.clone();
-            if member.sequence == 3 {
-                member.previous_snapshot_hash_hex = "ee".repeat(32);
-            }
-            storage.archive_snapshot(&member).unwrap();
-        }
-        atomic_write(
-            &storage.snapshot_path(),
-            &serde_json::to_vec(&chain[19]).unwrap(),
-        )
-        .unwrap();
-        assert!(matches!(
-            writer.compact_history(),
-            Err(StorageError::Parse(message)) if message.contains("broken at sequence 3")
-        ));
-        assert_eq!(storage.history_members().unwrap().len(), 20);
-        assert!(storage.history_compaction().unwrap().is_none());
-
-        for entry in std::fs::read_dir(storage.root.join("snapshots")).unwrap() {
-            std::fs::remove_file(entry.unwrap().path()).unwrap();
-        }
-        for member in &chain {
-            storage.archive_snapshot(member).unwrap();
-        }
-        let report = writer.compact_history().unwrap();
-        assert_eq!(report.pruned, 20 - SNAPSHOT_HISTORY_RETAINED);
-        assert_eq!(report.retained, SNAPSHOT_HISTORY_RETAINED);
-        let through = u64::try_from(20 - SNAPSHOT_HISTORY_RETAINED).unwrap();
-        assert_eq!(report.through_sequence, through);
-        let record = storage.history_compaction().unwrap().unwrap();
-        let pruned_head = &chain[usize::try_from(through - 1).unwrap()];
-        assert_eq!(
-            record.through_snapshot_hash_hex,
-            registry_types::snapshot_hash(pruned_head).unwrap()
-        );
-        assert_eq!(
-            record.through_snapshot_hash_hex,
-            chain[usize::try_from(through).unwrap()].previous_snapshot_hash_hex
-        );
-        assert!(storage.load_snapshot_sequence(through).unwrap().is_none());
-        assert!(
-            storage
-                .load_snapshot_sequence(through + 1)
-                .unwrap()
-                .is_some()
-        );
-        // A pruned sequence can never be archived again.
-        assert!(storage.archive_snapshot(&chain[0]).is_err());
-
-        // A run that crashed after writing its record finishes removal.
-        let stale = &chain[usize::try_from(through - 1).unwrap()];
-        let hash = registry_types::snapshot_hash(stale).unwrap();
-        atomic_write(
-            &storage
-                .snapshot_history_path(stale.sequence, &hash)
-                .unwrap(),
-            &serde_json::to_vec(stale).unwrap(),
-        )
-        .unwrap();
-        let report = writer.compact_history().unwrap();
-        assert_eq!(report.pruned, 1);
-        assert_eq!(report.retained, SNAPSHOT_HISTORY_RETAINED);
-
-        // Without the pointer the channel cannot restart at sequence 1.
-        std::fs::remove_file(storage.snapshot_path()).unwrap();
-        assert!(matches!(
-            writer.publish(&snapshot(1, String::new(), "so.tilo.restart")),
-            Err(StorageError::Parse(message)) if message.contains("compacted through")
-        ));
-        drop(writer);
     }
 }

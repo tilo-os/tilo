@@ -668,219 +668,219 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn moderation_rejects_other_protocols_and_destinations_before_writing() {
-        let (_directory, service, _publisher, _reviewer, allowlist) = setup();
-        let actor = SigningKey::from_bytes(&[7; 32]);
-        let request = report(&actor, "destination-test");
-        let mut other_protocol = request.clone();
-        other_protocol.protocol = registry_types::MODERATION_PROTOCOL + 1;
-        assert!(matches!(
-            service.apply(&other_protocol, 110, &allowlist),
-            Err(ModerationApiError::Invalid("unsupported protocol"))
-        ));
-        for change_owner in [false, true] {
-            let mut operation = request.external_operation().unwrap();
-            if change_owner {
-                operation.destination.owner_pubkey_hex = "ab".repeat(32);
-            } else {
-                operation.destination.base_url.push('/');
-            }
-            let foreign = sign_external_moderation(&operation, &actor).unwrap();
-            registry_types::verify_moderation_mutation(&foreign).unwrap();
-            assert!(matches!(
-                service.apply(&foreign, 110, &allowlist),
-                Err(ModerationApiError::Forbidden)
-            ));
-        }
-        assert!(service.transparency(1, 10).unwrap().events.is_empty());
-        service.apply(&request, 110, &allowlist).unwrap();
-        assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
-    }
+    tilo_test_env::scenario! {
+        fn the_moderation_api;
 
-    #[test]
-    fn moderation_requests_are_signed_idempotent_and_fresh() {
-        {
-            let (directory, service, _publisher, _reviewer, allowlist) = setup();
-            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let request = report(&reporter, "request-one");
-            let first = service.apply(&request, 110, &allowlist).unwrap();
-            assert_eq!(service.apply(&request, 111, &allowlist).unwrap(), first);
-            let page = service.transparency(1, 10).unwrap();
-            assert_eq!(page.events.len(), 1);
-            registry_types::verify_transparency_chain(&page.events, "").unwrap();
-            assert_eq!(service.case(&first.case_id).unwrap(), Some(first.clone()));
-
-            // Simulate a crash after the immutable event rename but before the materialized case
-            // and receipt renames. Retry repairs both without a second public event.
-            std::fs::remove_file(
-                directory
-                    .path()
-                    .join("moderation-requests/request-one.json"),
-            )
-            .unwrap();
-            std::fs::remove_file(
-                directory
-                    .path()
-                    .join(format!("moderation-cases/{}.json", first.case_id)),
-            )
-            .unwrap();
-            service.apply(&request, 112, &allowlist).unwrap();
-            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
-            let clicked_retry = report(&reporter, "new-id-same-evidence");
-            assert_eq!(
-                service.apply(&clicked_retry, 113, &allowlist).unwrap(),
-                first
-            );
-            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
-        }
+        phase moderation_rejects_other_protocols_and_destinations_before_writing;
         {
             let (_directory, service, _publisher, _reviewer, allowlist) = setup();
-            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-            service
-                .apply(&report(&reporter, "same"), 110, &allowlist)
-                .unwrap();
-            let changed = sign_moderation_mutation(
-                "same".into(),
-                100,
-                200,
-                ModerationActorRole::Reporter,
-                ModerationMutation::FileReport {
-                    package_id: "so.tilo.notes".into(),
-                    category: "quality".into(),
-                    summary: "A different signed report".into(),
-                    evidence_digest_hex: "bb".repeat(32),
-                },
-                &reporter,
-            )
-            .unwrap();
+            let actor = SigningKey::from_bytes(&[7; 32]);
+            let request = report(&actor, "destination-test");
+            let mut other_protocol = request.clone();
+            other_protocol.protocol = registry_types::MODERATION_PROTOCOL + 1;
             assert!(matches!(
-                service.apply(&changed, 110, &allowlist),
-                Err(ModerationApiError::RequestIdReused)
+                service.apply(&other_protocol, 110, &allowlist),
+                Err(ModerationApiError::Invalid("unsupported protocol"))
             ));
-            assert!(matches!(
-                service.apply(&report(&reporter, "expired"), 201, &allowlist),
-                Err(ModerationApiError::Expired)
-            ));
+            for change_owner in [false, true] {
+                let mut operation = request.external_operation().unwrap();
+                if change_owner {
+                    operation.destination.owner_pubkey_hex = "ab".repeat(32);
+                } else {
+                    operation.destination.base_url.push('/');
+                }
+                let foreign = sign_external_moderation(&operation, &actor).unwrap();
+                registry_types::verify_moderation_mutation(&foreign).unwrap();
+                assert!(matches!(
+                    service.apply(&foreign, 110, &allowlist),
+                    Err(ModerationApiError::Forbidden)
+                ));
+            }
+            assert!(service.transparency(1, 10).unwrap().events.is_empty());
+            service.apply(&request, 110, &allowlist).unwrap();
+            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
         }
-    }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn moderation_decisions_are_role_authorised_and_recoverable() {
+        phase moderation_requests_are_signed_idempotent_and_fresh;
         {
-            let (_directory, service, publisher, _reviewer, allowlist) = setup();
-            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let case = service
-                .apply(&report(&reporter, "file"), 110, &allowlist)
-                .unwrap();
-            let attacker = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let make = |key: &SigningKey, id: &str| {
-                sign_moderation_mutation(
-                    id.into(),
-                    111,
-                    200,
-                    ModerationActorRole::Publisher,
-                    ModerationMutation::PublisherAppeal {
-                        case_id: case.case_id.clone(),
-                        reason: "The report has omitted important context".into(),
-                        evidence_digest_hex: None,
-                    },
-                    key,
+            {
+                let (directory, service, _publisher, _reviewer, allowlist) = setup();
+                let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let request = report(&reporter, "request-one");
+                let first = service.apply(&request, 110, &allowlist).unwrap();
+                assert_eq!(service.apply(&request, 111, &allowlist).unwrap(), first);
+                let page = service.transparency(1, 10).unwrap();
+                assert_eq!(page.events.len(), 1);
+                registry_types::verify_transparency_chain(&page.events, "").unwrap();
+                assert_eq!(service.case(&first.case_id).unwrap(), Some(first.clone()));
+
+                // Simulate a crash after the immutable event rename but before the materialized case
+                // and receipt renames. Retry repairs both without a second public event.
+                std::fs::remove_file(
+                    directory
+                        .path()
+                        .join("moderation-requests/request-one.json"),
                 )
-                .unwrap()
-            };
-            assert!(matches!(
-                service.apply(&make(&attacker, "bad"), 112, &allowlist),
-                Err(ModerationApiError::Forbidden)
-            ));
-            let appealed = service
-                .apply(&make(&publisher, "good"), 112, &allowlist)
                 .unwrap();
-            assert_eq!(appealed.status, ModerationCaseStatus::Appealed);
+                std::fs::remove_file(
+                    directory
+                        .path()
+                        .join(format!("moderation-cases/{}.json", first.case_id)),
+                )
+                .unwrap();
+                service.apply(&request, 112, &allowlist).unwrap();
+                assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
+                let clicked_retry = report(&reporter, "new-id-same-evidence");
+                assert_eq!(
+                    service.apply(&clicked_retry, 113, &allowlist).unwrap(),
+                    first
+                );
+                assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
+            }
+            {
+                let (_directory, service, _publisher, _reviewer, allowlist) = setup();
+                let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+                service
+                    .apply(&report(&reporter, "same"), 110, &allowlist)
+                    .unwrap();
+                let changed = sign_moderation_mutation(
+                    "same".into(),
+                    100,
+                    200,
+                    ModerationActorRole::Reporter,
+                    ModerationMutation::FileReport {
+                        package_id: "so.tilo.notes".into(),
+                        category: "quality".into(),
+                        summary: "A different signed report".into(),
+                        evidence_digest_hex: "bb".repeat(32),
+                    },
+                    &reporter,
+                )
+                .unwrap();
+                assert!(matches!(
+                    service.apply(&changed, 110, &allowlist),
+                    Err(ModerationApiError::RequestIdReused)
+                ));
+                assert!(matches!(
+                    service.apply(&report(&reporter, "expired"), 201, &allowlist),
+                    Err(ModerationApiError::Expired)
+                ));
+            }
         }
+
+        phase moderation_decisions_are_role_authorised_and_recoverable;
         {
-            let (_directory, service, _publisher, reviewer, allowlist) = setup();
-            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let case = service
-                .apply(&report(&reporter, "file"), 110, &allowlist)
-                .unwrap();
-            let decision = |key: &SigningKey, id: &str| {
-                sign_moderation_mutation(
-                    id.into(),
+            {
+                let (_directory, service, publisher, _reviewer, allowlist) = setup();
+                let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let case = service
+                    .apply(&report(&reporter, "file"), 110, &allowlist)
+                    .unwrap();
+                let attacker = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let make = |key: &SigningKey, id: &str| {
+                    sign_moderation_mutation(
+                        id.into(),
+                        111,
+                        200,
+                        ModerationActorRole::Publisher,
+                        ModerationMutation::PublisherAppeal {
+                            case_id: case.case_id.clone(),
+                            reason: "The report has omitted important context".into(),
+                            evidence_digest_hex: None,
+                        },
+                        key,
+                    )
+                    .unwrap()
+                };
+                assert!(matches!(
+                    service.apply(&make(&attacker, "bad"), 112, &allowlist),
+                    Err(ModerationApiError::Forbidden)
+                ));
+                let appealed = service
+                    .apply(&make(&publisher, "good"), 112, &allowlist)
+                    .unwrap();
+                assert_eq!(appealed.status, ModerationCaseStatus::Appealed);
+            }
+            {
+                let (_directory, service, _publisher, reviewer, allowlist) = setup();
+                let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let case = service
+                    .apply(&report(&reporter, "file"), 110, &allowlist)
+                    .unwrap();
+                let decision = |key: &SigningKey, id: &str| {
+                    sign_moderation_mutation(
+                        id.into(),
+                        111,
+                        200,
+                        ModerationActorRole::Reviewer,
+                        ModerationMutation::ReviewerDecision {
+                            case_id: case.case_id.clone(),
+                            decision: ModerationDecision::NoAction,
+                            reason: "The signed evidence does not demonstrate a policy violation"
+                                .into(),
+                        },
+                        key,
+                    )
+                    .unwrap()
+                };
+                assert!(matches!(
+                    service.apply(&decision(&reporter, "bad-decision"), 112, &allowlist),
+                    Err(ModerationApiError::Forbidden)
+                ));
+                assert_eq!(
+                    service
+                        .apply(&decision(&reviewer, "good-decision"), 112, &allowlist)
+                        .unwrap()
+                        .status,
+                    ModerationCaseStatus::ClosedNoAction
+                );
+            }
+            {
+                let (_directory, service, _publisher, reviewer, allowlist) = setup();
+                let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
+                let case = service
+                    .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
+                    .unwrap();
+                let quarantine = sign_moderation_mutation(
+                    "quarantine-first".into(),
                     111,
                     200,
                     ModerationActorRole::Reviewer,
                     ModerationMutation::ReviewerDecision {
                         case_id: case.case_id.clone(),
-                        decision: ModerationDecision::NoAction,
-                        reason: "The signed evidence does not demonstrate a policy violation"
-                            .into(),
+                        decision: ModerationDecision::Quarantine,
+                        reason: "Hold while the signed evidence is investigated".into(),
                     },
-                    key,
+                    &reviewer,
                 )
-                .unwrap()
-            };
-            assert!(matches!(
-                service.apply(&decision(&reporter, "bad-decision"), 112, &allowlist),
-                Err(ModerationApiError::Forbidden)
-            ));
-            assert_eq!(
-                service
-                    .apply(&decision(&reviewer, "good-decision"), 112, &allowlist)
-                    .unwrap()
-                    .status,
-                ModerationCaseStatus::ClosedNoAction
-            );
-        }
-        {
-            let (_directory, service, _publisher, reviewer, allowlist) = setup();
-            let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let case = service
-                .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
                 .unwrap();
-            let quarantine = sign_moderation_mutation(
-                "quarantine-first".into(),
-                111,
-                200,
-                ModerationActorRole::Reviewer,
-                ModerationMutation::ReviewerDecision {
-                    case_id: case.case_id.clone(),
-                    decision: ModerationDecision::Quarantine,
-                    reason: "Hold while the signed evidence is investigated".into(),
-                },
-                &reviewer,
-            )
-            .unwrap();
-            service.apply(&quarantine, 112, &allowlist).unwrap();
+                service.apply(&quarantine, 112, &allowlist).unwrap();
 
-            // The catalogue half of restore lands, then the process dies before the API can append
-            // its public event.
-            service
-                .moderation
-                .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)
+                // The catalogue half of restore lands, then the process dies before the API can append
+                // its public event.
+                service
+                    .moderation
+                    .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)
+                    .unwrap();
+                let restore = sign_moderation_mutation(
+                    "restore-after-crash".into(),
+                    113,
+                    200,
+                    ModerationActorRole::Reviewer,
+                    ModerationMutation::ReviewerDecision {
+                        case_id: case.case_id,
+                        decision: ModerationDecision::Restore,
+                        reason: "The publisher supplied a verified fixed package".into(),
+                    },
+                    &reviewer,
+                )
                 .unwrap();
-            let restore = sign_moderation_mutation(
-                "restore-after-crash".into(),
-                113,
-                200,
-                ModerationActorRole::Reviewer,
-                ModerationMutation::ReviewerDecision {
-                    case_id: case.case_id,
-                    decision: ModerationDecision::Restore,
-                    reason: "The publisher supplied a verified fixed package".into(),
-                },
-                &reviewer,
-            )
-            .unwrap();
-            assert_eq!(
-                service.apply(&restore, 114, &allowlist).unwrap().status,
-                ModerationCaseStatus::Restored
-            );
-            assert_eq!(service.transparency(1, 10).unwrap().events.len(), 3);
+                assert_eq!(
+                    service.apply(&restore, 114, &allowlist).unwrap().status,
+                    ModerationCaseStatus::Restored
+                );
+                assert_eq!(service.transparency(1, 10).unwrap().events.len(), 3);
+            }
         }
     }
 }

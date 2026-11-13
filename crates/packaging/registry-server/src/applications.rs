@@ -493,176 +493,180 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn a_replacement_during_proof_checks_is_not_overwritten_by_approval() {
-        let (_directory, storage, reviewed, proofs) = review_fixture();
-        let replacement = replacement(&reviewed);
-        let racing = ReplacingProofs {
-            storage: &storage,
-            replacement: &replacement,
-            proofs: &proofs,
-            replaced: std::cell::Cell::new(false),
-        };
-        let decision = approve(
-            &storage,
-            &reviewed.application.pubkey_hex,
-            "owner",
-            102,
-            &racing,
-        );
-        assert!(
-            racing.replaced.get(),
-            "the production resubmission ran during review"
-        );
-        assert!(
-            matches!(decision, Err(ApplicationFailure::Changed(_))),
-            "{decision:?}"
-        );
-        assert!(storage.load_allowlist().unwrap().publishers.is_empty());
-        let current = pending(&storage, &reviewed.application.pubkey_hex).unwrap();
-        assert_eq!(current.application, replacement);
-        assert_eq!(current.status, ApplicationStatus::Pending);
-        assert!(current.reviewer.is_none());
-    }
+    tilo_test_env::scenario! {
+        fn publisher_application_review;
 
-    #[test]
-    fn a_displayed_application_cannot_decide_a_newer_submission() {
-        let (_directory, storage, reviewed, proofs) = review_fixture();
-        let replacement = submit(&storage, replacement(&reviewed), 101, &proofs).unwrap();
-        assert!(matches!(
-            approve_reviewed(&storage, &reviewed, "owner", 102, &proofs),
-            Err(ApplicationFailure::Changed(_))
-        ));
-        assert!(matches!(
-            reject_reviewed(
+        phase a_replacement_during_proof_checks_is_not_overwritten_by_approval;
+        {
+            let (_directory, storage, reviewed, proofs) = review_fixture();
+            let replacement = replacement(&reviewed);
+            let racing = ReplacingProofs {
+                storage: &storage,
+                replacement: &replacement,
+                proofs: &proofs,
+                replaced: std::cell::Cell::new(false),
+            };
+            let decision = approve(
                 &storage,
-                &reviewed,
+                &reviewed.application.pubkey_hex,
                 "owner",
-                "Feedback for the old request",
-                102
-            ),
-            Err(ApplicationFailure::Changed(_))
-        ));
-        assert_eq!(
-            pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
-            replacement
-        );
-        assert!(storage.load_allowlist().unwrap().publishers.is_empty());
+                102,
+                &racing,
+            );
+            assert!(
+                racing.replaced.get(),
+                "the production resubmission ran during review"
+            );
+            assert!(
+                matches!(decision, Err(ApplicationFailure::Changed(_))),
+                "{decision:?}"
+            );
+            assert!(storage.load_allowlist().unwrap().publishers.is_empty());
+            let current = pending(&storage, &reviewed.application.pubkey_hex).unwrap();
+            assert_eq!(current.application, replacement);
+            assert_eq!(current.status, ApplicationStatus::Pending);
+            assert!(current.reviewer.is_none());
+        }
 
-        let rejected =
-            reject_reviewed(&storage, &replacement, "owner", "Describe your app", 103).unwrap();
-        assert_eq!(rejected.status, ApplicationStatus::Rejected);
-        assert_eq!(rejected.reason.as_deref(), Some("Describe your app"));
-        assert_eq!(rejected.reviewer.as_deref(), Some("owner"));
-        assert_eq!(rejected.application, replacement.application);
-    }
+        phase a_displayed_application_cannot_decide_a_newer_submission;
+        {
+            let (_directory, storage, reviewed, proofs) = review_fixture();
+            let replacement = submit(&storage, replacement(&reviewed), 101, &proofs).unwrap();
+            assert!(matches!(
+                approve_reviewed(&storage, &reviewed, "owner", 102, &proofs),
+                Err(ApplicationFailure::Changed(_))
+            ));
+            assert!(matches!(
+                reject_reviewed(
+                    &storage,
+                    &reviewed,
+                    "owner",
+                    "Feedback for the old request",
+                    102
+                ),
+                Err(ApplicationFailure::Changed(_))
+            ));
+            assert_eq!(
+                pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
+                replacement
+            );
+            assert!(storage.load_allowlist().unwrap().publishers.is_empty());
 
-    #[test]
-    fn an_unchanged_review_still_rechecks_proofs_and_approves_exact_namespaces() {
-        let (_directory, storage, reviewed, proofs) = review_fixture();
-        assert!(
-            approve_reviewed(&storage, &reviewed, "owner", 101, &FixedProofs::default()).is_err()
-        );
-        assert_eq!(
-            pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
-            reviewed
-        );
-        assert!(storage.load_allowlist().unwrap().publishers.is_empty());
-        let (approved, row) = approve_reviewed(&storage, &reviewed, "owner", 102, &proofs).unwrap();
-        assert_eq!(approved.status, ApplicationStatus::Approved);
-        assert_eq!(approved.application, reviewed.application);
-        assert_eq!(row.namespaces, ["com.example"]);
-        assert_eq!(approved.verified.first().unwrap().checked_at_unix, 102);
-        assert!(matches!(
-            reject_reviewed(&storage, &reviewed, "owner", "Stale rejection", 103),
-            Err(ApplicationFailure::NotPending(_))
-        ));
-        assert_eq!(
-            storage
-                .load_publisher_application(&row.pubkey_hex)
-                .unwrap()
-                .unwrap(),
-            approved
-        );
-    }
+            let rejected =
+                reject_reviewed(&storage, &replacement, "owner", "Describe your app", 103).unwrap();
+            assert_eq!(rejected.status, ApplicationStatus::Rejected);
+            assert_eq!(rejected.reason.as_deref(), Some("Describe your app"));
+            assert_eq!(rejected.reviewer.as_deref(), Some("owner"));
+            assert_eq!(rejected.application, replacement.application);
+        }
 
-    #[test]
-    fn each_claim_needs_its_proof_where_only_the_owner_can_write() {
-        let key = SigningKey::from_bytes(&[5; 32]);
-        let token = proof_token(&hex::encode(key.verifying_key().to_bytes()));
-        let now = 1_790_000_000;
-        let application = signed(
-            &key,
-            vec![
-                NamespaceClaim::Domain {
-                    domain: "example.com".into(),
-                },
-                NamespaceClaim::Domain {
-                    domain: "example.org".into(),
-                },
-                NamespaceClaim::Forge {
-                    forge: "codeberg".into(),
-                    account: "ada".into(),
-                },
-            ],
-            now,
-        );
-        let mut proofs = FixedProofs::default();
-        let missing = check_application(&application, now, &proofs).unwrap_err();
-        assert!(
-            missing.to_string().contains("_tilo-publisher.example.com"),
-            "{missing}"
-        );
+        phase an_unchanged_review_still_rechecks_proofs_and_approves_exact_namespaces;
+        {
+            let (_directory, storage, reviewed, proofs) = review_fixture();
+            assert!(
+                approve_reviewed(&storage, &reviewed, "owner", 101, &FixedProofs::default()).is_err()
+            );
+            assert_eq!(
+                pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
+                reviewed
+            );
+            assert!(storage.load_allowlist().unwrap().publishers.is_empty());
+            let (approved, row) = approve_reviewed(&storage, &reviewed, "owner", 102, &proofs).unwrap();
+            assert_eq!(approved.status, ApplicationStatus::Approved);
+            assert_eq!(approved.application, reviewed.application);
+            assert_eq!(row.namespaces, ["com.example"]);
+            assert_eq!(approved.verified.first().unwrap().checked_at_unix, 102);
+            assert!(matches!(
+                reject_reviewed(&storage, &reviewed, "owner", "Stale rejection", 103),
+                Err(ApplicationFailure::NotPending(_))
+            ));
+            assert_eq!(
+                storage
+                    .load_publisher_application(&row.pubkey_hex)
+                    .unwrap()
+                    .unwrap(),
+                approved
+            );
+        }
 
-        proofs.txt.insert(
-            "_tilo-publisher.example.com".into(),
-            vec!["v=spf1".into(), token.clone()],
-        );
-        proofs.https.insert(
-            "https://example.org/.well-known/tilo-publisher.txt".into(),
-            format!("# publisher keys\n{token}\n"),
-        );
-        proofs.https.insert(
-            "https://codeberg.org/api/v1/repos/ada/tilo-publisher/raw/tilo-publisher.txt".into(),
-            proof_token(&"ee".repeat(32)),
-        );
-        let wrong_key = check_application(&application, now, &proofs).unwrap_err();
-        assert!(matches!(
-            wrong_key,
-            ApplicationRejection::ProofMissing { ref namespace, .. } if namespace == "org.codeberg.ada"
-        ));
+        phase each_claim_needs_its_proof_where_only_the_owner_can_write;
+        {
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let token = proof_token(&hex::encode(key.verifying_key().to_bytes()));
+            let now = 1_790_000_000;
+            let application = signed(
+                &key,
+                vec![
+                    NamespaceClaim::Domain {
+                        domain: "example.com".into(),
+                    },
+                    NamespaceClaim::Domain {
+                        domain: "example.org".into(),
+                    },
+                    NamespaceClaim::Forge {
+                        forge: "codeberg".into(),
+                        account: "ada".into(),
+                    },
+                ],
+                now,
+            );
+            let mut proofs = FixedProofs::default();
+            let missing = check_application(&application, now, &proofs).unwrap_err();
+            assert!(
+                missing.to_string().contains("_tilo-publisher.example.com"),
+                "{missing}"
+            );
 
-        proofs.https.insert(
-            "https://codeberg.org/api/v1/repos/ada/tilo-publisher/raw/tilo-publisher.txt".into(),
-            token,
-        );
-        let verified = check_application(&application, now, &proofs).unwrap();
-        assert_eq!(
-            verified
-                .iter()
-                .map(|claim| (claim.namespace.as_str(), claim.method))
-                .collect::<Vec<_>>(),
-            [
-                ("com.example", ProofMethod::DnsTxt),
-                ("org.example", ProofMethod::WellKnown),
-                ("org.codeberg.ada", ProofMethod::Forge),
-            ]
-        );
-        assert!(matches!(
-            check_application(
-                &application,
-                now + MAX_APPLICATION_SKEW_SECONDS + 1,
-                &proofs
-            ),
-            Err(ApplicationRejection::Stale { .. })
-        ));
-        assert!(
-            check_proofs(
-                &application,
-                now + MAX_APPLICATION_SKEW_SECONDS + 1,
-                &proofs
-            )
-            .is_ok()
-        );
+            proofs.txt.insert(
+                "_tilo-publisher.example.com".into(),
+                vec!["v=spf1".into(), token.clone()],
+            );
+            proofs.https.insert(
+                "https://example.org/.well-known/tilo-publisher.txt".into(),
+                format!("# publisher keys\n{token}\n"),
+            );
+            proofs.https.insert(
+                "https://codeberg.org/api/v1/repos/ada/tilo-publisher/raw/tilo-publisher.txt".into(),
+                proof_token(&"ee".repeat(32)),
+            );
+            let wrong_key = check_application(&application, now, &proofs).unwrap_err();
+            assert!(matches!(
+                wrong_key,
+                ApplicationRejection::ProofMissing { ref namespace, .. } if namespace == "org.codeberg.ada"
+            ));
+
+            proofs.https.insert(
+                "https://codeberg.org/api/v1/repos/ada/tilo-publisher/raw/tilo-publisher.txt".into(),
+                token,
+            );
+            let verified = check_application(&application, now, &proofs).unwrap();
+            assert_eq!(
+                verified
+                    .iter()
+                    .map(|claim| (claim.namespace.as_str(), claim.method))
+                    .collect::<Vec<_>>(),
+                [
+                    ("com.example", ProofMethod::DnsTxt),
+                    ("org.example", ProofMethod::WellKnown),
+                    ("org.codeberg.ada", ProofMethod::Forge),
+                ]
+            );
+            assert!(matches!(
+                check_application(
+                    &application,
+                    now + MAX_APPLICATION_SKEW_SECONDS + 1,
+                    &proofs
+                ),
+                Err(ApplicationRejection::Stale { .. })
+            ));
+            assert!(
+                check_proofs(
+                    &application,
+                    now + MAX_APPLICATION_SKEW_SECONDS + 1,
+                    &proofs
+                )
+                .is_ok()
+            );
+        }
     }
 }

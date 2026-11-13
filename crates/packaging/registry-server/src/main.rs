@@ -2208,9 +2208,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
 
-    #[test]
-    fn bounded_parallel_map_orders_bounds_and_stops_on_error() {
-        // phase: bounded_parallel_map_preserves_order_and_respects_the_bound
+    tilo_test_env::scenario! {
+        fn bounded_parallel_map_orders_bounds_and_stops_on_error;
+
+        phase bounded_parallel_map_preserves_order_and_respects_the_bound;
         {
             let active = Arc::new(AtomicUsize::new(0));
             let peak = Arc::new(AtomicUsize::new(0));
@@ -2233,7 +2234,8 @@ mod tests {
             );
             assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
         }
-        // phase: bounded_parallel_map_stops_before_the_next_batch_after_an_error
+
+        phase bounded_parallel_map_stops_before_the_next_batch_after_an_error;
         {
             let calls = AtomicUsize::new(0);
             let error = bounded_parallel_map(
@@ -2255,13 +2257,10 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn artifact_collection_stages_complete_submissions_in_sorted_batches() {
-        // phase: collected_artifacts_are_sorted_and_duplicate_bytes_are_safe
+    tilo_test_env::scenario! {
+        fn artifact_collection_stages_complete_submissions_in_sorted_batches;
+
+        phase collected_artifacts_are_sorted_and_duplicate_bytes_are_safe;
         {
             let storage_dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(storage_dir.path()).unwrap();
@@ -2334,7 +2333,8 @@ mod tests {
             );
             assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
         }
-        // phase: a_failed_submission_stays_out_of_the_staged_batch
+
+        phase a_failed_submission_stays_out_of_the_staged_batch;
         {
             let storage_dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(storage_dir.path()).unwrap();
@@ -2410,7 +2410,8 @@ mod tests {
             persist_distinct_artifact(&storage, &Mutex::new(BTreeSet::new()), &digest, &bytes)
                 .unwrap();
         }
-        // phase: failed_collection_invalidates_an_older_staged_batch
+
+        phase failed_collection_invalidates_an_older_staged_batch;
         {
             let storage_dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(storage_dir.path()).unwrap();
@@ -2454,7 +2455,8 @@ mod tests {
             assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
             assert!(storage.load_staged_promotion().unwrap().is_none());
         }
-        // phase: staged_artifacts_are_selected_by_version_and_target
+
+        phase staged_artifacts_are_selected_by_version_and_target;
         {
             let target = |architecture: &str, isa: &str| RegistryTarget {
                 platform: registry_types::TILO_OS_PLATFORM.into(),
