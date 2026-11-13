@@ -315,6 +315,73 @@ impl Session {
                     .unwrap_or_default()
             })
         };
+        // What a text that names an app's type does when the text names nothing held: ask that
+        // app, through the search action its package tags `outside:<origin>.search` (shell.md §8,
+        // "Finding what to place"; search.md §7, "Who indexes"). The app's own action runs the
+        // text against its origin, and the session settles the query when the app's own search
+        // state leaves `searching` (`Arrangement::settle_queries`). The closure late-binds the
+        // session's search and the action host the way `find` does: both exist before any action
+        // runs.
+        // A cell the closure reads the session's services through, filled once they are mounted.
+        let origin_services: Rc<std::cell::OnceCell<Rc<RefCell<tilo_service::Services>>>> =
+            Rc::default();
+        let ask_origin: crate::arrangement::AskOrigin = {
+            let search = Rc::clone(&session_search);
+            let services = Rc::clone(&origin_services);
+            Rc::new(move |text: &str| {
+                let search = search.get()?;
+                let services = services.get()?;
+                let (app, kind, query) = search.origin_search(text)?;
+                // The app's own search action: the one its package tags `outside:<origin>.search`,
+                // on the resource it acts on. Running it asks the service for what the text names.
+                let (resource_id, action_id, held) = {
+                    let resources = services.borrow().resources();
+                    let found = resources
+                        .iter()
+                        .flat_map(leaves_of)
+                        .flat_map(|resource| {
+                            resource
+                                .actions
+                                .iter()
+                                .map(move |action| (resource, action))
+                        })
+                        .find(|(resource, action)| {
+                            app_of_resource(resource.id.as_str()).as_deref() == Some(app.as_str())
+                                && action
+                                    .contract
+                                    .outside_capabilities()
+                                    .any(|capability| capability.ends_with(".search"))
+                        })?;
+                    // What the app holds of the kind now, before it answers: what it holds
+                    // afterwards that it did not hold now is what the search found.
+                    let held: std::collections::BTreeSet<String> = resources
+                        .iter()
+                        .flat_map(leaves_of)
+                        .filter(|resource| resource.kind == kind)
+                        .map(|resource| resource.id.as_str().to_owned())
+                        .collect();
+                    (
+                        found.0.id.as_str().to_owned(),
+                        found.1.id.as_str().to_owned(),
+                        held,
+                    )
+                };
+                let arguments = serde_json::Map::from_iter([(
+                    "query".to_owned(),
+                    serde_json::Value::String(query),
+                )]);
+                // The invocation's own result: refused (`DoorError`) or failed (`DoorError::Failed`)
+                // is what the query stands `.failed` with; a run that was taken answers later into
+                // the app's records (shell.md §8).
+                let outcome = services
+                    .borrow_mut()
+                    .invoke(&resource_id, &action_id, &arguments)
+                    .unwrap_or(Ok(tilo_service::Started::Accepted))
+                    .map(|_started| ())
+                    .map_err(|error| error.to_string());
+                Some((app, kind, held, outcome))
+            })
+        };
         // What text that asks does (shell.md §8.1, "Asking from the canvas"):
         // the session's own ask, which reads Chat's record, the workspace in
         // front and its agents. It is answered here and reads what the
@@ -369,6 +436,7 @@ impl Session {
                 Rc::new(move || underway.get()),
                 find.clone(),
                 ask,
+                ask_origin,
             ),
         )));
         // What the person's settings say the desk shows: a device that kept
@@ -1079,6 +1147,7 @@ impl Session {
             service.seated(&options.person, &seat.earlier);
         }
         let services = mount_services(&mut doors, started);
+        let _ = origin_services.set(Rc::clone(&services));
         // A launch asks the services whether one runs the app's model, and
         // where one does names the resource it publishes, so the app launches
         // hosted and opens no record of its own
@@ -2371,4 +2440,23 @@ impl Drop for Session {
             launch.end_running();
         }
     }
+}
+
+/// Every resource of `resource` and its children: what an app publishes is found among these,
+/// as the app own search action and the kinds it holds are read off its records.
+fn leaves_of(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
+    let mut out = vec![resource];
+    for child in &resource.children {
+        out.extend(leaves_of(child));
+    }
+    out
+}
+
+/// The app a resource belongs to, from its address in the app: `tl:so.tilo.lang.tube:...` gives
+/// `so.tilo.lang.tube`; `None` for a resource that is no app own.
+fn app_of_resource(resource: &str) -> Option<String> {
+    resource
+        .strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(0x3a as char))
+        .map(|(app, _)| app.to_owned())
 }

@@ -30,6 +30,17 @@ fn the_row(key: Text) -> session.Row {
     return resource("shell:row:{key}", of: session.Row)
 }
 
+/// Show `found` in the place `place` while it shows a query: the same place, now the found
+/// resource (shell.md §8).
+action query_show(place: Text, found: host.Resource) {
+    session.show(place: the_place(place), resource: found)
+}
+
+/// Look for what the place `place`'s search names again.
+action query_retry(place: Text) {
+    session.retry_query(place: the_place(place))
+}
+
 /// The id of the workspace in front: the one whose windows the switcher walks and the overview
 /// shows as the desk's, as the desk's own fields name it.
 fn front_workspace(d: Desk) -> Text {
