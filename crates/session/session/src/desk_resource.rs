@@ -582,17 +582,16 @@ impl Desk {
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
             quiet: self.signals.quiet(),
-            workspace: tree
-                .active_workspace()
-                .map(|workspace| workspace.name.clone())
-                .unwrap_or_default(),
+            // A workspace is named the one way every reading of it names it: the name the person
+            // gave, or the desk's own word for one they have not named yet.
+            workspace: workspace_in_front(tree),
             strip: strip_in_front(tree),
             workspaces: tree
                 .workspaces
                 .iter()
                 .map(|workspace| shell::WorkspaceReading {
                     key: workspace.slot.0.to_string(),
-                    name: workspace.name.clone(),
+                    name: tilo_desktop_surface::names::workspace(&workspace.name),
                     current: workspace.slot == tree.active,
                 })
                 .collect(),
@@ -614,7 +613,7 @@ impl Desk {
                 .iter()
                 .map(|workspace| shell::RoomReading {
                     key: workspace.slot.0.to_string(),
-                    name: workspace.name.clone(),
+                    name: tilo_desktop_surface::names::workspace(&workspace.name),
                     current: workspace.slot == tree.active,
                     members: self.person.clone(),
                     present: 0,
@@ -753,6 +752,14 @@ fn notice_actions(
                 })
         })
         .collect()
+}
+
+/// The name of the workspace in front, as every reading of a workspace names it.
+fn workspace_in_front(tree: &DesktopTree) -> String {
+    tree.active_workspace().map_or_else(
+        || tilo_desktop_surface::names::workspace(""),
+        |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+    )
 }
 
 /// The name of the strip in front in the workspace in front, when it has one: what the bar names

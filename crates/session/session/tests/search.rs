@@ -500,13 +500,22 @@ fn searching_for_the_person_lists_no_action_of_the_desks_own() {
 
 /// The empty desk's welcome verbs are declared actions, so search offers
 /// the ones that bring people in or catch them up before anything is typed,
-/// and typing finds all six by the name on their cards. The cards that open
-/// an app are looked for by the app's own name: search already lists that
-/// app, and two rows to it say less than one.
+/// and typing finds all six by the name on their cards. A card that opens an
+/// app stands only where that app is installed here, and is no row of its
+/// own: search lists the app under its own name, and two rows to it say less
+/// than one.
 #[test]
 fn the_empty_search_offers_the_desks_welcome_verbs_and_typing_finds_them_all() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session_installing(
+        Rc::new(Host::default()),
+        &[
+            ("so.tilo.sheets", "Sheets"),
+            ("so.tilo.chat", "Chat"),
+            ("so.tilo.notes", "Notes"),
+            ("so.tilo.tasks", "Tasks"),
+        ],
+    );
     session.step(Duration::from_millis(1)).expect("step");
     invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
     await_search(&mut session, None);
@@ -521,10 +530,16 @@ fn the_empty_search_offers_the_desks_welcome_verbs_and_typing_finds_them_all() {
             "the empty search offers {offered}: {titles:?}"
         );
     }
-    for kept_back in ["Discuss", "Notes", "Tasks"] {
-        assert!(
-            !titles.contains(&kept_back.to_owned()),
-            "the empty search opens no app by a card's name ({kept_back}): {titles:?}"
+    assert!(
+        !titles.contains(&"Discuss".to_owned()),
+        "the empty search opens no app by a card's name: {titles:?}"
+    );
+    // The cards that open an app add no row of their own: each app stands once, by its own name.
+    for app in ["Chat", "Notes", "Tasks"] {
+        assert_eq!(
+            titles.iter().filter(|title| *title == app).count(),
+            1,
+            "the empty search lists {app} once, not again by its card's name: {titles:?}"
         );
     }
     // Typed, every one of them is found.
@@ -546,6 +561,31 @@ fn the_empty_search_offers_the_desks_welcome_verbs_and_typing_finds_them_all() {
                 .collect::<Vec<_>>()
         );
     }
+
+    // Starting a call is Chat's: on a desk without Chat it is no row, neither offered before
+    // anything is typed nor found by its name.
+    let mut without = session_installing(Rc::new(Host::default()), &[("so.tilo.sheets", "Sheets")]);
+    without.step(Duration::from_millis(1)).expect("step");
+    invoke(&mut without, DESK_RESOURCE, "search", serde_json::json!({}));
+    await_search(&mut without, None);
+    let titles: Vec<String> = rows(&without)
+        .into_iter()
+        .filter(|row| row.kind == SEARCH_ROW_KIND)
+        .map(|row| row.label)
+        .collect();
+    assert!(
+        !titles.iter().any(|title| title == "Start a call"),
+        "a desk without Chat offers no call: {titles:?}"
+    );
+    search_for(&mut without, "start a call");
+    assert!(
+        titled(&without, "Start a call").is_none(),
+        "and typing its name finds none: {:?}",
+        rows(&without)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A welcome card, the verb an agent reads in the catalogue and the row
