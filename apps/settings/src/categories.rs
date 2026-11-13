@@ -12,7 +12,7 @@ use ui::icons::Icon;
 /// category list a scannable structure rather than one flat run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Section {
-    /// Network, Bluetooth, Devices & sync: getting online and connected.
+    /// Network, Bluetooth, Sync between devices: getting online and connected.
     Connectivity,
     /// Displays, sound, the input devices, printers and power: the hardware
     /// in front of you.
@@ -447,13 +447,13 @@ mod tests {
                 Category::DeviceMesh,
                 "file transfer",
                 true,
-                "file transfer → Devices & Sync",
+                "file transfer → Sync between devices",
             ),
             (
                 Category::DeviceMesh,
                 "typed gamepad",
                 true,
-                "typed gamepad → Devices & Sync",
+                "typed gamepad → Sync between devices",
             ),
             (Category::Network, "battery", false, "non-matching keyword"),
             (Category::About, "wifi", false, "non-matching keyword"),

@@ -22,7 +22,7 @@ the server.
 podman compose up -d
 ```
 
-Open Settings → Devices & Sync on the trusted Tilo device and choose
+Open Settings → Sync between devices on the trusted Tilo device and choose
 **Pair home server**. Settings shows the server name and six-digit code; confirm
 that code on the server, then approve that exact device. The signed
 certificate, selected workspace IDs, file ticket, and signed live authority

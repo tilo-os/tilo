@@ -57,7 +57,7 @@ qs-devices-count = { $count ->
 }
 qs-devices-empty = Keine Ausgänge oder Geräte
 qs-devices-no-identity = Richte deine persönliche Identität ein, um Geräte zu verbinden
-qs-devices-settings = Einstellungen für Geräte & Sync
+qs-devices-settings = Abgleich zwischen Geräten
 qs-do-not-disturb = Bitte nicht stören
 qs-do-not-disturb-on = Benachrichtigungen zurückgehalten
 qs-edit-active-heading = Aktive Steuerungen

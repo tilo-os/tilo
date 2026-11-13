@@ -283,7 +283,7 @@ continuity-app-continuations-description = In einer App auf einem anderen Gerät
 # Speakers pane
 speakers-overview-title = Lautsprecher auf deinen Geräten
 speakers-overview-empty = Nutze Lautsprecher mehrerer deiner Geräte zusammen: als Stereopaar, Surround oder im ganzen Raum verteilt.
-speakers-media-off = Schalte Medien unter Geräte & Sync ein, um über Lautsprecher mehrerer deiner Geräte abzuspielen.
+speakers-media-off = Schalte Medien unter „Abgleich zwischen Geräten“ ein, um über Lautsprecher mehrerer deiner Geräte abzuspielen.
 speakers-begin = Lautsprecher einrichten
 speakers-member-summary = { $device } ({ $role })
 speakers-ready-count = { $ready } von { $total } bereit
@@ -307,7 +307,7 @@ speakers-arrangement-stereo-description = Zwei Lautsprecher spielen links und re
 speakers-arrangement-surround-description = Drei bis sechs Lautsprecher an festen Positionen
 speakers-arrangement-room-description = Lautsprecher beliebig um dich herum
 speakers-choose-title = Lautsprecher auswählen
-speakers-no-outputs = Keine Lautsprecher verfügbar. Schalte Medien unter Geräte & Sync auf jedem Gerät ein, das du nutzen möchtest.
+speakers-no-outputs = Keine Lautsprecher verfügbar. Schalte Medien unter „Abgleich zwischen Geräten“ auf jedem Gerät ein, das du nutzen möchtest.
 speakers-output-this-device = Dieses Gerät
 speakers-output-asks = Fragt beim Speichern auf diesem Gerät um Erlaubnis
 speakers-output-use = { $label } verwenden

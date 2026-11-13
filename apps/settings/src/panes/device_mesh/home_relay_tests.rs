@@ -1,4 +1,4 @@
-//! The home relay switches of Devices & Sync, against a stand-in host.
+//! The home relay switches of Sync between devices, against a stand-in host.
 
 use std::sync::Arc;
 

@@ -1,4 +1,4 @@
-//! Devices & Sync's home relay section: per workspace this device hosts, a
+//! The Sync between devices page's home relay section: per workspace this device hosts, a
 //! switch for whether the person's home relay hosts it too.
 //!
 //! What each switch shows is the workspace's own list of hosts, as the host

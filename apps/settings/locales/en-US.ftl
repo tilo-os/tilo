@@ -283,7 +283,7 @@ continuity-app-continuations-description = Pick up where you left off in an app 
 # Speakers pane
 speakers-overview-title = Speakers across your devices
 speakers-overview-empty = Use speakers on several of your devices together: a stereo pair, surround, or speakers around the room.
-speakers-media-off = Turn on Media in Devices & sync to play through speakers on several of your devices.
+speakers-media-off = Turn on Media in Sync between devices to play through speakers on several of your devices.
 speakers-begin = Set up speakers
 speakers-member-summary = { $device } ({ $role })
 speakers-ready-count = { $ready } of { $total } ready
@@ -307,7 +307,7 @@ speakers-arrangement-stereo-description = Two speakers play left and right
 speakers-arrangement-surround-description = Three to six speakers in named positions
 speakers-arrangement-room-description = Speakers placed anywhere around you
 speakers-choose-title = Choose speakers
-speakers-no-outputs = No speakers are available. Turn on Media in Devices & sync on each device you want to use.
+speakers-no-outputs = No speakers are available. Turn on Media in Sync between devices on each device you want to use.
 speakers-output-this-device = This device
 speakers-output-asks = Asks for approval on that device when you save
 speakers-output-use = Use { $label }
