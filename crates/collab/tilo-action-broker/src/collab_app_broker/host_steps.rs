@@ -569,9 +569,24 @@ impl AppBrokerState {
             }
             Ok(policy)
         })?;
+        // A step a run takes is the run's agent's, working on the run's issue, as the same agent's
+        // app action in the run is (`BrokerActor::admit_published_in`): the run host's connection
+        // is the agent's own, and a kept agent's connection works no single issue of its own.
+        let working;
+        let actor = match run {
+            Some(run)
+                if policy.is_agent()
+                    && policy.issue().is_none()
+                    && policy.id().strip_prefix("agent:").unwrap_or(policy.id()) == run.agent() =>
+            {
+                working = policy.clone().working_on(run.issue());
+                &working
+            }
+            _ => &policy,
+        };
         let step = HostStepRequest {
             workspace: workspace_id,
-            actor: &policy,
+            actor,
             address,
             argument: run_argument.as_deref(),
             task_run: run.map(|run| run as &dyn tilo_broker_core::steps::TaskRun),
