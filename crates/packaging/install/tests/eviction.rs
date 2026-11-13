@@ -118,152 +118,156 @@ fn cap(apps: u64) -> u64 {
     apps.saturating_mul(u64::try_from(APP_BYTES).unwrap())
 }
 
-/// The installed apps are over the cap and the app downloaded next is larger than the cap on its own:
-/// the sweep evicts every other app it may and still cannot get under, and must not evict the new one.
-#[test]
-fn a_large_app_installed_into_a_full_store_survives_the_sweep_and_opens() {
-    const NEW: &str = "so.tilo.eviction-large";
-    let fx = Fixture::new();
-    fx.fill(&[
-        ("so.tilo.eviction-a", 10),
-        ("so.tilo.eviction-b", 20),
-        ("so.tilo.eviction-c", 30),
-        ("so.tilo.eviction-d", 40),
-    ]);
-    assert!(
-        fx.store.disk_usage().unwrap().total_bytes > cap(3),
-        "past the cap"
-    );
-    let installed = fx.install(NEW, "1.0.0", 99, LARGE_BYTES);
+tilo_test_env::scenario! {
+    fn eviction_spares_apps_in_use;
 
-    // The app host keeps what its install just wrote.
-    let report = fx.collect(cap(3), vec![installed.id]);
+    phase a_large_app_installed_into_a_full_store_survives_the_sweep_and_opens;
+    // The installed apps are over the cap and the app downloaded next is larger than the cap on its own:
+    // the sweep evicts every other app it may and still cannot get under, and must not evict the new one.
+    {
+        const NEW: &str = "so.tilo.eviction-large";
+        let fx = Fixture::new();
+        fx.fill(&[
+            ("so.tilo.eviction-a", 10),
+            ("so.tilo.eviction-b", 20),
+            ("so.tilo.eviction-c", 30),
+            ("so.tilo.eviction-d", 40),
+        ]);
+        assert!(
+            fx.store.disk_usage().unwrap().total_bytes > cap(3),
+            "past the cap"
+        );
+        let installed = fx.install(NEW, "1.0.0", 99, LARGE_BYTES);
 
-    assert_eq!(
-        report.evicted,
-        [
-            "so.tilo.eviction-a",
-            "so.tilo.eviction-b",
-            "so.tilo.eviction-c",
-            "so.tilo.eviction-d"
-        ],
-        "every other app goes, least recently used first"
-    );
-    assert!(fx.opens(NEW), "the app just installed opens");
-    assert!(
-        fx.store.disk_usage().unwrap().total_bytes > cap(3),
-        "the store stays over the cap rather than evict the app being opened"
-    );
-}
+        // The app host keeps what its install just wrote.
+        let report = fx.collect(cap(3), vec![installed.id]);
 
-/// An update keeps the app's last use, so updating the least recently used app would make it the
-/// first the sweep evicts; `tilo-install` keeps every app its change wrote.
-#[test]
-fn an_updated_app_survives_the_sweep_its_update_runs_and_opens() {
-    const OLDEST: &str = "so.tilo.eviction-oldest";
-    let fx = Fixture::new();
-    fx.fill(&[
-        (OLDEST, 10),
-        ("so.tilo.eviction-b", 20),
-        ("so.tilo.eviction-c", 30),
-    ]);
-    let started = tilo_clock::unix_now();
-    let updated = fx.install(OLDEST, "2.0.0", 77, APP_BYTES);
-    assert_eq!(updated.last_used, 10, "an update is not a use");
+        assert_eq!(
+            report.evicted,
+            [
+                "so.tilo.eviction-a",
+                "so.tilo.eviction-b",
+                "so.tilo.eviction-c",
+                "so.tilo.eviction-d"
+            ],
+            "every other app goes, least recently used first"
+        );
+        assert!(fx.opens(NEW), "the app just installed opens");
+        assert!(
+            fx.store.disk_usage().unwrap().total_bytes > cap(3),
+            "the store stays over the cap rather than evict the app being opened"
+        );
+    }
 
-    let written = written_since(&fx.store, started).unwrap();
-    assert_eq!(written, [OLDEST], "only the update is new");
-    let report = fx.collect(cap(2), written);
+    phase an_updated_app_survives_the_sweep_its_update_runs_and_opens;
+    // An update keeps the app's last use, so updating the least recently used app would make it the
+    // first the sweep evicts; `tilo-install` keeps every app its change wrote.
+    {
+        const OLDEST: &str = "so.tilo.eviction-oldest";
+        let fx = Fixture::new();
+        fx.fill(&[
+            (OLDEST, 10),
+            ("so.tilo.eviction-b", 20),
+            ("so.tilo.eviction-c", 30),
+        ]);
+        let started = tilo_clock::unix_now();
+        let updated = fx.install(OLDEST, "2.0.0", 77, APP_BYTES);
+        assert_eq!(updated.last_used, 10, "an update is not a use");
 
-    assert_eq!(report.evicted, ["so.tilo.eviction-b"]);
-    assert!(fx.opens(OLDEST), "the app just updated opens");
-    assert_eq!(
-        fx.store.registry().unwrap().find(OLDEST).unwrap().version,
-        "2.0.0"
-    );
-}
+        let written = written_since(&fx.store, started).unwrap();
+        assert_eq!(written, [OLDEST], "only the update is new");
+        let report = fx.collect(cap(2), written);
 
-/// A launch holds an app's tree until its sandbox exits; the sweep leaves it alone and evicts the
-/// next one.
-#[test]
-fn an_app_being_opened_is_not_evicted() {
-    const OPENING: &str = "so.tilo.eviction-opening";
-    let fx = Fixture::new();
-    fx.fill(&[(OPENING, 10), ("so.tilo.eviction-idle", 20)]);
-    let row = fx.store.registry().unwrap().find(OPENING).cloned().unwrap();
-    let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
-        .unwrap()
-        .expect("a tree of the user's store is held");
-    // The launch began long ago, so its lease records no recent use.
-    launch.file().set_modified(long_ago()).unwrap();
+        assert_eq!(report.evicted, ["so.tilo.eviction-b"]);
+        assert!(fx.opens(OLDEST), "the app just updated opens");
+        assert_eq!(
+            fx.store.registry().unwrap().find(OLDEST).unwrap().version,
+            "2.0.0"
+        );
+    }
 
-    let report = fx.collect(cap(1), Vec::new());
+    phase an_app_being_opened_is_not_evicted;
+    // A launch holds an app's tree until its sandbox exits; the sweep leaves it alone and evicts the
+    // next one.
+    {
+        const OPENING: &str = "so.tilo.eviction-opening";
+        let fx = Fixture::new();
+        fx.fill(&[(OPENING, 10), ("so.tilo.eviction-idle", 20)]);
+        let row = fx.store.registry().unwrap().find(OPENING).cloned().unwrap();
+        let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
+            .unwrap()
+            .expect("a tree of the user's store is held");
+        // The launch began long ago, so its lease records no recent use.
+        launch.file().set_modified(long_ago()).unwrap();
 
-    assert_eq!(report.evicted, ["so.tilo.eviction-idle"]);
-    assert!(fx.installed(OPENING));
-    assert!(row.payload_root.is_dir());
-    drop(launch);
-}
+        let report = fx.collect(cap(1), Vec::new());
 
-/// The first app was opened weeks ago and stayed open until today; the second was opened once, last
-/// week. Recorded at open alone the first looks older and goes; recorded when it closed, the second
-/// goes.
-#[test]
-fn the_use_recorded_when_an_app_closes_decides_what_is_evicted() {
-    const KEPT_OPEN: &str = "so.tilo.eviction-kept-open";
-    const OPENED_ONCE: &str = "so.tilo.eviction-opened-once";
-    let fx = Fixture::new();
-    fx.fill(&[(KEPT_OPEN, 10), (OPENED_ONCE, 20)]);
-    let row = fx
-        .store
-        .registry()
-        .unwrap()
-        .find(KEPT_OPEN)
-        .cloned()
-        .unwrap();
-    let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
-        .unwrap()
-        .expect("a tree of the user's store is held");
-    launch.file().set_modified(long_ago()).unwrap();
-    assert_eq!(
-        fx.store.last_used(&row),
-        10,
-        "while open, its use is the open"
-    );
+        assert_eq!(report.evicted, ["so.tilo.eviction-idle"]);
+        assert!(fx.installed(OPENING));
+        assert!(row.payload_root.is_dir());
+        drop(launch);
+    }
 
-    // The app closes: the launcher records the use as it releases the tree.
-    package_store::lease::record_use(&launch).unwrap();
-    drop(launch);
-    assert!(fx.store.last_used(&row) > 20);
+    phase the_use_recorded_when_an_app_closes_decides_what_is_evicted;
+    // The first app was opened weeks ago and stayed open until today; the second was opened once, last
+    // week. Recorded at open alone the first looks older and goes; recorded when it closed, the second
+    // goes.
+    {
+        const KEPT_OPEN: &str = "so.tilo.eviction-kept-open";
+        const OPENED_ONCE: &str = "so.tilo.eviction-opened-once";
+        let fx = Fixture::new();
+        fx.fill(&[(KEPT_OPEN, 10), (OPENED_ONCE, 20)]);
+        let row = fx
+            .store
+            .registry()
+            .unwrap()
+            .find(KEPT_OPEN)
+            .cloned()
+            .unwrap();
+        let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
+            .unwrap()
+            .expect("a tree of the user's store is held");
+        launch.file().set_modified(long_ago()).unwrap();
+        assert_eq!(
+            fx.store.last_used(&row),
+            10,
+            "while open, its use is the open"
+        );
 
-    let report = fx.collect(cap(1), Vec::new());
+        // The app closes: the launcher records the use as it releases the tree.
+        package_store::lease::record_use(&launch).unwrap();
+        drop(launch);
+        assert!(fx.store.last_used(&row) > 20);
 
-    assert_eq!(report.evicted, [OPENED_ONCE]);
-    assert!(fx.opens(KEPT_OPEN));
-}
+        let report = fx.collect(cap(1), Vec::new());
 
-/// An app opened long ago stayed open while an update replaced the build it runs on. Its row names
-/// the new build, which nothing runs or holds, but the app is open: a later sweep evicts the idle
-/// app, not the open one.
-#[test]
-fn an_app_updated_while_open_is_not_evicted() {
-    const OPEN: &str = "so.tilo.eviction-open";
-    const IDLE: &str = "so.tilo.eviction-idle";
-    let fx = Fixture::new();
-    fx.fill(&[(OPEN, 10), (IDLE, 20)]);
-    let row = fx.store.registry().unwrap().find(OPEN).cloned().unwrap();
-    let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
-        .unwrap()
-        .expect("a tree of the user's store is held");
-    launch.file().set_modified(long_ago()).unwrap();
-    let updated = fx.install(OPEN, "2.0.0", 77, APP_BYTES);
-    assert_ne!(updated.payload_root, row.payload_root, "a new build");
-    assert!(row.payload_root.is_dir(), "the open build stays");
-    assert_eq!(fx.store.last_used(&updated), 10, "an update is not a use");
+        assert_eq!(report.evicted, [OPENED_ONCE]);
+        assert!(fx.opens(KEPT_OPEN));
+    }
 
-    let report = fx.collect(cap(1), Vec::new());
+    phase an_app_updated_while_open_is_not_evicted;
+    // An app opened long ago stayed open while an update replaced the build it runs on. Its row names
+    // the new build, which nothing runs or holds, but the app is open: a later sweep evicts the idle
+    // app, not the open one.
+    {
+        const OPEN: &str = "so.tilo.eviction-open";
+        const IDLE: &str = "so.tilo.eviction-idle";
+        let fx = Fixture::new();
+        fx.fill(&[(OPEN, 10), (IDLE, 20)]);
+        let row = fx.store.registry().unwrap().find(OPEN).cloned().unwrap();
+        let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
+            .unwrap()
+            .expect("a tree of the user's store is held");
+        launch.file().set_modified(long_ago()).unwrap();
+        let updated = fx.install(OPEN, "2.0.0", 77, APP_BYTES);
+        assert_ne!(updated.payload_root, row.payload_root, "a new build");
+        assert!(row.payload_root.is_dir(), "the open build stays");
+        assert_eq!(fx.store.last_used(&updated), 10, "an update is not a use");
 
-    assert_eq!(report.evicted, [IDLE]);
-    assert!(fx.installed(OPEN));
-    drop(launch);
+        let report = fx.collect(cap(1), Vec::new());
+
+        assert_eq!(report.evicted, [IDLE]);
+        assert!(fx.installed(OPEN));
+        drop(launch);
+    }
 }

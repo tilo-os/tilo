@@ -142,284 +142,284 @@ impl TestEnv {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
-fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
+tilo_test_env::scenario! {
+    fn publisher_trust_gates_installs;
+
+    phase required_attestors_gate_installs_with_optional_self_signed_fallback;
     {
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let manifest = manifest(&publisher_pub_hex);
+        {
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let manifest = manifest(&publisher_pub_hex);
 
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
 
-        let tapp_path = env.home.path().join("app.tapp");
-        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+            let tapp_path = env.home.path().join("app.tapp");
+            build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-        env.write_trusted_attestors(&TrustedAttestors::default());
-        env.write_revocation(&RevocationList::default());
+            env.write_trusted_attestors(&TrustedAttestors::default());
+            env.write_revocation(&RevocationList::default());
 
-        let (ok, _stdout, stderr) =
-            env.install(&tapp_path, &["--require-attestor", "tilo-curated/2026.07"]);
-        assert!(!ok, "expected refusal, stderr: {stderr}");
-        assert!(
-            stderr.contains("--require-attestor")
-                && (stderr.contains("self-signed")
-                    || stderr.contains("verified as")
-                    || stderr.contains("policy refused")),
-            "unexpected stderr: {stderr}"
-        );
-    }
-    {
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let (attestor_sk, attestor_pub_hex) = fresh_key();
+            let (ok, _stdout, stderr) =
+                env.install(&tapp_path, &["--require-attestor", "tilo-curated/2026.07"]);
+            assert!(!ok, "expected refusal, stderr: {stderr}");
+            assert!(
+                stderr.contains("--require-attestor")
+                    && (stderr.contains("self-signed")
+                        || stderr.contains("verified as")
+                        || stderr.contains("policy refused")),
+                "unexpected stderr: {stderr}"
+            );
+        }
+        {
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let (attestor_sk, attestor_pub_hex) = fresh_key();
 
-        let mut manifest = manifest(&publisher_pub_hex);
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
-        attest_and_inject(
-            &mut manifest,
-            payload_dir.path(),
-            &publisher_sk,
-            "tilo-curated/2026.07",
-            &attestor_sk,
-        );
-
-        let tapp_path = env.home.path().join("app.tapp");
-        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-
-        env.write_trusted_attestors(&TrustedAttestors {
-            attestor: vec![TrustedAttestor {
-                id: "tilo-curated/2026.07".into(),
-                pubkey_hex: attestor_pub_hex,
-                scope: AttestorScope::All,
-            }],
-        });
-        env.write_revocation(&RevocationList::default());
-
-        let (ok, stdout, stderr) =
-            env.install(&tapp_path, &["--require-attestor", "tilo-curated/2026.07"]);
-        assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
-        assert!(stdout.contains("installed:"), "stdout: {stdout}");
-        assert!(stdout.contains("attested"), "stdout: {stdout}");
-    }
-    {
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let (attestor_sk, attestor_pub_hex) = fresh_key();
-
-        let mut manifest = manifest(&publisher_pub_hex);
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
-        attest_and_inject(
-            &mut manifest,
-            payload_dir.path(),
-            &publisher_sk,
-            "tilo-curated/2026.07",
-            &attestor_sk,
-        );
-
-        let tapp_path = env.home.path().join("app.tapp");
-        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-
-        env.write_trusted_attestors(&TrustedAttestors {
-            attestor: vec![TrustedAttestor {
-                id: "tilo-curated/2026.07".into(),
-                pubkey_hex: attestor_pub_hex,
-                scope: AttestorScope::All,
-            }],
-        });
-        env.write_revocation(&RevocationList::default());
-
-        let (ok, stdout, stderr) = env.install(
-            &tapp_path,
-            &[
-                "--require-attestor",
+            let mut manifest = manifest(&publisher_pub_hex);
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
+            attest_and_inject(
+                &mut manifest,
+                payload_dir.path(),
+                &publisher_sk,
                 "tilo-curated/2026.07",
-                "--allow-self-signed",
-            ],
-        );
-        assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
-        // The printed "attested" line proves the attestor path took priority.
-        assert!(stdout.contains("attested"), "stdout: {stdout}");
-    }
-    {
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let manifest = manifest(&publisher_pub_hex);
+                &attestor_sk,
+            );
 
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
+            let tapp_path = env.home.path().join("app.tapp");
+            build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-        let tapp_path = env.home.path().join("app.tapp");
-        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+            env.write_trusted_attestors(&TrustedAttestors {
+                attestor: vec![TrustedAttestor {
+                    id: "tilo-curated/2026.07".into(),
+                    pubkey_hex: attestor_pub_hex,
+                    scope: AttestorScope::All,
+                }],
+            });
+            env.write_revocation(&RevocationList::default());
 
-        env.write_trusted_attestors(&TrustedAttestors::default());
-        env.write_revocation(&RevocationList::default());
+            let (ok, stdout, stderr) =
+                env.install(&tapp_path, &["--require-attestor", "tilo-curated/2026.07"]);
+            assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
+            assert!(stdout.contains("installed:"), "stdout: {stdout}");
+            assert!(stdout.contains("attested"), "stdout: {stdout}");
+        }
+        {
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let (attestor_sk, attestor_pub_hex) = fresh_key();
 
-        let (ok, stdout, stderr) = env.install(
-            &tapp_path,
-            &[
-                "--require-attestor",
+            let mut manifest = manifest(&publisher_pub_hex);
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
+            attest_and_inject(
+                &mut manifest,
+                payload_dir.path(),
+                &publisher_sk,
                 "tilo-curated/2026.07",
-                "--allow-self-signed",
-            ],
-        );
-        assert!(
-            ok,
-            "expected success (allow-self-signed fallback), stderr: {stderr}"
-        );
-        assert!(stdout.contains("installed:"), "stdout: {stdout}");
-        assert!(
-            stderr.contains("--allow-self-signed permits") || stderr.contains("unmatched"),
-            "stderr: {stderr}"
-        );
+                &attestor_sk,
+            );
+
+            let tapp_path = env.home.path().join("app.tapp");
+            build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+            env.write_trusted_attestors(&TrustedAttestors {
+                attestor: vec![TrustedAttestor {
+                    id: "tilo-curated/2026.07".into(),
+                    pubkey_hex: attestor_pub_hex,
+                    scope: AttestorScope::All,
+                }],
+            });
+            env.write_revocation(&RevocationList::default());
+
+            let (ok, stdout, stderr) = env.install(
+                &tapp_path,
+                &[
+                    "--require-attestor",
+                    "tilo-curated/2026.07",
+                    "--allow-self-signed",
+                ],
+            );
+            assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
+            // The printed "attested" line proves the attestor path took priority.
+            assert!(stdout.contains("attested"), "stdout: {stdout}");
+        }
+        {
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let manifest = manifest(&publisher_pub_hex);
+
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
+
+            let tapp_path = env.home.path().join("app.tapp");
+            build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+            env.write_trusted_attestors(&TrustedAttestors::default());
+            env.write_revocation(&RevocationList::default());
+
+            let (ok, stdout, stderr) = env.install(
+                &tapp_path,
+                &[
+                    "--require-attestor",
+                    "tilo-curated/2026.07",
+                    "--allow-self-signed",
+                ],
+            );
+            assert!(
+                ok,
+                "expected success (allow-self-signed fallback), stderr: {stderr}"
+            );
+            assert!(stdout.contains("installed:"), "stdout: {stdout}");
+            assert!(
+                stderr.contains("--allow-self-signed permits") || stderr.contains("unmatched"),
+                "stderr: {stderr}"
+            );
+        }
     }
-}
 
-#[test]
-fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys() {
+    phase publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys;
     {
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let manifest = manifest(&publisher_pub_hex);
+        {
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let manifest = manifest(&publisher_pub_hex);
 
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
 
-        let tapp_path = env.home.path().join("app.tapp");
-        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+            let tapp_path = env.home.path().join("app.tapp");
+            build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-        env.write_trusted_attestors(&TrustedAttestors::default());
-        env.write_revocation(&RevocationList {
-            revoked: vec![RevokedKey {
-                pubkey_hex: publisher_pub_hex,
-                reason: "compromised 2026-07-05".into(),
-            }],
-        });
+            env.write_trusted_attestors(&TrustedAttestors::default());
+            env.write_revocation(&RevocationList {
+                revoked: vec![RevokedKey {
+                    pubkey_hex: publisher_pub_hex,
+                    reason: "compromised 2026-07-05".into(),
+                }],
+            });
 
-        let (ok, _stdout, stderr) = env.install(&tapp_path, &[]);
-        assert!(!ok, "expected refusal, stderr: {stderr}");
-        assert!(
-            stderr.contains("revoked") || stderr.contains("REFUSED"),
-            "stderr: {stderr}"
-        );
+            let (ok, _stdout, stderr) = env.install(&tapp_path, &[]);
+            assert!(!ok, "expected refusal, stderr: {stderr}");
+            assert!(
+                stderr.contains("revoked") || stderr.contains("REFUSED"),
+                "stderr: {stderr}"
+            );
+        }
+        {
+            // No flags: warn on a self-signed package and proceed.
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let manifest = manifest(&publisher_pub_hex);
+
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
+
+            let tapp_path = env.home.path().join("app.tapp");
+            build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+
+            env.write_trusted_attestors(&TrustedAttestors::default());
+            env.write_revocation(&RevocationList::default());
+
+            let (ok, stdout, stderr) = env.install(&tapp_path, &[]);
+            assert!(ok, "expected success, stderr: {stderr}");
+            assert!(stdout.contains("installed:"), "stdout: {stdout}");
+            assert!(
+                stderr.contains("self-signed") || stderr.contains("WARN"),
+                "stderr: {stderr}"
+            );
+        }
+        {
+            let env = TestEnv::new();
+            let (publisher_sk, publisher_pub_hex) = fresh_key();
+            let manifest = manifest(&publisher_pub_hex);
+            let payload_dir = tempfile::tempdir().unwrap();
+            write_payload(payload_dir.path());
+            let tapp_path = env.home.path().join("app.tapp");
+            let package_root = build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+            env.write_trusted_attestors(&TrustedAttestors::default());
+            env.write_revocation(&RevocationList::default());
+
+            let (ok, _stdout, stderr) =
+                env.install(&tapp_path, &["--require-publisher", &"11".repeat(32)]);
+            assert!(!ok, "a different publisher key must be refused");
+            assert!(
+                stderr.contains("does not match --require-publisher"),
+                "{stderr}"
+            );
+
+            let (ok, _stdout, stderr) = env.install(
+                &tapp_path,
+                &[
+                    "--require-publisher",
+                    &publisher_pub_hex,
+                    "--require-package-root",
+                    &"22".repeat(32),
+                ],
+            );
+            assert!(!ok, "a different signed root must be refused");
+            assert!(
+                stderr.contains("does not match --require-package-root"),
+                "{stderr}"
+            );
+
+            let (ok, stdout, stderr) = env.install(
+                &tapp_path,
+                &[
+                    "--require-publisher",
+                    &publisher_pub_hex,
+                    "--require-package-root",
+                    &package_root.to_hex(),
+                ],
+            );
+            assert!(ok, "matching publisher should install: {stderr}");
+            assert!(stdout.contains("installed:"));
+        }
     }
+
+    phase trust_store_commands_round_trip;
     {
-        // No flags: warn on a self-signed package and proceed.
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let manifest = manifest(&publisher_pub_hex);
+        {
+            let env = TestEnv::new();
+            let pubkey = "aa".repeat(32);
 
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
+            let (ok, stdout, stderr) =
+                env.cli(&["trust", "add", "--id", "acme/1", "--pubkey", &pubkey]);
+            assert!(ok, "trust add failed: {stderr}");
+            assert!(stdout.contains("acme/1"), "stdout: {stdout}");
 
-        let tapp_path = env.home.path().join("app.tapp");
-        build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
+            let (ok, stdout, _stderr) = env.cli(&["trust", "list"]);
+            assert!(ok);
+            assert!(stdout.contains("acme/1"), "list stdout: {stdout}");
+            assert!(
+                stdout.contains(&pubkey),
+                "list stdout missing key: {stdout}"
+            );
 
-        env.write_trusted_attestors(&TrustedAttestors::default());
-        env.write_revocation(&RevocationList::default());
+            let (ok, _stdout, stderr) = env.cli(&["trust", "remove", "acme/1"]);
+            assert!(ok, "trust remove failed: {stderr}");
 
-        let (ok, stdout, stderr) = env.install(&tapp_path, &[]);
-        assert!(ok, "expected success, stderr: {stderr}");
-        assert!(stdout.contains("installed:"), "stdout: {stdout}");
-        assert!(
-            stderr.contains("self-signed") || stderr.contains("WARN"),
-            "stderr: {stderr}"
-        );
-    }
-    {
-        let env = TestEnv::new();
-        let (publisher_sk, publisher_pub_hex) = fresh_key();
-        let manifest = manifest(&publisher_pub_hex);
-        let payload_dir = tempfile::tempdir().unwrap();
-        write_payload(payload_dir.path());
-        let tapp_path = env.home.path().join("app.tapp");
-        let package_root = build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
-        env.write_trusted_attestors(&TrustedAttestors::default());
-        env.write_revocation(&RevocationList::default());
+            let (ok, stdout, _stderr) = env.cli(&["trust", "list"]);
+            assert!(ok);
+            assert!(
+                stdout.contains("(no trusted attestors)"),
+                "stdout: {stdout}"
+            );
+        }
+        {
+            let env = TestEnv::new();
+            let pubkey = "bb".repeat(32);
 
-        let (ok, _stdout, stderr) =
-            env.install(&tapp_path, &["--require-publisher", &"11".repeat(32)]);
-        assert!(!ok, "a different publisher key must be refused");
-        assert!(
-            stderr.contains("does not match --require-publisher"),
-            "{stderr}"
-        );
+            let (ok, stdout, stderr) = env.cli(&["revoke", &pubkey, "--reason", "compromised"]);
+            assert!(ok, "revoke failed: {stderr}");
+            assert!(stdout.contains(&pubkey), "stdout: {stdout}");
 
-        let (ok, _stdout, stderr) = env.install(
-            &tapp_path,
-            &[
-                "--require-publisher",
-                &publisher_pub_hex,
-                "--require-package-root",
-                &"22".repeat(32),
-            ],
-        );
-        assert!(!ok, "a different signed root must be refused");
-        assert!(
-            stderr.contains("does not match --require-package-root"),
-            "{stderr}"
-        );
-
-        let (ok, stdout, stderr) = env.install(
-            &tapp_path,
-            &[
-                "--require-publisher",
-                &publisher_pub_hex,
-                "--require-package-root",
-                &package_root.to_hex(),
-            ],
-        );
-        assert!(ok, "matching publisher should install: {stderr}");
-        assert!(stdout.contains("installed:"));
-    }
-}
-
-#[test]
-fn trust_store_commands_round_trip() {
-    {
-        let env = TestEnv::new();
-        let pubkey = "aa".repeat(32);
-
-        let (ok, stdout, stderr) =
-            env.cli(&["trust", "add", "--id", "acme/1", "--pubkey", &pubkey]);
-        assert!(ok, "trust add failed: {stderr}");
-        assert!(stdout.contains("acme/1"), "stdout: {stdout}");
-
-        let (ok, stdout, _stderr) = env.cli(&["trust", "list"]);
-        assert!(ok);
-        assert!(stdout.contains("acme/1"), "list stdout: {stdout}");
-        assert!(
-            stdout.contains(&pubkey),
-            "list stdout missing key: {stdout}"
-        );
-
-        let (ok, _stdout, stderr) = env.cli(&["trust", "remove", "acme/1"]);
-        assert!(ok, "trust remove failed: {stderr}");
-
-        let (ok, stdout, _stderr) = env.cli(&["trust", "list"]);
-        assert!(ok);
-        assert!(
-            stdout.contains("(no trusted attestors)"),
-            "stdout: {stdout}"
-        );
-    }
-    {
-        let env = TestEnv::new();
-        let pubkey = "bb".repeat(32);
-
-        let (ok, stdout, stderr) = env.cli(&["revoke", &pubkey, "--reason", "compromised"]);
-        assert!(ok, "revoke failed: {stderr}");
-        assert!(stdout.contains(&pubkey), "stdout: {stdout}");
-
-        let (ok, stdout, _stderr) = env.cli(&["revoked", "list"]);
-        assert!(ok);
-        assert!(stdout.contains(&pubkey), "list stdout: {stdout}");
-        assert!(stdout.contains("compromised"), "list stdout: {stdout}");
+            let (ok, stdout, _stderr) = env.cli(&["revoked", "list"]);
+            assert!(ok);
+            assert!(stdout.contains(&pubkey), "list stdout: {stdout}");
+            assert!(stdout.contains("compromised"), "list stdout: {stdout}");
+        }
     }
 }

@@ -180,156 +180,160 @@ fn pub_hex(key: &SigningKey) -> String {
     hex::encode(key.verifying_key().to_bytes())
 }
 
-#[test]
-fn an_image_app_updates_rolls_back_and_returns_to_the_image() {
-    let machine = Machine::new();
-    let baked = machine.tapp("0.1.10", &machine.image_key);
-    let (ok, out) =
-        machine.image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(ok, "{out}");
+tilo_test_env::scenario! {
+    fn image_apps_update_beside_the_image_copy;
 
-    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+    phase an_image_app_updates_rolls_back_and_returns_to_the_image;
+    {
+        let machine = Machine::new();
+        let baked = machine.tapp("0.1.10", &machine.image_key);
+        let (ok, out) =
+            machine.image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(ok, "{out}");
 
-    let (ok, out) = machine.session(&["install", baked.to_str().unwrap(), "--allow-self-signed"]);
-    assert!(!ok && out.contains("already installed"), "{out}");
+        assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
 
-    // The registry signs with its own publisher, which the signed entry authorises.
-    let newer = machine.tapp("0.1.12", &machine.registry_key);
-    let (ok, out) = machine.session(&["update", APP, "--from", newer.to_str().unwrap()]);
-    assert!(
-        !ok && out.contains("changed publisher"),
-        "a local file may not change the publisher unasked: {out}"
-    );
-    let (ok, out) = machine.session(&[
-        "update",
-        APP,
-        "--from",
-        newer.to_str().unwrap(),
-        "--require-publisher",
-        &pub_hex(&machine.registry_key),
-        "--allow-self-signed",
-    ]);
-    assert!(ok, "{out}");
-    assert!(out.contains("0.1.10 -> 0.1.12"), "{out}");
-    assert_eq!(machine.listed(), ("0.1.12".into(), "user".into()));
-    assert_eq!(machine.running_payload(), b"0.1.12");
-    assert!(
-        machine.image_store().join("registry.toml").exists(),
-        "the image's store is never written"
-    );
+        let (ok, out) = machine.session(&["install", baked.to_str().unwrap(), "--allow-self-signed"]);
+        assert!(!ok && out.contains("already installed"), "{out}");
 
-    let older = machine.tapp("0.1.9", &machine.registry_key);
-    let (ok, out) = machine.session(&[
-        "update",
-        APP,
-        "--from",
-        older.to_str().unwrap(),
-        "--require-publisher",
-        &pub_hex(&machine.registry_key),
-        "--allow-self-signed",
-        "--allow-downgrade",
-    ]);
-    assert!(ok, "{out}");
-    assert_eq!(machine.listed(), ("0.1.9".into(), "held".into()));
-    assert_eq!(machine.running_payload(), b"0.1.9");
-
-    let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
-    assert!(ok, "{out}");
-    assert!(out.contains("from the system image"), "{out}");
-    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
-    assert_eq!(machine.running_payload(), b"0.1.10");
-
-    let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
-    assert!(!ok && out.contains("ships with the system image"), "{out}");
-}
-
-#[test]
-fn an_image_update_supersedes_an_older_user_copy() {
-    let machine = Machine::new();
-    let baked = machine.tapp("0.1.10", &machine.image_key);
-    assert!(
-        machine
-            .image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"])
-            .0
-    );
-    let newer = machine.tapp("0.1.12", &machine.image_key);
-    let (ok, out) = machine.session(&[
-        "update",
-        APP,
-        "--from",
-        newer.to_str().unwrap(),
-        "--allow-self-signed",
-    ]);
-    assert!(ok, "{out}");
-    assert_eq!(machine.listed(), ("0.1.12".into(), "user".into()));
-
-    // The next image ships a newer version, which runs instead of the user's older copy.
-    let next_image = machine.tapp("0.1.20", &machine.image_key);
-    let (ok, out) = machine.image_build(&[
-        "install",
-        next_image.to_str().unwrap(),
-        "--allow-self-signed",
-        "--force",
-    ]);
-    assert!(ok, "{out}");
-    assert_eq!(machine.listed(), ("0.1.20".into(), "image".into()));
-    assert_eq!(machine.running_payload(), b"0.1.20");
-
-    let (ok, out) = machine.session(&["update"]);
-    // No registries are configured, so updating fails; the stale copy is gone either way.
-    assert!(
-        out.contains("the system image ships a newer version; removed this copy"),
-        "{ok} {out}"
-    );
-    let user_rows =
-        package_store::Registry::load(&machine.data().join("tilo-apps/registry.toml")).unwrap();
-    assert!(user_rows.find(APP).is_none(), "{user_rows:?}");
-    assert_eq!(machine.listed(), ("0.1.20".into(), "image".into()));
-}
-
-#[test]
-fn an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback() {
-    let machine = Machine::new();
-    let baked = machine.tapp_requiring("0.1.10", &machine.image_key, Some(1));
-    assert!(
-        machine
-            .image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"])
-            .0
-    );
-    machine.serve_system(1);
-    let update = |tapp: &PathBuf| {
-        machine.session(&[
+        // The registry signs with its own publisher, which the signed entry authorises.
+        let newer = machine.tapp("0.1.12", &machine.registry_key);
+        let (ok, out) = machine.session(&["update", APP, "--from", newer.to_str().unwrap()]);
+        assert!(
+            !ok && out.contains("changed publisher"),
+            "a local file may not change the publisher unasked: {out}"
+        );
+        let (ok, out) = machine.session(&[
             "update",
             APP,
             "--from",
-            tapp.to_str().unwrap(),
+            newer.to_str().unwrap(),
             "--require-publisher",
             &pub_hex(&machine.registry_key),
             "--allow-self-signed",
-        ])
-    };
+        ]);
+        assert!(ok, "{out}");
+        assert!(out.contains("0.1.10 -> 0.1.12"), "{out}");
+        assert_eq!(machine.listed(), ("0.1.12".into(), "user".into()));
+        assert_eq!(machine.running_payload(), b"0.1.12");
+        assert!(
+            machine.image_store().join("registry.toml").exists(),
+            "the image's store is never written"
+        );
 
-    let for_newer_os = machine.tapp_requiring("0.2.0", &machine.registry_key, Some(2));
-    let (ok, out) = update(&for_newer_os);
-    assert!(!ok, "{out}");
-    assert!(
-        out.contains("system@2 (this system provides system@1)"),
-        "{out}"
-    );
-    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+        let older = machine.tapp("0.1.9", &machine.registry_key);
+        let (ok, out) = machine.session(&[
+            "update",
+            APP,
+            "--from",
+            older.to_str().unwrap(),
+            "--require-publisher",
+            &pub_hex(&machine.registry_key),
+            "--allow-self-signed",
+            "--allow-downgrade",
+        ]);
+        assert!(ok, "{out}");
+        assert_eq!(machine.listed(), ("0.1.9".into(), "held".into()));
+        assert_eq!(machine.running_payload(), b"0.1.9");
 
-    machine.serve_system(2);
-    let (ok, out) = update(&for_newer_os);
-    assert!(ok, "{out}");
-    assert_eq!(machine.listed(), ("0.2.0".into(), "user".into()));
+        let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
+        assert!(ok, "{out}");
+        assert!(out.contains("from the system image"), "{out}");
+        assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+        assert_eq!(machine.running_payload(), b"0.1.10");
 
-    machine.serve_system(1);
-    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+        let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
+        assert!(!ok && out.contains("ships with the system image"), "{out}");
+    }
 
-    let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
-    assert!(ok, "{out}");
-    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
-    let user_rows =
-        package_store::Registry::load(&machine.data().join("tilo-apps/registry.toml")).unwrap();
-    assert!(user_rows.find(APP).is_none(), "{user_rows:?}");
+    phase an_image_update_supersedes_an_older_user_copy;
+    {
+        let machine = Machine::new();
+        let baked = machine.tapp("0.1.10", &machine.image_key);
+        assert!(
+            machine
+                .image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"])
+                .0
+        );
+        let newer = machine.tapp("0.1.12", &machine.image_key);
+        let (ok, out) = machine.session(&[
+            "update",
+            APP,
+            "--from",
+            newer.to_str().unwrap(),
+            "--allow-self-signed",
+        ]);
+        assert!(ok, "{out}");
+        assert_eq!(machine.listed(), ("0.1.12".into(), "user".into()));
+
+        // The next image ships a newer version, which runs instead of the user's older copy.
+        let next_image = machine.tapp("0.1.20", &machine.image_key);
+        let (ok, out) = machine.image_build(&[
+            "install",
+            next_image.to_str().unwrap(),
+            "--allow-self-signed",
+            "--force",
+        ]);
+        assert!(ok, "{out}");
+        assert_eq!(machine.listed(), ("0.1.20".into(), "image".into()));
+        assert_eq!(machine.running_payload(), b"0.1.20");
+
+        let (ok, out) = machine.session(&["update"]);
+        // No registries are configured, so updating fails; the stale copy is gone either way.
+        assert!(
+            out.contains("the system image ships a newer version; removed this copy"),
+            "{ok} {out}"
+        );
+        let user_rows =
+            package_store::Registry::load(&machine.data().join("tilo-apps/registry.toml")).unwrap();
+        assert!(user_rows.find(APP).is_none(), "{user_rows:?}");
+        assert_eq!(machine.listed(), ("0.1.20".into(), "image".into()));
+    }
+
+    phase an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback;
+    {
+        let machine = Machine::new();
+        let baked = machine.tapp_requiring("0.1.10", &machine.image_key, Some(1));
+        assert!(
+            machine
+                .image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"])
+                .0
+        );
+        machine.serve_system(1);
+        let update = |tapp: &PathBuf| {
+            machine.session(&[
+                "update",
+                APP,
+                "--from",
+                tapp.to_str().unwrap(),
+                "--require-publisher",
+                &pub_hex(&machine.registry_key),
+                "--allow-self-signed",
+            ])
+        };
+
+        let for_newer_os = machine.tapp_requiring("0.2.0", &machine.registry_key, Some(2));
+        let (ok, out) = update(&for_newer_os);
+        assert!(!ok, "{out}");
+        assert!(
+            out.contains("system@2 (this system provides system@1)"),
+            "{out}"
+        );
+        assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+
+        machine.serve_system(2);
+        let (ok, out) = update(&for_newer_os);
+        assert!(ok, "{out}");
+        assert_eq!(machine.listed(), ("0.2.0".into(), "user".into()));
+
+        machine.serve_system(1);
+        assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+
+        let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
+        assert!(ok, "{out}");
+        assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+        let user_rows =
+            package_store::Registry::load(&machine.data().join("tilo-apps/registry.toml")).unwrap();
+        assert!(user_rows.find(APP).is_none(), "{user_rows:?}");
+    }
 }

@@ -99,93 +99,97 @@ fn run(home: &Path, key: &SigningKey, args: &[&std::ffi::OsStr]) -> (bool, Strin
     )
 }
 
-#[test]
-fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
-    let home = tempfile::tempdir().unwrap();
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let first = pack_of(
-        home.path(),
-        &key,
-        "2026.10.1",
-        &[
-            ("settings.ftl", "settings-title = Einstellungen\n"),
-            ("files.ftl", "files-title = Dateien\n"),
-        ],
-    );
-    let (ok, out) = install(home.path(), &key, &first);
-    assert!(ok, "{out}");
-    let installed = home.path().join("data/tilo/language-packs/de-DE");
-    assert_eq!(
-        std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
-        "settings-title = Einstellungen\n"
-    );
+tilo_test_env::scenario! {
+    fn language_packs_install_their_catalogues;
 
-    // The next version replaces the catalogues whole: one it no longer carries is gone.
-    let second = pack_of(
-        home.path(),
-        &key,
-        "2026.10.2",
-        &[("settings.ftl", "settings-title = Systemeinstellungen\n")],
-    );
-    let (ok, out) = update(home.path(), &key, &second);
-    assert!(ok, "{out}");
-    let (ok, out) = update(home.path(), &key, &second);
-    assert!(ok && out.contains("already current"), "{out}");
-    assert_eq!(
-        std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
-        "settings-title = Systemeinstellungen\n"
-    );
-    assert!(!installed.join("files.ftl").exists());
-    let root = home.path().join("data/tilo/language-packs");
-    let mut leftovers: Vec<_> = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
-    leftovers.sort();
-    assert_eq!(
-        leftovers,
-        [".versions", "de-DE"],
-        "no staging is left behind"
-    );
-    assert_eq!(
-        std::fs::read_dir(root.join(".versions")).unwrap().count(),
-        1,
-        "the version replaced is gone"
-    );
-
-    // A publisher the install does not require is refused, and nothing changes.
-    let stranger = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let forged = pack_of(
-        home.path(),
-        &stranger,
-        "2026.10.3",
-        &[("settings.ftl", "x = y\n")],
-    );
-    assert!(!install(home.path(), &key, &forged).0);
-    assert_eq!(
-        std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
-        "settings-title = Systemeinstellungen\n"
-    );
-}
-
-/// A pack carries its locale's catalogues and nothing else.
-#[test]
-fn a_language_pack_carries_only_its_locales_catalogues() {
-    let home = tempfile::tempdir().unwrap();
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    for (directory, file) in [("fr-FR", "settings.ftl"), ("de-DE", "bin/tool")] {
-        let payload = home.path().join(format!("bad-{directory}"));
-        let path = payload.join(directory).join(file);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, "x").unwrap();
-        assert!(
-            pack(
-                &payload,
-                &manifest("2026.10.1", &key),
-                &SigningIdentity::from_signing_key(key.clone())
-            )
-            .is_err(),
-            "{directory}/{file}"
+    phase a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole;
+    {
+        let home = tempfile::tempdir().unwrap();
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let first = pack_of(
+            home.path(),
+            &key,
+            "2026.10.1",
+            &[
+                ("settings.ftl", "settings-title = Einstellungen\n"),
+                ("files.ftl", "files-title = Dateien\n"),
+            ],
         );
+        let (ok, out) = install(home.path(), &key, &first);
+        assert!(ok, "{out}");
+        let installed = home.path().join("data/tilo/language-packs/de-DE");
+        assert_eq!(
+            std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
+            "settings-title = Einstellungen\n"
+        );
+
+        // The next version replaces the catalogues whole: one it no longer carries is gone.
+        let second = pack_of(
+            home.path(),
+            &key,
+            "2026.10.2",
+            &[("settings.ftl", "settings-title = Systemeinstellungen\n")],
+        );
+        let (ok, out) = update(home.path(), &key, &second);
+        assert!(ok, "{out}");
+        let (ok, out) = update(home.path(), &key, &second);
+        assert!(ok && out.contains("already current"), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
+            "settings-title = Systemeinstellungen\n"
+        );
+        assert!(!installed.join("files.ftl").exists());
+        let root = home.path().join("data/tilo/language-packs");
+        let mut leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        leftovers.sort();
+        assert_eq!(
+            leftovers,
+            [".versions", "de-DE"],
+            "no staging is left behind"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.join(".versions")).unwrap().count(),
+            1,
+            "the version replaced is gone"
+        );
+
+        // A publisher the install does not require is refused, and nothing changes.
+        let stranger = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let forged = pack_of(
+            home.path(),
+            &stranger,
+            "2026.10.3",
+            &[("settings.ftl", "x = y\n")],
+        );
+        assert!(!install(home.path(), &key, &forged).0);
+        assert_eq!(
+            std::fs::read_to_string(installed.join("settings.ftl")).unwrap(),
+            "settings-title = Systemeinstellungen\n"
+        );
+    }
+
+    phase a_language_pack_carries_only_its_locales_catalogues;
+    // A pack carries its locale's catalogues and nothing else.
+    {
+        let home = tempfile::tempdir().unwrap();
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        for (directory, file) in [("fr-FR", "settings.ftl"), ("de-DE", "bin/tool")] {
+            let payload = home.path().join(format!("bad-{directory}"));
+            let path = payload.join(directory).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+            assert!(
+                pack(
+                    &payload,
+                    &manifest("2026.10.1", &key),
+                    &SigningIdentity::from_signing_key(key.clone())
+                )
+                .is_err(),
+                "{directory}/{file}"
+            );
+        }
     }
 }

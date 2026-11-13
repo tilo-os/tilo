@@ -177,72 +177,76 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn verified_local_files_are_copied_and_the_rest_left_to_fetch() {
-        let root = tempfile::tempdir().unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let libstd: &[u8] = b"libstd of every build";
-        let toolkit: &[u8] = b"toolkit of the old build";
-        bundle(
-            root.path(),
-            "old",
-            &[
-                ("lib/libstd.so", libstd, None),
-                ("lib/libruntime_dylib.so", toolkit, None),
-            ],
-        );
-        let index = LocalRuntimeBlobs::index(&[root.path().to_path_buf()]);
-        assert_eq!(index.len(), 2);
-        let new_toolkit = BlobHash::of(b"toolkit of the new build");
-        let (missing, reused) = index
-            .copy_into(&[BlobHash::of(libstd), new_toolkit], out.path())
-            .unwrap();
-        assert_eq!(missing, vec![new_toolkit]);
-        assert_eq!(reused, libstd.len() as u64);
-        assert_eq!(
-            fs::read(out.path().join(BlobHash::of(libstd).to_hex())).unwrap(),
-            libstd
-        );
-    }
+    tilo_test_env::scenario! {
+        fn local_runtime_blobs_are_copied_only_when_verified;
 
-    #[test]
-    fn a_local_file_whose_hash_differs_is_never_copied() {
-        let root = tempfile::tempdir().unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let wanted: &[u8] = b"the bytes the signed package names";
-        // A manifest that lists other bytes under the wanted hash, as a tampered or half-updated
-        // bundle would.
-        bundle(
-            root.path(),
-            "tampered",
-            &[(
-                "lib/libc.so.6",
-                b"the bytes the signed package xxxxx",
-                Some(BlobHash::of(wanted)),
-            )],
-        );
-        let index = LocalRuntimeBlobs::index(&[root.path().to_path_buf()]);
-        let (missing, reused) = index
-            .copy_into(&[BlobHash::of(wanted)], out.path())
-            .unwrap();
-        assert_eq!(missing, vec![BlobHash::of(wanted)]);
-        assert_eq!(reused, 0);
-        assert_eq!(
-            fs::read_dir(out.path()).unwrap().count(),
-            0,
-            "nothing left behind"
-        );
-    }
+        phase verified_local_files_are_copied_and_the_rest_left_to_fetch;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let libstd: &[u8] = b"libstd of every build";
+            let toolkit: &[u8] = b"toolkit of the old build";
+            bundle(
+                root.path(),
+                "old",
+                &[
+                    ("lib/libstd.so", libstd, None),
+                    ("lib/libruntime_dylib.so", toolkit, None),
+                ],
+            );
+            let index = LocalRuntimeBlobs::index(&[root.path().to_path_buf()]);
+            assert_eq!(index.len(), 2);
+            let new_toolkit = BlobHash::of(b"toolkit of the new build");
+            let (missing, reused) = index
+                .copy_into(&[BlobHash::of(libstd), new_toolkit], out.path())
+                .unwrap();
+            assert_eq!(missing, vec![new_toolkit]);
+            assert_eq!(reused, libstd.len() as u64);
+            assert_eq!(
+                fs::read(out.path().join(BlobHash::of(libstd).to_hex())).unwrap(),
+                libstd
+            );
+        }
 
-    #[test]
-    fn manifest_paths_never_leave_their_bundle() {
-        assert_eq!(
-            contained("lib/libc.so.6"),
-            Some(PathBuf::from("lib/libc.so.6"))
-        );
-        assert_eq!(contained("../outside"), None);
-        assert_eq!(contained("/etc/shadow"), None);
-        assert_eq!(contained("lib/../../outside"), None);
-        assert_eq!(contained(""), None);
+        phase a_local_file_whose_hash_differs_is_never_copied;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let wanted: &[u8] = b"the bytes the signed package names";
+            // A manifest that lists other bytes under the wanted hash, as a tampered or half-updated
+            // bundle would.
+            bundle(
+                root.path(),
+                "tampered",
+                &[(
+                    "lib/libc.so.6",
+                    b"the bytes the signed package xxxxx",
+                    Some(BlobHash::of(wanted)),
+                )],
+            );
+            let index = LocalRuntimeBlobs::index(&[root.path().to_path_buf()]);
+            let (missing, reused) = index
+                .copy_into(&[BlobHash::of(wanted)], out.path())
+                .unwrap();
+            assert_eq!(missing, vec![BlobHash::of(wanted)]);
+            assert_eq!(reused, 0);
+            assert_eq!(
+                fs::read_dir(out.path()).unwrap().count(),
+                0,
+                "nothing left behind"
+            );
+        }
+
+        phase manifest_paths_never_leave_their_bundle;
+        {
+            assert_eq!(
+                contained("lib/libc.so.6"),
+                Some(PathBuf::from("lib/libc.so.6"))
+            );
+            assert_eq!(contained("../outside"), None);
+            assert_eq!(contained("/etc/shadow"), None);
+            assert_eq!(contained("lib/../../outside"), None);
+            assert_eq!(contained(""), None);
+        }
     }
 }
