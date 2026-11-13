@@ -1,13 +1,6 @@
-//! Windows Apps as a resource: the launch routes people agreed on are the
-//! [`Windows`] model, edited at their paths; the live catalogue, appliance
-//! readiness and pending installs are what the compatibility service
-//! reports.
-//!
-//! After every change, each device running the app carries the overrides to
-//! its own compatibility service, comparing them with the routes the
-//! service reports back (level state the window keeps in step). Install and appliance lifecycle are
-//! effects with no document delta (published on the root and on the live
-//! rows the view publishes).
+//! Windows Apps as a resource: the launch routes people agreed on are the [`Windows`]
+//! model, edited at their paths; the live catalogue, appliance readiness and pending
+//! installs are what the compatibility service reports.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -21,16 +14,10 @@ use crate::app::SharedProvider;
 use crate::model::{Catalogue, Route};
 use crate::provider::SampleProvider;
 
-/// The launch routes the people sharing this manager agreed on. An
-/// application without an override runs the catalogue's recommendation.
-/// Each is edited at its path:
-/// `Windows::paths().routes.key(id).set(Route::Proton)` overrides one,
-/// `Windows::paths().routes.remove(id)` goes back to the recommendation.
+/// The launch routes the people sharing this manager agreed on.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Windows {
     /// Launch routes
-    ///
-    /// The route each overridden application runs with, by its id.
     pub routes: Map<Route>,
 }
 
@@ -42,13 +29,8 @@ impl Windows {
 }
 
 impl Windows {
-    /// What the record holds: the launch routes the people sharing the manager agreed on, by
-    /// application.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the launch routes the people sharing the manager agreed on,
+    /// by application.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -69,13 +51,11 @@ struct ReportedRoute {
     app_id: String,
     route: Route,
     recommended: Route,
-    /// Whether the service accepts an override for it at all.
     overridable: bool,
 }
 
-/// The routes the service last reported, shared by the window (which
-/// refreshes them) and the route projection (which compares the document's
-/// overrides with them).
+/// The routes the service last reported, shared by the window (which refreshes them) and
+/// the route projection (which compares the document's overrides with them).
 #[derive(Clone, Debug, Default)]
 pub struct ReportedRoutes(Rc<RefCell<Vec<ReportedRoute>>>);
 
@@ -99,10 +79,9 @@ impl ReportedRoutes {
         true
     }
 
-    /// The route changes the service still needs for `state`: an override
-    /// for each application whose reported route differs from the stored one,
-    /// a reset for each that still runs an override the document no longer
-    /// holds. Keyed by application and desired override.
+    /// The route changes the service still needs for `state`: an override for each
+    /// application whose reported route differs from the stored one, a reset for each that
+    /// still runs an override the document no longer holds.
     pub(crate) fn pending(&self, state: &Windows) -> Vec<RouteChange> {
         self.0
             .borrow()
@@ -119,8 +98,8 @@ impl ReportedRoutes {
     }
 }
 
-/// One route change carried to the service: an override, or back to the
-/// catalogue recommendation (`None`).
+/// One route change carried to the service: an override, or back to the catalogue
+/// recommendation (`None`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct RouteChange {
     app_id: String,
@@ -136,10 +115,8 @@ pub(crate) fn carry(provider: &SharedProvider, change: &RouteChange) -> Result<(
     }
 }
 
-/// Framework app.
 pub struct WindowsShell;
 
-/// Every screenshot scenario, over the sample catalogue.
 const SCENARIOS: &[&str] = &[
     "wide",
     "detail",
@@ -160,7 +137,6 @@ impl ResourceApp for WindowsShell {
     const TITLE: &'static str = "Windows Apps";
     const TITLE_KEY: &'static str = "windows-app-title";
     const ICON: Option<&'static str> = Some("windows");
-    /// An installer to add (`windows setup.exe`).
     const ARGUMENTS: usize = 1;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -171,8 +147,8 @@ impl ResourceApp for WindowsShell {
         crate::app::window(cx)
     }
 
-    /// Opening an installer with Windows Apps installs it, through the same
-    /// effect the palette and the install button reach.
+    /// Opening an installer with Windows Apps installs it, through the same effect the
+    /// palette and the install button reach.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Windows>> {
         input
             .argument()
@@ -194,9 +170,9 @@ impl ResourceApp for WindowsShell {
         }
     }
 
-    /// The sample catalogue stands in for the compatibility service; the
-    /// error scenarios show its first application's setup failed, and the
-    /// pending-install scenario an installer awaiting confirmation.
+    /// The sample catalogue stands in for the compatibility service; the error scenarios
+    /// show its first application's setup failed, and the pending-install scenario an
+    /// installer awaiting confirmation.
     fn fixture(fixture: &mut Fixture<Windows>) {
         let mut sample = SampleProvider::new();
         if matches!(fixture.scenario(), Some("error" | "error-compact")) {
@@ -226,9 +202,9 @@ mod tests {
         catalogue
     }
 
-    /// A stored override the service does not run yet is pending, and so is
-    /// an override the service still runs after the document cleared it —
-    /// the reset of the last override reaches the service too.
+    /// A stored override the service does not run yet is pending, and so is an override the
+    /// service still runs after the document cleared it — the reset of the last override
+    /// reaches the service too.
     #[test]
     fn the_overrides_carry_to_the_service_and_reset_there() {
         let routes = ReportedRoutes::default();
@@ -271,8 +247,8 @@ mod tests {
         assert_eq!(reader.route, reader.recommended_route);
     }
 
-    /// A route is overridden and reset with field edits at its path; two
-    /// people overriding different applications at once both land.
+    /// A route is overridden and reset with field edits at its path; two people overriding
+    /// different applications at once both land.
     #[test]
     fn routes_are_field_edits_that_converge() {
         let routes = Windows::paths().routes;
@@ -311,8 +287,8 @@ mod tests {
         );
     }
 
-    /// An agent overrides a route in one call; undo takes it back, and the
-    /// entry reads as Windows Apps' sentence, naming who did it for whom.
+    /// An agent overrides a route in one call; undo takes it back, and the entry reads as
+    /// Windows Apps' sentence, naming who did it for whom.
     #[test]
     fn an_agent_routes_an_app_in_one_call_and_history_says_so() {
         use ui::tilo_actions::{ActionInvoker, ActorKind};
@@ -389,8 +365,8 @@ mod tests {
         }
     }
 
-    /// Opening an installer with the app installs it through the install
-    /// effect; a plain start takes no action.
+    /// Opening an installer with the app installs it through the install effect; a plain
+    /// start takes no action.
     #[test]
     fn a_launch_naming_an_installer_invokes_install() {
         let arguments = ["/home/you/Downloads/setup.exe".to_owned()];
@@ -402,9 +378,9 @@ mod tests {
         assert!(WindowsShell::launch(&LaunchInput::new(&[], None), false).is_empty());
     }
 
-    /// Every screenshot is the sample catalogue with its scenario's view
-    /// state, at the scenario's viewport; the live rows the window shows
-    /// carry effects, merged under the manager with the stored overrides.
+    /// Every screenshot is the sample catalogue with its scenario's view state, at the
+    /// scenario's viewport; the live rows the window shows carry effects, merged under the
+    /// manager with the stored overrides.
     #[test]
     fn captures_show_the_sample_catalogue_and_publish_its_rows() {
         let mut detail = TestApp::<WindowsShell>::capture(Some("confirm-delete")).unwrap();
@@ -428,7 +404,6 @@ mod tests {
                 .any(|row| row["resource"] == "windows.manager" && row["action"] == "field-edit"),
             "routes are edited on the manager"
         );
-        // A capture runs no row's effect; a drive of the scenario does.
         let mut driven = TestApp::<WindowsShell>::drive("wide").unwrap();
         let read = driven
             .effect_on(
@@ -447,8 +422,8 @@ mod tests {
 
 #[cfg(test)]
 mod capture_tests {
-    /// Every declared scenario stages through the framework's capture hook
-    /// and renders, the same path `--shots --scenario NAME` takes.
+    /// Every declared scenario stages through the framework's capture hook and renders, the
+    /// same path `--shots --scenario NAME` takes.
     #[test]
     fn every_scenario_stages_and_renders_in_the_framework_app() {
         let dir = tempfile::tempdir().unwrap();

@@ -18,8 +18,7 @@ impl Route {
             Self::Vm => "VM",
         }
     }
-    /// Fluent key for a route-selection control. Model consumers that display
-    /// a route resolve this key through their own localized surface.
+    /// Fluent key for a route-selection control.
     pub const fn button_key(self) -> &'static str {
         match self {
             Self::Wine => "windows-route-wine",
@@ -27,8 +26,8 @@ impl Route {
             Self::Vm => "windows-route-vm",
         }
     }
-    /// Fluent key naming how an app on this route is kept apart from the
-    /// rest of the computer.
+    /// Fluent key naming how an app on this route is kept apart from the rest of the
+    /// computer.
     pub const fn security_key(self) -> &'static str {
         match self {
             Self::Wine | Self::Proton => "windows-route-capsule-security",
@@ -109,23 +108,15 @@ pub struct WindowsApp {
     pub fallback_detail: String,
     pub launch_available: bool,
     pub launch_unavailable_reason: Option<String>,
-    /// Explicit presentation capability for opening a portal-selected file.
-    /// A Windows VM route alone is insufficient: focused SPICE has no file
-    /// bridge, while native RAIL does.
     pub portal_file_open_available: bool,
     pub portal_file_open_unavailable_reason: Option<String>,
     pub route_override_available: bool,
     pub route_override_unavailable_reason: Option<String>,
     pub can_retry_install: bool,
-    /// The retained, portal-managed installer can be explicitly replayed in
-    /// the one Windows appliance. This is only offered for an installation
-    /// state the service says can safely leave its private capsule.
     pub can_escalate_install_to_vm: bool,
     pub can_remove_launcher: bool,
     pub can_vendor_uninstall: bool,
     pub can_delete_data: bool,
-    /// This row is a discovered, not-yet-published application from the
-    /// managed installer operation. Its `id` remains server-owned.
     pub can_publish_vm_candidate: bool,
     pub installation_detail: Option<String>,
     pub vm_fallback_available: bool,
@@ -143,8 +134,7 @@ pub struct ApplianceState {
     pub ready: bool,
     pub detail: String,
     pub running_apps: usize,
-    /// Server-derived RDP/RAIL redirect union for the singleton Windows user
-    /// session. This is management status, never client-supplied policy.
+    /// This is management status, never client-supplied policy.
     pub shared_session_active: bool,
     pub shared_session_grants: Vec<String>,
     pub shared_session_contributors: Vec<String>,

@@ -1,5 +1,4 @@
-//! Provider boundary for the session compatibility service. No runner command
-//! or host path is constructed in UI code.
+//! Provider boundary for the session compatibility service.
 use std::fs::File;
 use std::sync::mpsc::{self, Receiver, Sender};
 use ui::time::{Duration, Instant};
@@ -19,20 +18,16 @@ use crate::strings::{self, format_all};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 pub trait CompatibilityProvider: Send {
-    /// Whether the session's compatibility service answers. Without it
-    /// nothing can be installed or opened, and the window says so in the
-    /// person's words, with the reason behind "Details".
+    /// Whether the session's compatibility service answers.
     fn connected(&self) -> bool {
         true
     }
-    /// Live UI controls emit inert resource/action addresses so the host can
-    /// re-authorize, record, and dispatch them. Fixtures execute in-process.
+    /// Live UI controls emit inert resource/action addresses so the host can re-authorize,
+    /// record, and dispatch them.
     fn action_native_controls(&self) -> bool {
         false
     }
-    /// Whether a successful method return is also the terminal outcome. Live
-    /// providers return `false`: they acknowledge queueing first and later
-    /// surface the service result through `take_notice`.
+    /// Whether a successful method return is also the terminal outcome.
     fn operations_complete_on_return(&self) -> bool {
         false
     }
@@ -53,13 +48,13 @@ pub trait CompatibilityProvider: Send {
     fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String>;
     /// Retry setup from the retained digest-pinned installer.
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String>;
-    /// Explicitly replays a retained, digest-pinned portal installer in the
-    /// one Windows appliance. This does not accept a new file or a guest path.
+    /// Explicitly replays a retained, digest-pinned portal installer in the one Windows
+    /// appliance.
     ///
     /// # Errors
     ///
-    /// Returns an error when the retained setup is in a state that cannot be
-    /// escalated, or the appliance is unavailable.
+    /// Returns an error when the retained setup is in a state that cannot be escalated, or
+    /// the appliance is unavailable.
     fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Remove one launcher while retaining its installation.
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String>;
@@ -78,8 +73,8 @@ pub trait CompatibilityProvider: Send {
     fn reset_route_override(&mut self, app_id: &str) -> Result<(), String>;
 }
 
-/// Safe live fallback until the compatibility service endpoint is available.
-/// A control-plane UI must never make fixture software look installed.
+/// Safe live fallback until the compatibility service endpoint is available. A
+/// control-plane UI must never make fixture software look installed.
 pub struct EmptyProvider {
     detail: String,
 }
@@ -176,8 +171,8 @@ impl CompatibilityProvider for EmptyProvider {
     }
 }
 
-/// Predictable fixture. It deliberately looks like the service response, not a
-/// mock of Wine: code depending on it cannot accidentally gain host execution.
+/// Predictable fixture. It deliberately looks like the service response, not a mock of
+/// Wine: code depending on it cannot accidentally gain host execution.
 #[derive(Clone)]
 pub struct SampleProvider {
     catalogue: Catalogue,
@@ -411,20 +406,17 @@ pub struct LiveProvider {
     notice: Option<String>,
     operation_result: Option<Result<String, String>>,
     pending_vm_install: Option<(File, String)>,
-    /// The portal-open descriptor is retained locally until the user chooses
-    /// a destination. Listing is periodic, so keep its inspected
-    /// confirmation separate from the refreshed server catalogue.
     pending_vm_install_confirmation: Option<VmInstallConfirmation>,
 }
 
 impl LiveProvider {
-    /// Connect to the launcher-inherited descriptor and move all blocking I/O
-    /// onto a dedicated worker thread.
+    /// Connect to the launcher-inherited descriptor and move all blocking I/O onto a
+    /// dedicated worker thread.
     ///
     /// # Errors
     ///
-    /// Returns an error when no verified descriptor was inherited or the
-    /// bounded worker thread cannot be started.
+    /// Returns an error when no verified descriptor was inherited or the bounded worker
+    /// thread cannot be started.
     pub fn connect() -> Result<Self, String> {
         // SAFETY: the app creates exactly one live provider, which becomes the
         // inherited descriptor's sole owner and transfers it immediately to
@@ -477,8 +469,8 @@ impl LiveProvider {
                     self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
                 }
                 WorkerEvent::Unavailable(detail) => {
-                    // A malformed, mismatched, or disconnected response never
-                    // leaves stale installed applications painted as live.
+                    // A malformed, mismatched, or disconnected response never leaves stale
+                    // installed applications painted as live.
                     self.cached = unavailable_catalogue(&detail);
                     self.refresh_pending = false;
                     self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
@@ -714,13 +706,11 @@ fn worker(
     events: &Sender<WorkerEvent>,
 ) {
     while let Ok(command) = commands.recv() {
-        // Commands that change server state are followed by a fresh list.
         let (event, refresh) = match command {
             WorkerCommand::Refresh => {
-                // A setup surface can be closed while Windows keeps working.
-                // Refreshing the server-owned singleton status before listing
-                // prevents discovery rows from being permanently stale; the
-                // client never supplies an operation ID.
+                // Refreshing the server-owned singleton status before listing prevents
+                // discovery rows from being permanently stale; the client never supplies an
+                // operation ID.
                 for request in [
                     ProtocolRequest::RefreshVmInstallation {
                         version: PROTOCOL_VERSION,
@@ -905,8 +895,8 @@ fn list(client: &mut SessionClient) -> WorkerEvent {
     }
 }
 
-/// Reports a launch: `success` when the application exited cleanly, otherwise
-/// `failure` followed by its exit status.
+/// Reports a launch: `success` when the application exited cleanly, otherwise `failure`
+/// followed by its exit status.
 fn launched(
     response: Result<ProtocolResponse, SessionError>,
     success: &str,
@@ -926,8 +916,7 @@ fn launched(
     }
 }
 
-/// Reports an install or management operation through the detail the service
-/// returned.
+/// Reports an install or management operation through the detail the service returned.
 fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
     WorkerEvent::Operation(match response {
         Ok(
@@ -1024,9 +1013,7 @@ fn catalogue_from_managed(
     }
 }
 
-/// A discovery row is deliberately not a launcher. It exists only while the
-/// privileged delegate retains the matching installer operation, and the UI
-/// can submit its opaque ID to publish the guest-selected application.
+/// A discovery row is deliberately not a launcher.
 fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> WindowsApp {
     WindowsApp {
         id: candidate.entry_id.clone(),
@@ -1107,8 +1094,6 @@ fn app_from_managed(
     let portal_file_open_unavailable_reason = active_vm_uninstall
         .map(|status| status.detail.clone())
         .or_else(|| {
-            // The service names the presentation it uses; the person needs
-            // to know only that files can't reach this window yet.
             if application.presentation == Some(compat_service::VmPresentation::AppFocusedSpice) {
                 Some(files_cannot_reach_window())
             } else {
@@ -1251,9 +1236,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
     }
 }
 
-/// Mirror the server's coarse lifecycle gate in the view model. The server is
-/// authoritative and re-checks this before it reopens its digest-pinned copy;
-/// the UI does not infer a guest path or preserve a portal descriptor.
+/// Mirror the server's coarse lifecycle gate in the view model.
 fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
     matches!(installation.route, RouteKind::Wine | RouteKind::Proton)
         && !matches!(

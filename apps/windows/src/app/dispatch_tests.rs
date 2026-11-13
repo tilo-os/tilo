@@ -1,11 +1,11 @@
-//! What Windows Apps does on this machine, as the operations its typed
-//! effects name: which picker, service call or appliance command each one
-//! reaches, and which the catalogue or the appliance refuses.
+//! What Windows Apps does on this machine, as the operations its typed effects name: which
+//! picker, service call or appliance command each one reaches, and which the catalogue or
+//! the appliance refuses.
 
 use super::*;
 
-/// A window whose sample service reports every maintenance operation as
-/// available, as it does while it is still following an installation.
+/// A window whose sample service reports every maintenance operation as available, as it
+/// does while it is still following an installation.
 fn window_offering_every_operation() -> WindowsApp {
     let mut app = WindowsApp::new_offline();
     for item in &mut app.catalogue.apps {
@@ -19,9 +19,9 @@ fn window_offering_every_operation() -> WindowsApp {
     app
 }
 
-/// Showing an app selects its row and asks the service for nothing;
-/// launching one goes through the route the catalogue reports, including
-/// the separately authorized appliance fallback.
+/// Showing an app selects its row and asks the service for nothing; launching one goes
+/// through the route the catalogue reports, including the separately authorized appliance
+/// fallback.
 #[test]
 fn show_and_launch_effects_reach_the_selection_and_the_route() {
     use actions::WindowsEffect as E;
@@ -59,8 +59,8 @@ fn show_and_launch_effects_reach_the_selection_and_the_route() {
     }
 }
 
-/// Maintenance effects reach the service with the id or private capsule
-/// they name, and leave the service to report the outcome.
+/// Maintenance effects reach the service with the id or private capsule they name, and
+/// leave the service to report the outcome.
 #[test]
 fn maintenance_effects_reach_the_service_by_id_and_capsule() {
     use actions::WindowsEffect as E;
@@ -108,8 +108,8 @@ fn maintenance_effects_reach_the_service_by_id_and_capsule() {
     );
 }
 
-/// Uninstall names the capsule of a Wine app and the entry itself of an
-/// app in the appliance, as the window offers it.
+/// Uninstall names the capsule of a Wine app and the entry itself of an app in the
+/// appliance, as the window offers it.
 #[test]
 fn uninstall_effects_reach_the_entry_their_route_owns() {
     use actions::WindowsEffect as E;
@@ -141,9 +141,9 @@ fn uninstall_effects_reach_the_entry_their_route_owns() {
     );
 }
 
-/// Install, ISO, file, publish and the pending install's two
-/// destinations reach the picker or the service that owns each; the
-/// service's own answer is what comes back, never a claim made here.
+/// Install, ISO, file, publish and the pending install's two destinations reach the picker
+/// or the service that owns each; the service's own answer is what comes back, never a
+/// claim made here.
 #[test]
 fn install_and_file_effects_reach_the_picker_or_the_service() {
     use actions::WindowsEffect as E;
@@ -217,9 +217,9 @@ fn install_and_file_effects_reach_the_picker_or_the_service() {
     app.drain_document_portal();
 }
 
-/// Every operation an effect can name is refused with the catalogue's own
-/// reason when it does not offer it now: an effect re-resolves what it
-/// asks for instead of trusting its invoker.
+/// Every operation an effect can name is refused with the catalogue's own reason when it
+/// does not offer it now: an effect re-resolves what it asks for instead of trusting its
+/// invoker.
 #[test]
 fn operations_the_catalogue_reports_unavailable_are_refused() {
     use actions::WindowsEffect as E;
@@ -314,8 +314,8 @@ fn operations_the_catalogue_reports_unavailable_are_refused() {
     );
 }
 
-/// The appliance's own status and this session's ownership decide its
-/// operations; a window that only reports a status runs none of them.
+/// The appliance's own status and this session's ownership decide its operations; a window
+/// that only reports a status runs none of them.
 #[test]
 fn appliance_operations_are_refused_when_this_session_cannot_manage_it() {
     use actions::WindowsEffect as E;
