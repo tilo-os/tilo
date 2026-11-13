@@ -156,52 +156,11 @@ fn restore(
         .expect("the actual owned history entry")
 }
 
-#[test]
-fn native_text_keeps_first_compensation_latest_redo_and_different_field_boundaries() {
-    let records = crate::record::RecordOwners::portable(
-        crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-    )
-    .open("so.tilo.test", "workspace")
-    .unwrap();
-    let checkout = RecordCheckout::new(
-        crate::record::RecordId::minted(),
-        crate::record::RecordKind::new("text"),
-    );
-    records.create_record(&checkout).unwrap();
-    let (binding, _scope, _owner) =
-        super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
-    let mut outer = AutoCommit::new();
-    let mut wire = Wire::default();
-    for typed in ["a", "ab", "abc"] {
-        edit(&binding, &mut outer, "first", typed, true, &mut wire);
-    }
-    for typed in ["x", "xy"] {
-        edit(&binding, &mut outer, "second", typed, true, &mut wire);
-    }
-    assert_eq!(
-        wire.0.len(),
-        5,
-        "coalescing history does not combine canonical envelopes"
-    );
-    restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
-    assert_eq!(value(&records, &checkout, "second"), "");
-    assert_eq!(value(&records, &checkout, "first"), "abc");
-    let entry = restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
-    let step = entry.step.unwrap();
-    let inverse: TextEdit = serde_json::from_slice(&step.compensation.unwrap().payload).unwrap();
-    let redo: TextEdit = serde_json::from_slice(&step.action.unwrap().payload).unwrap();
-    assert_eq!(inverse.value, "ab");
-    assert_eq!(redo.value, "abc");
-    assert_eq!(value(&records, &checkout, "first"), "");
-    restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
-    assert_eq!(value(&records, &checkout, "first"), "abc");
-    restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
-    assert_eq!(value(&records, &checkout, "second"), "xy");
-}
+tilo_test_env::scenario! {
+    fn native_text_keeps_undo_boundaries_and_physical_provenance;
 
-#[test]
-fn native_text_does_not_cross_collaborator_instance_or_programmatic_edits() {
-    for author in ["You", "Collaborator"] {
+    phase native_text_keeps_first_compensation_latest_redo_and_different_field_boundaries;
+    {
         let records = crate::record::RecordOwners::portable(
             crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
         )
@@ -212,122 +171,167 @@ fn native_text_does_not_cross_collaborator_instance_or_programmatic_edits() {
             crate::record::RecordKind::new("text"),
         );
         records.create_record(&checkout).unwrap();
-        let (one, _one_scope, _one_owner) =
+        let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
-        let (two, _two_scope, _two_owner) =
-            super::author_writer_tests::mount(&records, &checkout, author, 2, true);
         let mut outer = AutoCommit::new();
         let mut wire = Wire::default();
-        for text in ["a", "ab"] {
-            edit(&one, &mut outer, "first", text, true, &mut wire);
+        for typed in ["a", "ab", "abc"] {
+            edit(&binding, &mut outer, "first", typed, true, &mut wire);
         }
-        edit(&two, &mut outer, "other", "foreign", true, &mut wire);
-        edit(&one, &mut outer, "first", "abc", true, &mut wire);
-        restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
-        assert_eq!(value(&records, &checkout, "first"), "ab");
-        assert_eq!(value(&records, &checkout, "other"), "foreign");
-        restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
-        assert_eq!(value(&records, &checkout, "first"), "");
-        assert_eq!(value(&records, &checkout, "other"), "foreign");
-        for text in ["1", "12", "123"] {
-            edit(&one, &mut outer, "first", text, false, &mut wire);
+        for typed in ["x", "xy"] {
+            edit(&binding, &mut outer, "second", typed, true, &mut wire);
         }
-        restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
         assert_eq!(
-            value(&records, &checkout, "first"),
-            "12",
-            "an agent/programmatic call is one step"
+            wire.0.len(),
+            5,
+            "coalescing history does not combine canonical envelopes"
         );
-        restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
-        assert_eq!(value(&records, &checkout, "first"), "1");
+        restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
+        assert_eq!(value(&records, &checkout, "second"), "");
+        assert_eq!(value(&records, &checkout, "first"), "abc");
+        let entry = restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
+        let step = entry.step.unwrap();
+        let inverse: TextEdit = serde_json::from_slice(&step.compensation.unwrap().payload).unwrap();
+        let redo: TextEdit = serde_json::from_slice(&step.action.unwrap().payload).unwrap();
+        assert_eq!(inverse.value, "ab");
+        assert_eq!(redo.value, "abc");
+        assert_eq!(value(&records, &checkout, "first"), "");
+        restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
+        assert_eq!(value(&records, &checkout, "first"), "abc");
+        restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
+        assert_eq!(value(&records, &checkout, "second"), "xy");
     }
-}
 
-#[test]
-fn physical_text_provenance_is_captured_in_the_exact_owned_queue_entry() {
-    let records = crate::record::RecordOwners::portable(
-        crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-    )
-    .open("so.tilo.test", "workspace")
-    .unwrap();
-    let checkout = RecordCheckout::new(
-        crate::record::RecordId::minted(),
-        crate::record::RecordKind::new("text"),
-    );
-    records.create_record(&checkout).unwrap();
-    let (binding, _scope, _owner) =
-        super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
-    let domain = crate::ControlDomain::new();
-    domain.set_owner(crate::control_custody::ControlOwner::Component(binding));
-    let mut emitter =
-        crate::widget::ActionEmitter::new_in(crate::widget::test_string_action_binding(), &domain);
-    with_physical_text(true, || emitter.emit("same".into())).unwrap();
-    emitter.emit("same".into()).unwrap();
-    let queued = domain.drain_partitioned().components;
-    let mut queued = queued.into_iter();
-    let (physical, first) = queued.next().unwrap();
-    let (programmatic, second) = queued.next().unwrap();
-    assert_eq!(physical.input, Input::Continuing);
-    assert_eq!(programmatic.input, Input::Discrete);
-    assert_eq!(
-        first, second,
-        "equal descriptor values retain distinct provenance"
-    );
-    assert!(queued.next().is_none());
-    assert!(!physical_text(), "the scoped producer flag cannot leak");
-}
+    phase native_text_does_not_cross_collaborator_instance_or_programmatic_edits;
+    {
+        for author in ["You", "Collaborator"] {
+            let records = crate::record::RecordOwners::portable(
+                crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
+            )
+            .open("so.tilo.test", "workspace")
+            .unwrap();
+            let checkout = RecordCheckout::new(
+                crate::record::RecordId::minted(),
+                crate::record::RecordKind::new("text"),
+            );
+            records.create_record(&checkout).unwrap();
+            let (one, _one_scope, _one_owner) =
+                super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+            let (two, _two_scope, _two_owner) =
+                super::author_writer_tests::mount(&records, &checkout, author, 2, true);
+            let mut outer = AutoCommit::new();
+            let mut wire = Wire::default();
+            for text in ["a", "ab"] {
+                edit(&one, &mut outer, "first", text, true, &mut wire);
+            }
+            edit(&two, &mut outer, "other", "foreign", true, &mut wire);
+            edit(&one, &mut outer, "first", "abc", true, &mut wire);
+            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            assert_eq!(value(&records, &checkout, "first"), "ab");
+            assert_eq!(value(&records, &checkout, "other"), "foreign");
+            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            assert_eq!(value(&records, &checkout, "first"), "");
+            assert_eq!(value(&records, &checkout, "other"), "foreign");
+            for text in ["1", "12", "123"] {
+                edit(&one, &mut outer, "first", text, false, &mut wire);
+            }
+            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            assert_eq!(
+                value(&records, &checkout, "first"),
+                "12",
+                "an agent/programmatic call is one step"
+            );
+            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            assert_eq!(value(&records, &checkout, "first"), "1");
+        }
+    }
 
-#[test]
-fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_draining() {
-    let mut initial =
-        crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
-    with_physical_text(true, || initial.emit("same".into())).unwrap();
-    initial.emit("same".into()).unwrap();
-    let records = crate::record::RecordOwners::portable(
-        crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-    )
-    .open("so.tilo.test", "workspace")
-    .unwrap();
-    let checkout = RecordCheckout::new(
-        crate::record::RecordId::minted(),
-        crate::record::RecordKind::new("text"),
-    );
-    records.create_record(&checkout).unwrap();
-    let (binding, _scope, _owner) =
-        super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
-    let domain = crate::ControlDomain::new();
-    domain.set_owner(crate::control_custody::ControlOwner::Component(binding));
-    initial
-        .install_custody(&domain, crate::control_custody::CustodyAttachment::Initial)
+    phase physical_text_provenance_is_captured_in_the_exact_owned_queue_entry;
+    {
+        let records = crate::record::RecordOwners::portable(
+            crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
+        )
+        .open("so.tilo.test", "workspace")
         .unwrap();
-    let mut queued = domain.drain_partitioned().components.into_iter();
-    let (physical, first) = queued.next().unwrap();
-    let (programmatic, second) = queued.next().unwrap();
-    assert!(
-        physical.input == Input::Continuing,
-        "initial installation retains the producer's exact queued provenance"
-    );
-    assert_eq!(programmatic.input, Input::Discrete);
-    assert_eq!(first, second);
-    assert!(queued.next().is_none());
-    assert!(
-        initial.take().is_none(),
-        "registered holders cannot leak descriptors through legacy taking"
-    );
-    let mut legacy = crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
-    with_physical_text(true, || legacy.emit("same".into())).unwrap();
-    legacy.emit("same".into()).unwrap();
-    let mut parent = crate::widget::Column::new().push(Box::new(TextOwner {
-        emitter: Some(legacy),
-    }));
-    let (physical, marked, _) = capture_physical_drain(|| {
-        crate::widget::controls::take_attributed_control_invocation(&mut parent)
-    });
-    let (programmatic, unmarked, _) = capture_physical_drain(|| {
-        crate::widget::controls::take_attributed_control_invocation(&mut parent)
-    });
-    assert_eq!(marked, Input::Continuing);
-    assert_eq!(unmarked, Input::Discrete);
-    assert_eq!(physical, programmatic);
-    assert_eq!(super::input_provenance::drained_input(), Input::Discrete);
+        let checkout = RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("text"),
+        );
+        records.create_record(&checkout).unwrap();
+        let (binding, _scope, _owner) =
+            super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+        let domain = crate::ControlDomain::new();
+        domain.set_owner(crate::control_custody::ControlOwner::Component(binding));
+        let mut emitter =
+            crate::widget::ActionEmitter::new_in(crate::widget::test_string_action_binding(), &domain);
+        with_physical_text(true, || emitter.emit("same".into())).unwrap();
+        emitter.emit("same".into()).unwrap();
+        let queued = domain.drain_partitioned().components;
+        let mut queued = queued.into_iter();
+        let (physical, first) = queued.next().unwrap();
+        let (programmatic, second) = queued.next().unwrap();
+        assert_eq!(physical.input, Input::Continuing);
+        assert_eq!(programmatic.input, Input::Discrete);
+        assert_eq!(
+            first, second,
+            "equal descriptor values retain distinct provenance"
+        );
+        assert!(queued.next().is_none());
+        assert!(!physical_text(), "the scoped producer flag cannot leak");
+    }
+
+    phase physical_text_provenance_survives_initial_custody_transfer_and_legacy_draining;
+    {
+        let mut initial =
+            crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
+        with_physical_text(true, || initial.emit("same".into())).unwrap();
+        initial.emit("same".into()).unwrap();
+        let records = crate::record::RecordOwners::portable(
+            crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
+        )
+        .open("so.tilo.test", "workspace")
+        .unwrap();
+        let checkout = RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("text"),
+        );
+        records.create_record(&checkout).unwrap();
+        let (binding, _scope, _owner) =
+            super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+        let domain = crate::ControlDomain::new();
+        domain.set_owner(crate::control_custody::ControlOwner::Component(binding));
+        initial
+            .install_custody(&domain, crate::control_custody::CustodyAttachment::Initial)
+            .unwrap();
+        let mut queued = domain.drain_partitioned().components.into_iter();
+        let (physical, first) = queued.next().unwrap();
+        let (programmatic, second) = queued.next().unwrap();
+        assert!(
+            physical.input == Input::Continuing,
+            "initial installation retains the producer's exact queued provenance"
+        );
+        assert_eq!(programmatic.input, Input::Discrete);
+        assert_eq!(first, second);
+        assert!(queued.next().is_none());
+        assert!(
+            initial.take().is_none(),
+            "registered holders cannot leak descriptors through legacy taking"
+        );
+        let mut legacy = crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
+        with_physical_text(true, || legacy.emit("same".into())).unwrap();
+        legacy.emit("same".into()).unwrap();
+        let mut parent = crate::widget::Column::new().push(Box::new(TextOwner {
+            emitter: Some(legacy),
+        }));
+        let (physical, marked, _) = capture_physical_drain(|| {
+            crate::widget::controls::take_attributed_control_invocation(&mut parent)
+        });
+        let (programmatic, unmarked, _) = capture_physical_drain(|| {
+            crate::widget::controls::take_attributed_control_invocation(&mut parent)
+        });
+        assert_eq!(marked, Input::Continuing);
+        assert_eq!(unmarked, Input::Discrete);
+        assert_eq!(physical, programmatic);
+        assert_eq!(super::input_provenance::drained_input(), Input::Discrete);
+    }
 }
