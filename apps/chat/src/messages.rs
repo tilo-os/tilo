@@ -29,15 +29,8 @@ use ui::tilo_resource::{
 use crate::parts::{self, ChatPart};
 use crate::record::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
-    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, reply_id_at,
+    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
-
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
-    cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= 4096)
-        .map(str::to_owned)
-        .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
-}
 
 /// Refuses anyone but `message`'s author: editing and deleting a message is
 /// its author's. Removing someone else's is moderation (`remove-message`),
@@ -54,10 +47,6 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
 
 /// The longest name a delivered message is shown under.
 const MAX_SHOWN_NAME_BYTES: usize = 128;
-
-fn seconds(cx: &ActionCx) -> i64 {
-    cx.now_ms().div_euclid(1000)
-}
 
 /// A post's time: when it was `written` elsewhere, for a message a bot
 /// brings over on someone's behalf (`brought`), never later than now; else
@@ -123,18 +112,19 @@ impl ChatPart {
             .sum()
     }
 
-    /// Append a message to `channel` by `author` at `ts`, refusing what no
+    /// Append a message to `channel` by the invoker `cx` names, at `ts`, refusing what no
     /// one should see: a reply to a reply or to another channel's message,
     /// an oversized body or an invalid attachment. Whether the channel takes
     /// posts is the chat record's to say, where the post is invoked.
     pub(crate) fn append(
         &mut self,
+        cx: &ActionCx,
         id: Id,
         channel: &Id,
-        author: String,
         ts: i64,
         posting: Posting,
     ) -> Result<Id, Refusal> {
+        let author = author(cx)?;
         if posting.text.len() > MAX_MESSAGE_TEXT_BYTES {
             return Err(Refusal::new("the message is too long"));
         }
@@ -170,6 +160,7 @@ impl ChatPart {
                 mentions: posting.mentions,
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
+                acting: cx.acting(),
                 share: posting.share,
                 ..Message::default()
             },
@@ -239,13 +230,12 @@ impl ChatPart {
             return Err(Refusal::new("a message says something"));
         }
         let id = cx.id();
-        let by = author(cx)?;
         let appearance = cx.appearance();
         let ts = written_at(cx, written, appearance.is_some());
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text,
@@ -287,12 +277,11 @@ impl ChatPart {
             })
             .ok_or("the file is described where it is posted")?;
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text: text.unwrap_or_default(),
@@ -331,12 +320,11 @@ impl ChatPart {
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| label.clone());
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text,
@@ -374,12 +362,11 @@ impl ChatPart {
         }
         let label = attached.reference.label.clone();
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text: text.unwrap_or_default().trim().to_owned(),
@@ -498,12 +485,11 @@ impl ChatPart {
         if self.messages.contains(&id) {
             return Ok(());
         }
-        let by = self::author(cx)?;
         let now = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts.map_or(now, |ts| ts.clamp(0, now)),
             Posting {
                 text: body,
@@ -670,9 +656,9 @@ impl ChatPart {
         let reply = reply_id_at(message, &me, summons.attempts);
         if !self.messages.contains(&reply) {
             self.append(
+                cx,
                 reply.clone(),
                 &channel,
-                me.clone(),
                 since,
                 Posting {
                     parent: Some(thread),
@@ -758,7 +744,6 @@ impl ChatPart {
         {
             return Err(Refusal::new("provider display name is too long"));
         }
-        let me = author(cx)?;
         let id = Id::from_raw(reply);
         let existing = self.messages.get(&id);
         if let Some(row) = existing {
@@ -780,9 +765,9 @@ impl ChatPart {
         }
         if existing.is_none() {
             self.append(
+                cx,
                 id.clone(),
                 &channel,
-                me,
                 seconds(cx),
                 Posting {
                     appearance: name.map(|name| tilo_actions::Appearance {

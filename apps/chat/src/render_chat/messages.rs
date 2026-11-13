@@ -1464,7 +1464,7 @@ impl ChatApp {
             // An agent who answered wears its own face, as its byline does.
             let name = self.display_name(pid);
             let mut face = AvatarFace::new(&name, pid);
-            if self.is_agent_author(pid) {
+            if crate::views::is_agent(pid) {
                 face = face.agent();
             }
             face.presence(self.identity_colour(pid))

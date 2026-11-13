@@ -167,7 +167,7 @@ pub mod words;
 
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
-    ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
+    Acting, ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, minted_ids,
     minted_keys, reverting_type, take_minted,
 };

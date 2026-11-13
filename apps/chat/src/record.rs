@@ -698,7 +698,7 @@ impl Participant {
 }
 
 /// One message of a channel.
-#[derive(Model, Debug, Clone, PartialEq)]
+#[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Message {
     /// The channel it was posted in.
     #[model(readonly)]
@@ -747,6 +747,10 @@ pub struct Message {
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
     pub appearance: Option<ShownAs>,
+    /// The agent or app that wrote it for a person, as its send pinned them: what names it
+    /// "Helper for Ada" after it left too. `None` for a person's own words.
+    #[model(readonly)]
+    pub acting: Option<ui::tilo_resource::Acting>,
     /// The window it shares live, when it was written by sharing one: the
     /// resource is the one its first resource attachment names.
     #[model(readonly)]
@@ -859,29 +863,6 @@ impl From<ShownAs> for tilo_actions::Appearance {
                 account: persona.account,
                 linked: persona.linked,
             }),
-        }
-    }
-}
-
-impl Default for Message {
-    fn default() -> Self {
-        Self {
-            channel: Id::from_raw(""),
-            author: Atom::default(),
-            ts: 0,
-            text: String::new(),
-            body: Vec::new(),
-            edited: false,
-            history: Vec::new(),
-            parent: None,
-            reactions: ui::tilo_resource::Reactions::new(),
-            mentions: Vec::new(),
-            attachments: Vec::new(),
-            pinned: false,
-            work: None,
-            appearance: None,
-            share: None,
-            attempts: 0,
         }
     }
 }
@@ -1096,14 +1077,14 @@ pub(crate) fn prepare_file_post(
 
 /// Who an action is by; refused without one, since a report or a read mark
 /// is always someone's.
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
+pub(crate) fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
         .filter(|author| !author.is_empty() && author.len() <= 4096)
         .map(str::to_owned)
         .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
 }
 
-fn seconds(cx: &ActionCx) -> i64 {
+pub(crate) fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
 }
 

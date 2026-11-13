@@ -312,6 +312,14 @@ impl ChatApp {
                 .map(|(_, messages)| messages);
             for message in messages.into_iter().flatten() {
                 ids.insert(message.author.clone());
+                // The person an agent wrote for is named with it.
+                ids.extend(
+                    message
+                        .acting
+                        .iter()
+                        .filter_map(|by| by.person.clone())
+                        .map(|p| p.0),
+                );
                 // A member who writes only from a linked account on a
                 // bridged service is still this workspace's person: their
                 // bridged messages read as theirs, by their name and colour,

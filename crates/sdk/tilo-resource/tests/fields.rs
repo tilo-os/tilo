@@ -115,7 +115,10 @@ impl Board {
         self.author = format!(
             "{:?} for {}",
             cx.actor_kind().unwrap_or_default(),
-            cx.for_person().unwrap_or_default()
+            cx.acting()
+                .and_then(|acting| acting.person)
+                .unwrap_or_default()
+                .0
         );
     }
 

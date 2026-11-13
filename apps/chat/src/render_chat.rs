@@ -405,7 +405,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         if m.author.starts_with("bot:")
-            || self.is_agent_author(&m.author)
+            || crate::views::is_agent(&m.author)
             || self.is_provider_output(m)
         {
             return;
@@ -461,7 +461,7 @@ impl ChatApp {
                 for_person: Some(initiator),
                 color,
             }
-        } else if self.is_agent_author(&m.author) {
+        } else if crate::views::is_agent(&m.author) {
             Author::Agent {
                 name,
                 for_person: None,
@@ -915,6 +915,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
             sending: false,

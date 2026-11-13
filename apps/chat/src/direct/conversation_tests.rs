@@ -508,7 +508,7 @@ fn a_conversation_that_is_here_and_a_person_that_is_not_are_named_apart() {
 }
 
 /// An agent Ada admitted sends a message from her window: the message is the agent's, not
-/// Ada's, on her device and on Bob's.
+/// Ada's, on her device and on Bob's, and names it with her where nobody sees the agent here.
 #[test]
 fn an_agents_send_is_the_agents_on_every_member() {
     use ui::tilo_resource::Resource as _;
@@ -554,5 +554,11 @@ fn an_agents_send_is_the_agents_on_every_member() {
             .collect::<Vec<_>>(),
         [("hello from the agent", "agent:helper")],
         "and on Bob's"
+    );
+    bob_window.harness().relayout();
+    assert_eq!(
+        bob_window.with_chat(|chat| chat.message_author_name(&theirs[0])),
+        Some(ui::acting_line("Helper", Some("Ada"), false)),
+        "Bob, who never saw the agent here, reads it by its name and Ada's"
     );
 }

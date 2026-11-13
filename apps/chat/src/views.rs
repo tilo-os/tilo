@@ -478,9 +478,10 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// Whether `author` is an agent rather than a person: a participant spelled `agent:<id>`, or an
-/// agent task spelled `agent-task:<task>`.
-fn is_agent(author: &str) -> bool {
+/// Whether `author` is an agent rather than a person: one of the workspace's own (`agent:<id>`,
+/// the actor its identity record names) or a run of a task (`agent-task:<task>`). An agent is a
+/// collaborator and reads as one, in the byline and its face, wherever its name is shown.
+pub(crate) fn is_agent(author: &str) -> bool {
     author.starts_with("agent:") || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
 }
 
@@ -1318,6 +1319,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
             sending: false,
@@ -2232,6 +2234,7 @@ mod tests {
             attachments: Vec::new(),
             pinned: false,
             appearance: None,
+            acting: None,
             share: None,
             attempts: 0,
             sending: false,

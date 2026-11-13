@@ -313,26 +313,10 @@ impl ChatApp {
         for user in &self.users {
             (&user.id, &user.name).hash(&mut people);
         }
-        let mut colors: Vec<_> = self.workspace_colors.iter().collect();
-        colors.sort_unstable();
-        for color in &colors {
-            color.hash(&mut people);
-        }
-        let mut agents: Vec<_> = self.agent_authors.iter().collect();
-        agents.sort_unstable();
-        for agent in &agents {
-            agent.hash(&mut people);
-        }
-        let mut named: Vec<_> = self.workspace_agent_names.iter().collect();
-        named.sort_unstable();
-        for agent in &named {
-            agent.hash(&mut people);
-        }
-        let mut worn: Vec<_> = self.workspace_agent_colours.iter().collect();
-        worn.sort_unstable();
-        for agent in &worn {
-            agent.hash(&mut people);
-        }
+        hash_sorted(&self.workspace_colors, &mut people);
+        hash_sorted(&self.agent_authors, &mut people);
+        hash_sorted(&self.workspace_agent_names, &mut people);
+        hash_sorted(&self.workspace_agent_colours, &mut people);
         let look = PaintLook {
             theme: theme.clone(),
             transform: tf,
@@ -669,6 +653,13 @@ impl ChatApp {
         self.note_painted(&m.id, painted, column.area);
         *y += height;
     }
+}
+
+/// Hash `map` in its keys' order, as a key of what was painted must be.
+fn hash_sorted<K: Hash + Ord, V: Hash>(map: &HashMap<K, V>, into: &mut impl Hasher) {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    entries.hash(into);
 }
 
 #[cfg(test)]
