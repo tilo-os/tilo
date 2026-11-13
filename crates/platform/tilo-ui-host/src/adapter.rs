@@ -232,7 +232,7 @@ impl Adapter {
     }
 
     /// What the control `node` of a view does, as the identity anyone looks it up by: the kind
-    /// of record it acts on and the operation, in the app's ids.
+    /// of record it acts on and the operation, named as the app publishes it at its door.
     ///
     /// A control that runs an app action does that action; one that edits a record's field
     /// edits that field. The window's composition moves the control between the bar, an empty
