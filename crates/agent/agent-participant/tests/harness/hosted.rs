@@ -154,6 +154,39 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     }
 }
 
+/// Start a host for `root`'s person on `host`'s device as tilo.sh's relay
+/// runs (`--room-records`): no agents, its workspaces' records served to
+/// their devices, each action run in the record's own app worker here,
+/// whether or not a page of the person's is open. Its apps are
+/// `catalogue`'s.
+pub async fn serving_records(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
+) -> Relay {
+    let cfg = tilo_relay::RelayConfig {
+        state_root: state.join("relay"),
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+        ..Default::default()
+    };
+    tilo_relay::agents::start_serving_records(
+        cfg,
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host.key.clone(),
+            device_cert: host.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        Some(Arc::new(catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+}
+
 /// The laptop: a root holder answering every agent request with the agent's
 /// certificate and the delegation of exactly what was proposed.
 ///

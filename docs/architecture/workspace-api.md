@@ -148,6 +148,15 @@ dials the relay's iroh endpoint with the grant's certificate, as a `tilo
 login` computer dials with its own, and enters the way that computer does
 (`tilo_session_client::device`).
 
+The relay keeps one session per device: a second session of the same key cuts
+the first off. So each holder keeps one session and every run shares it. The
+API server holds one per grant for all of that grant's MCP sessions. A `tilo
+login` computer holds one per device: the first `tilo mcp` starts `tilo mcp
+--hold`, which enters the workspace, and every `tilo mcp` on the computer (each
+agent window, `tilo agent check`) connects to it over a socket only that
+account can open. Each connection is its own agent run over that one session.
+The holder leaves the workspace ten seconds after its last connection ends.
+
 The relay admits an agent's grant (`tilo_room_host::workspace_access`) as
 its person's agent, iff
 

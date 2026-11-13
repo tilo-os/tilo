@@ -56,7 +56,7 @@ ed25519-dalek.workspace = true
 postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std"] }
 # `tilo mcp`: the runtime's own MCP projection of a workspace, its actions
 # asked of the workspace's host through this device's session, as the person
 # their workspaces name.

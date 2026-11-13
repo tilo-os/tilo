@@ -443,6 +443,57 @@ const signedUp = await person(first);
 mark('the agent is present beside its name');
 report.person = signedUp;
 
+// A second agent on the same computer (another Claude Code window, say) starts
+// its own `tilo mcp` while the first stays connected: both are the one device
+// `tilo login` made, and neither cuts the other off. It does what the login's
+// words tell it to, and the person's tab shows the note it writes.
+const otherAgent = spawn(tiloBin, ['mcp'], {env, stdio: ['pipe', 'pipe', 'pipe']});
+const secondAnswers = new Map();
+let secondOut = '';
+otherAgent.stdout.on('data', chunk => {
+  secondOut += chunk;
+  let at;
+  while ((at = secondOut.indexOf('\n')) >= 0) {
+    const line = secondOut.slice(0, at);
+    secondOut = secondOut.slice(at + 1);
+    try { const answer = JSON.parse(line); secondAnswers.get(answer.id)?.(answer); } catch {}
+  }
+});
+let secondId = 0;
+const ask = (method, params) => new Promise(resolve => {
+  const id = ++secondId;
+  secondAnswers.set(id, resolve);
+  otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id, method, params})}\n`);
+});
+const call = async (name, args) => {
+  const answer = await Promise.race([
+    ask('tools/call', {name, arguments: args}),
+    sleep(stepLimit(4)).then(() => ({error: {message: 'no answer'}})),
+  ]);
+  const said = (answer.result?.content ?? []).map(block => block.text).join('\n') || JSON.stringify(answer);
+  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400)});
+  if (answer.error || answer.result?.isError) await fail(`the second agent's ${name} ${JSON.stringify(args)} failed: ${said}`);
+  return said;
+};
+await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'gate-second', version: '1'}});
+otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})}\n`);
+const noteTitle = 'Hello from the second agent';
+await call('tilo_do', {path: 'notes#open'});
+await call('tilo_do', {path: 'notes#new-note', args: {title: noteTitle}});
+// The first agent still acts after the second did.
+const firstAnswer = new Promise(resolve => {
+  let seen = '';
+  server.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
+});
+server.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes'}}})}\n`);
+const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
+report.firstAfterSecond = firstSaid.slice(-600);
+if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
+await until(first, `(document.body?.innerText ?? '').includes(${JSON.stringify(noteTitle)})`,
+  'the person\'s tab showing the second agent\'s note', stepLimit(3));
+otherAgent.stdin.end();
+mark('a second agent on the computer wrote a note the tab shows, the first still connected');
+
 // Loaded again while the agent's MCP server is still connected, the tab is the
 // same person in the same workspace, titled after it, with the agent still
 // there.

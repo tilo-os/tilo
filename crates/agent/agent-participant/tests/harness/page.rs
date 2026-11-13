@@ -85,9 +85,20 @@ impl Page {
         host: &Device,
         cluster_id: &str,
     ) -> Self {
+        Self::open_at(&hosted.relay, device, host, cluster_id).await
+    }
+
+    /// [`Self::open_workspace`] on any host `relay` runs, whatever serves
+    /// its records.
+    pub async fn open_at(
+        relay: &tilo_relay::daemon::Relay,
+        device: &Device,
+        host: &Device,
+        cluster_id: &str,
+    ) -> Self {
         let workspace = tilo_relay_protocol::WorkspaceId::parse(cluster_id).unwrap();
         let peer = start_peer(
-            Host::at(hosted.relay.node_addr()),
+            Host::at(relay.node_addr()),
             device.cert.clone(),
             host.cert.clone(),
             device.key.clone(),
@@ -203,6 +214,14 @@ impl Page {
             (_, None) => {}
         }
         None
+    }
+
+    /// The records whose writes reached this page before it could open them.
+    pub fn unopened(&self) -> Vec<String> {
+        self.unopened
+            .keys()
+            .map(|route| format!("{}/{}", route.app_id, route.record))
+            .collect()
     }
 
     /// Everyone here now, as a surface draws them.

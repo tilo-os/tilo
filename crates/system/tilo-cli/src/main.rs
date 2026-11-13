@@ -308,7 +308,12 @@ enum Cmd {
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (`tilo agent connect` adds it).
-    Mcp,
+    Mcp {
+        /// Hold this computer's session with the workspace for every
+        /// `tilo mcp` on it; a `tilo mcp` starts it when none runs.
+        #[arg(long, hide = true)]
+        hold: bool,
+    },
     /// Connect agents to this desktop, and choose their models.
     Agent {
         #[command(subcommand)]
@@ -956,7 +961,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             agent.as_deref(),
             site.as_deref(),
         ),
-        Cmd::Mcp => mcp::serve(),
+        Cmd::Mcp { hold } => mcp::serve(hold),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
