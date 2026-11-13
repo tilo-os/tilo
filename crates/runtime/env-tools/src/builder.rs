@@ -43,8 +43,6 @@ pub trait ToolStore {
     /// Whether `tool` is in the store (so an index entry naming it is good).
     fn has(&self, tool: &PackageId) -> bool;
 
-    /// Pack `tree` into a `tool` image bound to `key.runtime`, sign it and
-    /// keep it. `requested` is what the user asked for.
     fn store_tool(
         &self,
         tree: &Path,
@@ -82,14 +80,10 @@ pub enum BuildError {
     },
 }
 
-/// Where a tool id came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
-    /// This builder's index named an image the store has.
     Local,
-    /// The published catalog.
     Catalog,
-    /// Built just now.
     Built { report: SealReport, took: Duration },
 }
 
@@ -100,7 +94,6 @@ pub struct Built {
     pub origin: Origin,
 }
 
-/// Deadlines for the two dnf runs.
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
     pub resolve: Duration,
@@ -121,11 +114,9 @@ impl Default for Timeouts {
 pub struct SealedTree {
     pub nevras: Vec<String>,
     pub report: SealReport,
-    /// The package manager's output.
     pub log: String,
 }
 
-/// Resolves, caches and builds tool images.
 pub struct Builder<S, C> {
     store: S,
     catalog: C,
@@ -134,7 +125,6 @@ pub struct Builder<S, C> {
     timeouts: Timeouts,
     sandbox: SandboxOptions,
     network: NetworkChoice,
-    /// Each runtime's egress policy, worked out once.
     policies: Mutex<HashMap<PackageId, tilo_egress::EgressPolicy>>,
 }
 
@@ -259,11 +249,6 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         })
     }
 
-    /// Resolve `packages` against the runtime tree, returning the key.
-    ///
-    /// # Errors
-    ///
-    /// As [`resolve_in`].
     pub fn resolve(
         &self,
         runtime: &PackageId,
@@ -371,10 +356,8 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
 /// How a build's sandbox is set up beyond its runtime and scratch.
 #[derive(Clone, Debug)]
 pub struct SandboxOptions {
-    /// dnf's metadata cache, kept across builds on one runtime.
     pub dnf_cache: Option<PathBuf>,
     pub bwrap: Option<PathBuf>,
-    /// What the sandbox may reach.
     pub network: Network,
 }
 
@@ -412,13 +395,6 @@ fn dnf_argv<'a>(head: &[&'a str], packages: &'a [String]) -> Vec<&'a str> {
     argv
 }
 
-/// Resolve `packages` on the runtime `tree` in a sandbox under `scratch`.
-///
-/// # Errors
-///
-/// [`BuildError::Empty`], [`BuildError::AlreadyInRuntime`] when nothing new
-/// would be installed, [`BuildError::Resolve`] for dnf's verdicts, or a
-/// sandbox failure.
 pub fn resolve_in(
     tree: &Path,
     scratch: &Path,

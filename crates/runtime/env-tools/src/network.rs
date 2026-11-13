@@ -37,8 +37,6 @@ pub enum Network {
     Host,
 }
 
-/// Which [`Network`] a builder gives its sandboxes; [`NetworkChoice::Gated`]
-/// works out the hosts per runtime.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NetworkChoice {
     #[default]
@@ -47,12 +45,8 @@ pub enum NetworkChoice {
     Host,
 }
 
-/// How long fetching one metalink may take.
 const MIRROR_LIST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The policy for builds on the runtime at `tree`: its repositories' hosts
-/// and the mirrors their metalinks list. `scratch` is for the fetch's
-/// sandbox and is left empty.
 pub fn repo_policy(tree: &Path, scratch: &Path) -> Result<EgressPolicy, SandboxError> {
     let mut repos =
         RepoHosts::read(tree, std::env::consts::ARCH).map_err(|source| SandboxError::Io {
@@ -80,7 +74,6 @@ pub fn repo_policy(tree: &Path, scratch: &Path) -> Result<EgressPolicy, SandboxE
     Ok(repos.policy())
 }
 
-/// [`Network::Gated`] with this machine's resolvers and `pasta`.
 pub fn gated(policy: EgressPolicy) -> Network {
     Network::Gated {
         policy,
