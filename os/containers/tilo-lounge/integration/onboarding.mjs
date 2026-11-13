@@ -23,11 +23,6 @@
 //   6. someone else with no invitation still cannot get in, and leaves an
 //      address on the wait list.
 //
-// It stops at step 4: the passkey signs the person in on a browser that forgot
-// the site, and the host then refuses to certify that tab as one of their
-// devices ("only a member approves devices here"), so the walk ends there.
-// Steps 0 to 3 are what it proves today.
-//
 // The mails are the door's own, kept by the mail sink the stack points it at:
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
@@ -99,10 +94,13 @@ const fail = async message => {
     const lines = (tab.log ?? []).slice(-40);
     if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
   }
+  // A tab that stopped answering (its renderer gone, a dialog up) answers
+  // none of these: each is given a step's time, not the flow's.
+  const bounded = (work, otherwise) => Promise.race([work.catch(() => otherwise), sleep(stepLimit(1)).then(() => otherwise)]);
   for (const {name, tab} of said) {
-    await dump(tab, `failed-${name}`).catch(() => {});
-    report[`${name}Text`] = await pageText(tab);
-    report[`${name}State`] = await state(tab);
+    await bounded(dump(tab, `failed-${name}`), undefined);
+    report[`${name}Text`] = await bounded(pageText(tab), '(the tab did not answer)');
+    report[`${name}State`] = await bounded(state(tab), {});
   }
   writeFileSync(join(work, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
@@ -140,10 +138,16 @@ const poll = async (tab, expression, timeout = stepLimit(4)) => {
 /** Wait until the page answers `expression` true, or say what it was doing. */
 const until = async (tab, expression, what, timeout = stepLimit(4)) => {
   const deadline = Date.now() + timeout;
+  const answered = work => Promise.race([work, sleep(stepLimit(1)).then(() => null)]);
   for (;;) {
-    const value = await tab.evaluate(expression).catch(() => false);
+    const value = await answered(tab.evaluate(expression).catch(() => false));
     if (value) return value;
-    if (Date.now() > deadline) await fail(`${what} never happened: ${JSON.stringify(await state(tab))} — "${(await pageText(tab)).slice(0, 400)}"`);
+    if (Date.now() > deadline) {
+      const seen = await answered(state(tab));
+      const text = await answered(pageText(tab));
+      const cards = await answered(tab.evaluate(`[...document.querySelectorAll('.tilo-entry-card, [data-card]')].map(card => card.innerText.trim()).filter(Boolean).join(' | ')`).catch(() => ''));
+      await fail(`${what} never happened: ${seen === null ? 'the tab did not answer' : JSON.stringify(seen)} — "${(text ?? '').slice(0, 400)}"${cards ? ` — on screen: ${cards.slice(0, 600)}` : ''}`);
+    }
     await sleep(200);
   }
 };
@@ -159,6 +163,8 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
   if (setupDone) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN});
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Log.enable', {}).catch(() => {});
+  await tab.send('Page.enable', {}).catch(() => {});
+  await tab.send('Inspector.enable', {}).catch(() => {});
   const asked = new Map();
   browser.on(({sessionId, method, params}) => {
     if (sessionId !== tab.sessionId) return;
@@ -166,6 +172,11 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
     else if (method === 'Network.loadingFailed') tab.log.push(`NET ${asked.get(params.requestId) ?? params.requestId}: ${params.errorText}`);
     else if (method === 'Network.responseReceived' && params.response.status >= 400) tab.log.push(`HTTP ${params.response.status} ${params.response.url}`);
     else if (method === 'Log.entryAdded') tab.log.push(`LOG ${params.entry.level} ${params.entry.text}`);
+    // Where the tab went, and why it stopped answering: a page that never
+    // came after a navigation names one of these.
+    else if (method === 'Page.frameNavigated' && !params.frame.parentId) tab.log.push(`PAGE now at ${params.frame.url.replace(/#.*/, '#…')}`);
+    else if (method === 'Page.javascriptDialogOpening') tab.log.push(`PAGE dialog ${params.type}: ${params.message}`);
+    else if (method === 'Inspector.targetCrashed') tab.log.push(`PAGE the renderer crashed; the browser said: ${browser.crashLines?.() || '(nothing)'}`);
     else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 500));
     }
@@ -655,11 +666,25 @@ try {
     input.value = ${JSON.stringify(named)};
     input.dispatchEvent(new Event('input', {bubbles: true}));
   })()`);
+  // The workspace the page opens, and the one this browser remembers by that
+  // name: the tab's title names the space in front on the workspace's
+  // desktop, not the workspace, so it is not what says where the page is.
+  const opened = `(() => {
+    const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
+    const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
+    const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.room === chosen?.room);
+    const open = document.documentElement.dataset.entry === 'open'
+      && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
+    return open && kept?.name === ${JSON.stringify(named)} ? chosen.room : '';
+  })()`;
+  const first = await stranger.tab.evaluate(opened).catch(() => '');
+  if (first) await fail(`a workspace named ${named} was open before the person made one: ${first}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
-  await until(stranger.tab, `document.title.includes(${JSON.stringify(named)})`, 'the second workspace opening', stepLimit(10));
-  report.secondWorkspace = await stranger.tab.evaluate(`document.title`);
+  const second = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
+  if (second === report.returned?.room) await fail(`the second workspace is the first one again: ${second}`);
+  report.secondWorkspace = {room: second, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
-  console.log(`ok: the person made and opened a second workspace (${report.secondWorkspace})`);
+  console.log(`ok: the person made and opened a second workspace (${named}, ${second})`);
   mark('the person made a second workspace');
 
   // -- 6. a visitor with no invitation is still out --------------------------

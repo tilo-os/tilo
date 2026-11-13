@@ -137,8 +137,9 @@ visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
 door that takes people by invitation, a stranger's onboarding on a tilo.sh of
 its own (`test-onboarding.sh`: the wait list, the two mails, the invitation the
 person who runs the host sends from the workspace's wait list, and the
-workspace of their own with their agent set up in it; it stops at the passkey,
-which the host refuses to certify the tab for), and the chat read back after
+workspace of their own with their agent set up in it, the passkey that brings
+them back on a browser that forgot the site, a second workspace, and a visitor
+still refused), and the chat read back after
 the relay restarts. Each flow runs alone too:
 
 ```

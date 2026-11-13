@@ -60,9 +60,9 @@
 #                  confirmation mail, the invitation the person who runs the
 #                  host sends from the workspace's own wait list and the mail it
 #                  carries, the workspace of their own they land in and the
-#                  agent set up there. It stops at the passkey: a browser that
-#                  forgot the site signs the person in, and the host refuses to
-#                  certify the tab as one of their devices
+#                  agent set up there; the passkey that brings them back on a
+#                  browser that forgot the site; a second workspace they make;
+#                  and a visitor with no invitation, still refused
 #                  (integration/onboarding.mjs)
 #   restart        the Lounge's relay starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
@@ -157,13 +157,10 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list restart)
+all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
-# in one browser, counting the reloads that crash or never come back; and a
-# stranger's whole onboarding, which brings up a whole tilo.sh of its own
-# rather than using the stack the other flows share, and which stops at the
-# passkey return (the host refuses to certify the tab).
-named_only=(reloads onboarding)
+# in one browser, counting the reloads that crash or never come back.
+named_only=(reloads)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
@@ -305,6 +302,10 @@ await_flow() {
     # and what it said last are said here.
     echo "--- $1's steps:"
     grep -E '^(TIMING|ok:)' "$work/$1.log" | sed "s/^/  [$1] /" || true
+    # Why, as the flow said it: a page's console after it can push the
+    # reason itself out of the last lines.
+    echo "--- $1 failed on:"
+    grep -E '^FAIL' "$work/$1.log" | sed "s/^/  [$1] /" || true
     echo "--- $1 said (its last 60 lines):"
     tail -60 "$work/$1.log" | sed "s/^/  [$1] /"
     failed+=("$1")

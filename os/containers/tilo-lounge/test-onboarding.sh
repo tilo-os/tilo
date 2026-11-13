@@ -15,11 +15,6 @@
 # them back to it; a second workspace they make; and a visitor with no
 # invitation, who still cannot get in.
 #
-# It stops at the passkey: a browser that forgot the site signs the person in
-# with their passkey, and the host then refuses to certify the tab as one of
-# their devices, so the walk ends where that refusal is. What it proves today
-# is everything up to the person's own workspace with their agent in it.
-#
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle the stack's site serves
 # (tools/ci/publish/web-desktop-bundle.sh). WORK keeps what it found: every
