@@ -134,6 +134,39 @@ mod tests {
         );
     }
 
+    /// A step on one of a collection's items says that item, as its app
+    /// named it ("Editing Book room 4 for Friday"), in the window's language:
+    /// the record's own name only stands where the step names no item.
+    #[test]
+    fn a_step_on_an_item_says_the_item_in_the_window_language() {
+        let on = |kind| Step::new(kind, Some("Book room 4 for Friday"));
+        speak("en-US");
+        assert_eq!(line(&on(StepKind::Edit)), "Editing Book room 4 for Friday");
+        assert_eq!(
+            line(&on(StepKind::Delete)),
+            "Deleting Book room 4 for Friday"
+        );
+        assert_eq!(line(&on(StepKind::Move)), "Moving Book room 4 for Friday");
+        assert_eq!(
+            line(&on(StepKind::Write)),
+            "Writing in Book room 4 for Friday"
+        );
+        speak("de-DE");
+        assert_eq!(
+            line(&on(StepKind::Edit)),
+            "Bearbeitet Book room 4 for Friday"
+        );
+        assert_eq!(line(&on(StepKind::Delete)), "Löscht Book room 4 for Friday");
+        assert_eq!(
+            line(&on(StepKind::Move)),
+            "Verschiebt Book room 4 for Friday"
+        );
+        assert_eq!(
+            line(&on(StepKind::Write)),
+            "Schreibt in Book room 4 for Friday"
+        );
+    }
+
     /// A create that names the collection it adds to says what is being made,
     /// by the app's own noun for one of them, with its own article and word
     /// order: the line a person reads is a sentence of their language, never

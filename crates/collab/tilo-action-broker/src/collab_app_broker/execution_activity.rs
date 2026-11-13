@@ -124,6 +124,8 @@ pub(super) struct ActivityTarget {
 pub(super) struct ShownActor {
     pub(super) actor: tilo_actions::InteractionActor,
     pub(super) action: tilo_actions::InteractionAction,
+    /// What it acts in, named as the step's line says it: the item's own label
+    /// where the invocation names one, else the record's.
     pub(super) resource: tilo_actions::ActionResource,
     /// The narrowest target the invocation names, as far as its published
     /// action and the caller's own argument say: the record or item it acts on,
@@ -303,6 +305,58 @@ fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
     (named == field && !item.is_empty() && !item.contains('/')).then(|| item.to_owned())
 }
 
+/// The name the surface published for the item `argument` names of the record
+/// `action` acts in, in words its app chose ("Book room 4 for Friday"): the
+/// label the item's own published resource carries.
+///
+/// An item's actions are published on the item's own resource and again on the
+/// record, with the item's id as an argument (`<record>#rename` addressed by
+/// `issue`), so a caller naming an item either way names that item. `None`
+/// where the argument names none: the step then says the record.
+fn item_named<'a>(
+    action: &PublishedAction,
+    surface: &'a PublishedSurface,
+    argument: Option<&str>,
+) -> Option<&'a str> {
+    /// Every string `value` holds, at any depth.
+    fn strings<'v>(value: &'v serde_json::Value, into: &mut Vec<&'v str>) {
+        match value {
+            serde_json::Value::String(text) => into.push(text),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    strings(item, into);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values() {
+                    strings(item, into);
+                }
+            }
+            _ => {}
+        }
+    }
+    let tilo_actions::remote::InvokeArgument::Json(argument) =
+        tilo_actions::remote::InvokeArgument::from_slot(argument)
+    else {
+        return None;
+    };
+    let argument = serde_json::Value::Object(argument);
+    let mut said: Vec<&str> = Vec::new();
+    strings(&argument, &mut said);
+    surface.actions.iter().find_map(|descriptor| {
+        // The same verb on an item of this record, by the item resource the app
+        // published for it: what a person reads it by.
+        if descriptor.action != action.action
+            || descriptor.resource_kind.rsplit_once('.')?.0 != action.resource_kind
+        {
+            return None;
+        }
+        let item = item_of_resource(&descriptor.resource, &descriptor.resource_kind)?;
+        said.contains(&item.as_str())
+            .then_some(descriptor.resource_label.as_str())
+    })
+}
+
 impl ShownActor {
     /// How `caller`, admitted as `actor`, appears in the view it acts in;
     /// `None` for a person acting for themselves on this device, whose own
@@ -320,10 +374,11 @@ impl ShownActor {
         if !shown.kind.acts_for_someone() && shown.for_person.is_none() && !remote {
             return None;
         }
+        let label = item_named(action, surface, argument).unwrap_or(&action.resource_label);
         let resource = tilo_actions::ActionResource {
             id: action.resource.clone(),
             kind: action.resource_kind.clone(),
-            label: action.resource_label.clone(),
+            label: label.to_owned(),
         };
         Some(Self {
             actor: shown,
@@ -547,6 +602,85 @@ mod anchor_tests {
         )
         .to_slot()
         .expect("a typed argument has a slot")
+    }
+
+    /// A surface of the tracker `tasks.tracker`, publishing one issue as its
+    /// own resource so the app's label for it travels with its actions.
+    fn tracker() -> (PublishedSurface, PublishedAction) {
+        let mut record = published(
+            "tasks.tracker",
+            "tasks.tracker",
+            "rename",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Which issue"),
+                ActionParam::required_owned("title", ParamType::Text, "Its new title"),
+            ],
+        );
+        record.0.resource_label = "Tasks".into();
+        let (mut issue, _) = published(
+            "tasks.tracker/issues/7d2b",
+            "tasks.tracker.issues",
+            "rename",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Its new title",
+            )],
+        );
+        issue.resource_label = "Book room 4 for Friday".into();
+        let surface = PublishedSurface {
+            peer_id: 1,
+            app_id: "so.tilo.tasks".into(),
+            route: CrdtRoute::app("so.tilo.tasks", "workspace"),
+            actions: vec![record.0.clone(), issue],
+            live: true,
+        };
+        (surface, record.0)
+    }
+
+    /// A step on one of a collection's items names that item, by the label its
+    /// app published for it: a rename of an issue by its id reads "Editing Book
+    /// room 4 for Friday", never only "Editing Tasks". A step naming no item
+    /// says the record.
+    #[test]
+    fn a_step_on_an_item_names_the_item_its_app_labelled() {
+        let (surface, rename) = tracker();
+        let named = slot(&serde_json::json!({
+            "issue": "7d2b",
+            "title": "Book room four for Friday"
+        }));
+        assert_eq!(
+            item_named(&rename, &surface, Some(&named)),
+            Some("Book room 4 for Friday"),
+        );
+        // A title that merely looks like an id names no item: only an item of
+        // this record, addressed by its id, is the one the step acts on.
+        assert_eq!(
+            item_named(
+                &rename,
+                &surface,
+                Some(&slot(&serde_json::json!({
+                    "issue": "nothing",
+                    "title": "Book room four for Friday"
+                })))
+            ),
+            None
+        );
+        assert_eq!(item_named(&rename, &surface, None), None);
+        // The same verb on another record's item is another step's item.
+        let elsewhere = slot(&serde_json::json!({ "issue": "7d2b" }));
+        let (mut other, _) = published(
+            "notes.notebook/pages/7d2b",
+            "notes.notebook.pages",
+            "rename",
+            Vec::new(),
+        );
+        other.resource_label = "Trip plan".into();
+        let surface = PublishedSurface {
+            actions: vec![rename.clone(), other],
+            ..surface
+        };
+        assert_eq!(item_named(&rename, &surface, Some(&elsewhere)), None);
     }
 
     fn text_range(anchor: &tilo_actions::InteractionAnchor) -> (String, String, u64, u64) {
