@@ -1259,7 +1259,6 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         children: _,
         actions,
         views,
-        readers,
         resource_type,
     } = resource;
     ResourceSpec {
@@ -1272,7 +1271,6 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         children: Vec::new(),
         actions: actions.clone(),
         views: views.clone(),
-        readers: *readers,
         resource_type: resource_type.clone(),
     }
 }
