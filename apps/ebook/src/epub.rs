@@ -227,9 +227,7 @@ fn decode_cover(bytes: &[u8]) -> Option<Cover> {
     })
 }
 
-// ---------------------------------------------------------------------------
 // Table of contents -> href(no fragment) -> label
-// ---------------------------------------------------------------------------
 
 fn read_toc(archive: &mut Archive<'_>, pkg: &OpfPackage, base: &str) -> HashMap<String, String> {
     if let Some(nav) = &pkg.nav_href
@@ -334,9 +332,7 @@ fn first_heading(blocks: &[crate::model::Block]) -> Option<String> {
     })
 }
 
-// ---------------------------------------------------------------------------
 // ZIP + path helpers
-// ---------------------------------------------------------------------------
 
 /// Read a UTF-8 entry, bounded to `limit` bytes. XHTML chapters may carry a
 /// doctype, so this does not apply the office-format DTD rejection.
@@ -356,7 +352,6 @@ mod tests {
     /// EPUB identity is the content hash; the sample parses; zip member limits and oversized covers are handled before decoding.
     #[test]
     fn epub_parsing_is_content_addressed_and_bounded() {
-        // --- phase: identity_is_the_content_hash_not_the_path ---
         {
             // The same bytes always produce the same id — that is what lets a book's
             // highlights and reading progress follow it across folders, devices and
@@ -384,7 +379,6 @@ mod tests {
             );
         }
 
-        // --- phase: parses_the_bundled_sample ---
         {
             let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
             let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
@@ -402,7 +396,6 @@ mod tests {
             assert!(book.chapters[0].blocks.len() >= 5);
         }
 
-        // --- phase: zip_member_limit_is_enforced_before_reading ---
         {
             let mut archive =
                 BoundedArchive::from_bytes(crate::content::SAMPLE_EPUB, ZipLimits::default())
@@ -415,7 +408,6 @@ mod tests {
             );
         }
 
-        // --- phase: oversized_cover_dimensions_fall_back_without_decoding_the_image ---
         {
             // This PNG is tiny on disk but declares a source image wider than a
             // shelf cover can ever need. The preflight dimensions pass rejects it

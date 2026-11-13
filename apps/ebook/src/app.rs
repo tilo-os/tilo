@@ -1,21 +1,13 @@
-//! The Books app widget — a single retained-mode [`Widget`] that renders both
-//! the library shelf and the paginated reader, sourcing colour from the OS
-//! [`Theme`] (chrome) or a reader palette (the page), and storing all user
-//! state in the Automerge CRDT.
+//! The Books widget: the library shelf and the paginated reader in one
+//! retained-mode widget, drawing straight into the Vello [`Scene`] with
+//! [`crate::paginate`] and [`crate::paint`]. `draw` records clickable `Hit`
+//! regions and `handle_event` hit-tests them on the next click; a frame
+//! always precedes input, so regions are never stale.
 //!
-//! One custom widget rather than composed `ui` widgets because reflowable,
-//! paginated text with highlight bands behind glyphs and margin annotation
-//! glyphs doesn't map onto stock layout widgets: the surface is drawn
-//! straight into the Vello [`Scene`] via [`crate::paginate`] and
-//! [`crate::paint`]. `draw` records clickable `Hit` regions; `handle_event`
-//! hit-tests them on the next click; a frame always precedes input so
-//! regions are never stale.
-//!
-//! State: the library record ([`Ebook`]) holds the
-//! shelf, settings, progress and annotations, changed through its field
-//! edits and verbs. Ephemeral widget caches (open book, page index,
-//! selection, layout cache) are per-peer view state kept out of the document
-//! so readers browse independently.
+//! The library record ([`Ebook`]) holds the shelf, settings, progress and
+//! annotations, changed through its field edits and verbs. Ephemeral widget
+//! caches (open book, page index, selection, layout cache) are per-peer view
+//! state kept out of the document, so readers browse independently.
 
 #![allow(
     clippy::many_single_char_names,
@@ -93,9 +85,9 @@ use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction
 use crate::resource::{Ebook, HiPiece, Passage, books};
 use ui::lock::MutexRecover as _;
 
-/// Whether a parsed book should replace the reader's current content or only
-/// join a watched shelf. The worker carries this presentation intent but never
-/// touches the document.
+/// Whether a parsed book replaces the reader's content or only joins a
+/// watched shelf: presentation intent the worker never writes to the
+/// document.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ImportKind {
     Open,
@@ -119,9 +111,8 @@ struct ImportRequest {
 
 struct ImportResult {
     generation: u64,
-    /// The user-granted or watched source. This is used exclusively to decide
-    /// whether a worker result is still current and to de-duplicate watches;
-    /// it is never written to the collaborative document.
+    /// The user-granted or watched source: decides whether a worker result is
+    /// still current, and de-duplicates watches. Never written to the document.
     source_path: PathBuf,
     /// The resolved shelf location: normally the content-addressed workspace
     /// copy, otherwise the source when the host has no workspace capability.
@@ -239,7 +230,6 @@ impl ImportWorker {
         self.results.try_recv()
     }
 
-    /// Stop the worker: it takes no more imports and drops a waiting one.
     fn close(&self) {
         let (lock, wake) = &*self.mailbox;
         let mut state = lock.lock_recover();
@@ -261,9 +251,7 @@ struct LoadingImport {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
-    /// The store's book this import fetches, when it fetches one.
     store_book: Option<u64>,
-    /// The "Opening …" notice: progress, up while the import runs.
     card: Transient<()>,
 }
 
@@ -299,7 +287,6 @@ const TURN_STEP_PX: f64 = 40.0;
 /// measure for the book's text at its default size.
 const PAGE_MAX_W: f64 = 680.0;
 
-/// Which screen is showing. Per-peer, never persisted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum View {
     Library,
@@ -310,7 +297,6 @@ enum View {
     Search,
 }
 
-/// Which manager the settings screen is showing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SettingsTab {
     Fonts,
@@ -399,7 +385,6 @@ enum RenameTarget {
     Scheme(String),
 }
 
-/// A clickable region recorded during `draw`, consumed on the next click.
 #[derive(Clone)]
 struct Hit {
     rect: Rect,
@@ -472,9 +457,7 @@ struct SelRun {
     col: u8,
 }
 
-/// Screen `(x, y)` anchor for the selection HUD.
 type SelAnchor = Option<(f64, f64)>;
-/// On-page bounds `(x0, y0, x1, y1)` of the open comment overlay's highlight.
 type CommentBoxBounds = Option<(f64, f64, f64, f64)>;
 
 /// One on-screen reading column: where the flow slice lands ([`Self::x`],
@@ -521,7 +504,6 @@ struct ReaderFrame<'a> {
     comment_group: Option<Uuid>,
 }
 
-/// One visible line of a pane, with the ranged highlights over its block.
 #[derive(Clone, Copy)]
 struct PaneLine<'a> {
     pane: &'a Pane,
@@ -598,7 +580,6 @@ impl PageTurn {
     }
 }
 
-/// Everything a click or key can ask the app to do.
 #[derive(Clone, PartialEq)]
 enum Action {
     OpenBook(usize),
@@ -610,7 +591,6 @@ enum Action {
     ToggleToc,
     ToggleNotes,
     ToggleTypePopover,
-    /// Dismiss any open overlay flap (scrim tap on a narrow window).
     DismissOverlay,
     /// Absorb a click without acting — stops a tap on an overlay rail's own
     /// body from falling through to the dismissing scrim behind it.
@@ -625,7 +605,6 @@ enum Action {
     SetReadTheme(ReadTheme),
     SetMode(ReadMode),
     SetComposition(CompositionStyle),
-    /// Apply/toggle/replace a highlight colour over the current text selection.
     SetColor(HighlightColor),
     AddNote,
     CopySelection,
@@ -633,11 +612,9 @@ enum Action {
     Delete(Uuid),
     EditNote(Uuid),
 
-    // --- highlight comment overlay ---------------------------------------
     /// Open the floating comment overlay for a highlight group.
     OpenComments(Uuid),
     CloseComments,
-    /// Delete an entire highlight (its per-block pieces + every comment on it).
     DeleteHighlight(Uuid),
     AddComment(Uuid),
     EditComment(Uuid),
@@ -652,16 +629,13 @@ enum Action {
     /// progress are kept, keyed by content id, so re-adding the file restores them.
     RemoveFromLibrary(String),
     ToggleWatchFolder(PathBuf),
-    /// Keep a copy of the book catalogues on this device, or stop.
     ToggleKeepCatalogues,
 
-    // --- settings screen: navigation -------------------------------------
     OpenSettings,
     CloseSettings,
     SetSettingsTab(SettingsTab),
     BeginShortcutCapture(ReaderShortcut),
 
-    // --- settings screen: colour schemes ---------------------------------
     /// Apply a custom colour scheme by id (built-ins go via `SetReadTheme`).
     SetScheme(String),
     ToggleSchemeEnabled(String),
@@ -675,7 +649,6 @@ enum Action {
     PickSchemeColor(String, usize),
     BeginRenameScheme(String),
 
-    // --- settings screen: fonts ------------------------------------------
     /// Enable/disable a font (whether it appears in the quick settings picker).
     ToggleFontShown(String),
     RemoveFont(String),
@@ -684,7 +657,6 @@ enum Action {
     AddSystemFont(String),
     BeginRenameFont(String),
 
-    // --- search ------------------------------------------------------------
     /// Open the book, chapter, annotation or passage a result is anchored at.
     OpenHit(String),
     /// Get the store's book by its catalogue number, and open it.
@@ -835,7 +807,6 @@ impl BooksApp {
               sites across this file"
 )]
 pub struct BooksApp {
-    // --- parsed content (render cache, regenerable; not in the CRDT) -------
     // Membership snapshots share each immutable parsed book independently.
     // Adding/removing one shelf entry must never clone another EPUB's chapters.
     library: Arc<Vec<Arc<Book>>>,
@@ -896,13 +867,11 @@ pub struct BooksApp {
     /// import starts. It is state, not a toast, so it keeps no time.
     open_failure: Option<String>,
 
-    // --- taffy / paint geometry -------------------------------------------
     rect: Rect,
     dirty: bool,
     /// The settings' switches, sliding as a click turns them.
     faces: ui::widget::FaceMotions,
 
-    // --- view state (ephemeral, per-peer) ---------------------------------
     view: View,
     book_idx: usize,
     chapter: usize,
@@ -935,50 +904,38 @@ pub struct BooksApp {
     /// Pitch of the first contents row as last laid out (`draw_toc`), so
     /// keyboard paging inside the rail steps by a real row at any text scale.
     toc_row_pitch: f64,
-    /// Measured line-box height of the framed page's running header at the
-    /// current chrome text scale, refreshed at the top of every reader frame
-    /// (`draw_reader`) so the pure page geometry — which has no renderer at
-    /// hand and is also consulted by hit-testing — sizes the header slot from
-    /// the box the header is really painted in.
+    /// Line-box height of the framed page's running header, measured at the
+    /// current chrome text scale each reader frame so the page geometry (which
+    /// has no renderer) sizes the header slot from what is painted.
     running_header_h: f64,
     notes_scroll: f64,
     notes_max_scroll: f64,
     /// Request a bounded reveal of one annotation (from a search result or
     /// an edit affordance) on the next rail layout.
     notes_scroll_to_annotation: Option<Uuid>,
-    /// The block a live text selection is anchored in, for positioning the
-    /// floating toolbar/composer near the passage. Derived from [`Self::sel`].
+    /// The block the live selection is anchored in, for placing the floating
+    /// toolbar near the passage. Derived from [`Self::sel`].
     selected_block: Option<usize>,
-    /// Arbitrary drag text selection spanning paragraphs/pages, if any.
     sel: Option<TextSel>,
     /// The shared toolkit selection-gesture core: owns the multi-click
     /// ladder (single → double-word → triple) and reports drag granularity.
     drag_select: DragSelect,
-    /// The unit the in-flight drag snaps to (from the click ladder).
     drag_unit: DragUnit,
     /// The anchor span the current drag grows from: the pressed char for a
     /// single-click drag, or the double-clicked word for a word drag (see
     /// [`ui::extend_span_drag`]).
     drag_anchor_span: (DocPos, DocPos),
     mouse_down: bool,
-    /// Screen point where the current press began.
     press_pos: Point,
-    /// Doc position under the press, if it landed on page text.
     press_doc: Option<DocPos>,
-    /// Whether the current press has moved far enough to be a selection drag.
     dragging_sel: bool,
-    /// Per-frame run geometry for pointer→DocPos hit-testing (rebuilt in draw).
     sel_runs: Vec<SelRun>,
-    /// Per-frame continuous highlight band rects (rebuilt in draw).
     hi_bands: Vec<Rect>,
     /// After a drag auto-advances a page, extend the selection head to the
     /// new page's end (`Some(true)`) or start (`Some(false)`) once laid out.
     pending_sel_edge: Option<bool>,
-    /// The paginated page's leading and trailing side margins, which turn it.
     turn_margins: (Option<Rect>, Option<Rect>),
-    /// The reader body's vertical extent (top, bottom) for edge auto-advance.
     reader_body: (f64, f64),
-    /// First / last doc position visible on the current page (for edge grow).
     page_first_doc: Option<DocPos>,
     page_last_doc: Option<DocPos>,
     hi_color: HighlightColor,
@@ -994,7 +951,6 @@ pub struct BooksApp {
     /// Original library indices in the shelf's current display order (sort +
     /// hide-read filter). Rebuilt each `draw_library`.
     shelf_order: Vec<usize>,
-    /// Last-known column count of the shelf grid, so up/down move by a row.
     shelf_cols: usize,
     /// Set when the shelf cursor moves via the keyboard, so the next
     /// `draw_library` scrolls the focused card into view.
@@ -1014,16 +970,13 @@ pub struct BooksApp {
     page_said: Option<(usize, usize)>,
 
     cursor: Point,
-    /// Pointer tooltip derived from the same semantic label the accessibility
-    /// tree exposes. Keeping this retained avoids a hand-maintained second
-    /// vocabulary for the reader's icon-only and compact controls.
+    /// Pointer tooltip, taken from the semantic label the accessibility tree
+    /// exposes, so the compact controls need no second vocabulary.
     hover_tooltip: Option<String>,
     /// Stable synthetic control focused by assistive technology. Pointer and
     /// keyboard activation still dispatch through the same [`Action`] path.
     semantic_focus: Option<String>,
-    /// First block index visible on the current page (for bookmark targeting).
     page_top_block: usize,
-    /// The note currently being typed into (a CRDT annotation id).
     composing: Option<Uuid>,
     /// Shared multiline input for standalone page notes. Highlight comments
     /// keep using the comment overlay but share the same CRDT annotation model.
@@ -1057,7 +1010,6 @@ pub struct BooksApp {
     /// frame-demand query cannot accidentally bypass the toolkit preference.
     reduce_motion: bool,
 
-    // --- draggable annotation markers -------------------------------------
     /// Per-frame grab handles for each highlight group's margin marker:
     /// `(hit_rect, group)`. Rebuilt every `draw`.
     hi_markers: Vec<(Rect, Uuid)>,
@@ -1066,7 +1018,6 @@ pub struct BooksApp {
     marker_drag: Option<ui::MarkerDrag>,
     marker_group: Option<Uuid>,
 
-    // --- caches pulled from the CRDT (refreshed in sync / after events) ----
     settings: Settings,
     fonts: Vec<FontEntry>,
     default_font_id: String,
@@ -1080,7 +1031,6 @@ pub struct BooksApp {
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
     book_search: crate::search_provider::BookSearch,
-    /// The window's search over the library and the store.
     query: query_view::BookQuery,
     /// A single off-UI builder. A newer snapshot supersedes its result before
     /// publication instead of mutating a live provider in place.
@@ -1091,14 +1041,10 @@ pub struct BooksApp {
     search_fingerprint: u64,
     search_revision: u64,
 
-    // --- settings screen (ephemeral) --------------------------------------
     settings_tab: SettingsTab,
     renaming: Option<Rename>,
-    /// Shared spin buttons used by the quick-reading and font-manager panels.
     number_controls: NumberControls,
-    /// Modal colour editor; owns HSV state, drawing, hit regions and drags.
     color_picker: SchemeColorSheet,
-    /// The default-font dropdown of the fonts manager.
     font_dropdown: HostedDropdown,
     /// The open sheet's action and close controls as last laid out, for
     /// their hover faces.
@@ -1112,26 +1058,15 @@ pub struct BooksApp {
     /// registry prevents re-queuing the original local file forever while
     /// still allowing removal of one book to re-enable only its own source.
     watched_sources: HashMap<PathBuf, String>,
-    /// Device-local portal grants, persisted outside the collaborative doc.
     local_library: LocalLibrary,
-    /// The person's own reader key bindings.
     reader_keys: crate::reader_keys::ReaderKeys,
-    /// Whether this device keeps a copy of the book catalogues.
     catalogue_setting: Option<ui::framework::Setting<crate::catalogue::CatalogueCopies>>,
-    /// The device's copy of Project Gutenberg's catalogue, in a live window.
     catalogue: Option<std::sync::Arc<crate::catalogue::DeviceCatalogue>>,
-    /// What the copy was last told: kept or released.
     catalogue_kept: Option<bool>,
-    /// The command currently awaiting a one-key local binding in Settings.
     shortcut_capture: Option<ReaderShortcut>,
-    /// A short, local capture error announced through the row's accessible
-    /// name as well as the visible settings UI.
     shortcut_capture_error: Option<String>,
-    /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
-    /// its topmost hit stack; the app persists emitted preference actions.
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
-    /// Whether the "add a system font" family picker is open.
     font_picker: bool,
     picker_scroll: f64,
     picker_max_scroll: f64,
@@ -1139,7 +1074,6 @@ pub struct BooksApp {
     settings_max_scroll: f64,
     shelf_fraction: HashMap<String, f32>,
     shelf_annos: HashMap<String, usize>,
-    /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
     /// The chapter, block and page last recorded: a scroll records its
     /// place as it reaches another block or page, not every frame it moves.
@@ -1163,25 +1097,20 @@ pub struct BooksApp {
     /// drop hint and the touch-sized targets read.
     interaction: ui::interaction::InteractionEnvironment,
 
-    // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
     layouts: chapter_layouts::ChapterLayouts,
-    /// Whether the layout last drawn holds the whole chapter.
     flow_complete: bool,
     /// Decoded cover artwork lifted into GPU-ready image handles, keyed by
     /// book id and built lazily on first shelf draw.
     cover_cache: HashMap<String, PenikoImage>,
 
-    // --- per-frame hit regions --------------------------------------------
     hits: Vec<Hit>,
 
     /// The library's dispatcher: each on-page affordance submits the
     /// library's field edit or verb through it, exactly as the Ctrl+K
     /// palette does.
     dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
-    /// The window bar's entries.
     bar: window_bar::Bar,
-    /// The library as the framework last presented it.
     record: Rc<Ebook>,
     /// Whether this window edited the library since it was last read, so
     /// the next refresh reads it again from the document.
@@ -1189,12 +1118,10 @@ pub struct BooksApp {
     /// What a search hit or an agent's `open` asked to show, shown on the
     /// next sync.
     opens: Rc<std::cell::RefCell<Vec<String>>>,
-    /// What the reader shares with the view it is laid out in.
     store: view::Shared,
     /// The library as the view's document holds it, shown as it changes;
     /// `None` for a reader outside the framework.
     following: Option<ui::framework::Live<Ebook>>,
-    /// The `(revision, loads)` of the library last shown.
     presented: Option<(u64, u64)>,
 }
 
@@ -1428,7 +1355,6 @@ impl BooksApp {
         self.page_notice.show(self.page_line());
     }
 
-    /// "Chapter 2, page 3 of 12", or "3 of 12" for a book without chapters.
     fn page_line(&self) -> String {
         let page = self.page + 1;
         let pages = self.cur_page_count.max(1);
@@ -1571,8 +1497,6 @@ impl BooksApp {
         self.toc_drawer.is_animating() || self.notes_drawer.is_animating()
     }
 
-    // --- library <-> cache plumbing -----------------------------------------
-
     /// Take up the library as the document holds it after this window's own
     /// edits of an event, ahead of the framework presenting it, then refresh
     /// the render caches. Idempotent; called from `sync` and after every
@@ -1595,8 +1519,6 @@ impl BooksApp {
         self.refresh_from_record();
     }
 
-    /// Pull settings + annotations + shelf summaries out of the library into
-    /// the render caches.
     fn refresh_from_record(&mut self) {
         let record = Rc::clone(&self.record);
         if record.settings != self.settings {
@@ -1628,7 +1550,6 @@ impl BooksApp {
         self.shelf_fraction.clear();
         self.shelf_annos.clear();
         self.shelf_opened.clear();
-        // One pass over the marks, however many books the library holds.
         let mut marks: HashMap<&str, usize> = HashMap::new();
         for mark in record.live_marks() {
             *marks.entry(mark.doc_id.as_str()).or_default() += 1;
@@ -1811,8 +1732,6 @@ impl BooksApp {
             .clamp(0.0, 1.0)
         })
     }
-
-    // --- Library loading + the host file picker -----------------------------
 
     /// Whether the book at library index `i` lives on the shared workspace.
     #[cfg(test)]
@@ -2283,8 +2202,6 @@ impl BooksApp {
         }
     }
 
-    // --- Action dispatch (event side — has the document) --------------------
-
     /// Ask a remote source that failed again.
     fn retry_remote(&mut self, source: &str) {
         if self.query.engine.retry(source) {
@@ -2369,7 +2286,6 @@ impl BooksApp {
             Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
             Action::ToggleKeepCatalogues => self.on_toggle_keep_catalogues(),
 
-            // --- settings screen: navigation -----------------------------
             Action::OpenSettings => self.on_open_settings(),
             Action::CloseSettings => self.on_close_settings(doc),
             Action::SetSettingsTab(tab) => self.on_set_settings_tab(tab, doc),
@@ -2378,7 +2294,6 @@ impl BooksApp {
                 self.shortcut_capture_error = None;
             }
 
-            // --- settings screen: colour schemes -------------------------
             Action::SetScheme(id) => self.bump_setting(doc, |s| s.scheme_id = id),
             Action::ToggleSchemeEnabled(id) => self.on_toggle_scheme_enabled(&id, doc),
             Action::DuplicateScheme(id) => self.on_duplicate_scheme(&id, doc),
@@ -2389,7 +2304,6 @@ impl BooksApp {
             Action::PickSchemeColor(id, slot) => self.on_pick_scheme_color(id, slot, doc),
             Action::BeginRenameScheme(id) => self.on_begin_rename_scheme(id, doc),
 
-            // --- settings screen: fonts ----------------------------------
             Action::ToggleFontShown(id) => self.on_toggle_font_shown(&id, doc),
             Action::RemoveFont(id) => self.on_remove_font(&id, doc),
             Action::OpenFontPicker => self.on_open_font_picker(),
@@ -4131,8 +4045,6 @@ impl BooksApp {
         );
         true
     }
-
-    // --- Hit-test helpers ----------------------------------------------------
 
     fn push_hit(&mut self, rect: Rect, action: Action) {
         self.hits.push(Hit { rect, action });
@@ -6369,8 +6281,6 @@ impl BooksApp {
     }
 }
 
-// --- Painted controls ---------------------------------------------------
-
 /// The hit rect for a small painted control: the control's own rect grown
 /// symmetrically to at least `metrics.min_pointer_target` on each side, so a
 /// switch track is still a real pointer target without painting bigger.
@@ -6483,8 +6393,6 @@ impl BooksApp {
         track
     }
 }
-
-// --- Library (shelf) view ---------------------------------------------------
 
 /// The shelf grid as laid out this frame: columns of portrait media cards
 /// under the page title, scrolled by the shelf offset.
@@ -6841,8 +6749,6 @@ impl BooksApp {
     }
 }
 
-// --- Reader view -----------------------------------------------------------
-
 /// Column, paper, and content-box geometry for one reader frame, computed
 /// once per [`BooksApp::draw_reader`] call.
 struct ReaderPageGeometry {
@@ -6894,7 +6800,6 @@ impl BooksApp {
         let geom = self.reader_page_geometry(r, mode);
         let palette = self.resolve_palette(theme);
 
-        // ---- (re)compute the chapter layout -----------------------------
         let (base_family, font_mult, font_sig, base_mono) = self.body_font();
         let layout = match lib.get(self.book_idx) {
             Some(book) => self.resolve_chapter_layout(
@@ -6919,10 +6824,8 @@ impl BooksApp {
         self.cur_page_count = layout.page_count();
         self.resolve_reader_page_index(&layout, mode, &geom);
 
-        // ---- the on-screen reading columns (panes) ----------------------
         let panes = self.compute_panes(&layout, mode, &geom);
 
-        // ---- page surface ------------------------------------------------
         self.draw_reader_page_surface(ctx, &lib, &palette, &geom);
         if !mode.is_continuous() {
             // Narrower than half a pointer target, a margin is not a
@@ -7040,7 +6943,6 @@ impl BooksApp {
     ) {
         let theme = ctx.theme;
         let nchap = lib.get(self.book_idx).map_or(0, |b| b.chapters.len());
-        // ---- page footer -------------------------------------------------
         // The slider sits where the reader is: the start of the page on
         // screen, the same position a seek to its value lands on.
         let frac = self.slider_position(nchap);
@@ -7130,7 +7032,6 @@ impl BooksApp {
     /// Computed once per [`Self::draw_reader`] call from the current rect and
     /// the docked-rail reveal.
     fn reader_page_geometry(&self, r: Rect, mode: ReadMode) -> ReaderPageGeometry {
-        // ---- the content column ------------------------------------------
         // A docked drawer insets the page (by its eased reveal); a floating
         // one lies over a full-width page behind its scrim.
         let column = self.notes_drawer.content_rect();
@@ -7149,7 +7050,6 @@ impl BooksApp {
         // said in the window's bar instead of a permanent strip.
         let body_y1 = r.y1;
 
-        // ---- paper rect + content box -----------------------------------
         // In a compact window the page fills the reading area edge-to-edge,
         // no framed page or margin; a wide window keeps the framed page.
         let framed = self.rect.width() >= self.reader_compact_breakpoint;
@@ -7512,18 +7412,14 @@ impl BooksApp {
         frame: &ReaderFrame<'_>,
         pane: &Pane,
     ) -> (SelAnchor, CommentBoxBounds) {
-        // ---- note bands + bookmark glyphs (behind text) -----------------
         Self::draw_pane_note_bands(ctx, frame, pane);
 
-        // ---- selection + ranged-highlight bands; rebuild sel_runs -------
         let bands = self.draw_pane_selection_bands(ctx, frame, pane);
 
-        // ---- draggable highlight markers (left-margin grab handles) -----
         // One grip per highlight group, at the top of its first band. Recorded
         // in `hi_markers` so the press handler can hit-test it.
         self.draw_pane_highlight_markers(ctx, frame.palette, pane.x, &bands.group_top);
 
-        // ---- glyphs + decorations (on top of bands) ---------------------
         let compact = self.rect.width() < self.reader_compact_breakpoint;
         Self::draw_pane_glyphs(ctx, frame, pane, compact);
 
