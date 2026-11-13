@@ -20,12 +20,7 @@ fn drive(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("TILO_") || key.to_string_lossy().starts_with("QUICK_")
-        {
-            command.env_remove(key);
-        }
-    }
+    tilo_test_env::launch_env(&mut command);
     for key in [
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",

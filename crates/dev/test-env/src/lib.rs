@@ -147,6 +147,22 @@ pub fn package_binary_at(name: &str, built_at: &str) -> PathBuf {
         .map_or_else(|| PathBuf::from(built_at), PathBuf::from)
 }
 
+/// Give `command` the environment a launcher gives the app it starts: none of
+/// the `TILO_*` or `QUICK_*` choices this test process was started with, and
+/// the prepared fonts the run draws with, which a launch hands on
+/// (`crates/session/app-launch/src/env.rs` names them). A test that starts an
+/// app as a process of its own calls this instead of clearing the variables
+/// itself, so an app that draws text finds the catalog under nextest too.
+pub fn launch_env(command: &mut std::process::Command) {
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        let drawn_with = name == "TILO_FONT_ASSET_CACHE" || name == "TILO_FONT_ASSETS_OFFLINE";
+        if !drawn_with && (name.starts_with("TILO_") || name.starts_with("QUICK_")) {
+            command.env_remove(&key);
+        }
+    }
+}
+
 struct LockState {
     owner: Option<ThreadId>,
     depth: usize,

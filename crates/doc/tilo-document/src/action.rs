@@ -1499,11 +1499,15 @@ pub fn stage_import(format: ImportFormat, bytes: &[u8]) -> Result<StagedImport, 
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err(too_large());
     }
-    let mut scratch = AutoCommit::new();
+    // The file's own bytes name the writer that stages it and the blocks it
+    // reads as: every replica staging the same file stages the same document,
+    // so a record two members create from it is one genesis, byte for byte,
+    // and the same file imported again names the same blocks.
+    let digest = tilo_content::hash_bytes(bytes);
+    let staged_by = digest.get(..16).unwrap_or_default().to_owned();
+    let mut scratch = AutoCommit::new().with_actor(automerge::ActorId::from(staged_by.as_bytes()));
     let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
-    // Ids of the scratch document's own actor: the blocks it writes are
-    // new wherever the action applies.
-    let mut ids = tilo_doc::IdGen::new(scratch.get_actor().to_hex_string());
+    let mut ids = tilo_doc::IdGen::new(staged_by);
     let mut inputs = tilo_content::ContentInputs::new();
     import_formatted(
         &mut DocMut {
