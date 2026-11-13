@@ -941,7 +941,7 @@ impl HereState {
                     id,
                     key,
                     claimed,
-                    ui::presence::participant_color(key, agent),
+                    ui::presence::participant_color(key, agent, None),
                 ))
             })
             .collect();
@@ -1902,7 +1902,7 @@ mod tests {
     #[test]
     fn an_agent_wears_one_colour_on_every_surface() {
         let helper = "agent:helper@host";
-        let (r, g, b) = ui::presence::participant_color(helper, true);
+        let (r, g, b) = ui::presence::participant_color(helper, true, None);
         let announced = hex_of((r, g, b));
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -1930,7 +1930,7 @@ mod tests {
                 here.colors().get(helper).copied(),
                 listed.rgb,
                 presence.color_for(&UserId(helper.into())),
-                ui::presence::participant_color(helper, true),
+                ui::presence::participant_color(helper, true, None),
             ),
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"

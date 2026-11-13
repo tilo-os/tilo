@@ -43,8 +43,6 @@ struct Connection {
     /// with, and what taking back its work names. `None` where the workspace confines no agent to
     /// a run, and what it does is the workspace's as any app's.
     run: Option<String>,
-    /// The task agent its run acts as: who what it writes is by.
-    principal: Option<String>,
     /// The records it changed in that run, each as the app that keeps it and the record: what
     /// taking back its work undoes.
     changed: Vec<(String, String)>,
@@ -75,7 +73,6 @@ impl Seats {
                 doing: None,
                 door,
                 run: None,
-                principal: None,
                 changed: Vec::new(),
                 stream: None,
             },
@@ -135,14 +132,10 @@ impl Seats {
                     workspace_name: connection.workspace.clone(),
                     agent: connection.agent.clone(),
                     name: connection.client.clone(),
-                    principal: None,
                     doing: None,
                 });
             if seated.doing.is_none() {
                 seated.doing.clone_from(&connection.doing);
-            }
-            if seated.principal.is_none() {
-                seated.principal.clone_from(&connection.principal);
             }
         }
         agents.into_values().collect()
@@ -159,10 +152,9 @@ impl Seats {
 
     /// Connection `seat` works in the run `run` , the issue that names it: every change it makes
     /// there is stamped with it, and taking its work back names it.
-    pub(super) fn working_in(&self, seat: u64, run: &str, principal: &str) {
+    pub(super) fn working_in(&self, seat: u64, run: &str) {
         if let Some(connection) = self.inner.lock_recover().connections.get_mut(&seat) {
             connection.run = Some(run.to_owned());
-            connection.principal = Some(principal.to_owned());
         }
     }
 
@@ -323,8 +315,6 @@ pub(crate) struct Seated {
     pub(crate) agent: String,
     /// What the desk calls it (`Claude Code #2`).
     pub(crate) name: String,
-    /// The task agent its run acts as, once its run started: whose colour its face wears.
-    pub(crate) principal: Option<String>,
     /// What its latest step is, as the catalogue named it, and the app it was taken in.
     pub(crate) doing: Option<Doing>,
 }

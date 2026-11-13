@@ -1816,8 +1816,6 @@ pub(crate) struct DoorRun {
     /// The run itself, held for as long as the connection lasts: dropping it ends what the broker
     /// still runs of it.
     held: crate::door_runs::Held,
-    /// The task agent it acts as (`agent:task-…`): who everything it writes is by.
-    agent: String,
 }
 
 impl DoorRun {
@@ -1865,10 +1863,9 @@ impl DoorRun {
             admitted,
             tilo_clock::try_unix_now_ns().ok_or("this device has no clock to delegate by")?,
         )?;
-        let agent = format!("agent:{}", minted.run.agent);
         let held = runs.doors().open(admitted.workspace, minted.run);
         let host = broker.task_run_host(&minted.presentation)?;
-        Ok(Some(Self { host, held, agent }))
+        Ok(Some(Self { host, held }))
     }
 }
 
@@ -2608,7 +2605,7 @@ fn serve_admitted(
                     // What it works in, as its card's commands name it: the run taking its work
                     // back names, and the records it changes there.
                     if let Some(run) = &run {
-                        seats.working_in(seat, run.issue(), &run.agent);
+                        seats.working_in(seat, run.issue());
                     }
                     Ok(host.in_run(run))
                 }
@@ -2801,7 +2798,7 @@ mod tests {
         let seated = seats.working("claude-code@host#1").expect("seated here");
         assert_eq!(seated.workspace, "ws");
         assert_eq!(seated.run, None, "nothing of it worked in a run yet");
-        seats.working_in(seat, "tilo.task-run:abc", "agent:task-abc");
+        seats.working_in(seat, "tilo.task-run:abc");
         seats.changed(seat, "so.tilo.notes", "main");
         seats.changed(seat, "so.tilo.notes", "main");
         let working = seats.working("claude-code@host#1").expect("seated here");

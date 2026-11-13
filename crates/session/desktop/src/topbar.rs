@@ -1083,7 +1083,7 @@ impl TopBarChrome {
             let (r, g, b) = colors
                 .get(&c.id)
                 .copied()
-                .unwrap_or_else(|| ui::presence::participant_color(&c.id, agent));
+                .unwrap_or_else(|| ui::presence::participant_color(&c.id, agent, None));
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
             self.collaborator_agents.push(agent);
             self.collaborator_ids.push(c.id.clone());

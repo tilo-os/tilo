@@ -7327,7 +7327,7 @@ impl AppBrokerState {
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
             // The colour its face wears everywhere ([`participant_color`] of an agent): an app
             // draws it as the bar does, one rule for every surface.
-            let colour = ui::presence::participant_hue(&agent, true);
+            let colour = ui::presence::participant_hue(&agent, true, None);
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
@@ -13330,7 +13330,7 @@ pub mod tests {
                 .expect("an agent's id names its key");
             assert_eq!(
                 agent.colour,
-                Some(ui::presence::participant_hue(key, true)),
+                Some(ui::presence::participant_hue(key, true, None)),
                 "{key}"
             );
         }

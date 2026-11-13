@@ -115,10 +115,9 @@ fn rows_of(
             // One rule decides a face's colour wherever it is drawn: the workspace's, as their
             // own shell publishes it, else the one their kind wears
             // ([`ui::presence::participant_color`]).
-            let (red, green, blue) = colors
-                .get(&participant.id)
-                .copied()
-                .unwrap_or_else(|| ui::presence::participant_color(&participant.id, is_agent));
+            let (red, green, blue) = colors.get(&participant.id).copied().unwrap_or_else(|| {
+                ui::presence::participant_color(&participant.id, is_agent, None)
+            });
             RosterRow {
                 id: participant.id.clone(),
                 initial: roster_initial(&participant.name),
@@ -291,13 +290,13 @@ pub fn roster_colors_with_local_user(
         .map(|c| {
             (
                 c.id.as_str(),
-                ui::presence::participant_color(&c.id, is_agent(c)),
+                ui::presence::participant_color(&c.id, is_agent(c), None),
             )
         })
         .collect();
     if !local.is_empty() {
         let agent = roster.iter().find(|c| c.id == local).is_some_and(&is_agent);
-        naturals.push((local, ui::presence::participant_color(local, agent)));
+        naturals.push((local, ui::presence::participant_color(local, agent, None)));
     }
     // The person at this device is honoured first: their own colour is not given to anyone on
     // the roster.
