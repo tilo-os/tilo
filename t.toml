@@ -158,7 +158,9 @@ name = "test-idle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests"]
+# tilo-ui's tests build with its test fixtures (tools/ci/package_features.py): this family declares
+# no `unify` package to bring them, so its args name them, and t resolves the graph it builds.
+args = ["--locked", "--profile", "ci", "--tests", "--features", "tilo-ui/test-support"]
 packages = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
