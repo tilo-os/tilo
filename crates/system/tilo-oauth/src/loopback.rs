@@ -1,12 +1,4 @@
 //! The one-shot loopback redirect listener (RFC 8252 §7.3).
-//!
-//! [`LoopbackServer::bind`] takes an ephemeral port on `127.0.0.1` (or
-//! [`LoopbackServer::bind_to`] the first free registered port, for providers
-//! that match redirect URIs exactly) before the browser is opened, so its [`LoopbackServer::redirect_uri`] can go into the
-//! authorization request. [`LoopbackServer::wait_for_code`] then blocks in
-//! `accept` until the browser arrives with `code` and `state`. The deadline
-//! and a UI-side [`LoopbackCancel`] both end the wait by connecting to the
-//! listener themselves, so nothing polls.
 
 use std::io::{Read as _, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -23,7 +15,6 @@ const WAITING: u8 = 0;
 const CANCELLED: u8 = 1;
 const TIMED_OUT: u8 = 2;
 
-/// The bound redirect listener.
 pub struct LoopbackServer {
     listener: TcpListener,
     address: SocketAddr,
@@ -31,7 +22,6 @@ pub struct LoopbackServer {
     redirect: Redirect,
 }
 
-/// Ends a pending [`LoopbackServer::wait_for_code`] from another thread.
 #[derive(Clone)]
 pub struct LoopbackCancel {
     address: SocketAddr,
@@ -39,7 +29,6 @@ pub struct LoopbackCancel {
 }
 
 impl LoopbackCancel {
-    /// Cancel the wait; it returns [`OAuthError::Cancelled`].
     pub fn cancel(&self) {
         wake(&self.stop, CANCELLED, self.address);
     }
@@ -50,12 +39,10 @@ fn wake(stop: &AtomicU8, reason: u8, address: SocketAddr) {
         .compare_exchange(WAITING, reason, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
-        // The accept loop observes the flag once this connection lands.
         let _ = TcpStream::connect(address);
     }
 }
 
-/// What a redirect request carried.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RedirectResult {
     Code { code: String, state: String },
@@ -118,7 +105,6 @@ impl LoopbackServer {
         self.address.port()
     }
 
-    /// The exact redirect URI to send in the authorization request.
     pub fn redirect_uri(&self) -> String {
         format!(
             "http://{}:{}{}",
