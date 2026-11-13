@@ -14,21 +14,21 @@ Right / Down / Backspace / Delete / Home / End / PageUp / PageDown /
 Space. Anything else is treated as a single character.
 """
 import sys
-from _control import call, require_ok, socket_path_from_argv
+from real_apps import Session, control_socket_from_argv
 
-sock = socket_path_from_argv()
+session = Session.attach(control_socket_from_argv())
 query = sys.argv[2] if len(sys.argv) > 2 else "terminal"
 out = sys.argv[3] if len(sys.argv) > 3 else "/tmp/palette.png"
 
 # Hold Super, send Space, release Super.
-require_ok(call(sock, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True}))
-require_ok(call(sock, {"op": "key", "key": "Space"}))
-require_ok(call(sock, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False}))
+session.control({"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True})
+session.control({"op": "key", "key": "Space"})
+session.control({"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False})
 
 # Type the query.
-require_ok(call(sock, {"op": "type", "text": query}))
+session.control({"op": "type", "text": query})
 
 # Snapshot.
-require_ok(call(sock, {"op": "snapshot", "path": out}))
+session.control({"op": "snapshot", "path": out})
 
 print(f"done — palette with query {query!r} written to {out}")

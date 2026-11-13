@@ -7,7 +7,8 @@ Unit tests cover dispatcher contracts against a fixture; this checks the
 live action surface and state changes.
 
 Usage:
-  ./action-api-demo.py [SOCKET]   (default $XDG_RUNTIME_DIR/tilo-session/action-api.sock)
+  ./action-api-demo.py [SOCKET]   (default: a socket in the session's own runtime
+                                   directory, on a scratch profile)
 
 What it proves, in order:
 
@@ -26,17 +27,14 @@ import copy
 import json
 import os
 import pathlib
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
 
-from _control import call, runtime_socket_path
+from real_apps import Failed, Refused, ScriptedSession
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("action-api.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = (SCRIPT_DIR / ".." / ".." / "target" / "debug" / "tilo-session").resolve()
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else None
 
 # An overlay-opening action: the chrome flag it flips is exposed in
 # `state_dump`, so the effect is observable from outside the process
@@ -55,66 +53,32 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-def chrome_state() -> dict:
-    resp = call(SOCKET, {"op": "state_dump"})
-    return copy.deepcopy(resp["state"]["chrome"])
+def chrome_state(call) -> dict:
+    """The chrome state a refusal-free `state_dump` answers."""
+    return copy.deepcopy(call({"op": "state_dump"})["state"]["chrome"])
 
 
 def main() -> int:
-    if not BINARY.exists():
-        print(f"FAIL: compositor not built at {BINARY}", file=sys.stderr)
+    try:
+        session = ScriptedSession(BINARY, socket=SOCKET).start()
+    except Failed as error:
+        print(f"FAIL: {error}", file=sys.stderr)
         print("      run: cargo build -p tilo-session --bin tilo-session", file=sys.stderr)
         return 1
 
-    try:
-        os.unlink(SOCKET)
-    except FileNotFoundError:
-        pass
+    def call(payload: dict) -> dict:
+        """One control request; a refusal is an answer with an `err`, not a raise."""
+        try:
+            return session.control(payload)
+        except Refused as error:
+            return {"err": {"code": error.code, "message": error.message}}
 
-    # A throwaway home, so the run does not depend on whatever this
-    # machine happens to have persisted. That matters more than it looks:
-    # the capability gate resolves against the *active* workspace, and a
-    # session that loads a workspace owned by someone else will correctly
-    # show only the handful of resources anyone may see. Against leftover
-    # state this check would then "pass" while measuring something else.
-    #
-    # `TILO_STATE_PATH` alone is not enough. It moves the workspace tree;
-    # record documents live under `XDG_DATA_HOME` (see
-    # `crates/session/session/src/records.rs`), so isolating only the former
-    # leaves every run sharing one set of documents.
-    state_dir = tempfile.mkdtemp(prefix="tilo-action-proof-")
-    env = {
-        **os.environ,
-        "TILO_TEST_CONTROL": SOCKET,
-        "TILO_STATE_PATH": os.path.join(state_dir, "state.json"),
-        "XDG_DATA_HOME": os.path.join(state_dir, "data"),
-        "XDG_CACHE_HOME": os.path.join(state_dir, "cache"),
-        "XDG_STATE_HOME": os.path.join(state_dir, "state"),
-        "XDG_CONFIG_HOME": os.path.join(state_dir, "config"),
-    }
-    env.pop("DISPLAY", None)
-    env.pop("WAYLAND_DISPLAY", None)
-    proc = subprocess.Popen(
-        [str(BINARY), "--backend", "headless"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    time.sleep(0.5)  # let the first paint settle
 
     try:
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
-            if os.path.exists(SOCKET):
-                break
-            time.sleep(0.2)
-        else:
-            print("FAIL: socket did not appear within 20s", file=sys.stderr)
-            return 1
-        time.sleep(0.5)  # let the first paint settle
-
         # 1. The surface exists and is non-trivial.
         print("\n[1] enumerate the exported surface")
-        resp = call(SOCKET, {"op": "actions_enumerate", "query": ""})
+        resp = call({"op": "actions_enumerate", "query": ""})
         if "err" in resp:
             print(f"  FAIL  enumerate errored: {resp['err']}", file=sys.stderr)
             return 1
@@ -150,11 +114,11 @@ def main() -> int:
 
         # 2. Looking must not mutate.
         print("\n[2] enumeration is side-effect free")
-        before = chrome_state()
+        before = chrome_state(call)
         for _ in range(3):
-            call(SOCKET, {"op": "actions_enumerate", "query": ""})
-            call(SOCKET, {"op": "actions_enumerate", "query": "settings"})
-        after = chrome_state()
+            call({"op": "actions_enumerate", "query": ""})
+            call({"op": "actions_enumerate", "query": "settings"})
+        after = chrome_state(call)
         check(
             "chrome state unchanged after 6 enumerations",
             before == after,
@@ -164,7 +128,7 @@ def main() -> int:
         # 3. Invoking by address moves real state — no input synthesised.
         print("\n[3] invoke by address, with no synthetic input")
         addr = f"{INVOKE_PROVIDER}:{INVOKE_ID}"
-        pre = chrome_state()
+        pre = chrome_state(call)
         pre_flag = pre.get("overlays", {}).get(OVERLAY_FLAG)
         resp = call(
             SOCKET,
@@ -175,7 +139,7 @@ def main() -> int:
         else:
             check(f"invoke {addr} accepted", True, resp["answer"].get("title", ""))
             time.sleep(0.4)  # the executor runs after the response is written
-            post = chrome_state()
+            post = chrome_state(call)
             post_flag = post.get("overlays", {}).get(OVERLAY_FLAG)
             check(
                 f"chrome.overlays.{OVERLAY_FLAG} changed",
@@ -207,16 +171,7 @@ def main() -> int:
         print("All action-API checks passed against a live compositor.")
         return 0
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        try:
-            os.unlink(SOCKET)
-        except FileNotFoundError:
-            pass
-        shutil.rmtree(state_dir, ignore_errors=True)
+        session.stop()
 
 
 if __name__ == "__main__":

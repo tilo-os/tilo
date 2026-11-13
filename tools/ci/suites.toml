@@ -543,6 +543,7 @@ inputs = [
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
+  "scripts/tests/test_real_apps.py",
 ]
 
 [[group]]
@@ -1141,7 +1142,7 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml",
   "tools/with-test-environment.sh",
   "scripts/headless-examples/startup-frame-timeline.py",
-  "scripts/headless-examples/_control.py",
+  "scripts/headless-examples/real_apps.py",
   # The one place that picks a session's private runtime directory, which the
   # timeline asks for where its sockets go.
   "dist/dev/nested-session.sh",

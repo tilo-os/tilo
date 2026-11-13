@@ -60,7 +60,7 @@ trap "kill $COMP_PID" EXIT
 
 ## Examples
 
-Each script takes the socket path as its first argument (default `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`).
+Each script drives a running session: the socket path is its first argument, else `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. `real_apps.py` is the client they all use (`Session.attach` for a session another tool started, `ScriptedSession` for the tree's own build on a scratch profile, `Agent` for the session's agent door).
 
 | Script | What it shows |
 |---|---|
@@ -68,11 +68,9 @@ Each script takes the socket path as its first argument (default `$TILO_TEST_CON
 | `click-and-snapshot.py` | Click a named widget, write a PNG of the post-click state. |
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
-| `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down. |
+| `full-loop.py` | Spawn a session of this tree's build → list → click → key → drag → snapshot → tear down. |
 | `real_apps.py` | A headless session with the tree's own apps installed, launched through the desktop's own launcher: `Session` for a check, `--start --open notes --shot out.png` for a person. Every check of a desktop with apps starts here. |
 | `files-clipboard-e2e.py` | Copy and cut files in Files, paste them into another folder through the session's file clipboard, and read the bytes back off disk. |
-| `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
-| `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
 The input examples use the Python standard library. Native protocol proofs below
 have their own explicit external prerequisites.

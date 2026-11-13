@@ -1,42 +1,37 @@
 #!/usr/bin/env python3
 """End-to-end flow in one file: spawn → drive → snapshot → tear down.
 
-This is the most copy-pastable example. It DOES NOT assume a separate
-spawn-headless.sh; it launches the compositor itself, drives it, takes
-snapshots, and kills it. Use this as the template for a CI smoke test
-or an AI agent's exploratory probe.
+This is the most copy-pastable example. It starts a headless session of this
+tree's build (`real_apps.ScriptedSession`), drives it, takes snapshots and
+stops it. Use this as the template for a CI smoke test or an AI agent's
+exploratory probe. A check that wants the tree's apps uses
+`real_apps.Session` instead.
 
 Usage:
-  ./full-loop.py [SOCKET]   (default $XDG_RUNTIME_DIR/tilo-session/full-loop.sock)
+  ./full-loop.py [SOCKET]
 
 What it does:
-  1. Spawns ./target/debug/tilo-session --backend headless with
-     HOME and the XDG dirs in a scratch profile, TILO_TEST_CONTROL
-     set to the socket path, and DISPLAY + WAYLAND_DISPLAY unset.
-  2. Waits up to 15s for the socket to appear.
-  3. Lists targets, opens the strip switcher (Super+S), clicks its card,
+  1. Spawns ./target/debug/tilo-session --backend headless on a scratch
+     profile, with TILO_TEST_CONTROL set to the socket path.
+  2. Lists targets, opens the strip switcher (Super+S), clicks its card,
      closes it (Escape).
-  4. Opens global search (Super+Space), types "Files", proves its live state,
+  3. Opens global search (Super+Space), types "Files", proves its live state,
      waits for the transition to settle, and snapshots.
-  5. Closes the palette (Escape), snapshots again.
-  6. Kills the compositor + removes the socket.
+  4. Closes the palette (Escape), snapshots again.
+  5. Stops the session and removes the profile, the socket and the runtime.
 
 Total runtime: ~5 seconds on a warm cargo cache.
 
-Exits non-zero on any compositor error response or process timeout.
+Exits non-zero on any refusal of the session's or a failed assertion.
 """
 import os
 import pathlib
-import shutil
 import struct
-import subprocess
 import sys
 import time
 
-from _control import call, hang_bound, require_ok, runtime_socket_path
-from tilo_client import scratch_session_env
+from real_apps import Failed, ScriptedSession
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("full-loop.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = pathlib.Path(
     os.environ.get(
@@ -44,29 +39,30 @@ BINARY = pathlib.Path(
         SCRIPT_DIR / ".." / ".." / "target" / "debug" / "tilo-session",
     )
 ).resolve()
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else None
 # A snapshot renders a whole frame, and the first one on a software adapter
 # compiles every pipeline first: it is bounded as a hang, not as a reply.
-SNAPSHOT_TIMEOUT = hang_bound(otherwise=5.0)
+SNAPSHOT_TIMEOUT = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS") or 5.0)
 PALETTE_PNG = pathlib.Path("/tmp/full-loop-palette.png")
 FINAL_PNG = pathlib.Path("/tmp/full-loop-final.png")
 
 
-def state() -> dict:
-    response = call(SOCKET, {"op": "state_dump"})
+def state(session) -> dict:
+    response = session.control({"op": "state_dump"})
     if "state" not in response:
         raise RuntimeError(f"unexpected state_dump response: {response}")
     return response["state"]
 
 
-def palette() -> dict:
-    return state()["chrome"]["palette"]
+def palette(session) -> dict:
+    return state(session)["chrome"]["palette"]
 
 
-def has_target(name: str) -> bool:
+def has_target(session, name: str) -> bool:
     """Whether the compositor offers `name` as a target with an area."""
     return any(
         t["name"] == name and t["rect"][2] > 0 and t["rect"][3] > 0
-        for t in call(SOCKET, {"op": "list_targets"})["targets"]
+        for t in session.control({"op": "list_targets"})["targets"]
     )
 
 
@@ -205,123 +201,84 @@ def assert_palette_is_visually_gone(open_path: pathlib.Path, closed_path: pathli
 
 
 def main() -> int:
-    if not BINARY.exists():
-        print(f"FAIL: compositor not built at {BINARY}", file=sys.stderr)
-        print("      run: cargo build -p tilo-session --bin tilo-session", file=sys.stderr)
+    # 1. Spawn, on a scratch profile of its own.
+    try:
+        session = ScriptedSession(BINARY, socket=SOCKET).start()
+    except Failed as error:
+        print(f"FAIL: {error}", file=sys.stderr)
         return 1
-
-    # 1. Spawn.
+    print(f"socket up: {session.control}")
+    time.sleep(0.5)  # let the first paint complete
     try:
-        os.unlink(SOCKET)
-    except FileNotFoundError:
-        pass
-    env, profile = scratch_session_env()
-    env["TILO_TEST_CONTROL"] = SOCKET
-    env.pop("DISPLAY", None)
-    env.pop("WAYLAND_DISPLAY", None)
-    print(f"spawning {BINARY} --backend headless ...")
-    try:
-        proc = subprocess.Popen(
-            [str(BINARY), "--backend", "headless"],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        shutil.rmtree(profile, ignore_errors=True)
-        raise
-
-    try:
-        # 2. Wait for socket.
-        deadline = time.time() + 15.0
-        while time.time() < deadline:
-            if os.path.exists(SOCKET):
-                break
-            time.sleep(0.2)
-        else:
-            print("FAIL: socket did not appear within 15s", file=sys.stderr)
-            return 1
-        print(f"socket up: {SOCKET}")
-        time.sleep(0.5)  # let the first paint complete
-
-        # 3. List targets, open the strip switcher, click its card.
-        resp = call(SOCKET, {"op": "list_targets"})
+        # 2. List targets, open the strip switcher, click its card.
+        resp = session.control({"op": "list_targets"})
         print(f"  {len(resp['targets'])} targets")
-        require_ok(call(SOCKET, {"op": "key_down", "key": "Super"}))
-        require_ok(call(SOCKET, {"op": "key", "key": "s"}))
-        require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
+        session.control({"op": "key_down", "key": "Super"})
+        session.control({"op": "key", "key": "s"})
+        session.control({"op": "key_up", "key": "Super"})
         wait_until("strip switcher to open",
-                   lambda: state()["chrome"].get("strip_switcher_open"))
+                   lambda: state(session)["chrome"].get("strip_switcher_open"))
         # The state flips at the key press; the open labels have a place to
         # click only once a frame has laid them out.
         wait_until("open strip switcher to be laid out",
-                   lambda: has_target("strip_switcher"))
-        require_ok(call(SOCKET, {"op": "click_named", "name": "strip_switcher"}))
+                   lambda: has_target(session, "strip_switcher"))
+        session.control({"op": "click_named", "name": "strip_switcher"})
         print("  clicked strip_switcher")
-        require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
+        session.control({"op": "key", "key": "Escape"})
         wait_until("strip switcher to close",
-                   lambda: not state()["chrome"].get("strip_switcher_open"))
+                   lambda: not state(session)["chrome"].get("strip_switcher_open"))
 
-        # 4. Fresh profiles use Super+Space for global search, which opens
+        # 3. Fresh profiles use Super+Space for global search, which opens
         # scoped to the workspace in front (its launcher's scope); typing
         # still reaches other workspaces, the scope only ranks what is here.
         # Hold the modifier through the production key-down/up path.
-        require_ok(call(SOCKET, {"op": "key_down", "key": "Super"}))
-        require_ok(call(SOCKET, {"op": "key", "key": "Space"}))
-        require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
-        wait_until("global-search palette to open", lambda: palette()["visible"])
-        require_ok(call(SOCKET, {"op": "type", "text": "Files"}))
+        session.control({"op": "key_down", "key": "Super"})
+        session.control({"op": "key", "key": "Space"})
+        session.control({"op": "key_up", "key": "Super"})
+        wait_until("global-search palette to open", lambda: palette(session)["visible"])
+        session.control({"op": "type", "text": "Files"})
         wait_until(
             "palette query to become Files",
-            lambda: palette()["visible"] and palette()["query"] == "Files",
+            lambda: palette(session)["visible"] and palette(session)["query"] == "Files",
         )
-        if state()["chrome"]["search_scope"] != "Workspace":
+        if state(session)["chrome"]["search_scope"] != "Workspace":
             raise RuntimeError("Super+Space did not open global search on the workspace")
         input_target = next(
-            (t for t in call(SOCKET, {"op": "list_targets"})["targets"]
+            (t for t in session.control({"op": "list_targets"})["targets"]
              if t["name"] == "command_palette_input"), None,
         )
         if input_target is None:
             raise RuntimeError("palette is live in state but has no visible semantic target")
         time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
-        require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)},
-                        timeout=SNAPSHOT_TIMEOUT))
+        session.control({"op": "snapshot", "path": str(PALETTE_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT)
         assert_nonblank_png(PALETTE_PNG)
         assert_palette_input_painted(PALETTE_PNG, input_target["rect"])
         print(f"  {PALETTE_PNG} written and verified")
 
-        # 5. Escape clears what was typed, a second Escape closes search;
+        # 4. Escape clears what was typed, a second Escape closes search;
         # snapshot the final state.
-        require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
+        session.control({"op": "key", "key": "Escape"})
         wait_until("palette query to clear",
-                   lambda: palette()["visible"] and palette()["query"] == "")
-        require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
-        wait_until("palette to close", lambda: not palette()["visible"])
+                   lambda: palette(session)["visible"] and palette(session)["query"] == "")
+        session.control({"op": "key", "key": "Escape"})
+        wait_until("palette to close", lambda: not palette(session)["visible"])
         if any(
             t["name"] == "command_palette_input"
-            for t in call(SOCKET, {"op": "list_targets"})["targets"]
+            for t in session.control({"op": "list_targets"})["targets"]
         ):
             raise RuntimeError("closed palette still exports a visible semantic input target")
         time.sleep(0.5)  # let the close transition finish before judging pixels
-        require_ok(call(SOCKET, {"op": "snapshot", "path": str(FINAL_PNG)},
-                        timeout=SNAPSHOT_TIMEOUT))
+        session.control({"op": "snapshot", "path": str(FINAL_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT)
         assert_nonblank_png(FINAL_PNG)
         assert_palette_is_visually_gone(PALETTE_PNG, FINAL_PNG)
         print(f"  {FINAL_PNG} written and verified")
 
         return 0
     finally:
-        # 6. Tear down.
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        try:
-            os.unlink(SOCKET)
-        except FileNotFoundError:
-            pass
-        shutil.rmtree(profile, ignore_errors=True)
+        # 5. Tear down: the session, its profile, its socket and runtime.
+        session.stop()
 
 
 if __name__ == "__main__":
