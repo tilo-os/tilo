@@ -857,6 +857,11 @@ impl App {
         if let Some(route) = inputs.collab_manager.requested_primary_route()
             && !binding.matches_route(route)
         {
+            tracing::warn!(
+                requested = ?route,
+                opened = %binding.checkout.id.as_str(),
+                "application binding does not match: the collaboration route asked for is not the record the window opened"
+            );
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
