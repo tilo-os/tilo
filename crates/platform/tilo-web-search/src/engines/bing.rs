@@ -57,7 +57,6 @@ pub(super) fn parse(doc: &Document) -> Result<Vec<EngineResult>, EngineError> {
     .parse(doc)
 }
 
-/// The caption, without the icon Bing puts inside some of them.
 fn snippet(doc: &Document, result: NodeId) -> Option<String> {
     let caption = Selector::parse(".b_caption > p, p.b_algoSlug, .b_caption .ipText").ok()?;
     let icon = Selector::parse(".algoSlug_icon").ok()?;

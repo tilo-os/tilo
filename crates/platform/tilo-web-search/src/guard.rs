@@ -1,16 +1,10 @@
-//! Which addresses a fetch may reach: the public web, never this device or
-//! the network it sits on.
+//! Which addresses a fetch may reach: the public web, never this device or the network
+//! it sits on.
 //!
-//! A fetch's address comes from whoever invoked it, an agent following
-//! instructions in a page it read included. Where the service runs with the
-//! host's network, `http://localhost:631/` or a router's admin page would
-//! otherwise be one invocation away, so names and addresses that mean "here"
-//! are refused before anything is sent, every redirect hop included.
-//!
-//! [`check_url`] judges what the address says. [`check_address`] judges what
-//! a name resolved to, for callers that can resolve before connecting. Where
-//! the launcher's egress gate stands in front of the service, resolution
-//! happens at the gate, which refuses device-local destinations itself.
+//! A fetch's address comes from whoever invoked it, an agent following instructions in a
+//! page it read included, so names and addresses that mean "here" are refused before
+//! anything is sent, every redirect hop included. [`check_url`] judges what the address
+//! says, [`check_address`] what a name resolved to.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -20,11 +14,8 @@ use url::{Host, Url};
 /// Why an address is not fetched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// Not `http` or `https`.
     Scheme(String),
-    /// The address carries a user name or password.
     Credentials,
-    /// The address names this device or its local network.
     Local(String),
 }
 
@@ -59,7 +50,6 @@ const LOCAL_SUFFIXES: &[&str] = &[
     "localdomain",
 ];
 
-/// Whether `url` may be fetched, judged by what it says.
 pub fn check_url(url: &Url) -> Result<(), Refusal> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(Refusal::Scheme(url.scheme().to_owned()));

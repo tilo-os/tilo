@@ -1,16 +1,14 @@
-//! A web page as readable text: its main content in light Markdown, without
-//! navigation, scripts, forms or page furniture.
+//! A web page as readable text: its main content in light Markdown, without navigation,
+//! scripts, forms or page furniture.
 //!
-//! The reader keeps what a person reading the page would read — headings,
-//! paragraphs, lists, quotes, tables, code blocks — and every link as
-//! `[text](absolute address)`, because finding the right link is usually why
-//! a page was fetched. Emphasis and images are dropped.
+//! The reader keeps what a person reading the page would read, with every link as
+//! `[text](absolute address)`, because finding the right link is usually why a page was
+//! fetched; emphasis and images are dropped.
 
 use url::Url;
 
 use crate::html::{Document, NodeId, Selector, collapse_whitespace};
 
-/// The most characters of text the reader produces for one page.
 pub const MAX_TEXT_CHARS: usize = 1_000_000;
 
 /// Elements whose content is never part of the reading.
@@ -19,7 +17,6 @@ const SKIPPED: &[&str] = &[
     "header", "footer", "aside", "form", "button", "select", "input", "textarea", "label",
     "dialog", "menu", "img", "picture", "video", "audio", "map", "head",
 ];
-/// ARIA roles of page furniture.
 const SKIPPED_ROLES: &[&str] = &[
     "navigation",
     "banner",
@@ -31,7 +28,6 @@ const SKIPPED_ROLES: &[&str] = &[
     "menu",
     "menubar",
 ];
-/// Class or id words of page furniture that is not marked up as such.
 const SKIPPED_NAMES: &[&str] = &[
     "cookie",
     "sidebar",
@@ -41,7 +37,6 @@ const SKIPPED_NAMES: &[&str] = &[
     "skip-link",
     "share",
 ];
-/// Elements that start a new paragraph.
 const BLOCKS: &[&str] = &[
     "p",
     "div",
@@ -63,14 +58,12 @@ const BLOCKS: &[&str] = &[
     "hgroup",
 ];
 
-/// A page reduced to its reading.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Readable {
     pub title: Option<String>,
     pub text: String,
 }
 
-/// Read `html`, served from `base`.
 pub fn extract(html: &str, base: &Url) -> Readable {
     let doc = Document::parse(html);
     let title = title(&doc);
@@ -109,8 +102,6 @@ fn title(doc: &Document) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// The element holding the page's main content: its largest `<article>` when
-/// that has real text, else `<main>`, else the body.
 fn content_root(doc: &Document) -> NodeId {
     let text_len = |id: NodeId| collapse_whitespace(&doc.text(id)).len();
     if let Ok(article) = Selector::parse("article")
@@ -136,8 +127,6 @@ struct Renderer<'a> {
     chars: usize,
     list_depth: usize,
     quote_depth: usize,
-    /// Inside a table cell, where a paragraph or line break would split the
-    /// row across lines; breaks become spaces there.
     in_cell: bool,
 }
 
@@ -154,7 +143,6 @@ impl Renderer<'_> {
         self.out.push_str(s);
     }
 
-    /// Inline text, whitespace collapsed against what is already written.
     fn text(&mut self, raw: &str) {
         let mut words = raw.split(|c: char| c.is_whitespace()).peekable();
         let leading_space = raw.starts_with(|c: char| c.is_whitespace());
@@ -187,7 +175,6 @@ impl Renderer<'_> {
         }
     }
 
-    /// End the current paragraph.
     fn block(&mut self) {
         if self.in_cell {
             self.space();
@@ -266,7 +253,6 @@ impl Renderer<'_> {
             return;
         }
         let Some(name) = self.doc.name(id) else {
-            // The root.
             self.children(id);
             return;
         };
@@ -441,7 +427,6 @@ impl Renderer<'_> {
     }
 }
 
-/// Trim every line's trailing space and keep at most one blank line in a row.
 fn tidy(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut blank = false;

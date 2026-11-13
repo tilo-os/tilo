@@ -1,17 +1,13 @@
 //! A server on this machine that answers like a search engine or a web page.
 //!
-//! Test builds only (`fixture-servers`): [`crate::fetch_fixture`] and
-//! [`crate::search_fixture`] reach it, where the shipped paths refuse this
-//! machine's own addresses, and a test reads the engines' scrapers and the
-//! page reader against answers it writes itself.
+//! Test builds only (`fixture-servers`): the fixture entry points reach it where the
+//! shipped paths refuse this machine's own addresses, so a test reads the engines'
+//! scrapers and the page reader against answers it writes itself.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// One answer a fixture server gives: the path it answers, the media type it
-/// labels the body with, and the body itself.
 #[derive(Clone, Debug)]
 pub struct Route {
-    /// The path answered, without its query (`/search`).
     pub path: String,
     /// The body's media type; empty sends the body with no type at all.
     pub content_type: String,
@@ -19,7 +15,6 @@ pub struct Route {
 }
 
 impl Route {
-    /// A route answering `path` with `body`, labelled `content_type`.
     #[must_use]
     pub fn new(path: &str, content_type: &str, body: impl Into<Vec<u8>>) -> Self {
         Self {
@@ -30,22 +25,16 @@ impl Route {
     }
 }
 
-/// One request a fixture server answered, as the engine sent it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Request {
-    /// `GET` or `POST`.
     pub method: String,
-    /// The path asked for, without its query.
     pub path: String,
     /// The query string, as sent (`q=rust&adlt=strict`), or empty.
     pub query: String,
-    /// The body of a form submission.
     pub body: String,
 }
 
 impl Request {
-    /// The value of `name` in the query string or the form body, whichever
-    /// carried it.
     pub fn parameter(&self, name: &str) -> Option<String> {
         self.parameters().into_iter().find_map(
             |(key, value)| {
@@ -54,7 +43,6 @@ impl Request {
         )
     }
 
-    /// Every parameter of the query string and of the form body, in order.
     pub fn parameters(&self) -> Vec<(String, String)> {
         let mut parameters = Vec::new();
         for source in [self.query.as_str(), self.body.as_str()] {
@@ -67,7 +55,6 @@ impl Request {
     }
 }
 
-/// A parameter as it was sent: `+` is a space and `%xx` its byte.
 fn decode(encoded: &str) -> String {
     let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -131,7 +118,6 @@ impl FixtureServer {
                     body: request.body_text(),
                 });
             let Some(found) = routes.iter().find(|route| route.path == path) else {
-                // A path no route names is not there, as a server says.
                 return Some(test_http::Reply::status(404));
             };
             let reply = test_http::Reply::status(200).body(found.body.clone());
@@ -144,7 +130,6 @@ impl FixtureServer {
         Self { responder, seen }
     }
 
-    /// The address of `path` on the server.
     #[must_use]
     pub fn at(&self, path: &str) -> String {
         format!("{}{path}", self.responder.url())
