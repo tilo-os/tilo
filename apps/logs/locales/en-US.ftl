@@ -41,3 +41,6 @@ logs-effects-export-filtered-jsonl = Export filtered logs
 logs-effects-select-entry = Show entry details
 logs-journal = System journal
 logs-journal-clear-filters = Clear filters
+
+## What the app is called in a window and in the launcher
+logs-app-title = Logs

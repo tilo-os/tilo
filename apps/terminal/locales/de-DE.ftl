@@ -104,3 +104,6 @@ terminal-session-record-relay-session = Wieder verbundene Sitzung erfassen
 terminal-session-claim-pane = Bereich übernehmen
 terminal-recent-environments = Zuletzt verwendete Umgebungen
 terminal-recent-environments-used = Verwendete Umgebung erfassen
+
+## What the app is called in a window and in the launcher
+terminal-app-title = Terminal

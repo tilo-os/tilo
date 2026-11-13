@@ -75,6 +75,7 @@ impl ResourceApp for MapsShell {
     type Resource = Workspace;
     const ID: &'static str = "so.tilo.maps";
     const TITLE: &'static str = "Maps";
+    const TITLE_KEY: &'static str = "maps-app-title";
     const ICON: Option<&'static str> = Some("maps");
     /// A launch may name a search (`geo:0,0?q=cafe`).
     const ARGUMENTS: usize = 1;

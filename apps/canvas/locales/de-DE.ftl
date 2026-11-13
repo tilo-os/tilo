@@ -524,3 +524,6 @@ canvas-artwork-combine = Formen kombinieren
 canvas-tools-use-brush = Pinsel verwenden
 canvas-tools-use-colour = Farbe verwenden
 canvas-tools-use-pigment = Pigment laden
+
+## What the app is called in a window and in the launcher
+canvas-app-title = Leinwand

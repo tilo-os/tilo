@@ -85,3 +85,6 @@ activity-removed = Jetzt nichts
 
 activity-effects-remove-source = Quelle entfernen
 activity-filter = Aktivität im Arbeitsbereich
+
+## What the app is called in a window and in the launcher
+activity-app-title = Aktivität

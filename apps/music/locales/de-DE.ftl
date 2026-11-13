@@ -247,3 +247,6 @@ music-library = Musik
 music-library-create-playlist = Neue Wiedergabeliste erstellen
 music-library-delete-playlist = Wiedergabeliste löschen
 music-library-import-track = Titel zur Bibliothek hinzufügen
+
+## What the app is called in a window and in the launcher
+music-app-title = Musik

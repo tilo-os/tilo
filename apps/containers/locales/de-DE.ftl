@@ -121,3 +121,6 @@ containers-view-ask-to-remove-volume = Volume nach Rückfrage entfernen
 containers-view-enter-distrobox = Distrobox betreten
 containers-engine = Container
 containers-engine-clear-create = Neuen Container verwerfen
+
+## What the app is called in a window and in the launcher
+containers-app-title = Container

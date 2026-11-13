@@ -85,6 +85,7 @@ impl ResourceApp for WordProcessorApp {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Word Processor";
+    const TITLE_KEY: &'static str = "word-processor-app-title";
     const ICON: Option<&'static str> = Some("word-processor");
     const OPENS: &'static [&'static str] = OPENS;
     const ARGUMENTS: usize = 1;

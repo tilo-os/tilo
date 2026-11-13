@@ -171,3 +171,6 @@ shortcuts-workbench-set-nested = Schritt in anderen Block verschieben
 shortcuts-workbench-set-output = Ergebnis des Kurzbefehls festlegen
 shortcuts-workbench-add-input = Eingabe hinzufügen
 shortcuts-workbench-remove-input = Eingabe entfernen
+
+## What the app is called in a window and in the launcher
+shortcuts-app-title = Tastenkürzel

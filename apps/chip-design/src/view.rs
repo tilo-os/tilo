@@ -243,6 +243,7 @@ impl ResourceApp for ChipDesignShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Chip Design";
+    const TITLE_KEY: &'static str = "chip-design-app-title";
     // Content collection currently stages non-media transfers with a .bin name.
     // Both routes validate the complete bounded report before any action is sent.
     const OPENS: &'static [&'static str] = &["application/json", "application/octet-stream"];

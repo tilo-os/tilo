@@ -140,6 +140,7 @@ impl ResourceApp for MonitorShell {
     const ID: &'static str = "so.tilo.monitor";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "System Monitor";
+    const TITLE_KEY: &'static str = "monitor-app-title";
     const ICON: Option<&'static str> = Some("monitor");
 
     fn scenarios() -> &'static [&'static str] {

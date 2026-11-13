@@ -154,3 +154,6 @@ sheets-workbook-add-chart = Diagramm hinzufügen
 sheets-workbook-edit-chart = Diagramm bearbeiten
 sheets-workbook-rename-sheet = Blatt umbenennen
 sheets-workbook-comment = Zellen kommentieren
+
+## What the app is called in a window and in the launcher
+sheets-app-title = Tabellen

@@ -269,6 +269,7 @@ impl ResourceApp for BrowserShell {
     type Resource = Browser;
     const ID: &'static str = ui::webview::BROWSER_APP_ID;
     const TITLE: &'static str = "Browser";
+    const TITLE_KEY: &'static str = "browser-app-title";
     const ICON: Option<&'static str> = Some("browser");
     const ARGUMENTS: usize = 1;
     const PRIVATE_WINDOWS: bool = true;

@@ -340,3 +340,6 @@ ebook-library-delete-highlight = Markierung löschen
 ebook-library-delete-annotation = Anmerkung löschen
 ebook-library-remove-font = Schrift entfernen
 ebook-library-delete-scheme = Farbschema löschen
+
+## What the app is called in a window and in the launcher
+ebook-app-title = Bücher

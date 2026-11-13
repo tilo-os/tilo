@@ -186,3 +186,6 @@ diffmerge-session-take-ours = Unsere Seite übernehmen
 diffmerge-session-take-theirs = Ihre Seite übernehmen
 diffmerge-session-take-both = Beide Seiten übernehmen
 diffmerge-session-resolve = Mit eigenem Text auflösen
+
+## What the app is called in a window and in the launcher
+diffmerge-app-title = Vergleichen & Zusammenführen

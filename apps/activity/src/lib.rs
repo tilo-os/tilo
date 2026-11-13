@@ -221,6 +221,7 @@ impl ResourceApp for App {
     type Resource = Filter;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "activity-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

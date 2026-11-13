@@ -186,3 +186,6 @@ diffmerge-session-take-ours = Take ours
 diffmerge-session-take-theirs = Take theirs
 diffmerge-session-take-both = Take both
 diffmerge-session-resolve = Resolve with custom text
+
+## What the app is called in a window and in the launcher
+diffmerge-app-title = Diff & Merge

@@ -225,3 +225,6 @@ git-client-effect-show-whitespace = Leerzeichen ein- oder ausblenden
 git-client-effect-wrap-lines = Lange Zeilen umbrechen
 git-client-repo = Repository
 git-client-repo-record-repository = Zustand des Repositorys erfassen
+
+## What the app is called in a window and in the launcher
+git-client-app-title = Git

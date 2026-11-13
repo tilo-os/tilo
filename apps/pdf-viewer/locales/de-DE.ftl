@@ -319,3 +319,6 @@ pdf-document-add-typed-signature = Mit getipptem Namen unterschreiben
 pdf-signature-profile = Unterschrift
 pdf-signature-profile-set-signer = Unterschreiben als
 pdf-signature-profile-set-strokes = Unterschrift zeichnen
+
+## What the app is called in a window and in the launcher
+pdf-viewer-app-title = PDF-Betrachter

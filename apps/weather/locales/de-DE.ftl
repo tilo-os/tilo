@@ -115,3 +115,6 @@ weather-sky-thunderstorm = Gewitter
 weather-sky-thunderstorm-hail = Gewitter mit Hagel
 weather-sky-severe-thunderstorm = Schweres Gewitter
 weather-sky-unknown = Unbekannt
+
+## What the app is called in a window and in the launcher
+weather-app-title = Wetter

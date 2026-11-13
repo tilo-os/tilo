@@ -154,3 +154,6 @@ backups-operation-order-snapshots = Schnappschüsse ordnen
 backups-operation-read-snapshot = Schnappschuss lesen
 backups-operation-show-schedule = Globale Aufbewahrungsrichtlinie anzeigen
 backups-workspace = Sicherungen
+
+## What the app is called in a window and in the launcher
+backups-app-title = Sicherungen

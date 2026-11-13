@@ -854,6 +854,7 @@ impl ResourceApp for PdfViewerShell {
     // Each window shows what it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "PDF Viewer";
+    const TITLE_KEY: &'static str = "pdf-viewer-app-title";
     const ICON: Option<&'static str> = Some("pdf-viewer");
     const OPENS: &'static [&'static str] = &["application/pdf"];
     /// The PDF to open (`pdf-viewer paper.pdf`).

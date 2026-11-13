@@ -255,3 +255,6 @@ slides-effect-save-as = Save presentation
 slides-effect-read-deck = Read deck as text
 slides-effect-import-pptx-content = Import presentation from content
 slides-effect-export-pptx-content = Export presentation as content
+
+## What the app is called in a window and in the launcher
+slides-app-title = Slides

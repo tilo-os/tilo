@@ -354,6 +354,7 @@ impl ResourceApp for FirewallShell {
     const ID: &'static str = "so.tilo.firewall";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Network];
     const TITLE: &'static str = "Firewall";
+    const TITLE_KEY: &'static str = "firewall-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

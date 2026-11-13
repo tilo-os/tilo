@@ -93,3 +93,6 @@ video-player-library-add-to-watch-later = Zu Später ansehen hinzufügen
 video-player-library-add-annotation = Anmerkung hinzufügen
 video-player-library-delete-annotation = Anmerkung löschen
 video-player-library-set-transport = Wiedergabeposition festhalten
+
+## What the app is called in a window and in the launcher
+video-player-app-title = Videoplayer

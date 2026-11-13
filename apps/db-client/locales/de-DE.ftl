@@ -208,3 +208,6 @@ db-client-workspace-add-connection = Verbindung hinzufügen
 db-client-workspace-remove-connection = Gespeicherte Verbindung entfernen
 db-client-workspace-save-query = Abfrage speichern
 db-client-workspace-remove-query = Gespeicherte Abfrage entfernen
+
+## What the app is called in a window and in the launcher
+db-client-app-title = Datenbank-Client

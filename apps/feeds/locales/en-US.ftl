@@ -111,3 +111,6 @@ feeds-library-new-folder = New folder
 feeds-library-delete-folder = Delete folder
 feeds-library-import-subscriptions = Import subscriptions
 feeds-library-refreshed = Record fetched articles
+
+## What the app is called in a window and in the launcher
+feeds-app-title = Feeds

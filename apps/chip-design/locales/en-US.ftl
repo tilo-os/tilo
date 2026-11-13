@@ -285,3 +285,6 @@ chip-design-effect-select-output = Choose output
 chip-design-effect-inspect-evidence = Inspect evidence
 chip-design-effect-open-evidence-subflow = Open evidence subflow
 chip-design-effect-inspect = Inspect report
+
+## What the app is called in a window and in the launcher
+chip-design-app-title = Chip Design

@@ -282,3 +282,6 @@ mail-mailbox-draft-message = Nachricht entwerfen
 mail-trusted-senders = Vertrauenswürdige Absender
 mail-trusted-senders-trust = Diesem Absender vertrauen
 mail-trusted-senders-distrust = Diesem Absender nicht mehr vertrauen
+
+## What the app is called in a window and in the launcher
+mail-app-title = Mail

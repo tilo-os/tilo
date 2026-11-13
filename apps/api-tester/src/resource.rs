@@ -426,6 +426,7 @@ impl ResourceApp for ApiTesterShell {
     type Resource = Workspace;
     const ID: &'static str = "so.tilo.api-tester";
     const TITLE: &'static str = "API Tester";
+    const TITLE_KEY: &'static str = "api-tester-app-title";
     const ICON: Option<&'static str> = Some("api-tester");
 
     fn import_record(context: &ui::application::HostContext) -> Result<(), String> {

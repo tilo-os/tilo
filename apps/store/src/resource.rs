@@ -474,6 +474,7 @@ impl ResourceApp for StoreShell {
     type Resource = Reports;
     const ID: &'static str = "so.tilo.store";
     const TITLE: &'static str = "App Store";
+    const TITLE_KEY: &'static str = "store-app-title";
     const ICON: Option<&'static str> = Some("store");
     const OPENS: &'static [&'static str] = &[
         "application/vnd.flatpak.ref",

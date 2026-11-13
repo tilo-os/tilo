@@ -225,3 +225,6 @@ git-client-effect-show-whitespace = Show or hide whitespace
 git-client-effect-wrap-lines = Wrap long lines
 git-client-repo = Repository
 git-client-repo-record-repository = Record the repository's state
+
+## What the app is called in a window and in the launcher
+git-client-app-title = Git

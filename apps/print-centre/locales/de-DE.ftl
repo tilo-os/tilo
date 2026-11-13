@@ -213,3 +213,6 @@ print-centre-effects-copy-recognized-text = Erkannten Text kopieren
 print-centre-effects-save-scanned-page = Gescannte Seite exportieren
 print-centre-effects-save-scanned-document = Gescanntes Dokument speichern
 print-centre-defaults = Druckzentrale
+
+## What the app is called in a window and in the launcher
+print-centre-app-title = Druckzentrum

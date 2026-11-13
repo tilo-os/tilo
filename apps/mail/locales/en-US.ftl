@@ -285,3 +285,6 @@ mail-mailbox-draft-message = Draft message
 mail-trusted-senders = Trusted senders
 mail-trusted-senders-trust = Trust this sender
 mail-trusted-senders-distrust = Stop trusting this sender
+
+## What the app is called in a window and in the launcher
+mail-app-title = Mail

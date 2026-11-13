@@ -92,3 +92,6 @@ disks-device-format = Format
 disks-device-disk-usage = Show disk usage
 disks-system = Storage devices
 disks-system-name-drive = Name drive
+
+## What the app is called in a window and in the launcher
+disks-app-title = Disks

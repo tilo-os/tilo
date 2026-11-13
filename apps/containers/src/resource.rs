@@ -238,6 +238,7 @@ impl ResourceApp for ContainersShell {
     const ID: &'static str = "so.tilo.containers";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Containers];
     const TITLE: &'static str = "Containers";
+    const TITLE_KEY: &'static str = "containers-app-title";
     const ICON: Option<&'static str> = Some("containers");
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

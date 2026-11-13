@@ -151,6 +151,7 @@ impl ResourceApp for SettingsShell {
     type Resource = Settings;
     const ID: &'static str = settings_sections::APP_ID;
     const TITLE: &'static str = "Settings";
+    const TITLE_KEY: &'static str = "settings-app-title";
     const ICON: Option<&'static str> = Some("settings");
     // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
     // scale, theme, contrast and motion apply live.

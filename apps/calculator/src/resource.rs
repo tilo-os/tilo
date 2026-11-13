@@ -221,6 +221,7 @@ impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
     const ID: &'static str = "so.tilo.calculator";
     const TITLE: &'static str = "Calculator";
+    const TITLE_KEY: &'static str = "calculator-app-title";
     const ICON: Option<&'static str> = Some("calculator");
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

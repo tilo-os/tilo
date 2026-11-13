@@ -89,3 +89,6 @@ console-agent-runs = Runs
 console-agent-access = Access
 console-agent-no-runs = No runs yet
 console-agent-last-worked = Last worked { $when }
+
+## What the app is called in a window and in the launcher
+console-app-title = Console

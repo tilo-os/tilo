@@ -285,6 +285,7 @@ impl ResourceApp for DiffmergeShell {
     // Each window shows what it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Diff & Merge";
+    const TITLE_KEY: &'static str = "diffmerge-app-title";
     const ICON: Option<&'static str> = Some("diffmerge");
     fn label(state: &Session) -> String {
         state.title()

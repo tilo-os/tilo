@@ -71,3 +71,6 @@ monitor-effect-kill = Force quit
 monitor-effect-end-app = End app
 monitor-processes = Processes
 monitor-effect-refresh = Refresh processes
+
+## What the app is called in a window and in the launcher
+monitor-app-title = System Monitor

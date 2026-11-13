@@ -543,3 +543,6 @@ browser-application = Browser
 browser-application-add-bookmark = Seite als Lesezeichen merken
 browser-application-remove-bookmark = Lesezeichen entfernen
 browser-application-set-site-protection = Tracker-Schutz
+
+## What the app is called in a window and in the launcher
+browser-app-title = Browser

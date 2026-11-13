@@ -87,3 +87,6 @@ totp-vault = Authenticator
 totp-vault-move-up = Move up
 totp-vault-move-down = Move down
 totp-vault-delete = Delete
+
+## What the app is called in a window and in the launcher
+totp-app-title = Authenticator

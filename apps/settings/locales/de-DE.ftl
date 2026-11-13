@@ -3143,3 +3143,6 @@ settings-effect-remove-user = Konto entfernen
 settings-effect-use-identity = Identität verwenden
 settings-effect-protect-identity = Identität schützen
 settings-root = Einstellungen
+
+## What the app is called in a window and in the launcher
+settings-app-title = Einstellungen

@@ -64,6 +64,7 @@ impl ResourceApp for Scratchpad {
     type Resource = Note;
     const ID: &'static str = "so.tilo.scratchpad";
     const TITLE: &'static str = "Scratchpad";
+    const TITLE_KEY: &'static str = "scratchpad-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

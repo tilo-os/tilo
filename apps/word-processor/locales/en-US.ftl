@@ -331,3 +331,6 @@ word-processor-document-adopt-comments = Keep imported comments
 word-processor-document-set-page-margins = Set page margins
 word-processor-document-generate-toc = Generate table of contents
 word-processor-document-note-file-written = Record a written file
+
+## What the app is called in a window and in the launcher
+word-processor-app-title = Word Processor

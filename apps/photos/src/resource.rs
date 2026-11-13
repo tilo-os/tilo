@@ -485,6 +485,7 @@ impl ResourceApp for PhotosShell {
     type Resource = PhotoLibrary;
     const ID: &'static str = "so.tilo.photos";
     const TITLE: &'static str = "Photos";
+    const TITLE_KEY: &'static str = "photos-app-title";
     const ICON: Option<&'static str> = Some("photos");
     const OPENS: &'static [&'static str] = &["image/png", "image/jpeg", "image/webp"];
     /// A photograph to open, or a folder of them to import, into the library.

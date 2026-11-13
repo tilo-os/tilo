@@ -80,3 +80,6 @@ osk-learned = What the keyboard learned
 osk-learned-learn = Learn words
 osk-learned-forget = Forget learned words
 osk-keyboard = On-screen keyboard
+
+## What the app is called in a window and in the launcher
+osk-app-title = On-screen keyboard

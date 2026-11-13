@@ -114,6 +114,7 @@ impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
+    const TITLE_KEY: &'static str = "clocks-app-title";
 
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS

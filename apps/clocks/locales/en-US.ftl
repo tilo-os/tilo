@@ -135,3 +135,6 @@ clocks-effects-float-timer = Float timer
 clocks-effects-float-stopwatch = Float stopwatch
 clocks-on-devices = Clocks on each device
 clocks-on-devices-keep = Keep this device's clocks
+
+## What the app is called in a window and in the launcher
+clocks-app-title = Clocks

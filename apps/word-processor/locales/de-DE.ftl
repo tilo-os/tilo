@@ -324,3 +324,6 @@ word-processor-document-adopt-comments = Importierte Kommentare behalten
 word-processor-document-set-page-margins = Seitenränder setzen
 word-processor-document-generate-toc = Inhaltsverzeichnis erstellen
 word-processor-document-note-file-written = Geschriebene Datei vermerken
+
+## What the app is called in a window and in the launcher
+word-processor-app-title = Textverarbeitung

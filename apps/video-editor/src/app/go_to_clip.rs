@@ -76,7 +76,7 @@ impl VideoEditorApp {
             (0.0, 0.0)
         };
         let below = if offer { S2 + bh } else { 0.0 };
-        let top = canvas.center().y - (th + below) / 2.0;
+        let top = canvas.center().y - f64::midpoint(th, below);
         let button = offer.then(|| {
             let y = top + th + S2;
             let x = canvas.center().x - bw / 2.0;

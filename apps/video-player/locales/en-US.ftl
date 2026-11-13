@@ -93,3 +93,6 @@ video-player-library-add-to-watch-later = Add to Watch later
 video-player-library-add-annotation = Add annotation
 video-player-library-delete-annotation = Delete annotation
 video-player-library-set-transport = Record playback position
+
+## What the app is called in a window and in the launcher
+video-player-app-title = Video Player

@@ -316,3 +316,6 @@ pdf-document-add-typed-signature = Sign with typed name
 pdf-signature-profile = Signature
 pdf-signature-profile-set-signer = Sign as
 pdf-signature-profile-set-strokes = Draw signature
+
+## What the app is called in a window and in the launcher
+pdf-viewer-app-title = PDF Viewer

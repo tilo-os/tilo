@@ -399,3 +399,6 @@ video-editor-project-clear-effects = Clear effects
 video-editor-project-unlink = Unlink clip
 video-editor-project-link-audio = Separate audio
 video-editor-project-link-with = Link clips
+
+## What the app is called in a window and in the launcher
+video-editor-app-title = Video Editor

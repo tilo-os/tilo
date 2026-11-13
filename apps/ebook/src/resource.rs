@@ -1027,6 +1027,7 @@ impl ResourceApp for EbookShell {
     type Resource = Ebook;
     const ID: &'static str = "so.tilo.ebook";
     const TITLE: &'static str = "Books";
+    const TITLE_KEY: &'static str = "ebook-app-title";
     const ICON: Option<&'static str> = Some("ebook");
     const OPENS: &'static [&'static str] = &[EPUB_MEDIA_TYPE];
     /// A book to open (`ebook book.epub`).

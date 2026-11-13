@@ -67,3 +67,6 @@ typst-editor-workspace-new-file = New Typst file
 typst-editor-workspace-saved-at = Record where the file was saved
 typst-editor-workspace-load = Load a file
 typst-editor-workspace-close-file = Close a file
+
+## What the app is called in a window and in the launcher
+typst-editor-app-title = Typst

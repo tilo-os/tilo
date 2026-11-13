@@ -84,6 +84,7 @@ impl ResourceApp for BackupsShell {
     type Resource = Backups;
     const ID: &'static str = "so.tilo.backups";
     const TITLE: &'static str = "Backups";
+    const TITLE_KEY: &'static str = "backups-app-title";
     const ICON: Option<&'static str> = Some("backups");
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

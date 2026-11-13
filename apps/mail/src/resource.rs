@@ -1689,6 +1689,7 @@ impl ResourceApp for MailShell {
     type Resource = Mail;
     const ID: &'static str = "so.tilo.mail";
     const TITLE: &'static str = "Mail";
+    const TITLE_KEY: &'static str = "mail-app-title";
     const ICON: Option<&'static str> = Some("mail");
 
     /// The person's accounts, kept by Settings, and the directory of their

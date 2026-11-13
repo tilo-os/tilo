@@ -199,3 +199,6 @@ tilo-messages-view-confirm-account = Konto prüfen
 tilo-messages-view-search-messages = Nachrichten durchsuchen
 tilo-messages-view-export-content = Unterhaltungen exportieren
 tilo-messages-view-send = Nachricht senden
+
+## What the app is called in a window and in the launcher
+messages-app-title = Nachrichten

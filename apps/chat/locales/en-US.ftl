@@ -448,3 +448,6 @@ chat-effects-call-status = Call status
 chat-effects-start-call = Start a call
 chat-effects-start-video-call = Start a video call
 chat-effects-select-input = Select microphone
+
+## What the app is called in a window and in the launcher
+chat-app-title = Chat

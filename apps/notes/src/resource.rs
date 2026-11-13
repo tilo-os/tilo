@@ -22,6 +22,7 @@ impl ResourceApp for NotesShell {
     type Resource = Notebook;
     const ID: &'static str = "so.tilo.notes";
     const TITLE: &'static str = "Notes";
+    const TITLE_KEY: &'static str = "notes-app-title";
     const ICON: Option<&'static str> = Some("notes");
     const OPENS: &'static [&'static str] = &["text/markdown", "text/x-markdown"];
     const ARGUMENTS: usize = 1;

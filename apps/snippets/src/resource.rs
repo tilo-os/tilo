@@ -265,6 +265,7 @@ impl ResourceApp for SnippetsShell {
     type Resource = Snippets;
     const ID: &'static str = "so.tilo.snippets";
     const TITLE: &'static str = "Snippets";
+    const TITLE_KEY: &'static str = "snippets-app-title";
     const ICON: Option<&'static str> = Some("snippets");
 
     fn view(cx: &mut ViewCx<Snippets>) -> Element {

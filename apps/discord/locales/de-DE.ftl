@@ -195,3 +195,6 @@ discord-guild-apply-emoji = Emoji anwenden
 discord-guild-delete-emoji = Emoji löschen
 discord-guild-settle-emoji = Emoji-Upload abschließen
 discord-guild-report-voice = Sprachübertragung melden
+
+## What the app is called in a window and in the launcher
+discord-app-title = Discord

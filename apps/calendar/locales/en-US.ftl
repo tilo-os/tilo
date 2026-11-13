@@ -359,3 +359,6 @@ calendar-field-priority = Priority
 calendar-field-project = Project
 calendar-field-subtasks = Subtasks
 calendar-field-no-due-date = Add a due date
+
+## What the app is called in a window and in the launcher
+calendar-app-title = Calendar

@@ -430,6 +430,7 @@ impl ResourceApp for ContactsShell {
     type Resource = Contacts;
     const ID: &'static str = "so.tilo.contacts";
     const TITLE: &'static str = "Contacts";
+    const TITLE_KEY: &'static str = "contacts-app-title";
     const ICON: Option<&'static str> = Some("contacts");
     const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
     const ARGUMENTS: usize = 1;

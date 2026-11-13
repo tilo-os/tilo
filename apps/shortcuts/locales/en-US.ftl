@@ -174,3 +174,6 @@ shortcuts-workbench-set-nested = Move step into another block
 shortcuts-workbench-set-output = Set what the shortcut reports
 shortcuts-workbench-add-input = Add input
 shortcuts-workbench-remove-input = Remove input
+
+## What the app is called in a window and in the launcher
+shortcuts-app-title = Shortcuts

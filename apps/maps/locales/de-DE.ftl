@@ -279,3 +279,6 @@ maps-workspace-accept-route = Route übernehmen
 maps-workspace-clear-route = Route verwerfen
 maps-workspace-accept-transit = Verbindungen übernehmen
 maps-workspace-clear-transit = Verbindungen verwerfen
+
+## What the app is called in a window and in the launcher
+maps-app-title = Karten

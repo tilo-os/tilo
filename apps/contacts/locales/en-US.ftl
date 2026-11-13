@@ -178,3 +178,6 @@ contacts-book-new-contact = New contact
 contacts-book-add-contacts = Add contacts
 contacts-book-delete-contact = Delete contact
 contacts-book-merge-contacts = Merge contacts
+
+## What the app is called in a window and in the launcher
+contacts-app-title = Contacts

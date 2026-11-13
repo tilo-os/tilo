@@ -216,6 +216,7 @@ impl ResourceApp for ChatShell {
     type Resource = Chat;
     const ID: &'static str = "so.tilo.chat";
     const TITLE: &'static str = "Chat";
+    const TITLE_KEY: &'static str = "chat-app-title";
     const ICON: Option<&'static str> = Some("chat");
     const WORKSPACE_RECORD: bool = true;
 

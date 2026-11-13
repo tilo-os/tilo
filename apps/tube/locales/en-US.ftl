@@ -253,3 +253,6 @@ tube-effect-revoke-device = Revoke device access
 tube-effect-set-preference = Set a playback preference
 tube-effect-set-preferred-quality = Set preferred quality
 tube-effect-set-segment-handling = Set segment handling
+
+## What the app is called in a window and in the launcher
+tube-app-title = Tube

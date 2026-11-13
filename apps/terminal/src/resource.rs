@@ -704,6 +704,7 @@ impl ResourceApp for TerminalShell {
     // Each window is a session of its own, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Terminal";
+    const TITLE_KEY: &'static str = "terminal-app-title";
     const ICON: Option<&'static str> = Some("terminal");
 
     fn label(_state: &Terminal) -> String {

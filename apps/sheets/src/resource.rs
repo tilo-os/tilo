@@ -1515,6 +1515,7 @@ impl ResourceApp for SheetsShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Sheets";
+    const TITLE_KEY: &'static str = "sheets-app-title";
     const ICON: Option<&'static str> = Some("sheets");
 
     #[cfg(feature = "samples")]

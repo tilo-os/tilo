@@ -353,6 +353,7 @@ impl ResourceApp for ImagerShell {
     const ID: &'static str = "so.tilo.imager";
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
+    const TITLE_KEY: &'static str = "installer-app-title";
     const ICON: Option<&'static str> = Some("imager");
     #[cfg(all(feature = "installation", feature = "destination"))]
     const FLAGS: &'static [&'static str] =

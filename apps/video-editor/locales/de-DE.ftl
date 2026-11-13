@@ -399,3 +399,6 @@ video-editor-project-clear-effects = Effekte entfernen
 video-editor-project-unlink = Verknüpfung lösen
 video-editor-project-link-audio = Ton abtrennen
 video-editor-project-link-with = Clips verknüpfen
+
+## What the app is called in a window and in the launcher
+video-editor-app-title = Video-Editor

@@ -449,3 +449,6 @@ chat-effects-call-status = Anrufstatus
 chat-effects-start-call = Anruf starten
 chat-effects-start-video-call = Videoanruf starten
 chat-effects-select-input = Mikrofon wählen
+
+## What the app is called in a window and in the launcher
+chat-app-title = Chat

@@ -82,6 +82,7 @@ impl ResourceApp for App {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "canvas-app-title";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

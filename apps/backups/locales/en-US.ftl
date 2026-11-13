@@ -154,3 +154,6 @@ backups-operation-order-snapshots = Order snapshots
 backups-operation-read-snapshot = Read snapshot
 backups-operation-show-schedule = Show global retention policy
 backups-workspace = Backups
+
+## What the app is called in a window and in the launcher
+backups-app-title = Backups

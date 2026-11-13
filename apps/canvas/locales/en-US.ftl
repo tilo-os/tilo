@@ -526,3 +526,6 @@ canvas-artwork-combine = Combine shapes
 canvas-tools-use-brush = Use brush
 canvas-tools-use-colour = Use colour
 canvas-tools-use-pigment = Load pigment
+
+## What the app is called in a window and in the launcher
+canvas-app-title = Canvas

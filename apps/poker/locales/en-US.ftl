@@ -123,3 +123,6 @@ so-tilo-poker-table-leave = Leave table
 so-tilo-poker-table-deal = Deal
 so-tilo-poker-table-show = Show cards
 so-tilo-poker-table-skip = Fold idle player
+
+## What the app is called in a window and in the launcher
+poker-app-title = Poker

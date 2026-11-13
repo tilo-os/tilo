@@ -69,6 +69,7 @@ impl ResourceApp for TubeShell {
     type Resource = Library;
     const ID: &'static str = "so.tilo.tube";
     const TITLE: &'static str = "Tube";
+    const TITLE_KEY: &'static str = "tube-app-title";
     const ICON: Option<&'static str> = Some("tube");
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;

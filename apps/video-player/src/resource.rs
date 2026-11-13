@@ -42,6 +42,7 @@ impl ResourceApp for VideoPlayerShell {
     type Resource = Library;
     const ID: &'static str = "so.tilo.video-player";
     const TITLE: &'static str = "Video Player";
+    const TITLE_KEY: &'static str = "video-player-app-title";
     const ICON: Option<&'static str> = Some("video-player");
     /// The video to play: a path or a stream's URL.
     const ARGUMENTS: usize = 1;

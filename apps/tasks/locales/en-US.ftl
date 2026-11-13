@@ -110,3 +110,6 @@ tasks-issue-status = Moved { $item } to { $new }
 tasks-issue-labels = Changed the labels of { $item }
 tasks-issue-links = Changed the links of { $item }
 tasks-add-label = Labelled { $item } { $label }
+
+## What the app is called in a window and in the launcher
+tasks-app-title = Tasks

@@ -317,6 +317,7 @@ impl ResourceApp for App {
     type Resource = Console;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const TITLE_KEY: &'static str = "console-app-title";
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }

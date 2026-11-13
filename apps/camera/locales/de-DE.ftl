@@ -116,3 +116,6 @@ camera-refresh = Aktualisieren
 camera-scanning = Wird gescannt…
 camera-scan-page = Seite scannen
 camera-open-in = In { $destination } öffnen
+
+## What the app is called in a window and in the launcher
+camera-app-title = Kamera

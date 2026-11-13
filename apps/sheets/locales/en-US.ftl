@@ -154,3 +154,6 @@ sheets-workbook-add-chart = Add chart
 sheets-workbook-edit-chart = Edit chart
 sheets-workbook-rename-sheet = Rename sheet
 sheets-workbook-comment = Comment on cells
+
+## What the app is called in a window and in the launcher
+sheets-app-title = Sheets

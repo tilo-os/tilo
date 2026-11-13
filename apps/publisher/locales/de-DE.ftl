@@ -59,3 +59,6 @@ so-tilo-publisher-key-export-key = Schlüssel exportieren
 so-tilo-publisher-key-apply-for-namespaces = Namensräume beantragen
 so-tilo-publisher-key-check-status = Status prüfen
 publisher-profile = App-Veröffentlichung
+
+## What the app is called in a window and in the launcher
+publisher-app-title = Apps veröffentlichen

@@ -114,3 +114,6 @@ snippets-library-record-use = Verwendung vermerken
 snippets-library-rename-folder = Ordner umbenennen
 snippets-library-rename-tag = Tag umbenennen
 snippets-library-remove-tag = Tag entfernen
+
+## What the app is called in a window and in the launcher
+snippets-app-title = Codeschnipsel

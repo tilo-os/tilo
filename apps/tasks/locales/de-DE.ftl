@@ -113,3 +113,6 @@ tasks-issue-status = { $item } nach { $new } verschoben
 tasks-issue-labels = Labels von { $item } geändert
 tasks-issue-links = Verknüpfungen von { $item } geändert
 tasks-add-label = { $item } mit { $label } versehen
+
+## What the app is called in a window and in the launcher
+tasks-app-title = Aufgaben

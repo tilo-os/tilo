@@ -1878,3 +1878,6 @@ imager-installer-preview-continue-preview = Weitermachen
 imager-installer-preview-back-in-preview = Zurück
 imager-installer-preview-restart-preview = Vorschau neu starten
 imager-setup-action-install-desktop = Tilo Desktop installieren
+
+## What the app is called in a window and in the launcher
+installer-app-title = Tilo-Installer

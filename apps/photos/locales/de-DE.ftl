@@ -554,3 +554,6 @@ photos-library-rename-person = Person umbenennen
 photos-library-remove-person = Person entfernen
 photos-library-remove-album = Album entfernen
 photos-search-library = Fotobibliothek
+
+## What the app is called in a window and in the launcher
+photos-app-title = Fotos

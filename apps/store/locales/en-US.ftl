@@ -394,3 +394,6 @@ store-effect-add-remote = Add Flatpak remote
 store-effect-remove-remote = Remove remote
 store-effect-prepare-moderation = Prepare a report
 store-effect-submit-report = Submit signed report
+
+## What the app is called in a window and in the launcher
+store-app-title = App Store

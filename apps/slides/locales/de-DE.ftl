@@ -252,3 +252,6 @@ slides-effect-save-as = Präsentation speichern
 slides-effect-read-deck = Präsentation als Text lesen
 slides-effect-import-pptx-content = Präsentation aus Inhalt importieren
 slides-effect-export-pptx-content = Präsentation als Inhalt exportieren
+
+## What the app is called in a window and in the launcher
+slides-app-title = Präsentationen

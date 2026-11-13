@@ -58,8 +58,16 @@ pub trait ResourceApp: 'static {
     type Resource: Resource;
     /// The application id, e.g. `"so.tilo.scratchpad"`.
     const ID: &'static str;
-    /// The window and launcher title.
-    const TITLE: &'static str;
+    /// What the app is called when no catalogue names it: its source
+    /// language's name, for a host that shows the app before it has one (a
+    /// launch listing a package it has not run). An app that
+    /// [ships a catalogue](Self::catalog) names its title there instead, in
+    /// [`Self::TITLE_KEY`], so a German window is not titled in English.
+    const TITLE: &'static str = "";
+    /// The catalogue message that names the app, in every language the app
+    /// ships, and what its window, its launcher entry and its dock row read.
+    /// Every app with a catalogue sets it.
+    const TITLE_KEY: &'static str = "";
     /// A named icon; defaults to the app id's last segment.
     const ICON: Option<&'static str> = None;
     /// How every window hosting the app treats it: focus after a rebuild,
@@ -556,7 +564,8 @@ fn icon(app: &AppHooks) -> IconDescriptor {
 /// app; everything that reads it is compiled once for every app.
 pub(crate) struct AppHooks {
     id: &'static str,
-    title: &'static str,
+    /// [`ResourceApp::title`], per app id so the answer is resolved once.
+    title: fn(&'static str) -> &'static str,
     icon: Option<&'static str>,
     /// [`ResourceApp::named`] — the app's name when the launch gives it.
     named: fn() -> Option<AppName>,
@@ -618,7 +627,7 @@ struct Hooks<A>(std::marker::PhantomData<A>);
 impl<A: ResourceApp> Hooks<A> {
     const HOOKS: AppHooks = AppHooks {
         id: A::ID,
-        title: A::TITLE,
+        title: titled::<A>,
         icon: A::ICON,
         named: A::named,
         member_record: A::member_record,
@@ -655,9 +664,14 @@ impl AppHooks {
         (self.named)().map_or(self.id, |named| named.id)
     }
 
-    /// The window and launcher title: as the launch names it, else [`ResourceApp::TITLE`].
+    /// The window and launcher title: as the launch names it, else the app's
+    /// catalogue's name for it, resolved once per process — every host holds
+    /// a definition for as long.
     pub(crate) fn title(&self) -> &'static str {
-        (self.named)().map_or(self.title, |named| named.title)
+        match (self.named)() {
+            Some(named) => named.title,
+            None => (self.title)(self.id()),
+        }
     }
 
     fn icon_name(&self) -> Option<&'static str> {
@@ -668,6 +682,31 @@ impl AppHooks {
 /// `A`'s [`AppHooks`].
 pub(crate) fn hooks<A: ResourceApp>() -> &'static AppHooks {
     &Hooks::<A>::HOOKS
+}
+
+/// Every app's title, resolved from its catalogue once per language: a host
+/// keeps its definitions for the process's life, so a title is worth keeping
+/// for as long.
+static TITLES: Mutex<Vec<(&'static str, String, &'static str)>> = Mutex::new(Vec::new());
+
+/// [`ResourceApp::TITLE_KEY`] for the app `id`, in the language the person
+/// reads, else the source-language [`ResourceApp::TITLE`]. One place resolves
+/// every app's title, so no app can ship an English-only one.
+fn titled<A: ResourceApp>(id: &'static str) -> &'static str {
+    let (Some(catalog), false) = (A::catalog(), A::TITLE_KEY.is_empty()) else {
+        return A::TITLE;
+    };
+    let locale = catalog.current_locale();
+    let mut titles = TITLES.lock_recover();
+    if let Some((_, _, title)) = titles
+        .iter()
+        .find(|(app, kept, _)| *app == id && *kept == locale)
+    {
+        return title;
+    }
+    let title: &'static str = Box::leak(catalog.t(A::TITLE_KEY).into_boxed_str());
+    titles.push((id, locale, title));
+    title
 }
 
 fn declarations_of<R: Resource>() -> Rc<[tilo_resource::Declaration]> {
@@ -1347,7 +1386,7 @@ fn replay_of(
     if !app.document_history {
         return Err(LaunchError::Operation(format!(
             "{} keeps no History to replay a recording in",
-            app.title
+            app.title()
         )));
     }
     if !context.is_private() || !created {

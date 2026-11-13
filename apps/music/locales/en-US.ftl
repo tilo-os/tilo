@@ -247,3 +247,6 @@ music-library = Music
 music-library-create-playlist = Create playlist
 music-library-delete-playlist = Delete playlist
 music-library-import-track = Add to library
+
+## What the app is called in a window and in the launcher
+music-app-title = Music

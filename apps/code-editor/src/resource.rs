@@ -69,6 +69,7 @@ impl ResourceApp for CodeEditorShell {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Code Editor";
+    const TITLE_KEY: &'static str = "code-editor-app-title";
     const ICON: Option<&'static str> = Some("code-editor");
     /// The folder or file to open (`code-editor .`, `code-editor src/main.rs`).
     const ARGUMENTS: usize = 1;

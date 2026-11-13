@@ -130,6 +130,7 @@ impl ResourceApp for LauncherShell {
     type Resource = Launcher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Search";
+    const TITLE_KEY: &'static str = "launcher-app-title";
     const ICON: Option<&'static str> = Some("search");
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;

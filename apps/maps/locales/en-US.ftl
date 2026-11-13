@@ -281,3 +281,6 @@ maps-workspace-accept-route = Accept a route
 maps-workspace-clear-route = Clear route
 maps-workspace-accept-transit = Accept transit routes
 maps-workspace-clear-transit = Clear transit routes
+
+## What the app is called in a window and in the launcher
+maps-app-title = Maps

@@ -202,6 +202,7 @@ impl ResourceApp for TotpShell {
     type Resource = Totp;
     const ID: &'static str = "so.tilo.totp";
     const TITLE: &'static str = "Authenticator";
+    const TITLE_KEY: &'static str = "totp-app-title";
     const ICON: Option<&'static str> = Some("totp");
     // The window shows secrets: captures, recordings and remote viewers get
     // a placeholder in every launch.

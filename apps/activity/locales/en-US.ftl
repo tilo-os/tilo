@@ -85,3 +85,6 @@ activity-removed = Nothing now
 
 activity-effects-remove-source = Remove source
 activity-filter = Workspace activity
+
+## What the app is called in a window and in the launcher
+activity-app-title = Activity

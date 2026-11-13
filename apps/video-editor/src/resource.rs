@@ -832,6 +832,7 @@ impl ResourceApp for VideoEditor {
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Video Editor";
+    const TITLE_KEY: &'static str = "video-editor-app-title";
     const ICON: Option<&'static str> = Some("video-editor");
     /// A media file the editor is launched on (`video-editor CLIP`) is
     /// imported into the project and placed on the timeline, as a pick from

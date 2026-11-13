@@ -115,3 +115,6 @@ weather-sky-thunderstorm = Thunderstorm
 weather-sky-thunderstorm-hail = Thunderstorm, hail
 weather-sky-severe-thunderstorm = Severe thunderstorm
 weather-sky-unknown = Unknown
+
+## What the app is called in a window and in the launcher
+weather-app-title = Weather

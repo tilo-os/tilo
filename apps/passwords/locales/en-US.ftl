@@ -151,3 +151,6 @@ passwords-effect-export = Export CSV…
 passwords-effect-filter = Filter vault
 passwords-effect-open = Open
 passwords-vault = Password vault
+
+## What the app is called in a window and in the launcher
+passwords-app-title = Passwords
