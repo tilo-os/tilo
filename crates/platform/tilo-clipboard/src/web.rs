@@ -23,8 +23,6 @@ extern "C" {
 }
 
 thread_local! {
-    /// The `fill` of each copy claimed and not filled yet, by reservation:
-    /// a page's functions stay on its thread, the reservation may move.
     static RESERVED: RefCell<(u64, HashMap<u64, js_sys::Function>)> =
         RefCell::new((0, HashMap::new()));
 }
@@ -63,7 +61,6 @@ impl ClipboardBackend for BrowserClipboard {
         let report = events::input_report()?;
         let (copy, settle) = ClipboardCopy::pending();
         let settled = Closure::once_into_js(move |ok: bool, error: Option<String>| {
-            // A claim given up is no failure to tell the person about.
             match (ok, error) {
                 (true, _) => report(CopyReport::Copied),
                 (false, Some(error)) => report(CopyReport::Failed(error)),
