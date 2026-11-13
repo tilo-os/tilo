@@ -406,58 +406,71 @@ mod tests {
         out
     }
 
-    #[test]
-    fn the_build_id_is_found_after_other_notes() {
-        let mut notes = note(1, b"GNU\0", &[0; 16]);
-        notes.extend(note(
-            NT_GNU_BUILD_ID,
-            b"GNU\0",
-            &[0xde, 0xad, 0xbe, 0xef, 0x01],
-        ));
-        assert_eq!(gnu_build_id(&notes).as_deref(), Some("deadbeef01"));
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_build_id_is_read_from_the_gnu_note;
+
+        phase the_build_id_is_found_after_other_notes;
+        {
+            let mut notes = note(1, b"GNU\0", &[0; 16]);
+            notes.extend(note(
+                NT_GNU_BUILD_ID,
+                b"GNU\0",
+                &[0xde, 0xad, 0xbe, 0xef, 0x01],
+            ));
+            assert_eq!(gnu_build_id(&notes).as_deref(), Some("deadbeef01"));
+        }
+
+        phase a_truncated_note_is_no_build_id;
+        {
+            let notes = note(NT_GNU_BUILD_ID, b"GNU\0", &[1, 2, 3, 4]);
+            assert_eq!(gnu_build_id(&notes[..notes.len() - 2]), None);
+            assert_eq!(gnu_build_id(&note(NT_GNU_BUILD_ID, b"XYZ\0", &[1])), None);
+        }
+
+        phase the_running_test_binary_has_a_build_id;
+        {
+            #[cfg(target_os = "linux")]
+            {
+                // Every Linux link here passes --build-id (the distribution
+                // compiler's default); the crash log relies on it to name the binary.
+                let id = read_build_id(&std::env::current_exe().unwrap()).unwrap();
+                assert!(
+                    id.len() >= 16 && id.chars().all(|c| c.is_ascii_hexdigit()),
+                    "{id}"
+                );
+            }
+        }
     }
 
-    #[test]
-    fn a_truncated_note_is_no_build_id() {
-        let notes = note(NT_GNU_BUILD_ID, b"GNU\0", &[1, 2, 3, 4]);
-        assert_eq!(gnu_build_id(&notes[..notes.len() - 2]), None);
-        assert_eq!(gnu_build_id(&note(NT_GNU_BUILD_ID, b"XYZ\0", &[1])), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_rendered_record_names_what_ran_and_keeps_its_stacks;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_running_test_binary_has_a_build_id() {
-        // Every Linux link here passes --build-id (the distribution
-        // compiler's default); the crash log relies on it to name the binary.
-        let id = read_build_id(&std::env::current_exe().unwrap()).unwrap();
-        assert!(
-            id.len() >= 16 && id.chars().all(|c| c.is_ascii_hexdigit()),
-            "{id}"
-        );
-    }
-
-    #[test]
-    fn a_report_names_the_binary_and_keeps_the_backtrace() {
-        let build = BuildInfo {
-            version: "0.1.0",
-            executable: Some(PathBuf::from("/usr/bin/tilo-session")),
-            build_id: Some("abc123".to_owned()),
-        };
-        let report = render(
-            PANIC_TITLE,
-            &build,
-            &Panic {
-                timestamp: "2026-10-03-120000",
-                thread: "main",
-                contained: "no: the session ends",
-                location: "crates/session/session/src/x.rs:1:2",
-                message: "boom",
-                backtrace: "   0: session::x::f\n             at ./crates/session/session/src/x.rs:1:2",
-            },
-        );
-        assert_eq!(
-            report,
-            "tilo session panic\n\
+        phase a_report_names_the_binary_and_keeps_the_backtrace;
+        {
+            let build = BuildInfo {
+                version: "0.1.0",
+                executable: Some(PathBuf::from("/usr/bin/tilo-session")),
+                build_id: Some("abc123".to_owned()),
+            };
+            let report = render(
+                PANIC_TITLE,
+                &build,
+                &Panic {
+                    timestamp: "2026-10-03-120000",
+                    thread: "main",
+                    contained: "no: the session ends",
+                    location: "crates/session/session/src/x.rs:1:2",
+                    message: "boom",
+                    backtrace: "   0: session::x::f\n             at ./crates/session/session/src/x.rs:1:2",
+                },
+            );
+            assert_eq!(
+                report,
+                "tilo session panic\n\
              ==================\n\
              timestamp: 2026-10-03-120000\n\
              version:   0.1.0\n\
@@ -468,35 +481,59 @@ mod tests {
              location:  crates/session/session/src/x.rs:1:2\n\
              message:   boom\n\n\
              backtrace:\n   0: session::x::f\n             at ./crates/session/session/src/x.rs:1:2\n"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_freeze_record_names_the_binary_and_keeps_the_stacks() {
-        let build = BuildInfo {
-            version: "0.1.0",
-            executable: Some(PathBuf::from("/usr/bin/tilo-session")),
-            build_id: Some("abc123".to_owned()),
-        };
-        let record = render_freeze(
-            &build,
-            &Freeze {
-                timestamp: "2026-10-24-225201",
-                tid: 412,
-                blocked_for: Duration::from_millis(26_400),
-                report: "main loop hung\nthread 412 (session)\n   0: session::x::wait",
-            },
-        );
-        assert!(record.starts_with(FREEZE_TITLE), "{record}");
-        for line in [
-            "timestamp: 2026-10-24-225201\n",
-            "binary:    /usr/bin/tilo-session\n",
-            "build-id:  abc123\n",
-            "thread:    412\n",
-            "stalled:   26.4 s\n",
-            "   0: session::x::wait\n",
-        ] {
-            assert!(record.contains(line), "{line:?} in:\n{record}");
+        phase a_freeze_record_names_the_binary_and_keeps_the_stacks;
+        {
+            let build = BuildInfo {
+                version: "0.1.0",
+                executable: Some(PathBuf::from("/usr/bin/tilo-session")),
+                build_id: Some("abc123".to_owned()),
+            };
+            let record = render_freeze(
+                &build,
+                &Freeze {
+                    timestamp: "2026-10-24-225201",
+                    tid: 412,
+                    blocked_for: Duration::from_millis(26_400),
+                    report: "main loop hung\nthread 412 (session)\n   0: session::x::wait",
+                },
+            );
+            assert!(record.starts_with(FREEZE_TITLE), "{record}");
+            for line in [
+                "timestamp: 2026-10-24-225201\n",
+                "binary:    /usr/bin/tilo-session\n",
+                "build-id:  abc123\n",
+                "thread:    412\n",
+                "stalled:   26.4 s\n",
+                "   0: session::x::wait\n",
+            ] {
+                assert!(record.contains(line), "{line:?} in:\n{record}");
+            }
+        }
+
+        phase a_report_without_an_identity_says_so;
+        {
+            let build = BuildInfo {
+                version: "0.1.0",
+                executable: None,
+                build_id: None,
+            };
+            let report = render(
+                "t",
+                &build,
+                &Panic {
+                    timestamp: "",
+                    thread: "",
+                    contained: "",
+                    location: "",
+                    message: "",
+                    backtrace: "",
+                },
+            );
+            assert!(report.contains("binary:    <unknown>\n"), "{report}");
+            assert!(report.contains("build-id:  <none>\n"), "{report}");
         }
     }
 
@@ -514,28 +551,5 @@ mod tests {
         );
         assert!(write_record(dir.path(), "2026-10-24-225201-1-freeze.log", "second").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
-    }
-
-    #[test]
-    fn a_report_without_an_identity_says_so() {
-        let build = BuildInfo {
-            version: "0.1.0",
-            executable: None,
-            build_id: None,
-        };
-        let report = render(
-            "t",
-            &build,
-            &Panic {
-                timestamp: "",
-                thread: "",
-                contained: "",
-                location: "",
-                message: "",
-                backtrace: "",
-            },
-        );
-        assert!(report.contains("binary:    <unknown>\n"), "{report}");
-        assert!(report.contains("build-id:  <none>\n"), "{report}");
     }
 }
