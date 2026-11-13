@@ -269,17 +269,28 @@ run_flow() {
 # await_flow: the next flow to end, in the order they end, so each one's
 # seconds are its own; its result, and on failure what it said.
 failed=()
-# The machine as a flow ends: load against cores and the CPU pressure (the
-# share of the last ten seconds something runnable waited for a core) of the
-# machine and of this job, so a slow or timed-out flow on a starved node reads
-# differently from one where the product was slow on a machine with room.
+# The machine as a flow ends: load against cores, the CPU pressure (the share
+# of the last ten seconds something runnable waited for a core) of the machine
+# and of this job, and the memory this job has used of what it is given with
+# how many of its processes the kernel killed for it — a page whose renderer
+# died under a full run reads differently from one the product crashed on a
+# machine with room.
 machine_now() {
-  local load pressure job
+  local load pressure job used limit oom
   load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
   pressure=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /proc/pressure/cpu 2>/dev/null)
   job=$(sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' /sys/fs/cgroup/cpu.pressure 2>/dev/null)
-  printf 'load %s on %s cores, this job given %s threads, cpu pressure %s%% (machine) %s%% (this job)' \
-    "${load:-?}" "$(nproc --all)" "${OMP_NUM_THREADS:-?}" "${pressure:-?}" "${job:-?}"
+  used=$(sed -n 's/^anon \([0-9]*\).*/\1/p' /sys/fs/cgroup/memory.stat 2>/dev/null)
+  limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+  oom=$(sed -n 's/^oom_kill \([0-9]*\).*/\1/p' /sys/fs/cgroup/memory.events 2>/dev/null)
+  printf 'load %s on %s cores, this job given %s threads, cpu pressure %s%% (machine) %s%%, memory %s of %s used with %s killed (this job)' \
+    "${load:-?}" "$(nproc --all)" "${OMP_NUM_THREADS:-?}" "${pressure:-?}" "${job:-?}" \
+    "$(gib "${used:-0}")" "$(gib "${limit:-0}")" "${oom:-?}"
+}
+# BYTES as GiB, to one place; a limit of `max` is no limit at all.
+gib() {
+  [[ $1 == max || ! $1 =~ ^[0-9]+$ ]] && { printf 'no limit'; return; }
+  awk -v bytes="$1" 'BEGIN { printf "%.1f GiB", bytes / 1073741824 }'
 }
 await_flow() {
   local status=0 pid= left=() one
