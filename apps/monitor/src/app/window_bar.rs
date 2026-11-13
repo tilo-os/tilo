@@ -1,9 +1,6 @@
-//! Monitor's controls, as slots in the window's bar ([`ui::window_toolbar`]):
-//! the Processes and Resources views, Refresh, the update frequency as a menu
-//! button, and on the process list Tree view, with Include children and
-//! Kernel threads in the bar's menu. The bar's search narrows the process
-//! list ([`crate::view::ProcessesPane`] is its `Filterable`). The window
-//! draws no header row and the list no row of toggles of its own.
+//! Monitor's controls as slots in the window's bar: the Processes and Resources
+//! views, Refresh, the update frequency menu, Tree view with Include children, and
+//! Kernel threads. The bar's search narrows the process list.
 
 use ui::framework::BarCommands;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarView, ToolbarViews, WindowToolbar};
@@ -13,19 +10,16 @@ use crate::model::ProcessDataStatus;
 use crate::tree::SumMode;
 use crate::view::{Cadence, Request};
 
-/// What an entry of the window bar does.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum BarCommand {
     Refresh,
     TreeMode,
     SumChildren,
     KernelThreads,
-    /// Sample at this cadence.
     Cadence(Cadence),
 }
 
 impl Tab {
-    /// The view's id in the window bar.
     pub(crate) fn view_id(self) -> &'static str {
         match self {
             Self::Processes => "monitor.view.processes",
@@ -35,7 +29,6 @@ impl Tab {
 }
 
 impl MonitorApp {
-    /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
         let state = self.state.borrow();
@@ -117,9 +110,8 @@ impl MonitorApp {
         toolbar
     }
 
-    /// Queue what the person did in the window's bar as the request its
-    /// control would have made, after the shell's own slots. Returns whether
-    /// anything was asked.
+    /// Queue what the person did in the bar as the request its control makes;
+    /// whether anything was asked.
     pub(super) fn take_window_toolbar_events(&mut self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {

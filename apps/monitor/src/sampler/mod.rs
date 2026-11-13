@@ -1,10 +1,6 @@
-//! Where Monitor's readings come from: the system information service
-//! (`service`, through `tilo_system_info`). On Linux the session reads
-//! the machine and pushes it, since the sandbox shows Monitor no other
-//! process; elsewhere (macOS) the same service runs in Monitor's process
-//! over the platform's own interfaces. The sampler folds a reading into the
-//! [`crate::model::MonitorModel`] the panes draw, and a sample (`--shots`, a
-//! past version) never reads anything.
+//! Where Monitor's readings come from: the system information service. On Linux the
+//! session reads the machine and pushes it; elsewhere the service runs in Monitor's
+//! process. A sample reads nothing.
 
 pub(crate) mod service;
 
@@ -13,13 +9,10 @@ pub use service::Sampler;
 #[cfg(test)]
 use std::cell::Cell;
 
-/// How an end request asks a process to go. `Term` asks it to shut down
-/// cleanly (catchable); `Kill` is the un-catchable hard stop.
+/// How an end request asks a process to go: `Term` it can catch, `Kill` it cannot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopKind {
-    /// `SIGTERM` — "End process".
     Term,
-    /// `SIGKILL` — "Force end".
     Kill,
 }
 
@@ -28,7 +21,6 @@ thread_local! {
     static PROVIDER_READ_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Count a read of the machine, so a test sees whether one happened.
 fn note_provider_read() {
     #[cfg(test)]
     PROVIDER_READ_COUNT.with(|count| count.set(count.get().saturating_add(1)));
@@ -44,13 +36,10 @@ pub(crate) fn provider_read_count() -> usize {
     PROVIDER_READ_COUNT.with(Cell::get)
 }
 
-/// The session's service, in this test process: a real hub reading this
-/// machine, served over a socket pair the way the launcher hands one over,
-/// installed as the process's connection. The person whose processes may
-/// be ended is this test's user, and their "app" is the test's own cgroup,
-/// so a test can end a child it started and nothing outside it.
-/// Outside Linux the service runs in this process already, over this
-/// machine: there is no session to stand in for.
+/// The session's service in this test process: a real hub reading this machine,
+/// served over a socket pair as the launcher hands one over. The person whose
+/// processes may be ended is this test's user, so a test ends only a child it
+/// started. Outside Linux the service already runs in this process.
 #[cfg(all(test, not(target_os = "linux")))]
 pub(crate) fn install_test_session() {}
 
@@ -105,7 +94,6 @@ mod tests {
     use super::*;
     use crate::model::{MonitorModel, ProcessDataStatus};
 
-    /// The session's readings fold into the model the live app draws from.
     #[test]
     fn the_sessions_readings_fill_the_metrics_and_the_process_list() {
         install_test_session();
@@ -130,7 +118,6 @@ mod tests {
         assert!(model.metrics.disk_write.is_finite());
     }
 
-    /// An end request for a process that is not there reaches nothing.
     #[test]
     fn ending_an_unknown_or_stale_process_reaches_nothing() {
         install_test_session();
