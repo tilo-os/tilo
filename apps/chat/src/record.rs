@@ -845,14 +845,10 @@ impl Person {
     /// Whether this is software acting in the workspace rather than a person.
     #[must_use]
     pub fn is_agent(&self) -> bool {
-        self.member().map_or_else(
-            || {
-                self.id
-                    .0
-                    .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-            },
-            |member| !member.is_person(),
-        )
+        self.id
+            .0
+            .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            || self.member().is_some_and(|member| !member.is_person())
     }
 }
 

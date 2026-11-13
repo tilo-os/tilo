@@ -562,10 +562,8 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
 /// Whether `author` is software rather than a person: a member that is an agent or a bot, or a
 /// run of a task (`agent-task:<task>`), which is no member.
 pub(crate) fn is_agent(author: &str) -> bool {
-    MemberId::parse(author).map_or_else(
-        || author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX),
-        |member| !member.is_person(),
-    )
+    author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+        || MemberId::parse(author).is_some_and(|member| !member.is_person())
 }
 
 /// The name an agent author shows, as the record or the workspace names it: the name the

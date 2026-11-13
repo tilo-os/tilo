@@ -1051,8 +1051,8 @@ mod tests {
     const AGENT: &str = "tide";
     /// The id its words are written under.
     const AGENT_ACTOR: &str = "agent:tide";
-    /// The person sitting here.
-    const ME: &str = "person:me";
+    /// The person sitting here, by their member key.
+    const ME: &str = "me";
     /// The conversation the two of them have.
     const CONVERSATION: &str = "c_tide";
 
