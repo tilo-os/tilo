@@ -72,16 +72,17 @@ pub(crate) fn draw_action_presence(
         );
         // An agent's marker wears the one tag that says who it is and what it
         // is doing; anyone else's outline is labelled beside it.
+        let ink = ink_around(tree, bounds, viewport);
         let place = crate::presence::MarkerPlace {
             locus: bounds,
             control,
-            ink: ink_around(tree, bounds, viewport),
+            ink: ink.clone(),
         };
         let marker =
             presence.draw_agent_action_marker(paint, &interaction, &place, viewport, surface, now);
         if marker.is_none() {
             let label = presence.interaction_status_label(&interaction);
-            presence.draw_action_label_within(paint, &user, &label, bounds, viewport);
+            presence.draw_action_label_within(paint, &user, &label, bounds, viewport, &ink);
         }
         if let Some(marker) = marker
             && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent

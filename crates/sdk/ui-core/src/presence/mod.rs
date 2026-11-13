@@ -3978,3 +3978,7 @@ mod one_person_one_pointer_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "render_label_tests.rs"]
+mod render_label_tests;

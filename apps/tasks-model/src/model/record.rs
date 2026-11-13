@@ -246,7 +246,7 @@ impl Tracker {
         if title.chars().count() > crate::model::issue::MAX_TITLE_CHARS {
             return Err(Refusal::new("An issue's title fits on a line"));
         }
-        self.issue_mut(issue)?.title = title.trim().to_owned();
+        title.trim().clone_into(&mut self.issue_mut(issue)?.title);
         Ok(())
     }
 
