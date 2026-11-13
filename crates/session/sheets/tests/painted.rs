@@ -92,10 +92,17 @@ fn painted<A: ResourceApp>(
         .unwrap_or_else(|error| panic!("{sheet} {scenario} is staged: {error:?}"));
     let pixels = app.harness().render_rgba_with(renderer, Color::TRANSPARENT);
     assert!(
-        pixels.chunks(4).any(|pixel| pixel[3] > 0),
+        pixels.chunks_exact(4).remainder().is_empty(),
+        "{sheet} {scenario}: the frame is whole pixels"
+    );
+    assert!(
+        pixels
+            .chunks_exact(4)
+            .any(|pixel| matches!(pixel, [.., alpha] if *alpha > 0)),
         "{sheet} {scenario} draws"
     );
-    let alpha = |x: u32, y: u32| pixels[usize::try_from((y * VIEWPORT.0 + x) * 4 + 3).unwrap()];
+    // Out of the frame, the toolkit's reader panics: a place is in the viewport.
+    let alpha = |x: u32, y: u32| OffscreenRenderer::sample(&pixels, VIEWPORT.0, x, y).3;
     for &(place, expected) in shows {
         let (x, y) = match place {
             Place::At(x, y) => (x, y),
