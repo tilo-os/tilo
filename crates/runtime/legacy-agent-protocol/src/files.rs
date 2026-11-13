@@ -205,27 +205,31 @@ pub fn valid_component(name: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_single_components_name_entries() {
-        for good in [&b"a"[..], b"Cargo.toml", b".hidden", b"..."] {
-            assert!(valid_component(good), "{good:?}");
-        }
-        for bad in [&b""[..], b".", b"..", b"a/b", b"/", b"a\0b"] {
-            assert!(!valid_component(bad), "{bad:?}");
-        }
-        assert!(!valid_component(&[b'x'; 256]));
-    }
+    tilo_test_env::scenario! {
+        fn file_share_requests;
 
-    #[test]
-    fn requests_round_trip_within_a_frame() {
-        let request = FsRequest::Write {
-            handle: 7,
-            offset: 1 << 40,
-            data: vec![0xab; MAX_IO_BYTES as usize],
-        };
-        let mut bytes = Vec::new();
-        crate::send(&mut bytes, &request).unwrap();
-        let back: FsRequest = crate::recv(&mut bytes.as_slice()).unwrap().unwrap();
-        assert_eq!(back, request);
+        phase only_single_components_name_entries;
+        {
+            for good in [&b"a"[..], b"Cargo.toml", b".hidden", b"..."] {
+                assert!(valid_component(good), "{good:?}");
+            }
+            for bad in [&b""[..], b".", b"..", b"a/b", b"/", b"a\0b"] {
+                assert!(!valid_component(bad), "{bad:?}");
+            }
+            assert!(!valid_component(&[b'x'; 256]));
+        }
+
+        phase requests_round_trip_within_a_frame;
+        {
+            let request = FsRequest::Write {
+                handle: 7,
+                offset: 1 << 40,
+                data: vec![0xab; MAX_IO_BYTES as usize],
+            };
+            let mut bytes = Vec::new();
+            crate::send(&mut bytes, &request).unwrap();
+            let back: FsRequest = crate::recv(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(back, request);
+        }
     }
 }

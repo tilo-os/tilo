@@ -55,8 +55,10 @@ pub fn client_argv_unix(waypipe: &str, path: &std::path::Path) -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn forwarder_argv_pairs_the_guest_server_with_the_host_client() {
+    tilo_test_env::scenario! {
+        fn forwarder_argv_pairs_the_guest_server_with_the_host_client;
+
+        phase the_guest_wraps_the_apps_argv_verbatim_after;
         // phase: the guest wraps the app's argv verbatim after `--`
         {
             let argv = vec![
@@ -73,6 +75,8 @@ mod tests {
                 ]
             );
         }
+
+        phase the_host_listens_on_the_port_the_guest_connects_to;
         // phase: the host listens on the port the guest connects to
         {
             let port = host_port_for_uid(1000);

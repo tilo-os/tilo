@@ -178,8 +178,10 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_launch_relays_stdio_and_reports_the_exit() {
+    tilo_test_env::scenario! {
+        fn a_launch_relays_stdio_and_reports_the_exit;
+
+        phase stdin_reaches_the_guest_output_and_exit_come_back;
         // phase: stdin reaches the guest, output and exit come back
         {
             let (host, mut guest) = UnixStream::pair().unwrap();
@@ -240,6 +242,8 @@ mod tests {
                 (&b"hello"[..], &b"warn"[..], 42)
             );
         }
+
+        phase an_agent_on_another_protocol_major_is_refused;
         // phase: an agent on another protocol major is refused
         {
             let (mut host, mut guest) = UnixStream::pair().unwrap();

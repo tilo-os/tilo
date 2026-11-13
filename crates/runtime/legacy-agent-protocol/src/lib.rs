@@ -416,8 +416,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn messages_round_trip_and_reject_malformed_requests() {
+    tilo_test_env::scenario! {
+        fn messages_round_trip_and_reject_malformed_requests;
+
+        phase every_message_survives_the_wire_unchanged;
         // phase: every message survives the wire unchanged
         {
             let messages = vec![
@@ -456,6 +458,8 @@ mod tests {
             }
             assert!(recv::<_, HostMessage>(&mut reader).unwrap().is_none());
         }
+
+        phase launches_are_bounded_and_well_formed;
         // phase: launches are bounded and well-formed
         {
             assert!(launch(&["code", "."]).validate().is_ok());
@@ -469,6 +473,8 @@ mod tests {
             bad_env.env = vec![("1X".into(), String::new())];
             assert!(bad_env.validate().is_err());
         }
+
+        phase shares_never_reach_the_guests_own_system;
         // phase: shares never reach the guest's own system
         {
             let share = |tag: &str, path: &str| GuestShare {
@@ -499,6 +505,8 @@ mod tests {
                     .is_ok()
             );
         }
+
+        phase exit_status_reads_like_a_shells;
         // phase: exit status reads like a shell's
         {
             let exited = |code, signal| ExitStatus { code, signal };
