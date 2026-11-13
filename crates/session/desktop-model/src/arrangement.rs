@@ -68,6 +68,11 @@ pub struct CanvasPlace {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// Its height is the most it takes: what it shows is as tall as what it holds up to it (a
+    /// thing found where the person clicked, which names no size of its own). A place the person
+    /// sized — a rectangle they dragged, an edge they pulled — keeps its height exactly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hugs: bool,
 }
 
 impl CanvasPlace {
@@ -78,7 +83,15 @@ impl CanvasPlace {
             y,
             width,
             height,
+            hugs: false,
         }
+    }
+
+    /// This place, as tall as what it shows up to its height ([`Self::hugs`]).
+    #[must_use]
+    pub fn hugging(mut self) -> Self {
+        self.hugs = true;
+        self
     }
 
     /// This place as a window's: no smaller than [`WINDOW_MIN_WIDTH`] ×
@@ -429,11 +442,13 @@ impl Arrangement {
         let Some(place) = self.places.get_mut(&group) else {
             return false;
         };
-        if place.width == width && place.height == height {
+        if place.width == width && place.height == height && !place.hugs {
             return false;
         }
         place.width = width;
         place.height = height;
+        // Sized by hand, it keeps the size it was given.
+        place.hugs = false;
         true
     }
 

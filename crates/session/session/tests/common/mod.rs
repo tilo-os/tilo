@@ -421,23 +421,53 @@ pub fn type_text(session: &mut Session, text: &str) {
 }
 
 /// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows ("Showing
-/// Strips", "Showing Frames", …). Which one it names depends on the desk a test starts from, so a
-/// test asks for the menu rather than for a name.
+/// Strips", "Showing Desktop", …). Which one it names depends on the desk a test starts from, so a
+/// test asks for the menu rather than for a name. The canvas keeps no switch on its bar
+/// (`canvas.md` §7): there the presets are in the person's own menu, their face on the bar.
 pub fn preset_menu(session: &Session) -> Option<String> {
     session
         .accessible_labels()
         .into_iter()
         .find(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
+        .or_else(|| person_menu(session))
+}
+
+/// The person's own menu on the bar, their face, named for what it holds: on the canvas it holds
+/// the desk styles and the workspaces.
+pub fn person_menu(session: &Session) -> Option<String> {
+    session.accessible_labels().into_iter().find(|label| {
+        label.ends_with(": desk style and workspaces") && on_screen(session, label).is_some()
+    })
+}
+
+/// Whether the desk shows the Frames canvas: its canvas stands, and its bar carries no preset
+/// switch.
+fn canvas_shown(session: &Session) -> bool {
+    on_screen(session, CANVAS).is_some()
+        && !session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
+}
+
+/// Whether the desk shows `preset`: its switch names it, or, for the canvas, the canvas stands
+/// under a bar that keeps no switch.
+fn shows_preset(session: &Session, preset: &str) -> bool {
+    let shown = format!("Showing {preset}");
+    session
+        .accessible_labels()
+        .iter()
+        .any(|label| *label == shown && on_screen(session, label).is_some())
+        || (preset == "Frames" && canvas_shown(session))
 }
 
 /// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the preset
-/// menu the bar carries and press the preset it offers.
+/// menu the bar carries (the person's own menu, on the canvas) and press the preset it offers.
 /// A press that arrives before the menu stands where the desk lays it out dismisses the menu
 /// instead of choosing from it, as it does for a person who presses again to get the row they aimed
 /// at. So the wait presses again — asking the bar for the menu when a press closed it — until the
 /// desk shows the preset, and a desk that never does is reported with what the bar said instead.
 pub fn show_preset(session: &mut Session, preset: &str) {
-    let shown = format!("Showing {preset}");
     // Turns since the last press: the menu opens on the turn after its own button's press, and
     // closes on the turn after a row's, so the wait reads the desk's answer before it presses
     // again.
@@ -446,7 +476,7 @@ pub fn show_preset(session: &mut Session, preset: &str) {
         session,
         format!("the desk to show the {preset} preset"),
         |session| {
-            if preset_menu(session).as_deref() == Some(shown.as_str()) {
+            if shows_preset(session, preset) {
                 return Some(());
             }
             if since < 4 {

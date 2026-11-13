@@ -19,9 +19,14 @@ pub const TURN_VIEW: &str = "turn";
 
 /// How wide a turn stands when the person only clicked: the measure an answer reads at.
 const TURN_WIDTH: i64 = 520;
-/// How tall a turn stands when the person only clicked, and the most of a dragged rectangle it
-/// takes at its top: the rest is the room the agent's views fill.
+/// The most of a dragged rectangle a turn takes at its top: the rest is the room the agent's
+/// views fill. The turn's view hugs its words up to it (canvas.md §7, "The card hugs what it
+/// holds").
 const TURN_HEIGHT: i64 = 240;
+/// The most a turn stands when the person only clicked: there is no rectangle to keep to, so its
+/// view hugs its words up to a window's own height, and a long answer reads whole rather than
+/// cut at its last line.
+const TURN_MOST: i64 = 480;
 /// The gap between a turn standing at a rectangle's top and the room left under it: the canvas's
 /// own gap between places, so a place filling the room stands where the canvas would keep it.
 const TURN_GAP: i64 = tilo_desktop_model::CANVAS_GAP as i64;
@@ -77,7 +82,8 @@ fn key_parts(key: &str) -> Option<(&str, &str)> {
 /// a dragged rectangle leaves for the answer's views.
 fn turn_geometry(at: (i64, i64), size: Option<(i64, i64)>) -> (i64, i64, Option<CanvasRect>) {
     let Some((width, height)) = size else {
-        return (TURN_WIDTH, TURN_HEIGHT, None);
+        // At a click the turn hugs its answer up to its most; a rectangle sets its band.
+        return (TURN_WIDTH, TURN_MOST, None);
     };
     let band = TURN_HEIGHT.min(height);
     let left = height.saturating_sub(band).saturating_sub(TURN_GAP);
@@ -257,6 +263,37 @@ impl Arrangement {
             .into_iter()
             .map(|(key, _)| key)
             .find(|key| self.turn_of(key).is_some())
+    }
+
+    /// Open the whole conversation the turn `turn` (its address) was asked in, beside the turn:
+    /// what the turn's place offers in its handle (canvas.md §7, "the conversation is reached
+    /// from the handle"). Chat's own page of it, through the system's `open`, which stands it
+    /// beside the turn rather than in the room the turn keeps for its answer, or brings it
+    /// forward when it stands already.
+    ///
+    /// # Errors
+    /// The turn stands nowhere on the desk, or no conversation is known for it.
+    pub fn open_conversation_of(&mut self, asked: &str, turn: &str) -> Result<Option<u64>, String> {
+        let place = self
+            .place_of(turn.trim())
+            .ok_or_else(|| format!("the answer {turn} stands nowhere on the desk"))?;
+        // The turn's own key names it to `open_place`, which then stands its conversation beside
+        // the turn rather than in the room the turn keeps for its answer.
+        let (key, conversation) = self
+            .turns
+            .borrow()
+            .iter()
+            .find(|(_, anchor)| anchor.place == place)
+            .map(|(key, anchor)| (key.clone(), anchor.conversation.clone()))
+            .ok_or_else(|| format!("no conversation is known for the answer {turn}"))?;
+        let opened_as = self
+            .opened_as
+            .borrow()
+            .iter()
+            .find(|(_, held)| **held == conversation)
+            .map(|(opened_as, _)| opened_as.clone())
+            .ok_or_else(|| format!("the conversation {conversation} is not published"))?;
+        self.open_place(asked, &opened_as, "", &key)
     }
 
     /// Whether `resource` is, as its app publishes it, the conversation the turn `key` names was

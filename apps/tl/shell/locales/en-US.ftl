@@ -489,6 +489,9 @@ d-m67g5cso = Canvas width
 
 d-4n7jst3f = Canvas height
 
+d-nyhuwvbj = Canvas hugs
+    .doc = Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds up to it (a thing found where the person clicked).
+
 d-n2pmgnow = Shell
 
 d-vn23musu-filter-width = Width
@@ -504,6 +507,8 @@ d-vn23musu-filter-canvas_y = Canvas y
 d-vn23musu-filter-canvas_width = Canvas width
 
 d-vn23musu-filter-canvas_height = Canvas height
+
+d-vn23musu-filter-canvas_hugs = Canvas hugs
 
 d-gpmk4o3r = Arrangement place
     .doc = A place: one window, showing a resource through a view.
@@ -622,6 +627,9 @@ d-dwct4abs = Strips tabs
 d-gfmzi3qr = Frames snap
     .doc = Frames: whether a place let go on the canvas lands on the style's grid, so frames line up as they are placed.
 
+d-6bamt22e = Canvas asked
+    .doc = The canvas: whether the person has asked on it yet.
+
 d-cejnvssb-filter-preset = Preset
 
 d-cejnvssb-filter-based_on = Based on
@@ -663,6 +671,8 @@ d-cejnvssb-filter-settings_open = Settings open
 d-cejnvssb-filter-strips_tabs = Strips tabs
 
 d-cejnvssb-filter-frames_snap = Frames snap
+
+d-cejnvssb-filter-canvas_asked = Canvas asked
 
 d-sfhd6wko = Bar part
     .doc = One part of the top bar, in the person's order.
@@ -877,6 +887,9 @@ d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
 
 d-dkylvhw4-strip = Strip
+
+d-ukun4zmh = Asked on the canvas
+    .doc = The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on.
 
 d-2e7aappl = Size it
     .doc = Gives the place `key` the size a drag of its edge or corner left it at, `size` its width and height in canvas pixels: one arranging step of the person's, its corner where it stood.
@@ -1169,6 +1182,16 @@ d-vidcax4k = Workspace menu
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
 
+d-dgtjjxex = Person menu
+    .w-you = You
+    .w-desk-style-and-workspaces = { $me }: desk style and workspaces
+    .w-settings-for = Settings for { $style_title }
+    .w-new-workspace = New workspace
+    .w-workspaces = Workspaces
+    .w-join-a-workspace = Join a workspace
+    .w-workspace-settings = Workspace settings
+    .w-overview = Overview
+
 d-hac3p23j = Volume status
     .w-volume-muted = Volume, muted
     .w-volume = Volume, { $percent }%
@@ -1196,6 +1219,7 @@ d-fniigjed = Viewing settings
 d-gapwwnqc = Show style~present
 
 d-s7yqm7cb = Canvas
+    .w-click-anywhere-and-say-what-you = Click anywhere and say what you want
     .w-caret = Caret
     .w-find-or-ask = Find or ask
 

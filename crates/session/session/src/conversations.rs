@@ -764,6 +764,27 @@ fn turn_address(question: &str) -> String {
     format!("{TURNS}{question}")
 }
 
+/// What a turn offers on its place's handle: the whole conversation it was asked in, opened
+/// beside it (canvas.md §7, "the conversation is reached from the handle").
+const CONVERSATION: &str = "conversation";
+
+/// [`CONVERSATION`] as the turn publishes it: an action with no arguments, which the session runs
+/// itself ([`TurnSummonses::invoke_as`]).
+fn conversation_action() -> tilo_actions::ActionSpec {
+    tilo_actions::ActionSpec::typed_operation(
+        CONVERSATION,
+        "Whole conversation",
+        "Opens the whole conversation this answer was asked in, beside it.",
+        tilo_actions::OperationKind::Effect,
+        chat::views::TURN_KIND,
+        Vec::new(),
+        |_| tilo_actions::EncodedAction {
+            type_id: chat::views::TURN_KIND.into(),
+            payload: CONVERSATION.as_bytes().to_vec(),
+        },
+    )
+}
+
 /// One turn as a place's resource (canvas.md §3): the message `question` a person asked an agent
 /// in, named by what they asked, drawn through Chat's `turn` view.
 fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
@@ -779,7 +800,8 @@ fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
                 noun: tilo_actions::Noun::new("answer", "answers"),
                 app: tilo_actions::Noun::new("Chat", "Chat"),
                 root: false,
-            });
+            })
+            .with_action(conversation_action());
     spec.app_id = Some("chat".to_owned());
     spec
 }
@@ -827,6 +849,8 @@ pub(crate) struct TurnSummonses {
     turns_at: Vec<(u64, u64, u64)>,
     /// The one send: what a conversation's composer sends goes through it to Chat.
     sends: crate::send_to::Sends,
+    /// The desk's arrangement: where a turn's whole conversation is opened beside it.
+    arrangement: Rc<RefCell<crate::arrangement::Arrangement>>,
 }
 
 /// What the summonses a [session's summonses](TurnSummonses) publishes depend on: each open
@@ -836,12 +860,17 @@ type SummonsKey = (u64, u64, u64);
 impl TurnSummonses {
     /// The service over `conversations`, the session's one open of the workspaces' chats.
     #[must_use]
-    pub(crate) fn new(conversations: Rc<Conversations>, sends: crate::send_to::Sends) -> Self {
+    pub(crate) fn new(
+        conversations: Rc<Conversations>,
+        sends: crate::send_to::Sends,
+        arrangement: Rc<RefCell<crate::arrangement::Arrangement>>,
+    ) -> Self {
         Self {
             conversations,
             summonses: std::cell::RefCell::new(None),
             turns_at: Vec::new(),
             sends,
+            arrangement,
         }
     }
 }
@@ -966,6 +995,25 @@ impl tilo_service::Service for TurnSummonses {
             send.insert("to".into(), serde_json::json!([to]));
             send.insert("text".into(), text.into());
             return self.sends.send(Some(invoker.clone()), &send);
+        }
+        // A turn's whole conversation, from its place's handle: opened beside the turn, as the
+        // person's (or the invoker's) own arranging step.
+        if action == CONVERSATION && resource.starts_with(TURNS) {
+            let asked = if invoker.actor.is_empty() {
+                self.conversations.person()
+            } else {
+                invoker.actor.clone()
+            };
+            self.arrangement
+                .borrow_mut()
+                .open_conversation_of(&asked, resource)
+                .map_err(|why| tilo_actions::DoorError::Unavailable {
+                    code: "nowhere_to_open".to_owned(),
+                    reason: why,
+                })?;
+            return Ok(tilo_service::Started::Done(
+                tilo_actions::ActionOutput::default(),
+            ));
         }
         if action != RECORD_WORK {
             return Err(tilo_actions::DoorError::Unknown(
@@ -1289,6 +1337,20 @@ fn request(message: &chat::record::Message) -> (String, Option<tilo_actions::Sel
 mod tests {
     use super::*;
     use tilo_resource::Atom;
+
+    /// A turn offers its whole conversation as its own action, which its place's handle lists
+    /// (canvas.md §7): the card itself holds no button for it.
+    #[test]
+    fn a_turn_offers_its_whole_conversation() {
+        let turn = turn_resource("q1", "what is due?");
+        let offered = turn
+            .actions
+            .iter()
+            .find(|action| action.id == CONVERSATION)
+            .expect("the turn offers its conversation");
+        assert_eq!(offered.label, "Whole conversation");
+        assert!(offered.params().is_empty(), "it takes nothing");
+    }
 
     /// The agent the tests' conversations take in.
     const AGENT: &str = "tide";
