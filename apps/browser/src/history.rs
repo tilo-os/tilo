@@ -608,6 +608,11 @@ mod tests {
         let bundle = crate::continuity::ImportBundle::from_batch(batch).unwrap();
         let bundle = bundle.history_bundle();
         let encoded = serde_json::to_string(&bundle).unwrap();
+        // The window whose code records the import keeps its large parts in
+        // its content store, as every window's does.
+        let window = ui::wake::WakeScope::new();
+        ui::tilo_resource::content::register(&window.handle(), ui::content::ContentStore::memory());
+        let _in_the_window = window.enter();
         let mut replica = Replica::<BrowsingHistory>::new();
         replica
             .apply(BrowsingHistory::IMPORT_HISTORY_BUNDLE.with(encoded.clone()))

@@ -323,6 +323,11 @@ mod tests {
             bundle,
             parse_chromium_history_bundle(&granted(&source)).unwrap()
         );
+        // The window whose code records the import keeps its large parts in
+        // its content store, as every window's does.
+        let window = ui::wake::WakeScope::new();
+        ui::tilo_resource::content::register(&window.handle(), ui::content::ContentStore::memory());
+        let _in_the_window = window.enter();
         let mut personal = ui::tilo_resource::Replica::<crate::history::BrowsingHistory>::new();
         personal.apply(bundle.history_action().unwrap()).unwrap();
         assert_eq!(personal.state().unwrap().imported.len(), 10_001);
