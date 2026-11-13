@@ -207,7 +207,7 @@ def main() -> int:
     except Failed as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
-    print(f"socket up: {session.control}")
+    print(f"socket up: {session.control_socket}")
     time.sleep(0.5)  # let the first paint complete
     try:
         # 2. List targets, open the strip switcher, click its card.

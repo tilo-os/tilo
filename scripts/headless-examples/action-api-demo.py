@@ -25,7 +25,6 @@ from the compositor, never from the request that made the change.
 """
 import copy
 import json
-import os
 import pathlib
 import sys
 import time
@@ -131,7 +130,6 @@ def main() -> int:
         pre = chrome_state(call)
         pre_flag = pre.get("overlays", {}).get(OVERLAY_FLAG)
         resp = call(
-            SOCKET,
             {"op": "actions_invoke", "provider": INVOKE_PROVIDER, "id": INVOKE_ID},
         )
         if "err" in resp:
@@ -150,7 +148,6 @@ def main() -> int:
         # 4. An address that does not exist is refused, not ignored.
         print("\n[4] an unknown address is refused")
         resp = call(
-            SOCKET,
             {
                 "op": "actions_invoke",
                 "provider": INVOKE_PROVIDER,

@@ -189,8 +189,12 @@ class ScriptedSession:
     with one, the caller keeps them (a second pass over the same profile)."""
 
     def __init__(self, binary: Path | str, *, profile: Path | str | None = None,
-                 socket: Path | str | None = None, timeout: float = 60.0):
+                 socket: Path | str | None = None, timeout: float = 60.0,
+                 env: dict | None = None, log: Path | str | None = None):
         self.binary = Path(binary).resolve()
+        self.extra_env = dict(env or {})
+        self.log = Path(log) if log else None
+        self._log_file = None
         self.kept = profile is not None
         if profile is None:
             cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
@@ -198,7 +202,7 @@ class ScriptedSession:
             profile = Path(tempfile.mkdtemp(prefix="tilo-headless.", dir=cache))
         self.profile = Path(profile).resolve()
         for sub in ("config", "data", "state", "cache", "home", "identity",
-                    "system/run", "system/peer-cache"):
+                    "system/run", "system/fs-cache", "system/peer-cache"):
             (self.profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.profile.chmod(0o700)
         real_home = Path(os.path.realpath(os.environ.get("HOME") or "/"))
@@ -206,8 +210,8 @@ class ScriptedSession:
             raise Failed(f"profiling home {self.profile / 'home'} is this login's HOME")
         self.timeout = timeout
         self.runtime_dir = runtime_for(self.profile / "state")
-        self.control = Path(socket) if socket else self.runtime_dir / "tilo-session/test-control.sock"
-        refusal = socket_length_refusal(self.control)
+        self.control_socket = Path(socket) if socket else self.runtime_dir / "tilo-session/test-control.sock"
+        refusal = socket_length_refusal(self.control_socket)
         if refusal:
             raise Failed(refusal)
         self.proc: subprocess.Popen | None = None
@@ -219,7 +223,7 @@ class ScriptedSession:
         for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP"):
             env.pop(name, None)
         env.update(
-            TILO_TEST_CONTROL=str(self.control),
+            TILO_TEST_CONTROL=str(self.control_socket),
             HOME=str(self.profile / "home"),
             XDG_CONFIG_HOME=str(self.profile / "config"),
             XDG_DATA_HOME=str(self.profile / "data"),
@@ -229,6 +233,7 @@ class ScriptedSession:
             TILO_IDENTITY_ROOT=str(self.profile / "identity"),
             TILO_AUTHORITY_SOCKET_DIR=str(self.profile / "system/run"),
             TILO_FS_CONTENT_PEER_CACHE_DIR=str(self.profile / "system/peer-cache"),
+            **self.extra_env,
         )
         return env
 
@@ -239,34 +244,47 @@ class ScriptedSession:
             raise Failed(f"compositor not built at {self.binary} "
                          f"(cargo build -p tilo-session --bin tilo-session)")
         self.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.control.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if self.control.exists():
+        self.control_socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.control_socket.exists():
             with socket.socket(socket.AF_UNIX) as probe:
                 probe.settimeout(1.0)
                 try:
-                    probe.connect(str(self.control))
+                    probe.connect(str(self.control_socket))
                 except OSError:
-                    self.control.unlink(missing_ok=True)
+                    self.control_socket.unlink(missing_ok=True)
                 else:
-                    raise Failed(f"a live session answers on {self.control}")
-        print(f"==> starting {self.binary} headless (profile {self.profile})", file=sys.stderr)
+                    raise Failed(f"a live session answers on {self.control_socket}")
+        if self.log is not None:
+            self.log.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = self.log.open("ab")
+            print(f"==> starting {self.binary} headless (profile {self.profile})",
+                  file=self._log_file, flush=True)
+        else:
+            print(f"==> starting {self.binary} headless (profile {self.profile})",
+                  file=sys.stderr)
         self.proc = subprocess.Popen(
             [str(self.binary), "--backend", "headless"], env=self.env(),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            stdout=self._log_file or subprocess.DEVNULL,
+            stderr=self._log_file or subprocess.DEVNULL, start_new_session=True)
         try:
-            until("the session's control socket", self.control.exists, self.timeout, 0.2)
+            until("the session's control socket", self.control_socket.exists, self.timeout, 0.2)
             until("the session to answer", self.answers, self.timeout, 0.2)
         except BaseException:
             self.stop()
             raise
         return self
 
+    def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
+        """One request on this session's control socket and its reply
+        (`control_call`), as `Session.control` is for the product session."""
+        return control_call(self.control_socket, payload, timeout)
+
     def answers(self) -> bool:
         """Whether the session answers a request on its control socket yet."""
         if self.proc is None or self.proc.poll() is not None:
             return False
         try:
-            control_call(self.control, {"op": "list_targets"}, timeout=5.0)
+            control_call(self.control_socket, {"op": "list_targets"}, timeout=5.0)
         except (OSError, Failed):
             return False
         return True
@@ -283,7 +301,10 @@ class ScriptedSession:
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait(10)
-        self.control.unlink(missing_ok=True)
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
+        self.control_socket.unlink(missing_ok=True)
         shutil.rmtree(self.runtime_dir, ignore_errors=True)
         if not self.kept:
             shutil.rmtree(self.profile, ignore_errors=True)

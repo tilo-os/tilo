@@ -17,7 +17,7 @@ A session binds its Wayland socket, its doors and its files under `$XDG_RUNTIME_
 
 | Path | Written by | Read by |
 |---|---|---|
-| `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `spawn-headless.sh` |
+| `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
 | `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
 | `agent.sock` | the session's agent door, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
@@ -35,24 +35,24 @@ TILO_TEST_CONTROL=/run/user/1000/tilo-session/test-control.sock
 TILO_ADMIN_CONTROL=/run/user/1000/tilo-session/admin-control.sock
 ```
 
-A session that runs as a real login — its environment already names the Tilo desktop — also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation, so a service those start finds the display (`crates/session/session/src/env.rs`). A nested session exports nothing, and a harness beside a live desktop clears `XDG_CURRENT_DESKTOP` before starting one (`spawn-headless.sh` does), so a test session never repoints that desktop's user manager at its own socket.
+A session that runs as a real login — its environment already names the Tilo desktop — also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation, so a service those start finds the display (`crates/session/session/src/env.rs`). A nested session exports nothing, and a harness beside a live desktop clears `XDG_CURRENT_DESKTOP` before starting one (`real_apps.ScriptedSession` does), so a test session never repoints that desktop's user manager at its own socket.
 
 ## Layer 1: a session with no display
 
 The same binary and the same code paths as a login; the backend paints into a wgpu off-screen texture. Nothing appears on your desktop, and no `DISPLAY` or `WAYLAND_DISPLAY` is needed.
 
 ```bash
-# A session of its own: a scratch home, XDG tree, runtime directory and
-# identity, plus the socket it answers on.
-scripts/headless-examples/spawn-headless.sh &
-SESSION=$!
-trap "kill $SESSION" EXIT
-
-# From here on, tilo-control finds the socket by itself:
-target/debug/tilo-control windows
+# A session of its own: a scratch home, XDG tree, runtime directory, identity
+# and the socket it answers on (the tree's apps too, if you want them).
+python3 scripts/headless-examples/real_apps.py --start --keep --state ~/tilo-headless
+# prints {control, runtime, state, pid} once the desktop answers, and how to
+# drive it:  target/nested-session/bin/tilo-control --socket <control> windows
+# stop it with: kill -TERM -<pid>
 ```
 
-`spawn-headless.sh` takes its runtime directory from `dist/dev/nested-session.sh --print-runtime`, so the rule that picks a short private one lives in one place. It refuses a socket a live session still answers on, sets `TILO_TEST_CONTROL`, and prints `READY <socket>` once usable. Its knobs: `TILO_HEADLESS_BINARY` (default `target/debug/tilo-session`), `TILO_HEADLESS_PROFILE` (keep the scratch profile across runs), `TILO_HEADLESS_TIMEOUT`.
+`cargo headless` is the same session from the tree's own build, printing the socket and the exact command to drive it; `--ready FILE` writes the same JSON for a script. Either way the session's runtime directory comes from `dist/dev/nested-session.sh --print-runtime`, so the rule that picks a short private one lives in one place.
+
+A harness whose subject is a build of its own — a release session a performance lane compiled, a demo of this tree's debug build — starts that binary through `real_apps.ScriptedSession`: a scratch profile, the same runtime rule, `TILO_TEST_CONTROL` pointed at its socket, and everything removed on stop. `full-loop.py` is the short example.
 
 By hand, one session is three lines:
 
@@ -259,7 +259,7 @@ Every widget in the tree exposes a name through either:
 # tears the session down.
 ```
 
-- `spawn-headless.sh` — start a session on a scratch profile and wait for its socket
+- `real_apps.py` — the one client: `Session` (the tree's apps), `ScriptedSession` (a build of its own), `Agent` (the agent door), `Session.attach` (a session another tool started)
 - `reaper.py` — takes a session down, process group and all
 - `list-targets.py`, `click-and-snapshot.py`, `keyboard-flow.py`, `drag-demo.py`, `full-loop.py` — one op each
 - `action-api-demo.py` — discovery and semantic invocation by `(provider, id)`
@@ -449,7 +449,7 @@ For a source-matched fixture, opt into `TILO_FRAME_CPU_TRACE` through its suppor
 
 ### What an agent waits for
 
-`scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke and throughput under concurrent clients. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `spawn-headless.sh` and removes it on exit.
+`scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke and throughput under concurrent clients. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `real_apps.ScriptedSession` and removes it on exit.
 
 `scripts/perf/agent_task.py` times a whole task the way an agent in the login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp --connect` through the session's agent door, creates a note in Notes, writes its body, finds it by title and reads it back, and the record splits the time between Tilo, the model and the agent loop. It needs a session where apps start, with Notes installed.
 

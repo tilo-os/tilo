@@ -39,24 +39,28 @@ method running, and checks that the desk holds the body's caret, that it follows
 the typing, and that Super+V, pressed the moment the caret moves, opens the
 clipboard pane under that caret's line, its first frame as tall as its page.
 
-For examples that connect to an existing compositor, start it once with:
+For examples that connect to an existing compositor, start it once:
 
 ```bash
-./scripts/headless-examples/spawn-headless.sh
+python3 scripts/headless-examples/real_apps.py --start --keep --state ~/tilo-headless
 ```
 
-The socket defaults to the session's own runtime directory, `$RUNTIME/tilo-session/test-control.sock`, which the script prints as `RUNTIME <dir>`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The runtime directory is the one `dist/dev/nested-session.sh` picks for the profile's state, so its sockets sit under the same short private directory every session's do. The script refuses a socket a live compositor still answers on. It spawns `tilo-session --backend headless` against a scratch profile — its own HOME, XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
+It prints `{control, runtime, state, pid}` once the desktop answers: pass `control`
+as a script's first argument, or export it as `TILO_TEST_CONTROL` so every
+script and `tilo-control` finds the session by itself. It starts
+`dist/dev/nested-session.sh` (the tree's apps installed as signed packages and
+launched through the desktop's own launcher) on a private home, runtime
+directory and throwaway identity, so your real identity and workspaces are
+never touched. Stop a kept session with `kill -TERM -<pid>`, which stops its
+apps, services and bus too.
 
-`TILO_HEADLESS_TIMEOUT` sets how long to wait for the socket, in seconds (default 60). `TILO_HEADLESS_PROFILE=DIR` keeps a scratch profile in `DIR` across runs instead of a fresh one each time.
-
-For background lifetime management:
-
-```bash
-./scripts/headless-examples/spawn-headless.sh &
-COMP_PID=$!
-trap "kill $COMP_PID" EXIT
-# ... your commands ...
-```
+`cargo headless` is the same session from the tree's build with no window, and
+prints how to drive it; `--ready FILE` writes the same JSON. A harness that has
+to drive a build of its own (this tree's debug binaries, a release session a
+performance lane compiled) starts it through `real_apps.ScriptedSession`, which
+keeps the same rules: a scratch profile, the runtime directory
+`dist/dev/nested-session.sh --print-runtime` names for it, and nothing left
+behind.
 
 ## Examples
 

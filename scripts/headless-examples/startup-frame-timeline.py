@@ -379,7 +379,7 @@ def main() -> None:
                 if shell.poll() is not None:
                     raise RuntimeError(f"compositor exited {shell.returncode}; see compositor.log")
                 try:
-                    state = control_call(sock, {"op": "state_dump"}, timeout=0.5)["state"]
+                    control_call(sock, {"op": "state_dump"}, timeout=0.5)
                     break
                 except (OSError, KeyError):
                     if time.monotonic() >= deadline:

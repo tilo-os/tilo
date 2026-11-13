@@ -103,7 +103,7 @@ sys.path.insert(0, str(REPO / "tools" / "perf"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
 from agent_rtt import (  # noqa: E402
-    MCP_PROTOCOL, BenchError, Connection, answer_of, desk_session, receipt_state, request)
+    BenchError, Connection, answer_of, desk_session, receipt_state, request)
 from scratch_notes import NOTES_APP, ScratchWorkspaceError, open_scratch_notes  # noqa: E402
 
 # Generous: each answer leaves as soon as its invocation settles.
@@ -117,6 +117,8 @@ MODEL_NAME = "tilo-scripted-notes-task"
 CHARS_PER_TOKEN = 4
 # How long one door call may take before the run fails.
 CALL_TIMEOUT_S = 60.0
+# The MCP revision the agent door speaks, as the client offers it.
+MCP_PROTOCOL = "2025-06-18"
 
 
 # --- the fake model -------------------------------------------------------------
