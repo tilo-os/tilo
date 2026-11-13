@@ -21,13 +21,13 @@ use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
-use super::{Element, Widget};
+use super::Widget;
 use crate::bound_dispatch::BoundNodeMap;
 use crate::widget::DrawChild;
 use crate::{PresenceCtx, Theme, text_render::TextRenderer};
 
 /// A widget laid out and driven by the widget that owns it.
-pub struct Embedded<W: Widget + super::decorator::AsDynWidget + ?Sized> {
+pub struct Embedded<W: Widget> {
     // Boxed so the node map's pointers stay valid when the host moves.
     widget: Box<W>,
     tree: TaffyTree<()>,
@@ -55,39 +55,11 @@ pub struct Embedded<W: Widget + super::decorator::AsDynWidget + ?Sized> {
     owner_viewport: Option<Rect>,
 }
 
-impl Embedded<dyn Widget> {
-    /// An [`Element`](crate::widget::Element) hosted like any sized child: the
-    /// element a view slot holds, laid out in its own space and drawn, hit and
-    /// reported through a transform (a canvas pin scaled by its camera).
-    #[must_use]
-    pub fn boxed(element: Element) -> Self {
-        Self::over_box(element)
-    }
-
-    /// The hosted element, to swap it in place (a place showing another view).
-    pub fn element_mut(&mut self) -> &mut Element {
-        &mut self.widget
-    }
-
-    /// [`Self::sync`] with the host's model and path, as [`Widget::sync`] hands them.
-    pub fn sync_boxed(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-        self.widget.sync(state, path);
-    }
-}
-
-impl<W: Widget + super::decorator::AsDynWidget> Embedded<W> {
-    /// `widget` hosted: laid out in the rectangle its owner gives it, and
-    /// drawn, hit and reported where its owner puts it.
+impl<W: Widget + 'static> Embedded<W> {
     #[must_use]
     pub fn new(widget: W) -> Self {
-        Self::over_box(Box::new(widget))
-    }
-}
-
-impl<W: Widget + super::decorator::AsDynWidget + ?Sized> Embedded<W> {
-    fn over_box(widget: Box<W>) -> Self {
         Self {
-            widget,
+            widget: Box::new(widget),
             tree: TaffyTree::new(),
             nodes: HashMap::new(),
             bindings: BoundNodeMap::new(),
@@ -110,23 +82,6 @@ impl<W: Widget + super::decorator::AsDynWidget + ?Sized> Embedded<W> {
     pub fn filling(mut self) -> Self {
         self.fill = true;
         self
-    }
-
-    /// Take exactly the rectangle given ([`Self::filling`]) or, `false`, as
-    /// tall as the content wants: what a host whose place says how tall it
-    /// stands, or stops saying, sets before laying the child out again.
-    pub fn set_filling(&mut self, fill: bool) {
-        if self.fill != fill {
-            self.fill = fill;
-            self.laid = None;
-        }
-    }
-
-    /// The height the child came to at its last layout, in the child's own space: what an
-    /// owner that places the child by its content (a place with no height of its own) draws.
-    #[must_use]
-    pub fn laid_height(&self) -> f64 {
-        self.laid.map_or(0.0, |(_, height)| height)
     }
 
     /// Place the child's own space in the owner's: layout rectangles are in
@@ -186,10 +141,9 @@ impl<W: Widget + super::decorator::AsDynWidget + ?Sized> Embedded<W> {
             .build_layout(&mut self.tree, theme, &mut self.nodes);
         // SAFETY: the boxed widget owns every node in `nodes` and stays in
         // place until the next rebuild, which clears the maps first.
-        let root_widget = super::decorator::AsDynWidget::as_dyn_widget(self.widget.as_ref());
         unsafe {
             self.bindings
-                .rebuild(root_widget, &self.tree, root, &self.nodes);
+                .rebuild(self.widget.as_ref(), &self.tree, root, &self.nodes);
         }
         self.root = Some(root);
         self.layout_theme = Some(theme.clone());
@@ -282,13 +236,8 @@ impl<W: Widget + super::decorator::AsDynWidget + ?Sized> Embedded<W> {
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
         let owner = self.child_viewport(presence);
-        super::decorator::AsDynWidget::as_dyn_widget_mut(self.widget.as_mut()).draw_child(
-            scene,
-            transform * self.transform,
-            text,
-            theme,
-            presence,
-        );
+        self.widget
+            .draw_child(scene, transform * self.transform, text, theme, presence);
         presence.viewport.set(owner);
         self.widget.mark_drawn();
     }

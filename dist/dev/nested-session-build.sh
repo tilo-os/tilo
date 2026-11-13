@@ -177,12 +177,16 @@ build_tilolang_cli() {
 # --- Thin apps and the shared runtime -----------------------------------------
 # Resolved against the default collection's runtime, so the runtime is the one
 # every app of the collection links, whichever of them the session installs.
-# In the profile the apps ship in. The session installs its apps, signed with
-# its own key, under the local-build size ceiling, so it can build them in the
-# thin-dev profile (for build speed) once a session built so is proven;
-# dist/dev/tilolang-runtime-build.sh must then build in the same profile, so
-# its tilolang runtime links the library this session runs.
-thin_profile=thin-app
+# In the `thin-dev` profile: a development session's build, never published
+# (Cargo.toml). It compiles for build speed — opt-level 1, 256 codegen units and
+# incremental, no debug information — where the shipping `thin-app` profile
+# optimises for size in one codegen unit, which made a one-crate change rebuild
+# the whole collection for ten minutes. The session installs its apps, signed
+# with its own key, under the local-build size ceiling (package_store::
+# size_limit), so the larger apps are installable; dist/dev/
+# tilolang-runtime-build.sh builds in the same profile, so its tilolang runtime
+# links the library this session runs.
+thin_profile=thin-dev
 selected=()
 for app in $apps; do selected+=("$app"); done
 packages=tilolang-app
@@ -330,7 +334,7 @@ printf 'staged the nested session in %s\n' "$out"
 # it starts, so another tree's build is refused by name rather than run as this tree's code
 # (dist/dev/build-provenance.sh). The staged session directory and the staged `thin-app` copy a
 # session runs apps from are recorded, and so are the build directories they came from, which a
-# session of the same tree also reads directly (`shell-run.sh` runs `target/thin-app` beside
+# session of the same tree also reads directly (`shell-run.sh` runs `target/thin-dev` beside
 # `target/debug`).
 "$repo_root/dist/dev/build-provenance.sh" write \
     "$out" "$out/thin-app" "$target/$thin_profile" "$target/$host_profile"
