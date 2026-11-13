@@ -1173,6 +1173,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn launches_are_timed_from_request_to_first_present;
 
         phase startup_metrics_are_opt_in_transparent_and_bind_launches_once;
