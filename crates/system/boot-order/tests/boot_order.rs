@@ -160,153 +160,158 @@ fn refusal(result: Result<String, Refusal>) -> String {
     result.unwrap_err().0
 }
 
-#[test]
-fn appends_after_windows_and_is_idempotent() {
-    let firmware = Firmware::new();
-    assert_eq!(
-        enlist(&firmware, "0100", ESP, TILO).unwrap(),
-        "Boot0100 appended to BootOrder; Windows remains first"
-    );
-    assert_eq!(firmware.order(), ["0001", "0100"]);
-    assert_eq!(
-        enlist(&firmware, "0100", ESP, TILO).unwrap(),
-        "Boot0100 is already in BootOrder; Windows remains first"
-    );
-    assert_eq!(firmware.order(), ["0001", "0100"]);
-    assert_eq!(firmware.calls.get(), 1);
-}
+tilo_test_env::scenario! {
+    /// `enlist` against file-backed firmware.
+    fn enlisting_appends_tilo_after_windows_or_refuses;
 
-#[test]
-fn detects_failed_firmware_readback() {
-    let firmware = Firmware::new();
-    firmware.mutate_next.set(true);
-    assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("firmware readback differs"));
-}
-
-#[test]
-fn refuses_busy_bootnext_and_wrong_identity() {
-    let firmware = Firmware::new();
-    firmware.put("BootNext", &2u16.to_le_bytes());
-    assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("BootNext is occupied"));
-    assert_eq!(firmware.order(), ["0001"]);
-    fs::remove_file(firmware.path("BootNext", EFI_GLOBAL)).unwrap();
-    assert!(
-        refusal(enlist(
-            &firmware,
-            "0100",
-            "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
-            TILO
-        ))
-        .contains("does not match")
-    );
-    assert_eq!(firmware.order(), ["0001"]);
-}
-
-#[test]
-fn refuses_non_windows_default_or_non_current_tilo() {
-    let firmware = Firmware::new();
-    firmware.put("Boot0001", &boot_option("other", WIN_ESP, TILO));
-    assert!(
-        refusal(enlist(&firmware, "0100", ESP, TILO))
-            .contains("Windows Boot Manager is not the first")
-    );
-    firmware.put(
-        "Boot0001",
-        &boot_option("Windows Boot Manager", WIN_ESP, WINDOWS),
-    );
-    firmware.put("BootCurrent", &1u16.to_le_bytes());
-    assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("not the current"));
-    assert_eq!(firmware.order(), ["0001"]);
-}
-
-#[test]
-fn refuses_ambiguous_or_modified_boot_option() {
-    let firmware = Firmware::new();
-    firmware.put(
-        "BootOrder",
-        &[1u16.to_le_bytes(), 1u16.to_le_bytes()].concat(),
-    );
-    assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("duplicated"));
-    firmware.put("BootOrder", &1u16.to_le_bytes());
-    firmware.put(
-        "Boot0100",
-        &boot_option("Tilo", ESP, r"\EFI\BOOT\other.efi"),
-    );
-    assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("does not match"));
-    assert_eq!(firmware.order(), ["0001"]);
-}
-
-#[test]
-fn refuses_malformed_options_and_loader_reports() {
-    let cases: Vec<(&str, Tamper)> = vec![
-        (
-            "inactive",
-            Box::new(|f| {
-                let mut option = boot_option("Tilo", ESP, TILO);
-                option[0] = 0;
-                f.put("Boot0100", &option);
-            }),
-        ),
-        (
-            "absent or truncated",
-            Box::new(|f| f.put("Boot0100", &[1, 0, 0, 0, 0, 0])),
-        ),
-        (
-            "device path is truncated",
-            Box::new(|f| {
-                let option = boot_option("Tilo", ESP, TILO);
-                f.put("Boot0100", &option[..option.len() - 2]);
-            }),
-        ),
-        (
-            "did not report its loaded ESP",
-            Box::new(|f| fs::remove_file(f.path("LoaderDevicePartUUID", LOADER_VENDOR)).unwrap()),
-        ),
-        (
-            "loaded from another ESP",
-            Box::new(|f| {
-                f.put_vendor(
-                    "LoaderDevicePartUUID",
-                    &utf16(&format!("{WIN_ESP}\0")),
-                    LOADER_VENDOR,
-                );
-            }),
-        ),
-        ("odd length", Box::new(|f| f.put("BootOrder", &[1, 0, 0]))),
-        (
-            "truncated or too large",
-            Box::new(|f| fs::write(f.path("BootCurrent", EFI_GLOBAL), [7, 0]).unwrap()),
-        ),
-        (
-            "not a regular EFI variable",
-            Box::new(|f| {
-                fs::remove_file(f.path("BootNext", EFI_GLOBAL)).ok();
-                fs::create_dir(f.path("BootNext", EFI_GLOBAL)).unwrap();
-            }),
-        ),
-        (
-            "absent, empty or duplicated",
-            Box::new(|f| f.put("BootOrder", &[])),
-        ),
-    ];
-    for (expected, tamper) in cases {
+    phase appends_after_windows_and_is_idempotent;
+    {
         let firmware = Firmware::new();
-        tamper(&firmware);
-        let message = refusal(enlist(&firmware, "0100", ESP, TILO));
-        assert!(message.contains(expected), "{expected}: {message}");
-        assert_eq!(firmware.calls.get(), 0, "{expected}");
+        assert_eq!(
+            enlist(&firmware, "0100", ESP, TILO).unwrap(),
+            "Boot0100 appended to BootOrder; Windows remains first"
+        );
+        assert_eq!(firmware.order(), ["0001", "0100"]);
+        assert_eq!(
+            enlist(&firmware, "0100", ESP, TILO).unwrap(),
+            "Boot0100 is already in BootOrder; Windows remains first"
+        );
+        assert_eq!(firmware.order(), ["0001", "0100"]);
+        assert_eq!(firmware.calls.get(), 1);
     }
-}
 
-#[test]
-fn a_failed_efibootmgr_is_reported() {
-    let firmware = Firmware::new();
-    firmware.fail.set(true);
-    assert_eq!(
-        refusal(enlist(&firmware, "0100", ESP, TILO)),
-        "efibootmgr failed: Could not set BootOrder"
-    );
-    assert_eq!(firmware.order(), ["0001"]);
+    phase detects_failed_firmware_readback;
+    {
+        let firmware = Firmware::new();
+        firmware.mutate_next.set(true);
+        assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("firmware readback differs"));
+    }
+
+    phase refuses_busy_bootnext_and_wrong_identity;
+    {
+        let firmware = Firmware::new();
+        firmware.put("BootNext", &2u16.to_le_bytes());
+        assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("BootNext is occupied"));
+        assert_eq!(firmware.order(), ["0001"]);
+        fs::remove_file(firmware.path("BootNext", EFI_GLOBAL)).unwrap();
+        assert!(
+            refusal(enlist(
+                &firmware,
+                "0100",
+                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                TILO
+            ))
+            .contains("does not match")
+        );
+        assert_eq!(firmware.order(), ["0001"]);
+    }
+
+    phase refuses_non_windows_default_or_non_current_tilo;
+    {
+        let firmware = Firmware::new();
+        firmware.put("Boot0001", &boot_option("other", WIN_ESP, TILO));
+        assert!(
+            refusal(enlist(&firmware, "0100", ESP, TILO))
+                .contains("Windows Boot Manager is not the first")
+        );
+        firmware.put(
+            "Boot0001",
+            &boot_option("Windows Boot Manager", WIN_ESP, WINDOWS),
+        );
+        firmware.put("BootCurrent", &1u16.to_le_bytes());
+        assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("not the current"));
+        assert_eq!(firmware.order(), ["0001"]);
+    }
+
+    phase refuses_ambiguous_or_modified_boot_option;
+    {
+        let firmware = Firmware::new();
+        firmware.put(
+            "BootOrder",
+            &[1u16.to_le_bytes(), 1u16.to_le_bytes()].concat(),
+        );
+        assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("duplicated"));
+        firmware.put("BootOrder", &1u16.to_le_bytes());
+        firmware.put(
+            "Boot0100",
+            &boot_option("Tilo", ESP, r"\EFI\BOOT\other.efi"),
+        );
+        assert!(refusal(enlist(&firmware, "0100", ESP, TILO)).contains("does not match"));
+        assert_eq!(firmware.order(), ["0001"]);
+    }
+
+    phase refuses_malformed_options_and_loader_reports;
+    {
+        let cases: Vec<(&str, Tamper)> = vec![
+            (
+                "inactive",
+                Box::new(|f| {
+                    let mut option = boot_option("Tilo", ESP, TILO);
+                    option[0] = 0;
+                    f.put("Boot0100", &option);
+                }),
+            ),
+            (
+                "absent or truncated",
+                Box::new(|f| f.put("Boot0100", &[1, 0, 0, 0, 0, 0])),
+            ),
+            (
+                "device path is truncated",
+                Box::new(|f| {
+                    let option = boot_option("Tilo", ESP, TILO);
+                    f.put("Boot0100", &option[..option.len() - 2]);
+                }),
+            ),
+            (
+                "did not report its loaded ESP",
+                Box::new(|f| fs::remove_file(f.path("LoaderDevicePartUUID", LOADER_VENDOR)).unwrap()),
+            ),
+            (
+                "loaded from another ESP",
+                Box::new(|f| {
+                    f.put_vendor(
+                        "LoaderDevicePartUUID",
+                        &utf16(&format!("{WIN_ESP}\0")),
+                        LOADER_VENDOR,
+                    );
+                }),
+            ),
+            ("odd length", Box::new(|f| f.put("BootOrder", &[1, 0, 0]))),
+            (
+                "truncated or too large",
+                Box::new(|f| fs::write(f.path("BootCurrent", EFI_GLOBAL), [7, 0]).unwrap()),
+            ),
+            (
+                "not a regular EFI variable",
+                Box::new(|f| {
+                    fs::remove_file(f.path("BootNext", EFI_GLOBAL)).ok();
+                    fs::create_dir(f.path("BootNext", EFI_GLOBAL)).unwrap();
+                }),
+            ),
+            (
+                "absent, empty or duplicated",
+                Box::new(|f| f.put("BootOrder", &[])),
+            ),
+        ];
+        for (expected, tamper) in cases {
+            let firmware = Firmware::new();
+            tamper(&firmware);
+            let message = refusal(enlist(&firmware, "0100", ESP, TILO));
+            assert!(message.contains(expected), "{expected}: {message}");
+            assert_eq!(firmware.calls.get(), 0, "{expected}");
+        }
+    }
+
+    phase a_failed_efibootmgr_is_reported;
+    {
+        let firmware = Firmware::new();
+        firmware.fail.set(true);
+        assert_eq!(
+            refusal(enlist(&firmware, "0100", ESP, TILO)),
+            "efibootmgr failed: Could not set BootOrder"
+        );
+        assert_eq!(firmware.order(), ["0001"]);
+    }
 }
 
 fn cli(firmware: &Firmware, words: &[&str]) -> (i32, String, String) {
@@ -320,119 +325,124 @@ fn cli(firmware: &Firmware, words: &[&str]) -> (i32, String, String) {
     )
 }
 
-#[test]
-fn the_command_line_checks_identities_before_touching_firmware() {
-    let firmware = Firmware::new();
-    let args = |esp: &str, id: &str, loader: &str| {
-        vec![
-            "enlist",
-            "--esp-partuuid",
-            esp,
-            "--boot-id",
-            id,
-            "--loader",
-            loader,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>()
-    };
-    let run = |words: Vec<String>| {
-        cli(
-            &firmware,
-            &words.iter().map(String::as_str).collect::<Vec<_>>(),
-        )
-    };
-    for (words, message) in [
-        (
-            args("not-a-guid", "0100", TILO),
-            "expected a canonical ESP GUID and four-digit Boot ID",
-        ),
-        (
-            args(ESP, "100", TILO),
-            "expected a canonical ESP GUID and four-digit Boot ID",
-        ),
-        (
-            args(ESP, "0100", WINDOWS),
-            "loader must be the ARM64 systemd-boot primary or fallback path",
-        ),
-    ] {
+tilo_test_env::scenario! {
+    /// `main` and the binary around it.
+    fn the_command_line_validates_before_it_enlists;
+
+    phase the_command_line_checks_identities_before_touching_firmware;
+    {
+        let firmware = Firmware::new();
+        let args = |esp: &str, id: &str, loader: &str| {
+            vec![
+                "enlist",
+                "--esp-partuuid",
+                esp,
+                "--boot-id",
+                id,
+                "--loader",
+                loader,
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        };
+        let run = |words: Vec<String>| {
+            cli(
+                &firmware,
+                &words.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+        };
+        for (words, message) in [
+            (
+                args("not-a-guid", "0100", TILO),
+                "expected a canonical ESP GUID and four-digit Boot ID",
+            ),
+            (
+                args(ESP, "100", TILO),
+                "expected a canonical ESP GUID and four-digit Boot ID",
+            ),
+            (
+                args(ESP, "0100", WINDOWS),
+                "loader must be the ARM64 systemd-boot primary or fallback path",
+            ),
+        ] {
+            assert_eq!(
+                run(words),
+                (1, String::new(), format!("tilo-boot-order: {message}\n"))
+            );
+        }
+        assert_eq!(firmware.calls.get(), 0);
+        // Identities are case-insensitive, as the original's casefold and upper/lower.
+        let upper = ESP.to_uppercase();
+        let (code, out, err) = run(args(&upper, "0100", r"\efi\SYSTEMD\systemd-BOOTAA64.EFI"));
         assert_eq!(
-            run(words),
-            (1, String::new(), format!("tilo-boot-order: {message}\n"))
+            (code, out.as_str(), err.as_str()),
+            (
+                0,
+                "Boot0100 appended to BootOrder; Windows remains first\n",
+                ""
+            )
+        );
+        let lower_id = cli(
+            &firmware,
+            &[
+                "enlist",
+                "--esp-partuuid",
+                ESP,
+                "--boot-id",
+                "0100",
+                "--loader",
+                TILO,
+            ],
+        );
+        assert_eq!(lower_id.0, 0);
+        assert!(lower_id.1.contains("already in BootOrder"));
+    }
+
+    phase only_root_may_enlist;
+    {
+        let mut firmware = Firmware::new();
+        firmware.root = false;
+        let (code, _, err) = cli(
+            &firmware,
+            &[
+                "enlist",
+                "--esp-partuuid",
+                ESP,
+                "--boot-id",
+                "0100",
+                "--loader",
+                TILO,
+            ],
+        );
+        assert_eq!(
+            (code, err.as_str()),
+            (
+                1,
+                "tilo-boot-order: run as root after validating Tilo's first boot\n"
+            )
         );
     }
-    assert_eq!(firmware.calls.get(), 0);
-    // Identities are case-insensitive, as the original's casefold and upper/lower.
-    let upper = ESP.to_uppercase();
-    let (code, out, err) = run(args(&upper, "0100", r"\efi\SYSTEMD\systemd-BOOTAA64.EFI"));
-    assert_eq!(
-        (code, out.as_str(), err.as_str()),
-        (
-            0,
-            "Boot0100 appended to BootOrder; Windows remains first\n",
-            ""
-        )
-    );
-    let lower_id = cli(
-        &firmware,
-        &[
-            "enlist",
-            "--esp-partuuid",
-            ESP,
-            "--boot-id",
-            "0100",
-            "--loader",
-            TILO,
-        ],
-    );
-    assert_eq!(lower_id.0, 0);
-    assert!(lower_id.1.contains("already in BootOrder"));
-}
 
-#[test]
-fn only_root_may_enlist() {
-    let mut firmware = Firmware::new();
-    firmware.root = false;
-    let (code, _, err) = cli(
-        &firmware,
-        &[
-            "enlist",
-            "--esp-partuuid",
-            ESP,
-            "--boot-id",
-            "0100",
-            "--loader",
-            TILO,
-        ],
-    );
-    assert_eq!(
-        (code, err.as_str()),
-        (
-            1,
-            "tilo-boot-order: run as root after validating Tilo's first boot\n"
-        )
-    );
-}
-
-#[test]
-fn the_binary_answers_usage_and_help_without_firmware() {
-    let binary = tilo_test_env::package_binary!("tilo-boot-order");
-    let usage = Command::new(&binary).arg("enlist").output_locked().unwrap();
-    assert_eq!(usage.status.code(), Some(2));
-    let stderr = String::from_utf8(usage.stderr).unwrap();
-    assert!(
-        stderr.starts_with("usage: tilo-boot-order [-h]"),
-        "{stderr}"
-    );
-    assert!(stderr.ends_with(
-        "error: the following arguments are required: --esp-partuuid, --boot-id, --loader\n"
-    ));
-    let help = Command::new(binary).arg("--help").output_locked().unwrap();
-    assert_eq!(help.status.code(), Some(0));
-    assert!(
-        String::from_utf8(help.stdout)
-            .unwrap()
-            .contains("never creates or replaces an EFI boot option")
-    );
+    phase the_binary_answers_usage_and_help_without_firmware;
+    {
+        let binary = tilo_test_env::package_binary!("tilo-boot-order");
+        let usage = Command::new(&binary).arg("enlist").output_locked().unwrap();
+        assert_eq!(usage.status.code(), Some(2));
+        let stderr = String::from_utf8(usage.stderr).unwrap();
+        assert!(
+            stderr.starts_with("usage: tilo-boot-order [-h]"),
+            "{stderr}"
+        );
+        assert!(stderr.ends_with(
+            "error: the following arguments are required: --esp-partuuid, --boot-id, --loader\n"
+        ));
+        let help = Command::new(binary).arg("--help").output_locked().unwrap();
+        assert_eq!(help.status.code(), Some(0));
+        assert!(
+            String::from_utf8(help.stdout)
+                .unwrap()
+                .contains("never creates or replaces an EFI boot option")
+        );
+    }
 }
