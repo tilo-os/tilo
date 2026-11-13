@@ -314,6 +314,10 @@ pub enum ArrangementAction {
         #[serde(default)]
         beside: String,
     },
+    /// Give the place `place` the size `width` × `height` canvas pixels, its corner where it
+    /// stands and every other place where it is: what dragging a place's edge or corner on the
+    /// canvas runs (`canvas.md` §2). Appended last.
+    Size { place: u64, width: i64, height: i64 },
 }
 
 /// Where a place made on the desk now goes: the workspace in front, its row, and the ids the
@@ -1599,6 +1603,11 @@ fn change(
             tab.pinned = *pinned;
             Ok(changed)
         }
+        ArrangementAction::Size {
+            place,
+            width,
+            height,
+        } => size(tree, *place, clamp_side(*width), clamp_side(*height)),
         ArrangementAction::Position { place, x, y } => {
             position(tree, *place, clamp_coord(*x), clamp_coord(*y))
         }
@@ -1666,6 +1675,25 @@ fn position(tree: &mut DesktopTree, place: u64, x: i32, y: i32) -> Result<bool, 
         return Err("that place is not in the arrangement".into());
     };
     Ok(held.arrangement.set_position(id, x, y))
+}
+
+/// Give the place `place` the canvas size `width` × `height`; whether the desk changed.
+fn size(tree: &mut DesktopTree, place: u64, width: u32, height: u32) -> Result<bool, String> {
+    let Some((workspace, row, group, _)) = locate(tree, place) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(held) = tree.workspaces.get_mut(workspace) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(id) = held
+        .strips
+        .get(row)
+        .and_then(|strip| strip.window_groups.get(group))
+        .map(|group| group.id)
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    Ok(held.arrangement.set_size(id, width, height))
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
@@ -2048,6 +2076,7 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Activate { .. } => "activate",
         ArrangementAction::Pin { .. } => "pin",
         ArrangementAction::Position { .. } => "position",
+        ArrangementAction::Size { .. } => "size",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
         ArrangementAction::Open { .. } => "open",
         ArrangementAction::Float { .. } => "float",
@@ -2120,6 +2149,7 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
     let moved = key.to_owned();
     let in_front = key.to_owned();
     let positioned = key.to_owned();
+    let sized = key.to_owned();
     vec![
         action(
             "pin",
@@ -2152,6 +2182,19 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
                 place: count_of(&positioned),
                 x: args.integer("x").unwrap_or_default(),
                 y: args.integer("y").unwrap_or_default(),
+            },
+        ),
+        action(
+            "size",
+            "Give a place a size on the canvas, as dragging its edge does",
+            vec![
+                required("width", ParamType::Integer, "Its width in canvas pixels"),
+                required("height", ParamType::Integer, "Its height in canvas pixels"),
+            ],
+            move |args| ArrangementAction::Size {
+                place: count_of(&sized),
+                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
+                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
             },
         ),
         action("close", "Close a place", Vec::new(), move |_| {
@@ -2197,121 +2240,6 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
     .into_iter()
     .chain(float_actions(key))
     .collect()
-}
-
-/// The actions that float a place and snap it back, its key bound into each as every place action's
-/// is.
-fn float_actions(key: &str) -> Vec<ActionSpec> {
-    let floating = key.to_owned();
-    let snapping = key.to_owned();
-    vec![
-        action(
-            "float",
-            "Float a place above its workspace's windows, where every member sees it",
-            vec![
-                optional(
-                    "corner",
-                    ParamType::Text,
-                    "The corner of the work area it keeps its distance from: top-left, top-right, bottom-right (the default) or bottom-left",
-                ),
-                optional(
-                    "dx",
-                    ParamType::Integer,
-                    "Its distance from that corner's side edge, in canvas pixels",
-                ),
-                optional(
-                    "dy",
-                    ParamType::Integer,
-                    "Its distance from that corner's top or bottom edge, in canvas pixels",
-                ),
-                optional("width", ParamType::Integer, "Its width in canvas pixels"),
-                optional("height", ParamType::Integer, "Its height in canvas pixels"),
-            ],
-            move |args| ArrangementAction::Float {
-                place: count_of(&floating),
-                float: FloatPlace::new(
-                    float_corner(args.text("corner")),
-                    float_coord(args.integer("dx"), FLOAT_INSET),
-                    float_coord(args.integer("dy"), FLOAT_INSET),
-                    float_side(args.integer("width"), FLOAT_WIDTH),
-                    float_side(args.integer("height"), FLOAT_HEIGHT),
-                ),
-            },
-        ),
-        action(
-            "snap-back",
-            "Snap a floating place back among its workspace's windows",
-            vec![
-                optional(
-                    "row",
-                    ParamType::Resource,
-                    "The row it goes into; its own when left out",
-                )
-                .of_resource_kind(ROW_KIND),
-                optional(
-                    "before",
-                    ParamType::Resource,
-                    "The place it goes before in that row",
-                )
-                .of_resource_kind(PLACE_KIND),
-            ],
-            move |args| ArrangementAction::Snap {
-                place: count_of(&snapping),
-                row: named(args, "row", Item::Row),
-                before: named(args, "before", Item::Place),
-            },
-        ),
-    ]
-}
-
-/// The corner a `float` action names, the work area's bottom-right when it names none.
-fn float_corner(text: Option<&str>) -> FloatCorner {
-    text.and_then(FloatCorner::parse).unwrap_or_default()
-}
-
-/// A float's distance from a corner, never negative.
-fn float_coord(value: Option<i64>, default: i64) -> i32 {
-    i32::try_from(value.unwrap_or(default).max(0)).unwrap_or(i32::MAX)
-}
-
-/// A floated window's side, at least one pixel.
-fn float_side(value: Option<i64>, default: u32) -> u32 {
-    u32::try_from(value.unwrap_or_else(|| i64::from(default)).max(1)).unwrap_or(u32::MAX)
-}
-
-/// The actions a strip's own resource offers, its key bound into each: the strip is the resource
-/// they are pressed on.
-fn strip_actions(key: &str) -> Vec<ActionSpec> {
-    let resized = key.to_owned();
-    let maximized = key.to_owned();
-    vec![
-        action(
-            "resize",
-            "Resize a strip",
-            vec![required(
-                "permille",
-                ParamType::Integer,
-                "Its width in per-mille of the row",
-            )],
-            move |args| ArrangementAction::Resize {
-                strip: count_of(&resized),
-                permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
-            },
-        ),
-        action(
-            "maximize-strip",
-            "Maximize a strip, so it stands alone as the window the desk is",
-            vec![optional(
-                "on",
-                ParamType::Boolean,
-                "Whether it fills the desk",
-            )],
-            move |args| ArrangementAction::Maximize {
-                strip: count_of(&maximized),
-                maximized: args.boolean("on").unwrap_or(true),
-            },
-        ),
-    ]
 }
 
 /// The row `arguments` names as `name` , by the id of the row's resource. `None` for an id of
@@ -2962,6 +2890,10 @@ impl Door {
         self.arrangement.borrow().person().to_owned()
     }
 }
+
+#[path = "arrangement_specs.rs"]
+mod specs;
+use specs::{float_actions, float_coord, float_corner, float_side, strip_actions};
 
 #[cfg(test)]
 #[path = "arrangement_tests.rs"]

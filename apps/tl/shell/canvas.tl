@@ -32,15 +32,23 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     // Where the person pointed, in canvas pixels: a point (`x`, `y`) for a click, a rectangle
     // (`x`, `y`, width, height) for a drag, and nothing while no caret stands.
     state pointed: List<Int> = []
-    ui.Map(name: name, ground: true, fill) {
+    // The place a right press pointed at, by its key: what the words said there are about.
+    // Empty for free space and for a click.
+    state pointed_at: Text = ""
+    ui.Map(name: name, ground: true, outline: pointed, fill) {
         on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
-        on press(at: List<Int>): set(pointed, at)
-        on frame(at: List<Int>): set(pointed, at)
+        on press(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
+        on frame(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
+        // A right press the canvas answers itself — free space, or a place whose content took
+        // none — points there as a click does: the caret stands at it.
+        on context(target: Text, at: List<Int>): set(pointed, at).then(set(pointed_at, target))
+        on resize(target: Text, at: List<Int>): size_place(target, at)
         for s in a.strips {
             if s.placed {
                 for p in places_of(a, s.key) {
                     ui.MapPin(
                         name: p.key,
+                        item: p.key,
                         x: pin_x(a, s, p),
                         y: s.canvas_y,
                         width: pin_width(s),
@@ -86,6 +94,12 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
 /// dragged one narrower than a line, and a line's measure otherwise.
 fn caret_room(width: Int) -> Int {
     if width > 0 and width < 420 { width } else { 420 }
+}
+
+/// Gives the place `key` the size a drag of its edge or corner left it at, `size` its width and
+/// height in canvas pixels: one arranging step of the person's, its corner where it stood.
+action size_place(key: Text, size: List<Int>) (label: "Size it") {
+    session.size(place: the_place(key), width: size.at(0) ?? 720, height: size.at(1) ?? 520)
 }
 
 /// Puts a resource dropped on the canvas where it was let go. A place that already stands on the
@@ -177,7 +191,12 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 /// (`framed_place`): it is the one thing on the canvas that is a window.
 view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     if composed(p) {
-        ui.Place(name: place_title(p), carries: p.record, fill) {
+        ui.Place(
+            name: place_title(p),
+            carries: p.record,
+            subject: placed_resource(p.record),
+            fill,
+        ) {
             controls: {
                 place_controls(a, p, false)
             }

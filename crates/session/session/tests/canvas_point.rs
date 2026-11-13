@@ -388,3 +388,240 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
         "the handle holds the place's close"
     );
 }
+
+/// The right button, which points at a thing.
+const BTN_RIGHT: u32 = 0x111;
+
+/// Right-click the screen point `at`.
+fn right_click(session: &mut Session, at: (f64, f64)) {
+    point_to(session, at);
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_RIGHT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+/// The inbox, standing in the rectangle from `from` to `to`, and where it stands on screen.
+fn inbox_in(
+    session: &mut Session,
+    from: (f64, f64),
+    to: (f64, f64),
+) -> (
+    tilo_session::arrangement::PlaceReading,
+    (f64, f64, f64, f64),
+) {
+    frame_and_say(session, from, to, "my mails");
+    let inbox = wait_for(session, "the inbox placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.mail"))
+    });
+    let at = wait_for(session, "the inbox on screen", |session| {
+        place_on_screen(session, &inbox)
+            .filter(|(_, _, w, h)| near(*w, to.0 - from.0) && near(*h, to.1 - from.1))
+    });
+    (inbox, at)
+}
+
+/// A right-click on the canvas's free ground points there as a click does: the caret stands at it.
+#[test]
+fn a_right_click_on_free_space_puts_the_caret_there() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let at = (x + w * 0.45, y + h * 0.55);
+    right_click(&mut session, at);
+    let (cx, cy, _, _) = caret(&mut session);
+    assert!(
+        near(cx, at.0) && near(cy, at.1),
+        "the caret stands where the right-click pointed: {:?} at {at:?}",
+        (cx, cy)
+    );
+}
+
+/// A right-click on a place's handle opens its resource's own actions as its menu: what the
+/// resource publishes, the list its handle's menu and an agent see.
+#[test]
+fn a_right_click_on_a_place_opens_its_actions() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let (inbox, (px, py, pw, ph)) = inbox_in(
+        &mut session,
+        (x + w * 0.2, y + h * 0.15),
+        (x + w * 0.7, y + h * 0.9),
+    );
+    let offered: Vec<String> = session
+        .service_resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str() == inbox.record)
+        .map(|spec| spec.actions.iter().map(|a| a.label.clone()).collect())
+        .unwrap_or_default();
+    assert!(!offered.is_empty(), "the inbox offers actions: {inbox:?}");
+    // The pointer over the place shows its handle; a right-click on its name opens the menu.
+    point_to(&mut session, (px + pw * 0.5, py + ph * 0.5));
+    let title = if inbox.name.is_empty() {
+        inbox.title.clone()
+    } else {
+        inbox.name.clone()
+    };
+    let handle = wait_for(&mut session, "the place's handle", |session| {
+        session
+            .shell_controls(&title)
+            .into_iter()
+            .filter(|(_, _, w, h)| *w > 0.0 && *h > 0.0)
+            .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+    });
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let before = session.accessible_labels();
+    right_click(
+        &mut session,
+        (handle.0 + handle.2 / 2.0, handle.1 + handle.3 / 2.0),
+    );
+    let opened = common::reached(&mut session, |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| offered.contains(label) && !before.contains(label))
+    });
+    let after: Vec<String> = session
+        .accessible_labels()
+        .into_iter()
+        .filter(|label| !before.contains(label))
+        .collect();
+    assert!(
+        opened,
+        "the place's menu lists its actions {offered:?}; what the right-click showed: {after:?}"
+    );
+}
+
+/// Dragging a place's corner sizes it: its corner follows the pointer and the place keeps that
+/// size, one arranging step of the person's.
+#[test]
+fn dragging_a_places_corner_sizes_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let (inbox, (px, py, pw, ph)) = inbox_in(
+        &mut session,
+        (x + w * 0.1, y + h * 0.1),
+        (x + w * 0.5, y + h * 0.6),
+    );
+    let corner = (px + pw + 3.0, py + ph + 3.0);
+    drag(&mut session, corner, (corner.0 + 120.0, corner.1 + 80.0));
+    let resized = common::reached(&mut session, |session| {
+        place_on_screen(session, &inbox).is_some_and(|(_, _, nw, _)| !near(nw, pw))
+    });
+    assert!(
+        resized,
+        "the inbox resized from {:?} (canvas {:?}, caret {:?}): its strip {:?}, the last step {:?}, refusals {:?}",
+        (px, py, pw, ph),
+        on_screen(&session, CANVAS),
+        on_screen(&session, CANVAS_CARET),
+        common::strip(&session, common::number(&inbox.strip)),
+        session.arrangement().borrow_mut().last_step(),
+        session.shell_refusals()
+    );
+    let (_, _, nw, nh) = place_on_screen(&session, &inbox).expect("the inbox");
+    assert!(
+        near(nw, pw + 120.0) && near(nh, ph + 80.0),
+        "the place takes the size its corner was dragged to: {:?} from {:?}",
+        (nw, nh),
+        (pw, ph)
+    );
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("a step");
+    assert_eq!((who.as_str(), verb.as_str()), (common::PERSON, "size"));
+}
+
+/// The rectangle the person dragged stays outlined while they type what fills it, and goes with
+/// the caret.
+#[test]
+fn the_dragged_rectangle_stays_outlined_while_typing() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let from = (x + w * 0.2, y + h * 0.2);
+    let to = (x + w * 0.6, y + h * 0.7);
+    // The rectangle's bottom edge, half way along: clear of the caret at its top.
+    let edge = ((from.0 + to.0) / 2.0, to.1);
+    let pixel = |session: &mut Session| -> [u8; 4] {
+        let shot = common::shot(session, "canvas-outline");
+        let at = ((edge.1.round() as u32 * shot.width + edge.0.round() as u32) * 4) as usize;
+        [
+            shot.rgba[at],
+            shot.rgba[at + 1],
+            shot.rgba[at + 2],
+            shot.rgba[at + 3],
+        ]
+    };
+    let ground = pixel(&mut session);
+    drag(&mut session, from, to);
+    caret(&mut session);
+    common::type_text(&mut session, "my mails");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    assert_ne!(
+        pixel(&mut session),
+        ground,
+        "the rectangle's edge is outlined while the person types"
+    );
+    key(&mut session, KEY_ESCAPE);
+    until(&mut session, "the caret goes", |session| {
+        on_screen(session, CANVAS_CARET).is_none()
+    });
+    for _ in 0..4 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    assert_eq!(
+        pixel(&mut session),
+        ground,
+        "the outline goes with the caret"
+    );
+}
+
+/// A place's `size` sizes it, its corner where it stood: the arranging action a drag of its edge
+/// runs, and what an agent or the REPL runs to size it.
+#[test]
+fn a_places_size_action_sizes_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let (inbox, _) = inbox_in(
+        &mut session,
+        (x + w * 0.1, y + h * 0.1),
+        (x + w * 0.5, y + h * 0.6),
+    );
+    session
+        .invoke(
+            &format!("shell:place:{}", inbox.key),
+            "size",
+            serde_json::json!({"width": 600, "height": 450})
+                .as_object()
+                .expect("arguments"),
+        )
+        .unwrap_or_else(|error| panic!("the size runs: {error:?}"));
+    let strip = common::strip(&session, common::number(&inbox.strip)).expect("its strip");
+    assert_eq!(
+        (strip.canvas_width, strip.canvas_height),
+        (600, 450),
+        "the place takes the size: {strip:?}"
+    );
+}

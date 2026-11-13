@@ -368,6 +368,20 @@ impl Arrangement {
         true
     }
 
+    /// Give `group` the size `width` × `height` on the canvas, keeping its corner where it
+    /// stands. Returns whether it changed.
+    pub fn set_size(&mut self, group: GroupId, width: u32, height: u32) -> bool {
+        let Some(place) = self.places.get_mut(&group) else {
+            return false;
+        };
+        if place.width == width && place.height == height {
+            return false;
+        }
+        place.width = width;
+        place.height = height;
+        true
+    }
+
     /// Float `group` where `float` says (`None` snaps it back into the grid).
     /// Returns whether it changed.
     pub fn set_float(&mut self, group: GroupId, float: Option<FloatPlace>) -> bool {

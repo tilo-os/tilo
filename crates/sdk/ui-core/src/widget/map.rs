@@ -167,6 +167,15 @@ pub struct MapProps {
     /// (`canvas.md` §1, §6).
     #[component(event(value = String, at = Vec<i64>))]
     pub context: Event,
+    /// A place's trailing edge, bottom edge or corner was dragged and let go: carries the key of
+    /// the pin it resized and its new size in canvas pixels, its width then its height. Its
+    /// corner stays where it stood; the view gives the place that size.
+    #[component(event(value = String, at = Vec<i64>))]
+    pub resize: Event,
+    /// A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the
+    /// light outline a drag across the canvas draws: the rectangle the person dragged, kept while
+    /// they say what fills it.
+    pub outline: Vec<i64>,
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -186,6 +195,10 @@ pub struct MapPinProps {
     pub width: Option<i64>,
     /// How tall it stands, in canvas pixels; without it, as tall as its view asks.
     pub height: Option<i64>,
+    /// What the pin stands for, as the view names it: what pointing at the pin (`context`) and
+    /// sizing it (`resize`) report. Without it, the pin's key.
+    #[component(data)]
+    pub item: Option<String>,
     /// What it shows.
     #[component(slot(default))]
     pub body: Vec<Element>,
@@ -241,6 +254,45 @@ struct FreePress {
     /// How far it has travelled from where it went down, so a small wobble is still a click.
     travelled: f64,
 }
+
+/// A drag of a pin's trailing edge, bottom edge or corner, in this map's logical coordinates.
+#[derive(Clone, Debug)]
+struct EdgeDrag {
+    /// The pin it resizes, by key.
+    key: String,
+    /// Where the pin stood when the drag began.
+    from: Rect,
+    /// Where the press went down, and where the pointer is now.
+    start: Point,
+    now: Point,
+    /// Which edges it moves: the trailing one, the bottom one, or both at the corner.
+    trailing: bool,
+    bottom: bool,
+}
+
+impl EdgeDrag {
+    /// The pin's rectangle where the pointer has taken it: its corner held, the grabbed edges
+    /// following the pointer 1:1, never smaller than [`LEAST_SIDE`].
+    fn rect(&self) -> Rect {
+        let by = self.now - self.start;
+        let width = if self.trailing {
+            (self.from.width() + by.x).max(LEAST_SIDE)
+        } else {
+            self.from.width()
+        };
+        let height = if self.bottom {
+            (self.from.height() + by.y).max(LEAST_SIDE)
+        } else {
+            self.from.height()
+        };
+        Rect::from_origin_size(self.from.origin(), (width, height))
+    }
+}
+
+/// How close to a pin's trailing or bottom edge, in logical pixels, a press grabs that edge.
+const EDGE_GRAB: f64 = 6.0;
+/// The least side a resized place keeps, in logical pixels.
+const LEAST_SIDE: f64 = 120.0;
 
 /// See the module docs.
 pub struct Map {
@@ -298,12 +350,25 @@ pub struct Map {
     /// What a right press on the map does: the map reports the pin under it and the canvas point,
     /// and the view opens what the person pointed at.
     context: Event,
+    /// What dragging a pin's edge or corner does: the map reports the pin and its new size.
+    resize: Event,
+    /// The edge or corner being dragged, until it is let go.
+    edge_drag: Option<EdgeDrag>,
+    /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
+    outline: Option<Rect>,
     /// The key the map is known by on the drag bus, namespaced from the view that built it: a
     /// drag that started in one of its pins never lands back on the map it came from, and two
     /// maps never answer each other's drops.
     key: String,
     /// What the map is, as assistive technology names it ("Canvas").
     name: Option<String>,
+    /// What each pin stands for, by its key, as its view named it: what pointing at it reports.
+    items: HashMap<String, String>,
+    /// Where each pin stands, in draw order: what the region's policy lays them out at.
+    places_cell: Rc<std::cell::RefCell<Vec<PinPlace>>>,
+    /// The pin whose view a change inside it is patching (`part_views`), by its index: `None`
+    /// while the change is to the pins themselves.
+    editing: Option<usize>,
     /// The pins this map has already brought into view: a place that arrived off screen comes
     /// into view once, and a place the person panned away from is left where their look left it.
     arrived: std::collections::HashSet<String>,
@@ -341,9 +406,15 @@ impl Map {
             press: Event::None,
             frame: Event::None,
             context: Event::None,
+            resize: Event::None,
+            edge_drag: None,
+            outline: None,
             key: String::new(),
             arrived: std::collections::HashSet::new(),
             name: None,
+            items: HashMap::new(),
+            editing: None,
+            places_cell: Rc::default(),
         }
     }
 
@@ -507,9 +578,15 @@ impl Map {
             .map(|(key, _)| key.clone())
     }
 
+    /// What the pin `key` stands for, as its view named it, else its key; empty stays empty.
+    fn item_of(&self, key: String) -> String {
+        self.items.get(&key).cloned().unwrap_or(key)
+    }
+
     /// Report a right press at the pointer: the pin `pin` it pointed at (empty for free space)
     /// and the canvas point under it.
     fn point_at_context(&self, pin: String) {
+        let pin = self.item_of(pin);
         let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
         self.context.fire(Some(crate::component::Value::List(vec![
             crate::component::Value::Text(pin),
@@ -518,6 +595,22 @@ impl Map {
                 crate::component::Value::Int(at.y.round() as i64),
             ]),
         ])));
+    }
+
+    /// The pin whose trailing edge, bottom edge or corner stands at `local` (this map's own
+    /// coordinates), the topmost first: its key, where it stands, and which edges the point grabs.
+    fn edge_at(&self, local: Point) -> Option<(String, Rect, bool, bool)> {
+        let laid = self.laid.borrow();
+        self.pins.iter().rev().find_map(|(key, _, _)| {
+            let rect = *laid.get(key)?;
+            let near_trailing = (local.x - rect.x1).abs() <= EDGE_GRAB;
+            let near_bottom = (local.y - rect.y1).abs() <= EDGE_GRAB;
+            let along_y = local.y >= rect.y0 && local.y <= rect.y1 + EDGE_GRAB;
+            let along_x = local.x >= rect.x0 && local.x <= rect.x1 + EDGE_GRAB;
+            let trailing = near_trailing && along_y;
+            let bottom = near_bottom && along_x;
+            (trailing || bottom).then(|| (key.clone(), rect, trailing, bottom))
+        })
     }
 
     /// The smallest canvas rect holding every pin: what [`Self::show`] fits the camera to.
@@ -572,7 +665,11 @@ impl Map {
             views.push(view);
         }
         views.truncate(self.pins.len());
-        let places: Vec<PinPlace> = self.pins.iter().map(|(_, place, _)| *place).collect();
+        // Where the pins stand, shared with the region's policy like the camera: a place moved
+        // or sized in place re-solves the region at its new place rather than the one it was
+        // built with.
+        *self.places_cell.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
+        let places = Rc::clone(&self.places_cell);
         let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         // The region's policy is built once and re-solved whenever the camera moves, so it reads
         // the camera from this shared cell rather than from a copy taken here: a copy would lay
@@ -586,6 +683,7 @@ impl Map {
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
             let camera = camera.get();
+            let places = places.borrow();
             let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
@@ -642,8 +740,12 @@ impl Described for Map {
             press,
             frame,
             context,
+            resize,
+            outline,
         } = props;
         let mut map = Self::new();
+        map.resize = resize;
+        map.outline = outline_of(&outline);
         map.name = name;
         map.key = format!("map\u{1f}{key}");
         // The lens the person left this map looking through on this device: a map built again
@@ -663,6 +765,9 @@ impl Described for Map {
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
             };
+            if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
+                map.items.insert(pin.key.clone(), item);
+            }
             let view: Element = match pin.body.into_iter().next() {
                 Some(body) => body,
                 None => Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
@@ -688,7 +793,15 @@ impl Described for Map {
             press,
             frame,
             context,
+            resize,
+            outline,
         } = props;
+        self.resize = resize;
+        let outline = outline_of(&outline);
+        if outline != self.outline {
+            self.outline = outline;
+            self.dirty = true;
+        }
         self.name = name;
         self.drop = drop;
         self.press = press;
@@ -703,7 +816,11 @@ impl Described for Map {
             return false;
         }
         self.ground = ground;
-        for (pin, (_, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
+        self.items.clear();
+        for (pin, (key, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
+            if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
+                self.items.insert(key.clone(), item);
+            }
             *held = PinPlace {
                 x: pin.x.unwrap_or(0) as f64,
                 y: pin.y.unwrap_or(0) as f64,
@@ -711,13 +828,26 @@ impl Described for Map {
                 height: pin.height.map(|height| (height as f64).max(1.0)),
             };
         }
+        *self.places_cell.borrow_mut() = self.pins.iter().map(|(_, place, _)| *place).collect();
         self.dirty = true;
         self.invalidation.invalidate();
         true
     }
 
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
+        self.editing = None;
         (slot == "pins").then_some(self as &mut dyn SlotViews)
+    }
+
+    /// The view one pin shows, to change in place: a change inside a place (its handle, its
+    /// menu, what its resource's view says) patches that view where it stands, and the map —
+    /// its camera, a drag under way, every other place — stays as it is.
+    fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
+        if slot != "pins" || of != "body" {
+            return None;
+        }
+        self.editing = Some(self.pins.iter().position(|(held, _, _)| held == key)?);
+        Some(self as &mut dyn SlotViews)
     }
 }
 
@@ -726,10 +856,18 @@ impl Described for Map {
 /// the pins' keys and places stay in `self.pins`, which the next layout lays out afresh.
 impl SlotViews for Map {
     fn len(&self) -> usize {
+        if self.editing.is_some() {
+            return 1;
+        }
         self.pins.len()
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        let index = match self.editing {
+            Some(pin) if index == 0 => pin,
+            Some(_) => return None,
+            None => index,
+        };
         // The region holds the views once built; the pins' own until then.
         if self.parts.children.is_empty() {
             return self.pins.get_mut(index).map(|(_, _, view)| view);
@@ -744,6 +882,10 @@ impl SlotViews for Map {
     }
 
     fn insert(&mut self, index: usize, view: Element) {
+        if let Some(pin) = self.editing {
+            self.put_pin_view(pin, view);
+            return;
+        }
         let at = index.min(self.pins.len());
         let key = format!("pin-{at}");
         // Keep the pins' keys and places in step; the view goes to the region when built.
@@ -768,6 +910,13 @@ impl SlotViews for Map {
     }
 
     fn remove(&mut self, index: usize) {
+        if let Some(pin) = self.editing {
+            self.put_pin_view(
+                pin,
+                Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
+            );
+            return;
+        }
         if index < self.pins.len() {
             self.pins.remove(index);
             if let Some(region) = self.region_mut() {
@@ -777,6 +926,9 @@ impl SlotViews for Map {
     }
 
     fn move_view(&mut self, from: usize, to: usize) {
+        if self.editing.is_some() {
+            return;
+        }
         if from < self.pins.len() && to < self.pins.len() {
             let pin = self.pins.remove(from);
             self.pins.insert(to, pin);
@@ -787,6 +939,14 @@ impl SlotViews for Map {
     }
 
     fn replace(&mut self, index: usize, view: Element) {
+        let index = self.editing.unwrap_or(index);
+        self.put_pin_view(index, view);
+    }
+}
+
+impl Map {
+    /// Stand `view` in the pin at `index`: in the region once it is built, else in the pin.
+    fn put_pin_view(&mut self, index: usize, view: Element) {
         if let Some(slot) = self.region_mut().and_then(|region| region.child_mut(index)) {
             *slot = view;
         } else if let Some((_, _, slot)) = self.pins.get_mut(index) {
@@ -801,6 +961,31 @@ impl Map {
     /// frame they are pointing at before they let go (`canvas.md` §1, §5). Nothing is drawn when
     /// no such drag is under way, or while it is still a click.
     fn draw_frame_outline(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let outline = |scene: &mut Scene, rect: &Rect| {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                theme.border_focus,
+                None,
+                rect,
+            );
+        };
+        // A place's edge being dragged shows the size it is taking.
+        if let Some(drag) = &self.edge_drag {
+            let origin = self.rect.origin().to_vec2();
+            outline(scene, &(drag.rect() + origin));
+            return;
+        }
+        // The rectangle the view points at, while no drag draws one of its own.
+        if self.free_press.is_none()
+            && let Some(rect) = self.outline
+        {
+            let corner = self.rect.origin();
+            let a = self.camera.to_screen(corner, rect.origin());
+            let b = self.camera.to_screen(corner, Point::new(rect.x1, rect.y1));
+            outline(scene, &Rect::from_points(a, b));
+            return;
+        }
         let Some(press) = self.free_press else {
             return;
         };
@@ -983,6 +1168,13 @@ impl Map {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                // A place's edge follows the pointer while it is dragged.
+                if let Some(drag) = self.edge_drag.as_mut() {
+                    drag.now = self.cursor - self.rect.origin().to_vec2();
+                    self.dirty = true;
+                    *ctx.handled = true;
+                    return;
+                }
                 // A drag across the empty canvas draws its rectangle as it goes, so the person
                 // sees what they will point at before they let go (`canvas.md` §1).
                 if let Some(mut press) = self.free_press {
@@ -1051,6 +1243,52 @@ impl Map {
                     return;
                 }
                 self.point_at_context(String::new());
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self
+                .edge_at(self.cursor - self.rect.origin().to_vec2())
+                .is_some() =>
+            {
+                // A press on a place's trailing or bottom edge, or its corner, takes that edge:
+                // dragging it sizes the place (`canvas.md` §2), and nothing under it takes it.
+                if let Some((key, from, trailing, bottom)) =
+                    self.edge_at(self.cursor - self.rect.origin().to_vec2())
+                {
+                    let local = self.cursor - self.rect.origin().to_vec2();
+                    self.edge_drag = Some(EdgeDrag {
+                        key,
+                        from,
+                        start: local,
+                        now: local,
+                        trailing,
+                        bottom,
+                    });
+                }
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.edge_drag.is_some() => {
+                if let Some(drag) = self.edge_drag.take() {
+                    let rect = drag.rect();
+                    let zoom = self.camera.zoom.max(f64::EPSILON);
+                    if rect != drag.from {
+                        self.resize.fire(Some(crate::component::Value::List(vec![
+                            crate::component::Value::Text(self.item_of(drag.key)),
+                            crate::component::Value::List(vec![
+                                crate::component::Value::Int((rect.width() / zoom).round() as i64),
+                                crate::component::Value::Int((rect.height() / zoom).round() as i64),
+                            ]),
+                        ])));
+                    }
+                }
+                self.dirty = true;
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -1146,6 +1384,27 @@ impl Map {
 impl Widget for Map {
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
+    }
+
+    /// Over a place's trailing or bottom edge the pointer shows the edge can be dragged.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon;
+        if self.edge_drag.is_none() && !self.rect.contains(point) {
+            return None;
+        }
+        let edges = self
+            .edge_drag
+            .as_ref()
+            .map(|drag| (drag.trailing, drag.bottom))
+            .or_else(|| {
+                self.edge_at(point - self.rect.origin().to_vec2())
+                    .map(|(_, _, trailing, bottom)| (trailing, bottom))
+            })?;
+        Some(match edges {
+            (true, true) => CursorIcon::SeResize,
+            (true, false) => CursorIcon::EResize,
+            _ => CursorIcon::SResize,
+        })
     }
 
     /// The map is a group named for what it is ("Canvas"), its places read inside it.
@@ -1500,6 +1759,15 @@ impl Widget for Map {
             *ctx.handled = true;
         }
     }
+}
+
+/// The rectangle `[x, y, width, height]` names in canvas pixels, when it names one with an area.
+fn outline_of(outline: &[i64]) -> Option<Rect> {
+    let [x, y, width, height] = outline else {
+        return None;
+    };
+    (*width > 0 && *height > 0)
+        .then(|| Rect::from_origin_size((*x as f64, *y as f64), (*width as f64, *height as f64)))
 }
 
 /// `v` as `f32`, for the layout solver.

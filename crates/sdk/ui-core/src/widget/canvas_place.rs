@@ -10,6 +10,9 @@
 //! The look is the theme's: the surface is [`SurfaceLevel::Window`], the handle a floating
 //! surface of the hover toolbar's, the title a label in the theme's secondary ink.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
@@ -21,7 +24,10 @@ use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::arrange::{Align, Fit, Slot, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
-use crate::widget::{Decorator, DragSource, Element, HoverToolbar, Spacer, Text, Widget};
+use crate::widget::{
+    ContextMenuArea, Decorator, DragSource, Element, HoverToolbar, MenuItemProps, Spacer, Text,
+    Widget,
+};
 
 /// A resource's view standing on a canvas: the view on the window surface, with a handle shown
 /// over its corner on hover and focus that names it, holds its controls and moves it.
@@ -40,14 +46,26 @@ pub struct PlaceProps {
     /// The view the place shows, filling it.
     #[component(slot(default))]
     pub body: Option<Element>,
+    /// The resource the place shows, whose published actions its menu lists, which the host
+    /// fills as it fills a `ui.MenuButton`'s: a right-click on the place opens them, and typing
+    /// there filters them as every context menu does (`canvas.md` §1, "Right-click keeps its
+    /// menu"). A right-click on content with a menu of its own (a field, a row) is that
+    /// content's.
+    pub subject: Option<crate::component::ResourceId>,
+    /// The place's menu: the commands the host filled from its subject.
+    #[component(slot)]
+    pub items: Vec<MenuItemProps>,
 }
 
 /// See the module docs.
 pub struct CanvasPlace {
-    toolbar: HoverToolbar,
+    /// The place's menu around its view and its handle, so a right-click on either opens it.
+    menu: ContextMenuArea,
     /// The name its handle shows, and the resource the handle carries: what it was built with.
     name: String,
     carries: String,
+    /// The commands its menu offers, as the props last gave them.
+    items: Rc<RefCell<Vec<MenuItemProps>>>,
 }
 
 fn empty() -> Element {
@@ -63,7 +81,10 @@ impl Described for CanvasPlace {
             carries,
             controls,
             body,
+            subject: _,
+            items,
         } = props;
+        let items = Rc::new(RefCell::new(items));
         let props_name = name.clone();
         let props_carries = carries.clone().unwrap_or_default();
         let title = title_of(&name);
@@ -95,20 +116,38 @@ impl Described for CanvasPlace {
                 .gap(Rhythm::None)
                 .push_slot(slot),
         };
+        // The place's menu: the resource's own actions, read when it opens so it offers what
+        // is true then. It stands around the view and the handle both, so a right-click on the
+        // handle — or on a part of the view that has no menu of its own — opens it.
+        let offered = Rc::clone(&items);
+        let toolbar = HoverToolbar::filling(Box::new(ground), vec![handle]);
+        let menu = ContextMenuArea::new(Box::new(toolbar), move |_| {
+            offered
+                .borrow()
+                .iter()
+                .cloned()
+                .map(MenuItemProps::into_entry)
+                .collect()
+        });
         Self {
-            toolbar: HoverToolbar::filling(Box::new(ground), vec![handle]),
+            menu,
             name: title_of(&props_name),
             carries: props_carries,
+            items,
         }
     }
 
     /// The same place told it again keeps its view, its handle and the hover it is in: only
     /// another name, another resource or new views in its slots build it again.
     fn set_props(&mut self, props: PlaceProps) -> bool {
-        props.controls.is_none()
+        let kept = props.controls.is_none()
             && props.body.is_none()
             && title_of(&props.name) == self.name
-            && props.carries.unwrap_or_default() == self.carries
+            && props.carries.unwrap_or_default() == self.carries;
+        if kept {
+            *self.items.borrow_mut() = props.items;
+        }
+        kept
     }
 }
 
@@ -118,14 +157,14 @@ fn title_of(name: &Option<String>) -> String {
 }
 
 impl Decorator for CanvasPlace {
-    type Inner = HoverToolbar;
+    type Inner = ContextMenuArea;
 
-    fn inner(&self) -> &HoverToolbar {
-        &self.toolbar
+    fn inner(&self) -> &ContextMenuArea {
+        &self.menu
     }
 
-    fn inner_mut(&mut self) -> &mut HoverToolbar {
-        &mut self.toolbar
+    fn inner_mut(&mut self) -> &mut ContextMenuArea {
+        &mut self.menu
     }
 
     fn name(&self) -> &'static str {

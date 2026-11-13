@@ -34,6 +34,8 @@ const LIST_ITEM: &str = "ui.ListItem";
 const SHELL: &str = "ui.NavShell";
 /// The menu a view opens onto a resource, its commands filled here.
 const MENU_BUTTON: &str = "ui.MenuButton";
+/// A place on a canvas, whose menu is its subject's actions as a menu button's is.
+const PLACE: &str = "ui.Place";
 /// The slot a menu's commands go in.
 const ITEMS: &str = "items";
 /// The control that edits a title as a page's large title.
@@ -534,10 +536,11 @@ impl Core {
     }
 
     /// Each menu a view opened onto a resource gets that resource's actions: a bar naming the
-    /// window in front draws the commands the window's own menu would, without the view reading
-    /// them back.
+    /// window in front draws the commands the window's own menu would, and a place on a canvas
+    /// offers its resource's on a right-click, without the view reading them back.
     fn subject_menus(&self, at: usize) -> Result<(), RuntimeError> {
-        let subject = if self.kind(at)? == MENU_BUTTON {
+        let kind = self.kind(at)?;
+        let subject = if kind == MENU_BUTTON || kind == PLACE {
             match self.props(at)?.get("subject").cloned() {
                 Some(Value::Ref(subject)) => Some(subject),
                 Some(Value::Opt(Some(held))) => match *held {

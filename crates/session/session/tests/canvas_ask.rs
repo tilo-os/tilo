@@ -264,20 +264,11 @@ fn conversation(session: &Session) -> String {
         .expect("the ask conversation is published")
 }
 
-/// Open the whole conversation as content, as the turn's "Whole conversation" does: the system's
-/// `open` of the channel. The place it stands in.
+/// Open the whole conversation as content, as the person does: the turn's "Whole conversation"
+/// pressed, the system's `open` of the channel. The place it stands in.
 fn open_the_conversation(session: &mut Session) -> tilo_session::arrangement::PlaceReading {
     turn_place(session);
-    let address = conversation(session);
-    session
-        .invoke(
-            "shell:arrangement",
-            "open",
-            serde_json::json!({"resource": address})
-                .as_object()
-                .expect("arguments"),
-        )
-        .unwrap_or_else(|error| panic!("the conversation opens: {error:?}"));
+    common::press(session, "Whole conversation");
     wait_for(session, "the conversation placed", |session| {
         arrangement(session)
             .places

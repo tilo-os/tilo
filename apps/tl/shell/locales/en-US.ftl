@@ -824,6 +824,9 @@ d-7j7tzynq = Show as
 d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
 
+d-k2ugogxy = Size it
+    .doc = Gives the place `key` the size a drag of its edge or corner left it at, `size` its width and height in canvas pixels: one arranging step of the person's, its corner where it stood.
+
 d-nljxfsom = Move it here
     .doc = Puts a resource dropped on the canvas where it was let go.
 

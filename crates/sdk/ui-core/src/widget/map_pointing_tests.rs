@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::Theme;
-use crate::component::{Fired, Intent, Value};
+use crate::component::{Described as _, Fired, Intent, Value};
 use crate::headless::FrameHarness;
 
 /// The key the map reports its pointing under.
@@ -456,4 +456,96 @@ fn two_fingers_pan_and_a_pinch_zooms() {
     );
     assert!(camera.zoom > 1.0, "the pinch zoomed in: {camera:?}");
     assert_eq!(reported(&queue), Vec::new(), "nothing was pointed at");
+}
+
+/// Dragging a place's corner sizes it: the map reports the place and its new size in canvas
+/// pixels, at the camera's zoom, and points at nothing on the canvas while it does.
+#[test]
+fn dragging_a_places_corner_reports_its_new_size() {
+    let queue = crate::Intents::default();
+    let camera = MapCamera {
+        origin: Point::ORIGIN,
+        zoom: 2.0,
+    };
+    let mut map = pointing_map(&queue, camera);
+    map.resize = Event::View(Intent::new(&queue, CANVAS, "resize"));
+    map = map.pin(
+        "one",
+        PinPlace {
+            x: 50.0,
+            y: 50.0,
+            width: 200.0,
+            height: Some(150.0),
+        },
+        // A place as the canvas stands it: its view on the surface, its handle and its menu.
+        Box::new(crate::widget::CanvasPlace::from_props(
+            "one",
+            crate::widget::PlaceProps {
+                name: Some("Inbox".into()),
+                carries: Some("tl:mail:root".into()),
+                body: Some(Box::new(crate::widget::Spacer::fixed(300.0))),
+                ..crate::widget::PlaceProps::default()
+            },
+        )),
+    );
+    let mut host = laid_out(map);
+    // The pin stands at (100, 100) to (500, 400) on screen at zoom 2: its corner is (500, 400).
+    host.drag_at((500.0, 400.0), (580.0, 460.0));
+    assert_eq!(
+        reported(&queue),
+        [Fired {
+            key: CANVAS.into(),
+            event: "resize".into(),
+            value: Some(Value::List(vec![
+                Value::Text("one".into()),
+                Value::List(vec![Value::Int(240), Value::Int(180)]),
+            ])),
+        }],
+        "the corner's drag sizes the place by what it travelled, in canvas pixels"
+    );
+}
+
+/// The rectangle a view points at is drawn as the frame's outline in the theme's focus colour,
+/// at the camera's pan and zoom, and a map pointing at none draws no outline.
+#[test]
+fn a_pointed_rectangle_is_outlined_where_it_stands() {
+    let theme = crate::Theme::dark();
+    let render = |outline: Vec<i64>| -> Vec<u8> {
+        let queue = crate::Intents::default();
+        let mut map = pointing_map(&queue, MapCamera::default());
+        map.outline = outline_of(&outline);
+        let mut text = crate::font_catalog::fixture_renderer();
+        crate::widget::layout::lay_out_detached(
+            &mut map,
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            &theme,
+            &mut text,
+        )
+        .expect("the map lays out");
+        let mut scene = Scene::new();
+        Widget::draw(
+            &mut map,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        crate::offscreen::OffscreenRenderer::new(400, 300)
+            .render(&scene, vello::peniko::Color::BLACK)
+    };
+    let plain = render(Vec::new());
+    let outlined = render(vec![100, 80, 120, 90]);
+    let at =
+        |rgba: &[u8], x: u32, y: u32| crate::offscreen::OffscreenRenderer::sample(rgba, 400, x, y);
+    assert_ne!(
+        at(&outlined, 160, 80),
+        at(&plain, 160, 80),
+        "the outline's top edge is drawn where the rectangle stands"
+    );
+    assert_eq!(
+        at(&outlined, 160, 125),
+        at(&plain, 160, 125),
+        "inside the rectangle stays the canvas"
+    );
 }

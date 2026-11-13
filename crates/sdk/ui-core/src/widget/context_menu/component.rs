@@ -9,7 +9,7 @@ use crate::widget::{ButtonRole, MenuEntry, Press};
 use super::{MenuButton, MenuItem};
 
 /// One command of a menu: what it shows, and what choosing it does.
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone)]
 #[component(name = "MenuItem", role = "MenuItem", label = "label")]
 pub struct MenuItemProps {
     /// What choosing it does, in a word or two.
