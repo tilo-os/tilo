@@ -1,19 +1,5 @@
-//! `ArrivingView`: what shows of a read ([`crate::arriving`]) while its answer is on the way, and
-//! the answer once it is there.
-//!
-//! The app says what shows once the data is there ([`Arriving::view`]) and optionally the content's
-//! shape ([`ArrivingView::shaped`]); this view owns every timing and placeholder decision: the
-//! space is reserved at the shape's geometry from the first frame, so nothing moves when the answer
-//! lands; a local read inside its frame budget holds the frame
-//! ([`Widget::holds_frame_until`]) and shows its answer with no placeholder and no motion;
-//! otherwise only the reserved ground shows until [`GRACE`](crate::arriving::GRACE), then a
-//! skeleton for at least [`MIN_SHOWN`](crate::arriving::MIN_SHOWN), naming where the data comes
-//! from after [`NAME_SOURCE_AFTER`](crate::arriving::NAME_SOURCE_AFTER). The answer cross-fades in
-//! ([`CrossFade::arrive`]); a failure shows the one failure face
-//! ([`arrival_failure`](fn@super::arrival_failure)) with a retry where the read offers one.
-//!
-//! Each step is a deadline ([`Widget::next_wake_deadline`]), never a frame loop.
-//! [`ArrivalFace`] paints the same steps for immediate-mode painters holding an [`ArrivalClock`].
+//! `ArrivingView`: what shows of a read ([`crate::arriving`]) while its answer is on the way, and the
+//! answer once it is there.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -37,9 +23,8 @@ use crate::widget::{
     Widget,
 };
 
-/// The box a widget fills when it is the answer of a read: what an
-/// [`ArrivingView`] showing it must have reserved. A list row reports its
-/// kind, a media card its aspect.
+/// The box a widget fills when it is the answer of a read: what an [`ArrivingView`] showing it must
+/// have reserved.
 pub trait ReservedShape {
     fn reserved_shape(&self) -> SkeletonShape;
 }
@@ -60,27 +45,27 @@ pub enum Showing {
 struct Reveal {
     showing: Showing,
     revision: u64,
-    /// Whether a failure shows its face here: the first box in its region
-    /// standing for its read does; the others keep their reserved space.
+    /// Whether a failure shows its face here: the first box in its region standing for its read does;
+    /// the others keep their reserved space.
     speaks: bool,
 }
 
-/// The placeholder steps of a read, painted in a rect: the immediate-mode
-/// counterpart of [`ArrivingView`], for a painter that draws its own rows.
+/// The placeholder steps of a read, painted in a rect: the immediate-mode counterpart of
+/// [`ArrivingView`], for a painter that draws its own rows.
 #[derive(Clone, Debug)]
 pub struct ArrivalFace<'a> {
     shape: SkeletonShape,
     step: Step,
     source: &'a Source,
-    /// Whether this placeholder is the one in its region that says where
-    /// its data comes from ([`NamedOnce`]).
+    /// Whether this placeholder is the one in its region that says where its data comes from
+    /// ([`NamedOnce`]).
     names: bool,
     /// How much of what it waits on has come, when that measures itself.
     progress: Option<Progress>,
 }
 
-/// The sources a pending region already named: each source is named once
-/// per region (a list's first row from it), not on every row.
+/// The sources a pending region already named: each source is named once per region (a list's first
+/// row from it), not on every row.
 #[derive(Clone, Debug, Default)]
 pub struct NamedOnce(Vec<Source>);
 
@@ -120,25 +105,24 @@ impl<'a> ArrivalFace<'a> {
         }
     }
 
-    /// Say how much of the data has come, when what it waits on measures
-    /// itself: from the skeleton on, a line says the amount, over a bar
-    /// when the whole is known, under the skeleton.
+    /// Say how much of the data has come, when what it waits on measures itself: from the skeleton on,
+    /// a line says the amount, over a bar when the whole is known, under the skeleton.
     #[must_use]
     pub fn with_progress(mut self, progress: Option<Progress>) -> Self {
         self.progress = progress;
         self
     }
 
-    /// Whether this placeholder says where its data comes from, once it
-    /// would: a region names each source once.
+    /// Whether this placeholder says where its data comes from, once it would: a region names each
+    /// source once.
     #[must_use]
     pub fn naming(mut self, names: bool) -> Self {
         self.names = names;
         self
     }
 
-    /// Name the source here only if no placeholder before it in `region`
-    /// named it: one line per source per region.
+    /// Name the source here only if no placeholder before it in `region` named it: one line per source
+    /// per region.
     #[must_use]
     pub fn named_once(self, region: &mut NamedOnce) -> Self {
         let names = self.step == Step::Named && region.claim(self.source);
@@ -151,8 +135,7 @@ impl<'a> ArrivalFace<'a> {
         self.step
     }
 
-    /// The height the content will take at `width`: the space a painter
-    /// reserves for it.
+    /// The height the content will take at `width`: the space a painter reserves for it.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         SkeletonFace::new(self.shape).height(text, theme, width)
     }
@@ -191,8 +174,8 @@ impl<'a> ArrivalFace<'a> {
         Some(crate::i18n::I18nManager::lookup(key, Some(&args)))
     }
 
-    /// What it says, for a screen reader: where the data comes from and how
-    /// much of it has come, or that it is loading.
+    /// What it says, for a screen reader: where the data comes from and how much of it has come, or
+    /// that it is loading.
     #[must_use]
     pub fn description(&self) -> String {
         let said: Vec<String> = self.caption().into_iter().chain(self.amount()).collect();
@@ -203,12 +186,8 @@ impl<'a> ArrivalFace<'a> {
         }
     }
 
-    /// Paint the step in `rect`: nothing on the ground; the skeleton, with a
-    /// line saying where the data comes from in a place the shape keeps for
-    /// it; under it how much has come, over its bar. A shape of nothing
-    /// ([`SkeletonShape::Ground`]) keeps its first line for the source
-    /// whenever the source has a name. All of it inside `rect`, so a step
-    /// never moves anything.
+    /// Paint the step in `rect`: nothing on the ground; the skeleton, with a line saying where the data
+    /// comes from in a place the shape keeps for it; under it how much has come, over its bar.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -255,10 +234,9 @@ impl<'a> ArrivalFace<'a> {
     }
 }
 
-/// Where a view stands, which read it stands for and what it waits on, for
-/// the views around it to tell whether a source is named already
-/// ([`names_source`]) and whether its read's failure shows already
-/// ([`speaks_failure`]).
+/// Where a view stands, which read it stands for and what it waits on, for the views around it to
+/// tell whether a source is named already ([`names_source`]) and whether its read's failure shows
+/// already ([`speaks_failure`]).
 #[derive(Debug, Default)]
 struct NamingEntry {
     rect: Cell<Rect>,
@@ -271,15 +249,14 @@ struct NamingEntry {
 }
 
 impl NamingEntry {
-    /// Whether the view stands in a region: its placeholder or its failure
-    /// shows, in a box with room.
+    /// Whether the view stands in a region: its placeholder or its failure shows, in a box with room.
     fn stands(&self) -> bool {
         (self.pending.borrow().is_some() || self.failed.get()) && self.rect.get().height() > 0.0
     }
 }
 
 thread_local! {
-    /// Every pending view on this thread, weakly.
+/// Every pending view on this thread, weakly.
     static PENDING_VIEWS: std::cell::RefCell<Vec<std::rc::Weak<NamingEntry>>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -292,15 +269,14 @@ fn register_naming(entry: &Rc<NamingEntry>) {
     });
 }
 
-/// How far apart two pending boxes stand and still be one region: no
-/// farther than the gap between groups (a list's rows, a grid's cards),
-/// not the space between two parts of a page.
+/// How far apart two pending boxes stand and still be one region: no farther than the gap between
+/// groups (a list's rows, a grid's cards), not the space between two parts of a page.
 fn region_gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.rhythm.group)
 }
 
-/// Whether two pending boxes stand in one region: stacked or side by side
-/// with no more than `gap` between them.
+/// Whether two pending boxes stand in one region: stacked or side by side with no more than `gap`
+/// between them.
 fn adjoin(a: Rect, b: Rect, gap: f64) -> bool {
     let overlap_x = a.x0 < b.x1 && b.x0 < a.x1;
     let overlap_y = a.y0 < b.y1 && b.y0 < a.y1;
@@ -309,10 +285,9 @@ fn adjoin(a: Rect, b: Rect, gap: f64) -> bool {
     (overlap_x && gap_y <= gap) || (overlap_y && gap_x <= gap)
 }
 
-/// Whether the view `me` names its source: of the boxes in its region (the
-/// boxes it adjoins, the boxes those adjoin, and so on, whatever they wait
-/// on), it is the first in reading order that waits on its source. A list
-/// or a grid names each source once, wherever its rows or cards come from.
+/// Whether the view `me` names its source: of the boxes in its region (the boxes it adjoins, the
+/// boxes those adjoin, and so on, whatever they wait on), it is the first in reading order that
+/// waits on its source.
 fn names_source(me: &Rc<NamingEntry>, theme: &Theme) -> bool {
     let Some(source) = me.pending.borrow().clone() else {
         return false;
@@ -325,17 +300,15 @@ fn names_source(me: &Rc<NamingEntry>, theme: &Theme) -> bool {
     })
 }
 
-/// Whether the view `me`, its read failed, shows the failure: of the boxes
-/// in its region, it is the first in reading order that stands for its
-/// read. Rows sharing one read show one failure, with one way to ask
-/// again; rows with reads of their own each show theirs.
+/// Whether the view `me`, its read failed, shows the failure: of the boxes in its region, it is the
+/// first in reading order that stands for its read.
 fn speaks_failure(me: &Rc<NamingEntry>, theme: &Theme) -> bool {
     let read = me.read.get();
     first_in_region(me, theme, |other| other.read.get() == read)
 }
 
-/// Whether no box in `me`'s region that is `alike` stands before it in
-/// reading order: `(top, left)`.
+/// Whether no box in `me`'s region that is `alike` stands before it in reading order: `(top,
+/// left)`.
 fn first_in_region(
     me: &Rc<NamingEntry>,
     theme: &Theme,
@@ -370,8 +343,7 @@ fn first_in_region(
     true
 }
 
-/// The space a pending read reserves: as tall as its content's shape, and
-/// empty. Its [`ArrivingView`] paints the placeholder steps over it.
+/// The space a pending read reserves: as tall as its content's shape, and empty.
 struct Reserve {
     shape: SkeletonShape,
     rect: Rect,
@@ -380,8 +352,7 @@ struct Reserve {
 }
 
 impl Reserve {
-    /// Nothing, in no space: what a placeholder's read that never answers
-    /// would show.
+    /// Nothing, in no space: what a placeholder's read that never answers would show.
     fn empty() -> Self {
         Self::of(SkeletonShape::Text { lines: 0 })
     }
@@ -473,8 +444,8 @@ impl Widget for Reserve {
     }
 }
 
-/// What a view reads of its read, whatever its answer's type: the view
-/// itself is not generic, so the toolkit builds it once for every app.
+/// What a view reads of its read, whatever its answer's type: the view itself is not generic, so
+/// the toolkit builds it once for every app.
 trait ArrivalRead {
     fn revision(&self) -> u64;
     fn began(&self) -> Instant;
@@ -540,8 +511,7 @@ pub struct ArrivingView {
     shape: Rc<Cell<SkeletonShape>>,
     reveal: Rc<Cell<Reveal>>,
     inner: ModelView<Reveal>,
-    /// The box the read reserves: the content's geometry from the first
-    /// frame. The placeholder, the answer and a failure all stand in it.
+    /// The box the read reserves: the content's geometry from the first frame.
     reserve: Reserve,
     /// This view's place among the pending views naming their sources.
     naming: Rc<NamingEntry>,
@@ -554,23 +524,20 @@ pub struct ArrivingView {
     replaced: Step,
     /// The placeholder step the last frame painted.
     drawn_step: Option<Step>,
-    /// Whether the placeholder last drawn named its source: the face its
-    /// answer fades out keeps saying it.
+    /// Whether the placeholder last drawn named its source: the face its answer fades out keeps saying
+    /// it.
     drawn_naming: bool,
-    /// Whether layout moved which box shows a shared read's failure, for
-    /// the next frame to build it there.
+    /// Whether layout moved which box shows a shared read's failure, for the next frame to build it
+    /// there.
     respoken: bool,
     theme: Option<Theme>,
     rect: Rect,
-    /// Whether a read can still answer this view: a still capture waits
-    /// for it. A [`placeholder`](ArrivingView::placeholder) stands for data
-    /// whose answer comes with a new view, not into this one.
+    /// Whether a read can still answer this view: a still capture waits for it.
     answerable: bool,
 }
 
 impl ArrivingView {
-    /// The view of `arriving`, showing `build`'s content once the answer is
-    /// there.
+    /// The view of `arriving`, showing `build`'s content once the answer is there.
     pub fn new<T: 'static, E: std::fmt::Display + 'static>(
         arriving: &Arriving<T, E>,
         mut build: impl FnMut(&T) -> Element + 'static,
@@ -585,8 +552,7 @@ impl ArrivingView {
         )
     }
 
-    /// The view of `read`, showing what `answer` builds of its answer
-    /// (`None` while there is none).
+    /// The view of `read`, showing what `answer` builds of its answer (`None` while there is none).
     fn of_read(read: Rc<dyn ArrivalRead>, mut answer: Box<dyn FnMut() -> Option<Element>>) -> Self {
         let shape = Rc::new(Cell::new(SkeletonShape::Page));
         let reveal = Rc::new(Cell::new(Reveal {
@@ -635,9 +601,8 @@ impl ArrivingView {
     }
 }
 
-/// The reserved box as the error, with a retry when the read offers one:
-/// a banner where the box holds one, a row of the box's own kind where it
-/// is a row's (or a line's).
+/// The reserved box as the error, with a retry when the read offers one: a banner where the box
+/// holds one, a row of the box's own kind where it is a row's (or a line's).
 fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) -> Element {
     let failed = crate::i18n::I18nManager::lookup_plain("arriving-failed");
     let retry = read.can_retry().then(|| {
@@ -671,18 +636,15 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
 }
 
 impl ArrivingView {
-    /// The framework's placeholder for data on its way from `from`, timed
-    /// from when it is built: for a view rebuilt from a snapshot that knows
-    /// the data is pending but holds no read of its own. It reserves
-    /// `shape`'s geometry and steps through the same placeholder as any
-    /// [`ArrivingView`].
+    /// The framework's placeholder for data on its way from `from`, timed from when it is built: for a
+    /// view rebuilt from a snapshot that knows the data is pending but holds no read of its own.
     #[must_use]
     pub fn placeholder(from: Source, shape: SkeletonShape) -> Element {
         Self::placeholder_since(from, crate::time::now(), shape)
     }
 
-    /// [`Self::placeholder`] for data asked for at `since`: its steps keep
-    /// their timing however often the view around it is built again.
+    /// [`Self::placeholder`] for data asked for at `since`: its steps keep their timing however often
+    /// the view around it is built again.
     #[must_use]
     pub fn placeholder_since(from: Source, since: Instant, shape: SkeletonShape) -> Element {
         let pending = Arriving::<(), String>::pending_since(from, since);
@@ -693,32 +655,30 @@ impl ArrivingView {
 }
 
 impl ArrivingView {
-    /// Say what the content looks like, so the reserved space and the
-    /// skeleton take its geometry and nothing moves when it lands.
+    /// Say what the content looks like, so the reserved space and the skeleton take its geometry and
+    /// nothing moves when it lands.
     #[must_use]
     pub fn shaped(self, shape: SkeletonShape) -> Self {
         self.shape.set(shape);
         self
     }
 
-    /// The answer's view, while it shows: what a host that stands for the
-    /// view (a window's root) reaches through it. A traversal meets it as
-    /// the view's child; the view itself answers for nothing of it.
+    /// The answer's view, while it shows: what a host that stands for the view (a window's root)
+    /// reaches through it.
     #[must_use]
     pub fn answer(&self) -> Option<&dyn Widget> {
         (self.showing() == Showing::Answer).then(|| self.inner.child())
     }
 
-    /// Whether the answer shows at `now`, its cross-fade over: nothing of
-    /// the placeholder is left to paint.
+    /// Whether the answer shows at `now`, its cross-fade over: nothing of the placeholder is left to
+    /// paint.
     #[must_use]
     pub fn settled(&self, now: Instant) -> bool {
         self.showing() == Showing::Answer && !self.fade.is_moving(now)
     }
 
-    /// Take the answer's view out of a settled view ([`Self::settled`]),
-    /// for a host that shows it in the view's place from now on (a window's
-    /// root, once its record arrived). Nothing once taken, or before.
+    /// Take the answer's view out of a settled view ([`Self::settled`]), for a host that shows it in
+    /// the view's place from now on (a window's root, once its record arrived).
     pub fn take_answer(&mut self, now: Instant) -> Option<Element> {
         self.settled(now)
             .then(|| self.inner.replace_child(Box::new(Reserve::empty())))
@@ -739,8 +699,8 @@ impl ArrivingView {
         self.reveal.get().showing
     }
 
-    /// The placeholder step on screen at `now` while the placeholder shows;
-    /// [`Step::Shown`] once the answer or the failure does.
+    /// The placeholder step on screen at `now` while the placeholder shows; [`Step::Shown`] once the
+    /// answer or the failure does.
     #[must_use]
     pub fn step(&self, now: Instant) -> Step {
         if self.showing() != Showing::Placeholder {
@@ -781,7 +741,6 @@ impl ArrivingView {
                     if fresh {
                         self.clock = Some(ArrivalClock::new(since, from));
                     }
-                    // A failure gives way to the read asked again.
                     if self.showing() == Showing::Failure {
                         self.set_reveal(Showing::Placeholder, revision);
                         self.fade = CrossFade::new(Showing::Placeholder);
@@ -840,32 +799,30 @@ impl ArrivingView {
         });
     }
 
-    /// Whether this view shows its read's failure ([`speaks_failure`]);
-    /// before its first layout, it does.
+    /// Whether this view shows its read's failure ([`speaks_failure`]); before its first layout, it
+    /// does.
     fn speaks(&self) -> bool {
         self.theme
             .as_ref()
             .is_none_or(|theme| speaks_failure(&self.naming, theme))
     }
 
-    /// Whether this frame's layout moved a shared read's failure to another
-    /// box while this one still holds the face it built: it neither paints
-    /// it nor offers it, so the first frame already shows one failure, and
-    /// the next frame builds nothing here.
+    /// Whether this frame's layout moved a shared read's failure to another box while this one still
+    /// holds the face it built: it neither paints it nor offers it, so the first frame already shows
+    /// one failure, and the next frame builds nothing here.
     fn failure_moved_away(&self) -> bool {
         let reveal = self.reveal.get();
         self.respoken && reveal.showing == Showing::Failure && !reveal.speaks
     }
 
-    /// Whether the inner view stands here as the one child: the tree, the walk a route reads
-    /// and the list handed out to change all ask this, so a failure that moved away leaves it
-    /// out of each of them at once.
+    /// Whether the inner view stands here as the one child: the tree, the walk a route reads and the
+    /// list handed out to change all ask this, so a failure that moved away leaves it out of each of
+    /// them at once.
     fn inner_stands(&self) -> bool {
         !self.failure_moved_away()
     }
 
-    /// Move a shared read's failure to the box that shows it now. True when
-    /// it moved.
+    /// Move a shared read's failure to the box that shows it now.
     fn respeak(&self) -> bool {
         let current = self.reveal.get();
         if current.showing != Showing::Failure {
@@ -888,8 +845,7 @@ impl ArrivingView {
             .paint(ctx, rect);
     }
 
-    /// Tell the views around this one what it waits on, while its
-    /// placeholder shows.
+    /// Tell the views around this one what it waits on, while its placeholder shows.
     fn note_pending(&self) {
         let pending = (self.showing() == Showing::Placeholder)
             .then(|| self.clock.as_ref().map(|clock| clock.source().clone()))
@@ -898,9 +854,8 @@ impl ArrivingView {
         self.naming.failed.set(self.showing() == Showing::Failure);
     }
 
-    /// Check that the answer is of the shape its box reserved: a row of
-    /// another kind, a card of another aspect, is a mistake the view would
-    /// otherwise show as a box that does not fit.
+    /// Check that the answer is of the shape its box reserved: a row of another kind, a card of another
+    /// aspect, is a mistake the view would otherwise show as a box that does not fit.
     fn check_answer_shape(&self) {
         if self.showing() != Showing::Answer {
             return;
@@ -1155,8 +1110,6 @@ impl Widget for ArrivingView {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         let now = crate::time::now();
-        // A read that moved since the view last looked (said on this thread,
-        // with no worker to wake the window) is due now.
         if self.unobserved() {
             return Some(now);
         }
@@ -1224,8 +1177,6 @@ impl Widget for ArrivingView {
 
 impl<T: 'static, E: std::fmt::Display + 'static> Arriving<T, E> {
     /// The view of this read: `build`'s content once the answer is there.
-    /// Every placeholder and timing on the way is the framework's
-    /// ([`ArrivingView`]).
     pub fn view(&self, build: impl FnMut(&T) -> Element + 'static) -> ArrivingView {
         ArrivingView::new(self, build)
     }

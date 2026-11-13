@@ -1,7 +1,4 @@
-//! `split`: the adaptive two-pane pattern (layout design 3).
-//!
-//! Both panes always exist. The arrangement is decided *during layout* from the width the split
-//! is offered: side by side while both panes' minimums fit, otherwise by the collapse mode.
+//! `split`: the adaptive two-pane pattern.
 
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
@@ -10,27 +7,22 @@ use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_
 use super::units::{Arrangement, Axis, Direction, Length, arrangement_for};
 use crate::tokens::Rhythm;
 
-/// Which pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     Primary,
     Secondary,
 }
 
-/// What a split does when both panes do not fit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Collapse {
-    /// The secondary pane under the primary.
     #[default]
     Stack,
     /// The secondary pane is closed until the person opens it, and then stands under the
     /// primary.
     Drawer,
-    /// One pane at a time; the host offers the way back.
     Navigate,
 }
 
-/// The edge the primary pane stands at when side by side.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Side {
     #[default]
@@ -38,10 +30,6 @@ pub enum Side {
     Trailing,
 }
 
-/// The way a host steers a navigating split from outside it: which pane it shows, and whether
-/// it is collapsed to one pane at all. Clones share the state; a host keeps one beside the
-/// split, offers the way back where it draws its header, and shows the secondary pane when the
-/// person opens something there.
 #[derive(Clone, Debug, Default)]
 pub struct Navigation {
     secondary: std::rc::Rc<std::cell::Cell<bool>>,
@@ -49,7 +37,6 @@ pub struct Navigation {
 }
 
 impl Navigation {
-    /// The pane the split shows while collapsed.
     #[must_use]
     pub fn shown(&self) -> Pane {
         if self.secondary.get() {
@@ -59,18 +46,15 @@ impl Navigation {
         }
     }
 
-    /// Show `pane` while collapsed.
     pub fn show(&self, pane: Pane) {
         self.secondary.set(pane == Pane::Secondary);
     }
 
-    /// Whether the split is collapsed to one pane as of its last layout.
     #[must_use]
     pub fn collapsed(&self) -> bool {
         self.collapsed.get()
     }
 
-    /// Whether the person is looking at the secondary pane alone, which wants a way back.
     #[must_use]
     pub fn detail_alone(&self) -> bool {
         self.collapsed() && self.shown() == Pane::Secondary
@@ -81,46 +65,38 @@ pub struct SplitLayout {
     primary_min: Length,
     secondary_min: Length,
     side: Side,
-    /// The primary pane's share of the width when side by side.
     ratio: f32,
     collapse: Collapse,
     gap: Rhythm,
     direction: Direction,
     arrangement: Arrangement,
-    /// The pane `Navigate` shows, and whether the `Drawer` is open.
     shown: Pane,
     drawer_open: bool,
     dirty: bool,
-    /// A host's handle on the pane shown and the collapse, when it asked for one.
     navigation: Option<Navigation>,
 }
 
 impl SplitLayout {
-    /// How the panes stand now.
     #[must_use]
     pub const fn arrangement(&self) -> Arrangement {
         self.arrangement
     }
 
-    /// Whether the panes do not stand side by side.
     #[must_use]
     pub fn collapsed(&self) -> bool {
         self.arrangement == Arrangement::Collapsed
     }
 
-    /// The collapse mode.
     #[must_use]
     pub const fn collapse_mode(&self) -> Collapse {
         self.collapse
     }
 
-    /// The pane `Navigate` shows.
     #[must_use]
     pub const fn shown(&self) -> Pane {
         self.shown
     }
 
-    /// Show `pane` while navigating.
     pub fn show(&mut self, pane: Pane) {
         if self.shown != pane {
             self.shown = pane;
@@ -128,7 +104,6 @@ impl SplitLayout {
         }
     }
 
-    /// Open or close the drawer.
     pub fn set_drawer_open(&mut self, open: bool) {
         if self.drawer_open != open {
             self.drawer_open = open;
@@ -150,7 +125,6 @@ impl SplitLayout {
     }
 
     fn row(&self) -> taffy::FlexDirection {
-        // The primary pane is first in the source; trailing puts it at the other end.
         let reversed = self.direction.is_rtl() != (self.side == Side::Trailing);
         if reversed {
             taffy::FlexDirection::RowReverse
@@ -253,11 +227,9 @@ impl Layout for SplitLayout {
     }
 }
 
-/// The adaptive two-pane pattern. Add the primary pane, then the secondary.
 pub type Split = Arranged<SplitLayout>;
 
 impl Arranged<SplitLayout> {
-    /// A split whose panes need `primary_min` and `secondary_min` to stand side by side.
     #[must_use]
     pub fn new(primary_min: Length, secondary_min: Length) -> Self {
         Self::with_layout(SplitLayout {
@@ -295,7 +267,6 @@ impl Arranged<SplitLayout> {
         self
     }
 
-    /// A handle the host steers the shown pane with, for a split that collapses to navigate.
     #[must_use]
     pub fn navigation(&mut self) -> Navigation {
         let navigation = self
@@ -313,7 +284,6 @@ impl Arranged<SplitLayout> {
         self
     }
 
-    /// The axis the panes run along when side by side.
     #[must_use]
     pub const fn axis() -> Axis {
         Axis::Inline

@@ -1,16 +1,5 @@
-//! Rows that arrive one by one: the same placeholder steps as
-//! [`ArrivingView`](super::ArrivingView), kept per row.
-//!
-//! A list, table or tree whose model answers a row as
-//! [`Arrival::Pending`] reserves that row's slot and paints its placeholder
-//! there: the ground until [`GRACE`](crate::arriving::GRACE), then a
-//! skeleton that stays at least [`MIN_SHOWN`](crate::arriving::MIN_SHOWN),
-//! naming where the row comes from after
-//! [`NAME_SOURCE_AFTER`](crate::arriving::NAME_SOURCE_AFTER). The row's
-//! content cross-fades into its slot when it lands, and no other row moves.
-//! [`ArrivingRows`] keeps that timing for each pending row; the widget asks
-//! it what a row shows and when it next changes, so a pending row costs no
-//! frames between its steps.
+//! Rows that arrive one by one: the same placeholder steps as [`ArrivingView`](super::ArrivingView),
+//! kept per row.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -30,13 +19,11 @@ use crate::time::Instant;
 use crate::tokens::EffectiveMotion;
 use crate::widget::{ArrivalFace, Element, Showing, SkeletonShape, TaffyTreeExt, Widget};
 
-/// One row's arrival: its timing, and its fade once it landed.
 #[derive(Clone, Debug)]
 struct RowArrival {
     clock: ArrivalClock,
     showing: Showing,
     fade: CrossFade<Showing>,
-    /// The placeholder step its content replaced: what fades out.
     replaced: Step,
 }
 
@@ -50,26 +37,17 @@ impl RowArrival {
         }
     }
 
-    /// Whether it still needs timing at `now`: pending, or fading in.
     fn is_live(&self, now: Instant) -> bool {
         self.showing == Showing::Placeholder || self.fade.is_moving(now)
     }
 }
 
-/// How a landed row fades in: the placeholder step it replaced at its
-/// outgoing opacity, and its content's opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowFade {
     pub outgoing: Option<(Step, f32)>,
     pub incoming: f32,
 }
 
-/// The arrival timing of a widget's pending rows, by row key.
-///
-/// The key is all that differs from one widget's rows to another's: it
-/// names a row's slot in `RowArrivals`, which holds every row's timing,
-/// fading and painting once, in the toolkit, for every list, table and
-/// tree of every app.
 #[derive(Clone, Debug)]
 pub struct ArrivingRows<K> {
     slots: HashMap<K, usize>,
@@ -91,10 +69,6 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
         Self::default()
     }
 
-    /// What row `key` shows at `now`, its model answering `arrival`. A row
-    /// first seen pending starts its timing now; a row that lands shows
-    /// once its skeleton stood its minimum, fading in under `motion` (none
-    /// when the widget has no theme yet: it shows at once).
     pub fn observe<T, E>(
         &mut self,
         key: &K,
@@ -110,21 +84,16 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
         showing
     }
 
-    /// The placeholder row `key` paints at `now` in `shape`, while it
-    /// shows one.
     #[must_use]
     pub fn face(&self, key: &K, shape: SkeletonShape, now: Instant) -> Option<ArrivalFace<'_>> {
         self.rows.face(*self.slots.get(key)?, shape, now)
     }
 
-    /// How row `key` fades in at `now`, while it does.
     #[must_use]
     pub fn fade(&self, key: &K, now: Instant) -> Option<RowFade> {
         self.rows.fade(*self.slots.get(key)?, now)
     }
 
-    /// The placeholder step a landed row's content replaced, at the
-    /// opacity it fades out with at `now`, while it does.
     #[must_use]
     pub fn outgoing_face(
         &self,
@@ -135,15 +104,11 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
         self.rows.outgoing_face(*self.slots.get(key)?, shape, now)
     }
 
-    /// Whether row `key` is pending or fading in.
     #[must_use]
     pub fn contains(&self, key: &K) -> bool {
         self.slots.contains_key(key)
     }
 
-    /// Paint what row `key` shows over its slot `rect` at `now`, with
-    /// `content` drawing the row's own widget: the placeholder, or the
-    /// content fading in over the step it replaced, or just the content.
     pub fn paint(
         &self,
         key: &K,
@@ -167,46 +132,36 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
             .retain(|key, slot| rows.keep(*slot, keep(key), now));
     }
 
-    /// Whether a row is fading in at `now`.
     #[must_use]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.rows.is_moving(now)
     }
 
-    /// The next instant after `now` at which a placeholder changes: its next
-    /// step, or the content that landed showing once its skeleton stood its
-    /// minimum.
     #[must_use]
     pub fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
         self.rows.next_wake_deadline(now)
     }
 
-    /// Whether a row is waiting to show content that landed: the widget
-    /// looks at its model again by `now`.
     #[must_use]
     pub fn reveal_due(&self, now: Instant) -> bool {
         self.rows.reveal_due(now)
     }
 
-    /// The widget drew what the rows show at `now`.
     pub fn mark_drawn(&mut self, now: Instant) {
         self.rows.drawn_at = Some(now);
     }
 
-    /// Whether what the rows show changed since the widget last drew them.
     #[must_use]
     pub fn needs_redraw(&self, now: Instant) -> bool {
         self.rows.needs_redraw(now)
     }
 
-    /// Whether any row is pending or fading in.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
 }
 
-/// What a row's model answered, without the answer: all its timing reads.
 #[derive(Clone, Copy)]
 enum Answer<'a> {
     Pending(&'a Source),
@@ -228,9 +183,7 @@ impl<'a> Answer<'a> {
 #[derive(Clone, Debug, Default)]
 struct RowArrivals {
     rows: Vec<Option<RowArrival>>,
-    /// Slots of rows no longer kept, for the next row to take.
     free: Vec<usize>,
-    /// When the widget last drew what these rows show.
     drawn_at: Option<Instant>,
     /// The sources named in the frame painted at the instant it holds: the
     /// rows are one region, so each source is named on its first pending
@@ -247,8 +200,6 @@ impl RowArrivals {
         self.rows.iter().flatten()
     }
 
-    /// What the row in `slot` (none: a row not seen pending) shows at
-    /// `now`, and the slot a row first seen pending took.
     fn observe(
         &mut self,
         slot: Option<usize>,
@@ -258,8 +209,6 @@ impl RowArrivals {
     ) -> (Showing, Option<usize>) {
         let landed = match answer {
             Answer::Pending(from) => {
-                // Asked again (a retry, or a row refreshed after it showed):
-                // its placeholder starts over.
                 if let Some(row) = slot.and_then(|slot| self.rows.get_mut(slot)?.as_mut()) {
                     if row.clock.has_arrived() {
                         *row = RowArrival::pending(from, now);
@@ -296,7 +245,6 @@ impl RowArrivals {
         (landed, None)
     }
 
-    /// Hold `row` in a free slot, or a new one: its slot.
     fn add(&mut self, row: RowArrival) -> usize {
         if let Some(slot) = self.free.pop() {
             self.rows[slot] = Some(row);
@@ -306,8 +254,6 @@ impl RowArrivals {
         self.rows.len() - 1
     }
 
-    /// Whether the row in `slot` stays: `kept` by its widget, and pending
-    /// or fading in at `now`. A row that goes frees its slot.
     fn keep(&mut self, slot: usize, kept: bool, now: Instant) -> bool {
         let stays = kept && self.row(slot).is_some_and(|row| row.is_live(now));
         if !stays && let Some(row) = self.rows.get_mut(slot) {
@@ -450,8 +396,6 @@ fn with_opacity(
     }
 }
 
-/// A pending row's slot: as tall as the row it stands for, and empty. Its
-/// widget paints the placeholder steps over it.
 pub(crate) struct RowReserve {
     height: f32,
     rect: Rect,

@@ -1,20 +1,13 @@
 //! Units, sizing and the width classes the layout primitives share.
-//!
-//! Nothing here knows pixels. Sizes that relate to content are in `rem`, the body text size after
-//! the person's text-size setting, so a layout reflows when text is enlarged instead of clipping.
-//! Gaps are [`Rhythm`](crate::tokens::Rhythm) tokens. Directions are *logical* (leading and
-//! trailing), never left and right, so a right-to-left layout is the same layout mirrored.
 
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// One `rem` in logical pixels: the body text size, text scale included.
 #[must_use]
 pub fn rem_of(theme: &Theme) -> f32 {
     theme.tokens.typography.size(TextRole::Body).max(1.0)
 }
 
-/// A size in `rem` or in logical pixels (`dp`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Length {
     Rem(f32),
@@ -22,7 +15,6 @@ pub enum Length {
 }
 
 impl Length {
-    /// The size in logical pixels when one `rem` is `rem` pixels.
     #[must_use]
     pub fn resolve(self, rem: f32) -> f32 {
         match self {
@@ -32,7 +24,6 @@ impl Length {
     }
 }
 
-/// The direction inline content runs: leading to trailing is left to right for `Ltr`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
     #[default]
@@ -41,7 +32,6 @@ pub enum Direction {
 }
 
 impl Direction {
-    /// The flex direction of a row whose first child is at the leading edge.
     #[must_use]
     pub const fn row(self) -> taffy::FlexDirection {
         match self {
@@ -50,23 +40,18 @@ impl Direction {
         }
     }
 
-    /// Whether the leading edge is on the right.
     #[must_use]
     pub const fn is_rtl(self) -> bool {
         matches!(self, Self::Rtl)
     }
 }
 
-/// The axis of a container's main direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
-    /// Children run along the inline direction (a row).
     Inline,
-    /// Children run along the block direction (a stack).
     Block,
 }
 
-/// Placement across a container's cross axis, or of one item within its cell.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
     Start,
@@ -93,7 +78,6 @@ impl Align {
     }
 }
 
-/// How a row distributes its children along the main axis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Distribute {
     #[default]
@@ -115,7 +99,6 @@ impl Distribute {
     }
 }
 
-/// One of the nine logical positions of a layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum At {
     TopLeading,
@@ -130,8 +113,6 @@ pub enum At {
 }
 
 impl At {
-    /// The inline and block alignment of the position, with the inline one in physical terms
-    /// for `direction` (leading is the right edge in right-to-left).
     #[must_use]
     pub const fn aligns(self, direction: Direction) -> (taffy::AlignSelf, taffy::AlignSelf) {
         use taffy::AlignItems::{Center, FlexEnd as End, FlexStart as Start};
@@ -155,11 +136,8 @@ impl At {
     }
 }
 
-/// How one axis of a child is sized: as big as its content (`hug`), or taking the remaining
-/// space by weight (`fill`), within bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sizing {
-    /// `Some(weight)` takes the remaining space of the container's main axis by that weight.
     pub fill: Option<f32>,
     pub min: Option<Length>,
     pub max: Option<Length>,
@@ -202,9 +180,7 @@ impl Sizing {
 pub struct Fit {
     pub width: Sizing,
     pub height: Sizing,
-    /// Width divided by height.
     pub aspect: Option<f32>,
-    /// Placement across the container's cross axis, when it is not the container's own.
     pub align: Option<Align>,
 }
 
@@ -219,7 +195,6 @@ impl Fit {
         }
     }
 
-    /// Fill the space on both axes, by `weight` along the container's main axis.
     #[must_use]
     pub const fn fill(weight: f32) -> Self {
         Self {
@@ -230,14 +205,12 @@ impl Fit {
         }
     }
 
-    /// Set the sizing along the *inline* axis.
     #[must_use]
     pub const fn width(mut self, sizing: Sizing) -> Self {
         self.width = sizing;
         self
     }
 
-    /// Set the sizing along the *block* axis.
     #[must_use]
     pub const fn height(mut self, sizing: Sizing) -> Self {
         self.height = sizing;
@@ -337,11 +310,9 @@ pub const COMPACT_BELOW: f32 = 30.0;
 pub const MEDIUM_BELOW: f32 = 52.0;
 // ratchet-allow(pixel_const): a class boundary in rem, which the text size scales, not pixels
 pub const EXPANDED_BELOW: f32 = 75.0;
-/// Half the width of the band around a boundary inside which a class holds, in `rem`.
 pub const HYSTERESIS: f32 = 0.5;
 
 impl WidthClass {
-    /// The class of `width_rem`, with no history.
     #[must_use]
     pub fn of(width_rem: f32) -> Self {
         if width_rem < COMPACT_BELOW {
@@ -370,7 +341,6 @@ impl WidthClass {
         }
     }
 
-    /// The `rem` range the class covers.
     #[must_use]
     pub const fn band(self) -> (f32, f32) {
         match self {
@@ -392,14 +362,11 @@ pub fn class_min_width(class: WidthClass, rem: f32) -> f32 {
     class.band().0.max(0.0) * rem
 }
 
-/// The narrowest a column of content stands at, in logical pixels
-/// ([`class_min_width`] of [`WidthClass::Medium`]): the width a sidebar stands beside and no less.
 #[must_use]
 pub fn column_min_width(rem: f32) -> f32 {
     class_min_width(WidthClass::Medium, rem)
 }
 
-/// The shape of the space a view is offered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
     Portrait,
@@ -407,7 +374,6 @@ pub enum Orientation {
     Ultrawide,
 }
 
-/// The aspect ratio above which a space is ultrawide.
 pub const ULTRAWIDE_RATIO: f32 = 2.2;
 
 impl Orientation {
@@ -423,11 +389,8 @@ impl Orientation {
     }
 }
 
-/// What a view reads as `space`: the constraint its container offers it (layout.md,
-/// "Responding to space").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Space {
-    /// Offered width and height in `rem`.
     pub width: f32,
     pub height: f32,
     pub width_class: WidthClass,
@@ -435,8 +398,6 @@ pub struct Space {
 }
 
 impl Space {
-    /// The space offered `width` by `height` logical pixels at `rem` pixels to a `rem`, given the
-    /// class the view was last evaluated in.
     #[must_use]
     pub fn offered(width: f32, height: f32, rem: f32, previous: Option<WidthClass>) -> Self {
         let rem = rem.max(1.0);
@@ -483,14 +444,12 @@ pub fn columns_for(width: f32, min: f32, gap: f32) -> usize {
     }
 }
 
-/// How a split arranges its panes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrangement {
     SideBySide,
     Collapsed,
 }
 
-/// Side by side when both panes' minimums and the gap between them fit `width`.
 #[must_use]
 pub fn arrangement_for(width: f32, primary_min: f32, secondary_min: f32, gap: f32) -> Arrangement {
     if width >= primary_min + secondary_min + gap {
@@ -515,7 +474,6 @@ mod tests {
     #[test]
     fn lengths_resolve_against_the_text_size() {
         assert!((Length::Rem(11.0).resolve(16.0) - 176.0).abs() < f32::EPSILON);
-        // 200 % text: the same rem is twice the pixels, so fewer columns fit.
         assert!((Length::Rem(11.0).resolve(32.0) - 352.0).abs() < f32::EPSILON);
         assert!((Length::Dp(5.0).resolve(32.0) - 5.0).abs() < f32::EPSILON);
     }
@@ -526,11 +484,9 @@ mod tests {
         assert_eq!(columns_for(320.0, min, 16.0), 1, "a phone");
         assert_eq!(columns_for(2000.0, min, 16.0), 10);
         assert_eq!(columns_for(1000.0, min, 16.0), 5);
-        // Exactly enough for three columns and their gaps.
         assert_eq!(columns_for(3.0 * min + 2.0 * 16.0, min, 16.0), 3);
         assert_eq!(columns_for(3.0 * min + 2.0 * 16.0 - 1.0, min, 16.0), 2);
         assert_eq!(columns_for(0.0, min, 16.0), 1);
-        // Doubling the text size halves the columns.
         assert_eq!(columns_for(1000.0, 2.0 * min, 16.0), 2);
     }
 

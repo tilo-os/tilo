@@ -1,4 +1,4 @@
-//! `page`: the root of a document-like view (layout design 3).
+//! `page`: the root of a document-like view.
 
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
@@ -21,14 +21,9 @@ pub struct PageLayout {
     row: Option<RowSpacing>,
 }
 
-/// The space a row of a page's content ([`Page::row_after`]) has above and below it.
 #[derive(Clone, Copy, Debug)]
 enum RowSpacing {
-    /// The gap to the row before it above, nothing below: a transcript's message, the next
-    /// line of a run closer than the next run.
     After(crate::tokens::Rhythm),
-    /// A section's gap above, the gutter below: the bar at a column's foot, close under what
-    /// it follows.
     Foot,
 }
 
@@ -52,10 +47,6 @@ impl Layout for PageLayout {
 
     fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gutter = length(content_gutter(resolved));
-        // A page that fills its pane is a surface that lays out its own parts (a board's lanes,
-        // a desk's strips): it takes the pane's whole width, and what it holds keeps its own
-        // gutter at the sides. Its height gutter stays the page's.
-        // The lead a document reserves around its heading control adds to the page's gutter.
         let side = if self.fill {
             length(lead)
         } else {
@@ -66,8 +57,6 @@ impl Layout for PageLayout {
             Some(RowSpacing::Foot) => {
                 (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
             }
-            // The page's ends keep the content gutter: what grows with what it holds and what
-            // fills the pane alike start the same distance under the bar.
             None => (gutter, gutter),
         };
         Style {
@@ -108,7 +97,6 @@ impl Layout for PageLayout {
     }
 }
 
-/// Content bounded to a readable width and centred, one content gutter in from the column.
 pub type Page = Arranged<PageLayout>;
 
 impl Arranged<PageLayout> {
@@ -122,7 +110,6 @@ impl Arranged<PageLayout> {
         })
     }
 
-    /// `page(full)`: no bound, for canvases, tables, maps and media.
     #[must_use]
     pub fn full() -> Self {
         Self::with_layout(PageLayout {
@@ -142,9 +129,6 @@ impl Arranged<PageLayout> {
         self
     }
 
-    /// One row of a page's content that stands `gap` below the row before it and has nothing
-    /// below it: a transcript's message, whose run's next line sits closer than the next run.
-    /// Its list leaves [`TranscriptEdges`] around the rows.
     #[must_use]
     pub const fn row_after(mut self, gap: crate::tokens::Rhythm) -> Self {
         self.layout.row = Some(RowSpacing::After(gap));
@@ -160,16 +144,12 @@ impl Arranged<PageLayout> {
         self
     }
 
-    /// Another readable width.
     #[must_use]
     pub const fn measure(mut self, measure: Length) -> Self {
         self.layout.measure = Some(measure);
         self
     }
 
-    /// Keep what this page holds at `measure`: none to stand across its column, as a page that
-    /// fills does. A column whose content says the column it is read in takes it on again as
-    /// that content changes.
     pub const fn set_readable_measure(&mut self, measure: Option<Length>) {
         self.layout.measure = measure;
     }
@@ -189,12 +169,10 @@ impl Default for Arranged<PageLayout> {
 #[derive(Debug)]
 pub struct TranscriptEdges {
     resolved: Option<Resolved>,
-    /// The gap the first row has above it.
     first: crate::tokens::Rhythm,
 }
 
 impl TranscriptEdges {
-    /// Edges for rows whose first stands `first` below the row before it.
     #[must_use]
     pub const fn new(first: crate::tokens::Rhythm) -> Self {
         Self {

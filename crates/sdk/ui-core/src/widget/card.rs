@@ -1,27 +1,4 @@
 //! `Card` and `CardGrid`: objects in content.
-//!
-//! A card exists only for an *object*: something the person can open, move,
-//! share or drag (an app in a store, a document, a review comment, a saved
-//! connection). Settings groups, form sections and statistics are not cards;
-//! they sit on the content ground separated by space ([`Section`],
-//! [`FormSection`], [`StatTile`]).
-//!
-//! A card has a header (its name in `Subheading`, with one optional trailing
-//! action), a body, and an optional footer of [`Actions`]. A card led by its
-//! art ([`Card::with_media`]: a cover, a preview) shows the art first at the
-//! card's full inner width and the header under it. Its height is its
-//! content's; in a [`CardGrid`] a row is as tall as its tallest card and the
-//! footers line up. A card that opens something is itself pressable
-//! ([`Card::on_activate`]) and lifts under the pointer. A leading stripe in a
-//! [`Tone`] marks whose or what kind of object it is (a reviewer's comment, a
-//! failed job).
-//!
-//! [`CardFace`] paints the same surface, stripe, title and focus ring for a
-//! caller that lays out and paints its own body.
-//!
-//! [`Section`]: crate::widget::Section
-//! [`FormSection`]: crate::widget::FormSection
-//! [`StatTile`]: crate::widget::StatTile
 
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
@@ -41,10 +18,6 @@ use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Button, Element, TaffyTreeExt, Text, Tone, Widget};
-
-// ---------------------------------------------------------------------------
-// Pure reflow geometry, shared by CardGrid, MediaGrid and immediate callers.
-// ---------------------------------------------------------------------------
 
 /// How many columns of at least `min_card_w` fit in `avail_w` with `gap`
 /// between them. Always at least 1.
@@ -72,11 +45,6 @@ pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
     ((avail_w - total_gap) / f64_of_usize(cols)).max(0.0)
 }
 
-// ---------------------------------------------------------------------------
-// Shared card geometry.
-// ---------------------------------------------------------------------------
-
-/// The resolved chrome of a card in `theme`.
 #[derive(Clone, Copy, Debug)]
 struct CardMetrics {
     padding: f64,
@@ -91,18 +59,12 @@ impl CardMetrics {
         Self {
             padding: f64::from(rhythm.section),
             gap: f64::from(rhythm.sibling),
-            // A card is a control-like block of content inside the page, not a window tile
-            // floating over it: it takes the toolkit's card radius, the one a `Container`
-            // shown as a card draws.
             radius: theme.radius_standard,
             stripe: f64::from(theme.tokens.metrics.chrome_rule_px) * 3.0,
         }
     }
 }
 
-/// Paint a card's surface (and stripe, hover lift and focus ring) over
-/// `rect`: the one card chrome a [`super::Card`] and a row shown as a card
-/// ([`super::ListRowFace::card`]) share.
 pub(crate) fn paint_surface(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -124,8 +86,6 @@ pub(crate) fn paint_surface(
     } else {
         raised
     };
-    // The selected object: its own edge, heavier and in the accent, at the
-    // same place (`surface::selected_edge`).
     crate::surface::selectable_card(
         ctx.scene,
         ctx.transform,
@@ -157,10 +117,6 @@ pub(crate) fn paint_surface(
     }
 }
 
-// ---------------------------------------------------------------------------
-// CardFace — immediate-mode card chrome.
-// ---------------------------------------------------------------------------
-
 /// Immediate-mode card: the surface, leading stripe, title and focus ring
 /// of a [`Card`], for a caller that paints its own body into
 /// [`CardFace::body_rect`].
@@ -179,28 +135,24 @@ impl<'a> CardFace<'a> {
         Self::default()
     }
 
-    /// The object's name, in `Subheading`.
     #[must_use]
     pub fn title(mut self, title: &'a str) -> Self {
         self.title = Some(title);
         self
     }
 
-    /// See [`Card::leading_stripe`].
     #[must_use]
     pub fn leading_stripe(mut self, tone: Tone) -> Self {
         self.stripe = Some(tone);
         self
     }
 
-    /// The card opens something: it lifts under the pointer.
     #[must_use]
     pub fn pressable(mut self) -> Self {
         self.pressable = true;
         self
     }
 
-    /// The selected object among its peers.
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -261,7 +213,6 @@ impl<'a> CardFace<'a> {
         theme.on_ground(theme.tokens.colors.surfaces.raised)
     }
 
-    /// Paint the card's chrome and title into `rect`.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         paint_surface(
             ctx,
@@ -287,11 +238,6 @@ impl<'a> CardFace<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Card — retained.
-// ---------------------------------------------------------------------------
-
-/// The header row: a title and one optional trailing action.
 struct CardHeader {
     parts: Parts,
 }
@@ -353,11 +299,8 @@ impl Widget for CardHeader {
     }
 }
 
-/// A retained card. See the module docs.
 pub struct Card {
     parts: Parts,
-    /// The body is art that leads the card, above the header
-    /// ([`Card::with_media`]).
     media_first: bool,
     has_header: bool,
     has_footer: bool,
@@ -365,14 +308,12 @@ pub struct Card {
     activation: Activation,
     dirty: bool,
     title: Option<String>,
-    /// How many its header says it holds, when it says.
     header_count: Option<usize>,
     accessible_name: Option<String>,
     selected: bool,
 }
 
 impl Card {
-    /// A card around `body`.
     pub fn new(body: Element) -> Self {
         Self {
             parts: Parts::new(vec![body]),
@@ -409,7 +350,6 @@ impl Card {
         self
     }
 
-    /// Whether the card is the selected one ([`Self::selected`]).
     #[must_use]
     pub fn get_selected(&self) -> bool {
         self.selected
@@ -429,7 +369,6 @@ impl Card {
         self
     }
 
-    /// The object's name, in the header.
     #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         let title = title.into();
@@ -444,8 +383,6 @@ impl Card {
         )
     }
 
-    /// The object's name and one trailing action (a "More" menu, an
-    /// "Install" button, a count).
     #[must_use]
     pub fn with_title_action(mut self, title: impl Into<String>, action: Element) -> Self {
         let title = title.into();
@@ -460,8 +397,6 @@ impl Card {
         )
     }
 
-    /// A section header as the card's head: its title with a count pill or a trailing action,
-    /// as a dashboard card that lists things shows how many.
     #[must_use]
     pub fn with_section_header(mut self, header: super::SectionHeader) -> Self {
         self.title = Some(header.title().to_owned());
@@ -474,15 +409,12 @@ impl Card {
         self
     }
 
-    /// Show `header` where the card's header stands: the card keeps its body, its place and what
-    /// a press on it does.
     pub(crate) fn set_header(&mut self, header: super::SectionHeader) {
         self.title = Some(header.title().to_owned());
         self.header_count = header.stated_count();
         self.set_header_parts(header.into_element(), None);
     }
 
-    /// Take the header away: a card that names nothing.
     pub(crate) fn remove_header(&mut self) {
         if !self.has_header {
             return;
@@ -502,7 +434,6 @@ impl Card {
         let header: Element = Box::new(CardHeader {
             parts: Parts::new(children),
         });
-        // The header leads the card, or follows the art that leads it.
         let at = usize::from(self.media_first);
         if self.has_header
             && let Some(slot) = self.parts.children.get_mut(at)
@@ -515,7 +446,6 @@ impl Card {
         self.dirty = true;
     }
 
-    /// The card's actions, at its foot, trailing.
     #[must_use]
     pub fn with_footer(mut self, actions: Actions) -> Self {
         if self.has_footer {
@@ -526,16 +456,12 @@ impl Card {
         self
     }
 
-    /// A stripe down the leading edge in `tone`: whose object this is (a
-    /// reviewer's comment in their presence colour) or its status.
     #[must_use]
     pub fn leading_stripe(mut self, tone: Tone) -> Self {
         self.stripe = Some(tone);
         self
     }
 
-    /// Pressing the card (not one of its own actions) opens what it stands
-    /// for. `id` names the card for keyboard, tests and assistive technology.
     #[must_use]
     pub fn on_activate(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
         self.activation = Activation::new(id);
@@ -543,7 +469,6 @@ impl Card {
         self
     }
 
-    /// [`Self::on_activate`] through an exported resource action.
     #[must_use]
     pub fn on_action(
         mut self,
@@ -643,8 +568,6 @@ impl Widget for Card {
                 },
                 min_size: Size {
                     width: length(0.0_f32),
-                    // Intrinsic Grid rows need this item's automatic block minimum;
-                    // `flex_shrink` does not protect an item in Grid sizing.
                     height: auto(),
                 },
                 flex_shrink: 0.0,
@@ -687,7 +610,6 @@ impl Widget for Card {
             self.activation.is_bound(),
             self.selected,
         );
-        // The content stands on the card's face, not the window's ground.
         let inner = CardFace::content_theme(theme);
         self.parts.draw(scene, transform, text, &inner, presence);
     }
@@ -701,7 +623,6 @@ impl Widget for Card {
             let path = ctx.path;
             child.handle_event(event, &mut ctx.reborrow(path, node));
             if *ctx.handled {
-                // A child's own control took the press; the card stays put.
                 if self.activation.state.pressed {
                     self.activation.cancel_press();
                     self.dirty = true;
@@ -760,7 +681,6 @@ impl Widget for Card {
         dirty
     }
 
-    /// No structure of its own: what its content describes stays described.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         let mut change = crate::widget::StructureChange::None;
         for child in &mut self.parts.children {
@@ -818,9 +738,6 @@ impl Widget for Card {
 
 activation_controls!(Card, activation);
 
-/// A card whose press is a view intent of its owner (a described card that opens what it stands
-/// for) publishes that press as its own control, and answers it: the control its press is bound
-/// to is one the window publishes, as a list row's is.
 impl crate::widget::ResourceOperations for Card {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         self.activation.native_handler()
@@ -844,10 +761,6 @@ impl crate::resources::PublishesResources for Card {
         self.activation.native_resources()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Actions — a card's or a form's small action group.
-// ---------------------------------------------------------------------------
 
 /// Standard actions in declaration/focus order: secondaries, then primary.
 /// Unspecified buttons use measured content sizing; explicit sizes remain manual.
@@ -921,25 +834,17 @@ impl Widget for Actions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CardGrid — a responsive grid of equal, aligned cards.
-// ---------------------------------------------------------------------------
-
 /// How wide a grid's cards are at least, before the grid drops a column.
 /// Measured in lines of body text, so cards widen with the text scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CardWidth {
-    /// Small objects: a quick start, a device, a saved search.
     Compact,
-    /// Most objects: an app, a document, a connection.
     #[default]
     Regular,
-    /// Objects with a paragraph of content: a review, an article.
     Wide,
 }
 
 impl CardWidth {
-    /// The minimum column width under `theme`.
     #[must_use]
     pub fn min_width(self, theme: &Theme) -> f64 {
         let line = f64::from(theme.text(TextRole::Body).line_height_px());
@@ -966,7 +871,6 @@ pub struct CardGrid {
     gap: f64,
     rect: Rect,
     child_nodes: Vec<NodeId>,
-    /// What the grid is, for assistive technology: a list of the cards' names.
     name: Option<String>,
     /// Whether the cards were changed by the keyed operations ([`Self::insert_card`],
     /// [`Self::remove_card`], [`Self::move_card`], [`Self::replace_card`]) since the last frame:
@@ -988,19 +892,16 @@ impl CardGrid {
         }
     }
 
-    /// What the grid is, for assistive technology.
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
-    /// [`Self::with_accessible_name`] for a grid already built.
     pub fn set_accessible_name(&mut self, name: impl Into<String>) {
         self.name = Some(name.into());
     }
 
-    /// How many cards it shows.
     #[must_use]
     pub fn len(&self) -> usize {
         self.cards.len()
@@ -1016,7 +917,6 @@ impl CardGrid {
         self.cards.get(index)
     }
 
-    /// The card at `index`, to change it in place: what it reports of the change is its own.
     pub fn card_mut(&mut self, index: usize) -> Option<&mut Element> {
         self.cards.get_mut(index)
     }
@@ -1031,7 +931,6 @@ impl CardGrid {
         Some(std::mem::replace(slot, card))
     }
 
-    /// Insert `card` at `index` (at the end past it), described as [`Self::replace_card`] is.
     pub fn insert_card(&mut self, index: usize, card: Element) {
         let index = index.min(self.cards.len());
         self.cards.insert(index, card);
@@ -1040,7 +939,6 @@ impl CardGrid {
             .join(crate::widget::StructureChange::Described);
     }
 
-    /// Take the card at `index` out. Described as [`Self::replace_card`] is.
     pub fn remove_card(&mut self, index: usize) -> Option<Element> {
         if index >= self.cards.len() {
             return None;
@@ -1051,7 +949,6 @@ impl CardGrid {
         Some(self.cards.remove(index))
     }
 
-    /// Move the card at `from` to `to`. Described as [`Self::replace_card`] is.
     pub fn move_card(&mut self, from: usize, to: usize) {
         if from == to || from >= self.cards.len() {
             return;
@@ -1085,8 +982,6 @@ impl CardGrid {
             },
             min_size: Size {
                 width: length(0.0_f32),
-                // Intrinsic Grid rows need this item's automatic block minimum;
-                // `flex_shrink` does not protect an item in Grid sizing.
                 height: auto(),
             },
             flex_shrink: 0.0,
@@ -1252,7 +1147,6 @@ impl Widget for CardGrid {
         dirty
     }
 
-    /// What the keyed card operations did, joined with what the cards report.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         let mut change = std::mem::take(&mut self.structure);
         for card in &mut self.cards {

@@ -165,7 +165,6 @@ fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
     ))
 }
 
-/// Shift held down, built the same way winit reports it.
 fn shift() -> Modifiers {
     let state = winit::keyboard::ModifiersState::SHIFT;
     Modifiers::from(state)
@@ -188,7 +187,6 @@ fn type_str(t: &mut ActivityTimeline, s: &str) {
     }
 }
 
-/// Twenty changes a second apart by one person: a debounced typing run.
 fn typing_run(n: u8) -> Vec<HistoryEntry> {
     (0..n)
         .map(|i| {
@@ -212,7 +210,6 @@ fn typing_runs_collapse_into_expandable_bands() {
         assert!(!expanded, "a twenty-change band is past the expand budget");
         assert_eq!(t.group_title_at_row(0), Some("20 edits"));
 
-        // Click the header (not the chips) — the production toggle path.
         let row = t.row_rect(0).expect("the header lays out");
         click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
         assert!(t.group_at_row(0).unwrap().1, "the click opened it");
@@ -430,7 +427,6 @@ fn naming_a_band_writes_its_whole_range_or_nothing() {
             Some("Intro rewrite"),
             "renaming starts from the current name, not from blank"
         );
-        // Clear it out entirely and commit: that is how a name comes back off.
         for _ in 0.."Intro rewrite".len() {
             dispatch(&mut t, &key_press(Key::Named(NamedKey::Backspace)));
         }
@@ -479,7 +475,6 @@ fn naming_a_band_writes_its_whole_range_or_nothing() {
 #[test]
 fn band_undo_chip_targets_the_whole_band_only_when_supported() {
     fn a_band_offers_no_undo_chip_until_a_host_can_perform_one() {
-        // Opt-in: a control that silently does nothing is worse than none.
         let entries = typing_run(20);
         let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
         assert!(
@@ -638,8 +633,6 @@ fn band_rows_keep_chips_names_and_text_inside_the_row() {
         assert!(name.x1 <= restore.x0);
         paint(&mut t);
 
-        // Narrow, but tall enough to scroll the child band into view — an
-        // off-screen line correctly does not lay out at all.
         let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 1200.0), typing_run(20));
         let entries = typing_run(20);
         t.set_named_ranges(vec![
@@ -946,7 +939,6 @@ fn bands_order_virtualize_and_describe_themselves() {
         let bar = t.selection_bar_rect();
         assert!(bar.area() > 0.0, "a selection puts the bar on screen");
 
-        // The rows above it do not move — the bar is not a layout reflow.
         assert_eq!(t.row_rect(1).unwrap(), before);
         // It takes its space out of the viewport, so strictly fewer lines fit.
         let reachable_after = (0..t.row_count())
@@ -967,8 +959,6 @@ fn bands_order_virtualize_and_describe_themselves() {
                 );
             }
         }
-        // And everything stays reachable: the scroll extent grew by exactly the
-        // height the bar took.
         let with_bar = t.max_scroll();
         t.set_selection(None);
         let without_bar = t.max_scroll();
@@ -988,7 +978,6 @@ fn bands_order_virtualize_and_describe_themselves() {
         for i in 0..4 {
             entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
         }
-        // Peer session, merged after but stamped days earlier.
         for i in 0..3 {
             entries.push(entry(
                 EntryKind::Text,
@@ -1004,7 +993,6 @@ fn bands_order_virtualize_and_describe_themselves() {
         let authors: Vec<&str> = (0..tl.row_count())
             .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
             .collect();
-        // Newest-first: Alice's whole band, then Ada's whole band. No interleaving.
         assert_eq!(
             authors,
             vec!["Alice", "Alice", "Alice", "Alice", "Ada", "Ada", "Ada"],
@@ -1051,8 +1039,6 @@ fn bands_order_virtualize_and_describe_themselves() {
 
 #[test]
 fn day_headings_bucket_changes_into_today_yesterday_this_week_and_earlier() {
-    // 1970-01-01 was Thursday. Day 8 is Friday 1970-01-09; that week's
-    // Monday is day 4. Today / yesterday / mid-week / previous week.
     let now = SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(8 * 86_400 + 12 * 3_600))
         .unwrap_or(SystemTime::UNIX_EPOCH);

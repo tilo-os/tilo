@@ -1,15 +1,10 @@
-//! A button's face as a page shows it ([`crate::composition::Face`]): what
-//! the canvas paints it with, said as an icon, words and a ground.
+//! A button's face as a page shows it ([`crate::composition::Face`]): what the canvas paints it with,
+//! said as an icon, words and a ground.
 
 use super::{Button, FaceMetrics, FacePaint, hint_ink};
 use crate::theme::Theme;
 
 impl FacePaint<'_> {
-    /// The face as a page shows it: its icon, label and what follows on the
-    /// ground its role and state give it, in the colours and geometry
-    /// `paint` uses. `None` where the face shows people or a picture (who is
-    /// here, an avatar, an extension's image, a badge, a brand mark): those
-    /// show as its paint.
     pub(super) fn composed(&self, theme: &Theme) -> Option<crate::composition::Face> {
         use crate::composition::{Face, TextLook, rgba8};
         let content = &self.content;
@@ -60,9 +55,6 @@ impl FacePaint<'_> {
 }
 
 impl Button {
-    /// The face as a page shows it, in the colours and geometry `draw`
-    /// paints it in; `None` for a face that is a picture (a transport
-    /// control, a count on its icon).
     pub(crate) fn composed_face(&self, theme: &Theme) -> Option<crate::composition::Face> {
         if self.transport.is_some() || self.count.is_some() {
             return None;

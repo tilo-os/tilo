@@ -1,6 +1,4 @@
 //! A probe that reports the control results a test drives, standing in for an app.
-//!
-//! `widget::control_result_probe`, kept here so `widget/mod.rs` stays readable.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test support")]
 

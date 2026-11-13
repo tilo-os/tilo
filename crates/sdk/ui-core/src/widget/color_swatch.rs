@@ -1,18 +1,4 @@
 //! Colour swatches: one named swatch type, one painter, one picker.
-//!
-//! * [`ColorSwatch`] is a colour with an optional name; a swatch without a
-//!   name is spoken and shown as its `#RRGGBB` hex.
-//! * [`ColorSwatchFace`] paints a swatch and answers its hit-test, tooltip and
-//!   radio-style accessibility, for dense toolbars and custom canvases that
-//!   keep their own layout.
-//! * [`ColorSwatchPicker`] is a grid of swatches as a widget. Clicking a
-//!   swatch records its index; the host reads it with
-//!   [`ColorSwatchPicker::take_choice`] (or is told through
-//!   [`ColorSwatchPicker::on_change`]) and writes the colour to its model.
-//!   [`ColorSwatchPicker::with_painter`] paints a sample in each cell instead
-//!   of the flat colour, for a choice among brushes or patterns.
-//!   [`super::ColorPicker::with_swatches`] uses the same swatches as quick
-//!   picks beside its full colour field.
 
 use crate::widget::ModelPath;
 use std::collections::HashMap;
@@ -33,11 +19,9 @@ mod component;
 use crate::widget::{TaffyTreeExt, Widget};
 pub use component::ColorSwatchPickerProps;
 
-/// One colour a person can pick.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorSwatch {
     pub color: Color,
-    /// Spoken and tooltip name; `None` uses the `#RRGGBB` hex.
     pub name: Option<String>,
 }
 
@@ -55,7 +39,6 @@ impl ColorSwatch {
         }
     }
 
-    /// The name a screen reader speaks and the tooltip shows.
     pub fn spoken_name(&self) -> String {
         self.name
             .clone()
@@ -63,15 +46,12 @@ impl ColorSwatch {
     }
 }
 
-/// An immediate-mode swatch: paint, hit-test, tooltip and accessibility from
-/// one declaration.
 pub struct ColorSwatchFace {
     rect: Rect,
     target_rect: Rect,
     color: Color,
     name: String,
     marker: Option<String>,
-    /// "No colour": an empty swatch crossed by a diagonal.
     none: bool,
     selected: bool,
     hovered: bool,
@@ -103,7 +83,6 @@ impl ColorSwatchFace {
         }
     }
 
-    /// Whether this is the choice of no colour ([`Self::none`]).
     #[must_use]
     pub fn is_none(&self) -> bool {
         self.none
@@ -113,7 +92,6 @@ impl ColorSwatchFace {
         Self::new(rect, swatch.color, swatch.spoken_name())
     }
 
-    /// A short mark painted on the swatch (a letter for "automatic").
     #[must_use]
     pub fn marker(mut self, marker: impl Into<String>) -> Self {
         self.marker = Some(marker.into());
@@ -132,14 +110,12 @@ impl ColorSwatchFace {
         self
     }
 
-    /// Keyboard focus: the ring in your colour.
     #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
     }
 
-    /// A pointer target larger than the painted swatch.
     #[must_use]
     pub fn target_rect(mut self, target_rect: Rect) -> Self {
         self.target_rect = target_rect;
@@ -212,9 +188,6 @@ impl ColorSwatchFace {
         }
     }
 
-    /// "No colour": no fill, the swatch's edge on the ground, and a
-    /// diagonal from its lower left to its upper right corner, kept inside
-    /// the rounded edge.
     fn paint_none(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.item);
@@ -231,8 +204,6 @@ impl ColorSwatchFace {
             None,
             &crate::surface::edge_outline(self.rect, radius),
         );
-        // Where the corner's arc meets the diagonal: the radius less its
-        // projection on the diagonal.
         let inset = radius * (1.0 - std::f64::consts::FRAC_1_SQRT_2);
         let r = self.rect.inset(-inset);
         scene.stroke(
@@ -259,8 +230,6 @@ impl ColorSwatchFace {
         self.paint_mark(scene, transform, theme);
     }
 
-    /// The chosen swatch's concentric ring in primary ink (your colour under
-    /// keyboard focus), or the hover ring that reads on the swatch's fill.
     fn paint_mark(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.item);
@@ -285,7 +254,6 @@ impl ColorSwatchFace {
                 &RoundedRect::from_rect(self.rect.inset(reach), radius + reach),
             );
         } else if self.hovered {
-            // Hover: a ring that reads on the swatch's own fill.
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
@@ -297,8 +265,6 @@ impl ColorSwatchFace {
     }
 }
 
-/// Paints swatch `index` into its rect in place of its flat colour:
-/// `(scene, transform, rect, index, theme, text)`.
 pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
 
 /// A swatch fill's edge on `ground`: the edge derived from the fill, made to
@@ -312,13 +278,10 @@ fn swatch_edge(theme: &Theme, fill: Color, ground: Color) -> Color {
     )
 }
 
-/// The least contrast a swatch's edge keeps against its fill and its ground.
 const SWATCH_EDGE_CONTRAST: f64 = 1.4;
 
-/// The operation type of a picker's chosen swatch.
 const CHANGE_SWATCH: &str = "tilo.ui.swatch.change";
 
-/// A grid of [`ColorSwatch`]es as a widget.
 pub struct ColorSwatchPicker {
     swatches: Vec<ColorSwatch>,
     columns: usize,
@@ -326,8 +289,6 @@ pub struct ColorSwatchPicker {
     choice: Option<usize>,
     rect: Rect,
     swatch_rects: Vec<Rect>,
-    /// Edge of a swatch cell and the grid's padding, from the theme seen in
-    /// `build_layout`.
     cell: f64,
     pad: f64,
     last_cursor: Point,
@@ -336,21 +297,15 @@ pub struct ColorSwatchPicker {
     focus_index: usize,
     /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
     on_change: Option<Box<dyn FnMut(usize)>>,
-    /// Every chosen swatch, published as the picker's view action `change`
-    /// ([`ColorSwatchPicker::on_change_view`]) and answered by its handler.
     change_verb: Option<super::control_verb::ControlVerb<usize>>,
-    /// The action a chosen index invokes ([`ColorSwatchPicker::on_action`]).
     action: Option<crate::widget::ActionEmitter<usize>>,
     /// The cell's width (and height, unless `cell_height`), when it is not
     /// a pointer target.
     cell_width: Option<f64>,
-    /// The cell's height, when it is not as tall as it is wide.
     cell_height: Option<f64>,
     /// Paints each swatch in place of its flat colour.
     painter: Option<Box<SwatchPainter>>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -444,8 +399,6 @@ impl ColorSwatchPicker {
         self
     }
 
-    /// Show `idx` as chosen (`None`: none is), without telling
-    /// [`Self::on_change`].
     pub fn set_selected(&mut self, idx: Option<usize>) {
         self.dirty = true;
         self.selected = idx.filter(|idx| *idx < self.swatches.len());
@@ -461,7 +414,6 @@ impl ColorSwatchPicker {
         self
     }
 
-    /// How many swatches it offers.
     #[must_use]
     pub fn count(&self) -> usize {
         self.swatches.len()
@@ -542,8 +494,6 @@ impl crate::resources::PublishesResources for ColorSwatchPicker {
 }
 
 impl crate::widget::ResourceOperations for ColorSwatchPicker {
-    /// Answer a `change` addressed to this picker: choose the swatch and hand
-    /// it to the picker's own handler, whoever chose it.
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
@@ -938,7 +888,6 @@ mod tests {
         );
         assert_eq!(*chosen.borrow(), vec![2]);
 
-        // Showing a choice made elsewhere tells no one.
         picker.set_selected(Some(0));
         assert_eq!(picker.selected, Some(0));
         assert_eq!(*chosen.borrow(), vec![2]);
@@ -955,8 +904,6 @@ mod tests {
         assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
     }
 
-    /// The "no colour" swatch paints its edge and its diagonal, both
-    /// strokes, and no fill; a colour swatch paints a fill.
     #[test]
     fn a_none_swatch_paints_its_diagonal_and_no_fill() {
         let rect = Rect::new(10.0, 10.0, 40.0, 30.0);

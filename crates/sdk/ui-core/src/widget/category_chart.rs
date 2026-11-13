@@ -65,8 +65,6 @@ pub struct CategorySeries {
     pub id: String,
     pub name: String,
     pub color: Color,
-    /// The theme's categorical chart colour at this index, in place of
-    /// `color`: it follows the theme as it changes.
     pub palette: Option<usize>,
     pub values: Vec<CategoryValue>,
 }
@@ -100,8 +98,6 @@ impl CategorySeries {
             values,
         }
     }
-    /// A series in the theme's categorical chart colour `index`
-    /// ([`crate::chart_palette::ChartPalette::categorical`]).
     pub fn from_palette(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -140,12 +136,9 @@ pub struct CategoryChartStyle {
     pub corner_radius: f64,
     pub show_grid: bool,
     pub show_legend: bool,
-    /// Let pointer and assistive activation toggle series from the legend.
     pub interactive_legend: bool,
     pub show_values: bool,
     pub tooltip: bool,
-    /// How values read on the value axis, on bars and in the tooltip of a
-    /// value without its own detail.
     pub value_format: AxisLabelFormat,
 }
 
@@ -182,7 +175,6 @@ pub struct CategoryMarks {
     toggles: chart_legend::SeriesToggles,
 }
 
-/// Values per category as grouped, stacked, percent or waterfall bars.
 pub type CategoryChart = Plot<CategoryMarks>;
 
 impl CategoryChart {
@@ -499,9 +491,6 @@ fn label_stride(needed: f64, room: f64) -> usize {
 }
 
 impl CategoryMarks {
-    /// Where the legend's entries stand: under the chart's title, between the
-    /// content edges. `None` while the chart shows no legend, or when the
-    /// waterfall layout names no series.
     fn legend_area(&self) -> Option<Rect> {
         if !self.style.show_legend || self.style.layout == CategoryLayout::Waterfall {
             return None;
@@ -768,8 +757,6 @@ impl PlotMarks for CategoryMarks {
         }
         let group_width = plot.width()
             / f64::from(u32::try_from(self.categories.len().max(1)).unwrap_or(u32::MAX));
-        // Labels wider than their category are thinned to every n-th, counted
-        // back from the last: the latest category always keeps its label.
         let widest = self
             .categories
             .iter()

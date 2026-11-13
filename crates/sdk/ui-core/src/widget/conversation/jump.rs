@@ -1,18 +1,5 @@
-//! The pill that takes a reader back to where they want to be, over a conversation they have
-//! scrolled away from.
-//!
-//! Two things a long conversation owes its reader after they have read into its history: a way
-//! back to the lines they had not read when they opened it ([`Jump::Unread`], "New messages"),
-//! and a way back to what is being said now ([`Jump::Present`], "Jump to present"). Discord and
-//! Slack both float one of these over the foot of the transcript, and swap to the other when
-//! the reader does something that makes the first irrelevant. Chat and Messages need the same
-//! pill in the same place, so it is here: the face, the two words, and the geometry, and the
-//! host decides which one shows and where it goes.
-//!
-//! The pill never draws itself a control: [`JumpFace::paint`] draws it, and the widget or app
-//! that owns the pointer decides what a press on its rect means. That keeps the ephemeral
-//! state (has the reader scrolled away? has anything arrived?) where the reading position
-//! already lives.
+//! The pill that takes a reader back to where they want to be, over a conversation they have scrolled
+//! away from.
 
 use vello::kurbo::{Point, Rect};
 
@@ -21,17 +8,13 @@ use crate::paint::PaintCtx;
 use crate::theme::Theme;
 use crate::widget::{Button, ButtonFace, ControlSize};
 
-/// Which way back a [`JumpFace`] offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Jump {
-    /// Back to the first line the reader had not read when they opened the conversation.
     Unread,
-    /// Back to the newest line, following what arrives from then on.
     Present,
 }
 
 impl Jump {
-    /// What the pill says, in the desktop's language.
     #[must_use]
     pub fn label(self) -> String {
         super::t(match self {
@@ -40,7 +23,6 @@ impl Jump {
         })
     }
 
-    /// The glyph before the word: down to what is unread, down to what is now.
     #[must_use]
     pub const fn icon(self) -> Icon {
         Icon::ArrowDown
@@ -61,7 +43,6 @@ pub struct JumpFace {
 }
 
 impl JumpFace {
-    /// A pill offering `jump`, drawn at `rect`.
     #[must_use]
     pub fn new(jump: Jump, rect: Rect) -> Self {
         Self {
@@ -86,7 +67,6 @@ impl JumpFace {
         )
     }
 
-    /// The pill's width for its word, at the regular size.
     #[must_use]
     pub fn width(&self, text: &mut crate::text_render::TextRenderer, theme: &Theme) -> f64 {
         ButtonFace::new(Rect::ZERO, &self.label)
@@ -94,43 +74,36 @@ impl JumpFace {
             .intrinsic_width(text, theme)
     }
 
-    /// Whether the pointer is on it.
     #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.hovered = hovered;
         self
     }
 
-    /// The pill's rectangle.
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.rect
     }
 
-    /// Which way back it offers.
     #[must_use]
     pub fn jump(&self) -> Jump {
         self.jump
     }
 
-    /// What it says.
     #[must_use]
     pub fn spoken(&self) -> &str {
         &self.label
     }
 
-    /// Whether `point` is on the pill.
     #[must_use]
     pub fn contains(&self, point: Point) -> bool {
         self.rect.contains(point)
     }
 
-    /// Move the pill to `rect`.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
     }
 
-    /// Paint it.
     pub fn paint(&self, paint: &mut PaintCtx<'_>) {
         let face = ButtonFace::new(self.rect, &self.label)
             .icon(self.jump.icon())

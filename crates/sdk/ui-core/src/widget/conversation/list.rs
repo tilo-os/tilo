@@ -1,19 +1,7 @@
-//! [`ConversationList`] — the message list a widget-tree app draws, the same conversation the
-//! painting apps compose themselves — the day breaks, the clock each line carries, the delivery
-//! vocabulary, the way consecutive lines from one person run together — so a message reads the
-//! same whether it arrived in a channel or a private thread.
-//!
-//! The list owns the *mechanics*, not the app's identity: an app names its lines
-//! ([`ConversationLine`]) and which side they sit on ([`ConversationRole`]), and the list decides
-//! where the day changes, how wide a bubble may grow, when a line continues the one above it, and
-//! where the time and delivery state go. A private thread puts your own words on the right; a
-//! channel puts everything on one side with its author's name over each run.
-//!
-//! The list is static: it paints and measures, taking no pointer, holding no selection and
-//! keeping no state of its own, so a scroll view can measure it exactly and a screen reader can
-//! walk it (every line is a list item with its author, time and delivery state in its spoken
-//! name). What it keeps is its layout ([`ListCache`]), so a frame in which no text, width or type
-//! changed reuses its measurements and paints only the rows its viewport shows.
+//! [`ConversationList`] — the message list a widget-tree app draws, the same conversation the painting
+//! apps compose themselves — the day breaks, the clock each line carries, the delivery vocabulary, the
+//! way consecutive lines from one person run together — so a message reads the same whether it arrived
+//! in a channel or a private thread.
 
 use std::collections::HashMap;
 
@@ -37,42 +25,30 @@ use super::band::SectionDividerFace;
 use super::day::{ConversationClock, ConversationDay, DayBreaks};
 use super::delivery::{DeliveryFace, DeliveryState};
 
-/// How long after the line before it a message from the same person still
-/// continues that person's run (and loses its repeated name).
 pub const RUN_WINDOW_SECS: i64 = 5 * 60;
 
 /// The most of the column one bubble may take. A bubble that fills the column
 /// is no longer a bubble: you lose the side that says who is talking.
 const BUBBLE_COLUMN_SHARE: f64 = 0.78;
 
-/// Which side of the column a line sits on, and what its bubble says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConversationRole {
-    /// The other person: left, with their name over the first line of a run.
     Incoming,
-    /// You: right, with the delivery state under the last thing you see.
     Outgoing,
 }
 
-/// One line of a conversation, as the list draws it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConversationLine {
     /// Stable identity: a semantic key, and what a caller anchors a scroll to.
     pub id: String,
-    /// When it was said, in milliseconds since the epoch.
     pub at_ms: i64,
-    /// Who said it, as the person reads names. Empty for a line that
-    /// knowingly continues the run above (a bridged message with no author,
-    /// an import that lost one).
     pub author: String,
     pub body: String,
     pub role: ConversationRole,
-    /// What the transport said about it, when it said anything.
     pub delivery: Option<DeliveryState>,
 }
 
 impl ConversationLine {
-    /// A line from the other person.
     #[must_use]
     pub fn incoming(
         id: impl Into<String>,
@@ -90,7 +66,6 @@ impl ConversationLine {
         }
     }
 
-    /// One of your own lines.
     #[must_use]
     pub fn outgoing(id: impl Into<String>, at_ms: i64, body: impl Into<String>) -> Self {
         Self {
@@ -134,9 +109,6 @@ fn starts_run(previous: Option<&ConversationLine>, line: &ConversationLine) -> b
     }
 }
 
-/// Which lines start a new run: the first always, and then any line whose
-/// author or side differs from the one before, or that follows it by more than
-/// [`RUN_WINDOW_SECS`].
 #[must_use]
 pub fn run_breaks(lines: &[ConversationLine]) -> Vec<bool> {
     let mut previous: Option<&ConversationLine> = None;
@@ -151,7 +123,6 @@ pub fn run_breaks(lines: &[ConversationLine]) -> Vec<bool> {
 /// One thing the list paints, in order.
 #[derive(Clone, Debug, PartialEq)]
 enum Row {
-    /// A day divider: a band with its label, across the conversation column.
     Divider {
         y0: f64,
         y1: f64,
@@ -159,25 +130,20 @@ enum Row {
         x1: f64,
         label: String,
     },
-    /// A message: its bubble, and the people and time above and below it.
     Line {
         index: usize,
         y0: f64,
         y1: f64,
         starts_run: bool,
         bubble: Rect,
-        /// Where the body's first line starts.
         text: Point,
         text_width: f32,
-        /// The band the author's name occupies, on a run's first line.
         author: Option<Rect>,
-        /// The band under the bubble with the time and the delivery state.
         caption: Rect,
     },
 }
 
 impl Row {
-    /// A message row's bubble and, on a run's first line, its author band.
     #[cfg(test)]
     fn line_geometry(&self) -> Option<(Rect, Option<Rect>)> {
         match self {
@@ -192,23 +158,18 @@ impl Row {
         }
     }
 
-    /// The band the row occupies, top to bottom: its divider, or its author
-    /// line, bubble and caption.
     fn band(&self) -> (f64, f64) {
         match self {
             Self::Divider { y0, y1, .. } | Self::Line { y0, y1, .. } => (*y0, *y1),
         }
     }
 
-    /// Whether any of the row lies inside `viewport`, as a row scrolled half
-    /// out of a view still does.
     fn meets(&self, viewport: Rect) -> bool {
         let (y0, y1) = self.band();
         y1 > viewport.y0 && y0 < viewport.y1
     }
 }
 
-/// The list's geometry, measured once and painted from the same measurements.
 #[derive(Clone, Default)]
 struct Layout {
     rows: Vec<Row>,
@@ -225,12 +186,10 @@ struct Column {
     right: f64,
     bubble_max: f64,
     inner_max: f64,
-    /// [`Self::inner_max`] as the text engine takes it.
     wrap: f32,
 }
 
 impl Column {
-    /// The column `width` wide, starting at `x0`.
     fn of(theme: &Theme, x0: f64, width: f64) -> Self {
         let gutter = f64::from(theme.tokens.spacing.s2);
         let readable = f64::from(theme.tokens.metrics.readable_width);
@@ -257,8 +216,6 @@ impl Column {
     }
 }
 
-/// One line's bubble text as it measured: what it was measured from, and the box
-/// placing the bubble needs.
 #[derive(Clone, Debug)]
 struct Measured {
     /// The body the measurement was taken from. Compared, never painted: a line
@@ -271,8 +228,6 @@ struct Measured {
     text_h: f32,
 }
 
-/// What every kept measurement was taken against: the theme's type (its roles,
-/// sizes and text scale) and the renderer that shaped it.
 #[derive(Clone, PartialEq)]
 struct Typeface {
     theme: Theme,
@@ -281,9 +236,6 @@ struct Typeface {
     epoch: usize,
 }
 
-/// What a layout reads of the clock: the zone, which decides a line's day, and
-/// today, which decides what a divider calls it. The instant the clock was read
-/// at is not part of it — it changes every second and moves nothing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ClockKey {
     offset: i64,
@@ -299,7 +251,6 @@ impl ClockKey {
     }
 }
 
-/// Where the kept rows were placed, and from what.
 struct Placed {
     /// The address and length of the lines they were placed from, when the face
     /// that placed them owns them and never changes them.
@@ -325,11 +276,8 @@ struct Placed {
 pub struct ListWork {
     /// Lines the last layout measured, because no kept measurement applied.
     pub measured: usize,
-    /// Lines whose kept measurement the last layout reused.
     pub reused: usize,
-    /// Rows the last frame painted.
     pub painted: usize,
-    /// Rows the last frame skipped, lying wholly above or below its viewport.
     pub culled: usize,
 }
 
@@ -357,32 +305,25 @@ pub struct ListWork {
 pub struct ListCache {
     /// Each line's measured bubble text, by line id.
     measures: HashMap<String, Measured>,
-    /// What the measurements were taken against.
     typeface: Option<Typeface>,
-    /// The rows the last layout placed, at the origin it placed them from.
     layout: Layout,
-    /// What the kept rows were placed from. Equal to this frame's, the rows are
-    /// this frame's.
     placed: Option<Placed>,
     work: ListWork,
 }
 
 impl ListCache {
-    /// What the last layout and paint did.
     #[must_use]
     pub fn work(&self) -> ListWork {
         self.work
     }
 }
 
-/// What one layout measured and reused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct MeasuredCounts {
     measured: usize,
     reused: usize,
 }
 
-/// What one paint drew and skipped.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Painted {
     painted: usize,
@@ -425,10 +366,6 @@ pub fn bubble_colors(theme: &Theme, role: ConversationRole) -> (Color, Color) {
     }
 }
 
-/// The list's painting and measuring, without the widget around it.
-///
-/// A painting app can use this directly when it wants the list's geometry and
-/// mechanics but its own chrome around them.
 pub struct ListFace<'a> {
     lines: &'a [ConversationLine],
     clock: ConversationClock,
@@ -474,8 +411,6 @@ impl<'a> ListFace<'a> {
             && self.is_the_same_lines(placed)
     }
 
-    /// Whether the lines the kept rows were placed from are the ones this face
-    /// is of.
     fn is_the_same_lines(&self, placed: &Placed) -> bool {
         if self.standing {
             return placed.at == self.lines.as_ptr().addr() && placed.len == self.lines.len();
@@ -500,7 +435,6 @@ impl<'a> ListFace<'a> {
         }
     }
 
-    /// What the kept rows say they were placed from.
     fn placed(&self, x0: f64, width: f64, y0: f64) -> Placed {
         let (at, len) = (self.lines.as_ptr().addr(), self.lines.len());
         Placed {
@@ -518,11 +452,6 @@ impl<'a> ListFace<'a> {
         }
     }
 
-    /// Place every row at `rect`'s column, reusing `cache`'s measurements.
-    ///
-    /// Measured once, a line's bubble is placed from the box it measured to; a
-    /// frame whose conversation, column, origin and clock are the ones the kept
-    /// rows were placed from places nothing at all.
     fn layout<'c>(
         &self,
         cache: &'c mut ListCache,
@@ -635,7 +564,6 @@ impl<'a> ListFace<'a> {
                 caption,
             });
         }
-        // Lines that left the conversation take their measurements with them.
         if cache.measures.len() > self.lines.len() {
             let live: std::collections::HashSet<&str> =
                 self.lines.iter().map(|line| line.id.as_str()).collect();
@@ -687,7 +615,6 @@ impl<'a> ListFace<'a> {
         (text_w, text_h)
     }
 
-    /// The rows this list lays out in `rect`, for a test of the geometry.
     #[cfg(test)]
     fn layout_for_test(&self, text: &mut TextRenderer, theme: &Theme, rect: Rect) -> Layout {
         let mut cache = ListCache::default();
@@ -695,7 +622,6 @@ impl<'a> ListFace<'a> {
             .clone()
     }
 
-    /// The list's height at `width`, keeping nothing between calls.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         self.height_in(&mut ListCache::default(), text, theme, width)
     }
@@ -724,18 +650,10 @@ impl<'a> ListFace<'a> {
         self.layout(cache, text, theme, 0.0, width, 0.0).height
     }
 
-    /// Paint the list from `rect`'s top left, `rect`'s width wide, keeping
-    /// nothing between frames.
     pub fn paint(&self, paint: &mut PaintCtx<'_>, rect: Rect) {
         self.paint_in(paint, rect, None, &mut ListCache::default());
     }
 
-    /// Paint the rows of `rect` that meet `viewport` — all of them when it is
-    /// `None` — reusing and keeping `cache`'s measurements.
-    ///
-    /// A row outside the viewport is neither measured again (its kept box is
-    /// still right) nor shaped: the frame costs what is on screen, not what the
-    /// conversation holds.
     pub fn paint_in(
         &self,
         paint: &mut PaintCtx<'_>,
@@ -818,8 +736,6 @@ impl<'a> ListFace<'a> {
         painted
     }
 
-    /// The time, and the delivery state of one of your own lines, under its
-    /// bubble.
     fn paint_caption(&self, paint: &mut PaintCtx<'_>, line: &ConversationLine, band: Rect) {
         let theme = paint.theme;
         let style = theme.text(TextRole::Caption).numeric();
@@ -845,8 +761,6 @@ impl<'a> ListFace<'a> {
         }
     }
 
-    /// What a line says to a screen reader: who, when, whether it arrived, and
-    /// what it says.
     fn spoken(&self, line: &ConversationLine) -> String {
         let mut parts: Vec<String> = Vec::new();
         if !line.author.is_empty() {
@@ -868,7 +782,6 @@ fn seconds(at_ms: i64) -> i64 {
     at_ms.div_euclid(1_000)
 }
 
-/// The message list: a conversation, drawn. See the module docs.
 #[crate::component::not_a_component(
     part,
     "`ui.ConversationList` (`DescribedConversationList`) is its described form"
@@ -877,7 +790,6 @@ pub struct ConversationList {
     lines: Vec<ConversationLine>,
     rect: Rect,
     name: String,
-    /// Its paint changed since the last frame drew it.
     dirty: bool,
     theme: Option<Theme>,
     /// What the last frame measured and placed, kept so the next frame — a
@@ -887,7 +799,6 @@ pub struct ConversationList {
 }
 
 impl ConversationList {
-    /// A list of `lines`, oldest first.
     #[must_use]
     pub fn new(lines: Vec<ConversationLine>) -> Self {
         Self {
@@ -900,7 +811,6 @@ impl ConversationList {
         }
     }
 
-    /// The list's accessible name ("Conversation with Ada").
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
@@ -950,8 +860,6 @@ impl ConversationList {
         })
     }
 
-    /// What the list's last layout and frame did: how many lines it measured,
-    /// reused, painted and skipped as out of view.
     #[must_use]
     pub fn work(&self) -> ListWork {
         self.cache.work()
@@ -1026,8 +934,6 @@ impl Widget for ConversationList {
         }
         let face = ListFace::standing(&self.lines, ConversationClock::local());
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
-        // The rows that meet what the view shows, and no others: a long
-        // conversation shapes what is on screen, not what it holds.
         face.paint_in(&mut paint, self.rect, presence.viewport(), &mut self.cache);
     }
 
@@ -1094,8 +1000,6 @@ mod frame_tests;
 mod geometry_tests {
     use super::*;
 
-    /// Every row a list lays out sits inside the list it was given: a bubble
-    /// that escapes its column is a bubble drawn over its neighbours.
     #[test]
     fn every_row_is_laid_out_inside_the_list_it_is_given() {
         let mut text = crate::font_catalog::fixture_renderer();

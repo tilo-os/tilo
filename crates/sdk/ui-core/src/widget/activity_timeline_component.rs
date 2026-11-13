@@ -1,15 +1,6 @@
-//! [`ActivityTimeline`] as a described component: the changes of a document as entries in a
-//! slot, each what it did, who did it and when, and reverting or opening one reported with the
-//! change it stands for.
-//!
-//! The changes are [`ActivityEntryProps`], one per change; the timeline groups them itself —
-//! a typing run under one band, the day's heading over each day's changes — so the parts say
-//! only what the app knows of a change. Reverting a change, reverting a run and opening a change
-//! in the app are the timeline's own events, carrying the change.
-//!
-//! A change is identified by its stable key (a UUID, as history gives one), which the view keeps
-//! across the changes it shows: the timeline's selection and the groups a person folded are
-//! carried by it.
+//! [`ActivityTimeline`] as a described component: the changes of a document as entries in a slot, each
+//! what it did, who did it and when, and reverting or opening one reported with the change it stands
+//! for.
 
 use std::collections::HashMap;
 
@@ -30,19 +21,13 @@ crate::component::choice!(crate::widget::EntryKind, "EntryKind", {
     Redaction => "redaction",
 });
 
-/// What kind of resource the change was made to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActivityArtifact {
-    /// A rich-text document.
     #[default]
     Note,
-    /// A file.
     File,
-    /// A saved set of windows.
     Cluster,
-    /// A board.
     Kanban,
-    /// A channel's log.
     ChatLog,
 }
 
@@ -63,8 +48,8 @@ crate::component::choice!(ActivityArtifact, "ActivityArtifact", {
     presents = "item"
 )]
 pub struct ActivityEntryProps {
-    /// The change it is: its stable key, what reverting or opening it reports, and where its
-    /// band and selection stand across changes.
+    /// The change it is: its stable key, what reverting or opening it reports, and where its band and
+    /// selection stand across changes.
     #[component(required, positional)]
     pub item: ResourceId,
     /// Who made the change.
@@ -82,14 +67,13 @@ pub struct ActivityEntryProps {
 
 crate::component::part_slot!(ActivityEntryProps);
 
-/// The history of a document, grouped: runs of typing fold into one band that opens to its
-/// changes, each day's changes sit under the day's heading, and a change's menu offers
-/// reverting it.
+/// The history of a document, grouped: runs of typing fold into one band that opens to its changes,
+/// each day's changes sit under the day's heading, and a change's menu offers reverting it.
 #[derive(Component, Default)]
 #[component(name = "ActivityTimeline", role = "List")]
 pub struct ActivityTimelineProps {
-    /// The pane takes the height its parent gives it and scrolls inside, rather than being as
-    /// tall as its rows inside another scroll.
+    /// The pane takes the height its parent gives it and scrolls inside, rather than being as tall as its
+    /// rows inside another scroll.
     pub fill: bool,
     /// Whether it lists changes newest first.
     pub newest_first: bool,
@@ -112,11 +96,9 @@ pub struct ActivityTimelineProps {
 pub struct DescribedActivityTimeline {
     timeline: ActivityTimeline,
     keys: HashMap<String, HistoryEntryId>,
-    /// What the timeline was made with, the changes and the callbacks aside.
     face: Face,
 }
 
-/// What decides the timeline, its changes aside: the same again is taken in place.
 #[derive(Clone, Debug, PartialEq)]
 struct Face {
     fill: bool,
@@ -128,25 +110,22 @@ struct Face {
 }
 
 impl DescribedActivityTimeline {
-    /// The timeline, for a test of what it shows and keeps.
     #[must_use]
     pub fn timeline(&self) -> &ActivityTimeline {
         &self.timeline
     }
 
-    /// The timeline, to change.
     pub fn timeline_mut(&mut self) -> &mut ActivityTimeline {
         &mut self.timeline
     }
 }
 
-/// The change `key` stands for, as an event carries it: a resource with the change's key.
 fn change(key: &str) -> Value {
     Value::Resource(key.to_owned())
 }
 
-/// The id history gives a change, from its key: the first sixteen bytes of the key's own bytes,
-/// so a change the view names is the same change each time the view is built again.
+/// The id history gives a change, from its key: the first sixteen bytes of the key's own bytes, so
+/// a change the view names is the same change each time the view is built again.
 fn entry_id(key: &str) -> HistoryEntryId {
     let mut bytes = [0u8; 16];
     for (slot, byte) in bytes.iter_mut().zip(key.as_bytes()) {
@@ -155,7 +134,6 @@ fn entry_id(key: &str) -> HistoryEntryId {
     HistoryEntryId(bytes)
 }
 
-/// The entry one part makes, as the timeline reads it.
 fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
     let id = entry_id(&props.item.0);
     let author = props.author.clone().unwrap_or_default();
@@ -256,8 +234,8 @@ impl Described for DescribedActivityTimeline {
         }
     }
 
-    /// Changed changes, and changed headings and order, are taken in place: the band a person
-    /// folded and the selection stay. A change of the callbacks builds it again.
+    /// Changed changes, and changed headings and order, are taken in place: the band a person folded
+    /// and the selection stay.
     fn set_props(&mut self, props: ActivityTimelineProps) -> bool {
         let ActivityTimelineProps {
             fill,
@@ -305,7 +283,6 @@ impl Described for DescribedActivityTimeline {
     }
 }
 
-/// A timeline is its timeline.
 impl crate::widget::Decorator for DescribedActivityTimeline {
     type Inner = ActivityTimeline;
 
@@ -326,13 +303,11 @@ impl crate::widget::Decorator for DescribedActivityTimeline {
     }
 }
 
-/// The key a change reads as in an event: the change's own.
 #[allow(dead_code, reason = "the change an event carries is its key")]
 fn _report(key: &str) -> Value {
     change(key)
 }
 
-/// The person an entry names is the entry's own.
 #[allow(dead_code, reason = "the author is part of the entry")]
 fn _person() -> Option<Person> {
     None

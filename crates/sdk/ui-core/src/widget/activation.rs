@@ -1,13 +1,5 @@
-//! Pointer, keyboard and accessibility activation shared by the content
-//! composites that are themselves one pressable target (a list row, a media
-//! card, an interactive container).
-//!
-//! The owner keeps an [`Activation`] and forwards pointer events to it; the
-//! activation tracks hover and press against the owner's rect, fires the
-//! bound action or callback on a completed click and on an accessibility
-//! `Activate`, and answers the owner's [`ActionControls`] inventory.
-//!
-//! [`ActionControls`]: crate::widget::controls::ActionControls
+//! Pointer, keyboard and accessibility activation shared by the content composites that are themselves
+//! one pressable target (a list row, a media card, an interactive container).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -64,8 +56,6 @@ pub fn paint_disabled(scene: &mut Scene, transform: Affine, bounds: &impl vello:
     );
 }
 
-/// The operation type every closure-bound control publishes (`on_effect`,
-/// `on_view`): its payload is the control's id.
 pub(crate) const NATIVE_INVOKE: &str = "tilo.ui.control.invoke";
 
 /// A zero-argument effect or view action a control publishes for its own
@@ -77,8 +67,6 @@ pub(crate) struct NativeControl {
 }
 
 impl NativeControl {
-    /// Publish `handler` as the `invoke` action of control `id`, returning the
-    /// binding its pointer, keyboard and accessibility activation emit.
     #[expect(
         clippy::expect_used,
         reason = "String serialization and lookup of the just-created action are infallible"
@@ -89,8 +77,6 @@ impl NativeControl {
         kind: tilo_actions::OperationKind,
         handler: Box<dyn FnMut()>,
     ) -> (Self, tilo_actions::ActionBinding<()>) {
-        // The control's own verb, for agents and scripts: a person presses
-        // the control itself (`Button::on_effect`).
         let spec = tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
             .expect("a control id is always JSON serializable")
             .for_audience(tilo_actions::Audience::Agents);
@@ -106,8 +92,6 @@ impl NativeControl {
         self.resource.clone()
     }
 
-    /// The resource of a control `id` whose `invoke` its owner answers
-    /// itself ([`invoked_control`]), without a handler of its own.
     pub(crate) fn resource_of(
         id: &str,
         label: &str,
@@ -116,17 +100,14 @@ impl NativeControl {
         Self::new(id, label, kind, Box::new(|| {})).0.resource
     }
 
-    /// The handler back, to publish it under another id.
     pub(crate) fn into_handler(self) -> Box<dyn FnMut()> {
         self.handler
     }
 
-    /// Run the handler, as an `invoke` addressed to the control does.
     pub(crate) fn run(&mut self) {
         (self.handler)();
     }
 
-    /// Run the handler for an `invoke` addressed to control `id`.
     pub(crate) fn start(
         &mut self,
         id: &str,
@@ -151,10 +132,6 @@ impl NativeControl {
     }
 }
 
-/// The control an `invoke` operation addresses, when it is one.
-///
-/// # Errors
-/// Returns why the payload does not read.
 pub(crate) fn invoked_control(
     op: &crate::widget::ResourceOperation<'_>,
 ) -> Result<Option<String>, String> {
@@ -173,11 +150,6 @@ thread_local! {
     static PRESSES: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Ask the host to press the point `at` of the window, in the coordinates
-/// a widget is drawn in, once the operation it is answering returns: a
-/// published control whose owner reads its choice from the input it handles
-/// (a menu row) is chosen the way a person chooses it. The host presses as
-/// it does when an assistive technology activates a painted target.
 pub(crate) fn press_where_drawn(at: Point) {
     PRESSES.with(|presses| presses.borrow_mut().push(at));
 }
@@ -199,9 +171,6 @@ pub(crate) struct Activation {
     action: Option<ActionEmitter<()>>,
     on_activate: Option<Box<dyn FnMut()>>,
     native: Option<NativeControl>,
-    /// What the surface shows. `state.pressed` mirrors `held`, which is
-    /// the press itself: [`Self::press`], [`Self::release`] and
-    /// [`Self::cancel_press`] keep the two in step.
     pub(crate) state: Interaction,
     held: HeldPress,
     cursor: Point,
@@ -231,8 +200,6 @@ impl Activation {
         self.native = None;
     }
 
-    /// Publish `handler` as this surface's own effect or view action and
-    /// route every activation through it.
     pub(crate) fn set_native(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -244,8 +211,6 @@ impl Activation {
         self.native = Some(native);
     }
 
-    /// Route every activation through `event`, a component's data: an action through the
-    /// door, or a view intent published as this surface's own view action, `label` naming it.
     pub(crate) fn set_event(&mut self, event: crate::component::Event, label: &str) {
         match event {
             crate::component::Event::None => self.clear_event(),
@@ -258,14 +223,12 @@ impl Activation {
         }
     }
 
-    /// Stop activating anything: a surface whose event its view took away.
     pub(crate) fn clear_event(&mut self) {
         self.on_activate = None;
         self.action = None;
         self.native = None;
     }
 
-    /// The resource a closure-bound surface publishes, if any.
     pub(crate) fn native_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.native
             .as_ref()
@@ -274,8 +237,6 @@ impl Activation {
             .collect()
     }
 
-    /// The operation type this surface handles itself, as a widget's
-    /// [`local_resource_operation_handlers`](crate::widget::ResourceOperations::local_resource_operation_handlers).
     pub(crate) fn native_handler(&self) -> &'static [&'static str] {
         if self.native.is_some() {
             &[NATIVE_INVOKE]
@@ -284,7 +245,6 @@ impl Activation {
         }
     }
 
-    /// The operation types this surface handles itself.
     pub(crate) fn native_handlers(&self) -> std::collections::HashSet<String> {
         self.native
             .as_ref()
@@ -302,7 +262,6 @@ impl Activation {
         }
     }
 
-    /// Whether anything happens when this surface is pressed.
     pub(crate) fn is_bound(&self) -> bool {
         self.action.is_some() || self.on_activate.is_some()
     }
@@ -317,7 +276,6 @@ impl Activation {
         self.cursor
     }
 
-    /// Fire the bound action or callback.
     pub(crate) fn activate(&mut self) -> bool {
         if !self.is_enabled() {
             return false;
@@ -335,10 +293,6 @@ impl Activation {
         false
     }
 
-    /// Track hover and press against `rect`; a release over the surface that
-    /// was pressed on it activates. `exclude` lists inner targets (a row's
-    /// hover actions) that own their own clicks. Returns whether the visible
-    /// state changed.
     pub(crate) fn handle_pointer(
         &mut self,
         event: &WindowEvent,
@@ -384,15 +338,11 @@ impl Activation {
         before != self.state
     }
 
-    /// A press landed on the surface at `rect`.
     pub(crate) fn press(&mut self, rect: Rect) {
         self.held.press(PressAt::one(&self.id, rect));
         self.state.pressed = true;
     }
 
-    /// A left-button release, `over` the surface at `rect` or not: the
-    /// press this surface took, or the one a surface it replaced took at
-    /// this place, ends. Does not activate.
     pub(crate) fn release(&mut self, rect: Rect, over: bool) -> Release {
         let release = self
             .held
@@ -401,8 +351,6 @@ impl Activation {
         release
     }
 
-    /// Forget the press without a click (the pointer left, a control
-    /// inside took the gesture).
     pub(crate) fn cancel_press(&mut self) {
         self.held.cancel();
         self.state.pressed = false;
@@ -429,7 +377,6 @@ impl Activation {
         Vec::new()
     }
 
-    /// Returns whether availability changed.
     pub(crate) fn refresh_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -443,7 +390,6 @@ impl Activation {
     }
 }
 
-/// One pressable target a painted host registered for this frame.
 #[derive(Clone, Debug)]
 struct PaintedTarget {
     id: String,
@@ -473,7 +419,6 @@ pub struct PaintedTargets {
     targets: Vec<PaintedTarget>,
     hovered: Option<String>,
     pressed: Option<String>,
-    /// `pressed`, as a host rebuilt in this one's place sees it.
     carried: HeldPress,
     armed_rect: Option<Rect>,
     cancelled_release_pending: bool,
@@ -493,14 +438,10 @@ impl PaintedTargets {
         Self::default()
     }
 
-    /// Forget last frame's targets; register this frame's after it. Hover,
-    /// press and focus stay with the ids that keep their target.
     pub fn begin_frame(&mut self) {
         self.targets.clear();
     }
 
-    /// Register a target `id` at `rect`, announced as `label`. Later
-    /// targets are on top: a point inside two goes to the later one.
     pub fn target(&mut self, id: impl Into<String>, rect: Rect, label: impl Into<String>) {
         let id = id.into();
         if self.pressed.as_deref() == Some(id.as_str()) && self.armed_rect != Some(rect) {
@@ -514,8 +455,6 @@ impl PaintedTargets {
         });
     }
 
-    /// [`Self::target`] that shows but does nothing (a key that does not
-    /// apply now).
     pub fn disabled_target(&mut self, id: impl Into<String>, rect: Rect, label: impl Into<String>) {
         let id = id.into();
         if self.pressed.as_deref() == Some(id.as_str()) {
@@ -529,7 +468,6 @@ impl PaintedTargets {
         });
     }
 
-    /// How to paint target `id` now.
     #[must_use]
     pub fn interaction(&self, id: &str) -> Interaction {
         let disabled = self
@@ -544,7 +482,6 @@ impl PaintedTargets {
         }
     }
 
-    /// The target under `point`, topmost first.
     #[must_use]
     pub fn hit(&self, point: Point) -> Option<&str> {
         self.targets
@@ -554,31 +491,25 @@ impl PaintedTargets {
             .map(|target| target.id.as_str())
     }
 
-    /// The id of the target that holds keyboard focus.
     #[must_use]
     pub fn focused(&self) -> Option<&str> {
         self.focused.as_deref()
     }
 
-    /// The target under the pointer, if any.
     pub fn hovered(&self) -> Option<&str> {
         self.hovered.as_deref()
     }
 
-    /// The target a pointer press is held on, if any.
     pub fn pressed(&self) -> Option<&str> {
         self.pressed.as_deref()
     }
 
-    /// Move keyboard focus to target `id`.
     pub fn focus(&mut self, id: &str) {
         if self.targets.iter().any(|target| target.id == id) {
             self.focused = Some(id.to_string());
         }
     }
 
-    /// Follow the host's own keyboard focus (`Widget::set_focus`): the
-    /// first target takes it when the host gains it with none focused.
     pub fn set_host_focus(&mut self, focused: bool) {
         if self.host_focused && !focused {
             self.cancel_pointer_press();
@@ -590,8 +521,6 @@ impl PaintedTargets {
         }
     }
 
-    /// Close this frame's registration: a press whose target was not
-    /// painted again is over, even if that target comes back later.
     pub fn end_frame(&mut self) {
         if let Some(pressed) = &self.pressed
             && !self.targets.iter().any(|target| target.id == *pressed)
@@ -600,14 +529,12 @@ impl PaintedTargets {
         }
     }
 
-    /// Cancel the gesture while retaining ownership of its eventual release.
     pub fn cancel_pointer_press(&mut self) {
         self.cancelled_release_pending |= self.pressed.take().is_some();
         self.carried.cancel();
         self.armed_rect = None;
     }
 
-    /// Forward from the host's pointer-capture query, including cancelled gestures.
     #[must_use]
     pub fn wants_pointer_capture(&self) -> bool {
         self.pressed.is_some() || self.cancelled_release_pending
@@ -696,9 +623,6 @@ impl PaintedTargets {
                     .rev()
                     .find(|target| target.rect.contains(self.cursor))
                     .filter(|target| !target.disabled)
-                    // A host rebuilt while the button was held: the target
-                    // pressed in its predecessor, at the same place,
-                    // completes here.
                     && self
                         .carried
                         .release(Some(PressAt::one(&target.id, target.rect)))
@@ -712,10 +636,6 @@ impl PaintedTargets {
         }
     }
 
-    /// Pointer routing for canvas hosts without a widget focus context.
-    /// Uses the same completed-click and cancellation rules as `handle_event`,
-    /// without requesting keyboard focus. Returns whether feedback changed;
-    /// handled includes a cancelled gesture's matching release.
     pub fn handle_pointer_event(
         &mut self,
         event: &WindowEvent,
@@ -775,12 +695,6 @@ impl PaintedTargets {
             )
     }
 
-    /// Track the pointer and keys against the registered targets. A press
-    /// and release on the same target activates it; Enter or Space
-    /// activates the focused one; Tab and Shift+Tab move focus between
-    /// targets. Marks the event handled when a target took it, and asks the
-    /// host for keyboard focus when one is pressed. Returns whether
-    /// anything visible changed.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -839,8 +753,6 @@ impl PaintedTargets {
         changed || before != (self.focused.clone(), self.host_focused)
     }
 
-    /// The focus ring around the focused target, while the host holds
-    /// keyboard focus.
     pub fn paint_focus(
         &self,
         scene: &mut Scene,
@@ -885,9 +797,6 @@ impl PaintedTargets {
             .collect()
     }
 
-    /// Route an assistive-technology action on one
-    /// of [`Self::accessibility_children`]: forward the host's
-    /// `Widget::perform_action` key path here.
     pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
         let Some(&key) = key_path.first() else {
             return false;
@@ -903,8 +812,6 @@ impl PaintedTargets {
         self.perform_semantic_action(action, &id)
     }
 
-    /// [`Self::perform_action`] by the target's id (its semantic action
-    /// target): forward the host's `Widget::perform_semantic_action` here.
     pub fn perform_semantic_action(&mut self, action: &crate::a11y::Action, target: &str) -> bool {
         match action {
             crate::a11y::Action::Activate => self.activate(target),
@@ -1080,13 +987,11 @@ mod tests {
         assert_eq!(targets.take_activated(), vec!["seven".to_string()]);
         assert!(targets.take_activated().is_empty(), "taken once");
 
-        // Pressed on one target, released on another: nothing fires.
         send(&mut targets, &button(ElementState::Pressed));
         send(&mut targets, &cursor_moved(60.0, 10.0));
         send(&mut targets, &button(ElementState::Released));
         assert!(targets.take_activated().is_empty());
 
-        // A disabled target shows but takes nothing.
         send(&mut targets, &cursor_moved(110.0, 10.0));
         assert!(!send(&mut targets, &button(ElementState::Pressed)));
         assert!(targets.interaction("nine").disabled);

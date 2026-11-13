@@ -1,18 +1,5 @@
-//! Time-series charts — [`Chart`] (a full line/area plot with grid lines,
-//! axis ticks and a legend) and [`Sparkline`] (a compact, chromeless
-//! variant for inline trend cells).
-//!
-//! Both render one or more [`Series`] of `f32` samples. A series is mapped
-//! to pixels with the standard time-series projection: the samples are
-//! evenly spaced across the plot width and scaled against a shared `max`
-//! so multiple series share a vertical axis. The top edge of each series
-//! is a stroked polyline; with [`Chart::with_area`] an optional translucent
-//! area fill is dropped from the line down to the baseline.
-//!
-//! Colours come entirely from the [`Theme`]: grid lines from the standard
-//! border colour, axis tick labels from the dim text colour, and each
-//! series carries its own [`Series::color`] (callers typically pull these
-//! from the theme accent / semantic ramps). Nothing is hard-coded.
+//! Time-series charts — [`Chart`] (a full line/area plot with grid lines, axis ticks and a legend) and
+//! [`Sparkline`] (a compact, chromeless variant for inline trend cells).
 
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
@@ -33,21 +20,13 @@ use crate::widget::data_table::{centered_text_top, text_band, type_line_height};
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
 const AREA_FILL_ALPHA: u8 = 46;
-/// Alpha of the sparkline area fill — a touch heavier since sparklines are
-/// small and benefit from a more legible fill.
 const SPARK_FILL_ALPHA: u8 = 54;
 /// Number of horizontal grid divisions (so `DIVISIONS + 1` rules).
 const GRID_DIVISIONS: usize = 4;
-/// Stroke width of a series line.
 const LINE_WIDTH: f64 = 1.8;
-/// Stroke width of a sparkline.
 const SPARK_LINE_WIDTH: f64 = 1.5;
-/// Height reserved at the top of the plot for the title / legend strip.
 const HEADER_H: f64 = 22.0;
 
-/// One labelled data series. `data` is sampled left-to-right across the
-/// plot; `color` is the line/area tint; `legend` is the label shown in the
-/// chart's legend strip (empty string = omit from the legend).
 #[derive(Clone)]
 pub struct Series {
     pub data: Vec<f32>,
@@ -99,7 +78,6 @@ impl RollingSeries {
         series
     }
 
-    /// Append the newest sample, evicting the oldest once the window is full.
     pub fn push(&mut self, sample: f32) {
         if self.cap == 0 {
             return;
@@ -111,7 +89,6 @@ impl RollingSeries {
         self.data.push(sample);
     }
 
-    /// The held samples, oldest first.
     pub fn as_slice(&self) -> &[f32] {
         &self.data
     }
@@ -149,22 +126,19 @@ impl RollingSeries {
     }
 }
 
-/// How the area under a trend line is filled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TrendFill {
-    /// The line alone.
     None,
     /// A flat tint of the series colour at this alpha (0–255).
     Alpha(u8),
-    /// A vertical wash of the series colour: `top` × its alpha at the plot's
-    /// top edge, fading to `bottom` × at the baseline.
-    Gradient { top: f32, bottom: f32 },
+    Gradient {
+        top: f32,
+        bottom: f32,
+    },
 }
 
-/// How consecutive samples are joined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TrendCurve {
-    /// Straight segments — honest for sampled measurements.
     #[default]
     Linear,
     /// A uniform Catmull-Rom spline (tension 0) through every sample — for a
@@ -221,8 +195,6 @@ impl TrendRange {
     }
 }
 
-/// Paint options for a trend line — the one line/area renderer behind
-/// [`Sparkline`] and every series of a [`Chart`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrendStyle {
     pub line_width: f64,
@@ -232,13 +204,10 @@ pub struct TrendStyle {
     /// with dots on its lowest sample still sits on a filled ground.
     pub baseline_overhang: f64,
     pub markers: Option<f64>,
-    /// A dot of this radius at the newest (rightmost) sample — the live edge
-    /// of a streaming series.
     pub leading_dot: Option<f64>,
 }
 
 impl TrendStyle {
-    /// The compact trend of a [`Sparkline`]: a thin line over a legible fill.
     pub const SPARKLINE: Self = Self {
         line_width: SPARK_LINE_WIDTH,
         fill: TrendFill::Alpha(SPARK_FILL_ALPHA),
@@ -248,7 +217,6 @@ impl TrendStyle {
         leading_dot: None,
     };
 
-    /// A [`Chart`] series with its area fill.
     pub const CHART: Self = Self {
         line_width: LINE_WIDTH,
         fill: TrendFill::Alpha(AREA_FILL_ALPHA),
@@ -303,7 +271,6 @@ fn map_point(plot: Rect, idx: usize, len: usize, value: f64, range: TrendRange) 
     Point::new(x, y)
 }
 
-/// The open line through `points`, straight or splined.
 fn trend_path(points: &[Point], curve: TrendCurve) -> BezPath {
     let mut path = BezPath::new();
     let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
@@ -338,8 +305,6 @@ fn trend_path(points: &[Point], curve: TrendCurve) -> BezPath {
     path
 }
 
-/// Paint one trend into `plot`. Fewer than two samples draw nothing — a
-/// line needs two points to interpolate.
 fn paint_trend(
     scene: &mut Scene,
     transform: Affine,
@@ -418,22 +383,17 @@ fn paint_trend(
     }
 }
 
-/// Full time-series line/area chart with grid, axis ticks and a legend.
 pub struct Chart {
     series: Vec<Series>,
-    /// Explicit vertical-axis maximum. `None` ⇒ derived from the data.
     max: Option<f32>,
     area: bool,
     title: String,
-    /// `(hi, lo)` axis tick labels drawn at the top-right / bottom-right.
     axis_hi: String,
     axis_lo: String,
     height: f32,
     style: ChartStyle,
     rect: Rect,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -470,7 +430,6 @@ impl Chart {
         self
     }
 
-    /// Builder: a title drawn at the top-left of the header strip.
     #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
@@ -486,7 +445,6 @@ impl Chart {
         self
     }
 
-    /// Builder: intrinsic layout height in logical pixels.
     #[must_use]
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;
@@ -509,16 +467,12 @@ impl Chart {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
-    /// Builder: grid, header and per-series trend styling.
     #[must_use]
     pub fn with_style(mut self, style: ChartStyle) -> Self {
         self.style = style;
         self
     }
 
-    /// Immediate-mode draw: render a full chart into `scene` at `rect`,
-    /// reading colours from `theme`. Lets a host that lays out its own
-    /// dashboard cards paint a chart at a known rect without a widget.
     pub fn draw_at(
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
@@ -542,9 +496,6 @@ impl Chart {
         );
     }
 
-    /// Immediate-mode draw with explicit styling: the value `range` every
-    /// series shares, the header/axis `labels`, and the grid and trend
-    /// `style`. A header-less style gives the whole rect to the plot.
     pub fn draw_styled(
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
@@ -630,7 +581,6 @@ impl Chart {
                 );
             }
 
-            // Legend (right-aligned, painted right-to-left).
             let dot_gap = f64::from(tokens.spacing.s2);
             let entry_gap = f64::from(tokens.spacing.s3);
             let mut lx = rect.x1;
@@ -672,8 +622,6 @@ impl Chart {
             );
         }
 
-        // Axis ticks: in the gutter, right-aligned, centred on the top and
-        // bottom gridlines.
         for (label, y) in [(labels.axis_hi, plot.y0), (labels.axis_lo, plot.y1)] {
             if label.is_empty() {
                 continue;
@@ -699,7 +647,6 @@ impl Chart {
 /// The text a [`Chart`] paints around its plot. Any of them may be empty.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ChartLabels<'a> {
-    /// Drawn at the top-left of the header band.
     pub title: &'a str,
     /// Right-aligned at the top of the plot, e.g. `"100%"`.
     pub axis_hi: &'a str,
@@ -707,16 +654,12 @@ pub struct ChartLabels<'a> {
     pub axis_lo: &'a str,
 }
 
-/// Grid, header and series styling for a [`Chart`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChartStyle {
-    /// How every series is painted.
     pub trend: TrendStyle,
     /// Number of horizontal grid divisions (so `grid_divisions + 1` rules).
     pub grid_divisions: usize,
-    /// Grid rule colour; `None` derives it from the raised surface.
     pub grid_color: Option<Color>,
-    /// Whether the chart reserves a title/legend band above the plot.
     pub header: bool,
     pub title_weight: TextWeight,
 }
@@ -747,7 +690,6 @@ impl ChartStyle {
         self
     }
 
-    /// Drop the title/legend band; the plot takes the whole rect.
     #[must_use]
     pub fn without_header(mut self) -> Self {
         self.header = false;
@@ -766,7 +708,6 @@ impl Widget for Chart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // A page shown as HTML shows it as one image.
         crate::scene_parts::picture();
         let style = if self.area {
             self.style
@@ -801,27 +742,17 @@ impl Widget for Chart {
     }
 }
 
-/// Compact, chromeless trend line — no axis, grid, title or legend. Just
-/// the area fill + line, sized to fill its rect. Drop one into a table cell
-/// or a stat card to show a recent trend.
 pub struct Sparkline {
     data: Vec<f32>,
-    /// The colour it was built in; `None` wears the theme's accent at paint.
     color: Option<Color>,
-    /// Explicit max; `None` ⇒ derived from the data.
     pub(crate) max: Option<f32>,
     width: f32,
     height: f32,
     style: TrendStyle,
     rect: Rect,
-    /// What the trend is of, for assistive technology; `None` makes it decorative.
     pub(crate) label: Option<String>,
-    /// What the line means, when it means something: a status, a person. Its colour comes from
-    /// the theme at paint; without one the sparkline wears the colour it was built in.
     pub(crate) tone: Option<crate::widget::Tone>,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -872,8 +803,6 @@ impl Sparkline {
         self.style = style;
     }
 
-    /// The colour painted now: the tone's, when it has one, else the one it was built with,
-    /// else the theme's accent.
     fn painted_colour(&self, theme: &Theme) -> Color {
         match (self.tone, self.color) {
             (Some(tone), _) => tone.colour(theme),
@@ -882,14 +811,12 @@ impl Sparkline {
         }
     }
 
-    /// Builder: pin the vertical max.
     #[must_use]
     pub fn with_max(mut self, max: f32) -> Self {
         self.max = Some(max);
         self
     }
 
-    /// Builder: intrinsic size in logical pixels.
     #[must_use]
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.width = width;
@@ -907,14 +834,12 @@ impl Sparkline {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
-    /// Builder: how the trend is painted (fill, curve, markers).
     #[must_use]
     pub fn with_style(mut self, style: TrendStyle) -> Self {
         self.style = style;
         self
     }
 
-    /// Immediate-mode draw of a sparkline into `scene` at `rect`.
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -934,9 +859,6 @@ impl Sparkline {
         );
     }
 
-    /// Immediate-mode draw of `data` (any `f32`/`f64` samples, oldest first)
-    /// spread across `rect` and projected against `range`, painted with
-    /// `style`. Fewer than two samples draw nothing.
     pub fn paint<T: Copy + Into<f64>>(
         scene: &mut Scene,
         transform: Affine,
@@ -988,7 +910,6 @@ impl Widget for Sparkline {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // A page shown as HTML shows it as one image.
         crate::scene_parts::picture();
         Sparkline::paint(
             scene,
@@ -1015,7 +936,6 @@ impl Widget for Sparkline {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // What the trend is of is the accessible name; without one it is decorative.
         Some(AccessNode::new(Role::Image).with_optional_name(self.label.clone()))
     }
 
@@ -1042,9 +962,6 @@ mod tests {
 
     #[test]
     fn map_point_projects_and_clamps_values_with_floored_ceilings() {
-        /// The point projection scales against `ceil` and flips y: the max
-        /// value lands at the plot top, zero at the baseline, the midpoint in
-        /// the middle.
         fn map_point_projects_value_to_pixels() {
             let plot = Rect::new(0.0, 0.0, 100.0, 50.0);
             // n = 3 samples, ceil = 10.
@@ -1086,8 +1003,6 @@ mod tests {
 
     #[test]
     fn chart_paints_grid_series_fills_and_sparklines() {
-        /// A chart with an area fill emits strictly more COLOR fills than the
-        /// same chart without it (the area path is the extra fill).
         fn area_fill_adds_a_color_tag() {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -1219,8 +1134,6 @@ mod tests {
         assert_eq!(TrendRange::fit::<f64>(&[]), TrendRange::up_to(1.0));
     }
 
-    /// The spline passes through every sample — marks seated on
-    /// [`Sparkline::points`] sit on the painted curve.
     #[test]
     fn catmull_rom_passes_through_every_sample() {
         let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
@@ -1268,8 +1181,6 @@ mod tests {
                 }),
         );
         assert_eq!(count_color_tags(&plain), 2, "area + line");
-        // Line + three markers + the leading dot; the gradient area is not a
-        // solid-colour fill.
         assert_eq!(count_color_tags(&marked), 5);
     }
 

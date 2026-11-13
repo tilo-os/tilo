@@ -1,10 +1,4 @@
 //! The place of earlier lines a conversation cannot get.
-//!
-//! A conversation kept in parts reads earlier ones back from the room as
-//! its reader scrolls up, showing them arriving meanwhile. When the workspace's
-//! hosts sent everything they hold without them, or no host is connected,
-//! nothing more is coming: the place says so, quietly and with nothing
-//! moving, where the earlier lines would be.
 
 use vello::kurbo::Rect;
 
@@ -16,14 +10,11 @@ use crate::tokens::TextRole;
 pub struct EarlierUnavailableFace;
 
 impl EarlierUnavailableFace {
-    /// What the place says.
     #[must_use]
     pub fn label() -> String {
         super::t("conversation-earlier-unavailable")
     }
 
-    /// Paint the label centred across `band`, within `leading..trailing`
-    /// (the message column's edges).
     pub fn paint(paint: &mut PaintCtx<'_>, band: Rect, leading: f64, trailing: f64) {
         let theme = paint.theme;
         let label = Self::label();

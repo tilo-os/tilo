@@ -1,15 +1,7 @@
-//! What a view gives the element it stands in to do, besides drawing it: a context menu, a
-//! toolbar shown on hover and focus, and a swipe. Each is a described component that
-//! *attaches* ([`crate::component::Semantics::attaches`]): it draws nothing where the view puts
-//! it, and belongs to the view it stands in. A list item holds those of its row
-//! ([`super::ListItemProps::attached`]), so the list runs them for each row: the menu on a
-//! right-click, the Menu key or a long press, the toolbar while the row is hovered or holds
-//! focus, the swipe under the finger.
-//!
-//! A menu's content is ordinary components: commands ([`MenuItemProps`]), separators
-//! ([`MenuSeparatorProps`]) and an emoji bar ([`EmojiBarProps`]). The system adds the rest:
-//! what the item offers that the view did not place ([`item_menu`]), so every action stays
-//! reachable from the menu whatever a view chose to put first.
+//! What a view gives the element it stands in to do, besides drawing it: a context menu, a toolbar
+//! shown on hover and focus, and a swipe. Each is a described component that *attaches*
+//! ([`crate::component::Semantics::attaches`]): it draws nothing where the view puts it, and belongs to
+//! the view it stands in.
 
 use crate::component::{Accepts, Component, Event, SlotType, Source};
 use crate::widget::{Element, MenuEntry, MenuItemProps, SwipeActionProps};
@@ -19,8 +11,8 @@ use crate::widget::{Element, MenuEntry, MenuItemProps, SwipeActionProps};
 #[component(name = "MenuSeparator", role = "Splitter")]
 pub struct MenuSeparatorProps {}
 
-/// A row of emoji to react with, at the top of a menu: the ones the person uses most, then a
-/// button that opens the emoji picker for any other.
+/// A row of emoji to react with, at the top of a menu: the ones the person uses most, then a button
+/// that opens the emoji picker for any other.
 #[derive(Component, Default)]
 #[component(name = "EmojiBar", role = "Toolbar")]
 pub struct EmojiBarProps {
@@ -35,7 +27,6 @@ pub struct EmojiBarProps {
     pub pick: Event,
 }
 
-/// One part of a menu: a command, a separator or an emoji bar.
 pub enum MenuPart {
     Item(MenuItemProps),
     Separator,
@@ -77,7 +68,6 @@ impl MenuPart {
         }
     }
 
-    /// What a command is called; a separator and an emoji bar have no label.
     #[must_use]
     pub fn label(&self) -> Option<&str> {
         match self {
@@ -86,7 +76,6 @@ impl MenuPart {
         }
     }
 
-    /// The action a command runs, when it runs a known one.
     fn invokes(&self) -> Option<&tilo_actions::ActionAddress> {
         match self {
             Self::Item(item) => item.choose.invokes(),
@@ -95,7 +84,6 @@ impl MenuPart {
     }
 }
 
-/// The parts a menu slot takes.
 const MENU_PARTS: [&str; 3] = ["MenuItem", "MenuSeparator", "EmojiBar"];
 
 /// A menu's parts, in order: commands, separators and an emoji bar.
@@ -134,10 +122,7 @@ impl SlotType for Vec<MenuPart> {
     }
 }
 
-/// A context menu of the view it stands in: a right-click, the Menu key or a long press opens
-/// it. Its commands come first, as the view placed them; the system adds what the item offers
-/// that the view did not place and a typing field to filter them. A destructive command runs
-/// at once and is undone afterwards, never confirmed first.
+/// A context menu of the view it stands in: a right-click, the Menu key or a long press opens it.
 #[derive(Component, Default)]
 #[component(name = "ContextMenu", role = "Menu", attaches)]
 pub struct ContextMenuProps {
@@ -146,8 +131,8 @@ pub struct ContextMenuProps {
     pub items: Vec<MenuPart>,
 }
 
-/// Controls shown over the trailing edge of the view they stand in while it is hovered or
-/// holds focus: quick reactions, Reply. Tab reaches them from the view.
+/// Controls shown over the trailing edge of the view they stand in while it is hovered or holds focus:
+/// quick reactions, Reply.
 #[derive(Component, Default)]
 #[component(name = "HoverToolbar", role = "Toolbar", attaches)]
 pub struct HoverToolbarProps {
@@ -156,8 +141,8 @@ pub struct HoverToolbarProps {
     pub content: Vec<Element>,
 }
 
-/// What swiping the view it stands in across does: it follows the finger, uncovers the
-/// command and runs it when let go past the threshold, or springs back.
+/// What swiping the view it stands in across does: it follows the finger, uncovers the command and runs
+/// it when let go past the threshold, or springs back.
 #[derive(Component, Default)]
 #[component(name = "Swipe", role = "Group", attaches)]
 pub struct SwipeProps {
@@ -170,21 +155,17 @@ pub struct SwipeProps {
 }
 
 impl SwipeProps {
-    /// Whether it swipes either way.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.leading.is_none() && self.trailing.is_none()
     }
 }
 
-/// What a view gave the element it stands in: its menu, its hover toolbar and its swipe.
 #[derive(Default)]
 pub struct Attachments {
     /// The context menu's content, the view's own order.
     pub menu: Vec<MenuPart>,
-    /// The hover toolbar's controls.
     pub toolbar: Vec<Element>,
-    /// The swipe either way.
     pub swipe: SwipeProps,
 }
 
@@ -200,17 +181,14 @@ impl std::fmt::Debug for Attachments {
 }
 
 impl Attachments {
-    /// Whether the view gave nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.menu.is_empty() && self.toolbar.is_empty() && self.swipe.is_empty()
     }
 }
 
-/// The components that attach.
 const ATTACHMENTS: [&str; 3] = ["ContextMenu", "HoverToolbar", "Swipe"];
 
-/// What a view gave the element it stands in, from the attaching components in it.
 impl SlotType for Attachments {
     const MANY: bool = true;
 
@@ -254,13 +232,9 @@ impl SlotType for Attachments {
     }
 }
 
-/// The menu of an item: the view's own content first, as it placed it; then, after a
-/// separator, each command the item offers (`offered`, its allowed actions) that the view did
-/// not place, so every action stays reachable from the menu.
-///
-/// A command is placed when the view has one that runs the same action on the same resource,
-/// or, for a view whose own commands are its events rather than the type's actions, one the
-/// person knows by the same name.
+/// The menu of an item: the view's own content first, as it placed it; then, after a separator,
+/// each command the item offers (`offered`, its allowed actions) that the view did not place, so
+/// every action stays reachable from the menu.
 #[must_use]
 pub fn item_menu(placed: Vec<MenuPart>, offered: Vec<MenuPart>) -> Vec<MenuPart> {
     let taken: Vec<tilo_actions::ActionAddress> = placed
@@ -268,8 +242,6 @@ pub fn item_menu(placed: Vec<MenuPart>, offered: Vec<MenuPart>) -> Vec<MenuPart>
         .filter_map(MenuPart::invokes)
         .cloned()
         .collect();
-    // A command of the view's own is an event it runs, naming no action: it stands for the
-    // action the person knows by its name.
     let named: Vec<&str> = placed
         .iter()
         .filter(|part| part.invokes().is_none())
@@ -296,9 +268,6 @@ pub fn item_menu(placed: Vec<MenuPart>, offered: Vec<MenuPart>) -> Vec<MenuPart>
     menu
 }
 
-/// A menu's parts as the entries of the context menu that shows them. A destructive command
-/// runs at once and is undone afterwards (the platform's rule), never confirmed first; a
-/// separator at either end or beside another is dropped.
 #[must_use]
 pub fn menu_entries(parts: Vec<MenuPart>) -> Vec<MenuEntry> {
     let mut entries: Vec<MenuEntry> = Vec::with_capacity(parts.len());

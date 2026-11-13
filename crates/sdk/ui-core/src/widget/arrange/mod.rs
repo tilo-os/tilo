@@ -1,14 +1,5 @@
-//! The layout primitives (tilolang layout design): `Stack`, `Row`, `Grid`, `Split`, `Page`,
-//! `Layers`, with `Scroll` and `Spacer`.
-//!
-//! The model apps write against is **semantic**: children are hug-sized by default, fill the
-//! remaining space by weight, and are bounded in `rem`, the text size, never in pixels. Gaps are
-//! [`Rhythm`](crate::tokens::Rhythm) tokens, directions are leading and trailing, and the
-//! adaptive patterns (a responsive grid, a split that collapses, a readable page) are single
-//! primitives with their behaviour built in. The engine is Taffy flexbox and grid; the
-//! arrangement a primitive takes is decided during layout, from the width it is offered.
-//!
-//! Constraints flow down and the parent places: a child never reads its own final size.
+//! The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`, with `Scroll` and
+//! `Spacer`.
 
 mod arranged;
 mod flex;

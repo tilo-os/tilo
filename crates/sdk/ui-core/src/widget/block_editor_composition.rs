@@ -1,16 +1,12 @@
-//! The block editor's document as what it is, for a host that renders the
-//! window's composition with elements of its own ([`crate::composition`]):
-//! each block's kind, text and inline marks, and the caret while one is
-//! edited.
+//! The block editor's document as what it is, for a host that renders the window's composition with
+//! elements of its own ([`crate::composition`]): each block's kind, text and inline marks, and the
+//! caret while one is edited.
 
 use super::{
     BlockEditor, BlockKind, LIST_INDENT_STEP_PX, Mark, numbered_ordinals, prefix_gutter_for,
 };
 
 impl BlockEditor {
-    /// Where its text stands, as its own layout puts it: a paragraph at the
-    /// editor's text inset (the edge a title above lines up with), a list
-    /// item and a quote past their gutters, a nested item a step further.
     pub(super) fn composed_edges(&self, theme: &crate::Theme) -> crate::composition::DocEdges {
         let scale = self.text_scale;
         crate::composition::DocEdges {
@@ -89,8 +85,6 @@ impl BlockEditor {
                         )
                     }),
                     editable: block.kind.is_editable(),
-                    // The gap the editor stacks it at, its role's leading and weight, and the
-                    // document's size for its kind: what the canvas sets it in.
                     gap: self
                         .stack_boxes
                         .get(index)

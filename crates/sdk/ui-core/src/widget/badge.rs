@@ -1,24 +1,5 @@
-//! Badge widget — the non-interactive member of the chip family: a small
-//! pill typically anchored over another element (avatar, icon, row). Three
-//! contents:
-//!
-//! - [`BadgeContent::Dot`] — a small filled circle, no text.
-//! - [`BadgeContent::Count`] — `0` renders nothing; values `>= 100` clamp to
-//!   `"99+"` so the pill never grows past the visual budget reserved for it.
-//! - [`BadgeContent::Text`] — a short status ("Owner", "Beta").
-//!
-//! A badge takes a [`ChipStyle`], never a colour. A count or a dot is
-//! [`ChipStyle::Live`] by default (something new happened), filled in your
-//! colour like a sidebar's unread count; a text badge is
-//! [`ChipStyle::Neutral`]. A status reads as `ChipStyle::Tinted(Tone::…)`.
-//! Canvas hosts paint the same pill with [`BadgeFace`].
-//!
-//! A "modified" mark (unsaved changes) is a dot in neutral primary ink
-//! ([`Badge::modified`], [`BadgeFace::modified`]): it is not new and not
-//! anyone's, so it takes no colour.
-//!
-//! Positioning is the caller's responsibility — `Badge` does not anchor
-//! itself to another widget.
+//! Badge widget — the non-interactive member of the chip family: a small pill typically anchored over
+//! another element (avatar, icon, row).
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -34,18 +15,14 @@ use vello::kurbo::{Affine, Circle, Point, Rect};
 mod component;
 pub use component::BadgeProps;
 
-/// See module docs for content semantics.
 #[derive(Clone, Debug)]
 pub enum BadgeContent {
     Dot,
-    /// Unsaved changes: a dot in neutral primary ink.
     Modified,
     Count(u32),
     Text(String),
 }
 
-/// The ink of a badge dot: the style's fill, or neutral primary ink for a
-/// modified mark.
 fn dot_colour(style: ChipStyle, modified: bool, theme: &Theme) -> vello::peniko::Color {
     if modified {
         theme.text_primary
@@ -56,7 +33,6 @@ fn dot_colour(style: ChipStyle, modified: bool, theme: &Theme) -> vello::peniko:
     }
 }
 
-/// Paint a badge dot centred in `rect`.
 fn paint_dot(
     scene: &mut Scene,
     transform: Affine,
@@ -96,11 +72,8 @@ fn theme_key(style: ChipStyle, theme: &Theme) -> ThemeKey {
     )
 }
 
-/// A badge's geometry in one theme.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BadgeMetrics {
-    /// The caption line plus `spacing.s0` a side: a pill as tight as a
-    /// badge can be and still hold its text at any text scale.
     height: f64,
     pad_x: f64,
     dot: f64,
@@ -128,8 +101,6 @@ impl BadgeMetrics {
     }
 }
 
-/// An immediate-mode badge for hosts that own their row geometry (shell
-/// overlays, painted lists): the [`Badge`] look without a layout node.
 pub struct BadgeFace<'a> {
     rect: Rect,
     label: &'a str,
@@ -150,8 +121,6 @@ impl<'a> BadgeFace<'a> {
         }
     }
 
-    /// A dot centred in `rect`: something new, in your colour (or the
-    /// style's tone).
     #[must_use]
     pub fn dot(rect: Rect) -> Self {
         Self {
@@ -163,7 +132,6 @@ impl<'a> BadgeFace<'a> {
         }
     }
 
-    /// Unsaved changes: a dot in neutral primary ink, centred in `rect`.
     #[must_use]
     pub fn modified(rect: Rect) -> Self {
         Self {
@@ -180,7 +148,6 @@ impl<'a> BadgeFace<'a> {
     pub fn height(theme: &Theme) -> f64 {
         BadgeMetrics::of(theme).height
     }
-    /// The width a badge needs for `label` in `theme`.
     pub fn intrinsic_width(label: &str, text: &mut TextRenderer, theme: &Theme) -> f64 {
         BadgeMetrics::of(theme).width(label, text)
     }
@@ -225,8 +192,6 @@ impl<'a> BadgeFace<'a> {
     }
 }
 
-/// A badge's pill over `rect`: `bare` paints the label alone, at
-/// `opacity`, over a ground painted once.
 fn badge_pill(
     rect: Rect,
     label: &str,
@@ -249,35 +214,23 @@ pub struct Badge {
     rect: Rect,
     face: crate::widget::CachedPaint,
     dirty: bool,
-    /// The geometry seen in `build_layout`, for the measured width.
     metrics: Option<BadgeMetrics>,
-    /// The theme inputs `face` was painted from.
     cache_theme: Option<ThemeKey>,
-    /// The label shown, cross-fading from the one before when the count
-    /// changes while the badge is on screen (`None`: a dot).
     label: crate::motion::CrossFade<Option<String>>,
-    /// The content `label` shows, while it leaves: a badge whose count went
-    /// to nothing is drawn going.
     leaving: Option<BadgeContent>,
-    /// Whether the badge shows, appearing and leaving from its centre.
     presence: crate::motion::Presence,
     /// A frame with the badge in it has been presented: only a badge on
     /// screen moves when its count changes.
     on_screen: bool,
-    /// The frame being drawn has the badge's place in it.
     drawing: bool,
     /// The last frame drew the badge on its way, so its resting look is
     /// still to be painted (and cached).
     moved_drawn: bool,
-    /// The content changed since the last layout.
     layout_dirty: bool,
-    /// The badge has been placed by a layout.
     laid_out: bool,
     /// The layout keeps room for a leaving badge until it has gone.
     laid_out_leaving: bool,
-    /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
-    /// The pace its count changing plays at, when it says something other than the theme's.
     feel: crate::motion::Feel,
     /// A view that builds the badge anew on each change: the one built in
     /// its place goes on from it (`motion::keep`), as if its count had
@@ -285,7 +238,6 @@ pub struct Badge {
     hand_on: crate::motion::HandOn<KeptBadge>,
 }
 
-/// What a badge leaves for the one a rebuild puts in its place.
 struct KeptBadge {
     content: BadgeContent,
     label: crate::motion::CrossFade<Option<String>>,
@@ -401,13 +353,10 @@ impl Badge {
         self.layout_dirty = true;
     }
 
-    /// Whether the label or the badge itself is on its way at `now`.
     fn is_moving(&self, now: crate::time::Instant) -> bool {
         self.presence.is_moving(now) || self.label.is_moving(now)
     }
 
-    /// What the badge is laid out and drawn as: its content, or what it
-    /// showed while that leaves.
     fn drawn_content(&self) -> &BadgeContent {
         self.leaving.as_ref().unwrap_or(&self.content)
     }
@@ -447,7 +396,6 @@ impl Badge {
                     paint_pill(&pill(label, false, 1.0), scene, xform, text_renderer, theme);
                 }
                 (shown, outgoing) => {
-                    // The ground holds still; the labels trade places on it.
                     paint_pill(&pill("", false, 1.0), scene, xform, text_renderer, theme);
                     if let Some((Some(old), opacity)) = outgoing {
                         paint_pill(
@@ -472,27 +420,22 @@ impl Badge {
         });
     }
 
-    /// Unsaved changes: a dot in neutral primary ink.
     pub fn modified() -> Self {
         Self::with_content(BadgeContent::Modified, ChipStyle::Neutral)
     }
 
-    /// Something new, without a number.
     pub fn dot() -> Self {
         Self::with_content(BadgeContent::Dot, ChipStyle::Live)
     }
 
-    /// How many new things there are.
     pub fn count(n: u32) -> Self {
         Self::with_content(BadgeContent::Count(n), ChipStyle::Live)
     }
 
-    /// A short status ("Owner", "Beta").
     pub fn text(s: impl Into<String>) -> Self {
         Self::with_content(BadgeContent::Text(s.into()), ChipStyle::Neutral)
     }
 
-    /// What the badge is: neutral, tinted with a tone, or live.
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
@@ -506,7 +449,6 @@ impl Badge {
         self
     }
 
-    /// [`Self::with_feel`] on a badge already built.
     pub fn set_feel(&mut self, feel: crate::motion::Feel) {
         self.feel = feel;
     }
@@ -525,12 +467,10 @@ impl Badge {
 pub(crate) struct CountBadge {
     pub(crate) content: BadgeContent,
     pub(crate) style: ChipStyle,
-    /// The theme's badge measures, from the control's last `build_layout`.
     pub(crate) metrics: Option<BadgeMetrics>,
 }
 
 impl CountBadge {
-    /// How large it stands: the pill around its count, or the dot.
     pub(crate) fn size(&self, text: &mut TextRenderer) -> vello::kurbo::Size {
         let Some(metrics) = &self.metrics else {
             return vello::kurbo::Size::ZERO;
@@ -541,7 +481,6 @@ impl CountBadge {
         }
     }
 
-    /// Paint it filling `rect`.
     pub(crate) fn paint(
         &self,
         scene: &mut Scene,
@@ -561,7 +500,6 @@ impl CountBadge {
     }
 }
 
-/// The text `content` shows; `None` for a dot or nothing.
 fn label_of(content: &BadgeContent) -> Option<String> {
     match content {
         BadgeContent::Dot | BadgeContent::Modified | BadgeContent::Count(0) => None,
@@ -571,7 +509,6 @@ fn label_of(content: &BadgeContent) -> Option<String> {
     }
 }
 
-/// Whether `content` shows anything: a zero count is no badge.
 pub(crate) fn shows(content: &BadgeContent) -> bool {
     !matches!(content, BadgeContent::Count(0))
 }
@@ -591,7 +528,6 @@ impl Widget for Badge {
         let (width, height) = match self.drawn_content() {
             BadgeContent::Dot | BadgeContent::Modified => (metrics.dot, metrics.dot),
             BadgeContent::Count(0) => (0.0, 0.0),
-            // `auto`: measured in `measure`, pinned in `adjust_layout_style`.
             _ => (-1.0, metrics.height),
         };
         if self.metrics.as_ref() != Some(&metrics) {
@@ -621,7 +557,6 @@ impl Widget for Badge {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// A text or count badge is as wide as its measured label.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -671,9 +606,6 @@ impl Widget for Badge {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.laid_out = true;
-        // A badge has no name of its own: it goes on from the one that stood
-        // where it stands, its box centred on the same line and starting,
-        // ending or centred where that one's did (a count's width changes).
         let at = self.rect;
         let left = self.hand_on.place_by(at, |was| {
             let near = |a: f64, b: f64| (a - b).abs() < 0.5;
@@ -722,7 +654,6 @@ impl Widget for Badge {
             self.face.append(out_scene, out_transform, self.rect);
             return;
         }
-        // Taken out while painting: `drawn_content` borrows all of `self`.
         let mut face = std::mem::take(&mut self.face);
         let cached = face.repaint(self.rect);
         let transform = Affine::IDENTITY;
@@ -767,7 +698,6 @@ impl Widget for Badge {
     fn is_layout_dirty(&self) -> bool {
         !self.laid_out
             || self.layout_dirty
-            // The room a leaving badge kept is given back once it has gone.
             || self.laid_out_leaving && !self.presence.is_visible(crate::motion::frame_now())
     }
 
@@ -797,7 +727,6 @@ impl Widget for Badge {
     }
 }
 
-/// A badge a rebuild drops leaves itself for the one put in its place.
 impl Drop for Badge {
     fn drop(&mut self) {
         let kept = KeptBadge {
@@ -980,7 +909,6 @@ mod tests {
                 .as_deref(),
             Some("Modified")
         );
-        // A tall rect does not pad the pill more than its own metrics.
         let mut short = Scene::new();
         let mut tall = Scene::new();
         BadgeFace::new(Rect::new(0.0, 0.0, 60.0, BadgeFace::height(&theme)), "Beta").paint(

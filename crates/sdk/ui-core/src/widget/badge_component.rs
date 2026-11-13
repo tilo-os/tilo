@@ -6,8 +6,8 @@ use crate::widget::chip::ChipStyle;
 
 use super::{Badge, BadgeContent};
 
-/// A small pill on another element: how many new things there are, a dot for something new, a
-/// short status ("Owner", "Beta"), or the mark of unsaved changes. It is never pressed.
+/// A small pill on another element: how many new things there are, a dot for something new, a short
+/// status ("Owner", "Beta"), or the mark of unsaved changes.
 #[derive(Component, Default)]
 #[component(name = "Badge", role = "StaticText", label = "text")]
 pub struct BadgeProps {
@@ -20,14 +20,13 @@ pub struct BadgeProps {
     pub dot: bool,
     /// Unsaved changes: a dot in the primary ink, which is nobody's and not new.
     pub modified: bool,
-    /// A status the pill means, washed into it. A text badge is neutral unless said.
+    /// A status the pill means, washed into it.
     pub tone: Option<Tone>,
     /// The pace a changed count plays at: the theme's unless it says otherwise.
     pub motion: crate::motion::Feel,
 }
 
 impl BadgeProps {
-    /// What the badge shows, and how.
     fn content_and_style(&self) -> (BadgeContent, ChipStyle) {
         let content = if self.modified {
             BadgeContent::Modified
@@ -55,7 +54,6 @@ impl Described for Badge {
         Self::with_content(content, style).with_feel(props.motion)
     }
 
-    /// A changed count cross-fades in place, as [`Badge::set_count`] does.
     fn set_props(&mut self, props: BadgeProps) -> bool {
         let (content, style) = props.content_and_style();
         self.set_feel(props.motion);

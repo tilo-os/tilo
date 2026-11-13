@@ -1,8 +1,7 @@
-//! `DataTable` primitive — sortable, resizable, virtualized tabular view. Sort is non-destructive:
-//! rows stay in insertion order and an index `view` carries the display order, so
-//! [`DataTable::sort_by_with`] re-applies the remembered comparator whenever local rows change,
-//! while [`DataTable::from_model`] delegates order and paging to [`TableModel`]. Its sparse
-//! viewport keeps memory proportional to what is shown.
+//! `DataTable` primitive — sortable, resizable, virtualized tabular view. Sort is non-destructive: rows
+//! stay in insertion order and an index `view` carries the display order, so
+//! [`DataTable::sort_by_with`] re-applies the remembered comparator whenever local rows change, while
+//! [`DataTable::from_model`] delegates order and paging to [`TableModel`].
 
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
@@ -32,9 +31,9 @@ use crate::widget::DrawChild;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 
-/// One line of `role` as the renderer will lay it out: the role's resolved
-/// size times its leading, so a band sized from this at layout time agrees
-/// with the line the widget measures and centres at paint time.
+/// One line of `role` as the renderer will lay it out: the role's resolved size times its leading,
+/// so a band sized from this at layout time agrees with the line the widget measures and centres at
+/// paint time.
 pub fn type_line_height(
     typography: &crate::tokens::Typography,
     role: crate::tokens::TextRole,
@@ -42,21 +41,16 @@ pub fn type_line_height(
     f64::from(typography.style(role).line_height_px())
 }
 
-/// A structural band that follows the type: `floor` is the widget's 1×
-/// default, which `content + padding` never undercuts at the default text
-/// scale, so 1× layouts are unchanged and only larger type grows the band.
+/// A structural band that follows the type: `floor` is the widget's 1× default, which `content +
+/// padding` never undercuts at the default text scale, so 1× layouts are unchanged and only larger
+/// type grows the band.
 pub fn text_band(floor: f64, content: f64, padding: f64) -> f64 {
     floor.max(content + padding)
 }
 
-/// The estimated height of an unmeasured row: the host's authored estimate
-/// (from `set_viewport`), raised only once the label line plus `authored_pad`
-/// would not fit, or — unauthored — the widget's `default` grown to the line
-/// plus `default_pad`. `line` is `None` before the first layout, when no
-/// theme has been seen and the estimate is exactly what the host set. This
-/// deliberately does not use `SparseVirtualViewport::set_minimum_height`:
-/// that floor also applies to heights set per row (`set_row_height`), which
-/// are the host's exact values.
+/// The estimated height of an unmeasured row: the host's authored estimate (from `set_viewport`),
+/// raised only once the label line plus `authored_pad` would not fit, or — unauthored — the
+/// widget's `default` grown to the line plus `default_pad`.
 pub(crate) fn row_estimate(authored: Option<f64>, default: f64, row_type: Option<RowType>) -> f64 {
     match (authored, row_type) {
         (Some(authored), Some(t)) => text_band(authored, t.line, t.authored_pad),
@@ -66,8 +60,8 @@ pub(crate) fn row_estimate(authored: Option<f64>, default: f64, row_type: Option
     }
 }
 
-/// What a row widget learned about its label type at its last layout: the
-/// line box and the padding each kind of estimate keeps around it.
+/// What a row widget learned about its label type at its last layout: the line box and the padding
+/// each kind of estimate keeps around it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RowType {
     pub(crate) line: f64,
@@ -75,8 +69,8 @@ pub(crate) struct RowType {
     pub(crate) authored_pad: f64,
 }
 
-/// `Auto` is sized to content at build time (treated as `Flex(1.0)` until
-/// the layout pass can measure it).
+/// `Auto` is sized to content at build time (treated as `Flex(1.0)` until the layout pass can
+/// measure it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColumnWidth {
     Fixed(f32),
@@ -92,26 +86,20 @@ pub struct CellState {
     pub hovered: bool,
 }
 
-/// Register one per column via [`ColumnDef::with_text_render`]; columns
-/// without one render nothing (header + chrome still draw). Gets the
-/// table's transform (the cell rect is in the table's coordinates) and
-/// the row's [`CellState`], so a cell can change with its row: its ink
-/// when selected, a glyph that shows under the pointer.
+/// Register one per column via [`ColumnDef::with_text_render`]; columns without one render nothing
+/// (header + chrome still draw).
 pub type CellTextRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, Affine, &mut TextRenderer, Rect, &Theme, CellState) + Send + Sync>;
 
-/// A cell painter: the cell rect is in the table's coordinates, and the
-/// transform is the one the table paints with (an outer scroll's offset
-/// included).
+/// A cell painter: the cell rect is in the table's coordinates, and the transform is the one the
+/// table paints with (an outer scroll's offset included).
 pub type CellRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, Affine, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
 
 /// How two rows order under a column, for the table's own sorting.
 pub type ColumnCompare<Row> = Arc<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 
-/// Which column a table is sorted by and in which direction. Hand the
-/// table a [`crate::LocalState`] of it ([`DataTable::with_sort_state`]) and
-/// the order a person chose survives the view being built again.
+/// Which column a table is sorted by and in which direction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TableSort {
     pub key: String,
@@ -128,25 +116,20 @@ impl TableSort {
     }
 }
 
-/// A cell's badge: a short label and the tone it carries (a status, a
-/// level). An empty label paints nothing.
+/// A cell's badge: a short label and the tone it carries (a status, a level).
 pub type CellBadge<Row> = Arc<dyn Fn(&Row) -> (String, crate::widget::Tone) + Send + Sync>;
 
 /// Whether a checkbox column's box is ticked for a row.
 pub type CellChecked<Row> = Arc<dyn Fn(&Row) -> bool + Send + Sync>;
 
-/// Builds a real retained widget for one visible cell. The widget is keyed by
-/// the row's stable identity and the column key, so it survives sorting and
-/// scrolling while that cell remains in the mounted window.
+/// Builds a real retained widget for one visible cell.
 pub type CellWidgetBuilder<Row> = Box<dyn FnMut(&Row, usize) -> Element>;
 pub type CellAccessibleValue<Row> = Arc<dyn Fn(&Row) -> String + Send + Sync>;
-/// A cell's text, or `None` for an absent value (a SQL `NULL`, an unset
-/// field), which the table paints dimmed as the column's absent label.
+/// A cell's text, or `None` for an absent value (a SQL `NULL`, an unset field), which the table
+/// paints dimmed as the column's absent label.
 pub type CellText<Row> = Arc<dyn Fn(&Row) -> Option<String> + Send + Sync>;
 
 /// Where a column's header, text, badges and controls sit across its width.
-/// A column follows its [`TextKind`] unless it says otherwise: numbers at the
-/// trailing edge, everything else at the leading edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CellAlign {
     #[default]
@@ -167,8 +150,7 @@ impl CellAlign {
         }
     }
 
-    /// The x of something `width` wide placed in `cell` with `pad` kept
-    /// from the edge it sits against.
+    /// The x of something `width` wide placed in `cell` with `pad` kept from the edge it sits against.
     #[must_use]
     pub fn place(self, cell: Rect, width: f64, pad: f64) -> f64 {
         match self {
@@ -194,43 +176,39 @@ pub struct ColumnDef<Row: ?Sized> {
     pub render_cell: CellRender<Row>,
     /// `None` by default; set via [`ColumnDef::with_widget`].
     pub widget: Option<CellWidgetBuilder<Row>>,
-    /// The column's widgets are a row's actions: mounted only for the row
-    /// under the pointer (see [`ColumnDef::revealed_on_hover`]).
+    /// The column's widgets are a row's actions: mounted only for the row under the pointer (see
+    /// [`ColumnDef::revealed_on_hover`]).
     pub reveal_on_hover: bool,
     /// Value exposed for ready rows; set directly or by [`ColumnDef::with_text`].
     pub accessible_value: Option<CellAccessibleValue<Row>>,
-    /// The cell text the table paints itself (set by [`ColumnDef::with_text`]
-    /// and [`ColumnDef::with_optional_text`]).
+    /// The cell text the table paints itself (set by [`ColumnDef::with_text`] and
+    /// [`ColumnDef::with_optional_text`]).
     pub text: Option<CellText<Row>>,
-    /// What the column's text is ([`TextKind`]): a numeric column's cells
-    /// and header align to the trailing edge in tabular figures.
+    /// What the column's text is ([`TextKind`]): a numeric column's cells and header align to the
+    /// trailing edge in tabular figures.
     pub kind: TextKind,
     /// What an absent value reads as, dimmed.
     pub absent: String,
-    /// How many lines a cell's text may wrap to before it is elided; the
-    /// row grows to hold them.
+    /// How many lines a cell's text may wrap to before it is elided; the row grows to hold them.
     pub max_lines: usize,
-    /// Which columns give way first when the table is narrow: `0` never
-    /// hides, higher numbers hide before lower ones.
+    /// Which columns give way first when the table is narrow: `0` never hides, higher numbers hide
+    /// before lower ones.
     pub priority: u8,
     /// A badge the table measures and paints in the cell.
     pub badge: Option<CellBadge<Row>>,
-    /// A checkbox column: the box is ticked by this and toggled through the
-    /// table's checkbox callback.
+    /// A checkbox column: the box is ticked by this and toggled through the table's checkbox callback.
     pub checked: Option<CellChecked<Row>>,
     /// `None` follows [`Self::kind`] (see [`CellAlign::for_kind`]).
     pub align: Option<CellAlign>,
-    /// How a sortable column orders rows; `None` orders by the column's
-    /// text (numerically for a numeric column), else its badge label.
+    /// How a sortable column orders rows; `None` orders by the column's text (numerically for a numeric
+    /// column), else its badge label.
     pub compare: Option<ColumnCompare<Row>>,
     pub(crate) resize_handle_px: f32,
 }
 
 impl<Row: 'static> ColumnDef<Row> {
-    /// This column reading rows of any type, as [`DataTableCore`] holds
-    /// them: each callback takes the row back to the `Row` it was written
-    /// for. A table only ever hands a column the rows it was given, so the
-    /// fallbacks (an empty cell, nothing painted) never show.
+    /// This column reading rows of any type, as [`DataTableCore`] holds them: each callback takes the
+    /// row back to the `Row` it was written for.
     fn erase(self) -> ColumnDef<AnyRow> {
         fn typed<Row: 'static>(row: &AnyRow) -> Option<&Row> {
             row.downcast_ref::<Row>()
@@ -321,9 +299,8 @@ impl<Row: ?Sized> ColumnDef<Row> {
         }
     }
 
-    /// A column of checkboxes (an enabled header, a selected file): the table
-    /// paints the box, toggles it with a pointer or Space, and reports the
-    /// row through [`DataTable::on_check_view`].
+    /// A column of checkboxes (an enabled header, a selected file): the table paints the box, toggles
+    /// it with a pointer or Space, and reports the row through [`DataTable::on_check_view`].
     pub fn checkbox(
         key: impl Into<String>,
         header: impl Into<String>,
@@ -348,8 +325,8 @@ impl<Row: ?Sized> ColumnDef<Row> {
         column
     }
 
-    /// Let the cell text wrap to `max_lines` lines before it is elided (a
-    /// message, a description); the row grows to hold them.
+    /// Let the cell text wrap to `max_lines` lines before it is elided (a message, a description); the
+    /// row grows to hold them.
     #[must_use]
     pub fn wrapping(mut self, max_lines: usize) -> Self {
         self.max_lines = max_lines.max(1);
@@ -357,8 +334,6 @@ impl<Row: ?Sized> ColumnDef<Row> {
     }
 
     /// Keep a readable cell width while flexible columns share extra room.
-    /// If the remaining columns cannot fit their minima, the table scrolls
-    /// horizontally instead of squeezing their text or controls.
     #[must_use]
     pub fn min_width(mut self, width: f32) -> Self {
         self.min_width = if width.is_finite() {
@@ -369,8 +344,8 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Keep a flexible column from growing past `width` (a key beside its
-    /// value); the room it leaves goes to the other flexible columns.
+    /// Keep a flexible column from growing past `width` (a key beside its value); the room it leaves
+    /// goes to the other flexible columns.
     #[must_use]
     pub fn max_width(mut self, width: f32) -> Self {
         self.max_width = if width.is_nan() {
@@ -381,18 +356,16 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Hide this column when the table is too narrow for every column:
-    /// higher priorities give way first; `0` (the default) never hides.
+    /// Hide this column when the table is too narrow for every column: higher priorities give way
+    /// first; `0` (the default) never hides.
     #[must_use]
     pub fn priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
 
-    /// A badge in each cell (a level, a status), measured and painted by the
-    /// table: `badge(row)` gives its label and tone; an empty label paints
-    /// none. The label is the cell's accessible value unless the column has
-    /// text.
+    /// A badge in each cell (a level, a status), measured and painted by the table: `badge(row)` gives
+    /// its label and tone; an empty label paints none.
     #[must_use]
     pub fn with_badge(
         mut self,
@@ -410,18 +383,17 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Say what the column's values are: [`TextKind::Numeric`] for counts,
-    /// sizes, prices and times (cells and header then align to the trailing
-    /// edge), [`TextKind::Identifier`] for names people must not confuse,
-    /// [`TextKind::Secret`] for keys and hashes.
+    /// Say what the column's values are: [`TextKind::Numeric`] for counts, sizes, prices and times
+    /// (cells and header then align to the trailing edge), [`TextKind::Identifier`] for names people
+    /// must not confuse, [`TextKind::Secret`] for keys and hashes.
     #[must_use]
     pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
         self
     }
 
-    /// Place the column's header and cells: [`CellAlign::Center`] for a
-    /// column of switches or short statuses that stand under their header.
+    /// Place the column's header and cells: [`CellAlign::Center`] for a column of switches or short
+    /// statuses that stand under their header.
     #[must_use]
     pub fn with_align(mut self, align: CellAlign) -> Self {
         self.align = Some(align);
@@ -440,8 +412,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// A sortable column that orders rows by `compare` rather than by its
-    /// text.
+    /// A sortable column that orders rows by `compare` rather than by its text.
     #[must_use]
     pub fn sorted_by(
         mut self,
@@ -479,10 +450,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Render ordinary cell text and expose the exact same string as the
-    /// accessible cell value. This is the concise default for most columns;
-    /// use [`Self::with_text_render`] plus [`Self::with_accessible_value`] when
-    /// custom drawing is required.
+    /// Render ordinary cell text and expose the exact same string as the accessible cell value.
     #[must_use]
     pub fn with_text(self, value: impl Fn(&Row) -> String + Send + Sync + 'static) -> Self
     where
@@ -491,9 +459,8 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self.with_optional_text(move |row| Some(value(row)), "")
     }
 
-    /// Cell text that may be absent (a SQL `NULL`): `None` paints `absent`
-    /// in tertiary ink ("NULL", or "—" for an unset field), and is read out
-    /// as that label.
+    /// Cell text that may be absent (a SQL `NULL`): `None` paints `absent` in tertiary ink ("NULL", or
+    /// "—" for an unset field), and is read out as that label.
     #[must_use]
     pub fn with_optional_text(
         mut self,
@@ -517,8 +484,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Expose a value for a custom-painted cell. The column header remains
-    /// the cell name, while this string becomes its row-specific value.
+    /// Expose a value for a custom-painted cell.
     #[must_use]
     pub fn with_accessible_value(
         mut self,
@@ -534,20 +500,15 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Render this column with real child widgets. Only ready cells in the
-    /// visible range plus overscan are built; controls participate in input,
-    /// focus, animation, layout, inspection, and accessibility.
+    /// Render this column with real child widgets.
     #[must_use]
     pub fn with_widget(mut self, builder: impl FnMut(&Row, usize) -> Element + 'static) -> Self {
         self.widget = Some(Box::new(builder));
         self
     }
 
-    /// Make this column's widgets a row's actions: they are mounted only for
-    /// the row under the pointer, or for the selected row where nothing
-    /// hovers (touch). At rest the column paints what
-    /// [`Self::with_text_render`] draws: a row's quiet state (a liked mark,
-    /// a progress figure), with the controls taking its place on approach.
+    /// Make this column's widgets a row's actions: they are mounted only for the row under the pointer,
+    /// or for the selected row where nothing hovers (touch).
     #[must_use]
     pub fn revealed_on_hover(mut self) -> Self {
         self.reveal_on_hover = true;
@@ -557,15 +518,11 @@ impl<Row: ?Sized> ColumnDef<Row> {
 
 pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 
-/// One model notification batch consumed after the backing data has
-/// changed: a list's change ([`crate::widget::ListModelChange`]) over the table's row keys.
-/// Structural variants preserve mounted controls by stable row key;
-/// `RowsChanged` rebuilds controls only for the named rows.
+/// One model notification batch consumed after the backing data has changed: a list's change
+/// ([`crate::widget::ListModelChange`]) over the table's row keys.
 pub type TableModelChange = crate::widget::virtual_list::ListModelChange<u64>;
 
-/// Unopinionated backing model for very large or asynchronously populated
-/// tables. Implementations need not keep all rows resident: `DataTable`
-/// queries only the visible range plus overscan.
+/// Unopinionated backing model for very large or asynchronously populated tables.
 pub trait TableModel {
     type Row: ?Sized;
 
@@ -579,19 +536,15 @@ pub trait TableModel {
     /// Stable, unique identity for the row at `index`.
     fn key_at(&self, index: usize) -> Option<u64>;
 
-    /// Current index for a stable key, used to preserve anchors and selection
-    /// across inserts, removals, moves, and sort changes.
+    /// Current index for a stable key, used to preserve anchors and selection across inserts, removals,
+    /// moves, and sort changes.
     fn index_of(&self, key: u64) -> Option<usize>;
 
-    /// Where row `index`'s data stands: resident, on its way (saying where
-    /// it comes from), or failed with the reason. A pending row keeps its
-    /// geometry and stable key, and the table paints its placeholder
-    /// ([`crate::widget::ArrivingRows`]); completing a fetch disturbs
-    /// neither the scroll anchor nor the selection.
+    /// Where row `index`'s data stands: resident, on its way (saying where it comes from), or failed
+    /// with the reason.
     fn row_state(&self, index: usize) -> Arrival<&Self::Row, &str>;
 
-    /// Whether failed row `index` can be asked for again: pressing it then
-    /// calls [`Self::retry`].
+    /// Whether failed row `index` can be asked for again: pressing it then calls [`Self::retry`].
     fn can_retry(&self, _index: usize) -> bool {
         false
     }
@@ -602,16 +555,12 @@ pub trait TableModel {
     /// Opportunity to enqueue a fetch for the visible range plus overscan.
     fn request_range(&mut self, _range: Range<usize>) {}
 
-    /// Drain model notifications. Return true after any logical order, count,
-    /// key, or row-state change so the table reconciles and repaints.
+    /// Drain model notifications.
     fn poll_changed(&mut self) -> bool {
         false
     }
 
-    /// Drain a specific model-notification batch. Existing implementations of
-    /// [`Self::poll_changed`] remain compatible and produce [`TableModelChange::Reset`].
-    /// New asynchronous models should override this method so unchanged
-    /// retained cell controls survive background updates.
+    /// Drain a specific model-notification batch.
     fn poll_changes(&mut self) -> Vec<TableModelChange> {
         if self.poll_changed() {
             vec![TableModelChange::Reset]
@@ -620,14 +569,13 @@ pub trait TableModel {
         }
     }
 
-    /// Apply a model-owned sort. Return true when the logical order changed
-    /// synchronously or a remote sort request was accepted.
+    /// Apply a model-owned sort.
     fn sort_by(&mut self, _column_key: &str, _ascending: bool) -> bool {
         false
     }
 
-    /// Whether the host should keep scheduling frames so `poll_changed` can
-    /// observe an in-flight asynchronous source.
+    /// Whether the host should keep scheduling frames so `poll_changed` can observe an in-flight
+    /// asynchronous source.
     fn needs_poll(&self) -> bool {
         false
     }
@@ -662,9 +610,8 @@ struct SortState<Row: ?Sized> {
     cmp: SortCmp<Row>,
 }
 
-/// `origin_x`/`origin_w` are the pointer-x and column width at `begin_resize`,
-/// so repeated `drag_resize(pointer_x)` calls compute an absolute new width
-/// without drifting.
+/// `origin_x`/`origin_w` are the pointer-x and column width at `begin_resize`, so repeated
+/// `drag_resize(pointer_x)` calls compute an absolute new width without drifting.
 struct ResizeState {
     key: String,
     origin_x: f32,
@@ -691,9 +638,9 @@ type RowKey<Row> = Box<dyn Fn(&Row) -> u64 + Send + Sync>;
 /// `(display_index, point, row_rect)`.
 type RowContext = Box<dyn FnMut(usize, Point, Rect)>;
 
-/// A table whose rows are a flattened tree (a process tree, a folder
-/// listing): each row's depth, whether it has children and whether they
-/// show; the host owns the flattening and folds rows in `on_toggle`.
+/// A table whose rows are a flattened tree (a process tree, a folder listing): each row's depth,
+/// whether it has children and whether they show; the host owns the flattening and folds rows in
+/// `on_toggle`.
 struct TreeRows<Row: ?Sized> {
     depth: Box<dyn Fn(&Row) -> usize>,
     has_children: Box<dyn Fn(&Row) -> bool>,
@@ -701,8 +648,7 @@ struct TreeRows<Row: ?Sized> {
     on_toggle: Box<dyn FnMut(usize, bool)>,
 }
 
-/// The blank row after the last one that adds a row (a new header, a new
-/// parameter).
+/// The blank row after the last one that adds a row (a new header, a new parameter).
 struct AddRow {
     label: String,
     on_add: Box<dyn FnMut()>,
@@ -723,31 +669,25 @@ pub struct DataTableCore {
     accessible_name: Option<String>,
     columns: Vec<ColumnDef<AnyRow>>,
     rows: Vec<Box<AnyRow>>,
-    /// Present for sparse/paged tables. Vec-backed tables keep this `None`
-    /// and retain their local sorting API.
+    /// Present for sparse/paged tables.
     model: Option<Box<dyn TableModel<Row = AnyRow>>>,
-    /// Indices into `rows` in display order — sort operates on this so the
-    /// original insertion order stays untouched.
+    /// Indices into `rows` in display order — sort operates on this so the original insertion order
+    /// stays untouched.
     view: Vec<usize>,
     sort: Option<SortState<AnyRow>>,
     model_sort: Option<(String, bool)>,
     rect: Rect,
     col_rects: Vec<Rect>,
     is_focused: bool,
-    /// Populated lazily from `ColumnWidth`, then authoritative once the user
-    /// has dragged a handle.
+    /// Populated lazily from `ColumnWidth`, then authoritative once the user has dragged a handle.
     col_widths_px: HashMap<String, f32>,
     /// Pointer captured while `Some`.
     resize: Option<ResizeState>,
     /// For hit-testing press events against the per-column resize handles.
     last_cursor: Option<Point>,
-    /// Shared variable-height geometry. Stable identities follow rows across
-    /// sort/reconciliation; paint, hit testing and accessibility all consume
-    /// the same visible range.
+    /// Shared variable-height geometry.
     viewport: SparseVirtualViewport<RowIdentity>,
-    /// Snapshot from the last reconciled/rendered state. External model
-    /// mutations may already be visible by the time `poll_changed` fires, so
-    /// capturing at notification time would be one revision too late.
+    /// Snapshot from the last reconciled/rendered state.
     last_anchor: Option<SparseAnchor<RowIdentity>>,
     row_keys: Vec<RowIdentity>,
     row_key: Option<RowKey<AnyRow>>,
@@ -755,72 +695,61 @@ pub struct DataTableCore {
     structure_dirty: bool,
     layout_dirty: bool,
     interaction: crate::interaction::InteractionEnvironment,
-    /// Clicks update [`selection`], rows render a selection fill, and
-    /// keyboard Up/Down/Enter/Ctrl-A are honoured while focused. Off by
-    /// default so existing read-only tables are unaffected.
+    /// Clicks update [`selection`], rows render a selection fill, and keyboard Up/Down/Enter/Ctrl-A are
+    /// honoured while focused.
     selectable: bool,
-    /// Indices into `view`. Seeded by the owner each frame for stateless
-    /// hosts; mutated in place on click.
+    /// Indices into `view`. Seeded by the owner each frame for stateless hosts; mutated in place on
+    /// click.
     selection: crate::selection::SelectionModel,
-    /// Model-backed tables attach selection to stable keys. Select-all is a
-    /// complement and therefore constant-space even for 100M rows.
+    /// Model-backed tables attach selection to stable keys.
     model_selection: crate::selection::KeySelection<u64>,
-    /// Row clicks, published as the table's view action `click`
-    /// ([`DataTableCore::on_row_click_view`]).
+    /// Row clicks, published as the table's view action `click` ([`DataTableCore::on_row_click_view`]).
     row_click: Option<RowAction<(usize, bool, bool)>>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
-    /// When set, *replaces* the internal `toggle_sort` so the host can own
-    /// sort order (the file explorer sorts its own model).
+    /// When set, *replaces* the internal `toggle_sort` so the host can own sort order (the file
+    /// explorer sorts its own model).
     on_header_click: Option<Box<dyn FnMut(usize)>>,
-    /// For internal double-click detection (used only when `on_activate` is
-    /// set and the table is long-lived).
+    /// For internal double-click detection (used only when `on_activate` is set and the table is
+    /// long-lived).
     clicks: super::rows::Clicks<usize>,
-    /// Active only in internal-virtualization mode (host called
-    /// `set_viewport` and rows overflow it); dormant when wrapped in an
-    /// outer [`crate::widget::Scrollable`], to avoid a double bar.
+    /// Active only in internal-virtualization mode (host called `set_viewport` and rows overflow it);
+    /// dormant when wrapped in an outer [`crate::widget::Scrollable`], to avoid a double bar.
     vbar: Scrollbar,
     drag_scroll: DragScroller,
     scroll: super::rows::RowScroll,
     /// The motion the theme allows, sampled by the latest draw.
     motion: crate::tokens::EffectiveMotion,
-    /// What the rows, the bar over them and the chrome painted this frame
-    /// and the last: a scroll that only moved the rows is offered to the
-    /// host as a copy, and a row that changed repaints alone.
+    /// What the rows, the bar over them and the chrome painted this frame and the last: a scroll that
+    /// only moved the rows is offered to the host as a copy, and a row that changed repaints alone.
     shown: crate::scroll_copy::PaintedFrames,
-    /// A scroll or the pointer brought other cells near since the last
-    /// rebuild: mounting them is described by the frame's damage
-    /// ([`crate::widget::StructureChange::Described`]).
+    /// A scroll or the pointer brought other cells near since the last rebuild: mounting them is
+    /// described by the frame's damage ([`crate::widget::StructureChange::Described`]).
     remount: bool,
     reduce_motion: bool,
     /// The placeholders of a model's rows on their way, by row key.
     arrivals: crate::widget::ArrivingRows<u64>,
-    /// Header band, resolved from the theme's label line at layout time
-    /// (`HEADER_HEIGHT` at the default text scale, taller at 2×).
+    /// Header band, resolved from the theme's label line at layout time (`HEADER_HEIGHT` at the default
+    /// text scale, taller at 2×).
     header_h: f64,
-    /// The estimated row height the host authored through `set_viewport`,
-    /// if any. It is honoured as written at the default text scale and only
-    /// raised once the label line itself would not fit; the unauthored
-    /// default follows the type with its 1× padding.
+    /// The estimated row height the host authored through `set_viewport`, if any.
     authored_row_height: Option<f64>,
-    /// The label type seen at the last layout; `None` until then, when the
-    /// estimate is exactly the authored or default height.
+    /// The label type seen at the last layout; `None` until then, when the estimate is exactly the
+    /// authored or default height.
     row_type: Option<RowType>,
     /// Rules between columns, through header and body.
     ruled: bool,
-    /// Widths measured for [`ColumnWidth::Auto`] columns from their header
-    /// and the visible cells.
+    /// Widths measured for [`ColumnWidth::Auto`] columns from their header and the visible cells.
     auto_widths: HashMap<String, f32>,
     /// Theme values the layout pass measures with.
     measure_theme: Option<Theme>,
-    /// Rows a small control tall (`Compact`) rather than a pointer target
-    /// and a step (`Regular`).
+    /// Rows a small control tall (`Compact`) rather than a pointer target and a step (`Regular`).
     compact: bool,
     /// The row height at the current density and theme.
     default_row_h: f64,
     /// `metrics.scrollbar_gutter` and the lift's bleed, from the theme.
     gutter: f64,
-    /// The rounded corners of the window this sits in, learned where it
-    /// last drew: its bars keep out of them.
+    /// The rounded corners of the window this sits in, learned where it last drew: its bars keep out of
+    /// them.
     corners: crate::widget::scrollbar::SurfaceCorners,
     bleed: f64,
     /// Dragging the body scrolls it (touch always does).
@@ -829,15 +758,13 @@ pub struct DataTableCore {
     on_row_drag_begin: Option<RowContext>,
     /// The row a press landed on and where, until it becomes a drag.
     row_press: Option<(usize, Point)>,
-    /// A plain press on a row of a selection of several, in a table whose
-    /// rows can be dragged: the selection stays for the drag, and the press
-    /// is a click on release only if no drag began.
+    /// A plain press on a row of a selection of several, in a table whose rows can be dragged: the
+    /// selection stays for the drag, and the press is a click on release only if no drag began.
     deferred_click: Option<usize>,
-    /// Horizontal scroll: how far the columns are scrolled, and how wide
-    /// they are together.
+    /// Horizontal scroll: how far the columns are scrolled, and how wide they are together.
     h_offset: f64,
-    /// The gutter kept under the rows for the sideways scroll bar while the
-    /// columns overflow, so the bar never covers the last row.
+    /// The gutter kept under the rows for the sideways scroll bar while the columns overflow, so the
+    /// bar never covers the last row.
     h_reserve: f64,
     content_w: f64,
     hbar: Scrollbar,
@@ -856,29 +783,20 @@ pub struct DataTableCore {
     check: Option<RowAction<(usize, bool)>>,
     /// The display row under the pointer.
     hover_row: Option<usize>,
-    /// No header band: the table continues one headed above it, or has a
-    /// single self-evident column.
+    /// No header band: the table continues one headed above it, or has a single self-evident column.
     headerless: bool,
-    /// The rows are windowed by a scroll the host owns
-    /// ([`Self::host_scrolled`]).
+    /// The rows are windowed by a scroll the host owns ([`Self::host_scrolled`]).
     host_scrolled: bool,
-    /// Shown rows on their way after a sort or a change the person made
-    /// (`motion::ListChange`), kept across rebuilds.
+    /// Shown rows on their way after a sort or a change the person made (`motion::ListChange`), kept
+    /// across rebuilds.
     moving: row_motion::Moving,
 }
 
-/// A row whose type the table no longer names: what [`DataTableCore`] holds
-/// and its columns read. [`DataTable`] converts at its edges.
+/// A row whose type the table no longer names: what [`DataTableCore`] holds and its columns read.
 pub type AnyRow = dyn std::any::Any;
 
-/// A table of `Row`s: the [`DataTableCore`] that does the work (everything a
-/// table does, compiled once into the toolkit for rows of any type) and the
-/// row type its callers read and write.
-///
-/// The table's behaviour used to be generic over `Row`, so every app compiled
-/// it again for each row type it showed (40 to 100 KB of text per app); now
-/// only the conversions here are, and every method that does not name a row
-/// is the core's, reached through `Deref`.
+/// A table of `Row`s: the [`DataTableCore`] that does the work (everything a table does, compiled
+/// once into the toolkit for rows of any type) and the row type its callers read and write.
 #[crate::component::not_a_component(
     part,
     "`ui.DataTable` (`DescribedTable`) is its described form, over rows of its own"
@@ -913,8 +831,7 @@ impl<Row: 'static> DataTable<Row> {
         }
     }
 
-    /// The row a type-erased row is; every row the core hands back is one
-    /// this table was given.
+    /// The row a type-erased row is; every row the core hands back is one this table was given.
     fn typed(row: &AnyRow) -> Option<&Row> {
         row.downcast_ref::<Row>()
     }
@@ -925,9 +842,7 @@ impl<Row: 'static> DataTable<Row> {
         ))
     }
 
-    /// Construct a sparse table backed by an arbitrary model. Geometry and
-    /// selection remain proportional to visible/measured rows rather than
-    /// `model.len()`.
+    /// Construct a sparse table backed by an arbitrary model.
     pub fn from_model<M>(columns: Vec<ColumnDef<Row>>, model: M) -> Self
     where
         M: TableModel<Row = Row> + 'static,
@@ -1291,8 +1206,8 @@ impl DataTableCore {
         }
     }
 
-    /// Leave out the header band: for a table that continues one headed
-    /// above it, or whose one column needs no name.
+    /// Leave out the header band: for a table that continues one headed above it, or whose one column
+    /// needs no name.
     #[must_use]
     pub fn without_header(mut self) -> Self {
         self.headerless = true;
@@ -1301,8 +1216,8 @@ impl DataTableCore {
         self
     }
 
-    /// The estimated height of a row, for rows taller than one line of text
-    /// (a title over its artist) in a table that sets no viewport.
+    /// The estimated height of a row, for rows taller than one line of text (a title over its artist)
+    /// in a table that sets no viewport.
     #[must_use]
     pub fn with_row_height(mut self, row_height_px: f32) -> Self {
         self.authored_row_height = Some(f64::from(row_height_px));
@@ -1311,17 +1226,15 @@ impl DataTableCore {
     }
 
     /// The table stands in a page its host scrolls as a whole (a painted page with a hero above and
-    /// more below). The host keeps the table's rect on the part in view and tells it which rows
-    /// that is with [`Self::set_host_window`]; the table mounts and paints only those, keeps its
-    /// header at the top of that part, draws no scroll bar and leaves the wheel to the host.
+    /// more below).
     #[must_use]
     pub fn host_scrolled(mut self) -> Self {
         self.host_scrolled = true;
         self
     }
 
-    /// For a [`Self::host_scrolled`] table: `body_height` of rows is in
-    /// view, `offset` below the first row's top.
+    /// For a [`Self::host_scrolled`] table: `body_height` of rows is in view, `offset` below the first
+    /// row's top.
     pub fn set_host_window(&mut self, offset: f64, body_height: f64) {
         let body_height = body_height.max(1.0);
         if (self.viewport.viewport() - body_height).abs() > 0.5 {
@@ -1336,8 +1249,8 @@ impl DataTableCore {
         }
     }
 
-    /// The height of the header and every row together: what a
-    /// [`Self::host_scrolled`] table takes of its host's page.
+    /// The height of the header and every row together: what a [`Self::host_scrolled`] table takes of
+    /// its host's page.
     #[must_use]
     pub fn content_height(&self) -> f64 {
         self.header_h + self.viewport.content_extent()
@@ -1351,8 +1264,7 @@ impl DataTableCore {
             .map(|row| self.source_row(row))
     }
 
-    /// Whether a press on a row does something, so the row lifts under the
-    /// pointer as a list row does.
+    /// Whether a press on a row does something, so the row lifts under the pointer as a list row does.
     fn rows_pressable(&self) -> bool {
         self.selectable
             || self.row_click.is_some()
@@ -1360,8 +1272,8 @@ impl DataTableCore {
             || self.opens.is_some()
     }
 
-    /// The row whose revealed-on-hover cells are mounted: the one under the
-    /// pointer, or the selected one where nothing hovers.
+    /// The row whose revealed-on-hover cells are mounted: the one under the pointer, or the selected
+    /// one where nothing hovers.
     fn revealed_row(&self) -> Option<usize> {
         if self.interaction.supports_hover() {
             self.hover_row
@@ -1377,8 +1289,6 @@ impl DataTableCore {
     }
 
     /// Move the pointer in the table's logical coordinate space.
-    /// Embedded hosts can stage hover without constructing document state;
-    /// window input uses this same pointer-tracking path.
     pub fn set_pointer_position(&mut self, point: Point) -> bool {
         let mut handled = false;
         self.on_cursor_moved(point, &mut handled);
@@ -1400,43 +1310,38 @@ impl DataTableCore {
         }
     }
 
-    /// Rows a small control tall (32 at the default scale) instead of 40:
-    /// a dense grid (query results, logs).
+    /// Rows a small control tall (32 at the default scale) instead of 40: a dense grid (query results,
+    /// logs).
     #[must_use]
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
 
-    /// Let a pointer drag on the body scroll it, as a finger does. Off by
-    /// default for a mouse, so a press selects at once and a drag can
-    /// begin a row drag ([`Self::on_row_drag_begin`]).
+    /// Let a pointer drag on the body scroll it, as a finger does.
     #[must_use]
     pub fn drag_scroll(mut self) -> Self {
         self.drag_scroll_enabled = true;
         self
     }
 
-    /// Run `f(row, point, row_rect)` when a row is right-clicked or asked
-    /// for its menu by assistive technology. The row is selected first,
-    /// unless it already is.
+    /// Run `f(row, point, row_rect)` when a row is right-clicked or asked for its menu by assistive
+    /// technology.
     #[must_use]
     pub fn on_row_context_menu(mut self, f: impl FnMut(usize, Point, Rect) + 'static) -> Self {
         self.on_row_context = Some(Box::new(f));
         self
     }
 
-    /// Run `f(row, point, row_rect)` when a pointer drag starts on a row,
-    /// to begin a drag and drop. Use [`Self::row_rect`] and
-    /// [`Self::row_at_point`] to find drop targets.
+    /// Run `f(row, point, row_rect)` when a pointer drag starts on a row, to begin a drag and drop.
     #[must_use]
     pub fn on_row_drag_begin(mut self, f: impl FnMut(usize, Point, Rect) + 'static) -> Self {
         self.on_row_drag_begin = Some(Box::new(f));
         self
     }
 
-    /// Take the height the parent gives the table and scroll the rows
-    /// inside it, with the shared scroll bar.
+    /// Take the height the parent gives the table and scroll the rows inside it, with the shared scroll
+    /// bar.
     #[must_use]
     pub fn fill_height(mut self) -> Self {
         self.fill_height = true;
@@ -1449,10 +1354,8 @@ impl DataTableCore {
         self.header_h
     }
 
-    /// Show the rows as a flattened tree: each row indented by `depth(row)`,
-    /// with a chevron when `has_children(row)` that shows `expanded(row)`.
-    /// Pressing the chevron, or Right and Left on the selected row, calls
-    /// `on_toggle(row, expand)`; the host refolds its rows.
+    /// Show the rows as a flattened tree: each row indented by `depth(row)`, with a chevron when
+    /// `has_children(row)` that shows `expanded(row)`.
     #[must_use]
     pub(crate) fn tree(
         mut self,
@@ -1470,15 +1373,13 @@ impl DataTableCore {
         self
     }
 
-    /// Show `key`'s header as sorted without reordering the rows: the host
-    /// sorted them itself.
+    /// Show `key`'s header as sorted without reordering the rows: the host sorted them itself.
     pub fn set_sort_indicator(&mut self, key: impl Into<String>, ascending: bool) {
         self.sort_indicator = Some((key.into(), ascending));
     }
 
-    /// Sort by the column `state` names, and keep the order a person picks
-    /// from the headers in `state`, so it survives the view being built
-    /// again. Rows and their callbacks keep the host's indices.
+    /// Sort by the column `state` names, and keep the order a person picks from the headers in `state`,
+    /// so it survives the view being built again.
     #[must_use]
     pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self {
         if let Some(sort) = state.with(Clone::clone) {
@@ -1488,8 +1389,8 @@ impl DataTableCore {
         self
     }
 
-    /// Sort by the column keyed `key` with its own comparator; `false` when
-    /// there is no such sortable column.
+    /// Sort by the column keyed `key` with its own comparator; `false` when there is no such sortable
+    /// column.
     fn sort_by_column(&mut self, key: &str, ascending: bool) -> bool {
         let Some(compare) = self
             .columns
@@ -1503,8 +1404,8 @@ impl DataTableCore {
         true
     }
 
-    /// A blank row after the last one that adds a row when pressed (a new
-    /// header, a new parameter); `label` is its placeholder.
+    /// A blank row after the last one that adds a row when pressed (a new header, a new parameter);
+    /// `label` is its placeholder.
     #[must_use]
     pub fn with_add_row(
         mut self,
@@ -1518,10 +1419,9 @@ impl DataTableCore {
         self
     }
 
-    /// Run `f(row, checked)` when a checkbox column's box is toggled: the
-    /// table, as control `id`, publishes the turn as its view action
-    /// `check`, so a person's click, a screen reader, a script and an agent
-    /// turn the box through the same action.
+    /// Run `f(row, checked)` when a checkbox column's box is toggled: the table, as control `id`,
+    /// publishes the turn as its view action `check`, so a person's click, a screen reader, a script
+    /// and an agent turn the box through the same action.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -1586,11 +1486,9 @@ impl DataTableCore {
         &mut self.rows
     }
 
-    /// Reconcile edits made through `Self::rows_mut`: cell controls stay
-    /// mounted by row key (so a field being typed into keeps its focus),
-    /// and only the rows named in [`TableModelChange::RowsChanged`] rebuild
-    /// theirs. Give the table a `Self::with_row_key` for keys that
-    /// survive inserts and removals.
+    /// Reconcile edits made through `Self::rows_mut`: cell controls stay mounted by row key (so a field
+    /// being typed into keeps its focus), and only the rows named in [`TableModelChange::RowsChanged`]
+    /// rebuild theirs.
     pub fn apply_changes(&mut self, changes: &[TableModelChange]) {
         if self.model.is_some() {
             self.notify_model_changes(changes);
@@ -1631,11 +1529,7 @@ impl DataTableCore {
         self.row_at(point)
     }
 
-    /// Scroll display row `index` into view, by the nearest edge. A reveal
-    /// the person's hand or key just asked for (a search hit, a selection
-    /// made elsewhere) moves there ([`crate::motion::ScrollTo`]): a short
-    /// jump glides, a long one fades in at the row; one nobody asked for
-    /// lands at once.
+    /// Scroll display row `index` into view, by the nearest edge.
     pub fn reveal_row(&mut self, index: usize) {
         if index >= self.display_len() {
             return;
@@ -1665,17 +1559,15 @@ impl DataTableCore {
         }
     }
 
-    /// Draw a rule between columns, through the header and the body: for
-    /// grids the eye reads by column (a query result, a spreadsheet).
+    /// Draw a rule between columns, through the header and the body: for grids the eye reads by column
+    /// (a query result, a spreadsheet).
     #[must_use]
     pub fn ruled(mut self) -> Self {
         self.ruled = true;
         self
     }
 
-    /// Construct a sparse table backed by an arbitrary model. Geometry and
-    /// selection remain proportional to visible/measured rows rather than
-    /// `model.len()`.
+    /// Construct a sparse table backed by an arbitrary model.
     pub(crate) fn from_model(
         columns: Vec<ColumnDef<AnyRow>>,
         model: Box<dyn TableModel<Row = AnyRow>>,
@@ -1686,17 +1578,14 @@ impl DataTableCore {
         table
     }
 
-    /// Give this table a stable app-test/inspection id. The historical
-    /// default is `data_table`; set an explicit id when an app has more than
-    /// one table.
+    /// Give this table a stable app-test/inspection id.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = id.into();
         self
     }
 
-    /// Give the table itself a localized screen-reader label. Column headers
-    /// continue to label individual cells.
+    /// Give the table itself a localized screen-reader label.
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
@@ -1732,8 +1621,8 @@ impl DataTableCore {
         &mut self.model_selection
     }
 
-    /// Restore stable-key selection for a model-backed table, discarding keys
-    /// absent from the current model.
+    /// Restore stable-key selection for a model-backed table, discarding keys absent from the current
+    /// model.
     #[must_use]
     pub fn with_model_selection(
         mut self,
@@ -1752,10 +1641,9 @@ impl DataTableCore {
         self
     }
 
-    /// Run `f(row, ctrl, shift)` when a row is clicked: the table, as control `id`, publishes the
-    /// click as its view action `click`, so a person's click, a screen reader, a script and an
-    /// agent click through the same action. Every row callback names the row by its index in the
-    /// rows the host set ([`Self::set_rows`]), however the table sorted them.
+    /// Run `f(row, ctrl, shift)` when a row is clicked: the table, as control `id`, publishes the click
+    /// as its view action `click`, so a person's click, a screen reader, a script and an agent click
+    /// through the same action.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -1827,11 +1715,9 @@ impl DataTableCore {
         self
     }
 
-    /// Called with the row chosen, by its index in the rows the host set:
-    /// the table, as control `id`, publishes choosing a row as its view
-    /// action `select`, so a person's click, a screen reader, a script and
-    /// an agent choose through the same action. What is chosen is the
-    /// window's own state, never an edit.
+    /// Called with the row chosen, by its index in the rows the host set: the table, as control `id`,
+    /// publishes choosing a row as its view action `select`, so a person's click, a screen reader, a
+    /// script and an agent choose through the same action.
     #[must_use]
     pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
         let id = id.into();
@@ -1843,10 +1729,9 @@ impl DataTableCore {
         self
     }
 
-    /// Called with the row opened, by its index in the rows the host set:
-    /// the table, as control `id`, publishes opening a row as its view
-    /// action `open`, so a double click, Enter, a screen reader, a script
-    /// and an agent open through the same action.
+    /// Called with the row opened, by its index in the rows the host set: the table, as control `id`,
+    /// publishes opening a row as its view action `open`, so a double click, Enter, a screen reader, a
+    /// script and an agent open through the same action.
     #[must_use]
     pub fn on_activate_view(
         mut self,
@@ -1874,10 +1759,8 @@ impl DataTableCore {
         self
     }
 
-    /// Give rows stable model identity so scroll anchoring and cached
-    /// measurements survive inserts, removals, and sorting. Duplicate values
-    /// are disambiguated by occurrence order; unique keys provide the
-    /// strongest continuity.
+    /// Give rows stable model identity so scroll anchoring and cached measurements survive inserts,
+    /// removals, and sorting.
     #[must_use]
     pub(crate) fn with_row_key<F>(mut self, key: F) -> Self
     where
@@ -1926,8 +1809,8 @@ impl DataTableCore {
         self.reapply_sort_with_anchor(anchor.as_ref());
     }
 
-    /// Show the rows in the host's order again, the selection staying on
-    /// the rows it names, before the sort is applied afresh.
+    /// Show the rows in the host's order again, the selection staying on the rows it names, before the
+    /// sort is applied afresh.
     fn unsort_view(&mut self) {
         if self.model.is_none() && !self.selection.is_empty() {
             let selected: Vec<usize> = self
@@ -2018,8 +1901,8 @@ impl DataTableCore {
         self.row_keys.get(source_index).copied()
     }
 
-    /// The index in the host's rows of the row shown at `display_index`;
-    /// a model-backed table's model orders its own rows.
+    /// The index in the host's rows of the row shown at `display_index`; a model-backed table's model
+    /// orders its own rows.
     fn source_row(&self, display_index: usize) -> usize {
         if self.model.is_some() {
             return display_index;
@@ -2038,16 +1921,15 @@ impl DataTableCore {
         self.view.iter().position(|source| *source == row)
     }
 
-    /// Select only the host's row `row` (an index into the rows set with
-    /// `Self::set_rows`), wherever sorting shows it.
+    /// Select only the host's row `row` (an index into the rows set with `Self::set_rows`), wherever
+    /// sorting shows it.
     pub fn select_row(&mut self, row: usize) {
         if let Some(display) = self.display_row(row) {
             self.select_only_index(display);
         }
     }
 
-    /// The selected rows as indices into the rows the host set, in the
-    /// order the table shows them.
+    /// The selected rows as indices into the rows the host set, in the order the table shows them.
     #[must_use]
     pub fn selected_rows(&self) -> Vec<usize> {
         self.selection
@@ -2165,15 +2047,12 @@ impl DataTableCore {
             .collect()
     }
 
-    /// Reconcile an externally changed model. The first visible stable key,
-    /// measured heights, and key selection survive moves and inserts.
+    /// Reconcile an externally changed model.
     pub fn notify_model_changed(&mut self) {
         self.notify_model_changes(&[TableModelChange::Reset]);
     }
 
-    /// Reconcile one already-applied model change batch. Structural changes
-    /// retain visible cell controls whose stable keys still exist, while
-    /// `RowsChanged` rebuilds controls only for the named keys.
+    /// Reconcile one already-applied model change batch.
     pub fn notify_model_changes(&mut self, changes: &[TableModelChange]) {
         if self.model.is_none() {
             return;
@@ -2222,9 +2101,8 @@ impl DataTableCore {
             })
     }
 
-    /// Stores the comparator + key + direction so `set_rows` re-applies the
-    /// same ordering automatically. Model-backed tables delegate sorting to
-    /// [`TableModel::sort_by`] instead.
+    /// Stores the comparator + key + direction so `set_rows` re-applies the same ordering
+    /// automatically.
     pub(crate) fn sort_by_with<F>(&mut self, cmp: F, key: &str, ascending: bool)
     where
         F: Fn(&AnyRow, &AnyRow) -> Ordering + Send + Sync + 'static,
@@ -2240,11 +2118,8 @@ impl DataTableCore {
         self.reapply_sort();
     }
 
-    /// Reuses the comparator already installed via `Self::sort_by_with`;
-    /// returns `false` when none is installed for `column_key`. Per-column
-    /// comparators can't be encoded as pure `(key, direction)`, so callers
-    /// install one typed comparator, then header-click/keyboard handlers flip
-    /// direction through this simpler entry point.
+    /// Reuses the comparator already installed via `Self::sort_by_with`; returns `false` when none is
+    /// installed for `column_key`.
     pub fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
         if let Some(model) = self.model.as_deref_mut() {
             if !model.sort_by(column_key, ascending) {
@@ -2270,8 +2145,6 @@ impl DataTableCore {
     }
 
     fn reapply_sort_with_anchor(&mut self, anchor: Option<&SparseAnchor<RowIdentity>>) {
-        // The selection is kept by where rows are shown; it names the same
-        // rows after they move.
         let selected: Vec<usize> = self
             .selection
             .selected()
@@ -2293,7 +2166,6 @@ impl DataTableCore {
                 let o = cmp(&**ra, &**rb);
                 if ascending { o } else { o.reverse() }
             });
-            // Cell controls follow their rows to where they now stand.
             if !self.mounted_cells.is_empty() {
                 self.structure_dirty = true;
             }
@@ -2315,8 +2187,8 @@ impl DataTableCore {
         self.reconcile_viewport(anchor);
     }
 
-    /// Falls back to `ColumnWidth::Fixed`; Flex/Auto columns return `None`
-    /// until resized since their pixel value depends on the layout pass.
+    /// Falls back to `ColumnWidth::Fixed`; Flex/Auto columns return `None` until resized since their
+    /// pixel value depends on the layout pass.
     pub fn column_width_px(&self, key: &str) -> Option<f32> {
         if let Some(w) = self.col_widths_px.get(key).copied() {
             return Some(w);
@@ -2330,8 +2202,8 @@ impl DataTableCore {
         })
     }
 
-    /// Lay `key` out at `px`, as a drag of its edge would: a host that
-    /// remembers the widths a person set puts them back this way.
+    /// Lay `key` out at `px`, as a drag of its edge would: a host that remembers the widths a person
+    /// set puts them back this way.
     pub fn set_column_width(&mut self, key: &str, px: f32) {
         let px = px.max(Self::MIN_COL_WIDTH);
         self.col_widths_px.insert(key.to_string(), px);
@@ -2339,8 +2211,7 @@ impl DataTableCore {
         self.layout_dirty = true;
     }
 
-    /// The widths a person set by dragging a column's edge, by key. A
-    /// column never resized is not here: its width belongs to the layout.
+    /// The widths a person set by dragging a column's edge, by key.
     #[must_use]
     pub fn resized_widths(&self) -> Vec<(String, f32)> {
         let mut widths: Vec<(String, f32)> = self
@@ -2352,8 +2223,7 @@ impl DataTableCore {
         widths
     }
 
-    /// Subsequent `drag_resize` calls compute the new width as
-    /// `origin_w + (pointer_x - origin_x)`.
+    /// Subsequent `drag_resize` calls compute the new width as `origin_w + (pointer_x - origin_x)`.
     pub fn begin_resize(&mut self, key: &str, pointer_x: f32) {
         let origin_w = self.column_width_px(key).unwrap_or(Self::MIN_COL_WIDTH);
         self.resize = Some(ResizeState {
@@ -2379,8 +2249,8 @@ impl DataTableCore {
         self.resize = None;
     }
 
-    /// Enables the `visible_row_range` windowing so only rows intersecting
-    /// the viewport (plus overscan) are rendered.
+    /// Enables the `visible_row_range` windowing so only rows intersecting the viewport (plus overscan)
+    /// are rendered.
     pub fn set_viewport(&mut self, height_px: f32, row_height_px: f32) {
         self.authored_row_height = Some(f64::from(row_height_px));
         self.refresh_row_estimate();
@@ -2414,7 +2284,6 @@ impl DataTableCore {
         }
         self.layout_dirty = true;
         self.last_anchor = self.capture_view_anchor();
-        // The rows moved under a pointer that did not.
         self.track_hover(self.last_cursor);
     }
 
@@ -2423,9 +2292,7 @@ impl DataTableCore {
         f32_of_f64(self.viewport.offset())
     }
 
-    /// Override one display row's measured height while keeping the current
-    /// stable anchor fixed. Returns `false` when `display_index` is absent or
-    /// geometry did not change.
+    /// Override one display row's measured height while keeping the current stable anchor fixed.
     pub fn set_row_height(&mut self, display_index: usize, height_px: f32) -> bool {
         let Some(key) = self.row_identity_at(display_index) else {
             return false;
@@ -2439,16 +2306,14 @@ impl DataTableCore {
         changed
     }
 
-    /// `(start, end)` row-index range (half-open), with two estimated row
-    /// heights of pixel overscan on each side. With no viewport set, the
-    /// entire row list is returned.
+    /// `(start, end)` row-index range (half-open), with two estimated row heights of pixel overscan on
+    /// each side.
     pub fn visible_row_range(&self) -> (usize, usize) {
         let range = self.viewport.visible_range();
         (range.start, range.end)
     }
 
-    /// Number of retained cell controls. This remains proportional to the
-    /// visible window, not the logical model size.
+    /// Number of retained cell controls.
     #[must_use]
     pub fn mounted_cell_count(&self) -> usize {
         self.mounted_cells.len()
@@ -2460,13 +2325,7 @@ impl DataTableCore {
         self.refresh_view_anchor();
     }
 
-    /// Size the header band and the estimated row height from the theme's
-    /// label line. At the default text scale both resolve to the pinned
-    /// `HEADER_HEIGHT` / `ROW_HEIGHT`; at 2× they grow so the (now correctly
-    /// sized) text has the same padding it had at 1×. An estimate the host
-    /// authored through [`Self::set_viewport`] is kept as written and raised
-    /// only once the line plus the smallest step would not fit; heights set
-    /// per row (`set_row_height`, mounted cells) are never touched.
+    /// Size the header band and the estimated row height from the theme's label line.
     fn apply_type_metrics(&mut self, theme: &Theme) {
         let tokens = &theme.tokens;
         let line = type_line_height(&tokens.typography, TextRole::Caption);
@@ -2490,9 +2349,8 @@ impl DataTableCore {
         self.refresh_row_estimate();
     }
 
-    /// The one place the viewport's estimated row height is set, from the
-    /// authored estimate and the label type seen so far (see
-    /// [`row_estimate`]). Called when either input changes.
+    /// The one place the viewport's estimated row height is set, from the authored estimate and the
+    /// label type seen so far (see [`row_estimate`]).
     fn refresh_row_estimate(&mut self) {
         let estimate = row_estimate(self.authored_row_height, self.default_row_h, self.row_type);
         let before = self.viewport.estimated_height();
@@ -2625,8 +2483,6 @@ impl DataTableCore {
     }
 
     /// Live when an explicit viewport was set and the rows overflow it.
-    /// How far past an end fingers pull the rows, as drawn: negative before
-    /// the start ([`crate::motion::RubberBand`]).
     fn give(&self) -> f64 {
         self.scroll.momentum.give(crate::motion::frame_now())
     }
@@ -2635,10 +2491,10 @@ impl DataTableCore {
         !self.host_scrolled && self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
 
-    /// The band the columns share, by the one content edge (HIG §9.3): the first column's text
-    /// starts on the table's leading edge and the last column's ends on its trailing edge, each
-    /// cell padded by the bleed, so the band, and the lift and stripe that fill it, stand the bleed
-    /// past the table on both sides. While the scroll bar shows, the band stops at its gutter.
+    /// The band the columns share, by the one content edge (HIG §9.3): the first column's text starts
+    /// on the table's leading edge and the last column's ends on its trailing edge, each cell padded by
+    /// the bleed, so the band, and the lift and stripe that fill it, stand the bleed past the table on
+    /// both sides.
     fn columns_band(&self) -> Rect {
         let x0 = self.rect.x0 - self.bleed;
         let x1 = if self.internal_scroll() {
@@ -2649,8 +2505,8 @@ impl DataTableCore {
         Rect::new(x0, self.rect.y0, x1.max(x0), self.rect.y1)
     }
 
-    /// [`Widget::collect_damage`] for the widget `owner` in the tree that
-    /// holds this table (the typed table around it), which offers the copy.
+    /// [`Widget::collect_damage`] for the widget `owner` in the tree that holds this table (the typed
+    /// table around it), which offers the copy.
     fn collect_damage_of<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
         let bounds = self.paint_bounds();
         if self.scroll.fading() {
@@ -2665,8 +2521,7 @@ impl DataTableCore {
         }
     }
 
-    /// Everything the table paints: its box, and the rows' band that
-    /// bleeds past it.
+    /// Everything the table paints: its box, and the rows' band that bleeds past it.
     fn paint_bounds(&self) -> Rect {
         let band = self.columns_band();
         self.rect
@@ -2710,7 +2565,6 @@ impl DataTableCore {
         if !self.h_overflow() {
             return None;
         }
-        // In the gutter kept under the rows.
         let band = self.columns_band();
         let body = self.body_rect();
         let track = crate::widget::scrollbar::horizontal_track(
@@ -2767,8 +2621,8 @@ impl DataTableCore {
         }
     }
 
-    /// The first text column shown: a tree's chevron and indent, and the add
-    /// row's placeholder, sit in it (never in a checkbox column).
+    /// The first text column shown: a tree's chevron and indent, and the add row's placeholder, sit in
+    /// it (never in a checkbox column).
     fn first_shown_column(&self) -> Option<usize> {
         (0..self.columns.len()).find(|&i| {
             !self.hidden.get(i).copied().unwrap_or(false)
@@ -2776,8 +2630,7 @@ impl DataTableCore {
         })
     }
 
-    /// How far a tree row's content stands in: its depth in `s4` steps, then
-    /// the chevron's slot.
+    /// How far a tree row's content stands in: its depth in `s4` steps, then the chevron's slot.
     fn tree_indent(&self, theme: &Theme, depth: usize) -> f64 {
         let tokens = &theme.tokens;
         f64::from(tokens.spacing.s4) * depth as f64
@@ -2807,8 +2660,7 @@ impl DataTableCore {
         ))
     }
 
-    /// Toggle tree row `index` to `expand`; `false` when it has no children
-    /// or is already so.
+    /// Toggle tree row `index` to `expand`; `false` when it has no children or is already so.
     fn fold_tree_row(&mut self, index: usize, expand: bool) -> bool {
         let Some(tree) = &self.tree else {
             return false;
@@ -2898,9 +2750,8 @@ impl DataTableCore {
         ))
     }
 
-    /// Sort by column `index`, or flip the order when it already sorts by
-    /// it; the column's own comparator orders the rows (see
-    /// [`ColumnDef::sorted_by`]). `None` if the column does not sort.
+    /// Sort by column `index`, or flip the order when it already sorts by it; the column's own
+    /// comparator orders the rows (see [`ColumnDef::sorted_by`]).
     pub fn toggle_sort(&mut self, index: usize) -> Option<(String, bool)> {
         let col = self.columns.get(index)?;
         if !col.sortable {
@@ -2958,9 +2809,6 @@ impl DataTableCore {
         let tokens = &theme.tokens;
         let band = self.columns_band();
         let header_rect = Rect::new(band.x0, self.rect.y0, band.x1, self.rect.y0 + self.header_h);
-        // The header sits on the table's ground; one rule derived from that
-        // ground closes it, on the band's last pixel row, as wide as the
-        // rows' lift.
         crate::surface::separator(
             scene,
             transform,
@@ -3009,8 +2857,7 @@ impl DataTableCore {
         }
     }
 
-    /// Vertical rules between columns, through the header and the body, from
-    /// the ground they sit on.
+    /// Vertical rules between columns, through the header and the body, from the ground they sit on.
     fn draw_column_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let rule = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let y1 = self.rect.y0 + self.header_h + self.body_viewport_h();
@@ -3032,8 +2879,8 @@ impl DataTableCore {
 
     /// Row backgrounds (selection fill, zebra stripe) and per-column cell content, windowed to
     /// [`Self::visible_row_range`] plus overscan: each row (and the add row) a part of the scrolled
-    /// body, drawn where it stands in the rows as if unscrolled ([`crate::scroll_copy::Painted`]),
-    /// so a row a scroll only moved encodes the same and a host copies it.
+    /// body, drawn where it stands in the rows as if unscrolled ([`crate::scroll_copy::Painted`]), so a
+    /// row a scroll only moved encodes the same and a host copies it.
     fn draw_rows(
         &self,
         transform: Affine,
@@ -3074,7 +2921,6 @@ impl DataTableCore {
                 continue;
             }
             let shown = Rect::new(band.x0, y0, band.x1, y1);
-            // Painted where the row stands in the rows, unscrolled.
             let (y0, y1) = (y0 + offset, y1 + offset);
             let mut row_scene = Scene::new();
             let scene = &mut row_scene;
@@ -3099,8 +2945,6 @@ impl DataTableCore {
             // takes precedence over the zebra stripe; the stripe is a
             // fraction of the same lift, so selection always reads past it.
             if selected || hovered {
-                // A pressable row lifts under the pointer, as a list row
-                // and the painted table face do.
                 crate::chrome::paint_row_selection(
                     scene,
                     transform,
@@ -3119,8 +2963,6 @@ impl DataTableCore {
                     &RoundedRect::from_rect(row_band, radius),
                 );
             }
-            // A row on its way paints its placeholder in its slot; one that
-            // landed fades in over it.
             let slot = Rect::new(band.x0 + self.bleed, y0, band.x1 - self.bleed, y1);
             let mut paint_row = |ctx: &mut PaintCtx<'_>| {
                 let scene = &mut *ctx.scene;
@@ -3214,7 +3056,6 @@ impl DataTableCore {
                             }
                         }
                     }
-                    // The placeholder of a row on its way is the arrivals'.
                     Arrival::Pending { .. } => {}
                     Arrival::Failed(message) => arrivals::paint_row_failure(
                         scene,
@@ -3257,8 +3098,6 @@ impl DataTableCore {
             let rect = shown + vello::kurbo::Vec2::new(0.0, offset);
             let mut add_scene = Scene::new();
             let scene = &mut add_scene;
-            // The blank row that adds one: its placeholder where the first
-            // cell's text starts, in tertiary ink.
             let style = cell_style(theme, TextKind::Prose);
             let x = self
                 .first_shown_column()
@@ -3297,8 +3136,7 @@ impl DataTableCore {
         parts
     }
 
-    /// `WindowEvent::CursorMoved` — drag-resize/drag-scroll tracking, else
-    /// scrollbar hover.
+    /// `WindowEvent::CursorMoved` — drag-resize/drag-scroll tracking, else scrollbar hover.
     fn on_cursor_moved(&mut self, pt: Point, handled: &mut bool) {
         self.last_cursor = Some(pt);
         if self.resize.is_some() {
@@ -3306,7 +3144,6 @@ impl DataTableCore {
             *handled = true;
             return;
         }
-        // An active scrollbar drag owns the move.
         if self.vbar.is_dragging() {
             if let Some(track) = self.v_track()
                 && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt)
@@ -3325,7 +3162,6 @@ impl DataTableCore {
             *handled = true;
             return;
         }
-        // A press on a row that moves past the slop begins a row drag.
         if let Some((row, origin)) = self.row_press
             && self.on_row_drag_begin.is_some()
             && (pt - origin).hypot() > DRAG_SLOP
@@ -3361,9 +3197,8 @@ impl DataTableCore {
         }
     }
 
-    /// `WindowEvent::MouseInput { state: Pressed, button: Left }` — scrollbar,
-    /// then column resize handles, then header sort, then row selection, in
-    /// that priority order.
+    /// `WindowEvent::MouseInput { state: Pressed, button: Left }` — scrollbar, then column resize
+    /// handles, then header sort, then row selection, in that priority order.
     fn on_left_press(
         &mut self,
         modifiers: winit::event::Modifiers,
@@ -3529,8 +3364,7 @@ impl DataTableCore {
         }
     }
 
-    /// A click on display row `ri`: the selection, the host's click, and a
-    /// double click's activation.
+    /// A click on display row `ri`: the selection, the host's click, and a double click's activation.
     fn click_row(
         &mut self,
         ri: usize,
@@ -3550,14 +3384,12 @@ impl DataTableCore {
                 tracing::warn!(%error, control = click.id, "a row refused its click");
             }
         }
-        // Internal double-click → activate (long-lived hosts).
         if self.clicks.register(ri) {
             self.fire_activate(source);
         }
     }
 
-    /// Open `row`, published as the table's `open` view action where the
-    /// host asks for one.
+    /// Open `row`, published as the table's `open` view action where the host asks for one.
     fn fire_activate(&mut self, row: usize) {
         if let Some(opens) = &mut self.opens {
             opens.choice.emit(row.to_string());
@@ -3566,8 +3398,8 @@ impl DataTableCore {
         }
     }
 
-    /// `WindowEvent::MouseInput { state: Released, button: Left }` — ends any
-    /// in-progress column resize or scrollbar drag.
+    /// `WindowEvent::MouseInput { state: Released, button: Left }` — ends any in-progress column resize
+    /// or scrollbar drag.
     fn on_left_release(
         &mut self,
         modifiers: winit::event::Modifiers,
@@ -3576,7 +3408,6 @@ impl DataTableCore {
         node_id: NodeId,
     ) {
         let mut did = false;
-        // A deferred press that became no drag is the click it was.
         if let Some(ri) = self.deferred_click.take()
             && self.row_press.is_some()
         {
@@ -3611,8 +3442,8 @@ impl DataTableCore {
         }
     }
 
-    /// `WindowEvent::MouseWheel` — only live when this table owns its scroll
-    /// internally (an outer `Scrollable` otherwise consumes the wheel first).
+    /// `WindowEvent::MouseWheel` — only live when this table owns its scroll internally (an outer
+    /// `Scrollable` otherwise consumes the wheel first).
     fn on_wheel(
         &mut self,
         delta: &MouseScrollDelta,
@@ -3620,8 +3451,6 @@ impl DataTableCore {
         sideways: bool,
         handled: &mut bool,
     ) {
-        // Shift turns the wheel sideways, as does a trackpad's horizontal
-        // swipe, over columns wider than the table.
         if self.h_overflow() {
             let (dx, dy) = match delta {
                 MouseScrollDelta::LineDelta(x, y) => (
@@ -3677,9 +3506,8 @@ impl DataTableCore {
         scrolled || next != current
     }
 
-    /// `WindowEvent::KeyboardInput`, guarded by the caller to only fire while
-    /// selectable, focused and on key-down: arrow navigation, Enter-to-activate,
-    /// Ctrl+A select-all.
+    /// `WindowEvent::KeyboardInput`, guarded by the caller to only fire while selectable, focused and
+    /// on key-down: arrow navigation, Enter-to-activate, Ctrl+A select-all.
     fn on_key(
         &mut self,
         ke: &winit::event::KeyEvent,
@@ -3751,9 +3579,8 @@ mod arrivals;
 const HEADER_HEIGHT: f64 = 32.0;
 /// How far a press on a row travels before it becomes a row drag.
 const DRAG_SLOP: f64 = 4.0;
-/// A regular row at the stock theme: a pointer target and a step (40); a
-/// compact row is a pointer target (32). The live values come from the
-/// theme's metrics.
+/// A regular row at the stock theme: a pointer target and a step (40); a compact row is a pointer
+/// target (32).
 const ROW_HEIGHT: f64 = 40.0;
 
 /// A column header: `Caption` in its strong weight, sentence case.
@@ -3766,8 +3593,8 @@ fn cell_style(theme: &Theme, kind: TextKind) -> crate::text_render::TextStyle {
     theme.text(TextRole::Caption).with_kind(kind)
 }
 
-/// Paint one text cell placed by the column's alignment, elided to the cell,
-/// centred on the row; an absent value is the column's label in tertiary ink.
+/// Paint one text cell placed by the column's alignment, elided to the cell, centred on the row; an
+/// absent value is the column's label in tertiary ink.
 fn paint_cell_text<Row: ?Sized>(
     scene: &mut Scene,
     transform: Affine,
@@ -3786,7 +3613,6 @@ fn paint_cell_text<Row: ?Sized>(
     };
     let room = f32_of_f64((cell.width() - 2.0 * pad).max(0.0));
     if column.max_lines > 1 {
-        // A wrapping cell: its lines centred on the row as one block.
         let lines = text.clamp_to_lines(label, &style, room, column.max_lines);
         let line_h = f64::from(style.line_height_px());
         let block = line_h * lines.len() as f64;
@@ -3819,8 +3645,8 @@ fn paint_cell_text<Row: ?Sized>(
     );
 }
 
-/// Paint a cell's badge: a quiet pill tinted with its tone, placed across
-/// the cell by the column's alignment and centred on the row.
+/// Paint a cell's badge: a quiet pill tinted with its tone, placed across the cell by the column's
+/// alignment and centred on the row.
 fn paint_cell_badge(
     scene: &mut Scene,
     transform: Affine,
@@ -3857,9 +3683,9 @@ fn paint_cell_badge(
     .paint(scene, transform, text, theme);
 }
 
-/// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
-/// taller than the band starts at the band's top rather than bleeding into
-/// the row above, which the unclamped rule would let it do.
+/// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text taller than the band
+/// starts at the band's top rather than bleeding into the row above, which the unclamped rule would
+/// let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
     crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
 }
@@ -3958,9 +3784,8 @@ impl Widget for DataTableCore {
         dyn crate::widget::ResourceOperations
     );
 
-    /// Rows fading in after a long reveal, on their way after a sort or a
-    /// change, or whose placeholder steps on, repaint the table; otherwise
-    /// what its mounted cells say.
+    /// Rows fading in after a long reveal, on their way after a sort or a change, or whose placeholder
+    /// steps on, repaint the table; otherwise what its mounted cells say.
     fn needs_redraw(&self) -> bool {
         self.scroll.fading()
             || self
@@ -3975,10 +3800,8 @@ impl Widget for DataTableCore {
                 .any(|cell| cell.widget.needs_redraw() || cell.widget.needs_animation_frame())
     }
 
-    /// What the draw changed: the rows that changed, and a scroll offered as
-    /// a copy of the rows that only moved
-    /// ([`crate::scroll_copy::PaintedFrames`]);
-    /// the cells say what changed in them.
+    /// What the draw changed: the rows that changed, and a scroll offered as a copy of the rows that
+    /// only moved ([`crate::scroll_copy::PaintedFrames`]); the cells say what changed in them.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.collect_damage_of(self, regions);
     }
@@ -3998,10 +3821,8 @@ impl Widget for DataTableCore {
         }
     }
 
-    /// Mounting the cells a scroll or the pointer brought near is
-    /// described: they come and go inside the rows the table repaints or a
-    /// host copies, and a mounted cell draws itself whole. Any other change
-    /// is not.
+    /// Mounting the cells a scroll or the pointer brought near is described: they come and go inside
+    /// the rows the table repaints or a host copies, and a mounted cell draws itself whole.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         use crate::widget::StructureChange;
         let mut change = if std::mem::take(&mut self.structure_dirty) {
@@ -4022,8 +3843,6 @@ impl Widget for DataTableCore {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
-        // Every structural rebuild repeats the window's input; what mounts
-        // since hears it as it mounts.
         if self.interaction == environment {
             return;
         }
@@ -4148,7 +3967,6 @@ impl Widget for DataTableCore {
         };
         let height = self.header_h + body_height + self.h_reserve;
         let style = if self.fill_height {
-            // The parent's height: the rows scroll inside it.
             Style {
                 size: Size {
                     width: percent(1.0_f32),
@@ -4189,8 +4007,8 @@ impl Widget for DataTableCore {
         node
     }
 
-    /// Measure [`ColumnWidth::Auto`] columns from their header and the
-    /// visible cells, never narrower than four characters' worth of line.
+    /// Measure [`ColumnWidth::Auto`] columns from their header and the visible cells, never narrower
+    /// than four characters' worth of line.
     fn adjust_layout_style(
         &mut self,
         _taffy: &mut TaffyTree<()>,
@@ -4263,7 +4081,6 @@ impl Widget for DataTableCore {
             }
             next.insert(col.key.clone(), f32_of_f64((width + pad).max(floor).ceil()));
         }
-        // Wrapping cells grow their rows to hold their lines.
         let mut grew = false;
         if self.columns.iter().any(|c| c.max_lines > 1) {
             let line = f64::from(theme.text(TextRole::Caption).line_height_px());
@@ -4307,7 +4124,6 @@ impl Widget for DataTableCore {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         if self.fill_height {
-            // The rows scroll inside whatever height the parent gave.
             let body = (self.rect.height() - self.header_h - self.h_reserve).max(0.0);
             if (body - self.viewport.viewport()).abs() > 0.5 {
                 self.viewport.set_viewport(body);
@@ -4317,9 +4133,6 @@ impl Widget for DataTableCore {
                 self.layout_dirty = true;
             }
         }
-        // User-resized widths in `col_widths_px` override the declared
-        // `ColumnWidth`; columns give way by priority when the band is
-        // narrow, and what still does not fit scrolls sideways.
         let band = self.columns_band();
         self.hidden = hidden_for_room(
             &self.columns,
@@ -4358,8 +4171,6 @@ impl Widget for DataTableCore {
         for cell in &mut self.mounted_cells {
             let Some(child) = cell.node else { continue };
             let child_layout = taffy.layout(child).copied().unwrap_or_default();
-            // A control stands where its column's alignment puts it, flush
-            // with the column's edge as a leading or trailing one.
             let width = f64::from(child_layout.size.width);
             let desired_x = self
                 .col_rects
@@ -4370,7 +4181,6 @@ impl Widget for DataTableCore {
                         .map_or(CellAlign::Leading, ColumnDef::alignment)
                         .place(*column, width, 0.0)
                 });
-            // A control centres on its row's line.
             let row_top = self.rect.y0
                 + self.header_h
                 + self
@@ -4439,12 +4249,8 @@ impl Widget for DataTableCore {
         let now = crate::motion::frame_now();
         self.observe_arrivals(now);
         self.arrivals.mark_drawn(now);
-        // After a long reveal the rows fade in where they landed.
         self.scroll.fade_drawn = self.scroll.to.opacity(now);
-        // What does not scroll with the rows: the header, the focus ring and
-        // the sideways bar; compared frame to frame as one.
         let mut outside = Scene::new();
-        // No ground of its own: the table stands on its region's ground.
         self.draw_header(&mut outside, transform, text_renderer, theme);
         scene.append(&outside, None);
         // The body clips at the band, so the lift and stripe bleed past the
@@ -4483,7 +4289,6 @@ impl Widget for DataTableCore {
         self.draw_bar(&mut chrome, transform, theme, false);
         scene.append(&chrome, None);
         outside.append(&chrome, None);
-        // The bar over the rows stands still while they scroll under it.
         let mut fixed = Vec::new();
         if let Some(track) = self.v_track() {
             let mut bar = Scene::new();
@@ -4515,7 +4320,6 @@ impl Widget for DataTableCore {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.scroll.momentum.set_device_scale(ctx.scale_factor);
         self.scroll.device_scale = ctx.scale_factor;
-        // The hand takes over a reveal in progress from where it is drawn.
         if matches!(
             event,
             WindowEvent::MouseWheel { .. }
@@ -4528,7 +4332,6 @@ impl Widget for DataTableCore {
         ) {
             self.scroll.to.take_over(crate::motion::frame_now());
         }
-        // The row under the pointer, before a control in it takes the move.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = ctx.logical(position);
@@ -4816,8 +4619,6 @@ impl Widget for DataTableCore {
                         selected,
                         busy: matches!(row_state, Some(Arrival::Pending { .. })),
                         invalid: matches!(row_state, Some(Arrival::Failed(_))),
-                        // The row's own menu is the table's, which opens on
-                        // the row's centre exactly as a right-press does.
                         context_menu: self.on_row_context.is_some(),
                         ..Default::default()
                     })
@@ -4831,8 +4632,6 @@ impl Widget for DataTableCore {
                         row.with_name(crate::i18n::I18nManager::lookup_plain("arriving-loading"))
                     }
                     Some(Arrival::Failed(message)) => row.with_name(message),
-                    // A ready row is named by its first column that has a
-                    // value (its row header), as a person reads the table.
                     Some(Arrival::Ready(data)) => {
                         match self
                             .columns
@@ -4877,17 +4676,6 @@ impl Widget for DataTableCore {
     }
 
     /// Route an assistive technology's action to the **row** it was aimed at.
-    ///
-    /// The table paints its own rows and cells, so they reach an AT as synthetic
-    /// nodes rather than as child widgets; without this, an AT could describe
-    /// row 4 but activating it would land a click in the middle of the table.
-    /// `key_path` is `[row]` for a row and `[row, column]` for a cell — the
-    /// checkbox cells toggle their own checked value; other cells activate
-    /// their row.
-    ///
-    /// Rows carry no explicit key, so the path element is the row's display
-    /// index (its ordinal among the table's synthetic children); the
-    /// callbacks it reaches name the host's row, as `on_row_click_view` does.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -5030,8 +4818,6 @@ impl Widget for DataTableCore {
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 true
             }
-            // The menu a row announces opens on that row, as the row's own
-            // menu verb on its key path does.
             Action::ShowContextMenu => {
                 let point = self
                     .row_rect(index)
@@ -5045,8 +4831,7 @@ impl Widget for DataTableCore {
     }
 }
 
-/// The table's widget is its core's: a `DataTable<Row>` names its rows'
-/// type, and nothing else.
+/// The table's widget is its core's: a `DataTable<Row>` names its rows' type, and nothing else.
 impl<Row: 'static> Widget for DataTable<Row> {
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         self.core.provide(request);
@@ -5220,10 +5005,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 }
 
-/// The width a column is laid out at when the band is tight: a resized or
-/// fixed width as given, a measured `Auto` width, and the minimum for a
-/// flexible column. `None` for a flexible column (and an `Auto` one not yet
-/// measured), which takes a share of what is left.
+/// The width a column is laid out at when the band is tight: a resized or fixed width as given, a
+/// measured `Auto` width, and the minimum for a flexible column.
 fn column_floor<Row: ?Sized>(
     column: &ColumnDef<Row>,
     overrides: &HashMap<String, f32>,
@@ -5250,8 +5033,8 @@ fn column_floor<Row: ?Sized>(
     }
 }
 
-/// Which columns to hide so the rest fit `width`: those with the highest
-/// [`ColumnDef::priority`] first, never one at priority `0`.
+/// Which columns to hide so the rest fit `width`: those with the highest [`ColumnDef::priority`]
+/// first, never one at priority `0`.
 fn hidden_for_room<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     width: f64,
@@ -5334,11 +5117,8 @@ fn flexible_column_widths<Row: ?Sized>(
     widths
 }
 
-/// Lay the columns out in `host`: fixed, resized and measured `Auto` columns
-/// at their widths, flexible columns sharing what is left by weight (or,
-/// with none, the `Auto` columns sharing it). When the floors do not fit the
-/// columns keep them and the table scrolls sideways. Returns the rects
-/// (zero-width for hidden columns) and the columns' total width.
+/// Lay the columns out in `host`: fixed, resized and measured `Auto` columns at their widths,
+/// flexible columns sharing what is left by weight (or, with none, the `Auto` columns sharing it).
 fn compute_column_rects<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     host: Rect,
@@ -5412,9 +5192,9 @@ fn compute_column_rects<Row: ?Sized>(
     (rects, x - host.x0)
 }
 
-/// Paint one column header in `cell` (the column's rect at the header's
-/// height): `Caption` strong in secondary ink, placed by the column's
-/// alignment, with the sort direction as a chevron beside it.
+/// Paint one column header in `cell` (the column's rect at the header's height): `Caption` strong
+/// in secondary ink, placed by the column's alignment, with the sort direction as a chevron beside
+/// it.
 fn paint_header_label(
     ctx: &mut crate::paint::PaintCtx<'_>,
     cell: Rect,
@@ -5481,9 +5261,8 @@ pub struct FaceColumn<'a> {
 }
 
 impl<Row: 'static> DataTable<Row> {
-    /// The row the semantic target `target` names, as the table's rows are
-    /// indexed, or `None` when it names something else or a row it no longer
-    /// holds.
+    /// The row the semantic target `target` names, as the table's rows are indexed, or `None` when it
+    /// names something else or a row it no longer holds.
     pub(crate) fn semantic_row(&self, target: &str) -> Option<usize> {
         self.core.semantic_row_index(target)
     }
@@ -5506,15 +5285,12 @@ impl<'a> FaceColumn<'a> {
 }
 
 /// An immediate-mode table for a painted host (a track list): the [`DataTable`]'s header, columns,
-/// row heights, zebra and lift, painted per frame. `paint` takes the table's content rect; the lift
-/// and stripe bleed past it by [`crate::chrome::row_bleed`] as the retained table's do. The host
-/// hit-tests with [`Self::row_at`] and scrolls by passing the rows it shows.
+/// row heights, zebra and lift, painted per frame.
 #[derive(Clone, Debug)]
 pub struct DataTableFace<'a> {
     columns: &'a [FaceColumn<'a>],
     rows: &'a [&'a [&'a str]],
-    /// The display index of `rows[0]`, so stripes keep their parity while a
-    /// host scrolls.
+    /// The display index of `rows[0]`, so stripes keep their parity while a host scrolls.
     first_row: usize,
     selected: Option<usize>,
     hovered: Option<usize>,
@@ -5571,16 +5347,16 @@ impl<'a> DataTableFace<'a> {
         self
     }
 
-    /// Rows tall enough for a cell the host paints as a `Body` line over a
-    /// `Caption` one (a song over its artist, a file over its folder).
+    /// Rows tall enough for a cell the host paints as a `Body` line over a `Caption` one (a song over
+    /// its artist, a file over its folder).
     #[must_use]
     pub fn two_line(mut self) -> Self {
         self.two_line = true;
         self
     }
 
-    /// A table without its header band (a continuation of a list whose
-    /// columns need no names): rows start at the top of the rect.
+    /// A table without its header band (a continuation of a list whose columns need no names): rows
+    /// start at the top of the rect.
     #[must_use]
     pub fn without_header(mut self) -> Self {
         self.header = false;
@@ -5630,9 +5406,8 @@ impl<'a> DataTableFace<'a> {
         self.header_band(theme) + self.row_height(theme) * self.rows.len() as f64
     }
 
-    /// Each column's rect in `rect`, at the header's height: the band runs
-    /// the bleed past the content edges, `Auto` columns measured from their
-    /// header and cells.
+    /// Each column's rect in `rect`, at the header's height: the band runs the bleed past the content
+    /// edges, `Auto` columns measured from their header and cells.
     pub fn column_rects(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Vec<Rect> {
         let bleed = crate::chrome::row_bleed(theme);
         let pad = 2.0 * f64::from(theme.tokens.spacing.s2);
@@ -5762,15 +5537,11 @@ impl<'a> DataTableFace<'a> {
     }
 }
 
-/// How much of the selection lift a zebra stripe takes: a quarter of the
-/// way from the ground to the selected row's fill. Taken from the selection
-/// itself, a selected row always stands three stripes and more off the
-/// ground on every material, the near-black ones included, so selection
-/// never reads as one more stripe.
+/// How much of the selection lift a zebra stripe takes: a quarter of the way from the ground to the
+/// selected row's fill.
 pub(crate) const ZEBRA_SHARE: f32 = 0.25;
 
-/// A zebra stripe on `ground`: [`ZEBRA_SHARE`] of the way to the selection
-/// lift. Shared by [`DataTable`] and the block editor's tables.
+/// A zebra stripe on `ground`: [`ZEBRA_SHARE`] of the way to the selection lift.
 #[must_use]
 pub(crate) fn zebra_on(theme: &Theme, ground: Color) -> Color {
     let selected = crate::chrome::selection_tier_on(
@@ -5782,26 +5553,17 @@ pub(crate) fn zebra_on(theme: &Theme, ground: Color) -> Color {
     crate::tokens::colors::mix8(ground, selected, ZEBRA_SHARE)
 }
 
-/// A ground is *near black* below this relative luminance. sRGB is compressed
-/// there, so a white veneer moves the luminance far less than the same alpha
-/// does on the dark preset's `#16171B` (0.0086): white at 26 lifts that ground
-/// by 0.023 but pure black by only 0.010. The high-contrast and OLED presets
-/// sit on pure black, which is why `Theme::high_contrast` re-solves its
-/// veneers to roughly three times the dark tiers.
+/// A ground is *near black* below this relative luminance.
 pub(crate) const NEAR_BLACK_GROUND_LUMINANCE: f64 = 0.005;
 
-/// Gain applied to a derived tier's alpha on a near-black ground, and the
-/// alpha it never drops below — the high-contrast preset's own faintest
-/// re-solved veneer (`theme.rs`, `set_overlays`: 51 / 77 / 110 / 153 / 217
-/// against the dark 13 / 26 / 40 / 51 / 72). An alpha multiplier, not a
-/// pixel value.
+/// Gain applied to a derived tier's alpha on a near-black ground, and the alpha it never drops
+/// below — the high-contrast preset's own faintest re-solved veneer (`theme.rs`, `set_overlays`: 51
+/// / 77 / 110 / 153 / 217 against the dark 13 / 26 / 40 / 51 / 72).
 pub(crate) const NEAR_BLACK_TIER_GAIN: u32 = 3;
 pub(crate) const NEAR_BLACK_TIER_FLOOR: u8 = 51;
 
-/// A derived fill tier (band, stripe, track, thumb) on `surface`:
-/// [`Colors::hairline_on`] at `alpha`, with the near-black gain where the
-/// ground would otherwise swallow it. On the dark and light presets this is
-/// exactly `hairline_on(surface, alpha)`.
+/// A derived fill tier (band, stripe, track, thumb) on `surface`: [`Colors::hairline_on`] at
+/// `alpha`, with the near-black gain where the ground would otherwise swallow it.
 #[must_use]
 pub(crate) fn tier_on(surface: Color, alpha: u8) -> Color {
     use crate::a11y::relative_luminance;
@@ -5835,9 +5597,9 @@ mod tier_tests {
         116.0 * f - 16.0
     }
 
-    /// A selected row reads past a striped one on every ground of every
-    /// shipped material: the selection step is more than three stripe steps,
-    /// and the selected row stands clearly off a striped neighbour.
+    /// A selected row reads past a striped one on every ground of every shipped material: the selection
+    /// step is more than three stripe steps, and the selected row stands clearly off a striped
+    /// neighbour.
     #[test]
     fn selection_stands_well_past_the_zebra_stripe_on_every_ground() {
         for name in Theme::ALL {
@@ -5881,9 +5643,8 @@ mod tier_tests {
 
     #[test]
     fn selected_rows_and_tier_hairlines_register_on_every_ground() {
-        /// Pins the dark and light screenshots: on the two grounds this module's
-        /// callers paint tiers on, the gain never engages. (The dark preset's
-        /// overlay tier is itself near black and does take it, by design.)
+        /// Pins the dark and light screenshots: on the two grounds this module's callers paint tiers on,
+        /// the gain never engages.
         fn tier_on_is_plain_hairline_on_ordinary_grounds() {
             for theme in [Theme::dark(), Theme::light()] {
                 let s = &theme.tokens.colors.surfaces;
@@ -5895,8 +5656,8 @@ mod tier_tests {
             }
         }
 
-        /// The stripe stays fainter than the band on every preset, and on black
-        /// both still register (the high-contrast preset's own floor).
+        /// The stripe stays fainter than the band on every preset, and on black both still register (the
+        /// high-contrast preset's own floor).
         fn tiers_keep_their_order_and_register_on_black() {
             for theme in presets() {
                 let raised = theme.tokens.colors.surfaces.raised;
@@ -5921,9 +5682,8 @@ mod tier_tests {
     }
 }
 
-/// The least a one-line table row is tall: the theme's single-row height
-/// (36, or 28 at compact density, `tokens::Density`). A compact table is a
-/// table laid out at compact density whatever its window's density.
+/// The least a one-line table row is tall: the theme's single-row height (36, or 28 at compact
+/// density, `tokens::Density`).
 fn table_row_floor(theme: &Theme, compact: bool) -> f64 {
     let metrics = &theme.tokens.metrics;
     if compact && theme.tokens.density == crate::tokens::Density::Comfortable {

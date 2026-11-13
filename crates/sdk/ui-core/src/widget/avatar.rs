@@ -1,20 +1,4 @@
-//! Avatar: a person's (or an account's) picture, or their initials when no
-//! picture exists.
-//!
-//! An avatar is a person, so its fallback wears that person's presence
-//! colour: the hue comes from their identity ([`PresenceHue::of_identity`])
-//! or from the presence colour the caller already holds for them, never
-//! from a position in a list. The initials take one ink per palette, derived
-//! from the fill's own hue to at least 4.5:1, so every person's initials
-//! read alike (no black on one hue and white on the next). A person's
-//! presence ([`PresenceStatus`]) shows as a ringed badge on the corner, in
-//! their colour. An app or a thing without a picture is a neutral square
-//! ([`AvatarFace::neutral`]). A picture is cover-fitted into the shape and
-//! may load lazily from an [`ImageStore`]; the initials stay until it lands.
-//!
-//! Two forms with one geometry: the retained [`Avatar`] widget and the
-//! immediate [`AvatarFace`] painter for rows, gutters and clusters that a
-//! caller lays out itself.
+//! Avatar: a person's (or an account's) picture, or their initials when no picture exists.
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -35,21 +19,15 @@ use crate::widget::Widget;
 /// follows the UI scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AvatarSize {
-    /// Inline with a line of text: a mention, a chip, an attribution.
     Small,
-    /// A list row or a roster entry.
     #[default]
     Regular,
-    /// A card or a conversation header.
     Large,
-    /// The subject of a detail view (a contact, an account).
     Hero,
-    /// A person’s picture while setting up or editing their profile.
     Portrait,
 }
 
 impl AvatarSize {
-    /// The side in logical pixels under `theme`.
     #[must_use]
     pub fn side(self, theme: &Theme) -> f64 {
         let metrics = &theme.tokens.metrics;
@@ -64,7 +42,6 @@ impl AvatarSize {
     }
 }
 
-/// Whose colour a fallback avatar wears.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tint<'a> {
     Identity(&'a str),
@@ -72,25 +49,18 @@ enum Tint<'a> {
     /// One of the presence palette's hues, named by the caller rather than
     /// derived from an identity (an agent's client colour).
     Hue(PresenceHue),
-    /// No one's: an app, a device, a thing.
     Neutral,
 }
 
-/// Whether a person is there: the badge on their avatar's corner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PresenceStatus {
-    /// Here now: a filled badge in their colour.
     Online,
-    /// Signed in but away: a ring in their colour.
     Away,
-    /// Here, but not to be disturbed: a filled badge with a bar.
     Busy,
-    /// Not here: no badge.
     Offline,
 }
 
 impl PresenceStatus {
-    /// What a screen reader says.
     #[must_use]
     pub fn spoken(self) -> &'static str {
         match self {
@@ -114,7 +84,6 @@ pub struct AvatarFace<'a> {
     ring_on: Option<Color>,
     status: Option<PresenceStatus>,
     glyph: Option<crate::icons::Icon>,
-    /// Software: the agent mark on its rounded square, as every face of an agent is drawn.
     agent: bool,
     presence_ring: bool,
     speaking: f32,
@@ -122,8 +91,6 @@ pub struct AvatarFace<'a> {
 }
 
 impl<'a> AvatarFace<'a> {
-    /// `name` gives the initials; `identity` (a stable id: a peer id, an
-    /// address, an account key) picks the presence hue.
     #[must_use]
     pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
@@ -177,9 +144,6 @@ impl<'a> AvatarFace<'a> {
         self
     }
 
-    /// The person's presence, as a badge on the avatar's corner in their
-    /// colour, ringed in the ground ([`Self::ringed_on`], else the content
-    /// surface).
     #[must_use]
     pub fn status(mut self, status: PresenceStatus) -> Self {
         self.status = Some(status);
@@ -204,7 +168,6 @@ impl<'a> AvatarFace<'a> {
         self
     }
 
-    /// The person's picture. Without one the initials show.
     #[must_use]
     pub fn image(mut self, image: Option<&'a peniko::ImageData>) -> Self {
         self.image = image;
@@ -225,16 +188,12 @@ impl<'a> AvatarFace<'a> {
         self.square
     }
 
-    /// Paint a separator ring of `ground` around the avatar, for avatars that
-    /// overlap in a cluster. `ground` is the surface the cluster sits on.
     #[must_use]
     pub fn ringed_on(mut self, ground: Color) -> Self {
         self.ring_on = Some(ground);
         self
     }
 
-    /// A person's face as presence shows it: their colour as a ring around
-    /// the disc, inside `rect`, with the ground showing between the two.
     #[must_use]
     pub fn presence_ring(mut self) -> Self {
         self.presence_ring = true;
@@ -250,8 +209,6 @@ impl<'a> AvatarFace<'a> {
         self
     }
 
-    /// Their voice while they talk in a call: a soft ring in their colour
-    /// just outside `rect`, as strong as `level` (`ui::motion::Speaking`).
     #[must_use]
     pub fn speaking(mut self, level: f32) -> Self {
         self.speaking = level.clamp(0.0, 1.0);
@@ -270,8 +227,6 @@ impl<'a> AvatarFace<'a> {
         }
     }
 
-    /// The presence ring and the speaking ring around `shape`; returns the
-    /// shape the disc is painted in, inside the ring.
     fn paint_presence_rings(&self, ctx: &mut PaintCtx<'_>, shape: RoundedRect) -> RoundedRect {
         let theme = ctx.theme;
         let colour = self.presence_colour(theme);
@@ -285,7 +240,6 @@ impl<'a> AvatarFace<'a> {
             RoundedRect::from_rect(rect, radius)
         };
         if self.speaking > 0.0 {
-            // Just outside the face, the ground between.
             let reach = gap + ring / 2.0;
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(ring),
@@ -310,14 +264,11 @@ impl<'a> AvatarFace<'a> {
         rounded(shape.rect().inset(-inset), inset)
     }
 
-    /// The initials this face shows: the first letter of the first two
-    /// words, upper-cased.
     #[must_use]
     pub fn initials(&self) -> String {
         initials_for_name(self.name)
     }
 
-    /// The fallback fill under `theme`.
     #[must_use]
     pub fn colour(&self, theme: &Theme) -> Color {
         let presence = &theme.tokens.colors.presence;
@@ -334,7 +285,6 @@ impl<'a> AvatarFace<'a> {
         initials_fill(person, theme)
     }
 
-    /// The person's presence colour (the badge's), whatever the fallback.
     fn presence_colour(&self, theme: &Theme) -> Color {
         match self.tint {
             Tint::Neutral => theme.text_dim,
@@ -342,8 +292,6 @@ impl<'a> AvatarFace<'a> {
         }
     }
 
-    /// Where the presence badge sits for an avatar in `rect`: on the
-    /// bottom-trailing corner, a third of the side.
     #[must_use]
     pub fn status_rect(&self, rect: Rect, theme: &Theme) -> Rect {
         let shape = self.shape(rect, theme).rect();
@@ -433,14 +381,10 @@ impl<'a> AvatarFace<'a> {
         RoundedRect::from_rect(rect, radius)
     }
 
-    /// Paint into `rect` (the shorter side is the avatar's side, centred).
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        // A preceding nested text scene can leave a resolved glyph transform
-        // active even when its last encoded transform equals ours. Establish
-        // the avatar's geometry state explicitly before its first path.
         ctx.scene.encoding_mut().force_next_transform_and_style();
         let shape = self.shape(rect, ctx.theme);
         if let Some(ground) = self.ring_on {
@@ -460,7 +404,6 @@ impl<'a> AvatarFace<'a> {
             );
         }
         let shape = self.paint_presence_rings(ctx, shape);
-        // Software wears no picture: the agent mark is its face wherever it shows.
         if self.agent {
             crate::agent_identity::draw_agent_identity_mark(
                 ctx.scene,
@@ -522,8 +465,6 @@ impl<'a> AvatarFace<'a> {
             // The glyph takes the share of the tile an icon takes in the
             // icon set's own 24 px grid, centred.
             let side = shape.rect().width() * 0.55;
-            // It reads in the ink the tile calls for: the primary ink on a
-            // neutral square, the initials' ink on a tinted one.
             let ink = if self.tint == Tint::Neutral {
                 ctx.theme.text_primary
             } else {
@@ -604,7 +545,6 @@ impl<'a> AvatarFace<'a> {
         let style = initials_style(ctx.theme, side);
         let (width, height) = ctx.text.measure_style(&label, None, &style);
         let centre = disc.center();
-        // As readable as the initials beside it.
         let ink = ctx.theme.text_primary;
         ctx.text(
             &label,
@@ -702,7 +642,6 @@ pub(crate) fn initials_style(theme: &Theme, side: f64) -> TextStyle {
         .with_content_size(crate::num::f32_of_f64(side * 0.4))
 }
 
-/// Where a retained avatar's picture comes from.
 enum Picture {
     None,
     /// Resolved from the store on `sync`, so a picture that finishes loading
@@ -713,7 +652,6 @@ enum Picture {
     },
 }
 
-/// A person's avatar as a retained widget. See the module docs.
 pub struct Avatar {
     name: String,
     name_state: Option<crate::local_state::LocalBinding<String>>,
@@ -727,7 +665,6 @@ pub struct Avatar {
     neutral: bool,
     status: Option<PresenceStatus>,
     glyph: Option<crate::icons::Icon>,
-    /// Software: see [`AvatarFace::agent`].
     agent: bool,
     side: f64,
     rect: Rect,
@@ -772,17 +709,12 @@ impl Avatar {
         }
     }
 
-    /// The room an avatar takes, with none in it: a message that continues its author's run
-    /// lines up under the first one's avatar without repeating it. Nothing is painted and
-    /// nothing is read out.
     #[must_use]
     pub fn room(mut self) -> Self {
         self.room = true;
         self
     }
 
-    /// An app without artwork of its own: see [`AvatarFace::glyph`]. A
-    /// picture ([`Self::with_image_url`]) still replaces it once it loads.
     #[must_use]
     pub fn with_glyph(mut self, glyph: crate::icons::Icon) -> Self {
         self.glyph = Some(glyph);
@@ -802,9 +734,6 @@ impl Avatar {
         self
     }
 
-    /// Bind the displayed name and accessible description to process-local
-    /// presentation state, retaining the avatar and adjacent input widgets.
-    /// Identity, picture and geometry remain independently configured.
     #[must_use]
     pub fn with_name_state(mut self, state: &crate::LocalState<String>) -> Self {
         let (name, binding) = crate::local_state::LocalBinding::new(state);
@@ -826,31 +755,24 @@ impl Avatar {
         false
     }
 
-    /// See [`AvatarFace::presence`].
     #[must_use]
     pub fn with_presence(mut self, colour: Color) -> Self {
         self.presence = Some(colour);
         self
     }
 
-    /// The presence hue the person wears, as the workspace announced it
-    /// ([`AvatarFace::hue`]): a face painted through the theme's presence
-    /// palette, in the colour their caret and their byline wear.
     #[must_use]
     pub fn with_hue(mut self, hue: PresenceHue) -> Self {
         self.hue = Some(hue);
         self
     }
 
-    /// Render the validated public photo carried by canonical identity metadata.
-    /// Pixels are already normalized; this opens no files and decodes no image.
     #[cfg(feature = "local-daemons")]
     #[must_use]
     pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
         self.with_image(profile_image(photo))
     }
 
-    /// The person's picture, already decoded.
     #[must_use]
     pub fn with_image(mut self, image: peniko::ImageData) -> Self {
         self.picture = Picture::None;
@@ -875,14 +797,12 @@ impl Avatar {
         self
     }
 
-    /// See [`AvatarFace::square`].
     #[must_use]
     pub fn square(mut self) -> Self {
         self.square = true;
         self
     }
 
-    /// An app or a thing: see [`AvatarFace::neutral`].
     #[must_use]
     pub fn neutral(mut self) -> Self {
         self.neutral = true;
@@ -890,14 +810,12 @@ impl Avatar {
         self
     }
 
-    /// See [`AvatarFace::status`].
     #[must_use]
     pub fn status(mut self, status: PresenceStatus) -> Self {
         self.status = Some(status);
         self
     }
 
-    /// Change the presence badge.
     pub fn set_status(&mut self, status: Option<PresenceStatus>) {
         if status != self.status {
             self.status = status;
@@ -905,7 +823,6 @@ impl Avatar {
         }
     }
 
-    /// The initials the fallback shows.
     #[must_use]
     pub fn initials(&self) -> String {
         initials_for_name(&self.name)
@@ -1180,8 +1097,6 @@ mod tests {
         assert_eq!(initials_for_name(""), "");
 
         let theme = Theme::dark();
-        // The same person is the same colour wherever they appear, and two
-        // people with the same initials are not forced to share one.
         let a = AvatarFace::new("Ada Lovelace", "ada@example.org").colour(&theme);
         let again = AvatarFace::new("A. Lovelace", "ada@example.org").colour(&theme);
         assert_eq!(a, again);

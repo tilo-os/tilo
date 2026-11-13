@@ -1,18 +1,13 @@
-//! The `AppWidget` trait — the single contract between the tilo shell and
-//! any in-process app hosted inside a tile. Extends the base `Widget` trait
-//! with app-level metadata (kind, title, icon, permission hint, commands).
-//!
-//! `AppKind` is the tile-host enum re-exported from `tile_host`: one enum,
-//! `Terminal, Files, Editor, Browser, Settings`.
+//! The `AppWidget` trait — the single contract between the tilo shell and any in-process app hosted
+//! inside a tile. Extends the base `Widget` trait with app-level metadata (kind, title, icon,
+//! permission hint, commands).
 
-// Optional floating capabilities remain available through `dyn AppWidget`.
-// Re-export the extension at the app contract for hosts that import this module.
 use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
 use std::rc::Weak;
 
-/// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until
-/// they choose, then whether the device's own shell was allowed.
+/// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until they choose, then whether
+/// the device's own shell was allowed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostShellAllow {
     pub answer: Option<bool>,
@@ -24,10 +19,7 @@ pub struct DeviceDisplayMoveReply {
     pub result: Option<Result<(), String>>,
 }
 
-/// A typed, device-local request from app content to shell chrome. Keeping
-/// this on the common app contract lets both in-process tiles and future IPC
-/// adapters use one destination without an app reaching into compositor
-/// state or pretending a status toast completed the navigation.
+/// A typed, device-local request from app content to shell chrome.
 #[derive(Debug, Clone)]
 pub enum AppHostIntent {
     MoveDeviceDisplay {
@@ -37,21 +29,15 @@ pub enum AppHostIntent {
     ShowWorkspaceActivity {
         resource_id: String,
         version_id: Option<[u8; 16]>,
-        /// A factual app-native event that may not yet be part of the shell's
-        /// CRDT record index. This makes the handoff exact instead of opening
-        /// an empty resource lens while the durable indexes converge.
+        /// A factual app-native event that may not yet be part of the shell's CRDT record index.
         entry: Option<crate::widget::HistoryEntry>,
     },
     /// Show what an agent's task run did: History, at the run (`group`, its
-    /// `runtime_collab::task_run_group`), listed as one unit with Undo for
-    /// each step and for the run. A change mark activates it.
+    /// `runtime_collab::task_run_group`), listed as one unit with Undo for each step and for the run.
     ShowTaskRun { group: String },
-    /// Open the platform search scoped to this app (or one part of it), with
-    /// the query already typed. The shell focuses the source tab first.
+    /// Open the platform search scoped to this app (or one part of it), with the query already typed.
     OpenSearch(crate::search::SearchRequest),
-    /// Terminal asks for the device's own shell, which the person has not
-    /// allowed on this device yet. The shell raises its permission prompt
-    /// and records the answer where the shell runtime reads it.
+    /// Terminal asks for the device's own shell, which the person has not allowed on this device yet.
     AllowHostShell {
         reply: Weak<RefCell<HostShellAllow>>,
     },
@@ -97,9 +83,6 @@ impl PartialEq for AppHostIntent {
 }
 
 /// A lightweight icon descriptor usable before the full asset pipeline lands.
-/// `Glyph` is a Nerd Font / unicode codepoint (existing approach in both
-/// the iced file-explorer and quick-terminal). `Named` is a symbolic name for
-/// future theme-driven icon resolution.
 #[derive(Debug, Clone)]
 pub enum IconDescriptor {
     Glyph(&'static str),
@@ -110,9 +93,7 @@ pub enum IconDescriptor {
 pub type AppCommandInvoke =
     Box<dyn Fn(&mut automerge::AutoCommit, &automerge::ObjId) + Send + Sync>;
 
-/// A command palette entry contributed by an app. Invoked with a mutable
-/// CRDT handle and the app's root `ObjId` so the command can mutate state
-/// directly (matching `quick-ui`'s direct-mutation event model).
+/// A command palette entry contributed by an app.
 pub struct AppCommand {
     pub id: String,
     pub label: String,
@@ -131,9 +112,7 @@ impl std::fmt::Debug for AppCommand {
     }
 }
 
-/// Trait every in-process app implements so the shell can host it inside a
-/// `TileContent::App`. `AppWidget: Widget` means the shell always falls
-/// through to the widget contract for layout, draw, and events.
+/// Trait every in-process app implements so the shell can host it inside a `TileContent::App`.
 pub trait AppWidget: Widget {
     /// Capture app-owned local presentation alongside the ordinary View.
     fn capture_application_view(
@@ -142,8 +121,6 @@ pub trait AppWidget: Widget {
         Ok(None)
     }
     /// Prepare current topology from an immutable latest-record loan.
-    /// # Errors
-    /// A payload requires explicit application support and validation.
     fn restore_application_view(
         &mut self,
         _local: &crate::application_view::ApplicationLocalView,
@@ -154,8 +131,6 @@ pub trait AppWidget: Widget {
         ))
     }
     /// Finish after ordinary View restoration and before any mount or capture.
-    /// # Errors
-    /// Applications may reject a prepared local plan without publishing a partial view.
     fn finish_application_view_restore(&mut self) -> Result<(), crate::view::ThawError> {
         Ok(())
     }
@@ -163,11 +138,11 @@ pub trait AppWidget: Widget {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    /// Which role permission governs this app. Default `None`: ungated.
+    /// Which role permission governs this app.
     fn permission_hint(&self) -> Option<AppKind> {
         None
     }
-    /// Command-palette contributions. Default is none.
+    /// Command-palette contributions.
     fn commands(&self) -> Vec<AppCommand> {
         vec![]
     }
@@ -175,28 +150,20 @@ pub trait AppWidget: Widget {
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
 
-    /// The room refused a change this record made, and the record withdrew
-    /// it: the action is refused as one refused on this device is.
-    /// Delivered, like [`Self::record_save_status`], after the record loan
-    /// ends.
+    /// The room refused a change this record made, and the record withdrew it: the action is refused as
+    /// one refused on this device is.
     fn record_refused(&mut self, _refusal: &crate::record::RecordRefusal) {}
 
-    /// What the app said it did since last asked ("Added Buy milk"), for
-    /// the record to hold until the room keeps it
-    /// ([`crate::record::RecordStore::hold_notice`]).
+    /// What the app said it did since last asked ("Added Buy milk"), for the record to hold until the
+    /// room keeps it ([`crate::record::RecordStore::hold_notice`]).
     fn take_notices(&mut self) -> Vec<String> {
         Vec::new()
     }
 
-    /// The room kept what `text` says the app did: say it now. Delivered,
-    /// like [`Self::record_refused`], after the record loan ends.
+    /// The room kept what `text` says the app did: say it now.
     fn record_said(&mut self, _text: &str) {}
 
     /// Answer a device-owner operation from the authenticated hosting shell.
-    /// This is not an app action and never grants access to a host shell.
-    ///
-    /// # Errors
-    /// Refuses unsupported or unavailable device-shell operations.
     fn device_shell_operation(
         &mut self,
         _operation: &crate::floating_surface::DeviceShellOperation,
@@ -209,10 +176,8 @@ pub trait AppWidget: Widget {
         false
     }
 
-    /// Whether the person asked to try a failed record save again
-    /// ([`crate::SaveAction::Retry`] on the [`crate::SaveStatusSurface`]),
-    /// once. The host that owns the record submits its changes again before
-    /// it next reports [`Self::record_save_status`].
+    /// Whether the person asked to try a failed record save again ([`crate::SaveAction::Retry`] on the
+    /// [`crate::SaveStatusSurface`]), once.
     fn take_save_retry(&mut self) -> bool {
         false
     }
@@ -222,59 +187,38 @@ pub trait AppWidget: Widget {
         None
     }
 
-    /// The component to show in this one's place, built now: what a root shown before its
-    /// record ([`crate::application::HostContext::record_opening`]) answers once the record
-    /// is had. Asked, as a component's own request to show another is, before the window
-    /// syncs, so the window shows this root until it shows the new one.
+    /// The component to show in this one's place, built now: what a root shown before its record
+    /// ([`crate::application::HostContext::record_opening`]) answers once the record is had.
     fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
 
-    /// The narrowest window this app is still usable in, in logical px: a
-    /// Tilo app's compact layout, a client's `xdg_toplevel` min-size hint.
-    /// Resizing a window stops its edge here rather than squeezing the app
-    /// (`widget::edge_resize`). By default what the app's tree says
-    /// ([`crate::widget::minimum_window_width`]: a `NavShell` states its
-    /// compact layout's minimum), so an app in the shell's process is
-    /// stopped where its own window would be. `None` says nothing, and the
-    /// strip's floor applies.
+    /// The narrowest window this app is still usable in, in logical px: a Tilo app's compact layout, a
+    /// client's `xdg_toplevel` min-size hint.
     fn min_window_width(&self) -> Option<f64> {
         crate::widget::minimum_window_width(self)
     }
 
-    /// The widest window this app can fill, in logical px: a client's
-    /// `xdg_toplevel` max-size hint. `None`: no maximum.
+    /// The widest window this app can fill, in logical px: a client's `xdg_toplevel` max-size hint.
     fn max_window_width(&self) -> Option<f64> {
         None
     }
 
-    /// A person is dragging one edge of this app's window; `fixed` is the
-    /// edge that holds still on screen (`None` once nothing holds). An app
-    /// that draws a frame of another size than its window until it catches
-    /// up, a Wayland client answering a configure, draws that frame against
-    /// the fixed edge, at its own scale, rather than stretched or slid.
+    /// A person is dragging one edge of this app's window; `fixed` is the edge that holds still on
+    /// screen (`None` once nothing holds).
     fn set_live_resize_anchor(&mut self, _fixed: Option<crate::widget::WindowEdge>) {}
 
-    /// The edge drag ended. An app holding a frame against the fixed edge
-    /// keeps doing so until its content has the window's size again, then
-    /// lets go of it.
+    /// The edge drag ended.
     fn release_live_resize_anchor(&mut self) {}
 
-    /// What a private window offers its own device: the resources and
-    /// actions its door publishes, for the host to list and invoke for this
-    /// device's person without publishing them to any room. `None` for a
-    /// window that is not private, whose actions reach automation through
-    /// its collaboration route instead.
+    /// What a private window offers its own device: the resources and actions its door publishes, for
+    /// the host to list and invoke for this device's person without publishing them to any room.
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         None
     }
 
-    /// Invoke one of [`Self::device_local_resources`]' actions as the
-    /// window's own person, through its door.
-    ///
-    /// # Errors
-    /// Refuses a window that offers no device-local actions, and whatever
-    /// the door refuses.
+    /// Invoke one of [`Self::device_local_resources`]' actions as the window's own person, through its
+    /// door.
     fn invoke_device_local_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -283,20 +227,14 @@ pub trait AppWidget: Widget {
         Err(tilo_actions::DoorError::Unknown(address.clone()))
     }
 
-    /// What an app keeping its own document publishes for the search of its
-    /// window: its resources and its search providers, which its host cannot
-    /// read through its widgets. `None` for an app whose host reads them
-    /// directly ([`crate::widget::published_resources`]).
+    /// What an app keeping its own document publishes for the search of its window: its resources and
+    /// its search providers, which its host cannot read through its widgets.
     fn window_search(&self) -> Option<WindowPublication> {
         None
     }
 
-    /// Run `invocation`, chosen in the search of this window, as the app's
-    /// own control would, for an app keeping its own document. Gives it back
-    /// when the app takes no controls this way.
-    ///
-    /// # Errors
-    /// The invocation itself, when the app did not take it.
+    /// Run `invocation`, chosen in the search of this window, as the app's own control would, for an
+    /// app keeping its own document.
     fn run_window_control(
         &mut self,
         invocation: tilo_actions::ControlInvocation,
@@ -305,14 +243,13 @@ pub trait AppWidget: Widget {
     }
 }
 
-/// What a window publishes for its own search: the resources it holds and
-/// can act on, and the search providers that find what it keeps.
+/// What a window publishes for its own search: the resources it holds and can act on, and the
+/// search providers that find what it keeps.
 pub struct WindowPublication {
     pub resources: Vec<tilo_actions::ResourceSpec>,
     pub providers: Vec<Box<dyn crate::search::SearchProvider>>,
 }
 
-// The sole internal owner adapter; raw descendants inherit its layout boundary.
 mod component_adapter {
     use super::{AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
@@ -328,35 +265,24 @@ mod component_adapter {
 
     pub(crate) struct BoundAppWidget {
         pub(crate) component: AppComponent,
-        /// A complete-content capture laid the root out in a tree of its own:
-        /// the host rebuilds its layout before the next frame.
+        /// A complete-content capture laid the root out in a tree of its own: the host rebuilds its layout
+        /// before the next frame.
         relayout: bool,
         /// The record's durability changed and the root synced with it
-        /// ([`AppComponent::take_save_status_changed`]): what shows it is
-        /// drawn by the next frame. Nothing about the tree changed, so it is
-        /// not rebuilt (which repaints the whole window for a save label
-        /// after every key), and nothing is measured for it either: a widget
-        /// whose size the new status changes says so itself, as after any
-        /// sync, and a status that keeps its size (Saving, then Saved after
-        /// each keystroke's write) re-solves no layout.
+        /// ([`AppComponent::take_save_status_changed`]): what shows it is drawn by the next frame.
         save_status_shown: bool,
-        /// What the root's last pass read, as it stood once the pass ended:
-        /// a pass that would read the same is skipped
-        /// ([`crate::component_inputs`]). `None` until the first pass, and
-        /// whenever a pass read something the framework cannot follow.
+        /// What the root's last pass read, as it stood once the pass ended: a pass that would read the same
+        /// is skipped ([`crate::component_inputs`]).
         witness: Option<crate::component_inputs::Witness>,
-        /// The root asked for its next sync whatever its witness says: it
-        /// was laid out anew, its update or a deadline changed it.
+        /// The root asked for its next sync whatever its witness says: it was laid out anew, its update or
+        /// a deadline changed it.
         owes_sync: bool,
-        /// A sync ran since the last settle: what it took up is written by
-        /// the next settle.
+        /// A sync ran since the last settle: what it took up is written by the next settle.
         owes_settle: bool,
-        /// The size the root was last laid out at: a new size is input its
-        /// next sync takes up.
+        /// The size the root was last laid out at: a new size is input its next sync takes up.
         laid_out: Option<vello::kurbo::Size>,
-        /// What the root's updates read since its last sync: a view built
-        /// from what moved is input the sync it precedes takes up, and a
-        /// build that loads the words it shows proves nothing
+        /// What the root's updates read since its last sync: a view built from what moved is input the sync
+        /// it precedes takes up, and a build that loads the words it shows proves nothing
         /// ([`crate::component_inputs`]).
         update_reads: Option<crate::component_inputs::Reads>,
     }
@@ -401,10 +327,8 @@ mod component_adapter {
             }
         }
 
-        /// Whether the root's next pass would read only what its last one
-        /// read: nothing reached the component, nothing it follows moved,
-        /// and it asked for nothing. A component whose record is still
-        /// opening reads what this cannot follow.
+        /// Whether the root's next pass would read only what its last one read: nothing reached the
+        /// component, nothing it follows moved, and it asked for nothing.
         fn at_rest(&self, outer: &AutoCommit) -> bool {
             if self.owes_sync || crate::component_inputs::forced() {
                 return false;
@@ -429,7 +353,6 @@ mod component_adapter {
             drop(_entry);
             let moved = witness.moved(&self.inputs_now(outer));
             if let Some(why) = moved {
-                // Named for a profile: why this component's pass runs.
                 drop(tilo_resource::profiling::Phase::start(why));
             }
             moved.is_none()
@@ -439,8 +362,6 @@ mod component_adapter {
         fn sync_root(&mut self, state: &AutoCommit) {
             let binding = self.component.callback_binding();
             if binding.records.is_opening(&binding.checkout.id) {
-                // The record is still opening off the frame: the root shows before it
-                // (`HostContext::record_opening`) and reads nothing of it.
                 if let Some(root) = self.component.root.as_deref_mut() {
                     root.sync(state, &automerge::ROOT);
                 }
@@ -464,8 +385,8 @@ mod component_adapter {
             }
         }
 
-        /// The root's settle: what its widgets took up is written to the
-        /// record, and shown in the same frame.
+        /// The root's settle: what its widgets took up is written to the record, and shown in the same
+        /// frame.
         fn settle_root(&mut self, edits: &mut crate::widget::Edits<'_>) {
             let binding = self.component.callback_binding();
             binding
@@ -476,7 +397,6 @@ mod component_adapter {
                     let before = crate::doc::settle_mark(document);
                     root.settle(&mut crate::widget::Edits::lend(document), record_root);
                     let _ = binding.drain_owned_tree(root, document);
-                    // What it wrote shows in this same frame.
                     if crate::doc::settle_mark(document) != before {
                         root.update(document, record_root);
                         root.sync(document, record_root);
@@ -485,22 +405,12 @@ mod component_adapter {
                 .unwrap_or(());
         }
 
-        /// A debug build's proof that a component at rest skipped nothing:
-        /// its sync runs anyway, and must leave what it shows, its record and
-        /// its layout as they were. A difference fails a test; any other
-        /// debug build logs it. What the check's own sync wrote is part of
-        /// the next witness, as any pass's is.
-        ///
-        /// The proof runs as [`crate::component_inputs::proving`]: what a
-        /// frame's own hook takes in beside the tree's sync (an app's finished
-        /// work, moved into the state its views are keyed by) is the frame's
-        /// take-in, not the tree's sync, and taking it in again here would
-        /// change the tree the check means to find unchanged.
+        /// A debug build's proof that a component at rest skipped nothing: its sync runs anyway, and must
+        /// leave what it shows, its record and its layout as they were.
         #[cfg(debug_assertions)]
         fn verify_rest(&mut self, state: &AutoCommit) {
             let shown = |widget: &Self| {
                 (
-                    // Read inside the component's scope, as every callback is.
                     widget
                         .in_root(|root| crate::headless::widget_inspection_json(root))
                         .unwrap_or_default(),
@@ -512,7 +422,6 @@ mod component_adapter {
                     widget
                         .in_root(|root| root.layout_needs_measure() || root.is_layout_dirty())
                         .unwrap_or_default(),
-                    // What a sync asks of its host without showing it.
                     {
                         let binding = widget.component.callback_binding();
                         (
@@ -576,33 +485,25 @@ mod component_adapter {
             tracing::error!("{message}");
         }
 
-        /// Whether the root still works through its passes: what its
-        /// record's store owes, motion, a presentation still settling (an
-        /// image decoding). Such a pass proves nothing: what ends the work
-        /// (time passing) moves nothing the witness reads, so the pass after
-        /// it ended runs too.
+        /// Whether the root still works through its passes: what its record's store owes, motion, a
+        /// presentation still settling (an image decoding).
         fn busy(root: &dyn AppWidget) -> bool {
             root.needs_idle_sync() || root.needs_animation_frame() || root.has_pending_visual_work()
         }
 
-        /// Note what the pass that just ran read: `reads` outside the
-        /// component, and what stands now.
+        /// Note what the pass that just ran read: `reads` outside the component, and what stands now.
         fn witness_pass(&mut self, outer: &AutoCommit, reads: crate::component_inputs::Reads) {
             if self.in_root(|root| Self::busy(root)).unwrap_or(true) {
                 self.witness = None;
                 return;
             }
             let now = self.inputs_now(outer);
-            // What the updates since the last sync read, as they read it: a
-            // view built from what moved is input this pass takes up.
             let reads = match self.update_reads.take() {
                 Some(update) => reads.join(update),
                 None => reads,
             };
             let reads = match self.witness.take() {
-                // A settle after its sync: what both read.
                 Some(previous) if self.owes_settle => previous.reads.join(reads),
-                // What earlier passes read and this one did not read again.
                 Some(previous) => reads.carry(previous.reads),
                 None => reads,
             };
@@ -615,10 +516,6 @@ mod component_adapter {
                     revision,
                     document,
                     standing: crate::component_inputs::Standing {
-                        // What the root was told of its save, not what the
-                        // store says now: a save that moved on after the
-                        // root was told, even during this pass, is shown by
-                        // the next one.
                         owner: crate::bound_dispatch::OwnerStanding {
                             save: self
                                 .component
@@ -635,16 +532,14 @@ mod component_adapter {
             };
         }
 
-        /// Run `f` on the component's root inside the component's record
-        /// frame, lending it the frame's edits at the record root. With no
-        /// root, or when the frame refuses, the answer is `R::default()`.
+        /// Run `f` on the component's root inside the component's record frame, lending it the frame's
+        /// edits at the record root.
         fn with_root_edits<R: Default>(
             &mut self,
             edits: &mut crate::widget::Edits<'_>,
             f: impl FnOnce(&mut (dyn Widget + 'static), &mut crate::widget::Edits<'_>, &ObjId) -> R,
         ) -> R {
             let binding = self.component.callback_binding();
-            // An action or an outside event: input the next sync takes up.
             binding.note_input();
             binding
                 .with_document(edits.document_mut(), |document, record_root| {
@@ -657,7 +552,6 @@ mod component_adapter {
         }
 
         /// Run `f` on the component's root inside its callback binding.
-        /// `None` when the binding refuses or there is no root.
         fn in_root<'a, R>(
             &'a self,
             f: impl FnOnce(&'a (dyn AppWidget + 'static)) -> R,
@@ -743,7 +637,6 @@ mod component_adapter {
 
     impl FloatingSurfaceProvider for BoundAppWidget {
         fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
         }
@@ -764,13 +657,11 @@ mod component_adapter {
         }
 
         fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_focus_changed(id, focused));
         }
 
         fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_event_source(id));
         }
@@ -781,7 +672,6 @@ mod component_adapter {
             event: &winit::event::WindowEvent,
             ctx: &mut crate::widget::EventCtx<'_>,
         ) -> bool {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.floating_surface_event(id, event, ctx))
                 .unwrap_or_default()
@@ -868,7 +758,6 @@ mod component_adapter {
             &mut self,
             message: &crate::floating_surface::FloatingSurfaceHostMessage,
         ) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_floating_surface_host_message(message));
         }
@@ -883,7 +772,6 @@ mod component_adapter {
         }
 
         fn on_audience_presentation_changed(&mut self, active: bool) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_audience_presentation_changed(active));
         }
@@ -908,7 +796,6 @@ mod component_adapter {
             state: &mut crate::widget::Edits<'_>,
             _path: &ObjId,
         ) -> bool {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.with_root_edits(state, |root, edits, record_root| {
                 root.handle_audience_presentation_event(event, edits, record_root)
@@ -916,7 +803,6 @@ mod component_adapter {
         }
 
         fn on_audience_presentation_closed(&mut self) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_audience_presentation_closed());
         }
@@ -937,16 +823,14 @@ mod component_adapter {
         }
 
         fn on_fullscreen_changed(&mut self, active: bool) {
-            // Input the root's next sync takes up.
             self.owes_sync = true;
             self.in_root_mut(|root| root.on_fullscreen_changed(active));
         }
     }
 
     impl CompleteContentProvider for BoundAppWidget {
-        /// The root's own complete content, else a scrolling document it
-        /// shows at full height: the window taller by what the document's
-        /// primary scroll hides.
+        /// The root's own complete content, else a scrolling document it shows at full height: the window
+        /// taller by what the document's primary scroll hides.
         fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
             self.in_root(|root| {
                 if let Some(size) = root.complete_content_size() {
@@ -994,10 +878,6 @@ mod component_adapter {
             if unrolled_height(root).is_none() || bounds.area() <= 0.0 {
                 return false;
             }
-            // The capture is another presentation of the same view: lay the
-            // root out at the complete size, where its document fits without
-            // scrolling, draw it, and lay it back out where it lives, at the
-            // place its reader had scrolled to.
             let live = root.get_rect();
             let offset = root
                 .primary_vertical_scroll()
@@ -1066,8 +946,6 @@ mod component_adapter {
             self.in_root(|root| root.paints_ground()).unwrap_or(true)
         }
 
-        // A component's diagnostic probe observes its own record, the
-        // document its widgets actually render, not the runner's outer one.
         fn native_input_snapshot(
             &self,
             _: &crate::widget::AppModel,
@@ -1209,9 +1087,6 @@ mod component_adapter {
             let ((), reads) = crate::component_inputs::reading(&binding.lifetime, || {
                 self.settle_root(edits);
             });
-            // The settle after a sync writes what that sync took up and syncs
-            // the root again with it: the witness follows. Any other settle
-            // leaves it to the sync it precedes, which reads what moved.
             if owed {
                 self.witness_pass(edits.document_mut(), reads);
             }
@@ -1224,12 +1099,9 @@ mod component_adapter {
         ) -> bool {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            // The frame's presence, under the component's own authority, as
-            // its draw sees it.
             let permissions = binding.permissions.borrow().clone();
             let update = |component: &mut AppComponent| {
                 if binding.records.is_opening(&binding.checkout.id) {
-                    // Shown before its record, as `sync` does.
                     return component
                         .root
                         .as_deref_mut()
@@ -1245,9 +1117,6 @@ mod component_adapter {
                     .unwrap_or(false)
             };
             let component = &mut self.component;
-            // The build runs as the component's pass reading: what the view
-            // derived from, and the words it loaded to write it, are what the
-            // next sync takes up.
             let (changed, reads) = crate::component_inputs::reading(&binding.lifetime, || {
                 crate::presence::frame::frame(|presence| {
                     presence.with_permissions(permissions.clone(), || update(component))
@@ -1258,8 +1127,6 @@ mod component_adapter {
                 Some(earlier) => earlier.join(reads),
                 None => reads,
             });
-            // A change of the root's own is what its next sync shows, and
-            // what anything published from it follows.
             if changed {
                 self.owes_sync = true;
                 binding.note_input();
@@ -1272,8 +1139,6 @@ mod component_adapter {
             theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            // Controls built with the layout are synced before they are
-            // measured, whatever the root read before.
             self.owes_sync = true;
             let Some(child) = self.in_root_mut(|root| root.build_layout(taffy, theme, node_map))
             else {
@@ -1301,7 +1166,6 @@ mod component_adapter {
             origin: vello::kurbo::Point,
         ) {
             let rect = crate::widget::layout_rect(taffy, node, origin);
-            // A new size is input the root's next sync takes up.
             if self.laid_out != Some(rect.size()) {
                 self.laid_out = Some(rect.size());
                 self.owes_sync = true;
@@ -1334,7 +1198,6 @@ mod component_adapter {
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
-            // The component's own authority, not whatever its container holds.
             let permissions = binding.permissions.borrow().clone();
             presence.with_permissions(permissions, || {
                 root.draw_child(scene, transform, text_renderer, theme, presence);
@@ -1606,8 +1469,8 @@ mod component_adapter {
             self.in_root(|root| root.needs_animation_frame())
                 .unwrap_or_default()
         }
-        /// A save the store has not confirmed yet is pending too: "Saving…"
-        /// is a placeholder for "Saved", so a still capture waits for it.
+        /// A save the store has not confirmed yet is pending too: "Saving…" is a placeholder for "Saved",
+        /// so a still capture waits for it.
         fn has_pending_visual_work(&self) -> bool {
             self.in_root(Widget::has_pending_visual_work)
                 .unwrap_or_default()
@@ -1625,8 +1488,6 @@ mod component_adapter {
                     .as_deref()
                     .is_some_and(Widget::has_transient_feedback)
         }
-        // The component's root serves its own deadlines, inside the
-        // component's scope.
         fn serve_deadline(&mut self, now: Instant) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1656,9 +1517,7 @@ mod component_adapter {
         fn take_structure_dirty(&mut self) -> bool {
             self.take_structure_change().rebuilds()
         }
-        /// The root's change as it says it, and a relayout the component
-        /// asked for, which rebuilds. A save status no `App` presented is
-        /// drawn by the next frame (`save_status_shown`).
+        /// The root's change as it says it, and a relayout the component asked for, which rebuilds.
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             use crate::widget::StructureChange;
             let relayout = StructureChange::of(std::mem::take(&mut self.relayout));
@@ -1673,7 +1532,6 @@ mod component_adapter {
                 return relayout;
             };
             let change = root.take_structure_change().join(relayout);
-            // Widgets mounted or rebuilt are synced before they are measured.
             self.owes_sync |= change != StructureChange::None;
             change
         }
@@ -1735,8 +1593,6 @@ mod component_adapter {
             doc: &mut crate::widget::Edits<'_>,
             path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
-            // A required operation arrives inside its owner's checked record
-            // frame; it is routed without taking this component's document loan.
             if op.is_scoped() {
                 return crate::widget::start_in_children(self, op, doc, path);
             }
@@ -1809,8 +1665,8 @@ mod component_adapter {
         }
     }
 
-    /// What the component the window shows says it shows, for the window's own title: the app's
-    /// root answers it, so a window whose content names the page it is at is named by that.
+    /// What the component the window shows says it shows, for the window's own title: the app's root
+    /// answers it, so a window whose content names the page it is at is named by that.
     impl crate::component_lifecycle::WindowTitle for BoundAppWidget {
         fn window_title(&self) -> Option<&str> {
             self.in_root(crate::component_lifecycle::window_title)
@@ -1896,8 +1752,8 @@ mod component_adapter {
         ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
             self.component.search_provider_descriptors()
         }
-        /// The component's entries for the session's search index: what
-        /// its root publishes, read inside its binding as its providers are.
+        /// The component's entries for the session's search index: what its root publishes, read inside its
+        /// binding as its providers are.
         fn search_index_state(&self) -> Option<crate::search::index_publication::IndexState> {
             self.in_root(|root| crate::search::capability::search_index_state(root))
                 .flatten()
@@ -1989,9 +1845,9 @@ mod component_adapter {
                 })
                 .unwrap_or(None)
         }
-        /// A participant's tree is built against the component's own record
-        /// document, like [`Self::resources`]; the default would fall back to
-        /// this boundary's own view (the published schema) on the outer doc.
+        /// A participant's tree is built against the component's own record document, like
+        /// [`Self::resources`]; the default would fall back to this boundary's own view (the published
+        /// schema) on the outer doc.
         fn resources_for(
             &self,
             participant: Option<&tilo_actions::ParticipantId>,
@@ -2063,7 +1919,6 @@ mod component_adapter {
                 }
                 queued.push_back(intent);
             }
-            // The private host sweep consumes the queue with this captured owner.
             None
         }
         fn on_control_invocation_result(
@@ -2098,15 +1953,10 @@ mod component_adapter {
             &mut self,
             _allowed: &HashSet<tilo_actions::ActionAddress>,
         ) {
-            // The private host sweep supplies this component's own authority.
         }
     }
 
     impl crate::history_mode::capability::DocumentHistory for BoundAppWidget {
-        // The files of the mounted filesystem the component's History reads
-        // are named by its root, which witnesses the checked-file source it
-        // registered. The component's own registration is the runner's; a
-        // root's registration of anything else is not answered here.
         fn history_registration(
             &self,
         ) -> Result<
@@ -2156,7 +2006,6 @@ mod component_adapter {
 
     impl crate::undo::CommittedActions for BoundAppWidget {
         fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-            // Consumed under the canonical record admission.
             None
         }
     }
@@ -2182,10 +2031,9 @@ mod component_adapter {
         fn set_participant_host(&mut self, host: bool) {
             crate::collaboration::participants::set_participant_host_in_children(self, host);
         }
-        /// Participant views (agent carets) live against the component's own
-        /// record document, the one `sync` hands the app, never the outer
-        /// App document: resolved against the outer document a Writer caret
-        /// finds no block, and no participant presence is produced at all.
+        /// Participant views (agent carets) live against the component's own record document, the one
+        /// `sync` hands the app, never the outer App document: resolved against the outer document a Writer
+        /// caret finds no block, and no participant presence is produced at all.
         fn participant_presence(
             &self,
             state: &AutoCommit,

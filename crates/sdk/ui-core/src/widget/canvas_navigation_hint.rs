@@ -9,15 +9,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-/// The primary direct-manipulation verb used by a domain canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CanvasNavigation {
     PanZoom,
     OrbitZoom,
 }
 
-/// A quiet bottom-centred overlay that teaches canvas navigation without
-/// stealing focus or pointer input.
 pub struct CanvasNavigationHint;
 
 impl CanvasNavigationHint {
@@ -34,7 +31,6 @@ impl CanvasNavigationHint {
         }
     }
 
-    /// Standard placement inside a canvas, inset from its bottom edge.
     pub fn bounds(canvas: Rect) -> Rect {
         let width = (canvas.width() - 24.0).clamp(0.0, 244.0);
         Rect::from_center_size(

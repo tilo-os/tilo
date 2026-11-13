@@ -110,7 +110,6 @@ pub struct CandlestickMarks {
     frame: PlotFrame<usize>,
 }
 
-/// Open/high/low/close candles over an optional volume panel.
 pub type CandlestickChart = Plot<CandlestickMarks>;
 
 impl CandlestickChart {

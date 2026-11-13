@@ -1,23 +1,4 @@
 //! What an attachment does when a person touches it.
-//!
-//! A shared picture or file appears inline, and from there it has a ladder of
-//! things it can do: **open at full size**, **be saved** to somewhere the person
-//! chooses, and — once there is a saved copy — **open that copy** with this
-//! device's own handler. A file that cannot be read says why instead of being a
-//! picture nobody can enlarge; a long upload reports how far it has got and can
-//! be stopped.
-//!
-//! The ladder is data plus geometry: [`AttachmentSummary::actions`] says what is
-//! on offer and why not, [`full_size_rect`] says where a picture of a given
-//! shape sits in a given viewport, and [`AttachmentFace`] paints the line under
-//! a preview and the corner badge that says the preview can be opened. Nothing
-//! here reads a file, writes one or asks anyone for permission: the app owns its
-//! blob store and its file chooser, and reports what they said.
-//!
-//! There is no toolkit-wide "reveal in Files": an app that wants a saved copy's
-//! folder opened asks the desktop for it through its own platform service. What
-//! is here is the part every conversation needs in common — the same four rungs,
-//! the same words, the same order.
 
 use vello::kurbo::{Point, Rect, Size};
 
@@ -30,7 +11,6 @@ use crate::tokens::TextRole;
 use crate::widget::Tone;
 use crate::widget::{ChipFace, ChipLead};
 
-/// What kind of thing an attachment is, which decides its glyph and its word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKind {
     Image,
@@ -39,7 +19,6 @@ pub enum AttachmentKind {
 }
 
 impl AttachmentKind {
-    /// The catalogue key for this kind's noun.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -49,13 +28,11 @@ impl AttachmentKind {
         }
     }
 
-    /// The kind's noun, in the desktop's language.
     #[must_use]
     pub fn label(self) -> String {
         super::t(self.key())
     }
 
-    /// The kind's glyph.
     #[must_use]
     pub const fn icon(self) -> Icon {
         match self {
@@ -73,7 +50,6 @@ impl AttachmentKind {
     }
 }
 
-/// Why an attachment is not (or not yet) readable here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Availability {
     /// The bytes are here: the whole ladder is on offer.
@@ -82,7 +58,6 @@ pub enum Availability {
     NotShared,
     /// The bytes are not on this device and could not be fetched.
     NotOnDevice,
-    /// The transport is working on it (an upload from this device).
     Uploading(UploadProgress),
     /// The transport refused it, or failed partway.
     Failed(String),
@@ -100,7 +75,6 @@ impl Availability {
     }
 }
 
-/// How far an upload has got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UploadProgress {
     /// Bytes the transport has taken so far.
@@ -144,31 +118,21 @@ impl UploadProgress {
     }
 }
 
-/// A saved copy of an attachment, where the app put it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedCopy {
-    /// The name the copy has on disk.
     pub name: String,
-    /// What to hand the desktop to open it (a `file:` URI, or a path).
     pub target: String,
 }
 
-/// One rung of the ladder, as the app should carry it out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentAction {
-    /// Show the picture at the size it was shared (the inline preview is the
-    /// first rung; this is the second).
     OpenFullSize,
-    /// Ask the person where to put a copy, then write it there.
     Save,
-    /// Open the saved copy with this device's handler.
     OpenSaved,
-    /// Stop an upload that is in flight.
     CancelUpload,
 }
 
 impl AttachmentAction {
-    /// The catalogue key for this rung's word.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -179,13 +143,11 @@ impl AttachmentAction {
         }
     }
 
-    /// The rung's word, in the desktop's language.
     #[must_use]
     pub fn label(self) -> String {
         super::t(self.key())
     }
 
-    /// The rung's glyph.
     #[must_use]
     pub const fn icon(self) -> Icon {
         match self {
@@ -197,17 +159,13 @@ impl AttachmentAction {
     }
 }
 
-/// Everything the ladder needs to know about one attachment.
 #[derive(Clone, Debug)]
 pub struct AttachmentSummary<'a> {
     pub kind: AttachmentKind,
-    /// The name it was shared under: the identity of the file, used for the
-    /// save dialog's suggestion.
     pub name: &'a str,
     /// Its size in bytes, when known.
     pub size: Option<u64>,
     pub availability: Availability,
-    /// Where a copy was saved, if the person saved one in this session.
     pub saved: Option<SavedCopy>,
 }
 
@@ -224,14 +182,12 @@ impl<'a> AttachmentSummary<'a> {
         }
     }
 
-    /// The same attachment, in another state.
     #[must_use]
     pub fn in_state(mut self, availability: Availability) -> Self {
         self.availability = availability;
         self
     }
 
-    /// The same attachment, with the copy the person saved.
     #[must_use]
     pub fn saved_as(mut self, saved: SavedCopy) -> Self {
         self.saved = Some(saved);
@@ -261,7 +217,6 @@ impl<'a> AttachmentSummary<'a> {
         }
     }
 
-    /// Why there is nothing to do, when there is nothing to do.
     #[must_use]
     pub fn unavailable_reason(&self) -> Option<String> {
         match &self.availability {
@@ -272,7 +227,6 @@ impl<'a> AttachmentSummary<'a> {
         }
     }
 
-    /// The name the save dialog suggests: the name it was shared under.
     #[must_use]
     pub fn suggested_name(&self) -> String {
         self.name.to_owned()
@@ -326,7 +280,6 @@ pub fn full_size_rect(view: Rect, width: u32, height: u32) -> Rect {
     Rect::from_center_size(view.center(), size)
 }
 
-/// The line under an inline preview, and the badge that says it opens.
 pub struct AttachmentFace<'a> {
     summary: &'a AttachmentSummary<'a>,
 }
@@ -337,8 +290,6 @@ impl<'a> AttachmentFace<'a> {
         Self { summary }
     }
 
-    /// What the line under a preview says: the kind, the size, and either the
-    /// upload's progress or the reason there is nothing here to open.
     #[must_use]
     pub fn meta(&self) -> String {
         let mut parts = vec![self.summary.kind.label()];
@@ -355,8 +306,6 @@ impl<'a> AttachmentFace<'a> {
         parts.join(", ")
     }
 
-    /// Paint the meta line with its top-left at `origin`, wrapped at `width`.
-    /// Returns the height it took.
     pub fn paint_meta(&self, paint: &mut PaintCtx<'_>, origin: Point, width: f64) -> f64 {
         let theme = paint.theme;
         let caption = self.meta();
@@ -372,12 +321,6 @@ impl<'a> AttachmentFace<'a> {
         f64::from(height)
     }
 
-    /// Paint the badge in `preview`'s top-trailing corner that says it opens —
-    /// a chip with the open glyph and, while the pointer is on the card, its
-    /// word.
-    ///
-    /// Nothing is painted when there is nothing to open: an affordance that
-    /// leads nowhere is worse than none.
     pub fn paint_open_badge(&self, paint: &mut PaintCtx<'_>, preview: Rect, hovered: bool) {
         if self.summary.availability != Availability::Ready {
             return;
@@ -402,8 +345,6 @@ impl<'a> AttachmentFace<'a> {
     }
 }
 
-/// The badge's rect: its content plus its padding, inside `preview`'s top
-/// trailing corner.
 fn chip_rect(
     text: &mut TextRenderer,
     theme: &Theme,

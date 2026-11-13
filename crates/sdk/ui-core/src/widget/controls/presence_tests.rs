@@ -171,10 +171,6 @@ fn presence_preserves_custom_capability_inventory_fallback() {
     }
 }
 
-/// A surface root that stands for the view it holds and keeps the inventory of
-/// everything below it, as the app framework's own root does: it is met by a
-/// walk that asks for the widget it stands for, and answers for that widget's
-/// whole subtree.
 struct SurfaceRoot {
     view: Column,
 }

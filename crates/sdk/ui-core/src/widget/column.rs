@@ -16,14 +16,10 @@ pub struct Column {
     extra_top_padding: f32,
     extra_bottom_padding: f32,
     no_padding: bool,
-    /// See [`Column::with_vertical_padding`].
     vertical_padding_override: Option<f32>,
-    /// See [`Column::with_horizontal_padding`].
     horizontal_padding_override: Option<(f32, f32)>,
     intrinsic_height: bool,
-    /// See [`Column::with_intrinsic_width`].
     intrinsic_width: bool,
-    /// See [`Column::with_fill_remaining_height`].
     fill_remaining_height: bool,
 }
 
@@ -86,7 +82,6 @@ impl Column {
         self
     }
 
-    /// Apply layout flags from a serialized column node without rebuilding.
     pub fn apply_graph_props(
         &mut self,
         id: &str,
@@ -103,22 +98,17 @@ impl Column {
         self.flow.invalidate();
     }
 
-    /// Extra padding on top, e.g. to reserve room for a floating
-    /// affordance the column doesn't own (the responsive shell's Back
-    /// chip painted over the detail pane's top-left corner).
     #[must_use]
     pub fn with_extra_top_padding(mut self, px: f32) -> Self {
         self.extra_top_padding = px;
         self
     }
 
-    /// Update the extra top inset before the next layout pass.
     pub fn set_extra_top_padding(&mut self, px: f32) {
         self.flow.style_dirty |= self.extra_top_padding.to_bits() != px.to_bits();
         self.extra_top_padding = px;
     }
 
-    /// Update the extra bottom inset before the next layout pass.
     pub fn set_extra_bottom_padding(&mut self, px: f32) {
         self.flow.style_dirty |= self.extra_bottom_padding.to_bits() != px.to_bits();
         self.extra_bottom_padding = px;
@@ -141,14 +131,11 @@ impl Column {
         self
     }
 
-    /// Update the top + bottom inset before the next layout pass.
     pub fn set_vertical_padding(&mut self, px: f32) {
         self.flow.style_dirty |= self.vertical_padding_override != Some(px);
         self.vertical_padding_override = Some(px);
     }
 
-    /// Override the column's left + right padding (replacing
-    /// `base + extra_left_padding` on the left, `base` on the right).
     #[must_use]
     pub fn with_horizontal_padding(mut self, left: f32, right: f32) -> Self {
         self.horizontal_padding_override = Some((left, right));
@@ -165,7 +152,6 @@ impl Column {
         self
     }
 
-    /// Update the inter-child gap before the next layout pass.
     pub fn set_gap(&mut self, px: f32) {
         self.flow.style_dirty |= self.flow.gap_override != Some(px) || self.flow.rhythm.is_some();
         self.flow.gap_override = Some(px);
@@ -185,7 +171,6 @@ impl Column {
 }
 
 impl Widget for Column {
-    /// Its children, as its layout node stacks them.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -212,19 +197,11 @@ impl Widget for Column {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.flow.build_children(taffy, theme, node_map);
-        // A band disclosing in the column moves the widgets after it, its
-        // gap included.
         self.flow.vertical = true;
         self.flow.laid_gap = f64::from(self.flow.gap(theme));
         self.flow.content_sized = self.intrinsic_height;
 
         let style = Style {
-            // Intrinsic-height columns use a one-column implicit Grid.
-            // Taffy's Block layout ignores `gap`, while flex layout can
-            // truncate the intrinsic main axis to a Scrollable's viewport.
-            // Grid honors row gaps and intrinsically sizes every implicit
-            // row, preserving both scroll extent and the one widget / one
-            // direct Taffy child identity expected by host traversal.
             display: if self.intrinsic_height {
                 taffy::Display::Grid
             } else {
@@ -305,8 +282,6 @@ impl Widget for Column {
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        // A band on its way moves every widget after it; a content-sized
-        // column is drawn that much taller.
         if let Some(shifts) = self.flow.follower_shifts() {
             let grows = shifts.last().copied().unwrap_or(0.0).max(0.0);
             let mut rect = self.flow.rect;
@@ -428,8 +403,6 @@ mod tests {
         (taffy, node)
     }
 
-    /// Count GLYPH draw-tags in a freshly-drawn scene. A dropped leading Text
-    /// shows up as zero glyphs.
     fn glyph_count(root: &mut dyn Widget) -> usize {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -454,7 +427,6 @@ mod tests {
             .push(Box::new(Text::new("a")));
         let _ = lay_out(&mut col);
         assert!(!col.take_structure_dirty(), "a fresh build owes nothing");
-        // Hosts restyle every frame; restating the same values is free.
         col.set_vertical_padding(0.0);
         col.set_gap(0.0);
         col.set_extra_top_padding(0.0);
@@ -991,9 +963,6 @@ mod tests {
         /// pass.
         fn bare_leading_text_in_scrolled_intrinsic_column() {
             use crate::widget::{ScrollAxis, Scrollable};
-            // The Scrollable hosts the intrinsic column; this is what drives
-            // the constrained measure pass that previously zeroed the leading
-            // child.
             let inner = Column::new()
                 .with_intrinsic_height()
                 .push(Box::new(Text::new("Section Heading")))
@@ -1011,7 +980,6 @@ mod tests {
             let mut scroll = Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(inner));
             let _ = lay_out(&mut scroll);
 
-            // Reach the inner column's first child (the bare leading Text).
             let inner_col = &scroll.children()[0];
             let lead = inner_col.children()[0];
             let r = lead.get_rect();

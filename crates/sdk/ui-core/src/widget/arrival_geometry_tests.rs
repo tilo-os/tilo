@@ -1,9 +1,6 @@
-//! Nothing moves while data arrives: a remote list, media grid and document
-//! page, each under a heading and above a line that follows it, laid out
-//! frame by frame through the ground, the skeleton, the skeleton naming its
-//! source, the answer landing and its cross-fade. Every widget box outside
-//! the arriving content (the heading, each reserved box, the line below)
-//! stands where it stood on the first frame.
+//! Nothing moves while data arrives: a remote list, media grid and document page, each under a heading
+//! and above a line that follows it, laid out frame by frame through the ground, the skeleton, the
+//! skeleton naming its source, the answer landing and its cross-fade.
 
 use super::*;
 use crate::arriving::{GRACE, NAME_SOURCE_AFTER};
@@ -11,16 +8,13 @@ use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use crate::widget::{Column, ListRow, MediaCard, MediaGrid, MediaSource, RowShape, Text};
 
-/// A task's row: its title and the line under it.
 const TASK_ROW: RowShape = RowShape::TITLE.with_secondary(1);
 
-/// Where the boxes of the column's parts and of every arriving view stand.
 fn boxes(widget: &dyn Widget, found: &mut Vec<(String, Rect)>) {
     if matches!(widget.name(), "ArrivingView" | "Text") {
         found.push((widget.name().to_owned(), widget.get_rect()));
     }
     if widget.name() == "ArrivingView" {
-        // What stands inside the box is the content's own business.
         return;
     }
     for child in widget.children() {
@@ -28,7 +22,6 @@ fn boxes(widget: &dyn Widget, found: &mut Vec<(String, Rect)>) {
     }
 }
 
-/// The page around `body`: a heading above it and a line below it.
 fn page(body: Element) -> Column {
     Column::new()
         .with_intrinsic_height()
@@ -51,7 +44,6 @@ fn assert_nothing_moves(name: &str, arriving: &Arriving<()>, view: &mut Column, 
         t0 + Duration::from_millis(500),
         t0 + NAME_SOURCE_AFTER,
     ];
-    // The answer lands, then every frame of its cross-fade and after.
     instants.extend((0..40).map(|frame| lands + Duration::from_millis(16 * frame)));
     let mut first: Option<Vec<(String, Rect)>> = None;
     let mut steps = Vec::new();
@@ -256,14 +248,11 @@ fn a_row_of_another_kind_cannot_land_in_a_rows_box() {
     let _ = frame.draw(&mut view);
 }
 
-/// Whether a failure's face stands inside `widget`: its row, or its
-/// banner.
 fn shows_failure(widget: &dyn Widget) -> bool {
     matches!(widget.name(), "ListRow" | "Banner")
         || widget.children().into_iter().any(shows_failure)
 }
 
-/// Lay a frame of `view` out and draw it at `at`.
 fn frame(frame: &mut ShotFrame, view: &mut Column, at: Instant) {
     with_monotonic_time(at, || {
         frame.sync(view);
@@ -272,7 +261,6 @@ fn frame(frame: &mut ShotFrame, view: &mut Column, at: Instant) {
     });
 }
 
-/// Which rows of `view` show a failure.
 fn failing_rows(view: &Column) -> Vec<bool> {
     view.children().into_iter().map(shows_failure).collect()
 }
@@ -415,7 +403,6 @@ fn a_failed_rows_try_again_shows_nothing_under_its_rounded_corners() {
             let at = ((y * width + x) * 4) as usize;
             [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
         };
-        // The face's own fill, on its top edge clear of the label.
         let fill = pixel(button.center().x as u32, button.y0.ceil() as u32 + 1);
         let radius = f64::from(theme.tokens.radii.control);
         // In each corner square only the face and the ground paint: the

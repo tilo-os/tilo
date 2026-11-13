@@ -7,14 +7,12 @@ use crate::widget::TextInput;
 
 crate::component::part_slot!(SuggestionProps);
 
-/// A field that suggests completions under it as it is typed into: a search over a site's
-/// catalogue, a mention, a command. The suggestions are what the view gives it; a chosen one
-/// fills the field and is reported.
+/// A field that suggests completions under it as it is typed into: a search over a site's catalogue, a
+/// mention, a command.
 #[derive(Component)]
 #[component(name = "Autocomplete", role = "ComboBox", label = "placeholder")]
 pub struct AutocompleteProps {
-    /// The text typed, and where the edit of it goes. Taking a suggestion writes its value here
-    /// and reports it.
+    /// The text typed, and where the edit of it goes.
     #[component(bind(merge = "splice"))]
     pub value: Bound<String>,
     /// The completions to offer, in order.
@@ -125,7 +123,6 @@ impl Described for Autocomplete {
         field.on_edit(edits, accept)
     }
 
-    /// The text typed and the suggestions change in place.
     fn set_props(&mut self, props: AutocompleteProps) -> bool {
         let text = props.value.state.get();
         if text != self.text() {

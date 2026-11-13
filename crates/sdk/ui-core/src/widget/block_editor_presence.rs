@@ -1,6 +1,5 @@
-//! What peers and agents do inside a block's text: the runs each author
-//! wrote, a live typing glow, and an agent's write as the marks a person's
-//! typing leaves.
+//! What peers and agents do inside a block's text: the runs each author wrote, a live typing glow, and
+//! an agent's write as the marks a person's typing leaves.
 
 use vello::kurbo::{Point, Rect};
 
@@ -26,7 +25,6 @@ impl BlockEditor {
         let key = self.presence_key_for(&b.id);
         let line = &b.line;
         let brect = line.get_rect();
-        // A caret's name chip ends before the text's own right edge.
         let text_right = brect.x1 - line.text_inset(ctx.theme);
         // Drawn first, under caret/selection: the runs each foreign
         // author wrote, marker-style in their color, band by band as the
@@ -44,8 +42,6 @@ impl BlockEditor {
             ctx.presence
                 .draw_peer_authorship(ctx.scene, ctx.theme, &user, &bands);
         }
-        // A peer's recently-inserted run glows and decays over
-        // TYPING_FADE. Drawn over authorship, under caret/selection.
         let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
@@ -108,8 +104,6 @@ impl BlockEditor {
                 .among(self.ink_around(i, ctx.theme), text_right),
             );
         }
-        // A peer's caret arrives under the block's key, or under its digest when the key was too
-        // long to travel whole ([`crate::presence::PresenceKey::digest_form`]).
         let digest = key.digest_form();
         let carets = ctx.presence.carets.get(&key).into_iter().chain(
             digest
@@ -117,8 +111,6 @@ impl BlockEditor {
                 .and_then(|digest| ctx.presence.carets.get(digest)),
         );
         for list in carets {
-            // What sits above the editor (a note's title and dates) is not
-            // the editor's to cover: a chip on the first line hangs below.
             let top = self
                 .blocks
                 .first()
@@ -156,8 +148,6 @@ impl BlockEditor {
                 );
             }
         }
-        // Cross-block selection presence is sent once under a document
-        // key, then expanded into the same per-line geometry locally.
         for &(start_block, end_block, user, range) in document_selections {
             if i < start_block || i > end_block {
                 continue;

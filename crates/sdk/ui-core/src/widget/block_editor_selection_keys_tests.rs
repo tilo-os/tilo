@@ -1,6 +1,5 @@
-//! Keys after a mouse selection act on what is shown selected: a drag inside
-//! one block is that block's own selection, and a selection across blocks
-//! follows the keys that move its caret.
+//! Keys after a mouse selection act on what is shown selected: a drag inside one block is that block's
+//! own selection, and a selection across blocks follows the keys that move its caret.
 use super::*;
 
 /// A mouse drag that stays inside one block selects in that block, so the

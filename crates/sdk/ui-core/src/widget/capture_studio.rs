@@ -1,14 +1,5 @@
-//! The capture tool: one see-through bar to take a screenshot, record, or
-//! float a live picture in picture of a selection, a window, the screen or
-//! the strip.
-//!
-//! The bar holds two segmented controls (what comes out, what it is of), the
-//! shutter and an options popover; nothing else. A capture is of a thing,
-//! never of pixels at a position: a window is captured whole wherever it is,
-//! a selection made inside a window stays anchored to that window, and only
-//! a selection that is not inside any window is a region of the screen.
-//! Pixel readback stays in the compositor; this widget emits semantic
-//! intents.
+//! The capture tool: one see-through bar to take a screenshot, record, or float a live picture in
+//! picture of a selection, a window, the screen or the strip.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -85,12 +76,9 @@ pub struct CapturePreview {
     pub pixels: Vec<[u8; 4]>,
 }
 
-/// What became of a screenshot: kept as a file in Screenshots, put on the
-/// clipboard, or both (what the shutter and Print Screen do).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScreenshotKept {
     pub saved: bool,
-    /// On the clipboard.
     pub copied: bool,
 }
 
@@ -108,7 +96,6 @@ impl ScreenshotKept {
         copied: true,
     };
 
-    /// The receipt's status line.
     fn status_key(self) -> &'static str {
         match (self.saved, self.copied) {
             (true, true) => "widget-screenshot-copied-saved",
@@ -126,30 +113,23 @@ struct ScreenshotReceipt {
     preview: CapturePreview,
     shown_at: Instant,
     origin: Point,
-    /// Pinned flight progress for deterministic review.
     progress_override: Option<f64>,
 }
 
-/// What a capture puts out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CaptureMode {
     #[default]
     Screenshot,
     Recording,
-    /// A live, continuously refreshed floating surface of the target.
     Pip,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SourceMode {
-    /// One or more dragged selections. Hold Shift to add another.
     #[default]
     Region,
-    /// One whole window, including what is scrolled off screen.
     Window,
-    /// The whole output.
     Display,
-    /// The whole strip of the active workspace, every window side by side.
     Strip,
 }
 
@@ -158,16 +138,11 @@ pub enum CaptureDestination {
     File,
     Clipboard,
     FloatingWindow,
-    /// Save to the screenshots folder *and* put the pixels on the
-    /// clipboard: what the shutter and the instant Shift/Alt+Print captures
-    /// do.
     FileAndClipboard,
 }
 
-/// The live windows a capture repaints whole, outside the output clip.
 #[derive(Clone, Copy, Debug)]
 pub struct LiveCapture<'a> {
-    /// `group:<group>:tab:<tab>` ids of the windows.
     pub target_ids: &'a [String],
     /// Paint a window's complete semantic content (page, document, canvas)
     /// where its app provides one, rather than its live surface: what a
@@ -179,7 +154,6 @@ pub struct LiveCapture<'a> {
     pub content_only: bool,
 }
 
-/// How several selections are combined into one capture.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PipLayout {
     /// Where they are relative to each other.
@@ -225,9 +199,6 @@ impl AudioCaptureMode {
     }
 }
 
-/// A live window the capture tool can take, whether or not it is on this
-/// output now. `virtual_rect` is its place in Tilo's continuous desktop;
-/// `visible_rect` is the part of it on this output.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CaptureTarget {
     pub id: String,
@@ -240,10 +211,7 @@ pub struct CaptureTarget {
     /// the complete surface. Metadata only: execution asks the live window
     /// to paint again so stale geometry never wins.
     pub complete_rect: Option<Rect>,
-    /// The window holds the keyboard focus: the one Window captures.
     pub focused: bool,
-    /// The window is on the active workspace's active strip: part of what
-    /// Strip captures.
     pub on_active_strip: bool,
 }
 
@@ -253,26 +221,18 @@ impl CaptureTarget {
     }
 }
 
-/// A selection made inside a window, in that window's own coordinates: it
-/// goes with the window wherever the window moves or scrolls to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionAnchor {
-    /// The window's [`CaptureTarget::id`].
     pub target: String,
-    /// The selection relative to the window's top-left corner.
     pub local: Rect,
 }
 
-/// Commands for the compositor-owned recording session. Keeping controls in
-/// the same semantic intent stream as Start makes shell chrome, shortcuts and
-/// future remote controls share one state machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingCommand {
     Start,
     Pause,
     Resume,
     Stop,
-    /// Open the finished video itself in the user's preferred player.
     OpenLast,
     RevealLast,
 }
@@ -284,29 +244,21 @@ pub enum ReplayCommand {
     Stop,
 }
 
-/// Where "Send…" delivers the last screenshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenshotSendTarget {
-    /// Save a copy into the active workspace's shared files.
     Workspace,
-    /// Offer it to one of your certified devices; the receiver still decides.
     Device(String),
 }
 
-/// One of your online devices, as the shell offers it to "Send…".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenshotSendDevice {
-    /// Opaque device-fabric identity the shell resolves again when sending.
     pub id: String,
     pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenshotCommand {
-    /// Open the exact saved artifact in the shared native markup workspace.
     MarkupLast,
-    /// Open the finished artifact itself in the user's preferred image app.
-    /// This is distinct from `RevealLast`, which opens its containing folder.
     OpenLast,
     /// Turn the exact finished pixels into a frozen reference surface. This
     /// must never be implemented as a live recapture/`PiP` source.
@@ -315,7 +267,6 @@ pub enum ScreenshotCommand {
     /// Copy the already-rendered last screenshot without recapturing a live
     /// scene that may have changed in the meantime.
     CopyLast,
-    /// Deliver the saved artifact itself to a device or the workspace.
     SendLast(ScreenshotSendTarget),
 }
 
@@ -336,16 +287,11 @@ pub struct CaptureIntent {
     pub anchors: Vec<RegionAnchor>,
     pub include_pointer: bool,
     pub audio: AudioCaptureMode,
-    /// How several selections are combined.
     pub pip_layout: PipLayout,
-    /// The windows captured whole (Window, Strip) or that anchored
-    /// selections are in.
     pub targets: Vec<CaptureTarget>,
     /// `Some` only for recorder lifecycle work. Source fields remain
     /// populated on Start and may be empty for Stop.
     pub recording_command: Option<RecordingCommand>,
-    /// Retrospective capture is deliberately a separate lifecycle: arming a
-    /// bounded private buffer is not presented as starting a recording.
     pub replay_command: Option<ReplayCommand>,
     /// Post-capture actions are emitted separately from a new screenshot so
     /// clicking its receipt never accidentally reuses stale selection state.
@@ -372,7 +318,6 @@ impl CaptureIntent {
     }
 }
 
-/// A drag in progress on the selection canvas.
 #[derive(Clone, Copy, Debug)]
 enum Drag {
     Create {
@@ -421,7 +366,6 @@ struct RecordingTake {
     paused_total: Duration,
 }
 
-/// What one row of the options popover does when chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OptionChoice {
     Delay(u8),
@@ -432,10 +376,7 @@ enum OptionChoice {
     Layout(PipLayout),
 }
 
-/// One row of the options popover: its label, what it does, and whether it
-/// is checked (`None` for an action).
 type OptionRow = (String, OptionChoice, Option<bool>);
-/// A section of the options popover: its caption and rows.
 type OptionSection = (Option<String>, Vec<OptionRow>);
 
 #[allow(
@@ -464,14 +405,10 @@ pub struct CaptureStudio {
     pip_layout: PipLayout,
     candidates: Vec<CaptureTarget>,
     selected_target: Option<String>,
-    /// A window the person clicked, for the shell to focus and scroll into
-    /// view ([`Self::take_window_pick`]).
     window_pick: Option<String>,
     pending: Vec<CaptureIntent>,
-    /// The current take; reset whole whenever one starts or ends.
     take: RecordingTake,
     recording_finished_at: Option<Instant>,
-    /// Frames the recording that ended had to skip, while its receipt shows.
     recording_skipped: u64,
     /// Why the recording that ended could not be finished, while its
     /// receipt says so.
@@ -500,17 +437,12 @@ pub struct CaptureStudio {
     /// What the recording (or the kept last 30 seconds) takes, outlined
     /// while it runs.
     scope: Option<CaptureScope>,
-    /// Where the person moved the bar while recording, from its place at
-    /// the bottom centre.
     status_offset: Vec2,
-    /// A drag of the bar: where it started and the offset then.
     status_drag: Option<(Point, Vec2)>,
     /// Render caches only.
     metrics: BarMetrics,
     receipt_widths: ReceiptWidths,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -565,9 +497,6 @@ impl Default for CaptureStudio {
 }
 
 impl CaptureStudio {
-    /// Capture status belongs to compositor space, not to the picker node's
-    /// current layout parent. The latter can move back into the content area
-    /// as soon as modal selection closes.
     pub fn set_overlay_rect(&mut self, rect: Rect) {
         self.dirty = true;
         self.overlay_rect = rect;
@@ -606,7 +535,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Global recording shortcut entry point.
     pub fn open_recording_setup(&mut self) {
         self.open();
         if !self.take.active {
@@ -614,7 +542,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Global picture-in-picture shortcut entry point.
     pub fn open_pip_setup(&mut self) {
         self.open();
         if !self.take.active {
@@ -641,8 +568,6 @@ impl CaptureStudio {
         self.options_menu = None;
     }
 
-    /// Whether the person put the bar down since this was last asked, rather
-    /// than the bar going down to hand the capture on.
     pub fn take_put_away(&mut self) -> bool {
         std::mem::take(&mut self.put_away)
     }
@@ -663,7 +588,6 @@ impl CaptureStudio {
         &self.regions
     }
 
-    /// The bar is up and the person is choosing what to capture.
     fn choosing(&self) -> bool {
         self.open
             && !self.take.start_pending
@@ -684,9 +608,6 @@ impl CaptureStudio {
         self.mode == CaptureMode::Screenshot && self.choosing()
     }
 
-    /// Whether the desktop's own navigation (moving focus with the keys,
-    /// scrolling the strip) reaches the desktop while the tool is up: while
-    /// a window is being chosen, that navigation is how one is chosen.
     pub fn lets_desktop_navigation_through(&self) -> bool {
         self.choosing() && self.source == SourceMode::Window
     }
@@ -712,7 +633,6 @@ impl CaptureStudio {
         self.mode = mode;
         self.options_menu = None;
         if mode == CaptureMode::Pip {
-            // A live surface shows no pointer trail and plays no audio.
             self.include_pointer = false;
             self.audio = AudioCaptureMode::None;
         }
@@ -750,8 +670,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Pick the focused window, else keep the picked one while it lives,
-    /// else the first one on screen.
     fn select_focused_window(&mut self) {
         if let Some(focused) = self.candidates.iter().find(|target| target.focused) {
             self.selected_target = Some(focused.id.clone());
@@ -771,8 +689,6 @@ impl CaptureStudio {
         }
     }
 
-    /// The window the person clicked while choosing one: the shell focuses
-    /// it and scrolls it into view with the standard motion.
     pub fn take_window_pick(&mut self) -> Option<String> {
         self.window_pick.take()
     }
@@ -811,8 +727,6 @@ impl CaptureStudio {
                 ..RecordingTake::default()
             };
             self.end_recording_receipt();
-            // The picker closed before the compositor started the encoder;
-            // the bar comes back as a non-modal status.
             self.open = true;
             self.mode = CaptureMode::Recording;
         } else if !active {
@@ -825,7 +739,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Nothing of the last finished take is said any more.
     fn end_recording_receipt(&mut self) {
         self.recording_finished_at = None;
         self.recording_skipped = 0;
@@ -833,8 +746,6 @@ impl CaptureStudio {
         self.recording_kept = true;
     }
 
-    /// The compositor flushed the recording: the bar gives way to a receipt
-    /// that plays it or shows it in Files.
     pub fn set_recording_finished(&mut self, skipped: u64) {
         self.dirty = true;
         self.take = RecordingTake::default();
@@ -924,11 +835,9 @@ impl CaptureStudio {
         }
     }
 
-    /// The kept seconds were saved: the receipt offers to play them.
     pub fn set_replay_saved(&mut self) {
         self.dirty = true;
         if self.replay_active {
-            // What a recording before this kept back is not the clip's.
             self.recording_skipped = 0;
             self.recording_finished_at = Some(crate::time::now());
         }
@@ -980,14 +889,11 @@ impl CaptureStudio {
         self.send_devices = devices;
     }
 
-    /// Send the last saved screenshot without the picker — the action door
-    /// for automation and assistive clients, and the picker's own result.
     pub fn send_last_screenshot(&mut self, target: ScreenshotSendTarget) {
         self.close_send_menu();
         self.queue_screenshot_command(ScreenshotCommand::SendLast(target), None);
     }
 
-    /// Whether the "Send…" target picker is open.
     pub fn send_menu_open(&self) -> bool {
         self.send_menu
             .as_ref()
@@ -1047,8 +953,6 @@ impl CaptureStudio {
         self.open = false;
     }
 
-    /// What the receipt shown says became of the screenshot; `None` while
-    /// none shows.
     pub fn screenshot_kept(&self) -> Option<ScreenshotKept> {
         self.screenshot_receipt.as_ref().map(|receipt| receipt.kept)
     }
@@ -1090,8 +994,6 @@ impl CaptureStudio {
         self.open = false;
     }
 
-    /// Pin the selected-pixels-to-receipt handoff for deterministic visual
-    /// review. Live presentation continues to use elapsed time.
     pub fn set_screenshot_transition_progress(&mut self, permille: u16) {
         self.dirty = true;
         let Some(receipt) = self.screenshot_receipt.as_mut() else {
@@ -1115,7 +1017,6 @@ impl CaptureStudio {
         self.candidates.iter().find(|target| &target.id == id)
     }
 
-    /// The windows of the active strip, side by side.
     fn strip_targets(&self) -> Vec<CaptureTarget> {
         self.candidates
             .iter()
@@ -1124,7 +1025,6 @@ impl CaptureStudio {
             .collect()
     }
 
-    /// The window `region` lies wholly inside, if any.
     fn window_holding(&self, region: Rect) -> Option<&CaptureTarget> {
         const SLACK: f64 = 0.5;
         self.candidates.iter().find(|target| {
@@ -1133,7 +1033,6 @@ impl CaptureStudio {
         })
     }
 
-    /// What the current target captures, or `None` while nothing is chosen.
     fn chosen_source(&self) -> Option<ChosenSource> {
         match self.source {
             SourceMode::Region => {
@@ -1215,7 +1114,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Where what is being recorded is on screen now.
     fn scope_rects(&self) -> Vec<Rect> {
         let window = |id: &str| self.candidates.iter().find(|target| target.id == id);
         let rects = match self.scope.as_ref() {
@@ -1244,7 +1142,6 @@ impl CaptureStudio {
         self.chosen_source().is_some()
     }
 
-    /// The selections as they are now, the one being dragged included.
     fn active_regions(&self) -> Vec<Rect> {
         let mut out = self.regions.clone();
         if let Some(drag) = self.drag {
@@ -1278,8 +1175,6 @@ impl CaptureStudio {
             .reduce(|bounds, rect| bounds.union(rect))
     }
 
-    /// How the chosen things are combined: several selections as the
-    /// person asked, the strip's windows always as they stand.
     fn combine(&self) -> PipLayout {
         if self.source == SourceMode::Region {
             self.pip_layout
@@ -1387,8 +1282,6 @@ impl CaptureStudio {
             .collect()
     }
 
-    /// Whether selection `index`'s remove control shows: while the pointer
-    /// is on that selection or on the control.
     fn remove_shown(&self, index: usize) -> bool {
         let (Some(region), Some(remove)) = (
             self.regions.get(index),
@@ -1493,7 +1386,6 @@ impl CaptureStudio {
         true
     }
 
-    /// The options that apply now, in sections.
     fn option_sections(&self) -> Vec<OptionSection> {
         let mut sections = Vec::new();
         if self.mode != CaptureMode::Pip {
@@ -1626,7 +1518,6 @@ impl CaptureStudio {
             }
             return;
         }
-        // The bar's own ground is not the canvas.
         if self.setup_bar().contains(p) || !self.selection_bounds().contains(p) {
             return;
         }
@@ -1646,9 +1537,6 @@ impl CaptureStudio {
         }
     }
 
-    /// A press on the selection canvas: a selection's remove control, a
-    /// handle, a selection to move, or a new selection. Shift adds a new
-    /// selection to the ones there are; without it a new one replaces them.
     fn press_canvas(&mut self, p: Point, additive: bool) {
         if let Some(index) = self
             .remove_rects()
@@ -1753,7 +1641,6 @@ impl CaptureStudio {
         }
     }
 
-    /// The receipt shown now, if any: where it is.
     fn receipt_pill(&self) -> Option<Rect> {
         if self.screenshot_receipt.is_some() {
             return Some(self.screenshot_receipt_layout().pill);
@@ -1762,7 +1649,6 @@ impl CaptureStudio {
             .map(|_| self.recording_receipt_layout().pill)
     }
 
-    /// How far the tool has appeared (`motion::Appear`).
     fn appear_progress(&self, theme: &Theme) -> f32 {
         if theme.reduce_motion {
             return 1.0;
@@ -1783,8 +1669,6 @@ impl CaptureStudio {
         for hole in holes {
             add_rect(&mut outside, *hole);
         }
-        // One flat wash in the theme's scrim hue: it dims the desktop the
-        // tool draws over without needing that desktop in its own layer.
         let surfaces = &theme.tokens.colors.surfaces;
         scene.fill(
             Fill::EvenOdd,
@@ -1797,8 +1681,6 @@ impl CaptureStudio {
         );
     }
 
-    /// The design system's focus treatment round what a capture takes: your
-    /// colour, just outside it.
     fn paint_outline(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         let radius = f64::from(theme.tokens.radii.tile);
         scene.stroke(
@@ -1810,8 +1692,6 @@ impl CaptureStudio {
         );
     }
 
-    /// The outline round what a running recording takes: the recording
-    /// colour, thin, just outside it.
     fn paint_recording_outline(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
         let radius = f64::from(theme.tokens.radii.tile);
@@ -1824,8 +1704,6 @@ impl CaptureStudio {
         );
     }
 
-    /// Paint what is being chosen: the selections with their handles, the
-    /// picked window, the strip or the screen.
     fn paint_canvas(&self, ctx: &mut PaintCtx<'_>) {
         let PaintCtx {
             scene,
@@ -1928,7 +1806,6 @@ impl CaptureStudio {
         }
     }
 
-    /// Route one event to an open menu. Returns whether it was consumed.
     fn route_menu_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         let options = self.options_menu.is_some();
         let Some(menu) = self.options_menu.as_mut().or(self.send_menu.as_mut()) else {
@@ -1951,7 +1828,6 @@ impl CaptureStudio {
         outcome.handled
     }
 
-    /// A key while choosing. Returns whether it was the tool's.
     fn key(&mut self, key: &Key, shift: bool) -> bool {
         match key {
             Key::Named(NamedKey::Escape) => {
@@ -2073,7 +1949,6 @@ enum CaptureScope {
     Windows(Vec<String>),
 }
 
-/// What a chosen target captures.
 struct ChosenSource {
     regions: Vec<Rect>,
     anchors: Vec<RegionAnchor>,
@@ -2118,9 +1993,6 @@ impl Widget for CaptureStudio {
 
     crate::rect_geometry!();
 
-    /// Sized by its style alone (no `measure`): nothing it changes needs
-    /// taffy to measure it again, and saying it does re-solved the layout of
-    /// everything above it on every frame.
     fn is_layout_dirty(&self) -> bool {
         false
     }
@@ -2386,16 +2258,12 @@ impl Widget for CaptureStudio {
     }
 }
 
-/// What one event did to an open menu.
 struct MenuOutcome {
     handled: bool,
-    /// Escape, or a press outside it.
     dismissed: bool,
     chosen: Option<usize>,
 }
 
-/// Drive an open menu with one event, the pointer at `cursor`: Escape or a
-/// press outside dismisses it, anything else goes to the menu.
 fn drive_menu(
     menu: &mut crate::widget::context_menu::ContextMenu,
     cursor: Point,
@@ -2427,7 +2295,6 @@ fn drive_menu(
     } = e
         && !menu.contains([cursor.x, cursor.y])
     {
-        // A press outside the menu dismisses it and nothing else.
         return dismissed;
     }
     let mut taffy = TaffyTree::new();

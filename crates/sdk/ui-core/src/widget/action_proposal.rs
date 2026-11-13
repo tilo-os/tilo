@@ -1,30 +1,4 @@
 //! `ActionProposal`: one model call's answer, shown before it is written.
-//!
-//! A one-shot action (rewrite, translate, summarise) is one model call over an explicit context
-//! — a selection or a whole resource, optionally what surrounds it — and an answer the person
-//! accepts or rejects. That answer is never a document and has no lifetime: accepting writes it
-//! once, rejecting drops it. This module is the shared contract and surface, so every place
-//! that offers such an action offers the same one.
-//!
-//! | Part | Is |
-//! |---|---|
-//! | [`ProposalContext`] | exactly what will be sent, part by part, each with the name the person reads |
-//! | [`ProposalChange`] | what the answer makes of what it was asked about: a text diff, or a value's before and after |
-//! | [`ModelPass`] | which model answered and where it ran |
-//! | [`ProposalAccept`] | the single action accepting it runs |
-//! | [`ProposalDecision`] | Accept or Reject, with the change the person agreed to |
-//!
-//! [`ActionProposal::accept_action`] is the one write-back: a single typed field edit on the
-//! resource the proposal was made of ([`tilo_resource::Edit`]), submitted as the record's own
-//! [`field edit`](tilo_resource::FIELD_EDIT), so it lands as one action — one change, one undo
-//! step, one History row — and a peer replays it for what it was. A selection is named by its
-//! character range, and [`ProposalAccept::refusal_over`] says why it must not be written when
-//! the field no longer holds what the model was shown. A secret field never offers any of this
-//! (`TextInput::set_sensitive`).
-//!
-//! [`ActionProposalView`] is the shared surface: what the person asked for, the change as a line
-//! diff (or a value's before and after), which model answers and where it runs, and Accept and
-//! Reject — built from `Column`, `Text` and `Button`, painting no control of its own.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{Edit, EditOp, Path, Segment};
@@ -40,24 +14,18 @@ pub const MAX_CONTEXT_BYTES: usize = 32 * 1024;
 /// Most parts a context may send.
 pub const MAX_CONTEXT_PARTS: usize = 8;
 
-/// Most diff lines a proposal shows; past it it says how many it left out.
 pub const MAX_DIFF_LINES: usize = 80;
 
-/// Where a model runs, which is what a person weighing a send wants to know.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelPlace {
-    /// On this device: the text does not leave it.
     OnDevice,
-    /// On a host: the text goes to another machine.
     Hosted,
 }
 
-/// The model that answered: what the person calls it, and where it ran.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelPass {
-    /// What the person calls it: the model's name, not a provider's id.
     pub names: String,
     pub place: ModelPlace,
 }
@@ -77,7 +45,6 @@ impl ModelPass {
         }
     }
 
-    /// The sentence the view shows above the decision.
     pub fn placed(&self) -> String {
         let key = match self.place {
             ModelPlace::OnDevice => "proposal-model-on-device",
@@ -89,12 +56,9 @@ impl ModelPass {
     }
 }
 
-/// One part of what will be sent: its name, and its exact text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextPart {
-    /// The message key the person reads it under
-    /// ("proposal-context-selection").
     pub name: String,
     pub text: String,
 }
@@ -107,7 +71,6 @@ impl ContextPart {
         }
     }
 
-    /// The name the person reads.
     pub fn titled(&self) -> String {
         titled(&self.name)
     }
@@ -123,11 +86,9 @@ pub fn titled(key: &str) -> String {
     }
 }
 
-/// Exactly what a model call is sent, as the person can read it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalContext {
-    /// The instruction, when it is sent along with the parts.
     pub instruction: Option<ContextPart>,
     /// The parts, in the order they are sent.
     pub parts: Vec<ContextPart>,
@@ -138,7 +99,6 @@ impl ProposalContext {
         Self { instruction, parts }
     }
 
-    /// The parts sent with nothing else: the selection or the resource first.
     pub fn of(parts: Vec<ContextPart>) -> Self {
         Self::new(None, parts)
     }
@@ -195,11 +155,9 @@ impl ProposalContext {
     }
 }
 
-/// How one line of a text diff stands against the original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DiffTag {
-    /// In both, as it was.
     Same,
     /// Only in the answer.
     Added,
@@ -207,7 +165,6 @@ pub enum DiffTag {
     Removed,
 }
 
-/// One line of a text diff.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiffLine {
@@ -271,14 +228,18 @@ pub fn line_diff(before: &str, after: &str) -> Vec<DiffLine> {
     lines
 }
 
-/// What an answer makes of what it was asked about.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ProposalChange {
-    /// Prose: the original and the answer, shown as one diff.
-    Text { original: String, proposed: String },
+    Text {
+        original: String,
+        proposed: String,
+    },
     /// Any other value of a resource: what it is now, and what it would be.
-    Value { before: String, after: String },
+    Value {
+        before: String,
+        after: String,
+    },
 }
 
 impl ProposalChange {
@@ -296,7 +257,6 @@ impl ProposalChange {
         }
     }
 
-    /// The text accepting this writes.
     pub fn proposed(&self) -> &str {
         match self {
             Self::Text { proposed, .. } => proposed,
@@ -304,7 +264,6 @@ impl ProposalChange {
         }
     }
 
-    /// The lines [`ActionProposalView`] shows.
     pub fn diff(&self) -> Vec<DiffLine> {
         match self {
             Self::Text { original, proposed } => line_diff(original, proposed),
@@ -338,10 +297,7 @@ impl ProposalChange {
 /// and a [`ProposalChange::Text`] answer splices the characters of a text.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProposalTarget<R: tilo_resource::Resource, T = String> {
-    /// The field, from the record's root.
     pub path: Path<R, T>,
-    /// The characters the answer replaces, when the proposal is of a
-    /// selection; `None` replaces the field whole.
     pub range: Option<std::ops::Range<usize>>,
 }
 
@@ -355,13 +311,10 @@ impl<R: tilo_resource::Resource, T> Clone for ProposalTarget<R, T> {
 }
 
 impl<R: tilo_resource::Resource, T> ProposalTarget<R, T> {
-    /// The whole of the field at `path`.
     pub fn whole(path: Path<R, T>) -> Self {
         Self { path, range: None }
     }
 
-    /// The characters of the text field at `path` between the range's bounds,
-    /// counted in chars from the start of the field.
     pub fn selection(path: Path<R, T>, range: std::ops::Range<usize>) -> Self {
         Self {
             path,
@@ -369,8 +322,6 @@ impl<R: tilo_resource::Resource, T> ProposalTarget<R, T> {
         }
     }
 
-    /// The characters an answer replaces, given the original it was made of:
-    /// the selection's, or the whole field's.
     pub fn characters(&self, original: &str) -> (usize, usize) {
         match &self.range {
             Some(range) => (range.start, range.end.saturating_sub(range.start)),
@@ -379,19 +330,15 @@ impl<R: tilo_resource::Resource, T> ProposalTarget<R, T> {
     }
 }
 
-/// What the person decided, and the change they decided it about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalDecision {
     Accept { change: ProposalChange },
     Reject,
 }
 
-/// One model call's answer, shown before it is written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionProposal {
-    /// The key the person reads what they asked for under: its title.
     pub title: String,
-    /// The model's own prose about the answer, when it wrote any.
     pub note: Option<String>,
     pub context: ProposalContext,
     pub change: ProposalChange,
@@ -399,8 +346,6 @@ pub struct ActionProposal {
 }
 
 impl ActionProposal {
-    /// A proposal `title` names, from `model`, over what `context` sends,
-    /// making `change`.
     pub fn new(
         title: impl Into<String>,
         context: ProposalContext,
@@ -423,12 +368,10 @@ impl ActionProposal {
         self
     }
 
-    /// The title as the person reads it.
     pub fn titled(&self) -> String {
         titled(&self.title)
     }
 
-    /// The prompt a model is sent ([`ProposalContext::prompt`]).
     pub fn prompt(&self) -> String {
         self.context.prompt()
     }
@@ -438,13 +381,6 @@ impl ActionProposal {
         self.context.refusal()
     }
 
-    /// Accepting this writes `target`: the resource's own field edit, which
-    /// is one action on the record — one change, one History row, one undo
-    /// step — and a peer replays for what it was.
-    ///
-    /// A [`ProposalChange::Text`] splice the characters `target` names — the
-    /// selection's, or the whole field's — and a [`ProposalChange::Value`]
-    /// writes the field as the value the answer reads as.
     pub fn accept_action<R, T>(&self, target: ProposalTarget<R, T>) -> ProposalAccept<R>
     where
         R: tilo_resource::Resource,
@@ -465,8 +401,6 @@ impl ActionProposal {
                 accept.expecting(at, delete, original)
             }
             ProposalChange::Value { after, .. } => {
-                // The answer as text, read back as the field's own value: a
-                // boolean, a number, a choice's key.
                 match serde_json::from_str::<T>(after) {
                     Ok(value) => self.accept_edit(target.path.set(value)),
                     // An answer that is not the field's type is never
@@ -484,8 +418,6 @@ impl ActionProposal {
         }
     }
 
-    /// The one accept for `edit`, holding both the edit and the action that
-    /// carries it through the app's door.
     fn accept_edit<R: tilo_resource::Resource>(&self, edit: Edit<R>) -> ProposalAccept<R> {
         let field = edit.path().last().map(field_of).unwrap_or_default();
         // The action that carries the edit through the app's door; an edit
@@ -508,28 +440,18 @@ impl ActionProposal {
         }
     }
 
-    /// The person rejected the answer: nothing is written, and no part of it
-    /// outlives this value.
     pub fn reject(&self) -> ProposalDecision {
         ProposalDecision::Reject
     }
 }
 
-/// Accepting one proposal: the field edit it writes, and the change it is.
-///
-/// The edit is the resource's own [field edit](tilo_resource::FIELD_EDIT),
-/// held as the action to submit ([`tilo_resource::Invoke`]): applying it is
-/// one action on the record — one change, one version in History, one undo
-/// step — and a peer replays it for what it was.
 pub struct ProposalAccept<R: tilo_resource::Resource> {
     edit: Edit<R>,
     invoke: Option<tilo_resource::Invoke<R>>,
     field: String,
     change: ProposalChange,
     refusal: Option<String>,
-    /// The characters the answer replaces: where, and how many.
     selection: Option<(usize, usize)>,
-    /// The characters the answer was made of, at the selection it replaces.
     expects: Option<(std::ops::Range<usize>, String)>,
 }
 
@@ -580,7 +502,6 @@ impl<R: tilo_resource::Resource> ProposalAccept<R> {
         self.refusal.as_deref()
     }
 
-    /// This accept, refusing to write for `why`.
     fn refusing(mut self, why: String) -> Self {
         self.refusal = Some(why);
         self
@@ -615,7 +536,6 @@ impl<R: tilo_resource::Resource> ProposalAccept<R> {
         (*held != *expected).then(|| expected.clone())
     }
 
-    /// The characters this accept replaces, when it replaces a selection.
     pub fn selection(&self) -> Option<(usize, usize)> {
         self.selection
     }
@@ -639,7 +559,6 @@ impl<R: tilo_resource::Resource> ProposalAccept<R> {
     }
 }
 
-/// The storage key of the field a path's last step names.
 fn field_of(step: &Segment) -> String {
     match step {
         Segment::Field(key) | Segment::Key(key) => key.clone(),

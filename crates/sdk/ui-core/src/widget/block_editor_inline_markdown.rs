@@ -1,18 +1,5 @@
-//! Markdown typed as formatting: `**bold**` becomes bold text the moment the
-//! closing delimiter is typed.
-//!
-//! [`markdown_input`] decides which keystroke completes a span; this module
-//! renders the decision on the editor's own model. The delimiters leave the
-//! block's text and the content gets the matching [`Mark`], so the host
-//! writes two deletions and a mark: the content keeps its identity in the
-//! document. A Backspace right after the conversion puts the markdown back
-//! as typed, the way it reverts an autocorrection.
-//!
-//! The conversion, like an autocorrection, is made after the keystroke that
-//! asked for it: the keystroke is written as typed, and the editor makes
-//! the change when the host settles the frame ([`BlockEditor::settle_typing`]),
-//! so it is an undo step of its own. Undo right after gives back exactly
-//! what was typed.
+//! Markdown typed as formatting: `**bold**` becomes bold text the moment the closing delimiter is
+//! typed.
 
 use std::ops::Range;
 
@@ -24,7 +11,6 @@ use crate::widget::EventCtx;
 use crate::widget::markdown_input::{self, InlineKind, InlineMatch};
 use crate::widget::marks::{self, Mark, MarkSpan};
 
-/// A block's text, marks and caret at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LineState {
     text: String,
@@ -37,26 +23,20 @@ struct LineState {
 #[derive(Debug, Clone)]
 pub(super) struct InlineConversion {
     block_id: String,
-    /// The block as typed, closing delimiter included.
     typed: LineState,
-    /// The block once formatted.
     formatted: LineState,
 }
 
 /// The focused block before an event that may type a closing delimiter.
 pub(super) struct TypedMarkdownOrigin {
     block_id: String,
-    /// What the event types.
     typed: String,
     in_code: bool,
 }
 
-/// What a keystroke left to do once it is written: format the markdown it
-/// closed, make the correction its word boundary asked for.
 pub(super) struct TypingToSettle {
     index: usize,
     block_id: String,
-    /// The closing delimiter typed, and whether it was typed in code.
     markdown: Option<(String, bool)>,
 }
 
@@ -121,8 +101,6 @@ impl BlockEditor {
         })
     }
 
-    /// Remember what the keystroke just routed to block `index` left to
-    /// do; [`Self::settle_typing`] does it once the keystroke is written.
     pub(super) fn note_typing_to_settle(
         &mut self,
         index: usize,
@@ -173,9 +151,6 @@ impl BlockEditor {
         changed
     }
 
-    /// Format the span the delimiter `typed` right before the caret of
-    /// block `index` completed: the delimiters leave the text and the
-    /// content is marked.
     fn format_typed_markdown(&mut self, index: usize, typed: &str, in_code: bool) -> bool {
         if in_code {
             return false;
@@ -196,7 +171,6 @@ impl BlockEditor {
         let Some(found) = markdown_input::detect_inline(head) else {
             return false;
         };
-        // A delimiter inside inline code is code.
         if line.marks().iter().any(|span| {
             matches!(span.mark, Mark::Code)
                 && (overlaps(&span.range, &found.open) || overlaps(&span.range, &found.close))
@@ -211,7 +185,6 @@ impl BlockEditor {
         ) else {
             return false;
         };
-        // Text already linked is not linked again.
         if found.kind == InlineKind::Link
             && line.marks().iter().any(|span| {
                 matches!(span.mark, Mark::ExternalLink(_) | Mark::ResourceLink(_))
@@ -253,8 +226,6 @@ impl BlockEditor {
         true
     }
 
-    /// Backspace right after a conversion puts the markdown back as typed.
-    /// Any other input ends the chance to.
     pub(super) fn revert_inline_conversion(
         &mut self,
         event: &WindowEvent,
@@ -347,9 +318,6 @@ impl BlockEditor {
     }
 }
 
-/// `text` with every inline span its delimiters close formatted: the text
-/// without those delimiters, and the marks on it. Code spans are taken
-/// first, and what is inside one stays as written.
 fn formatted_spans(text: &str) -> (String, Vec<MarkSpan>) {
     let mut out = String::with_capacity(text.len());
     let mut spans: Vec<MarkSpan> = Vec::new();
@@ -387,7 +355,6 @@ fn formatted_spans(text: &str) -> (String, Vec<MarkSpan>) {
     (out, spans)
 }
 
-/// Prose with no code in it, its bold, italic and struck spans formatted.
 fn formatted_prose(text: &str) -> (String, Vec<MarkSpan>) {
     let mut out = String::with_capacity(text.len());
     let mut spans: Vec<MarkSpan> = Vec::new();
@@ -445,13 +412,10 @@ mod tests {
         Dispatch::new()
             .doc(doc)
             .send(editor, &crate::synthetic_input::keyboard_input(event));
-        // The frame after the keystroke, as a host runs it.
         editor.settle(&mut crate::widget::Edits::lend(doc), &ROOT);
         editor.sync(doc, &ROOT);
     }
 
-    /// Type `text` key by key into a fresh editor holding `block`, the way a
-    /// physical keyboard delivers it (Space is its own named key).
     fn typed_into(block: Block, text: &str) -> (BlockEditor, AutoCommit) {
         let mut doc = AutoCommit::new();
         let mut editor = BlockEditor::new();
@@ -557,8 +521,6 @@ mod tests {
 
     #[test]
     fn only_a_typed_closing_delimiter_ends_a_mark_for_what_follows() {
-        // Typing on right after bold text goes on in bold, as the document
-        // carries it.
         let mut bold = Block::paragraph("ab");
         bold.line.set_marks(vec![MarkSpan::new(0..2, Mark::Bold)]);
         let (bold, _) = typed_into(bold, "c");
@@ -566,7 +528,6 @@ mod tests {
             shown(&bold),
             ("abc".to_owned(), vec![MarkSpan::new(0..3, Mark::Bold)])
         );
-        // After a typed closing delimiter it is plain.
         let (mut editor, mut doc) = typed_into(Block::paragraph(""), "**b**");
         type_more(&mut editor, &mut doc, " c");
         assert_eq!(
@@ -581,11 +542,9 @@ mod tests {
         press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
         assert_eq!(shown(&editor), ("a **b**".to_owned(), vec![]));
         assert_eq!(editor.blocks()[0].line.cursor_pos(), "a **b**".len());
-        // The markdown stays as typed: the next Backspace deletes a letter.
         press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
         assert_eq!(shown(&editor), ("a **b*".to_owned(), vec![]));
 
-        // Once anything else is typed, Backspace deletes as usual.
         let (mut editor, mut doc) = typed_into(Block::paragraph(""), "*e*");
         type_more(&mut editor, &mut doc, "x");
         press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));

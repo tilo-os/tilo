@@ -63,7 +63,7 @@
     },
     {
       "name": "Autocomplete",
-      "doc": "A field that suggests completions under it as it is typed into: a search over a site's catalogue, a mention, a command. The suggestions are what the view gives it; a chosen one fills the field and is reported.",
+      "doc": "A field that suggests completions under it as it is typed into: a search over a site's catalogue, a mention, a command.",
       "props": [
         {
           "name": "placeholder",
@@ -110,7 +110,7 @@
       "bindings": [
         {
           "name": "value",
-          "doc": "The text typed, and where the edit of it goes. Taking a suggestion writes its value here and reports it.",
+          "doc": "The text typed, and where the edit of it goes.",
           "type": "text",
           "merge": "splice"
         }
@@ -122,7 +122,7 @@
     },
     {
       "name": "Avatar",
-      "doc": "Who someone is, at a glance: their picture, or their initials on their own colour. A thing or a group shows a glyph on a neutral square.",
+      "doc": "Who someone is, at a glance: their picture, or their initials on their own colour.",
       "props": [
         {
           "name": "who",
@@ -134,7 +134,7 @@
         },
         {
           "name": "name",
-          "doc": "What it is called when it shows no one: a group, a thing. Its initials and colour come from it.",
+          "doc": "What it is called when it shows no one: a group, a thing.",
           "type": {
             "option": "text"
           }
@@ -153,7 +153,7 @@
         },
         {
           "name": "room",
-          "doc": "The avatar's room with none in it: a message that continues its author's run lines up under the first one's avatar without repeating it. Nothing is painted and nothing is read out.",
+          "doc": "The avatar's room with none in it: a message that continues its author's run lines up under the first one's avatar without repeating it.",
           "type": "bool"
         }
       ],
@@ -164,7 +164,7 @@
     },
     {
       "name": "Badge",
-      "doc": "A small pill on another element: how many new things there are, a dot for something new, a short status (\"Owner\", \"Beta\"), or the mark of unsaved changes. It is never pressed.",
+      "doc": "A small pill on another element: how many new things there are, a dot for something new, a short status (\"Owner\", \"Beta\"), or the mark of unsaved changes.",
       "props": [
         {
           "name": "text",
@@ -193,7 +193,7 @@
         },
         {
           "name": "tone",
-          "doc": "A status the pill means, washed into it. A text badge is neutral unless said.",
+          "doc": "A status the pill means, washed into it.",
           "type": {
             "option": {
               "choice": {
@@ -319,7 +319,7 @@
     },
     {
       "name": "BlockEditor",
-      "doc": "A document: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Bound to a document's field it edits it, each edit written back as the value now reads and a change from elsewhere shown when the person is not typing there; given a value it shows that, read-only, and activating a reference opens it.",
+      "doc": "A document: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions.",
       "props": [
         {
           "name": "value",
@@ -338,7 +338,7 @@
         },
         {
           "name": "links",
-          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now. A view names them, `links: nb.notes`.\nA view whose records are a collection answers the picker's text with them (`links_query`) rather than handing all of them: what it offers is then what the picker is open to show, and offering none while the picker is closed costs it no read of the collection.",
+          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now.",
           "type": {
             "list": "link"
           }
@@ -354,7 +354,7 @@
       "events": [
         {
           "name": "open_reference",
-          "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
+          "doc": "A reference in the text was activated, carrying the reference.",
           "value": "text"
         },
         {
@@ -374,7 +374,7 @@
         },
         {
           "name": "headings",
-          "doc": "The document's headings, in the order they stand, each time they change. A view that draws an outline of the document keeps them as its state.",
+          "doc": "The document's headings, in the order they stand, each time they change.",
           "value": {
             "list": "text"
           }
@@ -400,7 +400,7 @@
     },
     {
       "name": "Board",
-      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status. Dragging a card to another place in its lane or into another lane is reported by the card or lane it lands at; each card also opens, and offers its commands on its context menu, so nothing needs a drag.",
+      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status.",
       "props": [
         {
           "name": "name",
@@ -428,7 +428,7 @@
     },
     {
       "name": "Breadcrumb",
-      "doc": "Where a page is, as the path to it: each place it is in, a chevron between them, the page itself last. Pressing a place goes there. Where the path does not fit, its middle gives way first, the first place and the page itself staying.",
+      "doc": "Where a page is, as the path to it: each place it is in, a chevron between them, the page itself last.",
       "props": [
         {
           "name": "root_icon",
@@ -461,18 +461,18 @@
     },
     {
       "name": "Button",
-      "doc": "A button: pressing it does one thing. Its role says what kind of thing, which decides its whole look: the window's one primary action, a destructive one, or an ordinary one.",
+      "doc": "A button: pressing it does one thing.",
       "props": [
         {
           "name": "label",
-          "doc": "What pressing it does, in a word or two. An icon-only button is still named by it.",
+          "doc": "What pressing it does, in a word or two.",
           "type": "text",
           "required": true,
           "positional": true
         },
         {
           "name": "accessible_name",
-          "doc": "How assistive technology names it, where that says more than the label shows: the charge reads \"61%\" beside its charging glyph and is named \"61%, charging\". Unset, the label names it.",
+          "doc": "How assistive technology names it, where that says more than the label shows: the charge reads \"61%\" beside its charging glyph and is named \"61%, charging\".",
           "type": {
             "option": "text"
           }
@@ -491,7 +491,7 @@
         },
         {
           "name": "faces",
-          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width. `icon_only`'s rule holds for it too: the label is the name assistive technology hears, naming the people (\"Mia Clayton and Sam Okafor are here\"). One press opens the roster of everyone here.",
+          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width.",
           "type": {
             "list": "text"
           }
@@ -538,19 +538,19 @@
         },
         {
           "name": "enabled",
-          "doc": "Whether it can be pressed now. A button with nothing to do never can.",
+          "doc": "Whether it can be pressed now.",
           "type": "bool"
         },
         {
           "name": "description",
-          "doc": "Why it cannot be pressed now, where the label does not say: the requirement an action does not meet. Its tooltip, and the description assistive technology reads beside the name it announces.",
+          "doc": "Why it cannot be pressed now, where the label does not say: the requirement an action does not meet.",
           "type": {
             "option": "text"
           }
         },
         {
           "name": "key",
-          "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event. Never drawn here; the header shows it at the action's menu row.",
+          "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event.",
           "type": {
             "option": "text"
           },
@@ -558,7 +558,7 @@
         },
         {
           "name": "count",
-          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count standing on its icon's top-trailing corner, as an app icon's does, and nothing at 0. The button keeps room for it, so it never covers the control beside it. The label says the count to assistive technology.",
+          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count standing on its icon's top-trailing corner, as an app icon's does, and nothing at 0.",
           "type": {
             "option": "int"
           }
@@ -600,7 +600,7 @@
     },
     {
       "name": "Card",
-      "doc": "A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview. Pressing it opens what it stands for.",
+      "doc": "A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview.",
       "props": [
         {
           "name": "title",
@@ -654,7 +654,7 @@
     },
     {
       "name": "CardGrid",
-      "doc": "Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a review. Each card is a resource, and pressing one opens it.",
+      "doc": "Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a review.",
       "props": [
         {
           "name": "name",
@@ -698,7 +698,7 @@
     },
     {
       "name": "ChangeMark",
-      "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it. The host fills all but `of` from the resource's versions; activating it shows what they did.",
+      "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it.",
       "props": [
         {
           "name": "of",
@@ -782,7 +782,7 @@
       "slots": [
         {
           "name": "content",
-          "doc": "What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed the mark. A mark of a row has none, and shows who changed it alone.",
+          "doc": "What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed the mark.",
           "accepts": "view",
           "many": true,
           "default": true
@@ -801,7 +801,7 @@
     },
     {
       "name": "Sparkline",
-      "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card. Fewer than two samples draw nothing.",
+      "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card.",
       "props": [
         {
           "name": "samples",
@@ -847,7 +847,7 @@
         },
         {
           "name": "tone",
-          "doc": "What its line means, when it means something: a status, a person. Without one it is the theme's accent.",
+          "doc": "What its line means, when it means something: a status, a person.",
           "type": {
             "option": {
               "choice": {
@@ -895,7 +895,7 @@
     },
     {
       "name": "Quote",
-      "doc": "A message quoted where another answers it, or in the reply banner over the composer: a rule at its leading edge, who wrote it and the start of what it says. With `dismiss` it has a close button (the banner: \"stop replying\").",
+      "doc": "A message quoted where another answers it, or in the reply banner over the composer: a rule at its leading edge, who wrote it and the start of what it says.",
       "props": [
         {
           "name": "excerpt",
@@ -922,7 +922,7 @@
       "events": [
         {
           "name": "dismiss",
-          "doc": "The close button was pressed. Without it there is no close button."
+          "doc": "The close button was pressed."
         },
         {
           "name": "activate",
@@ -936,7 +936,7 @@
     },
     {
       "name": "Reactions",
-      "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another. Each reports the emoji (`on toggle(e)`).",
+      "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another.",
       "props": [
         {
           "name": "reactions",
@@ -979,7 +979,7 @@
       "events": [
         {
           "name": "toggle",
-          "doc": "An emoji was pressed or picked: carries it. Your reaction with it is added, or taken back when you had reacted with it.",
+          "doc": "An emoji was pressed or picked: carries it.",
           "value": "text"
         }
       ],
@@ -989,7 +989,7 @@
     },
     {
       "name": "Checkbox",
-      "doc": "A box that is marked or not, bound to what it edits (whether to be told of a reply, which rows a bulk action takes). A labelled box is one target, its label included.",
+      "doc": "A box that is marked or not, bound to what it edits (whether to be told of a reply, which rows a bulk action takes).",
       "props": [
         {
           "name": "label",
@@ -1001,7 +1001,7 @@
         },
         {
           "name": "indeterminate",
-          "doc": "Some of what it stands for is chosen: a mixed mark. The value stays `false`, so the next choose marks all of it.",
+          "doc": "Some of what it stands for is chosen: a mixed mark.",
           "type": "bool"
         },
         {
@@ -1028,7 +1028,7 @@
       "events": [
         {
           "name": "check",
-          "doc": "It was pressed: what a mark is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value.",
+          "doc": "It was pressed: what a mark is, in the app's words.",
           "press": true
         }
       ],
@@ -1047,7 +1047,7 @@
     },
     {
       "name": "Chip",
-      "doc": "A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied filter. Pressing it opens or applies what it names; a chip that can be taken away has a trailing remove button; a filter chip shows whether it is on.",
+      "doc": "A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied filter.",
       "props": [
         {
           "name": "label",
@@ -1065,7 +1065,7 @@
         },
         {
           "name": "tone",
-          "doc": "The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill is washed in that tone. `Neutral` for a chip that only names something.",
+          "doc": "The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill is washed in that tone.",
           "type": {
             "choice": {
               "name": "Tone",
@@ -1095,7 +1095,7 @@
         },
         {
           "name": "remove",
-          "doc": "Its remove button was pressed: take it away. A chip with this has the button.",
+          "doc": "Its remove button was pressed: take it away.",
           "press": true
         }
       ],
@@ -1132,7 +1132,7 @@
         },
         {
           "name": "edge",
-          "doc": "The screen edge the body stands on. A square body casts no rule at it: a bar edge to edge with the screen has no line to mark, and a hairline a pixel inside its body would start its ground below the display's own edge.",
+          "doc": "The screen edge the body stands on.",
           "type": {
             "option": {
               "choice": {
@@ -1149,7 +1149,7 @@
         },
         {
           "name": "material",
-          "doc": "What the body is made of: the theme's bar body (the default), the theme's glass, or that glass made calm. A shell's bar and dock say which the person chose; every body that leaves it out draws the theme's bar body.",
+          "doc": "What the body is made of: the theme's bar body (the default), the theme's glass, or that glass made calm.",
           "type": {
             "option": {
               "choice": {
@@ -1179,7 +1179,7 @@
     },
     {
       "name": "CodeEditor",
-      "doc": "Code to read or write, with line numbers and its language's colouring. What is typed edits the text it is bound to, each edit spliced in, never written over.",
+      "doc": "Code to read or write, with line numbers and its language's colouring.",
       "props": [
         {
           "name": "placeholder",
@@ -1294,7 +1294,7 @@
     },
     {
       "name": "ColorSwatchPicker",
-      "doc": "A grid of swatches, one chosen (a palette of accents): the chosen cell carries the ring. Each swatch is a colour by its hex text, shown in the theme's own samples.",
+      "doc": "A grid of swatches, one chosen (a palette of accents): the chosen cell carries the ring.",
       "props": [
         {
           "name": "swatches",
@@ -1412,11 +1412,11 @@
     },
     {
       "name": "SectionDivider",
-      "doc": "A divider in a conversation: a caption centred in a band, ruled out to both sides, over the row where the part it opens begins — a day of the lines, or the place the reader's unread lines start. Both are this one component, told apart by the ink they are drawn in.\nA day's label is the day as the person reads it (\"Today\", \"Yesterday\", \"Sunday\", \"Jun 21\"); a view that draws its own rows reads it from the clock it already has, as a transcript does (`ConversationClock::day_label`). The place reading starts again says so in the person's language, which is the toolkit's word to say (`unread_label`): a divider in the accent that is given no words of its own says it.",
+      "doc": "A divider in a conversation: a caption centred in a band, ruled out to both sides, over the row where the part it opens begins — a day of the lines, or the place the reader's unread lines start.",
       "props": [
         {
           "name": "label",
-          "doc": "What the divider says: the day it opens (\"Today\", \"Sunday\", \"Jun 21\"). Unsaid, it says what its tone marks: the toolkit's own word where the reader's unread lines start.",
+          "doc": "What the divider says: the day it opens (\"Today\", \"Sunday\", \"Jun 21\").",
           "type": {
             "option": "text"
           },
@@ -1471,7 +1471,7 @@
     },
     {
       "name": "DataTable",
-      "doc": "A table of resources as columns and rows: the attributes of a device, the songs in a library, the rules of a firewall. Each row is the resource it stands for and says what its columns read in it; pressing a header sorts by that column, and selecting or activating a row reports the row's resource.",
+      "doc": "A table of resources as columns and rows: the attributes of a device, the songs in a library, the rules of a firewall.",
       "props": [
         {
           "name": "name",
@@ -1545,11 +1545,11 @@
     },
     {
       "name": "DateField",
-      "doc": "A day, shown as the person reads a day (with the time it is due at) and picked from a calendar that opens over it. A date that may be empty can be cleared, and the time it is due at is picked in the same popover, in the `time` slot.",
+      "doc": "A day, shown as the person reads a day (with the time it is due at) and picked from a calendar that opens over it.",
       "props": [
         {
           "name": "at",
-          "doc": "The time of day the day is due at, when its type pairs one with it (`9:00`): what the chip says after the day. The field picks it in its `time` slot; it only says it here.",
+          "doc": "The time of day the day is due at, when its type pairs one with it (`9:00`): what the chip says after the day.",
           "type": {
             "option": "text"
           }
@@ -1602,7 +1602,7 @@
     },
     {
       "name": "DatePicker",
-      "doc": "A month's calendar: the day chosen is ringed, today marked, and the arrows go between months. Days that hold something carry a dot.",
+      "doc": "A month's calendar: the day chosen is ringed, today marked, and the arrows go between months.",
       "props": [
         {
           "name": "marked",
@@ -6057,7 +6057,7 @@
     },
     {
       "name": "ContextMenu",
-      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. Its commands come first, as the view placed them; the system adds what the item offers that the view did not place and a typing field to filter them. A destructive command runs at once and is undone afterwards, never confirmed first.",
+      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it.",
       "slots": [
         {
           "name": "items",
@@ -6080,7 +6080,7 @@
     },
     {
       "name": "HoverToolbar",
-      "doc": "Controls shown over the trailing edge of the view they stand in while it is hovered or holds focus: quick reactions, Reply. Tab reaches them from the view.",
+      "doc": "Controls shown over the trailing edge of the view they stand in while it is hovered or holds focus: quick reactions, Reply.",
       "slots": [
         {
           "name": "content",
@@ -6200,7 +6200,7 @@
         },
         {
           "name": "action",
-          "doc": "The label of the one action that adds to the lane, at its foot under the cards: \"New card\". Drawn there, not in the heading, so the lane has one add and it is where the cards end; a lane that gives a `foot` of its own says it there instead.",
+          "doc": "The label of the one action that adds to the lane, at its foot under the cards: \"New card\".",
           "type": {
             "option": "text"
           }
@@ -6218,7 +6218,7 @@
         },
         {
           "name": "foot",
-          "doc": "What stands at the lane's foot, under its cards: the entry that adds to the lane. It stays in reach while the cards scroll above it.",
+          "doc": "What stands at the lane's foot, under its cards: the entry that adds to the lane.",
           "accepts": "view"
         }
       ],
@@ -6229,7 +6229,7 @@
         },
         {
           "name": "drop",
-          "doc": "A card was dropped into the lane: carries the card and its place among the lane's other cards, from 0. A card that takes drops itself reports those that land just before it.",
+          "doc": "A card was dropped into the lane: carries the card and its place among the lane's other cards, from 0.",
           "value": "resource",
           "at": "int"
         }
@@ -6242,7 +6242,7 @@
     },
     {
       "name": "BoardCard",
-      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens. The card is its body: a row given as its body is shown as a card — the row paints the surface, wraps its title and stands its facts under it — so what the card says is written once, and the row is what assistive technology reads as the lane's item. The card itself is the container around it, with no role of its own.",
+      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens.",
       "props": [
         {
           "name": "item",
@@ -6458,7 +6458,7 @@
         },
         {
           "name": "author",
-          "doc": "Who said it, as the person reads names. Empty for one that knowingly continues the run above it.",
+          "doc": "Who said it, as the person reads names.",
           "type": {
             "option": "text"
           }
@@ -6546,7 +6546,7 @@
         },
         {
           "name": "kind",
-          "doc": "How its cells read: prose unless said. Figures line up, and a numeric column sorts as numbers.",
+          "doc": "How its cells read: prose unless said.",
           "type": {
             "option": {
               "choice": {
@@ -6631,7 +6631,7 @@
       "slots": [
         {
           "name": "cells",
-          "doc": "The cells, in the order of the table's columns. A column with no cell reads as absent.",
+          "doc": "The cells, in the order of the table's columns.",
           "accepts": {
             "component": "DataTableCell"
           },

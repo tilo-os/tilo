@@ -10,7 +10,6 @@ fn ms(base: Instant, ms: u64) -> Instant {
     base + Duration::from_millis(ms)
 }
 
-/// One frame of `view` at `at`: sync, layout, draw.
 fn frame_at(frame: &mut ShotFrame, view: &mut dyn Widget, at: Instant) {
     with_monotonic_time(at, || {
         frame.sync(view);
@@ -19,24 +18,19 @@ fn frame_at(frame: &mut ShotFrame, view: &mut dyn Widget, at: Instant) {
     });
 }
 
-/// The height of the content the skeleton stands in for.
 fn content_height(frame: &mut ShotFrame) -> f32 {
     let theme = frame.theme.clone();
     crate::num::f32_of_f64(SkeletonFace::new(SHAPE).height(&mut frame.text, &theme, 400.0))
 }
 
-/// What the view's inner subtree is now: the reserved space, the content
-/// (a `Spacer` here) or the failure (a `Banner`).
 fn shown(view: &dyn Widget) -> String {
     view.children()[0].children()[0].name().to_owned()
 }
 
-/// The height the view's inner subtree takes.
 fn shown_height(view: &dyn Widget) -> f64 {
     view.children()[0].children()[0].get_rect().height()
 }
 
-/// The height of the box the view reserves: what every step stands in.
 fn reserved_height(view: &dyn Widget) -> f64 {
     let mut reserved = None;
     view.for_each_layout_child(&mut |child| {
@@ -76,7 +70,6 @@ fn local_data_inside_the_budget_paints_on_frame_one_without_a_placeholder() {
         "the frame that would show the view waits for the local read"
     );
 
-    // The read answers inside the budget, before the held frame is drawn.
     arriving.writer().ready(height);
     let landed = ms(t0, 8);
     assert_eq!(view.holds_frame_until(landed), None, "the frame goes ahead");
@@ -123,7 +116,6 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
         (arriving, view)
     });
 
-    // The ground, at the content's geometry from the first frame.
     frame_at(&mut frame, &mut view, t0);
     assert_eq!(
         view.holds_frame_until(t0),
@@ -139,13 +131,11 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
     );
     assert!(view.accessibility().is_some_and(|node| node.state.busy));
 
-    // The skeleton after the grace period.
     let skeleton = t0 + GRACE;
     assert_eq!(view.step(skeleton - Duration::from_millis(1)), Step::Ground);
     frame_at(&mut frame, &mut view, skeleton);
     assert_eq!(view.step(skeleton), Step::Skeleton);
 
-    // The answer lands while the skeleton has not stood its minimum.
     arriving.writer().ready(height);
     frame_at(&mut frame, &mut view, ms(t0, 200));
     assert_eq!(
@@ -154,7 +144,6 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
         "the skeleton never flashes"
     );
 
-    // It cross-fades in at the reserved geometry.
     let reveal = skeleton + MIN_SHOWN;
     frame_at(&mut frame, &mut view, reveal);
     assert_eq!(view.showing(), Showing::Answer);
@@ -231,7 +220,6 @@ fn a_pending_view_draws_no_frames_between_its_timed_steps() {
             assert_eq!(view.next_wake_deadline(), next);
         });
     }
-    // A step falling due asks for exactly the frame that shows it.
     let named_due = t0 + NAME_SOURCE_AFTER;
     let mut view = with_monotonic_time(t0, || {
         let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
@@ -353,8 +341,6 @@ fn a_placeholder_keeps_its_timing_however_often_its_view_is_built() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let skeleton = t0 + GRACE;
-    // The view around it is built again after its read began: the
-    // placeholder still steps on from when the read began.
     let mut view = with_monotonic_time(ms(t0, 120), || {
         ArrivingView::placeholder_since(Source::host("eu1.tilo.sh"), t0, SHAPE)
     });

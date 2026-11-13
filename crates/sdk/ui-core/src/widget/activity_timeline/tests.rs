@@ -25,7 +25,6 @@ fn a_bots_change_is_marked_as_the_bots_and_an_agents_is_not() {
     assert!(!is_bot_author(&HistoryAuthor::new("Ada", 10.0, "cd34")));
 }
 
-/// Relative luminance of the composited pixel at (`x`, `y`).
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -359,8 +358,6 @@ fn lay_out(t: &mut ActivityTimeline, theme: &Theme) {
     crate::testing::lay_out_in(t, 620.0, 560.0, theme).expect("the pane lays out");
 }
 
-/// Click whatever stands at `p`, the way a pointer does: move there
-/// first, then press.
 fn click(t: &mut ActivityTimeline, p: Point) {
     dispatch(t, &cursor_moved(p.x, p.y));
     dispatch(t, &mouse_press());
@@ -388,8 +385,6 @@ fn a_selection_and_a_name_place_the_controls_in_the_layout() {
     );
     assert!(!t.is_layout_dirty(), "the layout that placed it answers");
 
-    // A selection raises the bar: the layout runs again, and places the
-    // bar's actions before anything paints.
     t.set_selection(Some((2, 4)));
     assert!(
         t.is_layout_dirty(),
@@ -419,12 +414,9 @@ fn a_selection_and_a_name_place_the_controls_in_the_layout() {
     );
     assert!(!t.is_layout_dirty(), "the layout placed them");
 
-    // A press where the way out stands lands before any paint.
     click(&mut t, clear.center());
     assert_eq!(t.selection(), None, "the press cleared the placed bar");
 
-    // Naming replaces the action with its field: the layout places them
-    // again, and the action leaves the bar's box.
     t.set_selection(Some((2, 4)));
     lay_out(&mut t, &theme);
     assert!(t.begin_naming_selection(), "a selection can be named");
@@ -446,9 +438,6 @@ fn a_selection_and_a_name_place_the_controls_in_the_layout() {
     assert!(!t.is_layout_dirty(), "and the layout answers again");
 }
 
-/// The same for the way back out of a filter: a pane that has laid out
-/// and not yet painted places `[Clear filters]` under its message, inside
-/// its box, and answers a press on it.
 #[test]
 fn a_filter_with_nothing_left_places_the_way_back_out_in_the_layout() {
     let theme = Theme::dark();
@@ -551,8 +540,6 @@ fn a_presented_change_reads_opens_and_copies_as_the_app_says() {
     assert!(timeline.selection.is_none(), "opening is not selecting");
 }
 
-/// A band says what the app says it amounts to, in place of how many
-/// characters moved.
 #[test]
 fn a_presenter_says_what_a_band_amounts_to() {
     struct Counting;
@@ -729,7 +716,6 @@ fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
 #[test]
 fn empty_and_filtered_timelines_explain_themselves() {
     fn empty_timeline_paints_placeholder() {
-        // Pin the structural contract, not the literal string (i18n).
         let t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), vec![]);
         assert_eq!(t.visible_len(), 0);
         let strip = t.filter_strip_rect();
@@ -866,7 +852,6 @@ fn filters_narrow_by_entry_kind_and_author_and_clear() {
             lay_out(&mut t, &Theme::dark());
         }
 
-        // A press between two chips filters nothing.
         let (a, b) = (ChipKind::ALL[0], ChipKind::ALL[1]);
         let (a, b) = (
             t.chip_rect(a).expect("chip a"),
@@ -972,8 +957,6 @@ fn filters_narrow_by_entry_kind_and_author_and_clear() {
         assert_eq!(t.author_query(), "");
         assert_eq!(t.visible_len(), 2);
 
-        // An input method's commit types too, and Backspace takes back a
-        // whole accented letter, not half of it.
         dispatch(
             &mut t,
             &WindowEvent::Ime(winit::event::Ime::Commit("bo\u{301}".into())),
@@ -1125,7 +1108,6 @@ fn rows_order_newest_first_and_virtualize_within_narrow_panes() {
         );
         assert_eq!(range.start, 0, "unscrolled, the window starts at the top");
 
-        // Every row inside the window lays out; the first one past it does not.
         for i in range.clone() {
             assert!(t.row_rect(i).is_some(), "row {i} is on screen");
         }

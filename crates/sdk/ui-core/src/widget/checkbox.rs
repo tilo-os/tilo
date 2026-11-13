@@ -28,17 +28,11 @@ pub(crate) const BOX_EDGE: f64 = 18.0;
 /// its 32 px target empty on that side.
 const LABEL_GAP: f32 = 10.0;
 
-/// Stateless checkbox presentation for hand-laid-out canvases.
-///
-/// [`Checkbox`] remains the right choice when the value is bound directly to
-/// an Automerge path. `CheckboxFace` avoids every immediate-mode app copying
-/// the box, focus border, disabled treatment, and proportional check mark.
 pub struct CheckboxFace {
     rect: Rect,
     checked: bool,
     indeterminate: bool,
     interact: Interaction,
-    /// A radio: a circle with a dot, one of a set.
     radio: bool,
     /// Where its [`CheckMotion`] is this frame; at rest on the value when
     /// unset.
@@ -48,8 +42,6 @@ pub struct CheckboxFace {
     ring: Option<Color>,
 }
 
-/// The mark a checked box shows: a tick, or the mixed bar of a partly
-/// selected group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckGlyph {
     Check,
@@ -66,16 +58,12 @@ impl CheckGlyph {
     }
 }
 
-/// How a checkbox or radio is drawn this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CheckPose {
     /// How much of the checked state shows, `0..=1`: the fill and the mark.
     pub level: f32,
-    /// The glyph shown (the newest).
     pub glyph: CheckGlyph,
-    /// The shown glyph's opacity while it cross-fades in.
     pub incoming: f32,
-    /// The glyph it replaced, and its opacity, while it still shows.
     pub outgoing: Option<(CheckGlyph, f32)>,
 }
 
@@ -120,8 +108,6 @@ impl Default for CheckMotion {
 }
 
 impl CheckMotion {
-    /// Show the box `marked` (checked or mixed) with `glyph`, moving as
-    /// `source` asks. The first value shown rests.
     #[track_caller]
     pub fn follow(
         &mut self,
@@ -135,18 +121,14 @@ impl CheckMotion {
             self.snap(marked, glyph);
             return;
         };
-        // An empty box has no glyph to change.
         let glyph = if marked { glyph } else { had };
         if (was_marked, had) == (marked, glyph) {
             return;
         }
         self.shown = Some((marked, glyph));
         match (was_marked, marked) {
-            // Marking: the glyph it comes in with is the one it shows.
             (false, true) => self.glyph = crate::motion::CrossFade::new(glyph),
-            // Mixed and checked swap their glyphs in place.
             (true, true) => self.glyph.show(glyph, motion, source, now),
-            // Unmarking: the glyph it had goes with the fill.
             _ => {}
         }
         self.mark.set(marked, motion, source, now);
@@ -155,8 +137,6 @@ impl CheckMotion {
         }
     }
 
-    /// [`Self::follow`] as the input the person just made caused it
-    /// (`motion::recent_input`): a change nobody just caused lands.
     #[track_caller]
     pub fn follow_input(
         &mut self,
@@ -177,7 +157,6 @@ impl CheckMotion {
         self.glyph = crate::motion::CrossFade::new(glyph);
     }
 
-    /// How to draw the box at `now`.
     #[track_caller]
     #[must_use]
     pub fn pose(&self, now: crate::time::Instant) -> CheckPose {
@@ -189,7 +168,6 @@ impl CheckMotion {
         }
     }
 
-    /// Whether it is still on its way at `now`.
     #[track_caller]
     pub fn is_moving(&self, now: crate::time::Instant) -> bool {
         self.mark.is_moving(now) || self.glyph.is_moving(now)
@@ -209,7 +187,6 @@ impl CheckboxFace {
         }
     }
 
-    /// Draw the unchecked box's edge in `ring`: the item's tone, over its own ground.
     #[must_use]
     pub fn ring(mut self, ring: Color) -> Self {
         self.ring = Some(ring);
@@ -233,15 +210,12 @@ impl CheckboxFace {
         })
     }
 
-    /// Paint a radio: a circle, filled with the on state and a dot when
-    /// chosen.
     #[must_use]
     pub fn radio(mut self) -> Self {
         self.radio = true;
         self
     }
 
-    /// Show the standard mixed mark without changing the boolean value.
     #[must_use]
     pub fn indeterminate(mut self, indeterminate: bool) -> Self {
         self.indeterminate = indeterminate;
@@ -269,9 +243,6 @@ impl CheckboxFace {
 
 pub struct Checkbox {
     control: BoolControl,
-    /// Optional visible label owned by the checkbox itself. Unlike a sibling
-    /// `Text`, this makes the entire rendered row one pointer, keyboard and
-    /// accessibility target.
     label: Option<String>,
     /// Renderer-only group summary; activation still toggles the bound bool.
     indeterminate: bool,
@@ -288,9 +259,7 @@ pub struct Checkbox {
     drawing: Option<Painted>,
     /// A radio of a set rather than a checkbox.
     radio: bool,
-    /// How far the fill and the mark have come.
     motion: CheckMotion,
-    /// The pace its mark plays at, when it says something other than the theme's.
     feel: crate::motion::Feel,
     /// A view that builds the box anew on each change: the one built in its
     /// place goes on from its mark (`motion::keep`).
@@ -350,7 +319,6 @@ impl Checkbox {
         }
     }
 
-    /// What the box shows: marked, and with which glyph.
     fn shown(&self) -> (bool, CheckGlyph) {
         (
             self.control.is_checked || self.indeterminate,
@@ -358,8 +326,6 @@ impl Checkbox {
         )
     }
 
-    /// What names the box across rebuilds: an id it was given, else its
-    /// label, else nothing (it is known by its place).
     fn identity(&self) -> Option<String> {
         self.control
             .id_override
@@ -379,8 +345,6 @@ impl Checkbox {
         }
     }
 
-    /// A radio: one choice of a set, a circle with a dot when chosen, and a
-    /// radio button to assistive technology.
     #[must_use]
     pub fn radio(mut self) -> Self {
         self.radio = true;
@@ -422,7 +386,6 @@ impl Checkbox {
         self
     }
 
-    /// [`Self::with_feel`] on a box already built.
     pub fn set_feel(&mut self, feel: crate::motion::Feel) {
         if self.feel != feel {
             self.feel = feel;
@@ -451,7 +414,6 @@ impl Checkbox {
         self
     }
 
-    /// Whether it carries a visible label of its own.
     #[must_use]
     pub fn has_label(&self) -> bool {
         self.label.is_some()
@@ -465,7 +427,6 @@ impl Checkbox {
         self.label_layout_revision = None;
     }
 
-    /// Whether it shows a mixed mark: some of what it stands for is chosen.
     #[must_use]
     pub fn is_indeterminate(&self) -> bool {
         self.indeterminate
@@ -589,11 +550,8 @@ impl Checkbox {
     }
 }
 
-/// How small the mark starts as it scales in, about the box's centre.
 const MARK_START_SCALE: f64 = 0.6;
 
-/// One glyph of a marked box in `ink`: a radio's dot, a tick or the mixed
-/// bar.
 fn paint_glyph(
     scene: &mut Scene,
     transform: Affine,
@@ -725,7 +683,6 @@ impl Widget for Checkbox {
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
         let (label_width, label_height) =
             text_renderer.measure_style(&widget_text(label), label_limit, &self.label_style);
-        // An intrinsic box is as wide as its label needs, within the room.
         let hugged = self.intrinsic.then(|| {
             let (natural, _) =
                 text_renderer.measure_style(&widget_text(label), None, &self.label_style);
@@ -812,9 +769,6 @@ impl Widget for Checkbox {
         "Checkbox"
     }
 
-    /// A checkbox repaints when what it paints changed since the frame on
-    /// screen, not on every frame: a long list of them does not repaint
-    /// whole for a scroll or a keystroke elsewhere.
     fn needs_redraw(&self) -> bool {
         self.painted != Some(self.painted_now())
     }
@@ -889,7 +843,6 @@ fn square_box(rect: Rect) -> Rect {
     Rect::from_center_size(rect.center(), (side, side))
 }
 
-/// A box a rebuild drops leaves its mark for the one put in its place.
 impl Drop for Checkbox {
     fn drop(&mut self) {
         let motion = std::mem::take(&mut self.motion);
@@ -1674,7 +1627,6 @@ mod tests {
             CheckPose::at_rest(true, CheckGlyph::Check)
         );
         assert!(!boxed.is_moving(settled));
-        // A key swaps the glyph at once.
         boxed.follow(
             true,
             CheckGlyph::Mixed,
@@ -1686,7 +1638,6 @@ mod tests {
             boxed.pose(settled),
             CheckPose::at_rest(true, CheckGlyph::Mixed)
         );
-        // Reduced motion: still a fade (no scale), at `fast`.
         let reduced = Theme::dark().with_reduce_motion(true).motion();
         let mut calm = CheckMotion::default();
         calm.follow(

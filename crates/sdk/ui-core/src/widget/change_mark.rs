@@ -1,19 +1,13 @@
-//! `ChangeMark`: what someone else changed that the person has not seen yet
-//! (task-legibility §3), as one pill in the changer's colour: their face, and the task run it
-//! was part of. Activating it shows what they did.
-//!
-//! The UI host places one on every list row, table row and window whose resource has unseen
-//! changes, with no code of the app's; a view that wants it elsewhere places `ui.ChangeMark(r)`
-//! itself and the host fills in who and which run, and places none of its own for `r`.
+//! `ChangeMark`: what someone else changed that the person has not seen yet (task-legibility §3), as
+//! one pill in the changer's colour: their face, and the task run it was part of.
 
 use crate::component::{self, Component, Event, Person, ResourceId};
 use crate::tokens::Rhythm;
 use crate::tokens::colors::PresenceHue;
 use crate::widget::{Button, Chip, ChipStyle, Container, Element, Tone};
 
-/// What someone else changed of a resource that the person looking has not seen yet: who, in
-/// which task run, and whether they made, changed or removed it. The host fills all but `of`
-/// from the resource's versions; activating it shows what they did.
+/// What someone else changed of a resource that the person looking has not seen yet: who, in which task
+/// run, and whether they made, changed or removed it.
 #[derive(Component, Default)]
 #[component(name = "ChangeMark", role = "Button", label = "run")]
 pub struct ChangeMarkProps {
@@ -22,15 +16,15 @@ pub struct ChangeMarkProps {
     pub of: Option<ResourceId>,
     /// Who made the newest change the person has not seen.
     pub by: Option<Person>,
-    /// Everyone who made one of the changes the person has not seen, in the order they changed it
-    /// (its newest change last), each once.
+    /// Everyone who made one of the changes the person has not seen, in the order they changed it (its
+    /// newest change last), each once.
     pub by_all: Vec<Person>,
     /// What the newest change did, in the words history says it with ("moved this to").
     pub said: Option<String>,
     /// What one item of it is called, plural ("tasks"): the noun a window's count names.
     pub noun: Option<String>,
-    /// What one item of it is called, singular ("task"): one change names one, so the count
-    /// and the noun agree in number.
+    /// What one item of it is called, singular ("task"): one change names one, so the count and the noun
+    /// agree in number.
     pub noun_one: Option<String>,
     /// The task run it was part of, as its task is titled.
     pub run: Option<String>,
@@ -41,37 +35,30 @@ pub struct ChangeMarkProps {
     pub count: i64,
     /// It marks a window, in its header: it says how many changes and by whom.
     pub window: bool,
-    /// Every change it counts only put items in (`$noun`): what it says is new rather than
-    /// changed.
+    /// Every change it counts only put items in (`$noun`): what it says is new rather than changed.
     pub added: bool,
-    /// The window's document holds more resources than the mark counted: what it says is a
-    /// lower bound, and says so.
+    /// The window's document holds more resources than the mark counted: what it says is a lower bound, and
+    /// says so.
     pub more: bool,
     /// Activated: show what they did, at the run that did it.
     #[component(event)]
     pub activate: Event,
-    /// What a window's mark opens: the views of its catch-up (*Since you looked*), placed by
-    /// whoever placed the mark. A mark of a row has none, and shows who changed it alone.
+    /// What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed
+    /// the mark.
     #[component(slot(default))]
     pub content: Vec<Element>,
 }
 
-/// What a row shows of a change mark, at its own height ([`crate::widget::ListRow::change`]):
-/// who (identity and name), what they did said under the row's title, and what pressing their
-/// face does.
 pub struct RowMark {
     pub identity: String,
     pub name: String,
     pub spoken: String,
-    /// What the newest change did, one line under the row's title, "and N more" where there
-    /// are more; empty shows no line.
     pub said: String,
     pub show: Option<Box<dyn FnMut()>>,
 }
 
 impl ChangeMarkProps {
-    /// The same mark again, its activation shared: a row is built anew each time it scrolls
-    /// into view.
+    /// The same mark again, its activation shared: a row is built anew each time it scrolls into view.
     #[must_use]
     pub fn again(&self) -> Self {
         Self {
@@ -88,14 +75,10 @@ impl ChangeMarkProps {
             added: self.added,
             more: self.more,
             activate: self.activate.clone(),
-            // A row's mark shows no catch-up: the views of one belong to the mark placed.
             content: Vec::new(),
         }
     }
 
-    /// The mark as a row carries it: the face of who changed it and their colour under the
-    /// row, and one line under the row's title saying what they did; who and the run said on
-    /// hover and to assistive technology. `None` while nothing is unseen.
     #[must_use]
     pub fn row(self) -> Option<RowMark> {
         let by = self.by?;
@@ -112,8 +95,6 @@ impl ChangeMarkProps {
             ),
             None => what,
         };
-        // What they did, under the row's title: the sentence history says of the change, after
-        // who did it, and how many more of the row's changes wait behind it.
         let said = self
             .said
             .filter(|said| !said.is_empty())
@@ -141,8 +122,6 @@ impl ChangeMarkProps {
         })
     }
 
-    /// The mark beside a row that is no list row (a view of its own): the face of who changed
-    /// it alone, as a round pill that keeps the row's height; who and the run on hover.
     #[must_use]
     pub fn face(self, key: &str) -> Option<Chip> {
         let mark = self.row()?;
@@ -159,16 +138,11 @@ impl ChangeMarkProps {
         })
     }
 
-    /// The header's mark: the faces of everyone who changed what the window shows, and a
-    /// label naming them and saying how many. `None` while nothing is unseen (no `by`).
     #[must_use]
     pub fn chip(&self, key: &str) -> Option<Element> {
         Some(Box::new(self.pill(key)?))
     }
 
-    /// The header's mark as the button that opens a catch-up: the same faces and label, with
-    /// the views it was given inside (a popover, a sheet when narrow). `None` when it is no
-    /// window's mark, has nothing to show, or was given no views.
     #[must_use]
     pub fn catch_up(&mut self, key: &str) -> Option<Element> {
         let views = std::mem::take(&mut self.content);
@@ -185,9 +159,6 @@ impl ChangeMarkProps {
         let content = Container::new()
             .with_no_padding()
             .with_child(Box::new(column));
-        // A list under the mark, not a page across the window: as wide as the design system's
-        // list panel, inside the window it hangs in, and a sheet at the bottom of a window too
-        // narrow to hang one in. Its footer's one move stays whole at either width.
         let mut pair = button.with_popover(content);
         pair.popover_mut().set_confined_to_viewport(true);
         pair.popover_mut()
@@ -196,7 +167,6 @@ impl ChangeMarkProps {
         Some(Box::new(pair))
     }
 
-    /// The mark's button: the faces of everyone who changed it (one, for a row) and its label.
     fn pill(&self, key: &str) -> Option<Button> {
         let by = self.by.clone()?;
         let by_all = self.by_all.clone();
@@ -213,8 +183,6 @@ impl ChangeMarkProps {
                 who.push(person);
             }
         }
-        // A row's mark shows one face; a window's shows everyone, its label naming the first
-        // few and its count saying what they changed.
         let faces: Vec<(String, String)> = if window {
             who.iter()
                 .map(|person| (person.name.clone(), person.identity.clone()))
@@ -274,8 +242,8 @@ impl ChangeMarkProps {
     }
 }
 
-/// What `people` are called, as a sentence names them: "Bo", "Bo and Scout", "Bo, Scout and
-/// Kit", and past three "Bo, Scout and 3 others" — the faces count the rest.
+/// What `people` are called, as a sentence names them: "Bo", "Bo and Scout", "Bo, Scout and Kit",
+/// and past three "Bo, Scout and 3 others" — the faces count the rest.
 fn names(people: &[Person]) -> String {
     let name = |index: usize| -> String { people[index].name.clone() };
     match people.len() {
@@ -311,8 +279,6 @@ fn face_colour(hue: PresenceHue) -> vello::peniko::Color {
     PALETTE.tokens.colors.presence.hue(hue)
 }
 
-/// What a mark shows: a pill in a window's header, the catch-up it opens, or nothing while
-/// nothing is unseen.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shape {
     Nothing,
@@ -320,25 +286,19 @@ enum Shape {
     CatchUp,
 }
 
-/// A change mark as a widget: the faces and the label, kept where they stand while what they
-/// say changes, and the catch-up a window's mark opens.
 pub struct ChangeMark {
-    /// What it is addressed by.
     key: String,
     shape: Shape,
-    /// The pill, the catch-up, or the empty stack of a mark with nothing to say.
     element: Element,
 }
 
 impl ChangeMark {
-    /// The mark `props` describe, addressed by `key`.
     fn build(key: &str, mut props: ChangeMarkProps) -> Self {
         let catch_up = props.catch_up(key);
         let (shape, element) = match catch_up {
             Some(catch_up) => (Shape::CatchUp, catch_up),
             None => match props.chip(key) {
                 Some(chip) => (Shape::Pill, chip),
-                // Nothing unseen: nothing to show.
                 None => (
                     Shape::Nothing,
                     Box::new(crate::widget::arrange::Stack::stack()) as Element,
@@ -387,8 +347,8 @@ impl component::Described for ChangeMark {
         Self::build(key, props)
     }
 
-    /// Who changed what, what they did and what pressing it does change where the mark stands,
-    /// so the catch-up it opened stays open. Another shape of mark is built again.
+    /// Who changed what, what they did and what pressing it does change where the mark stands, so the
+    /// catch-up it opened stays open.
     fn set_props(&mut self, props: ChangeMarkProps) -> bool {
         if Self::shape_of(&props) != self.shape {
             return false;
@@ -421,7 +381,6 @@ impl component::Described for ChangeMark {
         }
     }
 
-    /// A window mark's catch-up views change by key in place.
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn component::SlotViews> {
         if slot != "content" || self.shape != Shape::CatchUp {
             return None;
@@ -443,8 +402,8 @@ impl component::Described for ChangeMark {
 
 #[cfg(test)]
 mod tests {
-    /// A window's mark names one change in the singular and several in the type's plural:
-    /// "Mia changed one message", never "changed one messages".
+    /// A window's mark names one change in the singular and several in the type's plural: "Mia changed
+    /// one message", never "changed one messages".
     #[test]
     fn a_mark_names_one_change_in_the_singular() {
         crate::i18n::I18nManager::register_widget_messages();
@@ -464,8 +423,8 @@ mod tests {
         assert_eq!(said(3), "Mia changed 3 messages");
     }
 
-    /// A window's mark of changes that only put items in says what is new and who put it there:
-    /// "6 new messages from Mia, Leo and Ada", never that they changed them.
+    /// A window's mark of changes that only put items in says what is new and who put it there: "6 new
+    /// messages from Mia, Leo and Ada", never that they changed them.
     #[test]
     fn a_mark_of_new_items_says_what_is_new() {
         crate::i18n::I18nManager::register_widget_messages();
@@ -485,10 +444,9 @@ mod tests {
         assert_eq!(said(6), "6 new messages from Mia, Leo and Ada");
     }
 
-    /// German's perfect tense agrees with the person it names ("Mia hat …"), and a window's mark
-    /// names everyone who changed it ("Leo und Mia"), so its sentence names them without a verb
-    /// after the names: it reads right for one person and for several. The window speaks German
-    /// because its package ships it; the toolkit's words ride along in that language.
+    /// German's perfect tense agrees with the person it names ("Mia hat …"), and a window's mark names
+    /// everyone who changed it ("Leo und Mia"), so its sentence names them without a verb after the
+    /// names: it reads right for one person and for several.
     #[test]
     fn a_german_mark_reads_right_for_several_names() {
         let language = crate::i18n::speak_window_language(&[(

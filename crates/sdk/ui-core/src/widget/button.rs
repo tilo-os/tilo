@@ -43,18 +43,11 @@ pub struct Button {
     /// Why it cannot be pressed now, where that says more than the label (an action whose
     /// requirement does not hold): spoken as its description, beside the name it announces.
     description: Option<String>,
-    /// Presentation captured while a responsive toolbar shows this button icon-first, restored
-    /// exactly when space returns.
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
-    /// It belongs in its header's menu, not in the row: the row's More
-    /// button holds it, whatever room the row has.
     menu_only: bool,
-    /// The run of its owner's actions it stands in (`group: "Due"`), as the app names it: the
-    /// header's menu keeps rows of one run together.
     menu_group: Option<String>,
     rect: Rect,
     is_hovered: bool,
-    /// The press this button took, carried to a rebuilt button in its place.
     press: crate::pointer_replay::HeldPress,
     is_focused: bool,
     /// Focus came from pressing the button: the pointer already shows where
@@ -66,20 +59,10 @@ pub struct Button {
     /// an extension's toolbar action shows. The glyph in `icon` stays the fallback and the layout
     /// key.
     image: Option<vello::peniko::ImageData>,
-    /// Who is here, as their faces: a button with no label is their faces alone, one with a label
-    /// leads with them.
     faces: Vec<(String, String)>,
-    /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
-    /// as a person field's chip shows who it holds, in the presence hue the workspace gives them.
     avatar: Option<(String, String, crate::tokens::PresenceHue)>,
-    /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
-    /// ink a field shows an empty value in.
     placeholder: bool,
-    /// What the face says means something ([`Self::tone`]): the icon and the label take the
-    /// tone's colour, the face under them stays the role's.
     content_tone: Option<Tone>,
-    /// A media transport's control (previous, play/pause, next), drawn as
-    /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
     badge: Option<String>,
     /// A count or dot on an icon-only face's icon ([`Self::with_count`]), and how large it was
@@ -88,27 +71,15 @@ pub struct Button {
     count_size: vello::kurbo::Size,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
-    /// What the button does, which decides its whole look (see
-    /// [`ButtonRole`]).
     role: ButtonRole,
-    /// `Some` for a toggle button; `Some(true)` paints the lift and is
-    /// announced as pressed.
     toggled: Option<bool>,
-    /// Trailing keyboard shortcut, spelled with the platform's keycaps.
     shortcut: Option<crate::platform::Shortcut>,
     /// The width `measure` settled on, pinned onto the node so a stretching
     /// parent cannot widen an intrinsic button.
     measured_width: Option<f32>,
-    /// Sets the label role and the height (see [`ControlSize`]).
     control_size: ControlSize,
-    /// The geometry resolved against the theme seen in `build_layout`, for `measure`, which has no
-    /// theme of its own.
     metrics: FaceMetrics,
-    /// Fires on release-while-hovered in addition to any `on_click_path` mutation, for app code
-    /// that does not model its control flow in the CRDT.
     on_click: Option<Box<dyn FnMut()>>,
-    /// An advertised action intent. While present it is the exclusive
-    /// activation path; raw document writes and callbacks are suppressed.
     action: Option<ActionEmitter<()>>,
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
     /// through the published action door.
@@ -116,9 +87,7 @@ pub struct Button {
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
-    /// When `false`: skipped by focus, rejects input, renders dimmed.
     enabled: bool,
-    /// Where `enabled` comes from, when the app keeps it in a state.
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
     /// The page's encouraged action: a focus reset lands here, so Enter
     /// activates it.
@@ -132,23 +101,15 @@ pub struct Button {
     solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
-    /// It stands in a window bar: drawn at the bar's control height whatever the
-    /// pointer, with a finger's target in its hit rect.
     in_window_bar: bool,
-    /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
     /// The theme roles the cached face was painted from, so a theme change
     /// that keeps the layout (dark to light, a new emphasis) repaints it.
     last_theme: Option<ThemeKey>,
-    /// The container's motion between states, on the toolkit's clock, as
-    /// the theme's painter set moves it ([`crate::part_paint`]).
     motion: crate::part_paint::PartMotion,
-    /// The shape the theme's painter set drew the container as, relative to `rect`'s origin: where
-    /// the button takes the pointer.
     painted_hit: Option<vello::kurbo::BezPath>,
 }
 
-/// The theme roles a button face reads.
 type ThemeKey = (
     vello::peniko::Color,
     vello::peniko::Color,
@@ -182,8 +143,6 @@ impl Button {
         Box::new(self)
     }
 
-    /// Focus a person needs to be shown: keyboard focus, not the focus a
-    /// click on the button gave it.
     fn focus_visible(&self) -> bool {
         self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
@@ -255,24 +214,18 @@ impl Button {
         self
     }
 
-    /// When the scope is denied the widget renders dimmed and rejects input.
     #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
     }
 
-    /// Fires once per completed click (left release over the button), Enter, Space or an assistive
-    /// `Activate`.
     #[must_use]
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Box::new(f));
         self
     }
 
-    /// Route pointer, keyboard and accessibility activation through an
-    /// exported resource action. The host resolves policy against the fresh
-    /// resource tree before dispatch.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
@@ -288,16 +241,11 @@ impl Button {
         self.on_native(tilo_actions::OperationKind::Effect, handler)
     }
 
-    /// [`Self::on_effect`] for an effect scoped to the person's own device: copying to their
-    /// clipboard, their own appearance, their own draft. A room's grants have nothing to consent to
-    /// ([`tilo_actions::OWN_DEVICE_SCOPE`]).
     #[must_use]
     pub fn on_own_device_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
         self.on_native_scoped(tilo_actions::OperationKind::Effect, true, handler)
     }
 
-    /// Publish a zero-argument transient presentation action: discoverable and agent-driveable,
-    /// absent from history and collaboration logs.
     #[must_use]
     pub fn on_view<F: FnMut() + 'static>(self, handler: F) -> Self {
         self.on_native(tilo_actions::OperationKind::View, handler)
@@ -381,30 +329,24 @@ impl Button {
         self
     }
 
-    /// Name the run of its owner's actions the button stands in (`group: "Due"`): the
-    /// header's menu keeps a run's rows together, under the run's own row.
     #[must_use]
     pub fn with_menu_group(mut self, group: impl Into<String>) -> Self {
         self.menu_group = Some(group.into());
         self
     }
 
-    /// What kind of action it is, as a menu row of the same command shows it.
     pub(crate) fn kind(&self) -> ButtonRole {
         self.role
     }
 
-    /// The run of its owner's actions it stands in, when it names one.
     pub(crate) fn menu_group(&self) -> Option<&str> {
         self.menu_group.as_deref()
     }
 
-    /// Its glyph, where it shows one.
     pub(crate) fn glyph(&self) -> Option<crate::icons::Icon> {
         self.icon
     }
 
-    /// The plain key that presses it, where the app declared one.
     pub(crate) fn declared_key(&self) -> Option<crate::platform::Shortcut> {
         self.shortcut.clone()
     }
@@ -462,8 +404,6 @@ impl Button {
         self
     }
 
-    /// The label stands for no value yet: it is painted in the secondary ink, as a field shows
-    /// an empty value, while the face stays a control the person presses.
     #[must_use]
     pub fn with_placeholder(mut self) -> Self {
         self.placeholder = true;
@@ -471,15 +411,12 @@ impl Button {
         self
     }
 
-    /// What the face says means something ([`Tone::Neutral`] is no tone): the icon and label take
-    /// the tone's colour while the face stays the role's.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.set_tone(tone);
         self
     }
 
-    /// Say what the face says means something, in place, as [`Self::tone`] does.
     pub fn set_tone(&mut self, tone: Tone) {
         let tone = (tone != Tone::Neutral).then_some(tone);
         if tone == self.content_tone {
@@ -498,8 +435,6 @@ impl Button {
         self
     }
 
-    /// Show `label`, and whether it stands for no value yet, changing in place when the control's
-    /// binding moved.
     pub fn set_label(&mut self, label: impl Into<String>, placeholder: bool) {
         let label = label.into();
         if label == self.label && placeholder == self.placeholder {
@@ -522,7 +457,6 @@ impl Button {
         self
     }
 
-    /// [`Self::with_detail`] after construction; `None` takes it away.
     pub fn set_detail(&mut self, detail: Option<String>) {
         if detail == self.detail {
             return;
@@ -532,7 +466,6 @@ impl Button {
         self.dirty = true;
     }
 
-    /// What the face tells at its trailing edge, when it tells anything.
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
         self.detail.as_deref()
@@ -583,7 +516,6 @@ impl Button {
         self
     }
 
-    /// Whether it shows `content` on its icon, in the warning tone when `alert`.
     pub(crate) fn shows_count(
         &self,
         content: Option<&crate::widget::BadgeContent>,
@@ -605,8 +537,6 @@ impl Button {
         }
     }
 
-    /// Where the count stands: centred on the icon's top-trailing corner and inside the face on
-    /// both axes.
     fn count_rect(&self) -> Option<Rect> {
         self.count.as_ref()?;
         if !self.label.is_empty() || self.icon.is_none() || self.count_size.width <= 0.0 {
@@ -680,21 +610,16 @@ impl Button {
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
             self.dirty = true;
-            // A new locale re-shapes the label, and the width follows it.
             self.layout_dirty = true;
         }
     }
 
-    /// A media transport's control: previous, play/pause or next, drawn as
-    /// the transport draws it (play/pause the one round, prominent control)
-    /// and named for what it does now.
     pub fn transport(id: &str, control: crate::widget::TransportControl) -> Self {
         let mut button = Self::icon_only(id, control.icon(), &control.name());
         button.transport = Some((control, 0.0));
         button
     }
 
-    /// Show `control` now (play while paused, pause while playing).
     pub fn set_transport(&mut self, control: crate::widget::TransportControl) {
         if self.transport.map(|(shown, _)| shown) == Some(control) {
             return;
@@ -708,8 +633,6 @@ impl Button {
         self.dirty = true;
     }
 
-    /// Show `icon` now, for a control whose glyph follows its state (a
-    /// speaker that is muted, a repeat that repeats one).
     pub fn set_icon(&mut self, icon: crate::icons::Icon) {
         if self.icon != Some(icon) {
             self.icon = Some(icon);
@@ -732,8 +655,6 @@ impl Button {
             .role(ButtonRole::Plain)
     }
 
-    /// Stretch to the parent's width. The height still comes from the
-    /// [`ControlSize`]; without this a button is as wide as its label.
     #[must_use]
     pub fn fill_width(mut self) -> Self {
         self.fill_width = true;
@@ -741,8 +662,6 @@ impl Button {
         self
     }
 
-    /// How big this button is: its height and label role together (see
-    /// [`ControlSize`]).
     #[must_use]
     pub fn control_size(mut self, size: ControlSize) -> Self {
         self.control_size = size;
@@ -752,13 +671,11 @@ impl Button {
         self
     }
 
-    /// Whether this is the window's one main action, drawn on the accent.
     #[must_use]
     pub fn is_primary(&self) -> bool {
         self.role == ButtonRole::Primary
     }
 
-    /// What the button does; the role decides its whole look.
     #[must_use]
     pub fn role(mut self, role: ButtonRole) -> Self {
         self.role = role;
@@ -766,7 +683,6 @@ impl Button {
         self
     }
 
-    /// What the button does, which decides its whole look.
     #[must_use]
     pub const fn role_of(&self) -> ButtonRole {
         self.role
@@ -787,7 +703,6 @@ impl Button {
         self
     }
 
-    /// Turn a toggle button on or off (the host syncing from its model).
     pub fn set_toggled(&mut self, on: bool) {
         if self.toggled != Some(on) {
             self.toggled = Some(on);
@@ -795,13 +710,10 @@ impl Button {
         }
     }
 
-    /// Whether this is a toggle button that is on.
     pub fn is_toggled(&self) -> bool {
         self.toggled == Some(true)
     }
 
-    /// Show the shortcut that does the same thing after the label, in the platform's keycap legends
-    /// (`Ctrl+Enter`, `⌘↩`); part of the button's width.
     #[must_use]
     pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
@@ -823,9 +735,6 @@ impl Button {
         }
     }
 
-    /// Follow `state` for whether the button can act ("Save" enabled while
-    /// there is something to save): a change through any clone of it shows
-    /// on the next sync.
     #[must_use]
     pub fn enabled_from(mut self, state: &crate::LocalState<bool>) -> Self {
         let (enabled, binding) = super::binding::local(state);
@@ -834,8 +743,6 @@ impl Button {
         self
     }
 
-    /// Follow `state` for whether the button can act, as `ready` reads it:
-    /// "Create" enabled while the draft beside it parses.
     #[must_use]
     pub fn enabled_while<S: Clone + 'static>(
         mut self,
@@ -857,8 +764,6 @@ impl Button {
         self
     }
 
-    /// Prefer the icon in a space-constrained toolbar, keeping the label as the accessible name and
-    /// tooltip; activation, focus and resource semantics are unchanged.
     pub fn set_compact_toolbar_presentation(&mut self, compact: bool) {
         if compact && !self.label.is_empty() && self.compact_presentation.is_none() {
             self.compact_presentation = Some((
@@ -910,8 +815,6 @@ impl Button {
         self.menu_only
     }
 
-    /// The counterpart to `TextInput::apply_layout_external`, for an app hand-positioning a shared
-    /// control over its own chrome: the button keeps its focus, a11y and activation contract.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         // Bitwise: this asks whether the stored size changed at all, not
         // whether it changed by more than some tolerance.
@@ -945,16 +848,11 @@ pub enum ButtonRole {
     Secondary,
     Destructive,
     Plain,
-    /// A key of a keypad or an on-screen keyboard.
     Key,
-    /// A control of the desktop's top bar or a window's bar: the bar
-    /// control's face and lifts ([`crate::widget::BarControlFace`]).
     Bar,
 }
 
 impl ButtonRole {
-    /// A labelled face of this role sets its ink on its layout edge and
-    /// reaches outward for its lift and hit area.
     const fn flush(self) -> bool {
         matches!(self, Self::Plain)
     }
@@ -966,15 +864,12 @@ fn fills_when_on(icon: crate::icons::Icon) -> bool {
     matches!(icon, crate::icons::Icon::Star | crate::icons::Icon::Pin)
 }
 
-/// `(fill, edge, ink)` of one button face.
 type FaceColors = (
     vello::peniko::Color,
     Option<vello::peniko::Color>,
     vello::peniko::Color,
 );
 
-/// The filled destructive face: the confirmation step of a destructive
-/// action, and nowhere else.
 fn confirmation_face_colors(theme: &Theme, interact: Interaction) -> FaceColors {
     let colors = &theme.tokens.colors;
     let rest = colors.semantic.danger;
@@ -994,8 +889,6 @@ fn confirmation_face_colors(theme: &Theme, interact: Interaction) -> FaceColors 
     (fill, None, ink)
 }
 
-/// The colours of `role` in `interact`, the one source for the retained and immediate-mode
-/// painters; `edge` is `None` where the fill defines the shape or there is no face.
 pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> FaceColors {
     use vello::peniko::Color;
     let colors = &theme.tokens.colors;
@@ -1059,13 +952,9 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
                 colors.text_primary
             };
             let ink = colors.ink_on_any(&[rest, hover, active], wanted, ON_FILL_MIN_CONTRAST);
-            // A raised face has no edge: the level step separates it
-            // (`docs/design-language.md`, "Surfaces").
             (fill, None, ink)
         }
         ButtonRole::Key => {
-            // A key rests on a faint lift of its ground and lifts further
-            // under the pointer and the press.
             let ground = colors.surfaces.content;
             let (rest, hover, pressed) = (
                 colors.lift_on(ground, 0.5),
@@ -1087,9 +976,6 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             (fill, None, ink)
         }
         ButtonRole::Bar => {
-            // The bar has no surface of its own: its controls stand on the
-            // ground and lift off it, half under the pointer, whole while
-            // pressed (`BarControlFace::fill`).
             let ground = colors.surfaces.content;
             let (hover, pressed) = (colors.lift_on(ground, 0.5), colors.lift_on(ground, 1.0));
             let fill = if interact.pressed {
@@ -1131,8 +1017,6 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
     }
 }
 
-/// A face's colours `(fill, edge, ink)` in `interact`, `on` for a toggle
-/// that is on, and the effective interaction they were resolved for.
 fn state_face_colors(
     theme: &Theme,
     role: ButtonRole,
@@ -1141,8 +1025,6 @@ fn state_face_colors(
     interact: Interaction,
 ) -> (FaceColors, Interaction) {
     let on = on && !interact.disabled;
-    // An "on" toggle is a lift and stays one under the pointer; a press
-    // still answers.
     let interact = Interaction {
         hovered: interact.hovered && !on,
         ..interact
@@ -1169,19 +1051,13 @@ fn resolve_face_colors(
     }
 }
 
-/// A button's geometry in one theme: everything its size decides.
 #[derive(Clone, Debug, PartialEq)]
 struct FaceMetrics {
-    /// The [`ControlSize`] height, grown with the label's line at large
-    /// text.
     height: f64,
     /// Inset of the content from each side.
     pad_x: f64,
-    /// Edge of a leading or sole icon.
     icon: f64,
-    /// Between the icon and the label.
     icon_gap: f64,
-    /// Between the label and the shortcut hint.
     hint_gap: f64,
     label_style: TextStyle,
 }
@@ -1212,8 +1088,6 @@ impl FaceMetrics {
         }
     }
 
-    /// The geometry of `size` for a face of `role`: a key sets its label in
-    /// `Title` and its icon to that line.
     fn of_role(size: ControlSize, role: ButtonRole, theme: &Theme) -> Self {
         let mut metrics = Self::of(size, theme);
         if role == ButtonRole::Key {
@@ -1221,9 +1095,6 @@ impl FaceMetrics {
             metrics.icon = f64::from(metrics.label_style.size).round();
         }
         if role == ButtonRole::Bar {
-            // The top bar's control: a label line with air above and below
-            // (the bar control less one `s1`), and the bar control's inset,
-            // whatever size is asked.
             let tokens = &theme.tokens;
             metrics.height = f64::from(tokens.metrics.bar_control_height - tokens.spacing.s1);
             metrics.pad_x = f64::from(tokens.spacing.rhythm.related);
@@ -1233,8 +1104,6 @@ impl FaceMetrics {
         metrics
     }
 
-    /// The geometry of `size` in the stock theme: what a button measures
-    /// with before it has seen the active theme.
     fn stock(size: ControlSize) -> Self {
         static STOCK: std::sync::LazyLock<[FaceMetrics; 3]> = std::sync::LazyLock::new(|| {
             let theme = Theme::dark();
@@ -1256,9 +1125,6 @@ impl FaceMetrics {
     }
 }
 
-/// A button face's geometry captured from the theme in `build_layout`, for a
-/// toolkit control that lays itself out like a [`Button`] and measures
-/// without a theme of its own.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FaceSizer {
     metrics: FaceMetrics,
@@ -1306,7 +1172,6 @@ impl FaceSizer {
     }
 }
 
-/// A badge pill on the bottom-right corner of `rect`.
 fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
     use crate::widget::badge::BadgeFace;
     let height = BadgeFace::height(ctx.theme);
@@ -1315,31 +1180,21 @@ fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
     BadgeFace::new(pill, label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
 
-/// What sits inside a button's face: an optional leading icon, the label, an
-/// optional fact at the trailing edge and an optional shortcut hint.
 struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
     /// Painted instead of `icon` on an icon-only face.
     image: Option<&'a vello::peniko::ImageData>,
-    /// Who is here, as their faces (name, identity), leading a label or standing alone;
-    /// empty for every face that is not a group of people.
     faces: &'a [(String, String)],
-    /// One person's avatar before the label, as a person chip leads with it.
     avatar: Option<(&'a str, &'a str, crate::tokens::PresenceHue)>,
-    /// The label names no value yet: painted in the secondary ink.
     placeholder: bool,
     /// What the content marks means: its colour, where the face's own ink would stand.
     tone: Option<Tone>,
     badge: Option<&'a str>,
     label: &'a str,
-    /// A fact told at the trailing edge, in the secondary ink; the label then leads.
     detail: Option<&'a str>,
     hint: Option<String>,
-    /// A labelled plain face: no inner padding, the ink on the layout edge.
     flush: bool,
-    /// Draw the icon filled (a toggle that is on, with a closed glyph).
     filled_icon: bool,
-    /// A trailing chevron after a label: the face opens a menu.
     menu: bool,
 }
 
@@ -1412,7 +1267,6 @@ impl FaceContent<'_> {
         );
     }
 
-    /// `image` stretched over `rect`.
     fn draw_image(&self, ctx: &mut PaintCtx<'_>, image: &vello::peniko::ImageData, rect: Rect) {
         let (width, height) = (f64::from(image.width), f64::from(image.height));
         if width <= 0.0 || height <= 0.0 {
@@ -1520,8 +1374,6 @@ impl FaceContent<'_> {
                 + metrics.icon_gap
         };
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
-        // A fact at the trailing edge makes the face a row: the label leads, the fact trails,
-        // and the ink between them is what a person scanning the column of choices compares.
         if let Some(detail) = self.detail.filter(|detail| !detail.is_empty()) {
             let detail_w = f64::from(ctx.text.measure_style(detail, None, style).0);
             let detail_x = rect.x1 - pad - detail_w;
@@ -1601,7 +1453,6 @@ impl FaceContent<'_> {
         }
         let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
         let label_x = start_x + lead;
-        // A label that names no value yet reads quieter than one that does.
         let label_ink = if self.placeholder { hint_ink } else { ink };
         ctx.text(&label, style, label_ink, Point::new(label_x, text_y), None);
         if let Some((hint, _)) = hint {
@@ -1623,8 +1474,6 @@ impl FaceContent<'_> {
     }
 }
 
-/// The ink of a shortcut hint: the label's own ink on an inverted or filled
-/// face, the secondary tier on a raised or bare one.
 fn hint_ink(
     theme: &Theme,
     role: ButtonRole,
@@ -1652,7 +1501,6 @@ fn hint_ink(
     }
 }
 
-/// The shortcut as the platform spells it on its keycaps.
 fn shortcut_text(shortcut: &crate::platform::Shortcut) -> String {
     shortcut.label(crate::platform::PlatformConventions::new(
         crate::platform::Platform::current(),
@@ -1665,17 +1513,13 @@ struct FacePaint<'a> {
     rect: Rect,
     role: ButtonRole,
     confirms: bool,
-    /// A toggle that is on: the face stands on the selection lift.
     on: bool,
     interact: Interaction,
     content: FaceContent<'a>,
     metrics: &'a FaceMetrics,
-    /// Where the container is in its motion between states.
     moment: crate::part_paint::Moment,
 }
 
-/// The container states of a face in `interact`, `on` for a toggle that is
-/// on.
 fn container_states(interact: Interaction, on: bool) -> crate::part_paint::States {
     use crate::part_paint::States;
     States::REST
@@ -1687,15 +1531,10 @@ fn container_states(interact: Interaction, on: bool) -> crate::part_paint::State
 }
 
 impl FacePaint<'_> {
-    /// The face's colours `(fill, edge, ink)` in its state and the effective
-    /// interaction they were resolved for.
     fn colors(&self, theme: &Theme) -> (FaceColors, Interaction) {
         state_face_colors(theme, self.role, self.confirms, self.on, self.interact)
     }
 
-    /// The rect the face fills: a labelled plain face keeps its ink on its
-    /// layout edge, and its lift (and focus ring) reach outward by the
-    /// padding it does not take.
     fn face_rect(&self) -> Rect {
         if self.content.flush {
             self.rect.inflate(self.metrics.pad_x, 0.0)
@@ -1704,9 +1543,6 @@ impl FacePaint<'_> {
         }
     }
 
-    /// Draw the container with the control role's painter set into
-    /// `scene`, where the set draws it; `None` leaves it to the toolkit's
-    /// face.
     fn painted_container(
         &self,
         scene: &mut Scene,
@@ -1735,16 +1571,11 @@ impl FacePaint<'_> {
         )
     }
 
-    /// The shape the theme's painter set draws the container as, in the
-    /// face's coordinates; `None` where the set leaves the container to the
-    /// toolkit.
     fn painted_shape(&self, theme: &Theme) -> Option<vello::kurbo::BezPath> {
         self.painted_container(&mut Scene::new(), Affine::IDENTITY, theme)?
             .hit
     }
 
-    /// Paint the face. Returns the shape the theme's painter set drew the
-    /// container as, where it drew one: the button takes the pointer there.
     fn paint(&self, ctx: &mut PaintCtx<'_>) -> Option<vello::kurbo::BezPath> {
         let theme = ctx.theme;
         let disabled = self.interact.disabled;
@@ -1785,7 +1616,6 @@ impl FacePaint<'_> {
         let outline = crate::surface::edge_outline(face_rect, radius);
         if self.interact.focused && !disabled {
             let ring = theme.tokens.colors.intent.accent_ink;
-            // The ring follows a painted shape.
             if let Some(hit) = &hit {
                 ctx.scene.stroke(
                     &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
@@ -1844,7 +1674,6 @@ impl FacePaint<'_> {
 pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
-    /// What the face says means something; the icon and the label take its colour.
     tone: Option<Tone>,
     icon: Option<crate::icons::Icon>,
     role: ButtonRole,
@@ -1881,19 +1710,15 @@ impl<'a> ButtonFace<'a> {
             .accessible_name(name)
             .role(ButtonRole::Plain)
     }
-    /// What the button does; the role decides its whole look.
     #[must_use]
     pub fn role(mut self, role: ButtonRole) -> Self {
         self.role = role;
         self
     }
-    /// What the face is drawn as, for a test that holds a bar's action to what it paints.
     #[cfg(test)]
     pub(crate) const fn role_of(&self) -> ButtonRole {
         self.role
     }
-    /// What the face says means something ([`Tone::Neutral`] is no tone): the
-    /// icon and the label take the tone's colour.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.tone = (tone != Tone::Neutral).then_some(tone);
@@ -1913,25 +1738,21 @@ impl<'a> ButtonFace<'a> {
         self.icon = Some(icon);
         self
     }
-    /// The face's height and label role.
     #[must_use]
     pub fn control_size(mut self, size: ControlSize) -> Self {
         self.control_size = size;
         self
     }
-    /// A trailing keyboard shortcut in the platform's keycap legends.
     #[must_use]
     pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
-    /// A fact told at the face's trailing edge, in the secondary ink: the label then leads.
     #[must_use]
     pub fn detail(mut self, detail: &'a str) -> Self {
         self.detail = Some(detail);
         self
     }
-    /// A toggle that is on: the face stands on the selection lift.
     #[must_use]
     pub fn toggled(mut self, on: bool) -> Self {
         self.on = on;
@@ -1963,7 +1784,6 @@ impl<'a> ButtonFace<'a> {
         self.accessible_name = Some(name);
         self
     }
-    /// The visible label, or the explicit `accessible_name` when it's empty.
     pub fn spoken_name(&self) -> &str {
         if self.label.is_empty() {
             self.accessible_name.unwrap_or("")
@@ -1971,8 +1791,6 @@ impl<'a> ButtonFace<'a> {
             self.label
         }
     }
-    /// The face as a page shows it ([`crate::composition::Face`]), as
-    /// [`Button::paint`] paints it; `None` for a face that is a picture.
     #[must_use]
     pub fn composed(&self, theme: &Theme) -> Option<crate::composition::Face> {
         let label = localized_label(self.label);
@@ -1980,16 +1798,12 @@ impl<'a> ButtonFace<'a> {
         self.painter(&metrics, &label).composed(theme)
     }
 
-    /// The resolved palette without painting: `(fill, edge, ink)`.
     pub fn colors(&self, theme: &Theme) -> FaceColors {
         resolve_face_colors(theme, self.role, self.confirms, self.interact)
     }
-    /// The height of a face of `size` in `theme`.
     pub fn height(size: ControlSize, theme: &Theme) -> f64 {
         FaceMetrics::of(size, theme).height
     }
-    /// The narrowest rect width that shows this face's icon, label and
-    /// shortcut without eliding.
     pub fn intrinsic_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let label = localized_label(self.label);
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
@@ -2031,7 +1845,6 @@ impl<'a> ButtonFace<'a> {
         let style = &metrics.label_style;
         let shown = text.elide_to_width_style(&label, f32_of_f64(room + 0.5), style);
         let label_w = f64::from(text.measure_style(&shown, None, style).0);
-        // A face telling a fact at its trailing edge leads with its icon, as its label does.
         let start_x = if self.detail.is_some_and(|detail| !detail.is_empty()) {
             rect.x0 + metrics.pad_x
         } else {
@@ -2039,16 +1852,12 @@ impl<'a> ButtonFace<'a> {
         };
         Some(Rect::new(start_x, iy, start_x + icon_px, iy + icon_px))
     }
-    /// Where a pointer activates this face: its rect, grown about its centre
-    /// to the minimum pointer target.
     pub fn hit_rect(&self, theme: &Theme) -> Rect {
         let target = f64::from(theme.tokens.metrics.min_pointer_target);
         let grow_x = ((target - self.rect.width()) / 2.0).max(0.0);
         let grow_y = ((target - self.rect.height()) / 2.0).max(0.0);
         self.rect.inflate(grow_x, grow_y)
     }
-    /// Whether `point` activates this face: inside the shape the theme's
-    /// painter set draws it as, or else in its hit rect.
     pub fn contains(&self, theme: &Theme, point: Point) -> bool {
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         match self.painter(&metrics, "").painted_shape(theme) {
@@ -2057,7 +1866,6 @@ impl<'a> ButtonFace<'a> {
         }
     }
 
-    /// This face as it is painted, labelled `label`.
     fn painter<'b>(&'b self, metrics: &'b FaceMetrics, label: &'b str) -> FacePaint<'b> {
         FacePaint {
             rect: self.rect,
@@ -2076,7 +1884,6 @@ impl<'a> ButtonFace<'a> {
                 label,
                 detail: self.detail,
                 hint: self.shortcut.as_ref().map(shortcut_text),
-                // A painted face fills the rect its host gave it.
                 flush: false,
                 filled_icon: self.icon.is_some_and(|icon| {
                     icon.is_brand()
@@ -2119,8 +1926,6 @@ fn localized_label(key: &str) -> String {
 }
 
 impl Button {
-    /// Paint a [`ButtonFace`]: the retained [`Button`]'s look for a canvas
-    /// host that owns its own hit-testing ([`ButtonFace::contains`]).
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -2138,7 +1943,6 @@ impl Button {
         ));
     }
 
-    /// The face `draw` paints: its role, state and what it shows.
     fn face_paint<'b>(
         &'b self,
         metrics: &'b FaceMetrics,
@@ -2195,11 +1999,6 @@ impl Button {
         )
     }
 
-    /// The face height in the current theme. A fine pointer keeps the
-    /// size's height and reaches the minimum target through the hit rect
-    /// ([`Self::hit_rect`]); a coarse pointer grows the face to it — except
-    /// in a window bar, which keeps its control height and leaves the
-    /// grown target to the hit rect.
     fn face_height(&self) -> f64 {
         let height = self.transport.map_or(self.metrics.height, |(_, side)| side);
         if self.in_window_bar || self.interaction.supports_hover() {
@@ -2209,8 +2008,6 @@ impl Button {
         }
     }
 
-    /// The face's width with everything shown, measured with the geometry
-    /// captured in `build_layout`.
     fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
         if self.transport.is_some() {
             return f32_of_f64(self.face_height());
@@ -2239,8 +2036,6 @@ impl Button {
         )
     }
 
-    /// Whether `point` activates the button: inside the shape the theme's
-    /// painter set drew it as, or else its hit rect ([`Self::hit_rect`]).
     fn takes(&self, point: Point) -> bool {
         match &self.painted_hit {
             Some(hit) => crate::part_paint::hit_contains(hit, point - self.rect.origin().to_vec2()),
@@ -2248,9 +2043,6 @@ impl Button {
         }
     }
 
-    /// Where a pointer activates the button: the face, grown about its
-    /// centre to the minimum pointer target; a labelled plain button also
-    /// reaches outward by the padding its ink does not take.
     fn hit_rect(&self) -> Rect {
         let rect = if self.role.flush() && !self.label.is_empty() {
             self.rect.inflate(self.metrics.pad_x, 0.0)
@@ -2305,8 +2097,6 @@ impl Button {
         taffy.set_style(node, style).is_ok()
     }
 
-    /// Run the native handler for a `tilo.ui.control.invoke` addressed to
-    /// this button. `Ok(false)` when the operation is not this button's.
     fn invoke_native_control(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -2331,10 +2121,6 @@ impl Button {
 }
 
 impl Widget for Button {
-    /// A real button showing its face: its icon, label and shortcut on the
-    /// ground its role and state give it. A face that shows people or a
-    /// picture (who is here, an extension's image, a transport control)
-    /// shows its paint.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("button");
         let face = crate::composition::HTML_CODE
@@ -2361,7 +2147,6 @@ impl Widget for Button {
         if self.interaction != environment {
             self.interaction = environment;
             self.is_hovered &= environment.supports_hover();
-            // An icon's square and a label's padding follow the face's height.
             self.measured_width = None;
             self.layout_dirty = true;
             self.dirty = true;
@@ -2520,7 +2305,6 @@ impl Widget for Button {
         let on = self.is_toggled();
         let now = crate::time::now();
         let set = theme.painter(crate::tokens::SurfaceRole::Control);
-        // The toolkit's own button changes state at once.
         self.motion.go(
             container_states(interact, on),
             (Some(set), crate::part_paint::Part::ButtonContainer),
@@ -2572,7 +2356,6 @@ impl Widget for Button {
             return;
         }
         let (label, hint) = self.content();
-        // The cached face is painted by the face it caches.
         let mut cached = std::mem::take(&mut self.face);
         let hit = self
             .face_paint(&metrics, &label, hint, moment)
@@ -2584,7 +2367,6 @@ impl Widget for Button {
             ));
         self.face = cached;
         if let (Some(count), Some(rect)) = (&self.count, self.count_rect()) {
-            // Into the cached face, where it moves with the button.
             count.paint(
                 self.face.scene_mut(),
                 Affine::IDENTITY,
@@ -2649,7 +2431,6 @@ impl Widget for Button {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Reject all input without setting `handled`.
         if !self.effectively_enabled() {
             return;
         }
@@ -2686,9 +2467,6 @@ impl Widget for Button {
                             *ctx.handled = true;
                         }
                     }
-                    // The press this button took, or the one a button it
-                    // replaced took at this place (a rebuild while the
-                    // button was held), completes here.
                     ElementState::Released => {
                         match self.press.release(self.is_hovered.then_some(at)) {
                             Release::Click(()) => {
@@ -2709,8 +2487,6 @@ impl Widget for Button {
         "Button"
     }
 
-    /// A host that lays buttons out (a header row) reaches their
-    /// presentation through this.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -2723,8 +2499,6 @@ impl Widget for Button {
         Some(self.id.as_str())
     }
 
-    /// Returns the raw string (a fluent key or plain text); the host
-    /// resolves i18n and renders.
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
@@ -2733,7 +2507,6 @@ impl Widget for Button {
         self.rect
     }
 
-    /// The count on the icon, and the icon it stands on.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let Some(count) = self.count_rect() else {
             return Vec::new();
@@ -2763,7 +2536,6 @@ impl Widget for Button {
         self.default_focus
     }
     fn set_focus(&mut self, focused: bool) {
-        // A press that focused it keeps its mark; losing focus clears it.
         self.pressed_into_focus &= focused;
         self.is_focused = focused;
     }
@@ -2774,8 +2546,6 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
-    /// mutation + imperative callback as a mouse click.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -2827,9 +2597,6 @@ impl Widget for Button {
         };
         let node = AccessNode::new(role)
             .with_semantic_key(&self.id)
-            // A button is spoken where a press reaches it: the shape it draws, grown to the
-            // target the person's pointer needs — in a window bar the finger's target stands
-            // beyond the drawn face, and assistive technology touches the same target.
             .with_bounds(self.painted_hit.as_ref().map_or_else(
                 || self.hit_rect(),
                 |hit| {

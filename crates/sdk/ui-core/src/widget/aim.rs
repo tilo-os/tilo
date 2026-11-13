@@ -1,26 +1,5 @@
-//! One reading of pointer intent for the whole system: is the pointer passing over something, or
-//! aiming at it?
-//!
-//! Passing over a control is not hovering it. Only aim counts: the pointer slowing and settling on
-//! a target, or decelerating so that it will stop inside one. Every surface that reacts to the
-//! pointer before a click (a tab pill opening its chips, a maximized window's bar revealed at the
-//! top edge, a desk widget brought by reaching for its edge, a banner that must not expire under
-//! the pointer) reads intent from this one [`Trajectory`], so they agree about what a hand movement
-//! means and are tuned in one place.
-//!
-//! - **settled**: slow at the newest sample ([`SETTLE_SPEED`]), or silent for [`SETTLE`] since it
-//!   (a moving pointer reports far more often, so silence means it stopped);
-//! - **settling into** a target: settled inside it, or decelerating so that, at constant
-//!   deceleration, it stops inside it;
-//! - **heading for** a target: inside the convex hull of a recent position (the apex) and the
-//!   target, so a pointer moving away or sideways past it is not;
-//! - **in transit**: fast and not braking, its speed still above a share of its recent peak;
-//! - **aiming at** a target ([`Trajectory::aims_at`]): on it and settled or settling there. This is
-//!   what "the pointer is on this control" means everywhere: an aimed-at control never moves, and
-//!   something that pauses for the person (a banner's timer) pauses only while aimed at.
-//!
-//! Pure: every method takes the instant it reasons about, so slow and fast pointer paths are tested
-//! against a synthetic timeline.
+//! One reading of pointer intent for the whole system: is the pointer passing over something, or aiming
+//! at it?
 
 use crate::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect, Vec2};
@@ -41,14 +20,12 @@ pub const APEX_SAMPLES: usize = 3;
 /// sane report rate.
 pub const MAX_SAMPLES: usize = 12;
 
-/// A pointer's recent path, newest last.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trajectory {
     samples: Vec<(Point, Instant)>,
 }
 
 impl Trajectory {
-    /// A pointer sample at `p`.
     pub fn push(&mut self, p: Point, now: Instant) {
         if self.samples.len() >= MAX_SAMPLES {
             self.samples.remove(0);
@@ -56,33 +33,25 @@ impl Trajectory {
         self.samples.push((p, now));
     }
 
-    /// Forget the path, e.g. when the pointer leaves the surface or jumps
-    /// to another display.
     pub fn clear(&mut self) {
         self.samples.clear();
     }
 
-    /// Whether no motion has been seen.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
 
-    /// The newest sample.
     #[must_use]
     pub fn last(&self) -> Option<(Point, Instant)> {
         self.samples.last().copied()
     }
 
-    /// The path, oldest first.
     #[must_use]
     pub fn samples(&self) -> &[(Point, Instant)] {
         &self.samples
     }
 
-    /// The apex of the heading cone for the newest sample: the position
-    /// [`APEX_SAMPLES`] samples before it (the oldest seen, early on).
-    /// `None` before there are two samples.
     #[must_use]
     pub fn apex(&self) -> Option<Point> {
         let newest = self.samples.len().checked_sub(1)?;
@@ -94,8 +63,6 @@ impl Trajectory {
             .map(|(p, _)| *p)
     }
 
-    /// Where the last [`APEX_SAMPLES`] samples began: the place a pointer
-    /// that has now stopped came from.
     #[must_use]
     pub fn recent_origin(&self) -> Option<Point> {
         self.samples
@@ -118,9 +85,6 @@ impl Trajectory {
         })
     }
 
-    /// Whether the pointer is resting where it is at `now`: slow at its
-    /// newest sample, or silent for [`SETTLE`] since. Without motion seen,
-    /// it is.
     #[must_use]
     pub fn settled(&self, now: Instant) -> bool {
         let Some((_, t)) = self.last() else {
@@ -133,7 +97,6 @@ impl Trajectory {
             .is_none_or(|v| v.is_finite() && v <= SETTLE_SPEED)
     }
 
-    /// When [`Self::settled`] next changes with no further input.
     #[must_use]
     pub fn settle_deadline(&self, now: Instant) -> Option<Instant> {
         if self.settled(now) {
@@ -171,8 +134,6 @@ impl Trajectory {
         self.stops_inside(v, target)
     }
 
-    /// At constant deceleration from the last two segments, the pointer
-    /// (now at speed `v`) stops inside `target`.
     fn stops_inside(&self, v: f64, target: Rect) -> bool {
         let n = self.samples.len();
         let (Some(v0), Some((p, t)), Some((q, tq))) = (
@@ -191,9 +152,6 @@ impl Trajectory {
         target.contains(p + dir * (v * v / (2.0 * decel)))
     }
 
-    /// Whether the newest sample heads for `target` from outside it: inside
-    /// the hull of the apex and the target. A repeated position says
-    /// nothing about direction.
     #[must_use]
     pub fn heading_for(&self, target: Rect) -> bool {
         let (Some((p, _)), Some(apex)) = (self.last(), self.apex()) else {
@@ -202,9 +160,6 @@ impl Trajectory {
         apex != p && !target.contains(p) && in_aim_hull(p, apex, target)
     }
 
-    /// Whether the pointer aims at `target` at `now`: on it, and settled or
-    /// settling there. The one meaning of "the pointer is on this" for
-    /// anything that holds still or pauses for the person.
     #[must_use]
     pub fn aims_at(&self, target: Rect, now: Instant) -> bool {
         self.last().is_some_and(|(p, _)| target.contains(p))
@@ -263,8 +218,6 @@ impl Trajectory {
     }
 }
 
-/// Whether `p` lies in the convex hull of `apex` and `target`: inside the
-/// target, or inside a triangle from the apex to one of its edges.
 #[must_use]
 pub fn in_aim_hull(p: Point, apex: Point, target: Rect) -> bool {
     if target.contains(p) {
@@ -309,9 +262,6 @@ mod tests {
 
     const BUTTON: Rect = Rect::new(100.0, 0.0, 140.0, 20.0);
 
-    /// Sweeping across a control at speed is not aiming at it, however
-    /// squarely the pointer crosses it; stopping on it, or braking into it,
-    /// is.
     #[test]
     fn passing_over_a_control_is_not_aiming_at_it() {
         let (sweep, t0) = path(&[(40.0, 10.0, 0), (80.0, 10.0, 8), (120.0, 10.0, 16)]);

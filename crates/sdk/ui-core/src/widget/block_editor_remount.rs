@@ -1,11 +1,4 @@
 //! What a change under a [`BlockEditor`] costs the window above it: nothing.
-//!
-//! Another document's blocks are laid out again in the stack the editor already holds, and the
-//! pictures' controls a document keeps or lets go of are mounted and unmounted under the
-//! editor's own node, so the editor reports a change of its own children
-//! ([`StructureChange::Children`]) and carries it out in place (`remount_children`) rather than
-//! asking the host to compose the window's layout tree again for the note, the task or the
-//! picture a person turned to.
 
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style};
@@ -15,9 +8,6 @@ use crate::theme::Theme;
 use crate::widget::{Remount, StructureChange, Widget};
 
 impl BlockEditor {
-    /// What the editor owes the host for what changed under it: a change of its own children
-    /// while it holds a stack to carry it out under, and nothing at all for a document whose
-    /// stack is merely laid out again.
     pub(super) fn change_of_its_own(&mut self) -> StructureChange {
         // Blocks that came or went may bring or take a picture's control.
         if self.restack {

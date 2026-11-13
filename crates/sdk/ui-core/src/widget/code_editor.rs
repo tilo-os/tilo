@@ -39,22 +39,17 @@ pub mod tilolang;
 pub use syntax::{SyntaxHighlighter, SyntaxState};
 pub use tilolang::TilolangHighlighter;
 
-/// The syntactic category of a run of source, and a coloured run within one
-/// line: shared with the grammar set (`tilo-highlight`), which the shared
-/// runtime opens only when code is first highlighted. The theme's
-/// [`SyntaxPalette`](crate::tokens::SyntaxPalette) resolves each kind to a
-/// concrete colour, so syntax tracks the active theme.
+/// The syntactic category of a run of source, and a coloured run within one line: shared with the
+/// grammar set (`tilo-highlight`), which the shared runtime opens only when code is first
+/// highlighted.
 pub use tilo_highlight::{Span, TokenKind};
 
-/// Opaque cross-line carry so multi-line constructs — block comments, fenced
-/// code — survive from one line to the next. `0` is the document start; a
-/// [`Highlighter`] owns the meaning of every other value. Line-local
-/// highlighters ignore it and always return `0`.
+/// Opaque cross-line carry so multi-line constructs — block comments, fenced code — survive from
+/// one line to the next.
 pub type HlState = u64;
 
-/// One logical line's highlight result: ordered, non-overlapping [`Span`]s
-/// (gaps render in the default text colour) plus the [`HlState`] the *next*
-/// line begins with.
+/// One logical line's highlight result: ordered, non-overlapping [`Span`]s (gaps render in the
+/// default text colour) plus the [`HlState`] the *next* line begins with.
 #[derive(Clone, Debug, Default)]
 pub struct LineSpans {
     pub spans: Vec<Span>,
@@ -63,21 +58,13 @@ pub struct LineSpans {
 
 impl LineSpans {}
 
-/// A pluggable, per-line source tokenizer. The [`CodeEditor`] owns rendering,
-/// caret, and selection; a `Highlighter` owns *only* the language lexing —
-/// mapping a line of source to coloured [`Span`]s. [`SyntaxHighlighter`]
-/// covers every language with a grammar; hand it (or a wrapper that adds
-/// app-specific spans) to [`CodeEditor::with_highlighter`].
+/// A pluggable, per-line source tokenizer.
 pub trait Highlighter {
-    /// `line` never contains `\n`. `carry` is the [`HlState`] the previous
-    /// line left (`0` for the first line); the returned [`LineSpans::carry`]
-    /// is what the following line begins with. Byte ranges in the returned
-    /// spans are relative to `line`.
+    /// `line` never contains `\n`.
     fn spans(&self, line: &str, carry: HlState) -> LineSpans;
 }
 
-/// A built-in language the editor ships a [`Highlighter`] for. Any other
-/// language with a grammar is a [`SyntaxHighlighter::for_token`] away.
+/// A built-in language the editor ships a [`Highlighter`] for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     PlainText,
@@ -89,7 +76,6 @@ pub enum Language {
     Tilolang,
 }
 
-// The languages an editor highlights, as a component's prop.
 crate::component::choice!(Language, "Language", {
     PlainText => "plain_text",
     Rust => "rust",
@@ -123,10 +109,7 @@ pub enum Severity {
     Error,
 }
 
-/// A problem a checker found in the source: a byte `range`, how much it
-/// matters, and what it says. The editor draws it — a squiggle under the
-/// range, a mark in the gutter, the message on hover — in the theme's
-/// status colours; the app only says what is wrong where.
+/// A problem a checker found in the source: a byte `range`, how much it matters, and what it says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub range: Range<usize>,
@@ -154,15 +137,13 @@ impl Diagnostic {
     }
 }
 
-/// Wraps the multiline [`TextInput`] core and enables its gutter +
-/// syntax-highlight path, so all caret/selection/clipboard/undo/IME/a11y
-/// behaviour is the one shared implementation.
+/// Wraps the multiline [`TextInput`] core and enables its gutter + syntax-highlight path, so all
+/// caret/selection/clipboard/undo/IME/a11y behaviour is the one shared implementation.
 pub struct CodeEditor {
     inner: TextInput,
     /// Selectable and copyable, never edited.
     read_only: bool,
-    /// The fewest and most lines the editor is tall for; past the most it
-    /// scrolls.
+    /// The fewest and most lines the editor is tall for; past the most it scrolls.
     min_lines: Option<usize>,
     max_lines: Option<usize>,
     diagnostics: Vec<Diagnostic>,
@@ -171,8 +152,7 @@ pub struct CodeEditor {
 }
 
 impl CodeEditor {
-    /// CRDT-bound at `path` (mirrors [`TextInput::new`]). Bind the backing
-    /// Automerge `Text` object with [`CodeEditor::bind_text`].
+    /// CRDT-bound at `path` (mirrors [`TextInput::new`]).
     pub fn new(path: Vec<PathSegment>) -> Self {
         Self::wrap(Self::configure(TextInput::new(path)))
     }
@@ -188,21 +168,19 @@ impl CodeEditor {
         }
     }
 
-    /// Non-CRDT, owns its own string — read with [`CodeEditor::value`],
-    /// observe edits with [`CodeEditor::take_dirty`].
+    /// Non-CRDT, owns its own string — read with [`CodeEditor::value`], observe edits with
+    /// [`CodeEditor::take_dirty`].
     pub fn local() -> Self {
         Self::wrap(Self::configure(TextInput::local()))
     }
 
-    /// Non-CRDT, following `state`: the editor shows the code it holds and writes each edit
-    /// back to it, so code set elsewhere shows in place.
+    /// Non-CRDT, following `state`: the editor shows the code it holds and writes each edit back to it,
+    /// so code set elsewhere shows in place.
     pub fn from_state(state: &crate::LocalState<String>) -> Self {
         Self::wrap(Self::configure(TextInput::from_state(state)))
     }
 
-    /// Source a person reads, selects and copies but does not edit (a
-    /// diff, a generated file, a log). Keys that would change the text do
-    /// nothing; assistive technology hears it as read-only.
+    /// Source a person reads, selects and copies but does not edit (a diff, a generated file, a log).
     #[must_use]
     pub fn read_only(mut self) -> Self {
         self.set_read_only(true);
@@ -219,8 +197,7 @@ impl CodeEditor {
         self.read_only
     }
 
-    /// What the editor is called to assistive technology ("Query",
-    /// "Response body").
+    /// What the editor is called to assistive technology ("Query", "Response body").
     #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.inner = self.inner.with_accessible_name(name);
@@ -257,8 +234,7 @@ impl CodeEditor {
         &self.diagnostics
     }
 
-    /// The diagnostic under `point`, if any: the most severe one whose
-    /// range covers the byte there.
+    /// The diagnostic under `point`, if any: the most severe one whose range covers the byte there.
     pub fn diagnostic_at(&self, point: Point) -> Option<&Diagnostic> {
         if !self.inner.get_rect().contains(point) {
             return None;
@@ -270,8 +246,8 @@ impl CodeEditor {
             .max_by_key(|d| d.severity)
     }
 
-    /// Multiline body, monospace face, plain chrome, a line-number gutter,
-    /// current-line highlight, and 4-space soft tabs by default.
+    /// Multiline body, monospace face, plain chrome, a line-number gutter, current-line highlight, and
+    /// 4-space soft tabs by default.
     fn configure(input: TextInput) -> TextInput {
         let mut input = input;
         input.keep_document_inset();
@@ -286,8 +262,7 @@ impl CodeEditor {
             .with_tab_width(4)
     }
 
-    /// The editor owns rendering/caret/selection; this owns only the
-    /// per-line lexing.
+    /// The editor owns rendering/caret/selection; this owns only the per-line lexing.
     #[must_use]
     pub fn with_highlighter(mut self, h: Box<dyn Highlighter>) -> Self {
         self.inner.set_highlighter(Some(h));
@@ -344,8 +319,7 @@ impl CodeEditor {
         self
     }
 
-    /// Show the text object `obj`, read on every sync. Edits stay local
-    /// for the owner to take ([`Self::take_dirty`]) and submit as actions.
+    /// Show the text object `obj`, read on every sync.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.inner.bind_text(obj);
     }
@@ -355,8 +329,7 @@ impl CodeEditor {
         self.inner.clear_text_binding();
     }
 
-    /// For a host outside the taffy tree calling each frame instead of
-    /// the `Widget::sync` pass. No-op until [`bind_text`](CodeEditor::bind_text).
+    /// For a host outside the taffy tree calling each frame instead of the `Widget::sync` pass.
     pub fn pull(&mut self, doc: &mut AutoCommit) {
         self.inner.sync(doc, &automerge::ROOT);
     }
@@ -383,8 +356,7 @@ impl CodeEditor {
         self.inner.set_cursor_pos(pos);
     }
 
-    /// `[anchor, cursor)` in bytes; `anchor == cursor` clears it. Used
-    /// by a host driving click+drag selection.
+    /// `[anchor, cursor)` in bytes; `anchor == cursor` clears it.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
         self.inner.set_selection(anchor, cursor);
     }
@@ -437,10 +409,7 @@ impl CodeEditor {
         self.inner.is_focused()
     }
 
-    /// For embedding outside the taffy tree (a monolithic immediate-mode
-    /// host). Pairs with [`draw_embedded`].
-    ///
-    /// [`draw_embedded`]: CodeEditor::draw_embedded
+    /// For embedding outside the taffy tree (a monolithic immediate-mode host).
     pub fn set_rect(&mut self, rect: Rect) {
         self.inner.apply_layout_external(rect);
     }
@@ -454,14 +423,12 @@ impl CodeEditor {
         self.inner.scroll_by(dy);
     }
 
-    /// A host uses this to align a gutter marker with a source line
-    /// (`caret_rect(theme, line_start)`).
+    /// A host uses this to align a gutter marker with a source line (`caret_rect(theme, line_start)`).
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
         self.inner.caret_rect(theme, byte)
     }
 
-    /// One rect per visual row; a host draws a diagnostic squiggle along
-    /// each rect's bottom edge.
+    /// One rect per visual row; a host draws a diagnostic squiggle along each rect's bottom edge.
     pub fn selection_rects(&self, theme: &Theme, start: usize, end: usize) -> Vec<Rect> {
         self.inner.selection_rects(theme, start, end)
     }
@@ -479,10 +446,7 @@ impl CodeEditor {
         self.inner.byte_at_point(point)
     }
 
-    /// A monolithic host that owns its own layout calls [`set_rect`]
-    /// then this each frame.
-    ///
-    /// [`set_rect`]: CodeEditor::set_rect
+    /// A monolithic host that owns its own layout calls [`set_rect`] then this each frame.
     pub fn draw_embedded(
         &mut self,
         scene: &mut Scene,
@@ -496,35 +460,31 @@ impl CodeEditor {
         self.draw_diagnostics(scene, transform, theme);
     }
 
-    /// For an embedded host that routes the pointer itself: where it is
-    /// (window coordinates), or `None` when it left. The diagnostic under it
-    /// shows its message in [`Self::draw_diagnostic_card`].
+    /// For an embedded host that routes the pointer itself: where it is (window coordinates), or `None`
+    /// when it left.
     pub fn set_pointer(&mut self, point: Option<Point>) {
         self.hover = point;
     }
 
-    /// For an embedded host: this editor's damage since the frame on screen,
-    /// as part of `owner`, the widget in the tree it is drawn in
-    /// ([`TextInput::collect_damage_for`]).
+    /// For an embedded host: this editor's damage since the frame on screen, as part of `owner`, the
+    /// widget in the tree it is drawn in ([`TextInput::collect_damage_for`]).
     pub fn collect_damage_for<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
         self.inner.collect_damage_for(owner, regions);
     }
 
-    /// For an embedded host's `mark_drawn`: the frame just drawn is on
-    /// screen.
+    /// For an embedded host's `mark_drawn`: the frame just drawn is on screen.
     pub fn mark_shown(&mut self) {
         self.inner.mark_shown();
     }
 
-    /// Whether the diagnostic under the pointer shows its message
-    /// ([`Self::draw_diagnostic_card`]).
+    /// Whether the diagnostic under the pointer shows its message ([`Self::draw_diagnostic_card`]).
     pub fn shows_diagnostic_card(&self) -> bool {
         self.hover
             .is_some_and(|point| self.diagnostic_at(point).is_some())
     }
 
-    /// For an embedded host: paint the message of the diagnostic under the
-    /// pointer from its own top-layer pass, kept inside `window`.
+    /// For an embedded host: paint the message of the diagnostic under the pointer from its own
+    /// top-layer pass, kept inside `window`.
     pub fn draw_diagnostic_card(
         &self,
         scene: &mut Scene,
@@ -593,8 +553,7 @@ impl Widget for CodeEditor {
         if known.height.is_none() && (self.min_lines.is_some() || self.max_lines.is_some()) {
             let line = self.inner.body_line_height();
             if line > 0.0 {
-                // The field's own padding around its lines stays as measured:
-                // what is left of its content height after whole rows.
+                // The padding around the lines stays: what is left after whole rows.
                 let total = self.inner.content_height();
                 let rows = (total / line).floor().max(1.0);
                 let chrome = (total - rows * line).max(0.0);
@@ -655,9 +614,8 @@ impl Widget for CodeEditor {
         Widget::needs_redraw(&self.inner)
     }
 
-    /// The field's damage, as this widget's: a scroll is offered as a copy,
-    /// the lines and marks (the diagnostics among them) that changed
-    /// repaint where they were and are.
+    /// The field's damage, as this widget's: a scroll is offered as a copy, the lines and marks (the
+    /// diagnostics among them) that changed repaint where they were and are.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.inner.collect_damage_for(self, regions);
     }
@@ -768,8 +726,8 @@ impl Widget for CodeEditor {
 }
 
 impl CodeEditor {
-    /// The squiggles under every diagnostic's range and the marks in the
-    /// gutter beside its first line, in the theme's status colours.
+    /// The squiggles under every diagnostic's range and the marks in the gutter beside its first line,
+    /// in the theme's status colours.
     fn draw_diagnostics(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if self.diagnostics.is_empty() {
             return;
@@ -819,8 +777,8 @@ impl CodeEditor {
         self.inner.note_marks(marks);
     }
 
-    /// The message of the diagnostic under the pointer, on a floating
-    /// surface just below its line, in the window's top layer.
+    /// The message of the diagnostic under the pointer, on a floating surface just below its line, in
+    /// the window's top layer.
     fn draw_diagnostic_hover(
         &self,
         scene: &mut Scene,
@@ -868,8 +826,8 @@ impl CodeEditor {
     }
 }
 
-/// A wavy underline from `x0` to `x1` along `y`: the mark of a problem in
-/// text, as spelling marks one.
+/// A wavy underline from `x0` to `x1` along `y`: the mark of a problem in text, as spelling marks
+/// one.
 pub fn paint_diagnostic_underline(
     scene: &mut Scene,
     transform: Affine,
@@ -887,7 +845,6 @@ pub fn paint_diagnostic_underline(
         let x = (x0 + 2.0 * f64::from(step)).min(x1);
         let up = step.is_multiple_of(2);
         path.line_to((x, y + if up { -1.0 } else { 1.0 }));
-        // Not "less than": a NaN end stops the run too.
         if x.partial_cmp(&x1) != Some(std::cmp::Ordering::Less) {
             break;
         }
@@ -916,8 +873,7 @@ impl crate::presence::capability::PublishesPresence for CodeEditor {
         self.inner.presence_key()
     }
 
-    /// The code's own caret and band geometry, as the field it wraps draws
-    /// them.
+    /// The code's own caret and band geometry, as the field it wraps draws them.
     fn presence_range_rects(
         &self,
         theme: &crate::theme::Theme,
@@ -933,10 +889,6 @@ impl crate::presence::capability::PublishesPresence for CodeEditor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Built-in highlighters.
-// ---------------------------------------------------------------------------
-
 fn find_from(hay: &str, from: usize, needle: char) -> Option<usize> {
     let rest = hay.get(from..)?;
     rest.find(needle).map(|i| from.saturating_add(i))
@@ -946,10 +898,8 @@ fn find_from(hay: &str, from: usize, needle: char) -> Option<usize> {
 /// code block" (Typst).
 const IN_FENCE: HlState = 1;
 
-/// A pragmatic Typst highlighter — a per-line lexer recognising headings,
-/// comments, strings, `#`-functions, numbers, raw code (inline and fenced),
-/// maths, `*strong*` and `_emph_` runs. Fenced code blocks are carried
-/// across lines.
+/// A pragmatic Typst highlighter — a per-line lexer recognising headings, comments, strings,
+/// `#`-functions, numbers, raw code (inline and fenced), maths, `*strong*` and `_emph_` runs.
 pub struct TypstHighlighter;
 
 impl Highlighter for TypstHighlighter {
@@ -962,12 +912,9 @@ impl Highlighter for TypstHighlighter {
     }
 }
 
-/// [`TypstHighlighter::spans`]'s fast paths: fence delimiter, inside a
-/// fence, heading. `None` means "none of these apply, fall through to the
-/// character tokenizer." Split out to keep that under the line cap.
+/// [`TypstHighlighter::spans`]'s fast paths: fence delimiter, inside a fence, heading.
 fn typst_fence_or_heading_spans(line: &str, len: usize, carry: HlState) -> Option<LineSpans> {
     let trimmed = line.trim_start();
-    // Fence delimiter line toggles the fenced state; it renders as raw.
     if trimmed.starts_with("```") {
         let next = if carry & IN_FENCE != 0 { 0 } else { IN_FENCE };
         return Some(LineSpans {
@@ -990,9 +937,8 @@ fn typst_fence_or_heading_spans(line: &str, len: usize, carry: HlState) -> Optio
     None
 }
 
-/// [`TypstHighlighter::spans`]'s character-by-character tokenizer, once the
-/// fast paths in [`typst_fence_or_heading_spans`] don't apply. Split out to
-/// keep that under the line cap.
+/// [`TypstHighlighter::spans`]'s character-by-character tokenizer, once the fast paths in
+/// [`typst_fence_or_heading_spans`] don't apply.
 fn tokenize_typst_line(line: &str, len: usize) -> LineSpans {
     let mut spans = Vec::new();
     let bytes = line.as_bytes();
@@ -1142,8 +1088,6 @@ mod tests {
             let mut ed = CodeEditor::local().with_language(Language::Rust);
             ed.set_text("let x = 1");
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-            // Draw builds the visual lines + highlight cache and runs the
-            // real colouring path (`row_segments` → the theme's syntax palette).
             draw_once(&mut ed, &theme);
             let segs = ed.inner().code_row_colors(&theme);
             let rgb = |c: Color| [c.r(), c.g(), c.b()];
@@ -1422,8 +1366,6 @@ mod tests {
     #[test]
     fn code_editor_gutter_and_wrapper_geometry_follow_the_theme_scale() {
         fn no_gutter_offset_when_gutter_disabled() {
-            // Proves the gutter participates in the shared caret geometry:
-            // turning it off collapses the offset it pushes the caret by.
             let theme = Theme::dark();
             let mut with_g = CodeEditor::local().with_initial_value("x");
             with_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));

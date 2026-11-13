@@ -27,14 +27,9 @@ use winit::event::WindowEvent;
 )]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
-    /// A child shown in place of another since the host last read it
-    /// ([`Container::replace_child`]): described.
     structure: crate::widget::StructureChange,
-    /// A band its view stopped building, drawn leaving.
     ghosts: crate::widget::Ghosts,
-    /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
-    /// Stable graph / test identity when built from a serialized UI node.
     id: Option<String>,
     rect: Rect,
     has_background: bool,
@@ -43,39 +38,22 @@ pub struct Container {
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     no_padding: bool,
-    /// Symmetric inset override. `None` follows the theme's standard
-    /// container inset; `with_no_padding` remains the explicit zero case.
     padding_override: Option<f32>,
     /// `Some(px)` switches the taffy width to `length(px)` and disables
     /// horizontal shrink, instead of the default `percent(1.0)` fill.
     fixed_width: Option<f32>,
-    /// Caps a normally fluid container and uses automatic horizontal margins
-    /// to keep it centred in a wider parent. Unlike [`Container::with_width`]
-    /// this remains responsive below the cap.
     max_width: Option<f32>,
-    /// Lower horizontal bound used by responsive flex children. Unlike
-    /// `fixed_width`, this still lets the container grow to share the row.
     min_width: Option<f32>,
-    /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
-    /// See [`Container::with_min_height`]: resolved from the theme at layout.
     min_height: Option<super::ControlSize>,
     /// `max_width` keeps the container on its parent's leading edge
     /// instead of centring it.
     leading: bool,
-    /// See [`Container::readable`]: the readable width, resolved from the
-    /// theme at layout time.
     readable: bool,
-    /// See [`Container::hug`].
     hug: bool,
-    /// See [`Container::narrows`].
     narrows: bool,
-    /// See [`Container::with_inset`].
     inset: Option<crate::tokens::Rhythm>,
-    /// Pressing the container activates it; it lifts under the pointer.
     activation: crate::widget::activation::Activation,
-    /// How far a hugging container's lift reaches past its rect (across,
-    /// along), resolved at layout.
     bleed: (f64, f64),
     /// Grows from a zero basis instead of claiming `percent(1.0)`. In a
     /// wrapping flex row this is the difference between filling the
@@ -84,8 +62,6 @@ pub struct Container {
     /// even when there was room. The weight is the container's share of
     /// that width against its growing siblings; zero does not grow.
     flex_grow: f32,
-    /// The name and semantic key assistive technology knows the container
-    /// by ([`Container::landmark`]).
     landmark: Option<(String, String)>,
 }
 
@@ -128,10 +104,6 @@ impl Container {
         }
     }
 
-    /// Name the container for assistive technology: a group called `name`
-    /// under the stable `semantic_key`, which keeps its identity however
-    /// the content under it is built again (an app's surface around a shell
-    /// whose columns rebuild).
     #[must_use]
     pub fn landmark(mut self, name: impl Into<String>, semantic_key: impl Into<String>) -> Self {
         self.landmark = Some((name.into(), semantic_key.into()));
@@ -146,7 +118,6 @@ impl Container {
         self
     }
 
-    /// See the field docs.
     #[must_use]
     pub fn with_flex_grow(mut self) -> Self {
         self.flex_grow = 1.0;
@@ -187,29 +158,24 @@ impl Container {
         self
     }
 
-    /// Address this container by a stable id in inspection and graph reconcile.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// Take the single child for identity-preserving reconcile.
     pub fn take_child(&mut self) -> Option<Box<dyn Widget>> {
         self.child.take()
     }
 
-    /// Whether it holds a child, without touching it.
     pub fn has_child(&self) -> bool {
         self.child.is_some()
     }
 
-    /// Replace the single child after a graph reconcile pass.
     pub fn set_child(&mut self, child: Box<dyn Widget>) {
         self.child = Some(child);
     }
 
-    /// The single child, to change it in place: what it reports of the change is its own.
     pub fn child_mut(&mut self) -> Option<&mut Box<dyn Widget>> {
         self.child.as_mut()
     }
@@ -224,7 +190,6 @@ impl Container {
         self.child.replace(child)
     }
 
-    /// Apply layout flags from a serialized container node without rebuilding.
     pub fn apply_graph_props(
         &mut self,
         id: &str,
@@ -256,9 +221,6 @@ impl Container {
         self
     }
 
-    /// Update a fixed-width container without rebuilding its retained child.
-    /// Responsive top-layer surfaces use this during layout when text scale
-    /// changes after construction.
     pub fn set_width(&mut self, px: f32) {
         self.fixed_width = Some(px);
     }
@@ -288,8 +250,6 @@ impl Container {
         self
     }
 
-    /// Centre a [`Container::readable`] column in a wider parent: a wizard
-    /// or a sign-in page that stands alone in its window.
     #[must_use]
     pub fn centered(mut self) -> Self {
         self.leading = false;
@@ -306,9 +266,6 @@ impl Container {
         self
     }
 
-    /// Inset the content by a rhythm step on every side, resolved from the
-    /// theme at layout time (the page gutter is `Rhythm::Group`). With
-    /// [`Container::readable`] the inset sits outside the readable measure.
     #[must_use]
     pub fn with_inset(mut self, inset: crate::tokens::Rhythm) -> Self {
         self.inset = Some(inset);
@@ -331,16 +288,12 @@ impl Container {
         self
     }
 
-    /// Keep this container usable when it participates in a wrapping row,
-    /// while still allowing it to grow and share spare horizontal space.
     #[must_use]
     pub fn with_min_width(mut self, px: f32) -> Self {
         self.min_width = Some(px);
         self
     }
 
-    /// Keep readable content from becoming an excessively wide wall while
-    /// still shrinking naturally on compact windows.
     #[must_use]
     pub fn with_max_width(mut self, px: f32) -> Self {
         self.readable = false;
@@ -357,7 +310,6 @@ impl Container {
         self
     }
 
-    /// Independent of [`Container::filling`].
     #[must_use]
     pub fn with_height(mut self, px: f32) -> Self {
         self.fixed_height = Some(px);
@@ -371,11 +323,6 @@ impl Container {
         self
     }
 
-    /// Make the whole container one pressable target (a tile that opens
-    /// something): it lifts under the pointer and when pressed, takes
-    /// keyboard focus with a ring, and runs `f` on a click, Enter, Space or
-    /// an assistive-technology activation. Controls inside keep their own
-    /// clicks. `id` names it for keyboard, tests and assistive technology.
     #[must_use]
     pub fn interactive(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
         self.activation = crate::widget::activation::Activation::new(id);
@@ -383,9 +330,6 @@ impl Container {
         self
     }
 
-    /// The container's surface under its current interaction: the raised
-    /// well when it has a background (lifted on hover and press), the
-    /// ground's selection lift when it is bare and interactive.
     fn surface_fill(&self, theme: &Theme) -> Option<vello::peniko::Color> {
         let colors = &theme.tokens.colors;
         let state = self.activation.state;
@@ -408,8 +352,6 @@ impl Container {
         }
     }
 
-    /// The rect the surface paints and takes the pointer in: the layout
-    /// rect, or past it by the lift's bleed for a hugging container.
     fn lift_rect(&self, theme: &Theme) -> Rect {
         if self.hug {
             let rhythm = theme.tokens.spacing.rhythm;
@@ -464,7 +406,6 @@ impl Container {
 }
 
 impl Widget for Container {
-    /// Its child, inside its padding.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }
@@ -500,7 +441,6 @@ impl Widget for Container {
         } else {
             (0.0, 0.0)
         };
-        // The readable measure is the content's; the inset is outside it.
         let max_width = if self.readable {
             Some(theme.tokens.metrics.readable_width + 2.0 * pad)
         } else {
@@ -521,9 +461,6 @@ impl Widget for Container {
         };
         let style = Style {
             display: taffy::Display::Flex,
-            // Prevent vertical squashing; a narrowing container shrinks along a row, its
-            // automatic minimum height keeping a column from squashing it. A growing
-            // container's minimums are [`super::layout::filling`]'s.
             flex_shrink: if self.narrows { 1.0 } else { 0.0 },
             // A pinned width must not grow to fill a flex parent: `flex_basis:
             // auto` lets `size.width` resolve the basis instead.
@@ -548,8 +485,6 @@ impl Widget for Container {
                 },
                 height: taffy::Dimension::auto(),
             },
-            // A hugging container takes its content's width in a stretching
-            // parent too.
             align_self: self.hug.then_some(taffy::AlignSelf::Start),
 
             margin: taffy::Rect {
@@ -578,15 +513,12 @@ impl Widget for Container {
             && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
         {
             child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-            // A band on its way stands out of the layout, at the top of the
-            // container's content.
             crate::widget::place_bands(
                 std::iter::once(child),
                 crate::widget::content_box(taffy, node, self.rect),
                 |_| 0.0,
             );
         }
-        // A band its view stopped building leaves where it stood.
         let content = crate::widget::content_box(taffy, node, self.rect);
         let children = match &mut self.child {
             Some(child) => std::slice::from_mut(child),
@@ -619,8 +551,6 @@ impl Widget for Container {
         ))
     }
 
-    /// Frames while a band its view stopped building leaves, and one more
-    /// to draw it gone.
     fn needs_animation_frame(&self) -> bool {
         !self.ghosts.is_empty()
             || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
@@ -667,7 +597,6 @@ impl Widget for Container {
         }
         if self.activation.is_bound() {
             if *ctx.handled {
-                // A control inside took the press; the container stays put.
                 self.activation.cancel_press();
                 return;
             }
@@ -836,8 +765,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// 800×600 viewport. Drives the real five-pass path so the taffy width
-    /// pin is exercised end-to-end.
     fn lay_out(mut c: Container) -> (Container, Rect) {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -857,8 +784,6 @@ mod tests {
         (c, r)
     }
 
-    /// A landmark is a named group that keeps its key whatever it holds; a
-    /// plain container says nothing of itself.
     #[test]
     fn a_landmark_names_its_group_for_assistive_technology() {
         assert!(Container::new().accessibility().is_none());

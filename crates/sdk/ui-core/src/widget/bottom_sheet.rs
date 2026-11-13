@@ -1,21 +1,5 @@
-//! A sheet up from the foot of a narrow window: where an inspector stands
-//! when the window has no room for it beside the content.
-//!
-//! The sheet rests at one of three detents: peeking (its grip and the top
-//! of what it holds), half the window, or the whole window under its header
-//! row. The content above it stays live: it is not modal, a press above it
-//! goes to the content, and the content keeps the part above the sheet's
-//! detent clear to scroll into. The grip moves the sheet: a drag (pointer
-//! or finger) follows the hand and the release settles on the detent the
-//! fling points to ([`motion::Snap`]); a press on the grip without a drag
-//! raises it a detent; the arrow keys on the focused grip step it. To
-//! assistive technology the sheet is a named region and its grip a slider
-//! whose value is the detent.
-//!
-//! The sheet is laid out at its detent while it rests (peeking, at half
-//! height, the rest of it below the window's foot). While it moves it is
-//! laid out at the whole window and clipped at the window's foot, so what
-//! it holds reflows once when it settles, never on every frame.
+//! A sheet up from the foot of a narrow window: where an inspector stands when the window has no room
+//! for it beside the content.
 
 use crate::time::Instant;
 
@@ -29,20 +13,15 @@ use crate::motion::{self, Direction, MotionValue, Snap};
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
-/// Where a sheet rests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SheetDetent {
-    /// Its grip and the top of what it holds.
     Peek,
-    /// Half the window.
     #[default]
     Half,
-    /// The whole window under its header row.
     Full,
 }
 
 impl SheetDetent {
-    /// Lowest first.
     pub const ALL: [Self; 3] = [Self::Peek, Self::Half, Self::Full];
 
     fn index(self) -> f64 {
@@ -53,7 +32,6 @@ impl SheetDetent {
         }
     }
 
-    /// The detent a step up (`up`) or down from this one lands on.
     #[must_use]
     pub fn step(self, up: bool) -> Option<Self> {
         match (self, up) {
@@ -64,7 +42,6 @@ impl SheetDetent {
         }
     }
 
-    /// The detent as assistive technology reads it.
     #[must_use]
     pub fn label(self) -> String {
         crate::i18n::widget_format(
@@ -78,12 +55,9 @@ impl SheetDetent {
     }
 }
 
-/// Where a sheet stands this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SheetGeometry {
-    /// The sheet as drawn, its grip included, down to the window's foot.
     pub panel: Rect,
-    /// The band along its top edge a drag takes it by.
     pub grip: Rect,
     /// What the sheet holds, under the grip: as tall as it is laid out, so
     /// it may run past the window's foot while the sheet moves.
@@ -154,36 +128,28 @@ impl SheetFrame {
     }
 }
 
-/// A grip held by the pointer or a finger.
 #[derive(Clone, Debug)]
 struct Drag {
     from_y: f64,
     from_height: f64,
-    /// How far up the hand has moved, report by report: the release's
-    /// speed is read from it.
     path: super::finger_path::FingerPath,
     touch: Option<u64>,
     moved: bool,
 }
 
-/// What [`BottomSheet::handle_event`] did with an event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SheetInput {
-    /// Not the sheet's: route it on.
     Ignored,
-    /// The sheet took it; it moved when `moved` (lay out again).
     Taken { moved: bool },
 }
 
 impl SheetInput {
-    /// Whether the sheet took the event.
     #[must_use]
     pub fn taken(self) -> bool {
         matches!(self, Self::Taken { .. })
     }
 }
 
-/// A sheet up from a narrow window's foot. See the module docs.
 #[derive(Clone, Debug)]
 pub struct BottomSheet {
     detent: SheetDetent,
@@ -204,7 +170,6 @@ impl Default for BottomSheet {
 }
 
 impl BottomSheet {
-    /// A sheet that opens at half the window.
     #[must_use]
     pub fn new() -> Self {
         let detent = SheetDetent::default();
@@ -220,13 +185,11 @@ impl BottomSheet {
         }
     }
 
-    /// The detent it rests at, or is going to.
     #[must_use]
     pub fn detent(&self) -> SheetDetent {
         self.detent
     }
 
-    /// Send the sheet to `detent` on the snap motion, as `source` asked.
     pub fn set_detent(
         &mut self,
         detent: SheetDetent,
@@ -248,7 +211,6 @@ impl BottomSheet {
         self.drawn = detent.index();
     }
 
-    /// Step a detent up or down; whether there was one to step to.
     pub fn step(&mut self, up: bool, source: MotionSource, motion: EffectiveMotion) -> bool {
         let Some(next) = self.detent.step(up) else {
             return false;
@@ -269,7 +231,6 @@ impl BottomSheet {
         true
     }
 
-    /// Advance the settle to `now`. Returns whether it is still moving.
     pub fn advance(&mut self, now: Instant) -> bool {
         if self.drag.is_some() {
             return false;
@@ -283,19 +244,16 @@ impl BottomSheet {
         moving
     }
 
-    /// Whether the sheet is on its way to a detent or held by a drag.
     #[must_use]
     pub fn is_moving(&self) -> bool {
         self.drag.is_some() || self.pos.is_moving(motion::frame_now())
     }
 
-    /// Whether a drag holds the grip.
     #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// The pose drawn this frame, to tell whether a tick changed it.
     #[must_use]
     pub fn drawn(&self) -> f64 {
         self.drawn
@@ -309,8 +267,6 @@ impl BottomSheet {
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return SheetGeometry::default();
         }
-        // The content keeps the foot clear from the moment the sheet opens,
-        // not as it rises: it reflows once, not every frame of the slide.
         let covered = if open {
             frame
                 .height_at(self.detent.index().min(SheetDetent::Half.index()))
@@ -345,21 +301,17 @@ impl BottomSheet {
         }
     }
 
-    /// Stand in `frame` this frame (see [`Self::geometry`]); events and
-    /// painting use where it was placed last.
     pub fn place(&mut self, frame: SheetFrame, reveal: f64, open: bool) -> SheetGeometry {
         self.frame = frame;
         self.geometry = self.geometry(frame, reveal, open);
         self.geometry
     }
 
-    /// Where it was placed last.
     #[must_use]
     pub fn placed(&self) -> SheetGeometry {
         self.geometry
     }
 
-    /// Whether the grip holds the keyboard.
     #[must_use]
     pub fn is_focused(&self) -> bool {
         self.focused
@@ -383,7 +335,6 @@ impl BottomSheet {
         self.geometry.grip.height() > 0.0 && self.geometry.grip.contains(point)
     }
 
-    /// The cursor over the grip.
     #[must_use]
     pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.drag.is_some() || self.claims_touch(point)).then_some(if self.drag.is_some() {
@@ -393,8 +344,6 @@ impl BottomSheet {
         })
     }
 
-    /// The sheet's own events: a drag on its grip, a press on it, the
-    /// arrow keys while it holds the keyboard. Place it first.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -420,7 +369,6 @@ impl BottomSheet {
                     return SheetInput::Taken { moved: false };
                 }
                 if self.focused {
-                    // A press anywhere else hands the keyboard on.
                     self.focused = false;
                 }
                 SheetInput::Ignored
@@ -490,7 +438,6 @@ impl BottomSheet {
         });
     }
 
-    /// The grip follows the hand one to one, from peeking to full.
     fn drag_to(&mut self, y: f64) -> SheetInput {
         let Some(drag) = self.drag.as_mut() else {
             return SheetInput::Ignored;
@@ -508,9 +455,6 @@ impl BottomSheet {
         SheetInput::Taken { moved: true }
     }
 
-    /// The hand let go: a press without a drag raises the sheet a detent
-    /// (from full, back to half); a drag settles on the detent its fling
-    /// points to, carrying the release's speed.
     fn let_go(&mut self, motion: EffectiveMotion) -> SheetInput {
         let Some(drag) = self.drag.take() else {
             return SheetInput::Ignored;
@@ -549,9 +493,6 @@ impl BottomSheet {
         SheetInput::Taken { moved: true }
     }
 
-    /// The sheet as a region named `name`, its grip a slider whose value is
-    /// the detent, routed back by `target`
-    /// ([`Self::perform_action`]).
     pub fn accessibility(&self, name: &str, target: &str) -> AccessNode {
         let grip = AccessNode::new(Role::Slider)
             .with_name(crate::i18n::widget_format("widget-sheet-height", &[]))
@@ -567,8 +508,6 @@ impl BottomSheet {
             .with_children(vec![grip])
     }
 
-    /// Carry out `action` on the grip: focus it, step it, or set it to a
-    /// detent by its label. Returns whether it did.
     pub fn perform_action(&mut self, action: &Action, motion: EffectiveMotion) -> bool {
         match action {
             Action::Focus => {
@@ -591,12 +530,6 @@ impl BottomSheet {
         }
     }
 
-    /// Paint the sheet where it was placed: the floating level with its
-    /// two-layer shadow and inner hairline, as every floating surface
-    /// stands off what is under it ([`crate::surface::floating_shadow`],
-    /// [`crate::surface::panel`]), with the panel radius along its top edge,
-    /// standing on the window's foot, and its grip. Returns the theme to
-    /// draw what it holds with.
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
         let local = theme.on_ground(crate::chrome::panel_ground(theme));
         let panel = self.geometry.panel;
@@ -604,9 +537,6 @@ impl BottomSheet {
             return local;
         }
         let radius = f64::from(theme.tokens.radii.panel);
-        // Its lower corners run past the window's foot, out of sight: the
-        // sheet stands on the edge, it does not float above it. What it
-        // casts above its top edge stays in the area it rises in.
         let shape = Rect::new(panel.x0, panel.y0, panel.x1, panel.y1 + radius);
         let area = self.frame.area;
         let clip = Rect::new(area.x0, area.y0, area.x1, panel.y1);

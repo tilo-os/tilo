@@ -1,12 +1,11 @@
-//! Headings made from the format menu and its chords: writing that is already there takes the
-//! line's kind, its text and marks stay, and body text is the way back.
+//! Headings made from the format menu and its chords: writing that is already there takes the line's
+//! kind, its text and marks stay, and body text is the way back.
 
 use super::*;
 use crate::testing::Dispatch;
 use automerge::ROOT;
 use winit::keyboard::{Key, ModifiersState};
 
-/// `modifiers` and `key` pressed in `editor`, handing back whether the editor took them.
 fn chord(
     editor: &mut BlockEditor,
     doc: &mut AutoCommit,
@@ -54,7 +53,6 @@ fn texts(editor: &BlockEditor) -> Vec<String> {
         .collect()
 }
 
-/// The row of the open format menu named `name`, activated as a press on it is.
 fn activate_row(editor: &mut BlockEditor, doc: &mut AutoCommit, name: &str) {
     fn find<'a>(
         node: &'a crate::a11y::AccessNode,
@@ -212,7 +210,6 @@ fn a_code_block_keeps_its_kind_when_the_chord_is_pressed() {
 
 #[test]
 fn a_heading_rides_the_blocks_the_editor_writes_as_an_edit() {
-    // What the host is handed: the line's new kind, with its words, as one edit of the block.
     let mut doc = AutoCommit::new();
     let mut editor = editing(&["Plan"]);
     assert!(chord(

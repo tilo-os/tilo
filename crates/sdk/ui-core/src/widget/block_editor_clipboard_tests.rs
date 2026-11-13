@@ -1,6 +1,6 @@
-//! Cut, copy and paste carry formatting: the editor's copy offers HTML
-//! with the words, its paste reads what Writer, Notes, Mail, a browser or
-//! an office suite copied, and Ctrl+Shift+V pastes the words alone.
+//! Cut, copy and paste carry formatting: the editor's copy offers HTML with the words, its paste reads
+//! what Writer, Notes, Mail, a browser or an office suite copied, and Ctrl+Shift+V pastes the words
+//! alone.
 
 use super::*;
 use crate::testing::Dispatch;

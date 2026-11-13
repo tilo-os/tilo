@@ -11,7 +11,6 @@ pub(super) fn studio_progress(spec: crate::motion::MotionSpec, elapsed: Duration
     )
 }
 
-/// How long one of the tool's motions runs.
 pub(super) fn studio_motion_time(spec: crate::motion::MotionSpec) -> Duration {
     spec.settle_time(
         crate::motion::Direction::Enter,
@@ -20,8 +19,6 @@ pub(super) fn studio_motion_time(spec: crate::motion::MotionSpec) -> Duration {
     )
 }
 
-/// A receipt's opacity: there at once, leaving on the standard transient
-/// when its time is up.
 pub(super) fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
     let now = crate::time::now();
     let fade_from = crate::motion::Transient::exit_starts(

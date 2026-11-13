@@ -1,17 +1,4 @@
 //! A chronological index for large, virtualised collections.
-//!
-//! [`DateIndexedScrollbar`] deliberately sits one layer above [`Scrollbar`]:
-//! the latter owns pixel-accurate thumb behaviour while this type understands
-//! that a collection has meaningful places in it (months, years, chapters,
-//! releases, …).  It is an immediate-mode face and interaction model, rather
-//! than a Photos control, so a reader, activity feed, media browser, or
-//! search result can use the same date-indexed affordance without retaining
-//! thousands of row widgets.
-//!
-//! The host remains authoritative for its virtual-list offset.  Feed the
-//! model its `ScrollMetrics`, apply the returned [`DateIndexIntent`], and
-//! re-paint.  This keeps scrolling smooth and lets a host preserve an item
-//! anchor while changing thumbnail density.
 
 use tilo_sort::CompactSort as _;
 use vello::Scene;
@@ -38,13 +25,8 @@ pub const PREVIEW_LANE_WIDTH: f64 = 8.0;
 /// marker tolerance: a marker may be easy to find along the timeline without
 /// capturing unrelated image content beside it.
 pub const HORIZONTAL_HIT_EXPANSION: f64 = 8.0;
-/// The visible date bubble is deliberately much narrower than its hit lane.
-/// A timeline index should name the nearby day, not occlude a column of
-/// photographs while the pointer travels near the edge.
 pub const PREVIEW_BUBBLE_MAX_WIDTH: f64 = 96.0;
-/// The marker hit size is independent of its one-pixel visual tick.
 pub const MARKER_HIT_RADIUS: f64 = 12.0;
-/// A compact but touch-reachable date-index track.
 pub const DEFAULT_TRACK_WIDTH: f64 = 16.0;
 
 /// A durable chronological boundary supplied by the collection owner.
@@ -62,7 +44,6 @@ pub struct DateIndexMarker {
     pub label: String,
     /// Normalised position, clamped defensively before use.
     pub position: f64,
-    /// Year boundaries survive projection before ordinary month boundaries.
     pub kind: DateIndexMarkerKind,
 }
 
@@ -90,16 +71,12 @@ impl DateIndexMarker {
     }
 }
 
-/// Relative importance of a date boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DateIndexMarkerKind {
-    /// A coarse boundary (usually a year) that stays visible under pressure.
     Major,
-    /// A normal boundary (usually a month).
     Minor,
 }
 
-/// A projected marker with its pixel position along the current track.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectedDateMarker {
     pub id: String,
@@ -109,7 +86,6 @@ pub struct ProjectedDateMarker {
     pub axis: f64,
 }
 
-/// Value used in hover, focus, and live announcements.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DateIndexPreview {
     pub id: String,
@@ -120,19 +96,19 @@ pub struct DateIndexPreview {
 /// positions/ids, never an app-specific row index.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DateIndexIntent {
-    /// Move the virtual collection to an absolute, normalised position.
-    ScrollTo { position: f64 },
+    ScrollTo {
+        position: f64,
+    },
     /// Change density while preserving the host's content anchor.  `1` means
     /// show more items at once, `-1` means fewer.
-    AdjustDensity { delta: i8 },
+    AdjustDensity {
+        delta: i8,
+    },
     /// A hover/focus preview changed.  This is presentation-only and does
     /// not move the collection.
     PreviewChanged(Option<DateIndexPreview>),
 }
 
-/// A modern chronological scrollbar face plus its ephemeral interaction
-/// state.  It intentionally has no document binding: scroll position and
-/// density are per-user presentation preferences, not shared collection data.
 #[derive(Clone, Debug)]
 pub struct DateIndexedScrollbar {
     semantic_id: String,
@@ -200,7 +176,6 @@ impl DateIndexedScrollbar {
         }
     }
 
-    /// Convert an absolute position back into the host's logical offset.
     pub fn offset_for(metrics: ScrollMetrics, position: f64) -> f64 {
         position.clamp(0.0, 1.0) * metrics.max_scroll()
     }
@@ -335,9 +310,6 @@ impl DateIndexedScrollbar {
         }
     }
 
-    /// Pointer movement updates the hover label and, while captured, returns
-    /// an absolute scroll target.  Call it even after the cursor leaves the
-    /// track; that is what makes a thumb drag reliable.
     pub fn pointer_moved(
         &mut self,
         cursor: Point,
@@ -362,9 +334,6 @@ impl DateIndexedScrollbar {
         self.set_preview(self.nearest_preview(&projected, cursor))
     }
 
-    /// Press on a marker jumps precisely to that date; press on the thumb
-    /// starts a captured drag; press elsewhere on the track follows the
-    /// standard shared scrollbar page behaviour.
     pub fn press(
         &mut self,
         metrics: ScrollMetrics,
@@ -426,9 +395,6 @@ impl DateIndexedScrollbar {
         })
     }
 
-    /// Keyboard parity for pointer behaviour.  The normal arrows nudge the
-    /// position, Page keys move a viewport, Home/End jump to endpoints, and
-    /// `+`/`-` expose density without requiring a trackpad gesture.
     pub fn key(&self, key: &Key, metrics: ScrollMetrics) -> Option<DateIndexIntent> {
         let current = Self::position(metrics);
         let page = if metrics.content > 0.0 {
@@ -495,9 +461,6 @@ impl DateIndexedScrollbar {
         }
     }
 
-    /// Stable synthetic semantics for a custom canvas host.  The slider is
-    /// one focus target; projected major/minor boundaries are discoverable
-    /// jump buttons, bounded with the same projection as paint.
     pub fn accessibility(&self, metrics: ScrollMetrics, markers: &[DateIndexMarker]) -> AccessNode {
         let value = self.preview.as_ref().map_or_else(
             || format!("{:.0}%", Self::position(metrics) * 100.0),
@@ -606,9 +569,6 @@ impl DateIndexedScrollbar {
     }
 
     fn paint_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme, _active: bool) {
-        // The broad lane is an invisible acquisition target. Painting it on
-        // hover turned a scrollbar into an opaque side panel over photos.
-        // The visible track is the shared scrollbar track.
         let radius = self.rect.width() / 2.0;
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -700,8 +660,6 @@ impl DateIndexedScrollbar {
         let Some(marker) = markers.iter().find(|marker| marker.id == preview.id) else {
             return;
         };
-        // A small floating bubble beside the track names the date: the
-        // floating material, a `Caption` label measured to fit.
         let spacing = &theme.tokens.spacing;
         let style = theme.text(TextRole::Caption).strong();
         let pad_x = f64::from(spacing.s2);

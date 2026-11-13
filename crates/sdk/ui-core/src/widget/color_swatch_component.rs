@@ -6,7 +6,6 @@ use crate::widget::ColorSwatch;
 use super::ColorSwatchPicker;
 
 /// A grid of swatches, one chosen (a palette of accents): the chosen cell carries the ring.
-/// Each swatch is a colour by its hex text, shown in the theme's own samples.
 #[derive(Component, Default)]
 #[component(name = "ColorSwatchPicker", role = "Group", label = "label")]
 pub struct ColorSwatchPickerProps {
@@ -55,7 +54,6 @@ impl Described for ColorSwatchPicker {
         picker
     }
 
-    /// What is chosen changes in place; other swatches are built again.
     fn set_props(&mut self, props: ColorSwatchPickerProps) -> bool {
         if props.swatches.len() != self.count() {
             return false;

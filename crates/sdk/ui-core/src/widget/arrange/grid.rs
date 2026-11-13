@@ -1,4 +1,4 @@
-//! `grid(min:)` and `grid(columns:)`: the responsive grid (layout design 3).
+//! `grid(min:)` and `grid(columns:)`: the responsive grid.
 
 use taffy::style_helpers::{fr, length, minmax, repeat};
 use taffy::{Size, Style};
@@ -7,12 +7,10 @@ use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_
 use super::units::{Axis, Length, columns_for};
 use crate::tokens::Rhythm;
 
-/// How many columns a grid has.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Columns {
     /// As many equal columns of at least this width as fit.
     AtLeast(Length),
-    /// This many.
     Fixed(u16),
     /// This many, each never narrower than its content: a column keeps what it holds whole
     /// and the grid overflows when the space does not hold it, rather than squeezing a cell
@@ -23,7 +21,6 @@ pub enum Columns {
 pub struct GridLayout {
     columns: Columns,
     gap: Rhythm,
-    /// The count the last allocation settled on.
     count: u16,
     /// How many items the grid holds: a row never has more columns than items, so a few cards
     /// share the whole width instead of leaving empty columns beside them.
@@ -34,7 +31,6 @@ pub struct GridLayout {
 }
 
 impl GridLayout {
-    /// The columns the grid has at `width` logical pixels.
     #[must_use]
     pub fn count_for(&self, width: f32, resolved: &Resolved) -> u16 {
         match self.columns {
@@ -47,7 +43,6 @@ impl GridLayout {
         }
     }
 
-    /// The column count of the last layout.
     #[must_use]
     pub const fn columns(&self) -> u16 {
         self.count
@@ -138,7 +133,6 @@ impl Arranged<GridLayout> {
         })
     }
 
-    /// A fixed number of columns.
     #[must_use]
     pub fn columns(count: u16) -> Self {
         Self::with_layout(GridLayout {
@@ -176,7 +170,6 @@ impl Arranged<GridLayout> {
         self
     }
 
-    /// Add a child spanning `span` columns.
     #[must_use]
     pub fn push_span(mut self, child: crate::widget::Element, span: u16) -> Self {
         let mut slot = Slot::new(child);

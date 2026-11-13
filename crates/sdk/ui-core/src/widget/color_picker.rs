@@ -1,24 +1,5 @@
-//! Event-driven: each press latches a [`DragTarget`] so a drag continues
-//! to track the cursor even after it leaves the widget rect (see
-//! `wants_pointer_capture`). All visuals pull colours from theme tokens —
-//! no literal palette values live in this file.
-//!
-//! The selected colour can stay widget-local, bind to typed process-local
-//! state with [`ColorPicker::from_state`], or be observed with `on_change`
-//! for an app-owned durable mutation.
-//!
-//! Two optional parts extend the inline picker:
-//!
-//! - **Swatches** ([`ColorPicker::with_swatches`]): a palette of quick picks
-//!   below the sliders, each a radio button for assistive technology.
-//! - **Confirm mode** ([`ColorPicker::confirming`]): a titled picker whose
-//!   edits stay pending until *Done*; *Cancel* (or `Escape`) restores the
-//!   colour it opened with. The host reads the result from
-//!   [`ColorPicker::take_outcome`] or [`ColorPicker::on_outcome`].
-//!
-//! The saturation/value field and hue strip paint the real HSV gradients the
-//! pointer maps into; every chrome colour (edges, rings, labels, buttons)
-//! comes from theme tokens.
+//! Event-driven: each press latches a [`DragTarget`] so a drag continues to track the cursor even after
+//! it leaves the widget rect (see `wants_pointer_capture`).
 
 use crate::color_compat::ColorCompat;
 use crate::i18n::widget_text;
@@ -45,16 +26,13 @@ use winit::keyboard::{Key, NamedKey};
 /// Geometry constants for the inner layout. Pulled out so the test fixture
 /// and the live layout agree on rect positions without poking taffy.
 const PICKER_WIDTH: f64 = 260.0;
-/// The SV square at [`PICKER_WIDTH`]; it grows and shrinks with the width.
 const SV_SIZE: f64 = 120.0;
 /// The smallest SV square that still keeps the preview column beside it;
 /// narrower, the preview and the hex field move under it.
 const SV_MIN: f64 = 80.0;
 const HUE_STRIP_WIDTH: f64 = 16.0;
-/// The ring marking the chosen point of the SV square.
 const SV_CURSOR_RADIUS: f64 = 6.0;
 const PREVIEW_SIZE: f64 = 40.0;
-/// One channel slider's row: the shared `Slider` with its knob.
 const SLIDER_HEIGHT: f64 = 24.0;
 const SLIDER_GAP: f64 = 4.0;
 const COMPONENT_GAP: f64 = 8.0;
@@ -65,10 +43,7 @@ const fn token(value: f32) -> f64 {
     value as f64
 }
 const SPACE: crate::tokens::Spacing = crate::tokens::Spacing::BASE;
-/// How much the SV square grows when the picker is laid out wider than
-/// [`PICKER_WIDTH`] (a picker filling a sheet), one pixel per pixel.
 const SV_GROWTH_MAX: f64 = token(SPACE.s16) + token(SPACE.s4);
-/// Confirm-mode title band.
 const TITLE_HEIGHT: f64 = token(SPACE.s6);
 /// Gap between the base block and each optional row.
 const SECTION_GAP: f64 = token(SPACE.s3);
@@ -77,9 +52,7 @@ const SWATCH_GAP: f64 = token(SPACE.s2);
 const BUTTON_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.min_pointer_target);
 const BUTTON_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s6);
 const BUTTON_GAP: f64 = token(SPACE.s2);
-/// The preview and hex column beside the SV square.
 const COLUMN_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s8);
-/// The hex field: a Small control.
 const FIELD_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.bar_control_height);
 
 /// Where every part of a picker sits in one rect: shared by layout and by
@@ -97,22 +70,17 @@ struct PickerLayout {
     swatches: Vec<Rect>,
     cancel: Rect,
     done: Rect,
-    /// The lowest edge any part reaches.
     bottom: f64,
 }
 /// Hue stops the strip's gradient passes through (every 60°).
 const HUE_STOPS: usize = 7;
 
-/// How a confirming picker closed (see [`ColorPicker::confirming`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColorPickerOutcome {
-    /// *Done*: the pending colour, now also the committed one.
     Confirmed(Color),
-    /// *Cancel*: the picker restored the colour it opened with.
     Cancelled,
 }
 
-/// Semantic target of the picker's colour value.
 const TARGET_VALUE: &str = "color_picker";
 const TARGET_CANCEL: &str = "color_picker.cancel";
 const TARGET_DONE: &str = "color_picker.done";
@@ -130,7 +98,6 @@ pub enum DragTarget {
 }
 
 pub struct ColorPicker {
-    /// Fluent message id spoken for the complete colour control.
     accessible_name: Option<String>,
     color: Color,
     on_change: Option<Box<dyn FnMut(Color)>>,
@@ -143,12 +110,9 @@ pub struct ColorPicker {
     b_slider_rect: Rect,
     preview_rect: Rect,
     drag_target: Option<DragTarget>,
-    /// The finger dragging the field, hue strip or a channel slider.
     touch: crate::widget::SliderTouch,
     last_cursor: Point,
     is_focused: bool,
-    /// Local-mode `TextInput` sitting under the preview swatch, holding the
-    /// canonical hex string. A parse failure leaves `self.color` untouched.
     hex_input: TextInput,
     /// Cached rect for the hex input. Computed in `apply_layout` so
     /// `handle_event` can hit-test mouse events against it.
@@ -163,26 +127,18 @@ pub struct ColorPicker {
     /// this node" call onto the embedded input instead — routing through
     /// the App is what blurs whatever sibling held focus before.
     hex_input_focus_pending: bool,
-    /// One-shot record of the last user-driven colour change, drained by
-    /// [`take_changed`] — a *programmatic* [`set_color`] does not set it.
     changed: Option<Color>,
     swatches: Vec<ColorSwatch>,
     swatch_rects: Vec<Rect>,
-    /// `Some` in confirm mode: the title painted above the picker.
     confirm_title: Option<String>,
-    /// The colour *Cancel* restores: the opening colour, or the last one
-    /// confirmed.
     committed: Color,
     outcome: Option<ColorPickerOutcome>,
     on_outcome: Option<Box<dyn FnMut(ColorPickerOutcome)>>,
     title_rect: Rect,
     cancel_rect: Rect,
     done_rect: Rect,
-    /// What inputs the host has, from the frame: a swatch is a finger's target on touch.
     interaction: crate::interaction::InteractionEnvironment,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -231,10 +187,6 @@ impl ColorPicker {
         s
     }
 
-    /// Create a colour picker bound to typed process-local state.
-    ///
-    /// Pointer, text, and semantic changes update `state`; mutations through
-    /// any clone update this picker on the next synchronization pass.
     pub fn from_state(state: &crate::LocalState<Color>) -> Self {
         let (color, binding) = crate::widget::binding::local(state);
         let mut picker = Self::new(color);
@@ -268,40 +220,27 @@ impl ColorPicker {
         self
     }
 
-    /// Confirm mode: paint `title` above the picker and *Cancel* / *Done*
-    /// below it. Edits stay pending — [`Self::color`] follows them and
-    /// [`Self::take_changed`] still reports them for a live preview — while
-    /// [`Self::committed_color`] keeps the colour the picker opened with.
-    /// *Done* (or `Enter` while the picker has focus) confirms; *Cancel* (or
-    /// `Escape`) restores the committed colour.
     #[must_use]
     pub fn confirming(mut self, title: impl Into<String>) -> Self {
         self.confirm_title = Some(title.into());
         self
     }
 
-    /// The colour *Cancel* restores: the opening colour, or the last one
-    /// confirmed.
     #[must_use]
     pub fn committed_color(&self) -> Color {
         self.committed
     }
 
-    /// Poll for how a confirming picker closed since the last call.
     pub fn take_outcome(&mut self) -> Option<ColorPickerOutcome> {
         self.outcome.take()
     }
 
-    /// Observe confirm-mode outcomes as they happen (see
-    /// [`Self::take_outcome`] for the polling form).
     #[must_use]
     pub fn on_outcome<F: FnMut(ColorPickerOutcome) + 'static>(mut self, f: F) -> Self {
         self.on_outcome = Some(Box::new(f));
         self
     }
 
-    /// *Done*: commit the pending colour and report
-    /// [`ColorPickerOutcome::Confirmed`].
     pub fn confirm(&mut self) {
         self.committed = self.color;
         self.finish(ColorPickerOutcome::Confirmed(self.color));
@@ -325,9 +264,6 @@ impl ColorPicker {
         }
     }
 
-    /// The size the picker lays out at, including any swatch and confirm
-    /// rows — for hosts that place it with [`Self::apply_layout_external`].
-    /// Every part it draws, the hex field included, lies inside it.
     #[must_use]
     pub fn preferred_size(&self) -> (f64, f64) {
         (PICKER_WIDTH, self.content_height(PICKER_WIDTH))
@@ -341,13 +277,10 @@ impl ColorPicker {
         self.content_height(width)
     }
 
-    /// Whether `width` keeps the preview column beside the SV square.
     fn side_column(width: f64) -> bool {
         width >= SV_MIN + 2.0 * COMPONENT_GAP + HUE_STRIP_WIDTH + COLUMN_WIDTH
     }
 
-    /// Side of the SV square (and height of the hue strip) at `width`: it
-    /// takes the room the hue strip and the preview column leave.
     fn sv_size(width: f64) -> f64 {
         if Self::side_column(width) {
             (width - 2.0 * COMPONENT_GAP - HUE_STRIP_WIDTH - COLUMN_WIDTH)
@@ -361,7 +294,6 @@ impl ColorPicker {
         self.confirm_title.is_some() || !self.swatches.is_empty()
     }
 
-    /// Swatches per row at `width`.
     fn swatches_per_row(width: f64) -> usize {
         let per = ((width + SWATCH_GAP) / (SWATCH_SIZE + SWATCH_GAP)).floor();
         #[allow(
@@ -379,9 +311,6 @@ impl ColorPicker {
             .ceil()
     }
 
-    /// Keep the colour field flexible while reserving the real heights of
-    /// the hex input, channels, swatches and confirmation controls. Natural
-    /// measurement supplies an unbounded height and remains unchanged.
     fn layout_in(&self, rect: Rect) -> PickerLayout {
         let side = Self::sv_size(rect.width());
         let natural = self.layout_with_sv(rect, side);
@@ -408,15 +337,12 @@ impl ColorPicker {
         layout.hue = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + sv);
         let mut block_bottom = layout.sv.y1;
         if Self::side_column(width) {
-            // The preview and the hex field in a column at the trailing
-            // edge, beside the square.
             let col_x0 = x1 - COLUMN_WIDTH;
             layout.preview = Rect::new(col_x0, y0, x1, y0 + PREVIEW_SIZE);
             let hex_y0 = layout.preview.y1 + COMPONENT_GAP;
             layout.hex = Rect::new(col_x0, hex_y0, x1, hex_y0 + FIELD_HEIGHT);
             block_bottom = block_bottom.max(layout.hex.y1);
         } else {
-            // Too narrow for the column: a row under the square.
             let top = block_bottom + COMPONENT_GAP;
             layout.preview = Rect::new(x0, top, x0 + FIELD_HEIGHT, top + FIELD_HEIGHT);
             let hex_x0 = layout.preview.x1 + COMPONENT_GAP;
@@ -466,7 +392,6 @@ impl ColorPicker {
         layout
     }
 
-    /// Choose the swatch at `index`, as a click on it does.
     fn choose_swatch(&mut self, index: usize) -> bool {
         let Some(color) = self.swatches.get(index).map(|swatch| swatch.color) else {
             return false;
@@ -476,17 +401,12 @@ impl ColorPicker {
         true
     }
 
-    /// Name the colour picker for assistive technology.
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
     }
 
-    /// Push a new "current colour" into the picker from the outside.
-    /// Updates the swatch/SV/hue/slider positions and the embedded hex
-    /// field, but does NOT fire `on_change` or the `take_changed` record
-    /// — see `take_changed`. No-op when the colour is unchanged.
     pub fn set_color(&mut self, color: Color) {
         self.dirty = true;
         if color.r() == self.color.r()
@@ -506,9 +426,6 @@ impl ColorPicker {
         self.hex_input_rect
     }
 
-    /// Position the picker at an externally-computed `rect`, without a
-    /// taffy node. Computes the same sub-rects `apply_layout` does.
-    /// Mirrors [`TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         let layout = self.layout_in(rect);
@@ -526,10 +443,6 @@ impl ColorPicker {
         self.hex_input.apply_layout_external(self.hex_input_rect);
     }
 
-    /// Sets the embedded hex input's text directly, bypassing
-    /// character-by-character IME driving. The next `handle_event` parses
-    /// it and applies it to `self.color`. Gated to test/debug builds —
-    /// release binaries don't carry the matching dirty-sentinel branch.
     #[cfg(any(test, debug_assertions))]
     pub fn set_hex_text_for_test(&mut self, s: &str) {
         self.dirty = true;
@@ -542,8 +455,6 @@ impl ColorPicker {
         self.hex_input.is_focused()
     }
 
-    /// Re-emits the canonical hex string into the embedded input after
-    /// the SV square/hue strip/sliders mutate `self.color`.
     fn sync_input(&mut self) {
         self.dirty = true;
         let hex = self.hex_string();
@@ -554,8 +465,6 @@ impl ColorPicker {
         self.color
     }
 
-    /// Six-digit `#RRGGBB` hex string for the current colour. Alpha is
-    /// intentionally not encoded — the picker doesn't expose that channel.
     pub fn hex_string(&self) -> String {
         crate::color::to_hex(self.color)
     }
@@ -686,8 +595,6 @@ impl ColorPicker {
         if self.hue_strip_rect.contains(p) {
             return Some(DragTarget::Hue);
         }
-        // A channel slider takes the pointer over its track and the knob
-        // overhanging its ends.
         let reach = crate::widget::SliderFace::overhang();
         if self.r_slider_rect.inflate(reach, 0.0).contains(p) {
             return Some(DragTarget::R);
@@ -701,8 +608,6 @@ impl ColorPicker {
         None
     }
 
-    /// Drive whichever control is currently dragging from a cursor
-    /// position. No-op when `drag_target` is `None`.
     #[allow(
         clippy::many_single_char_names,
         reason = "h, s, v, r, g, b, p, f are the standard HSV/RGB channel and cursor-point \
@@ -756,7 +661,6 @@ impl ColorPicker {
     ) {
         use vello::peniko::{ColorStop, Extend, Gradient};
 
-        // --- SV square ---
         let sv_shape = RoundedRect::from_rect(self.sv_rect, radius_sm);
         let (hue, sat, val) = self.current_hsv();
         let (hr, hg, hb) = Self::hsv_to_rgb(hue, 1.0, 1.0);
@@ -799,8 +703,6 @@ impl ColorPicker {
             None,
             &sv_shape,
         );
-        // The SV square carries the keyboard-focus ring for the whole
-        // picker (see the no-bounding-box note in `draw`).
         let (sv_border_w, sv_border_c) = if self.is_focused {
             (2.0, colors.border_focus)
         } else {
@@ -831,7 +733,6 @@ impl ColorPicker {
             &sv_ring,
         );
 
-        // --- Hue strip ---
         let strip = self.hue_strip_rect;
         let stops: Vec<ColorStop> = (0..HUE_STOPS)
             .map(|index| {
@@ -861,8 +762,6 @@ impl ColorPicker {
             None,
             &hue_shape,
         );
-        // The strip is a rainbow with no one colour to derive from; its edge
-        // is measured against the raised picker surface around it.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -953,8 +852,6 @@ impl ColorPicker {
         a.r() == b.r() && a.g() == b.g() && a.b() == b.b()
     }
 
-    /// Draws the preview swatch and the three RGB sliders (track, active
-    /// fill and knob). Split out of `draw` to keep that function readable.
     fn draw_preview_and_sliders(
         &self,
         scene: &mut Scene,
@@ -962,7 +859,6 @@ impl ColorPicker {
         theme: &Theme,
         radius_sm: f64,
     ) {
-        // --- Preview swatch ---
         let preview_shape = RoundedRect::from_rect(self.preview_rect, radius_sm);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -980,7 +876,6 @@ impl ColorPicker {
             &preview_shape,
         );
 
-        // --- RGB sliders --- the shared `Slider` face, one per channel.
         for (slider, channel, target) in [
             (self.r_slider_rect, self.color.r(), DragTarget::R),
             (self.g_slider_rect, self.color.g(), DragTarget::G),
@@ -1018,8 +913,6 @@ impl Widget for ColorPicker {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Its preferred size, narrowed to what the parent gives; the height
-        // then follows the width it got (`adjust_layout_style`).
         let style = Style {
             size: Size::from_lengths(
                 crate::num::f32_of_f64(PICKER_WIDTH),
@@ -1035,7 +928,6 @@ impl Widget for ColorPicker {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// A picker narrowed by its parent is as tall as that width needs.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1085,8 +977,6 @@ impl Widget for ColorPicker {
         self.draw_swatches(scene, transform, text_renderer, theme);
         self.draw_buttons(scene, transform, text_renderer, theme);
 
-        // --- Hex input --- drawn here directly since `hex_input` isn't in
-        // the taffy tree.
         self.hex_input
             .draw_child(scene, transform, text_renderer, theme, presence);
     }
@@ -1125,9 +1015,6 @@ impl Widget for ColorPicker {
                 ..
             } => {
                 if *el_state == ElementState::Pressed {
-                    // If the press already landed inside the hex input
-                    // the input has claimed focus + handling — don't
-                    // start an SV/hue/slider drag on top of that.
                     let in_input = self.hex_input_rect.contains(self.last_cursor);
                     let swatch = self
                         .swatch_rects
@@ -1172,8 +1059,6 @@ impl Widget for ColorPicker {
                     *ctx.handled = true;
                 }
             }
-            // A finger drags the field, the hue strip and the channel
-            // sliders as the pointer held down does.
             WindowEvent::Touch(touch) => {
                 use crate::widget::SliderTouchStep;
                 let mut finger = self.touch;
@@ -1229,9 +1114,6 @@ impl Widget for ColorPicker {
             _ => {}
         }
 
-        // Drain the embedded input's dirty flag (or test sentinel) and
-        // parse it as a colour. Invalid text is silently ignored;
-        // `sync_input` overwrites the bad string on the next mutation.
         let dirty = self.hex_input.take_dirty();
         #[cfg(any(test, debug_assertions))]
         let dirty = dirty.or_else(|| {
@@ -1256,7 +1138,6 @@ impl Widget for ColorPicker {
         self.drag_target.is_some() || self.touch.is_active()
     }
 
-    /// A finger on the field, the hue strip or a channel slider drags it.
     fn claims_raw_touch(&self, point: Point) -> bool {
         self.target_at(point).is_some()
     }
@@ -1465,8 +1346,6 @@ mod tests {
     use crate::theme::Theme;
     use automerge::AutoCommit;
 
-    /// Force a deterministic layout without spinning up a real taffy
-    /// pass. Mirrors the SV/hue/slider arithmetic in `apply_layout`.
     fn picker_at(initial: Color, origin: Point) -> ColorPicker {
         let mut p = ColorPicker::new(initial);
         let (w, h) = p.preferred_size();

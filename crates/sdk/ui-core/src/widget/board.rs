@@ -1,25 +1,5 @@
-//! `Board`: cards in lanes, moved between them by dragging (a kanban board,
-//! a pipeline, a hand of tasks by status).
-//!
-//! Each lane is a column with a header, where it has one, and its cards, side by side. The
-//! cards are any widgets (usually a pressable [`Card`](super::Card)), so a
-//! card opens, takes focus and is read out as itself. Dragging one shows a
-//! ghost under the pointer and the insertion line where it would land, over
-//! the lane it would land in; releasing it reports one [`BoardDrop`]: the
-//! card, the lane and the card it goes before. The board changes nothing
-//! itself: the owner turns the drop into one action on its model, and the
-//! board shows the card where the model then puts it.
-//!
-//! A press that never travels past [`DRAG_START_THRESHOLD_PX`] is the card's
-//! own click. Once a drag starts, the card under it is told the pointer left,
-//! so releasing ends the drag without also opening the card.
-//!
-//! On a touchscreen a still hold lifts a card and a drag after it moves it;
-//! a drag that begins without the hold scrolls what the board is in.
-//!
-//! A card is moved without a pointer through what it is an object of (a
-//! status in its page, the action the drop stands for), never only by
-//! dragging.
+//! `Board`: cards in lanes, moved between them by dragging (a kanban board, a pipeline, a hand of tasks
+//! by status).
 
 use std::collections::HashMap;
 
@@ -38,13 +18,10 @@ use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
 use crate::widget::{CardWidth, Column, Container, Element, EventCtx, Row, Scrollable, Widget};
 
-/// Where a dragged card was dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardDrop {
-    /// The card's key.
     pub card: String,
     pub lane: String,
-    /// The card it goes before; `None` for the end of the lane.
     pub before: Option<String>,
 }
 
@@ -52,15 +29,11 @@ pub struct BoardDrop {
 struct LaneKeys {
     key: String,
     cards: Vec<String>,
-    /// Whether the lane heads itself: its column starts with the heading, over the view that
-    /// scrolls its cards. A lane nobody named heads nothing, and its cards start at its top.
     heading: bool,
 }
 
-/// A drag from press to release.
 struct Drag {
     card: String,
-    /// The pressed card's rect and where in it the pointer took it.
     rect: Rect,
     grab: Point,
     start: Point,
@@ -69,7 +42,6 @@ struct Drag {
     target: Option<(usize, Option<String>)>,
 }
 
-/// See the [module docs](self).
 #[path = "board_component.rs"]
 mod component;
 pub use component::{BoardCardProps, BoardLaneProps, BoardProps};
@@ -83,17 +55,12 @@ pub struct Board {
     on_drop: Option<Box<dyn FnMut(BoardDrop)>>,
     /// What each drop asks the host for, where the app bound one.
     drops: Option<crate::widget::ActionEmitter<BoardDrop>>,
-    /// What the board is, for assistive technology.
     pub(crate) name: Option<String>,
-    /// The key the board was built under.
     id: String,
     /// The theme the lanes were last sized in: a lane's width follows the pane the board is
     /// given, which is known only once it is laid out (`Board::size_lanes`).
     theme: Option<Theme>,
-    /// The width the lanes were last given.
     sized: Option<f32>,
-    /// The width the pane showing the board was last laid out at: what a lane is judged
-    /// compact against ([`Board::snap_points`]).
     pane: Option<f64>,
 }
 
@@ -148,7 +115,6 @@ impl Board {
         self
     }
 
-    /// [`Self::lane`] on a board already built: the lane stands at the board's end.
     pub(crate) fn push_lane(
         &mut self,
         key: impl Into<String>,
@@ -172,21 +138,16 @@ impl Board {
         let scrolling = Scrollable::new_vertical()
             .fit_content_height()
             .with_child(Box::new(cards_column));
-        // A lane takes the board's height where the board has one (a pane's),
-        // and its content's where it does not.
         let heading = header.is_some();
         let mut column = Column::new().with_no_padding().with_rhythm(Rhythm::Related);
         if let Some(header) = header {
             column = column.push(header);
         }
         let column = column.push(Box::new(scrolling));
-        // What adds to the lane stands at its foot, under the cards, whichever of them shows.
         let column = match foot {
             Some(foot) => column.push(foot),
             None => column,
         };
-        // The lane's width is a card's comfortable measure, set at layout
-        // from the theme (`Board::size_lanes`).
         let lane = Container::new()
             .with_no_padding()
             .filling()
@@ -212,8 +173,6 @@ impl Board {
                 .all(|(held, (key, cards))| held.key == *key && held.cards == *cards)
     }
 
-    /// The lanes the board shows now, where it stands: what the board is and what the person is
-    /// doing with it — a drag in flight — stay.
     pub(crate) fn set_lanes(
         &mut self,
         lanes: Vec<(
@@ -238,7 +197,6 @@ impl Board {
         self.dirty = true;
     }
 
-    /// Answer a drop with `on_drop` where it stands.
     pub(crate) fn set_on_drop(&mut self, on_drop: Box<dyn FnMut(BoardDrop)>) {
         self.on_drop = Some(on_drop);
     }
@@ -258,8 +216,6 @@ impl Board {
         self
     }
 
-    /// Report a dropped card: through the app's bound action where it bound
-    /// one, else to its closure.
     fn drop_card(&mut self, drop: BoardDrop) {
         if let Some(drops) = &mut self.drops {
             if let Err(error) = drops.emit(drop) {
@@ -278,7 +234,6 @@ impl Board {
         self
     }
 
-    /// Whether a drag is going on: the ghost and insertion line show.
     #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.drag.as_ref().is_some_and(|drag| drag.active)
@@ -336,7 +291,6 @@ impl Board {
             .collect()
     }
 
-    /// The card under `point`: its lane, key and rect.
     fn card_at(&self, point: Point) -> Option<(String, Rect)> {
         (0..self.lanes.len()).find_map(|lane| {
             self.shown_cards(lane)
@@ -345,8 +299,6 @@ impl Board {
         })
     }
 
-    /// Where a card dragged to `point` lands: the lane whose band holds the
-    /// pointer, before the first card whose middle is below it.
     fn target_at(&self, point: Point, dragged: &str) -> Option<(usize, Option<String>)> {
         let lane = self
             .lane_rects()
@@ -388,7 +340,6 @@ impl Board {
         }
     }
 
-    /// Give every lane's widget this width, which the lane builds itself from.
     fn set_lane_widths(&mut self, width: f32) {
         for lane in self.row.children_mut() {
             if let Some(lane) = lane
@@ -400,7 +351,6 @@ impl Board {
         }
     }
 
-    /// Give every lane this width, as its widget builds itself and as it already stands.
     fn size_lanes(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -424,7 +374,6 @@ impl Board {
         true
     }
 
-    /// Where the insertion line goes for `target`, across its lane.
     fn line_rect(&self, (lane, before): &(usize, Option<String>), theme: &Theme) -> Option<Rect> {
         let band = *self.lane_rects().get(*lane)?;
         let shown = self.shown_cards(*lane);
@@ -518,10 +467,6 @@ impl crate::widget::Decorator for Board {
         &mut self.row
     }
 
-    /// The board answers for the drop it publishes itself (its
-    /// [`ActionControls`](crate::widget::controls::ActionControls) reaches
-    /// both that action and every row's); everything else the rows answer as
-    /// before.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if self.drops.is_some() && request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
@@ -542,7 +487,6 @@ impl crate::widget::Decorator for Board {
         self.dirty || Widget::needs_redraw(&self.row)
     }
 
-    /// A contact on a card holds to lift it; anywhere else it is ordinary content.
     fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
         if self.card_at(point).is_some() {
             crate::interaction::TouchClaim::HoldDrag
@@ -588,8 +532,6 @@ impl crate::widget::Decorator for Board {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = Some(theme.clone());
-        // The lanes build at a lane's comfortable measure, or at the width the pane the board
-        // is given settles (`adjust_layout_style`).
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
         let width = self.sized.unwrap_or(Self::comfortable_lane(theme) as f32);
         self.set_lane_widths(width);
@@ -609,8 +551,6 @@ impl crate::widget::Decorator for Board {
             return false;
         };
         let mut width = f64::from(layout.size.width);
-        // A board in a pane that scrolls sideways is as wide as its lanes; the room it shares
-        // them out over is the pane it shows through, its parent.
         if let Some(parent) = taffy.parent(node)
             && let Ok(pane) = taffy.layout(parent)
             && pane.size.width > 0.0
@@ -663,8 +603,6 @@ impl crate::widget::Decorator for Board {
                     });
                 }
             }
-            // A secondary press ends a pick-up without a drop: a hold lifted where it began
-            // is one, and opens the card's menu.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,

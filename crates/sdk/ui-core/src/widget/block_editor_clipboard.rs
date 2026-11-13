@@ -1,8 +1,7 @@
-//! Cut, copy and paste, owned by the editor whichever way they are asked
-//! for: a shortcut, the text menu, assistive technology. A copy offers the
-//! selection as formatted text (HTML) and as words; a paste brings in the
-//! formatting another editor, a browser or an office suite copied, and
-//! Ctrl+Shift+V the words alone.
+//! Cut, copy and paste, owned by the editor whichever way they are asked for: a shortcut, the text
+//! menu, assistive technology. A copy offers the selection as formatted text (HTML) and as words; a
+//! paste brings in the formatting another editor, a browser or an office suite copied, and Ctrl+Shift+V
+//! the words alone.
 
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::Key;
@@ -16,20 +15,12 @@ use crate::text_selection::{clipboard_copy_rich_accepted, clipboard_paste, clipb
 use crate::widget::EventCtx;
 use crate::widget::marks::{MarkSpan, add_mark_to_range};
 
-/// What a paste brings in.
 enum Pasted {
     Words(String),
-    /// Formatted blocks.
     Blocks(Vec<BlockContent>),
 }
 
 impl BlockEditor {
-    /// Cut, copy, paste (formatted, or `paste-plain` for the words alone) or
-    /// select all (`command`), as the shortcuts and the text menu do, over
-    /// the document selection, the focused paragraph's or the focused table
-    /// cell's. An edit it makes is left for the owner to take
-    /// ([`Self::take_edit_ops`]); within an event, the event's edit scope
-    /// covers it. `false` when `command` is none of those.
     pub(super) fn clipboard_command(&mut self, command: &str) -> bool {
         let table_command = if command == "paste-plain" {
             "paste"
@@ -110,8 +101,6 @@ impl BlockEditor {
         true
     }
 
-    /// What cut, copy and paste act on: the document selection, a picture
-    /// block shown as a preview, or the focused line's selection or caret.
     fn clipboard_selection(&self) -> Option<DocumentSelection> {
         // A preview's source is the clipboard candidate, not a live text
         // selection until a replacement actually succeeds.
@@ -150,12 +139,8 @@ impl BlockEditor {
         })
     }
 
-    /// What the clipboard pastes over `selection`: its formatting when
-    /// `rich` and the words land in prose, else its words. `None` when it
-    /// holds nothing to paste.
     fn clipboard_payload(&self, rich: bool, selection: DocumentSelection) -> Option<Pasted> {
         let (start, _) = selection.ordered();
-        // Code and table source take words: formatting has no place there.
         let prose = self.blocks.get(start.block).is_some_and(|block| {
             !matches!(
                 block.kind,
@@ -183,8 +168,6 @@ impl BlockEditor {
         clipboard_paste().map(Pasted::Words)
     }
 
-    /// Put the document selection on the clipboard, formatted and as
-    /// words. Whether the clipboard took it.
     fn copy_selection(&self) -> bool {
         let (Some(plain), Some(blocks)) = (self.selected_text(), self.selected_content()) else {
             return false;
@@ -226,15 +209,10 @@ impl BlockEditor {
         Some(out)
     }
 
-    /// Replace the document selection with formatted `pasted` blocks: the
-    /// first joins the words before the selection, the last the words after
-    /// it, and the ones between stand as blocks of their own kinds. One
-    /// edit, as [`Self::replace_document_selection`] is.
     pub fn replace_document_selection_with_blocks(&mut self, pasted: Vec<BlockContent>) -> bool {
         let mut pasted: Vec<BlockContent> = pasted
             .into_iter()
             .map(|mut block| {
-                // A block is one line; control characters go.
                 let text = normalize_replacement(&block.text).replace('\n', " ");
                 if text.len() != block.text.len() {
                     block.marks.retain(|span| span.range.end <= text.len());
@@ -275,8 +253,6 @@ impl BlockEditor {
             .map(|b| marks_after(b.line.marks(), end_byte))
             .unwrap_or_default();
 
-        // The first pasted block joins the words before the selection; on
-        // an empty line it brings its own kind (a heading, a list item).
         let first = pasted.remove(0);
         let mut first_text = prefix.clone();
         first_text.push_str(&first.text);
@@ -343,9 +319,6 @@ impl BlockEditor {
         true
     }
 
-    /// Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+Shift+V (Cmd on a Mac) while the
-    /// editor has focus: the editor's own cut, copy and paste, whichever
-    /// line holds the caret.
     pub(super) fn try_clipboard_key(
         &mut self,
         event: &WindowEvent,

@@ -4,13 +4,11 @@ use crate::component::{Bound, Component, Described, Event};
 
 use super::DatePicker;
 
-/// A month's calendar: the day chosen is ringed, today marked, and the arrows go between
-/// months. Days that hold something carry a dot.
+/// A month's calendar: the day chosen is ringed, today marked, and the arrows go between months.
 #[derive(Component)]
 #[component(name = "DatePicker", role = "Group", label = "label")]
 pub struct DatePickerProps {
-    /// The day chosen, as the moment a component binds (its ISO text), and where choosing one
-    /// goes.
+    /// The day chosen, as the moment a component binds (its ISO text), and where choosing one goes.
     #[component(bind(ty = crate::component::Moment))]
     pub value: Bound<String>,
     /// Days that hold something (an event, a note): a dot under the number.
@@ -62,7 +60,6 @@ impl Described for DatePicker {
         picker
     }
 
-    /// The day chosen changes in place; its marked days are built again.
     fn set_props(&mut self, props: DatePickerProps) -> bool {
         // A day set elsewhere shows in place through the binding; its spoken name changes
         // where it stands. Days that hold something are the calendar's own marks, which only

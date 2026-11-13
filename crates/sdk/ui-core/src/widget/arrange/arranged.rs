@@ -1,11 +1,5 @@
-//! The one widget every layout primitive is: a container whose arrangement a [`Layout`]
-//! decides, around child slots.
-//!
-//! Each child sits in a *wrapper* node whose style carries the child's [`Fit`] (fill weight,
-//! bounds, aspect, span, place). The container style and the wrappers' styles come from the
-//! layout, and are chosen again during layout from the width the container was given
-//! ([`Widget::adjust_layout_style`]): constraints flow down, the container decides its
-//! arrangement from what it was offered, and a child never reads its own final size.
+//! The one widget every layout primitive is: a container whose arrangement a [`Layout`] decides, around
+//! child slots.
 
 use std::collections::HashMap;
 
@@ -23,8 +17,8 @@ use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
 use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 
-/// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
-/// in logical pixels.
+/// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side, in
+/// logical pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct Resolved {
     pub rem: f32,
@@ -66,9 +60,7 @@ impl Resolved {
         self
     }
 
-    /// The row lead: the gutter a row's leading control stands in, its cell and the gap after
-    /// it. A document lays its body one lead in, under the text its heading's control leads
-    /// to, at whatever size the person's controls take.
+    /// The row lead: the gutter a row's leading control stands in, its cell and the gap after it.
     #[must_use]
     pub const fn lead(&self) -> f32 {
         self.target + self.gap(Rhythm::Related)
@@ -101,10 +93,7 @@ pub struct Slot {
     /// Where a layer sits; `None` fills the cell.
     pub at: Option<At>,
     wrapper: Option<NodeId>,
-    /// The block size the fit's `aspect` gives at the width the slot was solved at. A flex or
-    /// grid box derives its cross size from a ratio only when its inline size is definite in
-    /// its style, so a slot whose width the container decides takes the height the ratio gives
-    /// once the width is solved ([`Arranged::derive_aspects`]).
+    /// The block size the fit's `aspect` gives at the width the slot was solved at.
     height: Option<f32>,
 }
 
@@ -116,8 +105,8 @@ impl Slot {
     }
 
     /// The child in a slot of its own: sized as the view asked, when a host wrapped it in a
-    /// [`Fitted`](crate::widget::Fitted) carrying the fit its node wrote, and hugging its
-    /// content otherwise.
+    /// [`Fitted`](crate::widget::Fitted) carrying the fit its node wrote, and hugging its content
+    /// otherwise.
     #[must_use]
     pub fn new(element: Element) -> Self {
         let fit = element
@@ -156,9 +145,9 @@ fn lead_width(lead: i16, resolved: &Resolved) -> f32 {
     resolved.lead() * f32::from(lead)
 }
 
-/// A container's style with the `lead` it reserves before its content: what it holds stands
-/// that many logical pixels in from its leading edge, which is where a document's body starts
-/// under the text its heading's control leads to.
+/// A container's style with the `lead` it reserves before its content: what it holds stands that
+/// many logical pixels in from its leading edge, which is where a document's body starts under the
+/// text its heading's control leads to.
 pub(super) fn lead_container(mut style: Style, lead: f32, leading: Side) -> Style {
     if lead > 0.0 {
         let at = taffy::style_helpers::length(lead);
@@ -170,22 +159,21 @@ pub(super) fn lead_container(mut style: Style, lead: f32, leading: Side) -> Styl
     style
 }
 
-/// How a primitive arranges its slots. See the module docs.
+/// How a primitive arranges its slots.
 pub trait Layout {
     fn name(&self) -> &'static str;
 
-    /// The readable column this arrangement keeps what it holds in, when it is one: a page's
-    /// measure, which a bar at the foot of the column stands in too.
+    /// The readable column this arrangement keeps what it holds in, when it is one: a page's measure,
+    /// which a bar at the foot of the column stands in too.
     fn readable_column(&self) -> Option<Length> {
         None
     }
 
-    /// The container's style for the current arrangement, `lead` pixels of gutter reserved
-    /// before what it holds.
+    /// The container's style for the current arrangement, `lead` pixels of gutter reserved before what
+    /// it holds.
     fn container(&self, resolved: &Resolved, lead: f32) -> Style;
 
-    /// The side the arrangement leads on: where `lead` reserves its gutter. A row written
-    /// right to left leads on the right.
+    /// The side the arrangement leads on: where `lead` reserves its gutter.
     fn leading(&self) -> Side {
         Side::Leading
     }
@@ -193,14 +181,13 @@ pub trait Layout {
     /// The wrapper style of slot `index` for the current arrangement.
     fn slot(&self, index: usize, slot: &Slot, resolved: &Resolved) -> Style;
 
-    /// Decide the arrangement from the allocated size. Returns whether the styles must be
-    /// computed again.
+    /// Decide the arrangement from the allocated size.
     fn settle(&mut self, _allocated: Size<f32>, _resolved: &Resolved) -> bool {
         false
     }
 
-    /// How many slots the container holds, told before each layout: a layout that arranges by
-    /// count (a grid that keeps no empty columns) reads it.
+    /// How many slots the container holds, told before each layout: a layout that arranges by count (a
+    /// grid that keeps no empty columns) reads it.
     fn items(&mut self, _count: usize) {}
 
     /// Whether slot `index` is not shown in the current arrangement.
@@ -209,30 +196,26 @@ pub trait Layout {
     }
 }
 
-/// A container arranged by `L`. The primitives are this type with a layout:
-/// [`Stack`](super::Stack), [`Row`](super::Row), [`Grid`](super::Grid), [`Split`](super::Split),
-/// [`Page`](super::Page) and [`Layers`](super::Layers).
+/// A container arranged by `L`.
 #[crate::component::not_a_component(layout, "the language's `stack`, `row` and `grid`")]
 pub struct Arranged<L: Layout> {
     pub(super) layout: L,
     pub(super) slots: Vec<Slot>,
     node: Option<NodeId>,
     resolved: Resolved,
-    /// Leads this container reserves before its content: a document's body stands one lead
-    /// in, under the text its heading's control leads to. Kept only where the column what it
-    /// holds is read in has the room for it: on a phone's screen what it holds starts on the
-    /// page's gutter, and the words keep the width the indent would have taken.
+    /// Leads this container reserves before its content: a document's body stands one lead in, under
+    /// the text its heading's control leads to.
     lead: i16,
-    /// The width class of the column what this container holds was last laid out in, its lead
-    /// taken out: what decides whether that column has room for the lead.
+    /// The width class of the column what this container holds was last laid out in, its lead taken
+    /// out: what decides whether that column has room for the lead.
     column: Option<WidthClass>,
     /// How the person reaches the window, which sizes a lead.
     interaction: InteractionEnvironment,
     rect: Rect,
     id: Option<String>,
-    /// How the slots changed since the host last read it: replaced wholesale
-    /// ([`Self::set_slots`]) is a rebuild; a child replaced, inserted, removed, moved or
-    /// resized by the slot operations is described.
+    /// How the slots changed since the host last read it: replaced wholesale ([`Self::set_slots`]) is a
+    /// rebuild; a child replaced, inserted, removed, moved or resized by the slot operations is
+    /// described.
     structure: StructureChange,
 }
 
@@ -298,9 +281,9 @@ impl<L: Layout> Arranged<L> {
         self.slots.len()
     }
 
-    /// The box the children take, as far as they have been laid out: what a layout keeps around
-    /// its content — the gutters a page centres its column in, the room a lane keeps for the
-    /// column beside it — is not part of it.
+    /// The box the children take, as far as they have been laid out: what a layout keeps around its
+    /// content — the gutters a page centres its column in, the room a lane keeps for the column beside
+    /// it — is not part of it.
     #[must_use]
     pub fn content_box(&self) -> Option<Rect> {
         self.slots
@@ -315,8 +298,7 @@ impl<L: Layout> Arranged<L> {
         self.slots.is_empty()
     }
 
-    /// Replace the children wholesale: the host rebuilds and repaints whole. A keyed
-    /// reconciler uses the slot operations below instead, which it can describe.
+    /// Replace the children wholesale: the host rebuilds and repaints whole.
     pub fn set_slots(&mut self, slots: Vec<Slot>) {
         self.slots = slots;
         self.structure = StructureChange::Rebuild;
@@ -339,23 +321,22 @@ impl<L: Layout> Arranged<L> {
         self.slots.get_mut(index).map(|slot| &mut slot.element)
     }
 
-    /// Show `element` in slot `index` instead of its child, which it returns; the slot keeps
-    /// its sizing. A change the frame's damage describes: the new child draws itself whole,
-    /// and the host repaints where the boxes it moved were and are.
+    /// Show `element` in slot `index` instead of its child, which it returns; the slot keeps its
+    /// sizing.
     pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
         let slot = self.slots.get_mut(index)?;
         self.structure = self.structure.join(StructureChange::Described);
         Some(std::mem::replace(&mut slot.element, element))
     }
 
-    /// Insert `slot` at `index` (at the end past it). Described, as [`Self::replace`] is.
+    /// Insert `slot` at `index` (at the end past it).
     pub fn insert(&mut self, index: usize, slot: Slot) {
         let index = index.min(self.slots.len());
         self.slots.insert(index, slot);
         self.structure = self.structure.join(StructureChange::Described);
     }
 
-    /// Take the slot at `index` out. Described, as [`Self::replace`] is.
+    /// Take the slot at `index` out.
     pub fn remove(&mut self, index: usize) -> Option<Slot> {
         if index >= self.slots.len() {
             return None;
@@ -364,7 +345,7 @@ impl<L: Layout> Arranged<L> {
         Some(self.slots.remove(index))
     }
 
-    /// Move the slot at `from` to `to`, its child kept. Described, as [`Self::replace`] is.
+    /// Move the slot at `from` to `to`, its child kept.
     pub fn move_slot(&mut self, from: usize, to: usize) {
         if from == to || from >= self.slots.len() {
             return;
@@ -383,8 +364,6 @@ impl<L: Layout> Arranged<L> {
         if slot.fit == fit && slot.span == span && slot.at == at {
             return;
         }
-        // The block size derived from a ratio belongs to the fit that asked for it: a new fit
-        // derives its own on the next solve.
         if slot.fit.aspect != fit.aspect {
             slot.height = None;
         }
@@ -405,8 +384,8 @@ impl<L: Layout> Arranged<L> {
         self.lead
     }
 
-    /// The container's style: what its layout arranges with, and the lead it reserves before
-    /// its content. A column without the room for a lead reserves none.
+    /// The container's style: what its layout arranges with, and the lead it reserves before its
+    /// content.
     fn container_style(&self) -> Style {
         let lead = if self.lead > 0 && self.column != Some(WidthClass::Compact) {
             lead_width(self.lead, &self.resolved)
@@ -416,33 +395,21 @@ impl<L: Layout> Arranged<L> {
         self.layout.container(&self.resolved, lead)
     }
 
-    /// Slot `index`'s wrapper style: what the layout arranges it with, and the block size the
-    /// fit's `aspect` derived from the width it was solved at.
-    ///
-    /// A wrapper that holds a derived height keeps no ratio of its own: with one, taffy would
-    /// derive the width back out of the height it was given, and a slot whose width its
-    /// container decides would shrink to a fraction of the room every other solve.
+    /// Slot `index`'s wrapper style: what the layout arranges it with, and the block size the fit's
+    /// `aspect` derived from the width it was solved at.
     fn slot_style(&self, index: usize, slot: &Slot) -> Style {
         let mut style = self.layout.slot(index, slot, &self.resolved);
         if slot.fit.aspect.is_some()
             && let Some(height) = slot.height
         {
-            // A ratio decides the block size; a layer that fills the cell or a share of the
-            // column gives way to it, since the ratio is the size the view asked for.
             style.size.height = taffy::style_helpers::length(height);
             style.aspect_ratio = None;
         }
         style
     }
 
-    /// Give every slot whose fit asks for an `aspect` the block size the ratio gives at the
-    /// inline size it was solved at.
-    ///
-    /// Taffy derives one size from the other only where the known one is definite in the
-    /// style. A slot takes the width its container decides: stretched across a column, a share
-    /// of a row, a layer's cell, a grid's column. What is solved is where the ratio applies, so
-    /// the derivation reads the solved width and holds the slot at the height that follows.
-    /// Returns whether any slot's height changed, so the host solves again.
+    /// Give every slot whose fit asks for an `aspect` the block size the ratio gives at the inline size
+    /// it was solved at.
     fn derive_aspects(&mut self, tree: &mut TaffyTree<()>) -> bool {
         let mut changed = false;
         for index in 0..self.slots.len() {
@@ -495,10 +462,7 @@ impl<L: Layout> Arranged<L> {
         changed
     }
 
-    /// Style the container and its slots again for what the layout settled on. Where the node
-    /// sits in its parent stays as the parent set it: a parent that places it (a virtual list
-    /// positions its rows) changed those after the layout styled it, and settling changes how
-    /// the container arranges its children, not where it is.
+    /// Style the container and its slots again for what the layout settled on.
     fn restyle(&self, tree: &mut TaffyTree<()>) -> bool {
         let Some(node) = self.node else {
             return false;
@@ -529,9 +493,9 @@ impl<L: Layout> Arranged<L> {
         changed
     }
 
-    /// Lay the child at `index` out again `by` from where the arrangement placed it: a layer
-    /// that stands where something drawn inside a sibling says (a window's controls on the
-    /// trailing end of its app's header row, which only that row's layout knows).
+    /// Lay the child at `index` out again `by` from where the arrangement placed it: a layer that
+    /// stands where something drawn inside a sibling says (a window's controls on the trailing end of
+    /// its app's header row, which only that row's layout knows).
     pub(crate) fn offset_child(&mut self, tree: &TaffyTree<()>, index: usize, by: Vec2) {
         let start = Point::new(self.rect.x0, self.rect.y0);
         let Some(slot) = self.slots.get_mut(index) else {
@@ -585,10 +549,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             };
             let inner = slot.element.build_layout(tree, theme, map);
             let mut style = style;
-            // The child grows into a wrapper that is larger than its content (a filled slot).
             if let Ok(current) = tree.style(inner) {
-                // A child out of the flow (an absent one, an effect endpoint) takes its slot
-                // with it, gap and all.
                 if current.display == taffy::Display::None {
                     style.display = taffy::Display::None;
                 }
@@ -596,9 +557,6 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 if grown.flex_grow == 0.0 {
                     grown.flex_grow = 1.0;
                 }
-                // A slot whose height the layout gives (a page that fills, a filled layer)
-                // holds its child to it; the mark is read before the wrapper below takes a
-                // height of its own.
                 let given = style.size.height;
                 // A view that clips what it holds (a scroll view, a table) asks for the whole
                 // height because that height is its viewport: through a wrapper that hugs its
@@ -652,12 +610,8 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         };
         let allocated = laid.size;
         let aspects = self.derive_aspects(tree);
-        // The column this pass gave the container decides whether what it holds keeps the lead.
-        // A change of class is a change of style, solved again on the next pass.
         let mut room_changed = false;
         if self.lead > 0 {
-            // What the column has left once the lead is reserved decides whether it is kept: the
-            // box less one lead, which does not change with the answer.
             let room = (allocated.width - lead_width(self.lead, &self.resolved)).max(0.0);
             let column = WidthClass::with_history(room / self.resolved.rem, self.column);
             room_changed = self.column != Some(column);
@@ -754,10 +708,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
     }
 
-    /// An arrangement paints nothing of its own: what changed is what its
-    /// shown children repaint. The default would repaint its whole box
-    /// whenever any child changed, which for a window's root arrangement is
-    /// the whole window for each keystroke.
+    /// An arrangement paints nothing of its own: what changed is what its shown children repaint.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         for (index, slot) in self.slots.iter().enumerate() {
             if !self.layout.hidden(index) {
@@ -797,8 +748,8 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             .collect()
     }
 
-    /// Receive how the person reaches the window: a lead is a gutter for a control, and a
-    /// control answers to the least target the window offers.
+    /// Receive how the person reaches the window: a lead is a gutter for a control, and a control
+    /// answers to the least target the window offers.
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         self.interaction = environment;
         crate::widget::defaults::set_interaction_environment(self.children_mut(), environment);
@@ -832,11 +783,8 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         change
     }
 
-    /// An arrangement paints nothing of its own (see [`Self::collect_damage`]), so it is
-    /// dirty exactly when a shown child is. The default (`defaults::needs_redraw`) answers
-    /// `true` for a widget with no children, which made an empty arrangement — a view whose
-    /// every part is conditional and none stands — dirty forever, drawing a frame each time
-    /// it was asked.
+    /// An arrangement paints nothing of its own (see [`Self::collect_damage`]), so it is dirty exactly
+    /// when a shown child is.
     fn needs_redraw(&self) -> bool {
         self.slots.iter().enumerate().any(|(index, slot)| {
             !self.layout.hidden(index)

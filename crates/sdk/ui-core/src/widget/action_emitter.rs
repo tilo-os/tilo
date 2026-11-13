@@ -1,5 +1,5 @@
-//! [`ActionEmitter`] — the reusable action-intent queue shared controls use, kept apart from the
-//! widget toolkit itself so a control only pulls in the custody and binding it queues through.
+//! [`ActionEmitter`] — the reusable action-intent queue shared controls use, kept apart from the widget
+//! toolkit itself so a control only pulls in the custody and binding it queues through.
 
 use std::collections::HashSet;
 
@@ -44,7 +44,6 @@ impl<I> ActionEmitter<I> {
         }
     }
 
-    /// Construct already registered, including for emitting inside a builder.
     pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
         let mut emitter = Self::new(binding);
         emitter.pending = crate::control_custody::ControlHolder::in_domain(
@@ -85,8 +84,6 @@ impl<I> ActionEmitter<I> {
         &self.binding
     }
 
-    /// Refresh whether the bound action is in the host's current,
-    /// permission-filtered resource surface.
     pub fn refresh_availability(&mut self, allowed: &HashSet<tilo_actions::ActionAddress>) {
         self.available = allowed.contains(self.binding.address());
         if !self.available {
@@ -98,7 +95,6 @@ impl<I> ActionEmitter<I> {
         self.available
     }
 
-    /// Inventory entry for a custom control using this emitter.
     pub fn metadata(&self, control_id: impl Into<String>) -> ControlBindingMetadata {
         ControlBindingMetadata {
             control_id: control_id.into(),

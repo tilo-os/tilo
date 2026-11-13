@@ -15,7 +15,6 @@ fn laid_out_editor(
     let mut taffy = TaffyTree::<()>::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = editor.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-    // The build places what the editor holds; it owes the host nothing for it.
     let _ = editor.take_structure_change();
     (editor, taffy, nodes, node)
 }
@@ -41,7 +40,6 @@ fn another_document_changes_nothing_above_the_editor() {
         "the block stack and the picture's control stand under the editor"
     );
 
-    // A document that keeps the picture: the stack changed, the control under it did not.
     editor.set_blocks(vec![
         Block::paragraph("second"),
         Block::from_content(picture.clone()),
@@ -56,7 +54,6 @@ fn another_document_changes_nothing_above_the_editor() {
         "the stack is laid out again in place"
     );
 
-    // A document the person took the picture out of: the control is the editor's to let go of.
     editor.set_blocks(vec![Block::paragraph("no picture here")]);
     assert_eq!(
         editor.take_structure_change(),
@@ -82,7 +79,6 @@ fn another_document_changes_nothing_above_the_editor() {
         "a change carried out in place is no longer the host's to carry"
     );
 
-    // And a picture the other document brings: the control is mounted under the editor.
     editor.set_blocks(vec![
         Block::paragraph("a picture again"),
         Block::from_content(picture),
@@ -128,7 +124,6 @@ fn a_remount_leaves_the_place_the_host_gave_the_editor() {
     };
     let _ = taffy.set_style(node, placed.clone());
 
-    // A document without the picture: a change of the editor's own children, carried out here.
     editor.set_blocks(vec![Block::paragraph("no picture here")]);
     assert_eq!(editor.take_structure_change(), StructureChange::Children);
     let mut remount = Remount::new(&mut taffy, &theme, &mut nodes);

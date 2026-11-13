@@ -1,16 +1,6 @@
-//! The toolkit's grammar-backed [`Highlighter`]: a [`tilo_highlight`]
-//! grammar set (syntect over two-face's grammars), each span's scope mapped
-//! to one [`TokenKind`]; colours stay with the renderer and the OS
-//! [`Theme`], never with a syntect colour theme.
-//!
-//! The grammar set is not part of the shared runtime every app maps: with
-//! `lazy-highlight` (the runtime's build, turned on by the engine library's
-//! own build) it comes from `libtilo_highlight_engine.so`, opened the first
-//! time code is highlighted; otherwise it is linked
-//! (`tilo-highlight-grammars`). If the library does not open, code
-//! highlights as plain text.
-//!
-//! [`Theme`]: crate::theme::Theme
+//! The toolkit's grammar-backed [`Highlighter`]: a [`tilo_highlight`] grammar set (syntect over
+//! two-face's grammars), each span's scope mapped to one [`TokenKind`]; colours stay with the renderer
+//! and the OS [`Theme`], never with a syntect colour theme.
 
 use std::cell::RefCell;
 
@@ -18,13 +8,11 @@ use tilo_highlight::{Grammar, Grammars, LineState};
 
 use super::{Highlighter, HlState, LineSpans, Span, TokenKind};
 
-/// The grammar set: linked.
 #[cfg(not(feature = "lazy-highlight"))]
 fn grammars() -> Option<&'static dyn Grammars> {
     Some(tilo_highlight_grammars::grammars())
 }
 
-/// The grammar set, from its engine library: opened the first time, kept.
 #[cfg(feature = "lazy-highlight")]
 fn grammars() -> Option<&'static dyn Grammars> {
     static GRAMMARS: std::sync::OnceLock<Option<&'static dyn Grammars>> =
@@ -49,8 +37,6 @@ fn grammars() -> Option<&'static dyn Grammars> {
     })
 }
 
-/// A grammar's parse position between two lines: everything multi-line
-/// constructs (block comments, strings, heredocs) need to continue.
 #[derive(Debug)]
 pub struct SyntaxState(Option<Box<dyn LineState>>);
 
@@ -92,26 +78,20 @@ impl SyntaxState {
 /// parse states recorded since the last carry-`0` call. Callers keeping their
 /// own caches use [`SyntaxHighlighter::start`] and [`SyntaxState`] directly.
 pub struct SyntaxHighlighter {
-    /// `None` when no grammar set is available: plain text.
     grammar: Option<Grammar>,
     pass: RefCell<Vec<SyntaxState>>,
 }
 
 impl SyntaxHighlighter {
-    /// Look a grammar up by file extension (`rs`, `toml`) or by
-    /// case-insensitive name (`Rust`, `Dockerfile`), the way a Markdown fence
-    /// tag names its language. `None` when no grammar matches.
     pub fn for_token(token: &str) -> Option<Self> {
         let grammar = grammars()?.find(token)?;
         Some(Self::with_grammar(Some(grammar)))
     }
 
-    /// Plain text: every line is a single [`TokenKind::Text`] run.
     pub fn plain_text() -> Self {
         Self::with_grammar(grammars().map(|grammars| grammars.plain_text()))
     }
 
-    /// [`SyntaxHighlighter::for_token`], falling back to plain text.
     pub fn for_token_or_plain(token: &str) -> Self {
         Self::for_token(token).unwrap_or_else(Self::plain_text)
     }
@@ -123,7 +103,6 @@ impl SyntaxHighlighter {
         }
     }
 
-    /// The grammar's display name (`Rust`, `Plain Text`).
     pub fn name(&self) -> &'static str {
         match (grammars(), self.grammar) {
             (Some(grammars), Some(grammar)) => grammars.name(grammar),
@@ -131,7 +110,6 @@ impl SyntaxHighlighter {
         }
     }
 
-    /// The parse state at the start of a document.
     pub fn start(&self) -> SyntaxState {
         SyntaxState(match (grammars(), self.grammar) {
             (Some(grammars), Some(grammar)) => Some(grammars.start(grammar)),
@@ -156,8 +134,6 @@ impl Highlighter for SyntaxHighlighter {
             .into_iter()
             .filter(|span| span.kind != TokenKind::Text)
             .collect();
-        // Most lines leave the parse where it was; reuse that entry rather
-        // than recording one state per line.
         let carry = if incoming.is_some_and(|incoming| *incoming == state) {
             carry
         } else {

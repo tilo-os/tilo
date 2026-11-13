@@ -1,19 +1,13 @@
-//! A control's own verb: what pressing the control itself reports — the text
-//! a field's person typed, the choice a picker's person made. Published as
-//! control `tilo.control:<id>`'s view action and answered by the control's
-//! own handler, so a person's press here, a screen reader, a script and an
-//! agent reach the same handler through the same action. What a verb changes
-//! is what this window shows, never the document: it is absent from history.
-//!
-//! The argument a verb carries is its one declared parameter `value`, of the
-//! type the control reports ([`VerbArgument`]).
+//! A control's own verb: what pressing the control itself reports — the text a field's person typed,
+//! the choice a picker's person made. Published as control `tilo.control:<id>`'s view action and
+//! answered by the control's own handler, so a person's press here, a screen reader, a script and an
+//! agent reach the same handler through the same action.
 
 use super::{ActionEmitter, ControlBindingMetadata};
 use crate::tilo_actions::{
     ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
 };
 
-/// The type of the value a verb's action declares.
 #[derive(Clone, Copy)]
 pub(crate) enum VerbArgument {
     Text,
@@ -39,14 +33,12 @@ impl VerbArgument {
     }
 }
 
-/// What a verb's operation carries: the control and the value it reports.
 #[derive(serde::Deserialize)]
 struct Payload<A> {
     control: String,
     value: A,
 }
 
-/// A control's published verb and the emitter it reports through.
 pub(crate) struct ControlVerb<A> {
     control: String,
     type_id: &'static str,
@@ -55,7 +47,6 @@ pub(crate) struct ControlVerb<A> {
 }
 
 impl<A: serde::Serialize + 'static> ControlVerb<A> {
-    /// `verb` of control `id`, called `label`, its one argument `argument`.
     #[expect(
         clippy::expect_used,
         reason = "the generated payload is serializable and the action is the resource's own"
@@ -102,8 +93,6 @@ impl<A: serde::Serialize + 'static> ControlVerb<A> {
         }
     }
 
-    /// Report one value. A report the host has not collected yet is replaced
-    /// by the next: the control's latest state is what it says.
     pub(crate) fn emit(&mut self, value: A) {
         if let Err(error) = self.action.emit(value) {
             tracing::warn!(%error, control = %self.control, "a control refused its own verb");
@@ -133,15 +122,12 @@ impl<A: serde::Serialize + 'static> ControlVerb<A> {
         self.action.refresh_availability(allowed);
     }
 
-    /// The control's published verb, for the inventory an agent reads.
     pub(crate) fn metadata(&self, control_id: &str) -> ControlBindingMetadata {
         self.action.metadata(control_id)
     }
 }
 
 impl<A: serde::de::DeserializeOwned> ControlVerb<A> {
-    /// The value a `view` operation addressed to this control reports, when
-    /// the operation is this control's verb.
     pub(crate) fn start(
         &self,
         op: &crate::widget::ResourceOperation<'_>,

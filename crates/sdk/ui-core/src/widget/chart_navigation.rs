@@ -33,7 +33,6 @@ macro_rules! chart_leaf {
 }
 pub(crate) use chart_leaf;
 
-/// Paints a chart's title, if it has one, in the top-left corner of `rect`.
 pub(crate) fn draw_title(
     scene: &mut vello::Scene,
     transform: vello::kurbo::Affine,
@@ -184,8 +183,6 @@ pub fn moved_item<T: Clone + PartialEq>(
     moved_index(position, items.len(), action).and_then(|position| items.get(position).cloned())
 }
 
-/// The item key an accessibility `Activate` at `keys` targets: the last key.
-/// Any other action, or an empty path, targets nothing.
 pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Option<u64> {
     if matches!(action, crate::a11y::Action::Activate) {
         keys.last().copied()
@@ -194,16 +191,10 @@ pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Optio
     }
 }
 
-/// The pointer, hovered item and keyboard/touch state an interactive chart
-/// keeps between events.
 #[derive(Clone, Debug)]
 pub(crate) struct ChartInspection<H> {
-    /// The last pointer position, or the inspected item's anchor while the
-    /// keyboard drives.
     pub(crate) pointer: Point,
     pub(crate) hovered: Option<H>,
-    /// Whether the keyboard chose the hovered item, which then survives the
-    /// pointer leaving the window.
     pub(crate) keyboard: bool,
     pub(crate) touch: ChartTouchTracker,
 }
@@ -236,7 +227,6 @@ pub(crate) trait InteractiveChart {
     /// Where inspecting `item` puts the pointer, so its tooltip shows there;
     /// `None` leaves the pointer where it is.
     fn anchor(&self, item: &Self::Hover) -> Option<Point>;
-    /// Puts the pointer on the hovered item's [`anchor`](Self::anchor).
     fn anchor_hovered(&mut self) {
         let Some(item) = self.inspection().hovered.clone() else {
             return;
@@ -245,16 +235,11 @@ pub(crate) trait InteractiveChart {
             self.inspection().pointer = anchor;
         }
     }
-    /// Hovers whatever lies under the pointer.
     fn update_hover(&mut self);
     fn clear_hover(&mut self) {
         self.inspection().hovered = None;
     }
-    /// Activates the hovered item; false when nothing activatable is hovered.
     fn activate_hovered(&mut self) -> bool;
-    /// Steps the hovered item through [`keyboard_items`](Self::keyboard_items)
-    /// for any action but `Activate` and anchors the pointer on it; returns
-    /// whether an item is now inspected.
     fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
         let items = self.keyboard_items();
         let hovered = self.inspection().hovered.clone();
@@ -262,15 +247,11 @@ pub(crate) trait InteractiveChart {
         self.anchor_hovered();
         self.inspection().hovered.is_some()
     }
-    /// Toggles the legend entry under `point`, if the chart has one there.
     fn toggle_legend_at(&mut self, _point: Point) -> bool {
         false
     }
 }
 
-/// Hover follows the mouse or finger, a click or tap toggles a legend entry
-/// or activates the hovered item, and keys step through the items. Leaving
-/// the window keeps an item the keyboard chose.
 pub(crate) fn handle_chart_event(
     chart: &mut impl InteractiveChart,
     event: &WindowEvent,

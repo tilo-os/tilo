@@ -5,29 +5,25 @@ use crate::icons::Icon;
 
 use super::Avatar;
 
-/// Who someone is, at a glance: their picture, or their initials on their own colour. A thing
-/// or a group shows a glyph on a neutral square.
+/// Who someone is, at a glance: their picture, or their initials on their own colour.
 #[derive(Clone, Component, Debug, Default, PartialEq)]
 #[component(name = "Avatar", role = "Image", label = "name")]
 pub struct AvatarProps {
     /// The person or agent it shows.
     #[component(positional)]
     pub who: Option<Person>,
-    /// What it is called when it shows no one: a group, a thing. Its initials and colour come
-    /// from it.
+    /// What it is called when it shows no one: a group, a thing.
     pub name: Option<String>,
     /// A glyph instead of initials, on a neutral square: a group, an app.
     pub glyph: Option<Icon>,
     /// A square rather than a circle: an account or a site, not a person.
     pub square: bool,
-    /// The avatar's room with none in it: a message that continues its author's run lines up
-    /// under the first one's avatar without repeating it. Nothing is painted and nothing is
-    /// read out.
+    /// The avatar's room with none in it: a message that continues its author's run lines up under the
+    /// first one's avatar without repeating it.
     pub room: bool,
 }
 
 impl AvatarProps {
-    /// What the avatar is called and whose colour it takes.
     #[must_use]
     pub fn name_and_identity(&self) -> (String, String) {
         self.who.as_ref().map_or_else(

@@ -1,14 +1,4 @@
 //! Per-widget accessibility coverage, proven on the **real export path**.
-//!
-//! These tests build each newly-covered widget, lay it out exactly as the
-//! `App` does, then run the production
-//! [`crate::accesskit_bridge::build_tree_update`] over it and assert on the
-//! emitted [`accesskit::Node`]s — the same tree that reaches AT-SPI2 / Orca.
-//! Nothing here inspects the intermediate [`crate::a11y::AccessNode`] in
-//! isolation; every assertion is against the bridge output (role, label,
-//! value, toggled/selected/expanded/hidden state, supported actions), so a
-//! regression in either the widget's `accessibility()` **or** the bridge's
-//! mapping fails the test.
 
 use std::collections::HashMap;
 
@@ -19,8 +9,6 @@ use crate::accesskit_bridge::build_tree_update;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// Lay `root` out (populating the taffy `node_map` the bridge keys ids off)
-/// and return the production AccessKit node list.
 fn access_nodes(root: &mut dyn Widget) -> Vec<(AkNodeId, AkNode)> {
     let theme = Theme::dark();
     let mut taffy = TaffyTree::<()>::new();
@@ -39,7 +27,6 @@ fn of_role(nodes: &[(AkNodeId, AkNode)], role: AkRole) -> Vec<&AkNode> {
         .collect()
 }
 
-/// The single node of `role` whose label is `label`.
 fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &'a AkNode {
     nodes
         .iter()
@@ -68,7 +55,6 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
         let lists = of_role(&nodes, AkRole::List);
         assert_eq!(lists.len(), 1, "one list container");
         let list = lists[0];
-        // The chosen swatch's hex is the list value — derived from the real colour.
         assert_eq!(
             list.value(),
             Some("#E6C84A"),
@@ -77,7 +63,6 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
 
         let items = of_role(&nodes, AkRole::ListItem);
         assert_eq!(items.len(), palette.len(), "one ListItem per swatch");
-        // Item names are the real palette hex values (not fabricated labels).
         let first = by_label(&nodes, AkRole::ListItem, "#E64A4A");
         assert_eq!(first.position_in_set(), Some(1));
         assert_eq!(first.size_of_set(), Some(4));
@@ -160,7 +145,6 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
             "value is the selected segment"
         );
 
-        // Segments map to Buttons carrying the pressed (toggled) state.
         let buttons = of_role(&nodes, AkRole::Button);
         assert_eq!(buttons.len(), 3, "one toggle button per segment");
         let dark = by_label(&nodes, AkRole::Button, "Dark");
@@ -181,10 +165,6 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
     toggle_group_exposes_each_segment_with_checked_state();
 }
 
-// color_swatch::ColorSwatchPicker -> List + ListItem children
-
-// gauge::ProgressRing / gauge::BarGauge -> ProgressBar with % value
-
 #[test]
 fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
     fn ring_gauge_exposes_a_named_percentage_meter() {
@@ -192,7 +172,6 @@ fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
         let mut g = ProgressRing::new(0.42).caption("CPU");
         let nodes = access_nodes(&mut g);
         let bar = by_label(&nodes, AkRole::ProgressIndicator, "CPU");
-        // The dim caption names it; the fraction becomes a spoken percentage.
         assert_eq!(bar.value(), Some("42%"), "fraction renders as a percentage");
     }
 
@@ -204,7 +183,6 @@ fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
         // A human-facing readout ("3.2 GB") wins over the raw percentage.
         assert_eq!(bar.value(), Some("3.2 GB"));
 
-        // With no readout, the fraction falls back to a percentage.
         let mut plain = BarGauge::new(0.25).with_label("Disk", "");
         let plain_nodes = access_nodes(&mut plain);
         let plain_bar = by_label(&plain_nodes, AkRole::ProgressIndicator, "Disk");
@@ -261,7 +239,6 @@ fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
             "a closed menu collapses out of the reading order"
         );
         assert_eq!(menus[0].is_expanded(), Some(false));
-        // No item rows are exposed while closed.
         assert!(of_role(&nodes, AkRole::MenuItem).is_empty());
     }
 
@@ -270,15 +247,6 @@ fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
     slash_menu_open_exposes_menu_items();
     slash_menu_closed_is_a_hidden_menu();
 }
-
-// slash_menu::SlashMenu -> Menu + MenuItem children (hidden when closed)
-
-// tabs::TabBar -> TabList + Tab children with selected state
-
-// toggle_group::ToggleGroup -> Group + ToggleButton children with checked
-
-// Composed UI: leaf widgets under one presentational container all reach
-// the window root through the real collapse/reparent walk.
 
 #[test]
 fn new_widgets_are_reachable_and_announced_from_the_window_root() {
@@ -323,7 +291,6 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
             5,
             "all five widgets hang off the window root"
         );
-        // No GenericContainer leaked from the collapsed Column.
         assert!(of_role(&nodes, AkRole::GenericContainer).is_empty());
 
         assert_eq!(of_role(&nodes, AkRole::Group).len(), 1, "segmented group");
@@ -343,8 +310,6 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
         use super::toggle_group::{Segment, ToggleGroup};
         use crate::screen_reader::{ScreenReader, describe};
 
-        // Focus narration composes name + role + value + state straight off the
-        // widget's own accessibility() node.
         let segmented = ToggleGroup::new(
             vec![
                 Segment::new("Allow"),
@@ -354,9 +319,7 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
             0,
         );
         let group = Widget::accessibility(&segmented).unwrap();
-        // The group is unnamed and announces its active choice ("Allow") as value.
         assert_eq!(describe(&group), "group, Allow");
-        // Its first segment reads as an on toggle positioned in the set.
         assert_eq!(
             describe(&group.children[0]),
             "Allow, toggle button, on, 1 of 3"
@@ -370,7 +333,6 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
         let gnode = Widget::accessibility(&gauge).unwrap();
         assert_eq!(describe(&gnode), "CPU, progress bar, 42%");
 
-        // Drive the real reader: focus announcement, then a value change.
         let rec = Rec::default();
         let mut reader = ScreenReader::with_speaker(Box::new(rec.clone()));
         reader.announce_focus(&gnode);
@@ -384,9 +346,6 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
     composed_ui_reaches_every_new_widget_through_the_window_root();
     screen_reader_announces_focus_and_value_change_for_new_widgets();
 }
-
-// Screen-reader announcement path: focus + value-change narration on the
-// same AccessNodes the bridge consumes.
 
 use std::sync::{Arc, Mutex};
 use tts::{NullSpeaker, Speaker, Utterance};

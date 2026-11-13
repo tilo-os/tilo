@@ -1,8 +1,6 @@
-//! The studio as assistive technology and agents meet it: every control it
-//! paints itself (the bar's outputs, shutter, targets and options, the
-//! status bar's stop and save, a receipt's actions and the menus they open)
-//! published as a named node and operated through the same paths as a
-//! press on it.
+//! The studio as assistive technology and agents meet it: every control it paints itself (the bar's
+//! outputs, shutter, targets and options, the status bar's stop and save, a receipt's actions and the
+//! menus they open) published as a named node and operated through the same paths as a press on it.
 
 use super::bar::{BarItem, output_name, studio_text, target_key};
 use super::{
@@ -12,23 +10,15 @@ use super::{
 use crate::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 use vello::kurbo::Rect;
 
-/// Where a published control is operated from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
-    /// The setup bar, pressed as a click at the control.
     Bar,
-    /// The status bar's stop or save.
     Status,
-    /// A receipt's action or its Dismiss.
     Receipt,
-    /// A row of the options menu.
     Option(usize),
-    /// A row of a screenshot's send menu.
     Send(usize),
 }
 
-/// One control the studio paints: its stable target, where it is, how it
-/// is pressed, and its node.
 pub(super) struct StudioControl {
     target: String,
     rect: Rect,
@@ -36,8 +26,6 @@ pub(super) struct StudioControl {
     node: AccessNode,
 }
 
-/// The stable name of a setup-bar item, as tests, agents and assistive
-/// technology address it.
 pub(super) fn bar_target(item: BarItem) -> Option<&'static str> {
     Some(match item {
         BarItem::Output(0) => "capture.output.screenshot",
@@ -53,7 +41,6 @@ pub(super) fn bar_target(item: BarItem) -> Option<&'static str> {
     })
 }
 
-/// The stable name of a row of the options menu.
 pub(super) fn option_target(choice: OptionChoice) -> String {
     match choice {
         OptionChoice::Delay(seconds) => format!("capture.option.delay-{seconds}"),
@@ -72,7 +59,6 @@ pub(super) fn option_target(choice: OptionChoice) -> String {
     }
 }
 
-/// The stable name of a row of the send menu.
 pub(super) fn send_target(target: &ScreenshotSendTarget) -> String {
     match target {
         ScreenshotSendTarget::Workspace => "capture.send-to-workspace".into(),
@@ -223,8 +209,6 @@ impl CaptureStudio {
             }
             if let Some(menu) = self.options_menu.as_ref().filter(|menu| menu.is_open()) {
                 for (index, item) in menu.items().iter().enumerate() {
-                    // A section's caption names the rows under it; it is
-                    // not a choice.
                     let Some(choice) = self.options_choices.get(index).copied().flatten() else {
                         continue;
                     };
@@ -273,7 +257,6 @@ impl CaptureStudio {
                 .with_name(studio_text("widget-capture-title"))
                 .with_state(AccessState::new().modal(true))
         } else if let Some(receipt) = self.screenshot_receipt.as_ref() {
-            // What became of the screenshot is said as it appears.
             AccessNode::new(Role::Group)
                 .with_name(studio_text(receipt.kept.status_key()))
                 .with_live(Politeness::Polite)
@@ -336,7 +319,6 @@ impl CaptureStudio {
                 }
             }
             Route::Status => self.press_status(at),
-            // The receipt is on its way into a pin; it takes nothing more.
             Route::Receipt if self.screenshot_pin_pending => return false,
             Route::Receipt => {
                 // The send menu closes with any other press on the receipt,

@@ -1,6 +1,6 @@
-//! The card of a completion drawer's selected row, beside the drawer on a wide window: what
-//! the candidate is before it is picked (a person's avatar, name and handle; a channel's topic;
-//! a command's description and parameters).
+//! The card of a completion drawer's selected row, beside the drawer on a wide window: what the
+//! candidate is before it is picked (a person's avatar, name and handle; a channel's topic; a command's
+//! description and parameters).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};

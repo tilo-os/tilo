@@ -1,11 +1,9 @@
-//! A model's rows on their way, in a [`DataTableCore`]: their placeholder
-//! timing, and asking again for the ones that failed.
+//! A model's rows on their way, in a [`DataTableCore`]: their placeholder timing, and asking again for
+//! the ones that failed.
 
 use super::{Arrival, DataTableCore};
 
 impl DataTableCore {
-    /// Look at where the visible rows' data stands at `now`: a row on its
-    /// way starts its placeholder timing, a landed one shows once due.
     pub(super) fn observe_arrivals(&mut self, now: crate::time::Instant) {
         let Some(model) = self.model.as_deref() else {
             return;
@@ -23,7 +21,6 @@ impl DataTableCore {
         self.arrivals.retain(now, |key| seen.contains(key));
     }
 
-    /// Ask the model again for failed row `index`, when it can be.
     pub(super) fn retry_failed_row(&mut self, index: usize) -> bool {
         let Some(model) = self.model.as_deref_mut() else {
             return false;
@@ -36,8 +33,6 @@ impl DataTableCore {
         true
     }
 
-    /// What failed row `index` says: why, and that pressing it asks again
-    /// when the model can.
     pub(super) fn failure_label(&self, index: usize, message: &str) -> String {
         if self
             .model
@@ -54,7 +49,6 @@ impl DataTableCore {
     }
 }
 
-/// Paint a failed row's `label` (why, and how to ask again) in its `slot`.
 pub(super) fn paint_row_failure(
     scene: &mut vello::Scene,
     transform: vello::kurbo::Affine,

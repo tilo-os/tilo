@@ -161,11 +161,9 @@ fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
             g.cards.iter().map(|c| c.get_rect()).collect::<Vec<_>>()
         );
     }
-    // A row of short cards is short: no fixed height stretches them.
     let line = f64::from(theme.text(TextRole::Body).line_height_px());
     assert!(g.cards[0].get_rect().height() < line * 4.0);
 
-    // Narrow: one full-width column.
     let narrow = lay_out_grid(
         CardGrid::new((0..4).map(|i| text_card(&format!("card {i}"))).collect()),
         min - 10.0,
@@ -174,7 +172,6 @@ fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
     assert_eq!(narrow.columns_for_width(min - 10.0), 1);
     assert!((narrow.cards[0].get_rect().width() - (min - 10.0)).abs() < 0.5);
 
-    // Wider cards take fewer columns at the same width; larger text widens them.
     let wide = CardGrid::new((0..6).map(|i| text_card(&format!("{i}"))).collect())
         .with_card_width(CardWidth::Wide);
     assert!(CardWidth::Wide.min_width(&theme) > min);
@@ -184,8 +181,6 @@ fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
     assert!(wide.columns_for_width(width) < 3);
 }
 
-/// A card led by its art shows the art first, across the card's inner
-/// width, and its name and actions in one row under it.
 #[test]
 fn a_card_led_by_its_art_shows_the_art_first_and_its_caption_under_it() {
     let theme = Theme::dark();
@@ -228,8 +223,6 @@ fn a_card_led_by_its_art_shows_the_art_first_and_its_caption_under_it() {
     );
 }
 
-/// A selected card's edge is its own outline made heavier and accented, at
-/// the same place: no ring outside it, no gap between two outlines.
 #[test]
 #[allow(
     clippy::cast_possible_truncation,

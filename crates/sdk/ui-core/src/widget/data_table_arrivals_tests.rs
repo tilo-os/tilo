@@ -10,7 +10,6 @@ use super::*;
 
 #[test]
 fn a_paged_model_requests_only_the_window_and_wakes_on_loaded_rows() {
-    // The rows land when asked for: a local read in its budget.
     let asked = crate::time::now();
     crate::time::testing::with_monotonic_time(asked, || {
         let loaded = Rc::new(Cell::new(false));

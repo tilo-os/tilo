@@ -1,61 +1,28 @@
 //! What a completion drawer offers and in which order: the sources a field completes from
 //! (`ui.Completion(trigger: "@", from: …)`), and the rows a typed token shows from them.
-//!
-//! A field's view gives each trigger its source once ([`CompletionSource`]): the candidates in
-//! priority tiers (this conversation, then the channel, then the workspace), sources that
-//! answer later under their own header ([`SlowTier`]), and whether a missing one may be
-//! created. Everything per keystroke happens here, in the UI, against what the source gave:
-//! the token after the trigger is the query, and [`rows`] orders the candidates for it.
-//!
-//! - **No letters yet:** each tier under its header, up to its limit.
-//! - **While typing:** one list without headers. A name or handle starting with the query
-//!   comes first, then a word in the name starting with it, then the query anywhere in the name
-//!   or handle, then close fuzzy matches (the query's letters in order from a word start).
-//!   Within each, the tiers' order, then the source's own. Accents and case fold as system
-//!   search folds them.
-//! - **Slow sources** answer below the local rows under their own header, with progress
-//!   while they are on their way, and never reorder what is shown.
-//! - **No match:** one row saying so, and "Create …" where the source allows it.
-//!
-//! A pick ([`Pick`]) is what the field writes in place of the token: the candidate's inline
-//! text and, where the field keeps rich text, the reference it names.
 
 use std::ops::Range;
 
 use crate::icons::Icon;
 use crate::widget::autocomplete::{RowRole, Suggestion, SuggestionPerson};
 
-/// The most rows offered for one token, whatever the source holds.
 pub const MAX_ROWS: usize = 50;
 
-/// One thing a completion offers: how it reads in the drawer and what a pick writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Candidate {
-    /// What identifies it across tiers and keystrokes: its reference, or its text.
     pub key: String,
-    /// What a pick writes in place of the token: the inline view's text (`@Ada Lovelace`,
-    /// `#general`, an emoji).
     pub insert: String,
-    /// The reference a pick names, for a field that keeps rich text (the `mention` mark's
-    /// value). `None` writes plain text.
     pub reference: Option<String>,
-    /// The name matched and shown, its matched letters bold.
     pub name: String,
-    /// A second name it is found by, shown dim after the name: a handle, a shortcode.
     pub handle: Option<String>,
-    /// A line about it, shown dim after the name: a channel's topic, a command's description.
     pub aside: Option<String>,
-    /// A label on the row's trailing side: "in this channel", a role, an unread count.
     pub label: Option<String>,
     pub icon: Option<Icon>,
-    /// The participant it names, shown as their avatar.
     pub person: Option<SuggestionPerson>,
-    /// The command it runs, for a `/` source.
     pub command: Option<Command>,
 }
 
 impl Candidate {
-    /// A candidate named `name` that writes `insert` and names `reference`.
     #[must_use]
     pub fn reference(
         name: impl Into<String>,
@@ -72,7 +39,6 @@ impl Candidate {
         }
     }
 
-    /// A candidate that writes `insert` as plain text, shown as `name`.
     #[must_use]
     pub fn text(name: impl Into<String>, insert: impl Into<String>) -> Self {
         let insert = insert.into();
@@ -121,21 +87,16 @@ impl Candidate {
     }
 }
 
-/// A command a `/` source offers: an action, with the parameters its signature asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Command {
-    /// What it is typed as, without the `/`.
     pub name: String,
-    /// The app it belongs to, for grouping when many apps offer commands.
     pub app: Option<String>,
     /// Its parameters, in the signature's order.
     pub params: Vec<Param>,
-    /// Running it removes something; it shows what it will do before Enter runs it.
     pub destructive: bool,
 }
 
 impl Command {
-    /// The parameter hints a row shows (`person duration message`).
     #[must_use]
     pub fn hints(&self) -> String {
         self.params
@@ -146,44 +107,31 @@ impl Command {
     }
 }
 
-/// One parameter of a command, as its inline field asks for it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Param {
-    /// The signature's name for it.
     pub name: String,
-    /// What its field is labelled.
     pub label: String,
     pub kind: ParamKind,
     /// Enter waits until it is filled.
     pub required: bool,
-    /// What it holds before anything is typed.
     pub default: Option<String>,
 }
 
-/// What a parameter's field takes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ParamKind {
     #[default]
     Text,
-    /// A whole number.
     Number,
-    /// A yes or no.
     Flag,
     /// How long, or until when: `2h`, `30m`, `tomorrow 9:00`.
     Duration,
-    /// Someone, picked from the people drawer (the field's `@` source).
     Person,
-    /// One of these.
     Choice(Vec<String>),
 }
 
-/// One tier of a source: candidates of one priority, under a header shown before anything
-/// is typed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tier {
-    /// What the tier is called ("In this conversation", "Members").
     pub header: Option<String>,
-    /// The most rows it shows before anything is typed.
     pub limit: Option<usize>,
     pub candidates: Vec<Candidate>,
 }
@@ -211,23 +159,16 @@ impl Tier {
     }
 }
 
-/// A source that answers later (people outside the workspace, a directory): its rows come
-/// under its own header below the local ones.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SlowTier {
     pub header: String,
-    /// What it answered; `None` while it is on its way.
     pub candidates: Option<Vec<Candidate>>,
 }
 
-/// What one trigger completes from, as a field's view gave it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionSource {
-    /// The character that opens the drawer.
     pub trigger: char,
-    /// The candidates, in priority tiers.
     pub tiers: Vec<Tier>,
-    /// Sources that answer later.
     pub slow: Vec<SlowTier>,
     /// What creating a missing one is called ("Create channel"), when the person may.
     pub create: Option<String>,
@@ -266,42 +207,37 @@ impl CompletionSource {
     }
 }
 
-/// What a pick writes in place of the token, or the command it starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
-    /// Write the candidate (its inline text, and its reference where the field keeps rich
-    /// text), then a space.
     Insert(Candidate),
-    /// Start the command: the field becomes its chip and parameter fields.
     Command(Candidate),
-    /// Create one named by the query, as the source offered.
     Create { trigger: char, query: String },
 }
 
-/// One row of the drawer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
-    /// A tier's header; `busy` while a slow source is on its way.
-    Header { title: String, busy: bool },
+    Header {
+        title: String,
+        busy: bool,
+    },
     /// A candidate, with the byte ranges of its name the query matched.
     Item {
         candidate: Candidate,
         matched: Vec<Range<usize>>,
     },
-    /// Nothing matches the query.
     NoMatch(String),
-    /// Create one named by the query.
-    Create { label: String, query: String },
+    Create {
+        label: String,
+        query: String,
+    },
 }
 
 impl Entry {
-    /// Whether the row can be selected and picked.
     #[must_use]
     pub fn is_pickable(&self) -> bool {
         matches!(self, Self::Item { .. } | Self::Create { .. })
     }
 
-    /// What identifies the row across keystrokes.
     #[must_use]
     pub fn key(&self) -> Option<&str> {
         match self {
@@ -311,7 +247,6 @@ impl Entry {
         }
     }
 
-    /// The row as the drawer's list paints it.
     #[must_use]
     pub fn suggestion(&self) -> Suggestion {
         match self {
@@ -405,20 +340,15 @@ impl Folded {
     }
 }
 
-/// How well a candidate matches the query, best first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MatchClass {
-    /// The name or the handle starts with the query.
     Prefix,
-    /// A later word of the name starts with it.
     Word,
-    /// The name or the handle holds it.
     Substring,
     /// The query's letters in order, from a word start of the name.
     Fuzzy,
 }
 
-/// A candidate with its name and handle folded once, when its source arrives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prepared {
     pub candidate: Candidate,
@@ -498,7 +428,6 @@ impl Prepared {
     }
 }
 
-/// A source with its candidates folded once: what the drawer filters per keystroke.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedSource {
     pub source: CompletionSource,
@@ -549,7 +478,6 @@ impl PreparedSource {
     }
 }
 
-/// The drawer's rows for `query` typed after the trigger of `source` (see the module docs).
 #[must_use]
 pub fn rows(source: &PreparedSource, query: &str) -> Vec<Entry> {
     let folded = crate::search::fold_search_text(query.trim_start());

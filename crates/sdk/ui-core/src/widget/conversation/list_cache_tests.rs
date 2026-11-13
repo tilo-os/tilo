@@ -1,25 +1,15 @@
 //! What a kept layout promises: it is the layout, exactly.
-//!
-//! A list that keeps its measurements must place every row where laying it out
-//! from nothing would — the same dividers, run gaps, author bands and bubbles —
-//! and must measure again exactly the lines whose measure no longer holds. A
-//! scrollbar that disagrees with where the last message ends is worse than a slow
-//! one, so these tests compare the kept layout to the unkept one row by row.
 
 use super::*;
 
-/// 2026-06-30T14:05:00Z.
 const NOONISH: i64 = 1_782_828_300;
 
 fn clock() -> ConversationClock {
     ConversationClock::at(0, NOONISH)
 }
 
-/// Where a conversation is laid out: a column inside a window.
 const LIST: Rect = Rect::new(24.0, 100.0, 924.0, 900.0);
 
-/// Two people over three days, with runs of one person's lines, a line that
-/// knowingly continues the run above it, and a delivery state under your own.
 fn conversation() -> Vec<ConversationLine> {
     let at = |minutes: i64, day: i64| {
         NOONISH
@@ -39,16 +29,13 @@ fn conversation() -> Vec<ConversationLine> {
             "Bo Park",
             "a sentence long enough to wrap inside the column, twice over, so the bubble it sits in is taller than one line of text and its own measurement is worth keeping",
         ),
-        // The next day: a divider, and a fresh run for the same person.
         ConversationLine::incoming("f", at(0, 1), "Bo Park", "morning"),
         ConversationLine::outgoing("g", at(1, 1), "morning").with_delivery(DeliveryState::Read),
-        // A line that knowingly continues the run above it, with no author.
         ConversationLine::incoming("h", at(2, 1), "", "and one more thing"),
         ConversationLine::incoming("i", at(3, 2), "Ada Chen", "three days later"),
     ]
 }
 
-/// The layout of `lines` in `rect`, laid out with nothing kept.
 fn reference(
     text: &mut TextRenderer,
     theme: &Theme,
@@ -107,8 +94,6 @@ fn the_layout_under_test_breaks_days_and_runs() {
         })
         .count();
     assert_eq!(dividers, 3, "three days, three dividers");
-    // Five runs open with a named person (your own lines open runs too, but carry
-    // no name; a line with no author is its own run and carries none either).
     assert_eq!(bands, 5, "the runs that open with a named person");
     assert_eq!(laid.rows.len(), lines.len() + dividers);
 }
@@ -121,7 +106,6 @@ fn a_kept_layout_is_the_layout_it_replaces() {
     let laid = reference(&mut text, &theme, &lines, LIST);
     let face = ListFace::new(&lines, clock());
     let mut cache = ListCache::default();
-    // The first frame measures every line.
     let first = face
         .layout(
             &mut cache,
@@ -135,7 +119,6 @@ fn a_kept_layout_is_the_layout_it_replaces() {
     same_layout(&first, &laid);
     assert_eq!(cache.work().measured, lines.len());
     assert_eq!(cache.work().reused, 0);
-    // The second frame is the first one, kept.
     let second = face
         .layout(
             &mut cache,
@@ -153,8 +136,6 @@ fn a_kept_layout_is_the_layout_it_replaces() {
         "a frame that changed nothing measures nothing"
     );
     assert_eq!(cache.work().reused, lines.len());
-    // And a height asked for between frames is the height the rows were placed
-    // at, without moving them.
     let height = face.height_in(&mut cache, &mut text, &theme, LIST.width());
     assert_eq!(height.to_bits(), laid.height.to_bits());
     let third = face
@@ -182,8 +163,6 @@ fn editing_a_line_measures_only_that_line() {
     let mut lines = conversation();
     let mut cache = ListCache::default();
     laid_out(&lines, &mut cache, &mut text, &theme);
-    // The line is edited in place: the same slice, the same address, a different
-    // body. Every line but it keeps the measurement it had.
     lines[5].body = "morning — the frame is up, take a look when you can".into();
     let edited = laid_out(&lines, &mut cache, &mut text, &theme);
     assert_eq!(
@@ -246,7 +225,6 @@ fn a_narrower_column_measures_every_line() {
     );
     assert_eq!(cache.work().reused, 0);
     same_layout(&laid, &reference(&mut text, &theme, &lines, narrow));
-    // A height asked for at the narrow width is that column's height.
     assert_eq!(
         face.height_in(&mut cache, &mut text, &theme, narrow.width())
             .to_bits(),
@@ -304,7 +282,6 @@ fn a_moved_list_places_again_without_measuring() {
         LIST.width(),
         LIST.y0,
     );
-    // A scroller moves its content up the screen: the rows move, no line changes.
     let moved = Rect::new(LIST.x0, LIST.y0 - 640.0, LIST.x1, LIST.y1 - 640.0);
     let laid = face
         .layout(

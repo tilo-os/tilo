@@ -1,11 +1,4 @@
 //! Shared responsive legend layout for comparative charts.
-//!
-//! [`measure`], [`wrap`] and [`paint_entry`] lay out and paint a legend
-//! from the theme: each entry is a series swatch and its `Caption` label,
-//! measured by the renderer so long labels never overlap. [`layout`] is the
-//! older renderer-free estimate. `SeriesToggles` is the legend's
-//! interactive half: which series people hid and where to click to toggle
-//! them.
 
 use std::collections::HashSet;
 
@@ -18,7 +11,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// One measured legend entry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LegendEntry {
     pub width: f64,
@@ -73,8 +65,6 @@ pub fn wrap(entries: &[LegendEntry], left: f64, right: f64, top: f64, theme: &Th
         .collect()
 }
 
-/// Paint one entry into `rect`: the series swatch, then its label in
-/// secondary ink, elided to the rect.
 pub fn paint_entry(
     scene: &mut Scene,
     transform: Affine,
@@ -87,8 +77,6 @@ pub fn paint_entry(
     paint_entry_emphasised(scene, transform, text, theme, rect, colour, label, false);
 }
 
-/// [`paint_entry`] for a legend people point at: an `emphasised` entry (the
-/// hovered or chosen series) reads in primary ink.
 pub fn paint_entry_emphasised(
     scene: &mut Scene,
     transform: Affine,
@@ -141,12 +129,10 @@ impl SeriesToggles {
         self.hidden.contains(id)
     }
 
-    /// Forget hidden series the chart no longer has.
     pub(crate) fn retain(&mut self, known: impl Fn(&str) -> bool) {
         self.hidden.retain(|id| known(id));
     }
 
-    /// Show or hide `id`, recording the change; false when it already was.
     pub(crate) fn set(&mut self, id: &str, visible: bool) -> bool {
         let changed = if visible {
             self.hidden.remove(id)
@@ -187,7 +173,6 @@ impl SeriesToggles {
         });
     }
 
-    /// The place `id`'s entry takes, once the layout placed it.
     pub(crate) fn entry(&self, id: &str) -> Option<Rect> {
         self.placed
             .iter()
@@ -236,7 +221,6 @@ impl SeriesToggles {
         }
     }
 
-    /// The series whose placed entry contains `point`.
     pub(crate) fn hit(&self, point: Point) -> Option<String> {
         self.placed
             .iter()
@@ -244,7 +228,6 @@ impl SeriesToggles {
             .map(|(id, _)| id.clone())
     }
 
-    /// The toggle a screen reader activates in place of clicking `id`'s entry.
     pub(crate) fn access_node(&self, id: &str, name: &str) -> AccessNode {
         AccessNode::new(Role::ToggleButton)
             .with_action_target(target(id))
@@ -259,7 +242,6 @@ impl SeriesToggles {
             )
     }
 
-    /// The series among `ids` whose [`Self::access_node`] has action `key`.
     pub(crate) fn activated<'a>(
         ids: impl IntoIterator<Item = &'a str>,
         key: u64,
@@ -285,7 +267,6 @@ fn item_width(label: &str) -> f64 {
     (f64::from(glyphs) * APPROX_GLYPH_WIDTH).clamp(24.0, MAX_LABEL_WIDTH) + SWATCH_AND_GAP
 }
 
-/// Place legend items left-to-right and wrap before the chart edge.
 pub fn layout<'a>(
     labels: impl IntoIterator<Item = &'a str>,
     left: f64,
