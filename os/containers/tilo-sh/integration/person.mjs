@@ -23,6 +23,17 @@
 //                   how long each key took to change the window's picture
 //                   (keyToFrameMs), and a picture of it is kept as
 //                   window.png;
+//   --page NAME --changes N
+//                   after following the invitation, the desk tile whose
+//                   accessible name matches NAME (the hosted Browser window)
+//                   is the page of a window another device draws, and they
+//                   watch it: a line `{"desk": …}` says when the page is drawn
+//                   there and how much of the tile is content rather than
+//                   background, and every N pictures that differ from the one
+//                   before are kept as page-<n>.png and said in a line of their
+//                   own, with the milliseconds since the last one. That is how
+//                   a check holds the person to seeing the agent's work on
+//                   their desk while it happens;
 //   --passkey       they keep themselves with a passkey (a virtual
 //                   authenticator, as a platform one answers), the browser
 //                   then forgets the site, and they sign in again with that
@@ -40,6 +51,7 @@
 import {spawn} from 'node:child_process';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {inflateSync} from 'node:zlib';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
 const [site, relay, out, ...rest] = process.argv.slice(2);
@@ -60,6 +72,8 @@ const tiloBin = option('--tilo');
 const door = option('--api');
 const windowName = option('--window');
 const typed = option('--type');
+const pageName = option('--page');
+const changes = Number(option('--changes') ?? 1);
 mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
@@ -250,9 +264,111 @@ const press = async ({code, key, shift = false}, text = key) => {
   if (shift) await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', code: 'ShiftLeft', key: 'Shift', windowsVirtualKeyCode: 16});
 };
 
-if (windowName) {
-  if (!follow || typed === null) await finish(2, '--window needs --follow and --type');
-  const pattern = new RegExp(windowName, 'i');
+// A picture of a window's box, as the PNG the browser writes it: what the
+// person looking at their desk sees of it. The pixels are read back so that
+// two pictures can be compared by what changed in them, not by whether the
+// file's bytes differ — a caret blinking is not the page changing.
+const pixelsOf = png => {
+  if (png.length < 24 || png.readUInt32BE(0) !== 0x89504e47) throw new Error('not a PNG');
+  let at = 8;
+  let width = 0;
+  let height = 0;
+  let depth = 0;
+  let colour = 0;
+  let interlace = 0;
+  const parts = [];
+  while (at + 8 <= png.length) {
+    const length = png.readUInt32BE(at);
+    const kind = png.toString('ascii', at + 4, at + 8);
+    const body = png.subarray(at + 8, at + 8 + length);
+    if (kind === 'IHDR') {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      depth = body[8];
+      colour = body[9];
+      interlace = body[12];
+    } else if (kind === 'IDAT') {
+      parts.push(body);
+    } else if (kind === 'IEND') {
+      break;
+    }
+    at += 12 + length;
+  }
+  if (depth !== 8 || interlace !== 0 || (colour !== 2 && colour !== 6)) {
+    throw new Error(`a PNG this does not read: depth ${depth}, colour ${colour}, interlace ${interlace}`);
+  }
+  const channels = colour === 6 ? 4 : 3;
+  const raw = inflateSync(Buffer.concat(parts));
+  const stride = width * channels;
+  const data = Buffer.alloc(width * height * 4, 255);
+  let previous = Buffer.alloc(stride);
+  for (let row = 0; row < height; row++) {
+    const filter = raw[row * (stride + 1)];
+    const current = Buffer.from(raw.subarray(row * (stride + 1) + 1, (row + 1) * (stride + 1)));
+    for (let i = 0; i < stride; i++) {
+      const left = i >= channels ? current[i - channels] : 0;
+      const up = previous[i];
+      const upLeft = i >= channels ? previous[i - channels] : 0;
+      let predictor = 0;
+      if (filter === 1) predictor = left;
+      else if (filter === 2) predictor = up;
+      else if (filter === 3) predictor = (left + up) >> 1;
+      else if (filter === 4) {
+        const p = left + up - upLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - upLeft);
+        predictor = pa <= pb && pa <= pc ? left : (pb <= pc ? up : upLeft);
+      }
+      current[i] = (current[i] + predictor) & 0xff;
+    }
+    for (let x = 0; x < width; x++) {
+      const from = x * channels;
+      const to = (row * width + x) * 4;
+      data[to] = current[from];
+      data[to + 1] = current[from + 1];
+      data[to + 2] = current[from + 2];
+      if (channels === 4) data[to + 3] = current[from + 3];
+    }
+    previous = current;
+  }
+  return {width, height, data};
+};
+// How many pixels two pictures of the same box differ in, by more than a
+// colour change this compression and scaling could make on its own.
+const differingPixels = (before, after) => {
+  if (before.width !== after.width || before.height !== after.height) return before.width * before.height;
+  let count = 0;
+  for (let i = 0; i < before.data.length; i += 4) {
+    if (Math.abs(before.data[i] - after.data[i]) > 16
+      || Math.abs(before.data[i + 1] - after.data[i + 1]) > 16
+      || Math.abs(before.data[i + 2] - after.data[i + 2]) > 16) count++;
+  }
+  return count;
+};
+// How much of a picture is what is drawn in it rather than the box's
+// background: a page with a form on it is not a tile waiting for one.
+const contentShare = picture => {
+  const counts = new Map();
+  for (let i = 0; i < picture.data.length; i += 4 * 7) {
+    const colour = (picture.data[i] << 16) | (picture.data[i + 1] << 8) | picture.data[i + 2];
+    counts.set(colour, (counts.get(colour) ?? 0) + 1);
+  }
+  const background = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  let drawn = 0;
+  let seen = 0;
+  for (let i = 0; i < picture.data.length; i += 4) {
+    seen++;
+    const colour = (picture.data[i] << 16) | (picture.data[i + 1] << 8) | picture.data[i + 2];
+    if (colour !== background) drawn++;
+  }
+  return seen ? drawn / seen : 0;
+};
+
+if (windowName || pageName) {
+  if (!follow) await finish(2, '--window and --page need --follow');
+  const name = windowName ?? pageName;
+  const pattern = new RegExp(name, 'i');
   const waiting = Date.now();
   // The page's semantic layer names every tile: the hosted window's is found
   // by its name, as a screen reader finds it.
@@ -264,7 +380,7 @@ if (windowName) {
       && pattern.test(String(node.name?.value ?? '')));
     if (!found) await sleep(250);
   }
-  if (!found) await finish(1, `no window named like /${windowName}/i appeared on the desk in 180 s (it reads: ${await text()})`);
+  if (!found) await finish(1, `no window named like /${name}/i appeared on the desk in 180 s (it reads: ${await text()})`);
   report.window = {name: found.name?.value, role: found.role?.value, appearedMs: Date.now() - waiting};
   console.error(`ok: the window ${JSON.stringify(report.window.name)} is on the desk after ${report.window.appearedMs} ms`);
   const {result: box} = await tab.send('DOM.getBoxModel', {backendNodeId: found.backendDOMNodeId});
@@ -275,15 +391,17 @@ if (windowName) {
   for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
     await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
   }
+  report.window.clip = {x: quad[0], y: quad[1], width: quad[4] - quad[0], height: quad[5] - quad[1]};
+}
+
+if (windowName) {
+  if (!follow || typed === null) await finish(2, '--window needs --follow and --type');
+  const clip = {...report.window.clip, scale: 1};
   // A picture arrives once the window's stream is decoded: what the person
   // sees before they type.
   await sleep(1500);
   const before = await tab.screenshot().catch(() => null);
   if (before) writeFileSync(join(out, 'window-before.png'), before);
-  // Each key is timed from the press to the next picture of the window that
-  // differs from the one before it: what a person feels as the window
-  // answering their typing, the whole way through the VM and back.
-  const clip = {x: quad[0], y: quad[1], width: quad[4] - quad[0], height: quad[5] - quad[1], scale: 1};
   const picture = async () => (await tab.send('Page.captureScreenshot', {format: 'png', clip})
     .catch(() => ({data: ''}))).data;
   const answered = [];
@@ -316,6 +434,58 @@ if (windowName) {
   await sleep(1500);
   const after = await tab.screenshot().catch(() => null);
   if (after) writeFileSync(join(out, 'window.png'), after);
+}
+
+if (pageName) {
+  if (!follow) await finish(2, '--page needs --follow');
+  const clip = {...report.window.clip, scale: 1};
+  const shot = async () => (await tab.send('Page.captureScreenshot', {format: 'png', clip})
+    .catch(() => ({data: ''}))).data;
+  const look = async () => pixelsOf(Buffer.from(await shot(), 'base64'));
+  // A picture arrives once the window's page is drawn there: the person
+  // waits for one the publisher sent, as an arriving card is no page.
+  let drawn = null;
+  const lookFrom = Date.now();
+  while (!drawn && Date.now() - lookFrom < 120_000) {
+    const picture = await look().catch(() => null);
+    if (picture?.width && contentShare(picture) >= 0.02) drawn = picture;
+    else await sleep(250);
+  }
+  if (!drawn) await finish(1, `the page on the desk is still the arriving card after 120 s (it reads: ${await text()})`);
+  writeFileSync(join(out, 'page-desk.png'), await shot());
+  const said = {name: report.window.name, appearedMs: report.window.appearedMs,
+    drawnMs: Date.now() - lookFrom, content: Number(contentShare(drawn).toFixed(4))};
+  report.desk = said;
+  // A line of its own, before the run ends: the check goes on to have the
+  // agent work the page while the person watches, and reads these as they come.
+  process.stdout.write(`${JSON.stringify({desk: said})}\n`);
+  console.error(`ok: the page is drawn on the desk after ${said.drawnMs} ms, ${(said.content * 100).toFixed(1)}% of the tile its content`);
+  // Every picture that differs from the one before is the page changing
+  // under their eyes. A caret blinking moves a few pixels; the agent filling
+  // a field or a page showing its receipt moves many.
+  let previous = drawn;
+  const watching = Date.now();
+  let changed = 0;
+  let at = watching;
+  while (changed < changes && Date.now() - watching < 600_000) {
+    const picture = await look().catch(() => null);
+    if (!picture) { await sleep(200); continue; }
+    const moved = differingPixels(previous, picture);
+    if (moved > 150) {
+      previous = picture;
+      const kept = await shot();
+      changed++;
+      writeFileSync(join(out, `page-${changed}.png`), Buffer.from(kept, 'base64'));
+      const one = {n: changed, ms: Date.now() - at, moved, picture: join(out, `page-${changed}.png`)};
+      at = Date.now();
+      console.error(`ok: the page on the desk changed ${moved} pixels, ${one.ms} ms after the change before`);
+      report.changes = [...(report.changes ?? []), one];
+      process.stdout.write(`${JSON.stringify({change: one})}\n`);
+      continue;
+    }
+    await sleep(150);
+  }
+  if (changed < changes) await finish(1, `the page on the desk changed ${changed} times of the ${changes} the check waits for`);
 }
 
 if (keyName) {
