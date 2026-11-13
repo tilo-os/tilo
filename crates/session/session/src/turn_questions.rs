@@ -58,13 +58,14 @@ pub(crate) fn ask(
         details,
     });
     let (answer, answered) = oneshot::channel();
-    // The person answers on the sheet in their own time, and the
-    // broker's thread waits for it; nothing here holds the session's
-    // loop.
+    // The person answers on the sheet in their own time, and asks nothing of
+    // the session's loop meanwhile. Their answer is a change the broker's
+    // decision reads, so it is announced: that is what wakes a held child.
     let spawned = std::thread::Builder::new()
         .name("turn-question-answer".into())
         .spawn(move || {
             let _ = answer.send(answer_to(wait(asked).as_ref()));
+            tilo_identity_host::policy_change::announce();
         });
     if spawned.is_err() {
         return None;

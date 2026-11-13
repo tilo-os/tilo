@@ -15,13 +15,13 @@
 //! - declined: [`tilo_actions::draft::DECLINED`], in the person's words.
 //!
 //! The person answers on the broker's sheet while the agent's hold waits.
-//! The answer is taken by a thread that parks on the sheet's channel and
-//! then announces the decision ([`tilo_identity_host::policy_change`]),
+//! The sheet announces the answer ([`tilo_identity_host::policy_change`]),
 //! which is what wakes the held child to be decided again: a held re-ask
-//! never polls a clock.
+//! never polls a clock. The answer itself is read when the step is decided,
+//! so an ask that arrives after the person answered still finds it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use tilo_actions::{Draft, DraftEdit};
 
@@ -34,33 +34,45 @@ struct ConversationAsk {
     /// The run it belongs to, by its task id: the question goes when the run
     /// does.
     task: String,
-    /// What the person answered, until it is spent on a child.
-    answered: Answered,
+    /// The sheet's answer, read when the step is decided again: the person
+    /// answered it, or the sheet closed without one.
+    answer: tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>,
 }
 
 /// What the person answered a conversation turn's question.
 enum Answered {
-    /// Nobody has answered yet.
-    Waiting,
     Confirmed(Vec<DraftEdit>),
     Declined,
 }
 
-/// The questions conversation turns wait on, shared with the threads that
-/// take their answers.
+/// The questions conversation turns wait on.
 #[derive(Default)]
 pub(super) struct ConversationAsks {
     questions: Mutex<HashMap<String, ConversationAsk>>,
 }
 
 impl ConversationAsks {
+    /// What the person answered `key`, if they have: read here rather than
+    /// taken by a thread of its own, so an ask made after their answer never
+    /// misses it. A sheet that closed unanswered takes its question with it.
     fn take_answered(&self, key: &str) -> Option<Answered> {
         let mut questions = self.questions.lock().ok()?;
-        let question = questions.get(key)?;
-        let Answered::Waiting = question.answered else {
-            return questions.remove(key).map(|question| question.answered);
-        };
-        None
+        let answer = questions.get_mut(key)?.answer.try_recv();
+        match answer {
+            Ok(answer) if answer.allowed() => {
+                questions.remove(key);
+                Some(Answered::Confirmed(answer.edits))
+            }
+            Ok(_) => {
+                questions.remove(key);
+                Some(Answered::Declined)
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                questions.remove(key);
+                None
+            }
+        }
     }
 
     /// Whether no question waits now.
@@ -206,7 +218,7 @@ impl AppBrokerState {
                     reason: conversation_declined(&draft.action_label),
                 });
             }
-            Some(Answered::Waiting) | None => {}
+            None => {}
         }
         let contract_argument =
             json.map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
@@ -251,7 +263,7 @@ impl AppBrokerState {
             .read()
             .map_err(|_| "the confirmation sheet is unavailable")?
             .clone();
-        let Some(answered) = prompter
+        let Some(answer) = prompter
             .and_then(|prompter| prompter.ask(conversation_request(draft, resource, action)))
         else {
             return Err(conversation_no_sheet(&draft.action_label));
@@ -260,43 +272,10 @@ impl AppBrokerState {
             key.to_owned(),
             ConversationAsk {
                 task: task.to_owned(),
-                answered: Answered::Waiting,
+                answer,
             },
         );
         drop(questions);
-        // The sheet answers in the person's own time, off the broker's loop:
-        // the answer is kept here and the decision announced, which is what
-        // wakes the agent's held child to be decided again.
-        let asks = Arc::clone(&self.conversation_asks);
-        let key = key.to_owned();
-        let spawned = std::thread::Builder::new()
-            .name("turn-question".into())
-            .spawn(move || {
-                let answered = match answered.blocking_recv() {
-                    Ok(answer) if answer.allowed() => Answered::Confirmed(answer.edits),
-                    Ok(_) => Answered::Declined,
-                    // The sheet closed without the person's answer: that is
-                    // no denial of theirs, so the question goes and the next
-                    // ask raises it again (`super::run_question`'s
-                    // `serve_answered` decides a closed sheet the same way).
-                    Err(_) => {
-                        if let Ok(mut questions) = asks.questions.lock() {
-                            questions.remove(&key);
-                        }
-                        tilo_identity_host::policy_change::announce();
-                        return;
-                    }
-                };
-                if let Ok(mut questions) = asks.questions.lock()
-                    && let Some(question) = questions.get_mut(&key)
-                {
-                    question.answered = answered;
-                }
-                tilo_identity_host::policy_change::announce();
-            });
-        if let Err(error) = spawned {
-            return Err(format!("the person's answer could not be awaited: {error}"));
-        }
         Ok(())
     }
 
