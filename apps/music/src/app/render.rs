@@ -209,6 +209,16 @@ impl<'a> TrackTable<'a> {
     }
 }
 
+/// The name of the `slot`th track list a page draws: the first keeps the app's own, and each one
+/// after it is named by its place, so two lists on a page never publish one control id.
+fn track_table_id(slot: usize) -> String {
+    if slot == 0 {
+        "music.tracks".to_owned()
+    } else {
+        format!("music.tracks.{slot}")
+    }
+}
+
 /// Column edges of a track table inside its span: index, title, album, actions,
 /// duration.
 #[derive(Clone, Copy, Debug)]
@@ -2939,7 +2949,16 @@ impl Music {
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
         let downloads = matches!(self.view, View::Downloads);
-        let shape = Self::track_table_shape(ctx, look, (left, right), table, downloads);
+        let slot_index = self.track_tables_drawn;
+        self.track_tables_drawn += 1;
+        let shape = Self::track_table_shape(
+            ctx,
+            look,
+            (left, right),
+            table,
+            downloads,
+            track_table_id(slot_index),
+        );
         let offset = table.queue_offset.unwrap_or(0);
         let rows: Vec<_> = table
             .rows
@@ -2961,10 +2980,9 @@ impl Music {
             });
 
         let slot_index = self.track_tables_drawn;
-        self.track_tables_drawn += 1;
         if self.page.track_tables.len() <= slot_index {
             self.page.track_tables.push(super::TrackTableSlot {
-                table: TrackTableHost::new(shape, theme),
+                table: TrackTableHost::new(shape.clone(), theme),
                 queue: Arc::default(),
                 playlist: None,
                 queue_offset: None,
@@ -3000,6 +3018,7 @@ impl Music {
         (left, right): (f64, f64),
         table: &TrackTable<'_>,
         downloads: bool,
+        id: String,
     ) -> super::track_table::Shape {
         use super::track_table::{Actions, Second, Shape};
         let theme = ctx.theme;
@@ -3046,6 +3065,7 @@ impl Music {
         // Widths on the half pixel, so only a real change rebuilds the table.
         let half = |v: f64| ((v * 2.0).round() / 2.0) as f32;
         Shape {
+            id,
             numbers: table.number_col,
             second: cols.album.map(|_| {
                 if downloads {
