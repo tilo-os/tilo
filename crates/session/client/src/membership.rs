@@ -319,7 +319,7 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         workspace
             .policy
             .grants
-            .retain(|grant| !grant.subject.agent_id().is_some());
+            .retain(|grant| grant.subject.agent_id().is_none());
         workspace.policy.grants.extend(agents);
     }
     if held_apps != apps {

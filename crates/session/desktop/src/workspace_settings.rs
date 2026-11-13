@@ -1006,11 +1006,8 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
         }
         tilo_action_policy::Grantee::App(_)
         | tilo_action_policy::Grantee::Role(_)
-        | tilo_action_policy::Grantee::Member(_) => GrantSubject {
-            kind: SubjectKind::Other,
-            id: t("workspace-settings-subject-foreign-device"),
-        },
-        tilo_action_policy::Grantee::ForeignDevice => GrantSubject {
+        | tilo_action_policy::Grantee::Member(_)
+        | tilo_action_policy::Grantee::ForeignDevice => GrantSubject {
             kind: SubjectKind::Other,
             id: t("workspace-settings-subject-foreign-device"),
         },
