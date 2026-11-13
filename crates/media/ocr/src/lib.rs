@@ -61,9 +61,8 @@ pub struct Document {
     pub language: String,
 }
 
-/// Structured recognition plus the visible preprocessing decision that led to
-/// it. Apps can explain a corrected scan and keep previews/export aligned
-/// instead of treating cleanup as an invisible engine side effect.
+/// Structured recognition plus the preprocessing decision that led to it, so an
+/// app can explain a corrected scan and keep previews and exports aligned.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recognition {
     pub document: Document,
@@ -108,11 +107,11 @@ pub enum Error {
 }
 
 impl Error {
-    /// A stable, people-facing explanation suitable for app notices.
+    /// A stable explanation suitable for app notices.
     ///
-    /// Engine stderr and filesystem details can contain implementation jargon,
-    /// paths, or sensitive document context, so callers must not display the
-    /// error's diagnostic `Display` representation directly.
+    /// Engine stderr and filesystem details carry implementation jargon, paths
+    /// and document context, so a caller must not show the diagnostic
+    /// `Display`.
     #[must_use]
     pub const fn user_message(&self) -> &'static str {
         match self {
@@ -137,10 +136,7 @@ impl Error {
 }
 
 /// Contrast-normalise and deskew an image before recognition. The returned
-/// image remains available to the UI for an honest before/after preview.
-///
-/// # Errors
-/// Returns [`Error::TooLarge`] when dimensions exceed the processing bounds.
+/// image stays available to the UI for a before/after preview.
 pub fn preprocess(image: &DynamicImage) -> Result<DynamicImage, Error> {
     prepare(image).map(|(image, _)| image)
 }
@@ -158,10 +154,9 @@ fn prepare(image: &DynamicImage) -> Result<(DynamicImage, Option<f64>), Error> {
     Ok((DynamicImage::ImageLuma8(corrected), deskew_degrees))
 }
 
-/// Estimate the small corrective rotation needed to make text baselines
-/// horizontal. A capped preview keeps work bounded for full-resolution scans;
-/// blank pages, photographs, and weak/ambiguous evidence return `None` rather
-/// than rotating content speculatively.
+/// Estimate the small corrective rotation that makes text baselines
+/// horizontal. A capped preview keeps the work bounded; a blank page, a
+/// photograph or weak evidence returns `None` rather than rotate.
 #[must_use]
 pub fn estimate_skew_degrees(image: &GrayImage) -> Option<f64> {
     if image.width() < 32 || image.height() < 32 {
@@ -308,9 +303,9 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// Recognise decoded pixels (the toolkit codec's) with Tesseract's TSV
-/// output. `language` is restricted to data identifiers, preventing it from
-/// becoming an argv option or filesystem path.
+/// Recognise decoded pixels with Tesseract's TSV output. `language` is
+/// restricted to data identifiers, so it can become neither an argv option nor
+/// a path.
 pub fn recognize(image: &DecodedImage, language: &str) -> Result<Document, Error> {
     recognize_detailed(image, language).map(|result| result.document)
 }
@@ -336,7 +331,6 @@ pub fn recognize_detailed(image: &DecodedImage, language: &str) -> Result<Recogn
     })
 }
 
-/// Recognise an image path through the bounded OCR process boundary.
 pub fn recognize_path(path: &Path, language: &str) -> Result<Document, Error> {
     recognize_path_with_program(path, language, Path::new("tesseract"))
 }
@@ -396,7 +390,7 @@ fn recognize_path_with_program_args_timeout(
         _ => Error::Engine("OCR engine process failed".into()),
     })?;
     if !output.status.success() {
-        // Keep OCR's existing 500-character boundary after shared sanitisation.
+        // Only 500 characters of engine diagnostic reach an app.
         let diagnostic = output.stderr_diagnostic().chars().take(500).collect();
         return Err(Error::Engine(diagnostic));
     }
@@ -423,7 +417,6 @@ fn validate_language(language: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Parse bounded Tesseract TSV into structured words.
 pub fn parse_tsv(tsv: &str, language: &str) -> Result<Document, Error> {
     parse_tsv_bounded(tsv, language, MAX_TSV_BYTES, MAX_WORDS, MAX_WORD_BYTES)
 }
@@ -491,9 +484,9 @@ fn parse_tsv_bounded(
         }
         words.push(Word {
             text: text_col.trim().to_string(),
-            // Engines conventionally report 0..=100, but this is still an
-            // external process boundary. Keep the public confidence contract
-            // in 0..=1 even when a buggy engine emits 140 or infinity.
+            // Engines conventionally report 0..=100, but this is an external
+            // process boundary: keep the public 0..=1 contract even when one
+            // emits 140 or infinity.
             confidence: (confidence / 100.0).clamp(0.0, 1.0),
             bounds: Bounds {
                 x,
@@ -660,7 +653,6 @@ mod tests {
 
     #[test]
     fn inputs_are_validated_and_errors_are_typed_and_actionable() {
-        // Phase `absent_engine_is_a_typed_error_when_not_installed`.
         fn absent_engine_is_a_typed_error_when_not_installed() {
             if Command::new("tesseract")
                 .arg("--version")
@@ -695,7 +687,6 @@ mod tests {
                 Err(Error::TooLarge)
             ));
         }
-        // Phase `absent_engine_is_a_typed_error_when_not_installed` (defined above).
         absent_engine_is_a_typed_error_when_not_installed();
         {
             let cases = [
