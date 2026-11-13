@@ -1095,94 +1095,94 @@ user_pref("mail.identity.id1.fullName", "Personal");
         (plan, prepared, reviewed)
     }
 
+    #[test]
+    fn journal_is_private_bound_and_reimports_only_the_selected_mail_and_browser() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("root");
+        source_dir(&root);
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let identity = PreparedIdentity::create(
+            &root.join("identity"),
+            "Ada",
+            [1, 2, 3],
+            IdentityStorage::Files,
+        )
+        .unwrap();
+        let person = provision_device(&root.join("device"), &identity, &mut environment);
+        let home = fixture.path().join("source");
+        source_dir(&home);
+        let (plan, prepared, _reviewed) = prepared(&home);
+        assert_eq!(
+            std::fs::metadata(&prepared.journal)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let opened = Journal::open(&home, &plan).unwrap();
+        assert_eq!(opened.operation_id(), plan.operation_id);
+        assert_eq!(opened.exclusions(), plan.home_exclusions.as_slice());
+        let target = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let receipt = import_selected_from_source(
+            &plan,
+            &home,
+            target.path(),
+            workspace.path(),
+            person,
+            &AtomicBool::new(false),
+        )
+        .unwrap_or_else(|error| panic!("deferred import failed: {error}"));
+        assert_eq!(receipt.mail.len(), 1);
+        assert_eq!(receipt.mail[0].accounts.len(), 1);
+        assert!(
+            receipt
+                .reconnect
+                .iter()
+                .any(|reason| reason == "browser:sessions"),
+            "copied browser profiles still require a specific sign-in"
+        );
+        assert!(
+            receipt
+                .reconnect
+                .iter()
+                .any(|reason| reason == "browser:credentials"),
+            "saved passwords stay in the source and require a new sign-in"
+        );
+        assert!(target.path().join(".config/tilo").is_dir());
+        assert!(target.path().join(".cache/so.tilo.mail/mail").is_dir());
+        let browser = receipt.browser.expect("selected browser projection");
+        assert_eq!(browser.profiles.len(), 1);
+        assert!(browser.projection.join("plan.json").is_file());
+        assert!(browser.projection.join("profiles").is_dir());
+        let deferred_root =
+            browser_continuity::completion::deferred_root(target.path(), &plan.operation_id);
+        assert_eq!(
+            browser.projection,
+            browser_continuity::completion::deferred_projection(&deferred_root)
+        );
+        let completion = browser_continuity::completion::Completion::read(
+            &deferred_root.join(browser_continuity::completion::FILE_NAME),
+        )
+        .unwrap();
+        assert_eq!(completion.operation(), plan.operation_id);
+        assert_eq!(
+            completion.setup_digest(),
+            browser_continuity::completion::deferred_setup_digest(&plan.operation_id)
+        );
+        assert_eq!(completion.plan().identity_public_key, person);
+        let plan_bytes = plan.bytes().unwrap();
+        assert!(!String::from_utf8_lossy(&plan_bytes).contains("person@example.test"));
+        assert!(!String::from_utf8_lossy(&plan_bytes).contains("ImapMail"));
+        assert!(!String::from_utf8_lossy(&plan_bytes).contains("profile.id"));
+    }
+
     tilo_test_env::scenario! {
         /// The deferred handoff journal: its privacy, its binding and what crosses it.
         /// Each phase was a test of its own and builds its own fixture.
         fn the_deferred_handoff_journal_carries_only_what_was_selected;
-
-        phase journal_is_private_bound_and_reimports_only_the_selected_mail_and_browser;
-        {
-            let fixture = tempfile::tempdir().unwrap();
-            let root = fixture.path().join("root");
-            source_dir(&root);
-            let mut environment = tilo_test_env::ScopedEnv::new();
-            environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-            let identity = PreparedIdentity::create(
-                &root.join("identity"),
-                "Ada",
-                [1, 2, 3],
-                IdentityStorage::Files,
-            )
-            .unwrap();
-            let person = provision_device(&root.join("device"), &identity, &mut environment);
-            let home = fixture.path().join("source");
-            source_dir(&home);
-            let (plan, prepared, _reviewed) = prepared(&home);
-            assert_eq!(
-                std::fs::metadata(&prepared.journal)
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-            let opened = Journal::open(&home, &plan).unwrap();
-            assert_eq!(opened.operation_id(), plan.operation_id);
-            assert_eq!(opened.exclusions(), plan.home_exclusions.as_slice());
-            let target = tempfile::tempdir().unwrap();
-            let workspace = tempfile::tempdir().unwrap();
-            let receipt = import_selected_from_source(
-                &plan,
-                &home,
-                target.path(),
-                workspace.path(),
-                person,
-                &AtomicBool::new(false),
-            )
-            .unwrap_or_else(|error| panic!("deferred import failed: {error}"));
-            assert_eq!(receipt.mail.len(), 1);
-            assert_eq!(receipt.mail[0].accounts.len(), 1);
-            assert!(
-                receipt
-                    .reconnect
-                    .iter()
-                    .any(|reason| reason == "browser:sessions"),
-                "copied browser profiles still require a specific sign-in"
-            );
-            assert!(
-                receipt
-                    .reconnect
-                    .iter()
-                    .any(|reason| reason == "browser:credentials"),
-                "saved passwords stay in the source and require a new sign-in"
-            );
-            assert!(target.path().join(".config/tilo").is_dir());
-            assert!(target.path().join(".cache/so.tilo.mail/mail").is_dir());
-            let browser = receipt.browser.expect("selected browser projection");
-            assert_eq!(browser.profiles.len(), 1);
-            assert!(browser.projection.join("plan.json").is_file());
-            assert!(browser.projection.join("profiles").is_dir());
-            let deferred_root =
-                browser_continuity::completion::deferred_root(target.path(), &plan.operation_id);
-            assert_eq!(
-                browser.projection,
-                browser_continuity::completion::deferred_projection(&deferred_root)
-            );
-            let completion = browser_continuity::completion::Completion::read(
-                &deferred_root.join(browser_continuity::completion::FILE_NAME),
-            )
-            .unwrap();
-            assert_eq!(completion.operation(), plan.operation_id);
-            assert_eq!(
-                completion.setup_digest(),
-                browser_continuity::completion::deferred_setup_digest(&plan.operation_id)
-            );
-            assert_eq!(completion.plan().identity_public_key, person);
-            let plan_bytes = plan.bytes().unwrap();
-            assert!(!String::from_utf8_lossy(&plan_bytes).contains("person@example.test"));
-            assert!(!String::from_utf8_lossy(&plan_bytes).contains("ImapMail"));
-            assert!(!String::from_utf8_lossy(&plan_bytes).contains("profile.id"));
-        }
 
         phase browser_already_carried_by_the_package_is_not_duplicated_in_the_journal;
         {
