@@ -22,21 +22,16 @@ pub(crate) const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
 /// A glyph key's character, as a fraction of its cell height. Keys are a
 /// content surface: the glyph follows the key it sits on, not the text scale.
 const KEY_GLYPH_CONTENT_PX_RATIO: f64 = 0.46;
-/// The press preview's glyph, as a fraction of the bubble's height.
 const PREVIEW_GLYPH_CONTENT_PX_RATIO: f64 = 0.5;
-/// A long-press option's glyph, as a fraction of its cell's height.
 const OPTION_GLYPH_CONTENT_PX_RATIO: f64 = 0.5;
-/// Gutter between neighbouring keys, as a fraction of a row's height.
 const KEY_GAP_RATIO: f64 = 0.06;
 
 pub(crate) struct KeyboardGeometry {
     pub content_rect: Rect,
-    /// The toolbar band.
     pub toolbar_area: Rect,
     pub toolbar: Vec<(usize, Rect)>,
     pub suggestions: Vec<(usize, Rect)>,
     pub suggestion_area: Rect,
-    /// The band the keys fill: where a touch belongs to the keys.
     pub key_area: Rect,
     /// The rows the keys are laid out in: the key band less one key gap above
     /// and below, so the first and last rows keep the same distance from the
@@ -54,8 +49,6 @@ pub(crate) fn keyboard_geometry(
     suggestion_height: f32,
     gutter: f64,
 ) -> KeyboardGeometry {
-    // Every band shares one width: the window less a side gutter, so no key,
-    // chip or button touches the window edge.
     let width = (rect.width() - 2.0 * gutter).clamp(0.0, MAX_KEYBOARD_CONTENT_WIDTH);
     let x = rect.center().x - width * 0.5;
     let content_rect = Rect::new(x, rect.y0, x + width, rect.y1);
@@ -110,28 +103,19 @@ pub(crate) struct KeyboardPresentation<'a> {
     pub finger_keys: &'a [KeyId],
     pub hovered_tool: Option<usize>,
     pub pressed_tool: Option<usize>,
-    /// The terminal row's Ctrl and Alt, shown on their keys.
     pub modifiers: ModifierLatches,
     pub hovered_sugg: Option<usize>,
     pub pressed_sugg: Option<usize>,
     pub empty_hint: &'a str,
     pub context_error: Option<&'a str>,
-    /// The emoji panel puts its search field over the suggestion bar.
     pub emoji_panel_open: bool,
-    /// The character key a finger or the pointer holds down, previewed in a
-    /// bubble above it. `None` in secret fields.
     pub preview: Option<KeyId>,
-    /// The long-press alternates row, when one is open.
     pub alternates: Option<&'a AlternatesPopup>,
-    /// A drag on the space bar is moving the caret.
     pub cursor_mode: bool,
-    /// The debug overlay of effective hit areas (empty when off).
     pub hit_cells: &'a [HitCell],
-    /// The in-flight solo gesture; empty for taps and stateless presentation.
     pub swipe_path: &'a [Point],
 }
 
-/// Paint transient gesture feedback from the current theme, clipped to keys.
 fn draw_swipe_trail(ctx: &mut PaintCtx<'_>, points: &[Point], bounds: Rect) {
     if points.len() < 2 {
         return;
@@ -168,13 +152,10 @@ fn draw_swipe_trail(ctx: &mut PaintCtx<'_>, points: &[Point], bounds: Rect) {
     ctx.scene.pop_layer();
 }
 
-/// The accented variants offered by a long press on a letter, with the one
-/// under the finger.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AlternatesPopup {
     pub options: Vec<String>,
     pub selected: usize,
-    /// Where each option is drawn, parallel to `options`.
     pub cells: Vec<Rect>,
 }
 
@@ -211,7 +192,6 @@ impl AlternatesPopup {
     }
 }
 
-/// Key-sized cells in one row just above `key_rect`, parallel to the options.
 fn alternates_cells(key_rect: Rect, n: usize, bounds: Rect) -> Vec<Rect> {
     let w = key_rect.width();
     let h = key_rect.height();
@@ -269,9 +249,6 @@ impl KeyboardPresentation<'_> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // The keyboard paints its own panel, so it exists exactly while the
-        // keys do: its window stands on no ground of its own, and a keyboard
-        // the person has put away leaves the app under it showing.
         let ground = ui::surface::region(
             scene,
             transform,
@@ -281,11 +258,7 @@ impl KeyboardPresentation<'_> {
         );
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
 
-        // Toolbar.
         for (i, r) in self.toolbar_geom {
-            // `toolbar_geom` is built from `self.toolbar` each frame, so `*i`
-            // is always in range; `get` avoids a panic if the geometry is
-            // ever stale for one frame.
             let Some(item) = self.toolbar.get(*i) else {
                 continue;
             };
@@ -306,7 +279,6 @@ impl KeyboardPresentation<'_> {
             }
         }
 
-        // Suggestion bar: a tappable chip per suggestion.
         if self.suggestion_area.area() > 0.0 && !self.emoji_panel_open {
             for (i, r) in self
                 .suggestion_geom
@@ -317,7 +289,6 @@ impl KeyboardPresentation<'_> {
                     continue;
                 };
                 let hovered = self.hovered_sugg == Some(*i) || self.pressed_sugg == Some(*i);
-                // The top chip is the highlighted (auto / best) pick.
                 draw_suggestion_chip(&mut ctx, *r, &s.word, *i == 0, hovered);
             }
             if self.suggestion_geom.is_empty() || self.context_error.is_some() {
@@ -333,7 +304,6 @@ impl KeyboardPresentation<'_> {
             }
         }
 
-        // Keys.
         let shift = self.shift;
         let layout = self.layout;
         for (id, rect) in self.key_geom {
@@ -352,8 +322,6 @@ impl KeyboardPresentation<'_> {
             let icon_filled =
                 matches!(&key.action, KeyAction::Shift) && shift == ShiftState::CapsLock;
             let is_space = matches!(&key.action, KeyAction::Space);
-            // While the space bar steers the caret the letters fade and the
-            // space bar shows which way it moves.
             let dim_label = self.cursor_mode && Key::is_letter(key);
             let shown = if is_space && self.cursor_mode {
                 ""
@@ -397,7 +365,6 @@ impl KeyboardPresentation<'_> {
             draw_swipe_trail(&mut ctx, self.swipe_path, bounds);
         }
 
-        // Floating feedback goes last so it overlaps the rows above.
         if let Some(popup) = self.alternates {
             draw_alternates(&mut ctx, popup);
         } else if let Some(id) = self.preview
@@ -411,12 +378,10 @@ impl KeyboardPresentation<'_> {
     }
 }
 
-/// Gutter between neighbouring keys: each cell is inset by this on every side.
 pub(crate) fn key_pad(rect: Rect) -> f64 {
     key_pad_for_height(rect.height())
 }
 
-/// [`key_pad`] for a row `height` tall.
 pub(crate) fn key_pad_for_height(height: f64) -> f64 {
     (height * KEY_GAP_RATIO).clamp(2.0, 6.0)
 }
@@ -460,8 +425,6 @@ fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Colo
     }
 }
 
-/// A floating panel for key feedback: the floating material, the panel edge
-/// and the one floating shadow. Returns the panel's radius.
 fn draw_float_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) -> f64 {
     let radius = f64::from(theme.tokens.radii.panel);
     ui::surface::shadow(
@@ -492,12 +455,8 @@ fn body_middle(ch: char) -> f64 {
 /// Marks that are a dot or a tick in any face: drawn larger and heavier than
 /// a letter, so a key that carries only one still reads as that mark.
 const SMALL_MARKS: &str = ".,:;'\"-_*~^`";
-/// How much larger a small mark is drawn than a letter on the same key.
 const SMALL_MARK_SCALE: f32 = 1.35;
 
-/// Paint one character centred on `rect`: horizontally on its advance,
-/// vertically on the body of its kind (see [`body_middle`]). A small mark is
-/// drawn larger but stays on the baseline the letters share.
 fn draw_glyph(ctx: &mut PaintCtx<'_>, rect: Rect, ch: &str, content_px: f32, ink: Color) {
     let first = ch.chars().next().unwrap_or(' ');
     let small = ch.chars().count() == 1 && SMALL_MARKS.contains(first);
@@ -534,8 +493,6 @@ fn draw_word(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, ink: Color) {
     ctx.text_role(word, TextRole::Label, ink, origin, None);
 }
 
-/// A label that is one character reads at the key's glyph size; a word sits
-/// in the label role.
 fn draw_label(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, ratio: f64, ink: Color) {
     if label.chars().count() == 1 {
         let label_px = ctx.theme.text(TextRole::Label).size;
@@ -558,8 +515,6 @@ fn draw_key_preview(ctx: &mut PaintCtx<'_>, bubble: Rect, label: &str) {
     draw_label(ctx, bubble, label, PREVIEW_GLYPH_CONTENT_PX_RATIO, ink);
 }
 
-/// The long-press row of accented variants; the one under the finger is the
-/// armed row of a popover, inverted.
 fn draw_alternates(ctx: &mut PaintCtx<'_>, popup: &AlternatesPopup) {
     let (Some(first), Some(last)) = (popup.cells.first(), popup.cells.last()) else {
         return;
@@ -586,7 +541,6 @@ fn draw_alternates(ctx: &mut PaintCtx<'_>, popup: &AlternatesPopup) {
     }
 }
 
-/// Left and right chevrons on the space bar while it moves the caret.
 fn draw_cursor_chevrons(ctx: &mut PaintCtx<'_>, rect: Rect) {
     let cell = rect.inset(-key_pad(rect));
     let s = f64::from(ctx.theme.tokens.metrics.icon_md);
@@ -608,9 +562,6 @@ fn draw_cursor_chevrons(ctx: &mut PaintCtx<'_>, rect: Rect) {
     }
 }
 
-/// Debug overlay: tints each sampled cell by the key a tap there resolves
-/// to, strongly where that differs from the drawn key, and outlines every
-/// letter's core zone (inside which the drawn key always wins).
 fn draw_hit_overlay(
     scene: &mut Scene,
     transform: Affine,
@@ -620,8 +571,6 @@ fn draw_hit_overlay(
     layout: &KeyboardLayout,
 ) {
     let s = &theme.tokens.colors.semantic;
-    // Four colours so no two neighbouring keys share one: along a row the
-    // index steps by two, between rows by one.
     let palette = [s.info, s.success, s.warning, s.danger];
     let colour = |id: KeyId| {
         palette
@@ -653,8 +602,6 @@ fn draw_hit_overlay(
     }
 }
 
-/// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
-/// doesn't take separate `bool` parameters.
 #[derive(Clone, Copy, Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -667,31 +614,20 @@ pub(crate) struct CellState {
     pub(crate) hovered: bool,
     pub(crate) pressed: bool,
     pub(crate) tone: CellTone,
-    /// Solid (vs. outline) icon glyph — used for a latched state like
-    /// Caps-Lock's Shift key.
     pub(crate) icon_filled: bool,
-    /// A quieter label: the letters while the space bar steers the caret.
     pub(crate) dim_label: bool,
 }
 
-/// What a cell is, which decides its fill and ink.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CellTone {
-    /// A character key: the raised key surface.
     #[default]
     Plain,
-    /// Shift, Backspace, layer and emoji keys.
     Modifier,
-    /// A latched state (Shift or Caps-Lock on): the inverted fill, like a
-    /// switch that is on.
     Active,
-    /// The primary action (Return): the inverted fill.
     Primary,
-    /// A bare cell with no key surface of its own.
     Flat,
 }
 
-/// What a cell shows: an icon glyph, or a text label.
 #[derive(Clone, Copy)]
 pub(crate) enum CellFace<'a> {
     Icon(Icon),
@@ -699,13 +635,11 @@ pub(crate) enum CellFace<'a> {
 }
 
 impl<'a> CellFace<'a> {
-    /// The icon when there is one, else the label.
     pub(crate) fn new(icon: Option<Icon>, text: &'a str) -> Self {
         icon.map_or(Self::Label { text }, Self::Icon)
     }
 }
 
-/// Draw one key: an edged rounded cell with its icon or label.
 pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, state: CellState) {
     let CellState {
         hovered,
@@ -716,7 +650,6 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
     } = state;
     let theme = ctx.theme;
     let c = &theme.tokens.colors;
-    // Inset so adjacent cells have a visible gutter.
     let cell = rect.inset(-key_pad(rect));
     let radius = f64::from(theme.tokens.radii.control);
     if tone != CellTone::Flat {
@@ -744,8 +677,6 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
             let s = f64::from(theme.tokens.metrics.icon_md);
             let icon_rect = Rect::from_center_size(cell.center(), (s, s));
             if icon_filled {
-                // A latched state (e.g. Caps-Lock's Shift key) reads as a solid
-                // glyph, distinct from the outline of the momentary state.
                 icon.draw_filled(ctx.scene, ctx.transform, icon_rect, fg);
             } else {
                 icons::draw_icon(
@@ -761,9 +692,6 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
     }
 }
 
-/// One key of the terminal row, drawn as the keys below it are. A held Ctrl
-/// or Alt takes the inverted fill, as Shift does; a locked one also shows the
-/// lock icon beside or above its label.
 fn draw_row_key(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -782,8 +710,6 @@ fn draw_row_key(
         CellTone::Modifier
     };
     let locked = latch == Latch::Locked;
-    // A locked key lays the lock icon out with its label, so it is drawn
-    // here rather than as the cell's face.
     let face = if locked {
         CellFace::Label { text: "" }
     } else {
@@ -805,8 +731,6 @@ fn draw_row_key(
     }
 }
 
-/// The lock icon and the label of a locked modifier, side by side when the
-/// key is wide enough and stacked when it is not.
 fn draw_locked_label(ctx: &mut PaintCtx<'_>, cell: Rect, label: &str) {
     let ink = ctx.theme.tokens.colors.intent.on_accent;
     let icon = f64::from(ctx.theme.tokens.metrics.icon_sm);
@@ -863,8 +787,6 @@ fn draw_toolbar_item(
     Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
 }
 
-/// Draw one suggestion chip. The best (auto-inserted) pick is the lifted
-/// chip; the rest are quiet.
 fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, top: bool, hovered: bool) {
     let gap = f64::from(ctx.theme.tokens.spacing.s2);
     let height = ChipFace::height(ctx.theme);
@@ -872,8 +794,6 @@ fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, top: boo
     // as even keys whatever each word's length.
     let room = (rect.width() - 2.0 * gap).max(0.0);
     let chip = Rect::from_center_size(rect.center(), (room, height));
-    // The auto pick is the chip in the lifted tier, like a selected segment:
-    // an emphasis that carries no colour.
     ChipFace::new(chip, word)
         .selected(top)
         .hovered(hovered)

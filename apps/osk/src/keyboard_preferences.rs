@@ -6,28 +6,22 @@
 use super::{KeyboardSize, Language, OskWidget, Predictor};
 
 impl OskWidget {
-    /// Whether a finished word may be rewritten to a likely correction.
     pub fn autocorrect_enabled(&self) -> bool {
         self.autocorrect_enabled
     }
 
-    /// The chosen key height.
     pub fn key_size(&self) -> KeyboardSize {
         self.key_size
     }
 
-    /// The language the dictionary and autocorrection use.
     pub fn typing_language(&self) -> Language {
         self.language
     }
 
-    /// Correct finished words, or leave every word as typed, as the
-    /// autocorrect preference says. The suggestion bar is unaffected.
     pub fn set_autocorrect_enabled(&mut self, enabled: bool) {
         self.autocorrect_enabled = enabled;
     }
 
-    /// Set the key height. The preference changes no other app's density.
     pub fn set_key_size(&mut self, size: KeyboardSize) {
         if self.key_size == size {
             return;

@@ -26,8 +26,6 @@ use crate::service::{self, InputMethodChoice};
 use crate::session::{self, Said};
 use crate::{InputPurpose, OskWidget};
 
-/// The screenshot scenarios: a field of each kind the keyboard serves, the
-/// French layout, the emoji panel and a word being composed.
 pub(crate) const SCENARIOS: &[&str] = &[
     "terminal",
     "terminal-ctrl",
@@ -45,24 +43,17 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "parked",
 ];
 
-/// The on-screen keyboard over its preferences.
 pub struct OskSurface {
     keyboard: OskWidget,
     preferences: Option<(Setting<OskPreferences>, Option<OskPreferences>)>,
-    /// What the keyboard learned from this person, and the revision of it
-    /// the keyboard was last presented.
     learned: Option<(PersonRecord<Learned>, u64)>,
     vocabulary: Option<ui::personal_dictionary::Snapshot>,
     vocabulary_identity: (Option<[u8; 32]>, u64),
-    /// Focus changes the input method reports, while the keyboard serves the
-    /// session through one.
     focus: Option<service::FocusChanges>,
     /// What the session says the keyboard does, while it runs as an app of
     /// one: whether it belongs on screen, which the input method alone cannot
     /// say.
     said: Option<Said>,
-    /// The person put the keyboard away: the session heard it, and its reading of the moment still
-    /// says it shows until its next word arrives.
     dismissed: bool,
     context: Option<service::ContextChanges>,
     /// The scenario to stage on the next sync.
@@ -107,12 +98,10 @@ impl OskSurface {
         }
     }
 
-    /// The keyboard it shows.
     pub fn keyboard(&self) -> &OskWidget {
         &self.keyboard
     }
 
-    /// Store `edits` in the person's preferences.
     fn store(&mut self, edits: &[SetPreference]) -> Result<(), String> {
         if edits.is_empty() {
             return Ok(());
@@ -131,9 +120,6 @@ impl OskSurface {
         Ok(())
     }
 
-    /// Present the preferences when they changed here or on another of the
-    /// person's devices. Personalization turned off forgets what was learned
-    /// everywhere.
     fn present_preferences(&mut self) {
         let Some((setting, presented)) = &mut self.preferences else {
             return;
@@ -153,8 +139,6 @@ impl OskSurface {
         }
     }
 
-    /// Store the preference changes the keyboard made itself, and save what
-    /// typing taught it.
     fn submit_edits(&mut self) {
         let edits = self.keyboard.take_preference_edits();
         if let Err(error) = self.store(&edits) {
@@ -177,8 +161,6 @@ impl OskSurface {
         }
     }
 
-    /// Present what the keyboard learned when it changed here or on another
-    /// of the person's devices.
     fn present_learned(&mut self) {
         let Some((learned, presented)) = &mut self.learned else {
             return;
@@ -190,8 +172,6 @@ impl OskSurface {
         }
     }
 
-    /// Serve the session: take its input method, unless the launch said
-    /// otherwise, and type into the focused field.
     fn connect(&mut self, cx: &ViewCx<Osk>) {
         let choice = if cx.launch_flag(NO_INPUT_METHOD_FLAG) {
             InputMethodChoice::Off
@@ -203,8 +183,6 @@ impl OskSurface {
         self.said = session::follow(cx.waker());
         match service::connect(choice, cx.waker()) {
             Ok(connection) => {
-                // Driven by the input method, the keyboard waits hidden for
-                // a focused field.
                 if connection.focus.is_some() {
                     self.keyboard.set_visible(false);
                 }
@@ -250,8 +228,6 @@ impl Decorator for OskSurface {
                 self.keyboard.follow_input_method(transition);
             }
         }
-        // The person put the keyboard away: the session decides whether it belongs on screen, so
-        // it hears the press and stops saying it does.
         if self.keyboard.take_dismissed()
             && let Some(said) = &self.said
         {
@@ -263,8 +239,6 @@ impl Decorator for OskSurface {
         // field focused at all, and one the person is not typing on the glass
         // stays down even as a field takes the focus.
         if let Some(visible) = self.said.as_ref().and_then(Said::visible) {
-            // What the session said before the person put the keyboard away still says it shows:
-            // it comes back when the session's own next word says so.
             if visible || !self.dismissed {
                 self.keyboard.set_visible(visible);
             }
@@ -326,11 +300,8 @@ impl Decorator for OskSurface {
     }
 }
 
-/// A screenshot scenario to stage, `None` for a plain capture.
 struct Scenario(Option<String>);
 
-/// The keyboard window of `cx`'s view: it answers the preference effects
-/// and publishes the preferences as live rows.
 pub(crate) fn window(cx: &ViewCx<Osk>) -> Element {
     let mut window = OskSurface::new();
     window.attach(cx);
@@ -399,8 +370,6 @@ impl OskSurface {
         }
         match scenario {
             Some("emoji") => self.keyboard.open_emoji_panel(),
-            // A parked keyboard: the strip that brings the keys back, and the
-            // screen under it already the app's again.
             Some("parked") => self.keyboard.set_parked(true),
             Some("terminal-ctrl") => {
                 self.keyboard.set_purpose(InputPurpose::Terminal);

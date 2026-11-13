@@ -29,12 +29,8 @@ use crate::touch_model::NextKeyDistribution;
 pub(crate) const MAX_LEARNED_CONTEXTS: usize = 512;
 pub(crate) const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
 
-/// Weight of the previous word's bigram successors against the plain lexicon
-/// when estimating the next letter.
 const BIGRAM_NEXT_KEY_SHARE: f64 = 0.5;
 
-/// The embedded bigram table of `language`: `w1<TAB>w2<TAB>weight` per line,
-/// ~40k common pairs.
 fn bigrams_table(language: Language) -> &'static str {
     match language {
         Language::English => include_str!("../data/bigrams-en.txt"),
@@ -42,7 +38,6 @@ fn bigrams_table(language: Language) -> &'static str {
     }
 }
 
-/// Offline n-gram next-word predictor.
 #[derive(Clone, Debug)]
 pub struct Predictor {
     dict: Dictionary,
@@ -58,24 +53,18 @@ pub struct Predictor {
 }
 
 impl Predictor {
-    /// Build the predictor over the embedded dictionary + bigrams of
-    /// `language`.
     pub fn for_language(language: Language) -> Self {
         Self::from_data(Dictionary::for_language(language), bigrams_table(language))
     }
 
-    /// Build the predictor over the embedded English dictionary + bigrams.
     pub fn english() -> Self {
         Self::for_language(Language::English)
     }
 
-    /// Build the predictor over the embedded French dictionary + bigrams.
     pub fn french() -> Self {
         Self::for_language(Language::French)
     }
 
-    /// Build from a dictionary and a `w1<TAB>w2<TAB>weight` bigram table.
-    /// Exposed for tests / custom corpora.
     pub fn from_data(dict: Dictionary, bigram_data: &str) -> Self {
         let mut bigrams: HashMap<String, Vec<(String, u32)>> = HashMap::new();
         let mut max_bigram_weight = 1u32;
@@ -112,10 +101,6 @@ impl Predictor {
         &self.dict
     }
 
-    /// Split `word` after a leading elision (`l'homme` -> `l'`, `homme`;
-    /// `l'` -> `l'`, empty) unless the whole starts a word of its own, as
-    /// `aujourd'hui` does. Elisions are the dictionary words that end in an
-    /// apostrophe.
     pub fn split_elision<'a>(&self, word: &'a str) -> Option<(&'a str, &'a str)> {
         let at = word.find('\'')? + 1;
         let (elision, rest) = word.split_at(at);
@@ -124,7 +109,6 @@ impl Predictor {
         .then_some((elision, rest))
     }
 
-    /// Number of distinct preceding-words with bigram successors.
     pub fn bigram_contexts(&self) -> usize {
         self.bigrams.len()
     }
@@ -143,9 +127,6 @@ impl Predictor {
         Some((previous.map(str::to_lowercase).unwrap_or_default(), word))
     }
 
-    /// Teach the predictor one committed transition. Repetition increases its
-    /// rank with a saturating counter, entirely offline. Returns what it
-    /// learned, if anything.
     pub fn learn_transition(
         &mut self,
         previous: Option<&str>,
@@ -171,8 +152,6 @@ impl Predictor {
         Some(learned)
     }
 
-    /// Take `learned` (context → word → count) as what this user taught the
-    /// predictor, replacing what it learned before.
     pub fn adopt_learned<'a>(
         &mut self,
         learned: impl IntoIterator<
@@ -198,15 +177,11 @@ impl Predictor {
             .collect();
     }
 
-    /// Whether this user has committed `word` before (in any context).
     pub fn has_learned(&self, word: &str) -> bool {
         let word = word.to_lowercase();
         self.learned.values().any(|words| words.contains_key(&word))
     }
 
-    /// Forget all on-device adaptation immediately. The embedded dictionary
-    /// and bundled bigram model remain available, but no typed words stay in
-    /// this process after a privacy reset.
     pub fn clear_learned(&mut self) {
         self.learned.clear();
     }
@@ -217,10 +192,6 @@ impl Predictor {
         self.learned.len()
     }
 
-    /// How likely each letter is to be typed next, given the in-progress
-    /// `prefix` and the previous committed word. The lexicon (every word
-    /// extending `prefix`, weighted by frequency) is blended with the bigram
-    /// successors of `prev_word` that extend `prefix`, when there are any.
     pub fn next_key_distribution(
         &self,
         prev_word: Option<&str>,
@@ -246,23 +217,10 @@ impl Predictor {
         lexicon.blend(&context, BIGRAM_NEXT_KEY_SHARE)
     }
 
-    /// Predict the next/completion words, ranked best-first, as
-    /// `(word, score)` with `score` in roughly `0.0..=1.0`.
-    ///
-    /// * `prev_word` — the word just committed, if any (lower-cased internally).
-    /// * `prefix` — the in-progress word fragment (may be empty).
-    ///
-    /// Scoring blends three signals:
-    /// * **bigram** — P(word | `prev_word`) from the bigram table (dominant when
-    ///   present),
-    /// * **prefix** — does the candidate start with `prefix` (required when
-    ///   `prefix` is non-empty),
-    /// * **frequency** — the unigram prior.
     pub fn predict_next(&self, prev_word: Option<&str>, prefix: &str) -> Vec<(String, f32)> {
         self.predict_next_n(prev_word, prefix, 8)
     }
 
-    /// As [`predict_next`](Self::predict_next) but with an explicit cap.
     pub fn predict_next_n(
         &self,
         prev_word: Option<&str>,
@@ -283,7 +241,6 @@ impl Predictor {
         }
         let prev = prev_word.map(str::to_lowercase);
 
-        // Accumulate the best score per candidate word.
         let mut scores: HashMap<String, f32> = HashMap::new();
 
         // Personal history is the strongest signal after it has repeated, but
@@ -305,7 +262,6 @@ impl Predictor {
                     continue;
                 }
                 let bigram_score = *weight as f32 / self.max_bigram_weight as f32;
-                // Bigram is the strongest signal — weight it heavily.
                 let freq = self.dict.frequency(w2);
                 let s = 0.7 * bigram_score + 0.3 * freq;
                 upsert_max(&mut scores, w2, s);
@@ -324,7 +280,6 @@ impl Predictor {
                 upsert_max(&mut scores, &entry.word, s);
             }
         } else if prev.is_none() || !self.bigrams.contains_key(prev.as_deref().unwrap_or("")) {
-            // Cold start: no context, no prefix → most common words.
             for entry in self.dict.words().iter().take(n * 2) {
                 let freq = self.dict.frequency(&entry.word);
                 upsert_max(&mut scores, &entry.word, 0.3 * freq);
@@ -380,7 +335,6 @@ mod tests {
             let p = small();
             let preds = p.predict_next(Some("good"), "");
             let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-            // "morning" and "luck" are good's bigram successors and should lead.
             assert_eq!(words[0], "morning", "got {words:?}");
             assert!(words.contains(&"luck"));
         }
@@ -388,7 +342,6 @@ mod tests {
         eprintln!("phase embedded_real_bigram_predicts_sensibly");
         {
             let p = Predictor::english();
-            // "of" -> "the" is the single most common English bigram.
             let preds = p.predict_next(Some("of"), "");
             assert!(!preds.is_empty());
             let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
@@ -435,8 +388,6 @@ mod tests {
         eprintln!("phase bigram_plus_prefix_filters_to_matching_successor");
         {
             let p = small();
-            // After "good", typing "m" should surface "morning" (the matching
-            // bigram successor), not "luck".
             let preds = p.predict_next(Some("good"), "m");
             let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
             assert_eq!(words[0], "morning", "got {words:?}");
@@ -454,7 +405,6 @@ mod tests {
         eprintln!("phase unknown_context_falls_back_to_prefix_or_common");
         {
             let p = small();
-            // No bigram for "xyzzy"; with a prefix we still complete.
             let preds = p.predict_next(Some("xyzzy"), "ar");
             let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
             assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
@@ -464,13 +414,10 @@ mod tests {
         eprintln!("phase next_key_distribution_blends_lexicon_with_bigram_context");
         {
             let p = small();
-            // Lexicon alone: "mo" continues as "more" (r), "morning" (r), "mood" (o).
             let plain = p.next_key_distribution(None, "mo");
             assert!(plain.prob('r') > plain.prob('o'));
-            // After "good" only "morning" follows, reinforcing 'r' further.
             let ctx = p.next_key_distribution(Some("good"), "mo");
             assert!(ctx.prob('r') > plain.prob('r'));
-            // A prefix nothing extends carries no context at all.
             assert!(p.next_key_distribution(None, "zzq").is_uniform());
         }
     }
@@ -508,7 +455,6 @@ mod tests {
                 Some("bonjour"),
                 "{bonj:?}"
             );
-            // No accented keys: the unaccented spelling reaches the word.
             let tres = p.predict_next(None, "tres");
             assert_eq!(
                 tres.first().map(|(w, _)| w.as_str()),
