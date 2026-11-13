@@ -5,8 +5,8 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Patch, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        AmStore, EngineKind, InvokeOutcome, PackageId, Patch, ResourceRef, Runtime,
+        SimpleAuthority, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = r#"app so.tilo.rows "Rows"
@@ -223,6 +223,8 @@ view tinted_row(item: Item, tint: Text) {
     struct Rows {
         rt: Runtime,
         app: App,
+        /// The app's module, as the engine names it.
+        module: PackageId,
         bag: ResourceRef,
         items: Vec<ResourceRef>,
     }
@@ -231,11 +233,12 @@ view tinted_row(item: Item, tint: Text) {
         fn new(n: usize) -> Self {
             let app = App::compile(SOURCE, &[]);
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-            app.load(&rt);
+            let module = app.load(&rt);
             let bag = rt.create("Bag").unwrap();
             let mut rows = Self {
                 rt,
                 app,
+                module,
                 bag,
                 items: Vec::new(),
             };
@@ -495,6 +498,113 @@ view deck(d: Deck) {
                 "{n} items"
             );
         }
+    }
+
+    /// A handle names its frame by a serial, and serials wrap at 2048 (`handles.rs`). A view
+    /// open through more invocations than there are serials keeps following its items: every
+    /// change is its row's run and no other's, on whichever serial the action's frame and the
+    /// row's fall. The one read between the halves moves which of the two a serial falls to.
+    #[test]
+    fn a_view_follows_its_items_through_more_invocations_than_frame_serials() {
+        const HALF: usize = 1_050;
+        let rows = Rows::new(2);
+        let mut view = rows.view("eager");
+        let mut renders = view.stats().renders;
+        for round in 0..2 * HALF {
+            if round == HALF {
+                let InvokeOutcome::Done(Value::Int(open)) =
+                    rows.call("open_count", vec![Value::resource(&rows.bag)])
+                else {
+                    panic!("a count");
+                };
+                assert_eq!(open, 2);
+            }
+            let at = round % 2;
+            let title = format!("round {round}");
+            rows.retitle(at, &title);
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().renders - renders,
+                1,
+                "round {round}: only the retitled item's row ran"
+            );
+            renders = view.stats().renders;
+            assert!(
+                matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
+                "round {round}: {patches:?}"
+            );
+            assert_eq!(texts(view.tree())[at], title, "round {round}");
+        }
+        assert_eq!(view.stats().boundaries, 3, "the view and its two rows");
+    }
+
+    /// The tiered engine starts a module on wasmi and moves it to compiled code between calls,
+    /// once its compile ended. A view opened before that follows its collection the same after
+    /// it, and a view opened after it is the same view: an insert is one row, and a list builds
+    /// the row it is asked for and no other.
+    #[test]
+    fn a_views_rows_follow_their_collection_once_the_module_runs_compiled() {
+        let rows = Rows::new(30);
+        let engine = rows.rt.engine();
+        let mut view = rows.view("handed");
+        let opened = view.stats();
+        assert_eq!(
+            opened.boundaries, 32,
+            "the view, the one it hands to, a row per item"
+        );
+
+        // The compile ended: the next call into the module moves it to its compiled code.
+        engine.settle_compile(&rows.module);
+        let built = rows.rt.items_built();
+        rows.call(
+            "add",
+            vec![Value::resource(&rows.bag), Value::text("one more")],
+        );
+        let compiled = if engine.kind() == EngineKind::Tiered {
+            EngineKind::Cranelift
+        } else {
+            engine.kind()
+        };
+        assert_eq!(
+            engine.tier(&rows.module),
+            Some(compiled),
+            "{:?}",
+            engine.compile_failure(&rows.module)
+        );
+        let patches = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders - opened.renders,
+            1,
+            "only the new item's row ran: neither view holding the collection did"
+        );
+        assert!(
+            rows.rt.items_built() - built <= 2,
+            "the collection was not read whole: {} items built",
+            rows.rt.items_built() - built
+        );
+        assert!(
+            matches!(patches.as_slice(), [Patch::Insert { index: 30, .. }]),
+            "{patches:?}"
+        );
+        assert_eq!(
+            texts(view.tree()).last().map(String::as_str),
+            Some("one more")
+        );
+
+        // A view opened on compiled code: no row before it is shown, then the one shown.
+        let mut lazy = rows.view("lazy");
+        let list = list_key(&lazy);
+        assert_eq!(lazy.list_len(&list), Some(31));
+        let unshown = lazy.stats();
+        assert_eq!(unshown.renders, 1, "no row ran before it was shown");
+        assert_eq!(unshown.boundaries, 1, "{unshown:?}");
+        assert_eq!(titles(lazy.row(&list, 0).unwrap().unwrap()), ["item 0"]);
+        assert_eq!(lazy.stats().renders, 2);
+        rows.retitle(0, "null");
+        let patches = lazy.poll_patches().unwrap();
+        assert_eq!(patches.len(), 1, "{patches:?}");
+        assert_eq!(lazy.stats().renders, 3);
+        assert_eq!(titles(lazy.row(&list, 0).unwrap().unwrap()), ["null"]);
     }
 
     #[test]
