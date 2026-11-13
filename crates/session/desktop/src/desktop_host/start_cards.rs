@@ -20,7 +20,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::{DesktopAsk, desk_is_empty, fill};
-use crate::launchpad::{CollaborationLaunchpad, LaunchpadPress};
+use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadPress};
 use ui::widget::DrawChild;
 
 /// Where one display shows the start cards: which display it belongs to,
@@ -70,6 +70,9 @@ pub(super) struct PadWant {
 pub(super) struct EmptyWorkspace {
     /// What each pad is made from: the words and scope the host gave it.
     pub(super) template: CollaborationLaunchpad,
+    /// The cards the desk offers now: the verbs whose apps this host has. Read every pass, so an
+    /// app installed or removed while the desk stands adds or takes away its card.
+    pub(super) cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
     pub(super) pads: Vec<DisplayPad>,
     /// Whether the pads were rebuilt, so the desk's layout has to follow.
     pub(super) rebuilt: bool,
@@ -129,13 +132,22 @@ impl EmptyWorkspace {
 
 impl Widget for EmptyWorkspace {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // The cards follow the apps the host has: an app installed or removed here changes what
+        // every display's desk offers.
+        let cards = (self.cards)();
+        let mut changed = cards != self.template.cards();
+        if changed {
+            for pad in &mut self.pads {
+                pad.launchpad.set_cards(cards.clone());
+            }
+            self.template.set_cards(cards);
+        }
         let wants = self.handle.read(Self::wants);
         let same_displays = wants.len() == self.pads.len()
             && wants
                 .iter()
                 .zip(&self.pads)
                 .all(|(want, pad)| want.display == pad.display);
-        let mut changed = false;
         if !same_displays {
             self.pads = wants
                 .iter()

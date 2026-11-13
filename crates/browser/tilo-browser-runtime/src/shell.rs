@@ -683,6 +683,16 @@ impl BrowserShell {
             Box::new(surface),
             handle.clone(),
             launchpad,
+            // The page offers the verbs whose apps it carries: a card for an
+            // app this page does not have would open nothing.
+            Rc::new(|| {
+                LaunchpadAction::ALL
+                    .into_iter()
+                    .filter(|card| {
+                        card.offered(|app| crate::desktop::known_application(app).is_some())
+                    })
+                    .collect()
+            }),
             // The page has no widget layer of its own under the desk, so the
             // layer keeps the asks to itself; `follow_asks` reads them back.
             Rc::default(),

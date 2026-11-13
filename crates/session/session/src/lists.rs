@@ -171,6 +171,13 @@ impl AppLists {
         }
     }
 
+    /// Whether the Tilo app `app` is installed here: what the desk offers a card for, and what
+    /// search lists under the app's own name.
+    #[must_use]
+    pub fn has_app(&self, app: &str) -> bool {
+        self.applications.iter().any(|listed| listed.id == app)
+    }
+
     /// The directories [`Self::read`] reads, whose entries change with what it would find.
     #[must_use]
     pub fn directories() -> Vec<PathBuf> {

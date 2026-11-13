@@ -25,7 +25,8 @@ use tilo_actions::{DoorError, ResourceSpec};
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_desktop::desk_verbs::{
-    CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, launchpad_card_id,
+    CHROME_RESOURCE, DESK_RESOURCE, LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND,
+    launchpad_card_id,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
@@ -118,6 +119,28 @@ fn session_over(
             records,
             ..SearchOptions::default()
         },
+        apps: Some(host),
+        collab: false,
+        ..Options::default()
+    })
+}
+
+/// A session on a device that has `apps` installed, by the id and the name this device lists them
+/// under: what the desk offers a card for, and what search lists as an app.
+fn session_installing(host: Rc<Host>, apps: &[(&str, &str)]) -> Session {
+    crate::common::headless(Options {
+        lists: Lists::fixed(AppLists {
+            applications: apps
+                .iter()
+                .map(|(id, title)| AppEntry {
+                    id: (*id).into(),
+                    title: (*title).into(),
+                    category: None,
+                    description: None,
+                })
+                .collect(),
+            ..AppLists::default()
+        }),
         apps: Some(host),
         collab: false,
         ..Options::default()
@@ -536,7 +559,7 @@ fn a_welcome_card_does_what_its_published_action_does() {
 
     let _settled = ui::motion::testing::settled();
     let host = Rc::new(Host::default());
-    let mut session = session(Rc::clone(&host));
+    let mut session = session_installing(Rc::clone(&host), &[("so.tilo.chat", "Chat")]);
     session.step(Duration::from_millis(1)).expect("step");
 
     // The verb published for agents: Meet's own card, by the resource action the catalogue lists.
@@ -621,13 +644,13 @@ fn desk_apps(session: &Session) -> Vec<String> {
 /// to-dos. Each card gets a desk of its own, because the launchpad stands only while no window does.
 #[test]
 fn an_app_card_opens_the_app_it_names() {
-    for (verb, app) in [
-        ("chat", "so.tilo.chat"),
-        ("notes", "so.tilo.notes"),
-        ("tasks", "so.tilo.tasks"),
+    for (verb, app, name) in [
+        ("chat", "so.tilo.chat", "Chat"),
+        ("notes", "so.tilo.notes", "Notes"),
+        ("tasks", "so.tilo.tasks", "Tasks"),
     ] {
         let _settled = ui::motion::testing::settled();
-        let mut session = session(Rc::new(Host::default()));
+        let mut session = session_installing(Rc::new(Host::default()), &[(app, name)]);
         session.step(Duration::from_millis(1)).expect("step");
         invoke(
             &mut session,
@@ -644,6 +667,115 @@ fn an_app_card_opens_the_app_it_names() {
             "the {verb} card opens {app} and nothing else"
         );
     }
+}
+
+/// The desk offers the apps this device has and no others: with only the tilolang Tasks package
+/// installed, there is no Tasks card to open the native app that is not here — the desk carries
+/// Tasks because it is installed, search lists it by its name, and choosing it puts it on the desk.
+/// The verb of the app that is not installed opens nothing, neither a window nor a card.
+#[test]
+fn the_desk_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is_not() {
+    const TASKS: &str = "so.tilo.lang.tasks";
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = session_installing(Rc::clone(&host), &[(TASKS, "Tasks")]);
+    session.step(Duration::from_millis(1)).expect("step");
+
+    // The cards the desk draws, the rows search lists and the verbs agents read are published for
+    // the apps this device has: the native Tasks is not here, so its card is not offered, and the
+    // desk's own two verbs are.
+    let published: Vec<String> = session
+        .handle()
+        .host_actions()
+        .into_iter()
+        .map(|action| action.id)
+        .collect();
+    for card in [
+        "launchpad-chat",
+        "launchpad-notes",
+        "launchpad-tasks",
+        "launchpad-meet",
+    ] {
+        assert!(
+            !published.iter().any(|id| id == card),
+            "no card for an app this device has not got, let alone {card}: {published:?}"
+        );
+    }
+    for card in ["launchpad-invite", "launchpad-activity"] {
+        assert!(
+            published.iter().any(|id| id == card),
+            "the desk's own verb {card} stands: {published:?}"
+        );
+    }
+    // The desk draws the cards it publishes, and no other: the launchpad's own rows are the ones
+    // the person and a script can press.
+    let cards: Vec<String> = session
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == LAUNCHPAD_RESOURCE)
+        .expect("the empty desk shows its launchpad")
+        .children
+        .into_iter()
+        .map(|row| row.id.as_str().to_owned())
+        .collect();
+    assert!(
+        !cards.contains(&launchpad_card_id("tasks")),
+        "the desk offers no Tasks card while this device has no native Tasks app: {cards:?}"
+    );
+
+    // The verb itself is gone with the card: a script or an agent invoking it by the resource the
+    // desk publishes is refused, and no window of an app that is not here stands on the desk.
+    assert!(
+        session
+            .invoke(
+                &launchpad_card_id("tasks"),
+                "launchpad",
+                &serde_json::Map::new(),
+            )
+            .is_err(),
+        "the desk offers no verb for an app this device has not got"
+    );
+    session.step(Duration::from_millis(1)).expect("step");
+    assert_eq!(
+        desk_apps(&session),
+        Vec::<String>::new(),
+        "no window of an app this device has not got"
+    );
+
+    // Tasks is here, under the name of the package that provides it: search lists it, and choosing
+    // it puts Tasks on the desk.
+    search_for(&mut session, "tasks");
+    let tasks = row(&session, "Tasks").unwrap_or_else(|| {
+        panic!(
+            "the desk lists the Tasks it has: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        tasks.label, "Tasks",
+        "the app names itself as the person reads it"
+    );
+    // Choosing it opens that app: the workspace's own address for the package that has it.
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("a workspace")
+    });
+    invoke(
+        &mut session,
+        tasks.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    assert_eq!(
+        host.invoked.borrow()[0].0,
+        application_open_target(&workspace, TASKS),
+        "the Tasks this device has opens, and nothing of an app it has not"
+    );
 }
 
 #[test]

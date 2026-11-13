@@ -49,7 +49,7 @@ fn published() -> Vec<ResourceSpec> {
                 searching: false,
             }),
         ),
-        launchpad_resource(),
+        launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL),
     ]
 }
 
@@ -162,7 +162,7 @@ fn the_launchpad_cards_are_its_controls_for_scripts() {
     // invokes the same verb by the row this resource publishes. People reach the verbs through
     // their host actions, which is what the palette lists, so this resource is never the palette's
     // door.
-    let launchpad = launchpad_resource();
+    let launchpad = launchpad_resource(&tilo_desktop::launchpad::LaunchpadAction::ALL);
     assert!(
         !launchpad.children.is_empty(),
         "the launchpad has its cards"

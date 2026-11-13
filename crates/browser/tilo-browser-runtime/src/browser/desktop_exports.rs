@@ -78,9 +78,13 @@ pub fn desktop_input_ownership(id: u64) -> Result<Option<String>, JsValue> {
 pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
     let mut actions: Vec<tilo_desktop_surface::HostAction> =
         serde_json::from_str(actions).map_err(error)?;
-    actions.extend(tilo_desktop::launchpad::LaunchpadAction::host_actions(
-        tilo_desktop::launchpad::WorkspaceScope::default(),
-    ));
+    // The page's welcome verbs are the cards it draws: the ones whose apps this page carries.
+    actions.extend(
+        tilo_desktop::launchpad::LaunchpadAction::ALL
+            .into_iter()
+            .filter(|card| card.offered(|app| crate::desktop::known_application(app).is_some()))
+            .map(|card| card.host_action(tilo_desktop::launchpad::WorkspaceScope::default())),
+    );
     with_mount(id, |m| {
         let desktop = m
             .desktop

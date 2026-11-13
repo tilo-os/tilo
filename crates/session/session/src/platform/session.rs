@@ -938,6 +938,7 @@ impl Session {
             crate::sheets::mount::power_offers(&options),
             directory.is_some(),
             feedback.is_some(),
+            &options.lists,
         );
 
         // The one worker that encodes a recording and writes every capture's
@@ -1394,6 +1395,8 @@ impl Session {
             earlier: seat.earlier,
             search,
             launch: options.launch,
+            #[cfg(target_os = "linux")]
+            lists: options.lists.clone(),
             apps: action_apps,
             restore: RefCell::new(restore),
             drives: options.drives,

@@ -35,6 +35,26 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
     ),
 ];
 
+/// The empty desk's cards this device offers: a verb that opens an app stands only where the app is
+/// installed here, which is the app catalogue the desk's search lists it from. The desk draws these
+/// cards, publishes a row for each to agents, and search lists them; a verb whose app is not here
+/// is no card, no row and no search entry.
+#[cfg(target_os = "linux")]
+pub(crate) fn cards(lists: &crate::lists::Lists) -> Vec<LaunchpadAction> {
+    let listed = lists.latest();
+    LaunchpadAction::ALL
+        .into_iter()
+        .filter(|card| card.offered(|app| listed.has_app(app)))
+        .collect()
+}
+
+/// Whether this device offers `card`: its app is installed here, or the verb happens on the desk
+/// itself.
+#[cfg(target_os = "linux")]
+pub(crate) fn offers(lists: &crate::lists::Lists, card: LaunchpadAction) -> bool {
+    card.offered(|app| lists.latest().has_app(app))
+}
+
 /// Offer the session's host actions: the workspace rows always, the empty desk's welcome verbs, and
 /// the session's own rows where this session can carry them out — a session in a window of another
 /// desktop neither restarts nor shuts its host down, and one that cannot be unlocked again is not
@@ -42,7 +62,13 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
 /// `can_join` is whether a workspace can be joined here at all, which is whether this session holds
 /// the directory a workspace is joined from, and `can_report` is whether this computer is told
 /// where a report about Tilo itself goes.
-pub fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, can_report: bool) {
+pub fn publish(
+    handle: &DesktopHandle,
+    offers: Offers,
+    can_join: bool,
+    can_report: bool,
+    #[cfg(target_os = "linux")] lists: &crate::lists::Lists,
+) {
     let t = tilo_desktop_surface::i18n::t;
     let offer =
         |id: &str, title: &str, description: Option<&str>, icon: Icon, source: HostActionSource| {
@@ -107,8 +133,14 @@ pub fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, can_repor
         HostActionSource::Workspace,
     ));
     // The empty desk's welcome verbs, declared by the launchpad that shows them: the desk's cards,
-    // search and the catalogue agents read all read these rows.
-    actions.extend(LaunchpadAction::host_actions(WorkspaceScope::default()));
+    // search and the catalogue agents read all read these rows, and only the verbs whose app this
+    // device has are offered.
+    #[cfg(target_os = "linux")]
+    actions.extend(
+        cards(lists)
+            .into_iter()
+            .map(|card| card.host_action(WorkspaceScope::default())),
+    );
     // A report about Tilo itself goes where this computer is told, so a computer told nowhere is
     // offered no report.
     if can_report {

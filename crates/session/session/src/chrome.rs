@@ -868,8 +868,13 @@ pub(crate) fn host(
 impl crate::Shared {
     /// A verb of the empty desk's launchpad, as its card, its host action and its resource action
     /// all ask for it: the app action the verb declares, what only the session can do, and else the
-    /// app itself.
+    /// app itself. A verb whose app this device does not have opens nothing: the person is shown
+    /// the apps it does have, never a window of an app that is not here.
     pub(crate) fn launchpad(&self, action: LaunchpadAction) {
+        #[cfg(target_os = "linux")]
+        if !crate::host_actions::offers(&self.lists, action) {
+            return self.handle.open_search(Scope::WindowGroup(None), None);
+        }
         if let Some(app_action) = action.app_action() {
             return self.invoke_app_action(app_action);
         }

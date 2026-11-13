@@ -1382,7 +1382,24 @@ fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
 #[test]
 fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
+    // A device with the apps the empty desk's cards open: what its launchpad offers is drawn from
+    // the apps installed here.
+    let mut session = session_with_lists(tilo_session::AppLists {
+        applications: [
+            ("so.tilo.chat", "Chat"),
+            ("so.tilo.notes", "Notes"),
+            ("so.tilo.tasks", "Tasks"),
+        ]
+        .into_iter()
+        .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
+            id: id.into(),
+            title: title.into(),
+            category: None,
+            description: None,
+        })
+        .collect(),
+        ..tilo_session::AppLists::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     for card in [
         "chat", "notes", "tasks", "meet", "invite", "activity", "apps",
