@@ -834,6 +834,18 @@ impl App {
         (any, action_surface_may_have_changed)
     }
 
+    /// The lanes `route`'s record has its content on in this process: the
+    /// record's own, and each window's showing it
+    /// ([`ContentLane::on_route`](crate::collaboration::record_content::ContentLane::on_route)).
+    fn lanes_on_route(
+        route: &crate::collaboration::RouteSpec,
+    ) -> Vec<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
+        crate::collaboration::record_content::ContentLane::on_route(
+            &route.app_id,
+            route.record.as_deref().unwrap_or(""),
+        )
+    }
+
     /// Send what the window's record content store queued on the record's
     /// route: content it lacks, and content it stored for the record's
     /// other readers. See [`crate::collaboration::record_content`].
@@ -951,18 +963,17 @@ impl App {
                 self.respond_document_snapshot(&route);
             }
             CollabEvent::RecordContent { route, hash, bytes } => {
-                crate::collaboration::record_content::ContentLane::of(
-                    &route.app_id,
-                    route.record.as_deref().unwrap_or(""),
-                )
-                .arrive(hash, bytes);
+                // The record's content reaches every lane carrying it, the
+                // windows' own included: a window's store reads the lane it
+                // keeps, never the record's.
+                for lane in Self::lanes_on_route(&route) {
+                    lane.arrive(hash.clone(), bytes.clone());
+                }
             }
             CollabEvent::RecordContentState { route, hash, state } => {
-                crate::collaboration::record_content::ContentLane::of(
-                    &route.app_id,
-                    route.record.as_deref().unwrap_or(""),
-                )
-                .stands(hash, state);
+                for lane in Self::lanes_on_route(&route) {
+                    lane.stands(hash.clone(), state);
+                }
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
@@ -1315,103 +1326,14 @@ impl App {
     }
 
     /// Bypasses the collab manager's socket/poll path — for tests using a
-    /// `MemoryRelay`.
+    /// `MemoryRelay` — through the routing the window's loop applies every
+    /// event with ([`Self::apply_collab_presence_event`]).
     #[doc(hidden)]
-    // This test adapter deliberately mirrors the complete collaboration event
-    // match so lifecycle tests exercise the same routing as the runtime loop.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "test adapter mirrors complete collaboration event routing for lifecycle coverage"
-    )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
-        let _background = crate::local_document_action::suspend();
         let _entry = self.enter_wake_scope();
         let action_surface_may_have_changed = Self::collab_event_may_change_action_surface(&event);
         self.forward_session_notification(&event);
-        match event {
-            CollabEvent::LocalDocumentActionReported { request_id, result } => {
-                self.observe_local_input_capture(request_id, result);
-            }
-            CollabEvent::CommittedDocument { route, read } => {
-                self.queue_committed_document(route, read)
-            }
-            CollabEvent::RemotePresenceUpdate {
-                user_id,
-                key,
-                payload,
-            } => {
-                self.apply_remote_presence(user_id, key, payload);
-            }
-            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                self.presence_ctx
-                    .upsert_remote_cursor(user_id, [x, y], None);
-            }
-            CollabEvent::Document {
-                envelope,
-                decrypted_payload,
-                ..
-            } => {
-                self.collaboration
-                    .history
-                    .observe_live(envelope.artifact, envelope.seq);
-                self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
-                self.observe_primary_retirement();
-            }
-            CollabEvent::ScrollbackBatch {
-                artifact,
-                ops,
-                decrypted_payloads,
-                oldest_seq,
-                exhausted,
-            } => {
-                self.continue_document_history(artifact, oldest_seq, exhausted);
-                self.apply_document_scrollback(ops, &decrypted_payloads);
-            }
-            CollabEvent::FollowChanged { peer_id } => match peer_id {
-                Some(peer_id) => self.follow(peer_id),
-                None => self.unfollow(),
-            },
-            CollabEvent::Handoff { request } => self.apply_handoff(request),
-            CollabEvent::DocumentSnapshotRequested { route } => {
-                self.respond_document_snapshot(&route);
-            }
-            CollabEvent::Context {
-                collaborators,
-                apps,
-                ..
-            } => {
-                self.apply_collab_context(collaborators);
-                // What each app installed here is called: the same feed names the people in it.
-                crate::history_source::set_installed_apps(apps);
-            }
-            CollabEvent::HistoryAgents { cluster_id, agents } => {
-                crate::history_source::set_workspace_agents(&cluster_id, agents);
-            }
-            CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
-            CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
-            CollabEvent::Invocation {
-                invocation,
-                id,
-                resource,
-                action,
-                argument,
-                actor,
-                context,
-            } => self.invoke_published_action(
-                id,
-                invocation,
-                resource,
-                action,
-                argument.as_deref(),
-                &actor,
-                context.as_deref(),
-            ),
-            CollabEvent::InvocationCancellation { id } => {
-                self.request_invocation_cancellation(id);
-            }
-            CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
-            _ => {}
-        }
+        self.apply_collab_presence_event(event);
         self.invalidate_widget_resource_cache();
         if action_surface_may_have_changed {
             self.publish_action_surface();

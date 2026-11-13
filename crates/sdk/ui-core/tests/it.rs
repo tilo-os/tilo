@@ -123,6 +123,8 @@ mod real_socket_n_peer;
 #[cfg(unix)]
 #[path = "real_socket_two_peer.rs"]
 mod real_socket_two_peer;
+#[path = "record_content_route.rs"]
+mod record_content_route;
 #[path = "remote_cursor_presence.rs"]
 mod remote_cursor_presence;
 #[path = "resize_reflow_test.rs"]
