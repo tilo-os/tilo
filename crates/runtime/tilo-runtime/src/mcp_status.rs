@@ -6,6 +6,7 @@
 
 use super::{ActionHost, McpServer, Reply, answer_of, invocation_id, link, outcome};
 use serde::Deserialize;
+use std::fmt::Write as _;
 use tilo_lock::MutexRecover as _;
 
 /// What `tilo_status` takes.
@@ -73,7 +74,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 } else {
                     &run.path
                 };
-                text.push_str(&format!("\n{} {path} {}", run.invocation, run.phase));
+                let _ = write!(text, "\n{} {path} {}", run.invocation, run.phase);
             }
             text
         };
