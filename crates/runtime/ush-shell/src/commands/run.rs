@@ -35,8 +35,6 @@ pub fn lookup(name: &str) -> Option<Command> {
     })
 }
 
-/// The signals `timeout -s` and `--preserve-status` know, by name and
-/// number, as Linux numbers them.
 const SIGNALS: &[(&str, i32)] = &[
     ("HUP", 1),
     ("INT", 2),
@@ -230,7 +228,6 @@ fn nice(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     ctx.dispatch.run(rest, ctx.cwd, ctx.io)
 }
 
-/// `nohup COMMAND [ARG]...`
 fn nohup(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     let command = match args.split_first() {
         Some((first, tail)) if first == "--" => tail,

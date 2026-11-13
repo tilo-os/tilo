@@ -44,7 +44,6 @@ struct Ran {
 }
 
 impl Ran {
-    /// The command lines Terminal was told ran, in order.
     fn runs(&self) -> Vec<String> {
         marked(&self.out, "C")
             .into_iter()
@@ -58,7 +57,6 @@ impl Ran {
             .collect()
     }
 
-    /// What was printed, marks taken out.
     fn printed(&self) -> String {
         let mut pieces = self.out.split("\x1b]133;");
         let mut out = pieces.next().unwrap_or_default().to_owned();
@@ -69,7 +67,6 @@ impl Ran {
     }
 }
 
-/// The marks of kind `kind` in `out`, each as its fields.
 fn marked(out: &str, kind: &str) -> Vec<Vec<(String, String)>> {
     let start = format!("{kind};");
     out.split("\x1b]133;")
@@ -87,7 +84,6 @@ fn marked(out: &str, kind: &str) -> Vec<Vec<(String, String)>> {
         .collect()
 }
 
-/// An interactive session on `host` reading `keys` until they run out.
 fn typed_on(host: &MemoryHost, keys: &str) -> Ran {
     let (stdout, out) = Output::buffer();
     let (stderr, err) = Output::buffer();
@@ -143,8 +139,6 @@ fn emacs_keys_edit_the_line_before_it_runs() {
         ran.err
     );
     assert!(ran.printed().contains("hi there"), "{:?}", ran.printed());
-    // Switched on and off once to see there is a terminal, then for each
-    // of the eight lines and the end of the input.
     assert_eq!(
         host.editing(),
         (false, 20),
@@ -232,8 +226,6 @@ fn history_lists_the_persons_lines_numbered_oldest_first() {
     assert!(ran.err.contains("only reads it"), "{}", ran.err);
 }
 
-/// The input side of a session whose terminal answers the editor's history
-/// questions the way Terminal does.
 struct Keys(Receiver<Vec<u8>>, VecDeque<u8>);
 
 impl Read for Keys {
@@ -256,8 +248,6 @@ impl Read for Keys {
     }
 }
 
-/// The screen side: it answers each history question from `history`
-/// (newest first) on the input, two lines at a time, as Terminal pages.
 struct Answering {
     seen: Arc<Mutex<Vec<u8>>>,
     history: Vec<String>,
@@ -330,8 +320,6 @@ fn without_a_history_of_its_own_the_host_lets_terminal_answer() {
             runs_key: Some(KEY.into()),
         });
     });
-    // Up three times, past the first page of two; then Enter at once,
-    // before the answer: the line waits for it.
     keys_tx.send(b"\x1b[A\x1b[A\x1b[A\r".to_vec()).unwrap();
     keys_tx.send(b"\x12b\r".to_vec()).unwrap();
     keys_tx.send(b"exit\r".to_vec()).unwrap();
@@ -388,7 +376,6 @@ fn tab_completes_commands_paths_variables_and_lists_on_a_second_tab() {
     );
 }
 
-/// Run `script` (not interactively) on `host`, answering what it printed.
 fn script_on(host: &MemoryHost, script: &str) -> (String, String, i32) {
     let (stdout, out) = Output::buffer();
     let (stderr, err) = Output::buffer();
@@ -442,8 +429,6 @@ fn kill_ends_a_job_and_fg_waits_for_one() {
     assert!(lines.get(2).is_some_and(|pid| pid.parse::<u32>().is_ok()));
 }
 
-/// A host whose one program, `serve`, runs until the shell ends it, and
-/// which records the signals the shell's job control sent it.
 #[derive(Clone)]
 struct Guest {
     files: MemoryHost,
@@ -500,7 +485,6 @@ impl Host for Guest {
                 Ok(Signal::Terminate | Signal::Kill | Signal::Interrupt) | Err(_) => {
                     return Program::Exited(143);
                 }
-                // A stop the shell took back before it was seen is no stop.
                 Ok(Signal::Stop) => match rx.try_recv() {
                     Ok(Signal::Continue) => {}
                     Ok(Signal::Terminate | Signal::Kill | Signal::Interrupt) => {
@@ -637,7 +621,6 @@ fn a_run_an_agent_asked_for_gets_the_agent_rendering() {
         "{:?}",
         agent.printed()
     );
-    // A forged request, without the key, is not run.
     let forged = typed_on(&host, &asked(true).replace(KEY, "forged"));
     assert!(forged.runs().is_empty());
 }

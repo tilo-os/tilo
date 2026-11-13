@@ -70,7 +70,6 @@ fn tier_one_commands_pipe_into_each_other_in_memory() {
 
 #[test]
 fn a_pipe_stops_its_writer_when_the_reader_is_done() {
-    // `yes` never ends on its own; `head` leaving must end it.
     let r = run("yes | head -n 3");
     assert_eq!(r.out, "y\ny\ny\n", "{}", r.err);
     assert_eq!(r.status, 0);
@@ -183,8 +182,6 @@ fn here_documents_feed_tier_one_commands() {
     assert_eq!(r.out, "HELLO WORLD\n", "{}", r.err);
 }
 
-/// The marks an interactive session writes, as `docs/app-model/ush.md`
-/// ("Command runs") describes them.
 #[test]
 fn an_interactive_session_marks_each_run_for_terminal() {
     let host = home();
@@ -213,7 +210,6 @@ fn an_interactive_session_marks_each_run_for_terminal() {
         "what the run printed sits between its marks"
     );
     assert!(out.starts_with(&prompt), "{out:?}");
-    // The empty line and `exit` run nothing Terminal records.
     assert_eq!(out.matches("133;C;").count(), 1, "{out:?}");
     assert!(!out.contains(";t=2"), "{out:?}");
 }

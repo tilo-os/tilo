@@ -27,17 +27,13 @@ use crate::io::{Input, Stdio};
 /// default, so batches split where GNU's would.
 const BATCH_BYTES: usize = super::xargs::DEFAULT_SIZE;
 
-/// A command `-exec`, `-execdir`, `-ok` or `-okdir` runs.
 #[derive(Debug)]
 struct Exec {
     /// The command line; `{}` in it is the name. Under `+`, without the
     /// final `{}`, which the batch's names take the place of.
     argv: Vec<String>,
-    /// `+`: names are collected and run in batches.
     batch: bool,
-    /// `-execdir`/`-okdir`: run in the name's directory, as `./name`.
     in_dir: bool,
-    /// `-ok`/`-okdir`: ask first.
     ask: bool,
     pending: Vec<String>,
     pending_dir: Option<PathBuf>,
@@ -70,7 +66,6 @@ enum Expr {
     Print0,
     Prune,
     Quit,
-    /// The command of this index in the walk's list.
     Exec(usize),
     Delete,
 }
@@ -88,7 +83,6 @@ impl Expr {
     }
 }
 
-/// Why parsing the expression failed: already reported, with this status.
 struct Bad(i32);
 
 struct Parser<'c, 'a> {
@@ -288,7 +282,6 @@ impl Parser<'_, '_> {
 }
 
 impl Parser<'_, '_> {
-    /// The command of `-exec` and its kind, up to its `;` (or its `{} +`).
     fn exec(&mut self, token: &str) -> Result<Expr, Bad> {
         let ask = token.starts_with("-ok");
         let mut argv = Vec::new();
@@ -335,11 +328,9 @@ struct Walk<'c, 'a> {
     status: i32,
     quit: bool,
     execs: Vec<Exec>,
-    /// What `-print` printed, for an agent: rendered at the end.
     names: Option<Names>,
 }
 
-/// What the expression is evaluated against.
 struct Node<'p> {
     shown: &'p str,
     path: &'p Path,
@@ -636,7 +627,6 @@ impl Walk<'_, '_> {
         Ok(self.ran(status)? == 0)
     }
 
-    /// Run what `-exec … {} +` has collected for command `i`.
     fn flush(&mut self, i: usize) -> Result<(), Stop> {
         let ctx = self.ctx;
         let Some(spec) = self.execs.get_mut(i) else {

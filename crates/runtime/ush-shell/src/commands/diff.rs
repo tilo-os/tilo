@@ -39,7 +39,6 @@ struct Opts {
     labels: Vec<String>,
 }
 
-/// One input: its name as given, its label, its time and its lines.
 struct Side {
     name: String,
     modified: i64,
@@ -200,7 +199,6 @@ fn read_side(ctx: &Ctx<'_>, name: &str) -> std::io::Result<Side> {
     })
 }
 
-/// What a line is compared as, after `-i`, `-b` and `-w`.
 fn key(o: &Opts, line: &[u8]) -> Vec<u8> {
     let (body, newline) = match line.strip_suffix(b"\n") {
         Some(b) => (b, true),
@@ -393,7 +391,6 @@ impl Hunk<'_> {
     }
 }
 
-/// The hunks of a unified diff with `context` lines around each change.
 fn hunks<'l>(
     changes: &[Change],
     la: &[&'l [u8]],
@@ -467,7 +464,6 @@ fn unified(
     Ok(())
 }
 
-/// The runs of lines that differ between `a` and `b`, in order.
 fn changes(a: &[u32], b: &[u32]) -> Vec<Change> {
     let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
     let a_rest = a.get(prefix..).unwrap_or_default();

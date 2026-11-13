@@ -6,13 +6,11 @@ use std::fmt::Write as _;
 
 use unicode_width::UnicodeWidthChar as _;
 
-/// Where the cursor was left, relative to the first row of the prompt.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Drawn {
     pub cursor_row: usize,
 }
 
-/// A position on the screen, relative to the prompt's first row.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct At {
     row: usize,
@@ -20,7 +18,6 @@ struct At {
 }
 
 impl At {
-    /// Move past `c`, wrapping at `columns`.
     fn advance(&mut self, c: char, columns: usize) {
         if c == '\n' {
             self.row = self.row.saturating_add(1);
@@ -153,7 +150,6 @@ pub fn finish(previous: Drawn, prompt: &str, text: &str, columns: usize) -> Stri
     out
 }
 
-/// `names` in columns across `columns`, as bash lists completions.
 pub fn table(names: &[String], columns: usize) -> String {
     let width = names
         .iter()

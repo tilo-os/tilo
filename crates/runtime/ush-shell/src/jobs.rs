@@ -26,7 +26,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use crate::host::{DirEntry, FileCall, HistoryQuery, Host, Metadata, Program, WriteMode};
 use crate::io::Stdio;
 
-/// What the shell asks of a job's programs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     /// Stop until continued (Ctrl+Z, `kill -STOP`).
@@ -42,7 +41,6 @@ pub enum Signal {
     Kill,
 }
 
-/// Where a job is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Running,
@@ -52,11 +50,8 @@ pub enum Phase {
 
 type Signaller = Arc<dyn Fn(Signal) + Send + Sync>;
 
-/// One job: its command line, where it is, and how to reach its programs.
 pub struct Job {
-    /// What `jobs` calls it.
     pub command: String,
-    /// The number `$!`, `wait` and `kill` know it by.
     pub pid: u32,
     phase: Mutex<Phase>,
     changed: Condvar,
@@ -64,8 +59,6 @@ pub struct Job {
     foreground: AtomicBool,
     signallers: Mutex<Vec<(u64, Signaller)>>,
     next_signaller: Mutex<u64>,
-    /// The host's own name for the group of programs this job runs (a
-    /// process group), set by the host when it starts the first.
     group: Mutex<Option<i64>>,
 }
 
@@ -114,7 +107,6 @@ impl Job {
         *lock(&self.phase)
     }
 
-    /// Whether the job has the terminal: Ctrl+C and Ctrl+Z are for it.
     pub fn foreground(&self) -> bool {
         self.foreground.load(Ordering::SeqCst)
     }
@@ -123,19 +115,14 @@ impl Job {
         self.foreground.store(foreground, Ordering::SeqCst);
     }
 
-    /// Whether the job was ended (`kill`): its commands stop.
     pub fn killed(&self) -> bool {
         self.killed.load(Ordering::SeqCst)
     }
 
-    /// The host's group for this job's programs, for the host to set when
-    /// it starts the first and read when it starts the next.
     pub fn group(&self) -> MutexGuard<'_, Option<i64>> {
         lock(&self.group)
     }
 
-    /// The host started a program for the job: `signal` reaches it, until
-    /// the answer is dropped.
     pub fn attach(self: &Arc<Self>, signal: impl Fn(Signal) + Send + Sync + 'static) -> Attached {
         let mut next = lock(&self.next_signaller);
         *next = next.wrapping_add(1);
@@ -148,7 +135,6 @@ impl Job {
         }
     }
 
-    /// How many programs the host runs for the job now.
     pub fn programs_running(&self) -> usize {
         lock(&self.signallers).len()
     }
@@ -173,7 +159,6 @@ impl Job {
         self.changed.notify_all();
     }
 
-    /// The host saw one of the job's programs stop (Ctrl+Z reached it).
     pub fn stopped(&self) {
         self.set_phase(Phase::Stopped);
     }
@@ -184,7 +169,6 @@ impl Job {
         self.signal_programs(Signal::Stop);
     }
 
-    /// Let the job go on, in the foreground or not.
     pub fn resume(&self, foreground: bool) {
         self.set_foreground(foreground);
         self.set_phase(Phase::Running);
@@ -196,7 +180,6 @@ impl Job {
     pub fn kill(&self, signal: Signal) {
         self.killed.store(true, Ordering::SeqCst);
         self.signal_programs(signal);
-        // A stopped job must run to end.
         if self.phase() == Phase::Stopped {
             self.set_phase(Phase::Running);
             self.signal_programs(Signal::Continue);
@@ -204,13 +187,11 @@ impl Job {
         self.changed.notify_all();
     }
 
-    /// The job's commands ended with `status`.
     pub(crate) fn finish(&self, status: i32) {
         *lock(&self.phase) = Phase::Done(status);
         self.changed.notify_all();
     }
 
-    /// Wait while the job runs: until it stopped or ended.
     pub fn wait_settled(&self) -> Phase {
         let mut phase = lock(&self.phase);
         while *phase == Phase::Running {
@@ -253,17 +234,13 @@ impl Job {
 /// The jobs of one shell.
 #[derive(Debug, Default)]
 pub(crate) struct Table {
-    /// By job number, lowest first.
     jobs: Vec<(u32, Arc<Job>)>,
-    /// The job `%+` names, and the one before it (`%-`).
     current: Option<u32>,
     previous: Option<u32>,
-    /// The number the next job's `pid` takes.
     next_pid: u32,
 }
 
 impl Table {
-    /// Add `job`, answering its number.
     pub(crate) fn add(&mut self, job: Arc<Job>) -> u32 {
         let number = self.jobs.last().map_or(1, |(n, _)| n.saturating_add(1));
         self.jobs.push((number, job));
@@ -272,7 +249,6 @@ impl Table {
         number
     }
 
-    /// A number for a new job's `pid`, after `base` (the shell's own).
     pub(crate) fn pid(&mut self, base: u32) -> u32 {
         if self.next_pid <= base {
             self.next_pid = base.saturating_add(1);
@@ -295,7 +271,6 @@ impl Table {
         }
     }
 
-    /// Make `number` the current job (`%+`).
     pub(crate) fn make_current(&mut self, number: u32) {
         if self.current != Some(number) {
             self.previous = self.current;
@@ -307,7 +282,6 @@ impl Table {
         self.jobs.clone()
     }
 
-    /// `+` for the current job, `-` for the one before, else a space.
     pub(crate) fn mark(&self, number: u32) -> char {
         if self.current == Some(number) {
             '+'
@@ -526,7 +500,6 @@ pub(crate) struct JobWriter {
     pub(crate) inner: crate::io::Output,
     pub(crate) job: Arc<Job>,
     pub(crate) host: Arc<dyn Host>,
-    /// The marks around each write: what opens and what closes it.
     pub(crate) marks: Option<(String, String)>,
 }
 
@@ -563,7 +536,6 @@ impl Write for JobWriter {
 pub(crate) struct Marks {
     pub(crate) key: String,
     count: std::sync::atomic::AtomicU64,
-    /// The session's terminal, where the marks go.
     out: crate::io::Output,
 }
 
@@ -576,7 +548,6 @@ impl Marks {
         }
     }
 
-    /// The number the next run takes.
     pub(crate) fn next(&self) -> u64 {
         self.count.fetch_add(1, Ordering::SeqCst).saturating_add(1)
     }
@@ -585,8 +556,6 @@ impl Marks {
         let _ = self.out.write_str(mark);
     }
 
-    /// `C`: run `number` starts, `command` in `cwd`; `job` says it is a
-    /// job's.
     pub(crate) fn started(&self, number: u64, command: &str, cwd: &Path, job: Option<u32>) {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
@@ -599,7 +568,6 @@ impl Marks {
         ));
     }
 
-    /// `D`: run `number` ended with `status`.
     pub(crate) fn ended(&self, number: u64, status: i32, job: Option<u32>) {
         let job = job.map(|n| format!(";j={n}")).unwrap_or_default();
         self.write(&format!(
@@ -619,15 +587,12 @@ impl Marks {
 }
 
 impl crate::shell::Shell {
-    /// Lock the job table.
     pub(crate) fn jobs(&self) -> MutexGuard<'_, Table> {
         lock(&self.jobs)
     }
 
     /// The outputs of a job's copy of the shell, wrapped so they wait while
     /// it is stopped and fail once it was ended, with `marks` around each
-    /// write. A stream that is the host's own stays so (a program run in
-    /// the foreground gets the terminal itself).
     pub(crate) fn wrap_outputs(&mut self, job: &Arc<Job>, marks: Option<&(String, String)>) {
         for fd in [1_u32, 2] {
             let Some(output) = self.output(fd) else {
@@ -647,8 +612,6 @@ impl crate::shell::Shell {
         }
     }
 
-    /// `and_or &`: run it as a background job, on a copy of the shell, and
-    /// go on at once.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn background(&mut self, and_or: &brush_parser::ast::AndOrList) -> i32 {
         // What `jobs` shows: on one line, as it was typed.
@@ -721,8 +684,6 @@ impl crate::shell::Shell {
         0
     }
 
-    /// Without threads (WebAssembly in a page), nothing runs beside the
-    /// shell.
     #[cfg(target_family = "wasm")]
     pub(crate) fn background(&mut self, _: &brush_parser::ast::AndOrList) -> i32 {
         self.error(
@@ -731,7 +692,6 @@ impl crate::shell::Shell {
         2
     }
 
-    /// Say `text` on standard error as it is.
     pub(crate) fn error_plain(&self, text: &str) {
         if let Some(err) = self.output(2) {
             let _ = err.write_str(text);
@@ -816,7 +776,6 @@ impl crate::shell::Shell {
         self.eval_text(text)
     }
 
-    /// Say which jobs ended since the last prompt, and forget them.
     pub(crate) fn report_jobs(&self) {
         let done: Vec<(u32, Arc<Job>, char)> = {
             let table = self.jobs();
@@ -844,7 +803,6 @@ impl crate::shell::Shell {
     }
 }
 
-/// The line `jobs` shows for one job.
 fn describe(number: u32, mark: char, job: &Job, with_pid: bool) -> String {
     let state = match job.phase() {
         Phase::Running => "Running".to_owned(),
@@ -865,7 +823,6 @@ fn describe(number: u32, mark: char, job: &Job, with_pid: bool) -> String {
     format!("[{number}]{mark}  {pid}{state:<24}{}{amp}\n", job.command)
 }
 
-/// `jobs [-l|-p] [SPEC…]`.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "a `Builtin`: every built-in returns `Exec`"
@@ -923,7 +880,6 @@ pub(crate) fn jobs_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
     Ok(0)
 }
 
-/// The job a `fg` or `bg` operand names, or the current one.
 fn job_of(sh: &crate::shell::Shell, name: &str, args: &[String]) -> Result<(u32, Arc<Job>), i32> {
     let spec = args.first().map_or("%+", String::as_str);
     sh.jobs().find(spec).map_err(|e| {
@@ -932,7 +888,6 @@ fn job_of(sh: &crate::shell::Shell, name: &str, args: &[String]) -> Result<(u32,
     })
 }
 
-/// `fg [SPEC]`: bring a job to the foreground and wait for it.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "a `Builtin`: every built-in returns `Exec`"
@@ -961,7 +916,6 @@ pub(crate) fn fg_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate
     Ok(148)
 }
 
-/// `bg [SPEC…]`: let stopped jobs go on in the background.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "a `Builtin`: every built-in returns `Exec`"
@@ -990,8 +944,6 @@ pub(crate) fn bg_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate
     Ok(status)
 }
 
-/// `wait [SPEC…]`: wait for jobs to end; every running one without operands.
-/// Ctrl+C stops the waiting, not the jobs.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "a `Builtin`: every built-in returns `Exec`"
@@ -1041,7 +993,6 @@ pub(crate) fn wait_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
     Ok(if args.is_empty() { 0 } else { status })
 }
 
-/// What a `kill` signal name or number asks of a job.
 fn signal_named(name: &str) -> Option<Signal> {
     let name = name.trim_start_matches("SIG").to_ascii_uppercase();
     Some(match name.as_str() {
