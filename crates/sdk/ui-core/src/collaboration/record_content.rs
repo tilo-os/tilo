@@ -94,8 +94,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    fn record_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
-        let lane = ContentLane::of("so.tilo.record-content-test", record);
+    fn record_store() -> (ContentStore, Arc<ContentLane>) {
+        let lane = Arc::new(ContentLane::default());
         (
             RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
             lane,
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn content_reads_arrive_from_the_workspace_and_content_here_is_ready_at_once() {
         use crate::arriving::Arrival;
-        let (store, lane) = record_store("read-as-arriving");
+        let (store, lane) = record_store();
         let here = store.put(b"a picture here").unwrap();
         let reads = ContentReads::new(store);
         assert_eq!(

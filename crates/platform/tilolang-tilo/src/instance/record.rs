@@ -230,7 +230,7 @@ impl InstanceRecord {
         // other workspace's record of the app this process holds. Its content is sealed under the
         // secret of the members who read the record, once its route holds their keys.
         let lane = Arc::new(ContentLane::default());
-        ContentLane::show_on_route(&route.app_id, route.record.as_deref().unwrap_or(""), &lane);
+        ContentLane::show_on_route(&route, &lane);
         Self {
             content: RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
             lane,

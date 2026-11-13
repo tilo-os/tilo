@@ -2316,6 +2316,19 @@ fn read_record(
 }
 
 impl RecordStore {
+    /// The route record `id` travels on: its workspace, the app and its wire name, unchecked
+    /// against the record's document. What names a record across workspaces in one process (its
+    /// content lane) keys by it.
+    pub fn wire_route(
+        &self,
+        id: &RecordId,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        self.0
+            .try_borrow()
+            .map_err(|_| RecordOpenError::Busy)?
+            .wire_route(id)
+    }
+
     /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
         &self,

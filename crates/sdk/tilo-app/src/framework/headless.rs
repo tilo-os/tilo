@@ -2161,12 +2161,12 @@ fn open_app(
     let checkout = prepared.context.record().clone();
     // The harness holds the workspace's keys, as the record's route does on a
     // device: what the app stores is sealed under its members' secret.
-    if let Some(workspace) = profile.workspace() {
-        ui_core::collaboration::record_content::ContentLane::of(
-            opening.id,
-            super::app::record_wire(&checkout.id),
-        )
-        .hold_secret(workspace_secret(workspace));
+    if let (Some(workspace), Ok(route)) = (
+        profile.workspace(),
+        prepared.context.records().wire_route(&checkout.id),
+    ) {
+        ui_core::collaboration::record_content::ContentLane::of(&route)
+            .hold_secret(workspace_secret(workspace));
     }
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);

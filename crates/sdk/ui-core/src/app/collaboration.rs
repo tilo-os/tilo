@@ -840,10 +840,7 @@ impl App {
     fn lanes_on_route(
         route: &crate::collaboration::RouteSpec,
     ) -> Vec<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
-        crate::collaboration::record_content::ContentLane::on_route(
-            &route.app_id,
-            route.record.as_deref().unwrap_or(""),
-        )
+        crate::collaboration::record_content::ContentLane::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's

@@ -74,7 +74,11 @@ fn registry() -> ActionRegistry {
 /// route, as a window's record content is. A lane belongs to a record of this
 /// process, so the two replicas here name their own.
 fn record_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
-    let lane = ContentLane::of(APP, record);
+    let lane = ContentLane::of(&collaboration::RouteSpec::record(
+        APP,
+        uuid::Uuid::nil(),
+        record,
+    ));
     (
         RecordContent::store(ContentStore::memory(), Arc::clone(&lane)),
         lane,

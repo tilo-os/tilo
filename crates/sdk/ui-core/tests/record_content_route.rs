@@ -45,7 +45,7 @@ fn window_store(
 ) -> (ContentStore, Arc<ContentLane>) {
     let lane = ContentLane::of_window();
     keep_lane(&window.handle(), Arc::clone(&lane));
-    ContentLane::show_on_route(&route.app_id, route.record.as_deref().unwrap_or(""), &lane);
+    ContentLane::show_on_route(route, &lane);
     (RecordContent::store(local, Arc::clone(&lane)), lane)
 }
 

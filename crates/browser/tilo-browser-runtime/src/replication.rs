@@ -111,6 +111,8 @@ pub(crate) struct Joined {
     device: String,
     events: Events,
     uuid: String,
+    /// `uuid`, as the routes of the workspace's records name it.
+    cluster: uuid::Uuid,
     workspace: u64,
     store: Rc<MemoryStore>,
     /// Where `store` lives.
@@ -213,6 +215,7 @@ pub(crate) fn open(
         device,
         events,
         uuid: workspace.to_owned(),
+        cluster: uuid::Uuid::parse_str(workspace).map_err(|_| "a workspace must be a uuid")?,
         workspace: workspace_id,
         store,
         kept,
@@ -874,6 +877,12 @@ impl Joined {
     }
 
     /// Every record a mount has open in this workspace, as wire `(app, record)`.
+    /// The route record `record` (its wire name) of app `app` travels on in
+    /// this workspace: its content lanes are this workspace's alone.
+    fn content_route(&self, app: &str, record: &str) -> ui::collaboration::RouteSpec {
+        ui::collaboration::RouteSpec::record(app, self.cluster, record)
+    }
+
     fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.mounts.values().flat_map(|mounted| {
             let stores = mounted.attachment.stores.borrow();
@@ -1038,7 +1047,7 @@ impl Joined {
         let records: BTreeSet<(String, String)> = self.open_records().collect();
         for (app, record) in records {
             // The record's windows each queue on a lane of their own.
-            for lane in ContentLane::on_route(&app, &record) {
+            for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
                 for hash in lane.take_requests().wants {
                     let Some(request) = self.content.ask(
                         &device,
@@ -1072,7 +1081,7 @@ impl Joined {
             return false;
         };
         let (app, record) = arrived.tag;
-        for lane in ContentLane::on_route(&app, &record) {
+        for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
             lane.arrive(arrived.hash.clone(), arrived.bytes.clone());
         }
         true

@@ -1432,24 +1432,16 @@ fn record_content(context: &mut HostContext) {
     // reads its own, never this one's queue of wants.
     ui_core::collaboration::record_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
     // Whatever carries the record's content for the process (a browser
-    // page's replication) asks for and hands over this window's too.
-    ui_core::collaboration::record_content::ContentLane::show_on_route(
-        context.app_id(),
-        record_wire(&context.record().id),
-        &lane,
-    );
+    // page's replication) asks for and hands over this window's too, and
+    // what it stores is sealed for the members of the record's workspace.
+    match context.records().wire_route(&context.record().id) {
+        Ok(route) => {
+            ui_core::collaboration::record_content::ContentLane::show_on_route(&route, &lane);
+        }
+        Err(error) => tracing::warn!(%error, "record content: the record names no route"),
+    }
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
-}
-
-/// The name `record` travels under on its route: none for a package's
-/// primary record.
-pub(super) fn record_wire(record: &RecordId) -> &str {
-    if record.is_package_primary() {
-        ""
-    } else {
-        record.as_str()
-    }
 }
 
 /// Prepare a capture's scene before its view is built: the app's fixture,

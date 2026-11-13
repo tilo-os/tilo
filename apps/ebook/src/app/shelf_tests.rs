@@ -133,7 +133,7 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     app.invoke(Invoke::edit(&Ebook::paths().progress.set(progress)).unwrap())
         .unwrap();
     app.settle();
-    let lane = ContentLane::of("so.tilo.books-shelf-test", "arriving");
+    let lane = std::sync::Arc::new(ContentLane::default());
     books(&mut app).content = Some(RecordContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),
@@ -238,7 +238,7 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
     app.invoke(Invoke::edit(&Ebook::paths().progress.set(progress)).unwrap())
         .unwrap();
     app.settle();
-    let lane = ContentLane::of("so.tilo.books-shelf-test", "waiting");
+    let lane = std::sync::Arc::new(ContentLane::default());
     books(&mut app).content = Some(RecordContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),

@@ -158,8 +158,8 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
         let first_record = first_host.person::<crate::copies::MailCopies>().unwrap();
         let second_record = second_host.person::<crate::copies::MailCopies>().unwrap();
-        let first_lane = ContentLane::of("so.tilo.mail", "copies-test-first-device");
-        let second_lane = ContentLane::of("so.tilo.mail", "copies-test-second-device");
+        let first_lane = Arc::new(ContentLane::default());
+        let second_lane = Arc::new(ContentLane::default());
         let (mut first, mut first_doc, first_requests, first_events) =
             device(first_record.clone(), &first_lane);
         let (mut second, mut second_doc, second_requests, second_events) =
