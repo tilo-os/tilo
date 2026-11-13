@@ -353,21 +353,23 @@ mod tests {
 
     #[test]
     fn path_effects_refuse_a_relative_path() {
-        for id in ["reveal", "open-file", "open-folder", "save"] {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("path".into(), "src/main.rs".into());
-            arguments.insert("line".into(), 0.into());
-            arguments.insert("column".into(), 0.into());
-            arguments.insert("results".into(), false.into());
-            let error = CodeEditorEffect::decode(id, &arguments).unwrap_err();
-            assert!(
-                matches!(
-                    &error,
-                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                        if name == "path" && source.to_string().contains("absolute")
-                ),
-                "{id}: {error}"
-            );
+        for path in ["src/main.rs", "./src/main.rs", "../main.rs", "~/main.rs"] {
+            for id in ["reveal", "open-file", "open-folder", "save"] {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("path".into(), path.into());
+                arguments.insert("line".into(), 0.into());
+                arguments.insert("column".into(), 0.into());
+                arguments.insert("results".into(), false.into());
+                let error = CodeEditorEffect::decode(id, &arguments).unwrap_err();
+                assert!(
+                    matches!(
+                        &error,
+                        ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                            if name == "path" && source.to_string().contains("absolute")
+                    ),
+                    "{id} {path}: {error}"
+                );
+            }
         }
     }
 
