@@ -790,15 +790,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_leader_authors_its_group() {
-        let pair = group(vec![member("desk", LEFT), member("shelf", RIGHT)]);
-        assert_eq!(
-            pair.validate(&id("shelf")),
-            Err(FabricError::ForeignAuthorship)
-        );
-    }
-
-    #[test]
     fn roles_must_be_unique_and_complete() {
         for members in [
             vec![member("desk", LEFT), member("shelf", LEFT)],
@@ -830,24 +821,41 @@ mod tests {
         }
     }
 
+    /// A left and a right member, validated as one device: each row is the output the right
+    /// member plays on, the device that validates the group as its author, and the verdict.
     #[test]
-    fn one_output_cannot_play_two_roles() {
-        let mut right = member("desk", RIGHT);
-        right.output = member("desk", LEFT).output;
-        assert_eq!(
-            group(vec![member("desk", LEFT), right]).validate(&id("desk")),
-            Err(FabricError::InvalidSpeakerGroup)
-        );
-    }
-
-    #[test]
-    fn two_outputs_on_one_device_can_form_a_pair() {
-        let mut right = member("desk", RIGHT);
-        right.output = EndpointSelector::mint(&id("desk"), "bluez_output.speaker");
-        assert_eq!(
-            group(vec![member("desk", LEFT), right]).validate(&id("desk")),
-            Ok(())
-        );
+    fn a_pair_is_valid_only_from_its_leader_with_an_output_for_each_role() {
+        let right_on = |output: EndpointSelector| {
+            let mut right = member("desk", RIGHT);
+            right.output = output;
+            right
+        };
+        let rows = [
+            (
+                "only_the_leader_authors_its_group",
+                vec![member("desk", LEFT), member("shelf", RIGHT)],
+                "shelf",
+                Err(FabricError::ForeignAuthorship),
+            ),
+            (
+                "one_output_cannot_play_two_roles",
+                vec![member("desk", LEFT), right_on(member("desk", LEFT).output)],
+                "desk",
+                Err(FabricError::InvalidSpeakerGroup),
+            ),
+            (
+                "two_outputs_on_one_device_can_form_a_pair",
+                vec![
+                    member("desk", LEFT),
+                    right_on(EndpointSelector::mint(&id("desk"), "bluez_output.speaker")),
+                ],
+                "desk",
+                Ok(()),
+            ),
+        ];
+        for (row, members, author, verdict) in rows {
+            assert_eq!(group(members).validate(&id(author)), verdict, "row `{row}`");
+        }
     }
 
     #[test]
