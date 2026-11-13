@@ -47,6 +47,46 @@ async fn a_host_reached_through_a_relay_names_it_from_the_start() {
     relay.shutdown().await;
 }
 
+/// A host that comes back answering somewhere else names its new address in
+/// the workspace it kept before it serves it: once, in place of the address
+/// it named before, and what it answers a joiner is what the workspace says.
+#[tokio::test]
+async fn a_host_that_comes_back_elsewhere_names_its_new_address_in_the_workspace_it_kept() {
+    use tilo_delivery_protocol::workspace_join::{WorkspaceDeviceHintV1, reachable};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let first = relay.node_addr();
+    let workspace = relay.workspaces().create("Demo").await.unwrap().workspace;
+    relay.shutdown().await;
+
+    // The same host on the same state, behind another relay and another port.
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let second = relay.node_addr();
+    assert_ne!(first, second, "the host came back where it left");
+    let workspaces = relay.workspaces();
+    let hosts = workspaces
+        .workspace(&workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .peer()
+        .governance()
+        .workspace_hosts();
+    assert_eq!(hosts.len(), 1, "the host is named once: {hosts:?}");
+    assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);
+    let hint = WorkspaceDeviceHintV1::from_transport_hint(&hosts[0]).unwrap();
+    assert_eq!(hint.endpoint_addr, reachable(&second));
+    assert_ne!(hint.endpoint_addr, reachable(&first));
+    let served = workspaces.hosts(&workspace).await.unwrap();
+    assert_eq!(
+        served, hosts,
+        "a joiner is answered what the workspace names"
+    );
+    relay.shutdown().await;
+}
+
 /// A host whose endpoint has no relay to reach waits no longer for one than a
 /// net report takes, then opens all the same and names the address it has: a
 /// desktop on a network with no relay still serves its workspaces.
