@@ -149,21 +149,12 @@ impl Document {
     /// under `root`, the map of a field of a larger record.
     ///
     /// # Errors
-    /// Returns [`DocError`] if `root` does not hold a tilo-doc schema `open` recognises, or
-    /// if the version key it replaced could not be dropped.
+    /// Returns [`DocError`] if `root` does not hold a tilo-doc schema `open` recognises.
     pub fn from_automerge_under(
-        mut doc: AutoCommit,
+        doc: AutoCommit,
         root: &automerge::ObjId,
     ) -> Result<Self, DocError> {
         let c = crate::model::open(&doc, root)?;
-        // An older document kept its version under a key of its own; it is
-        // read once, here, and the document keeps it under the one key every
-        // Tilo document uses from then on.
-        if tilo_resource::evolution::adopt_at(&mut doc, root)
-            .map_err(|error| DocError::Invalid(error.to_string()))?
-        {
-            doc.commit();
-        }
         let mut ids = crate::model::try_seeded_id_gen(&doc, &c)?;
         ids.allow_commits();
         Ok(Self { doc, c, ids })

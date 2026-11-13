@@ -232,16 +232,10 @@ pub fn with_footprints(
 }
 
 /// The claims of the changes `mutation` carries, a change this process made to
-/// a record of `app_id`, each naming as units what its action may write
-/// ([`with_footprints`]): what the op that carries it is signed with.
-///
-/// A change names what it is in its message. One store wrote a record's
-/// first change with none: its schema stamp, a root change with no deps that
-/// only sets the old schema version key (`tilo:schema_version`). That change
-/// is the record's creation by what it is, so it is claimed as one
-/// ([`collab_types::FrameworkChange::Genesis`]), as a store now names it when
-/// it writes it: a record whose first change is such a stamp is handed to a
-/// sealed workspace whole, with no change rewritten and no id changed.
+/// a record of `app_id`, each naming what it is and, as units, what its action
+/// may write ([`with_footprints`]): what the op that carries it is signed
+/// with. A change names what it is in its message; the store writes one for
+/// every change it makes.
 pub fn claims_of(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,
@@ -252,43 +246,8 @@ pub fn claims_of(
             collab_types::claim::parse_changes(bytes)?
         }
     };
-    let claims = changes
-        .iter()
-        .map(|change| {
-            if change.message().is_none() && is_schema_stamp(change) {
-                return Ok(collab_types::ChangeClaim {
-                    change: change.hash().0,
-                    action: collab_types::ClaimedAction::Framework(
-                        collab_types::FrameworkChange::Genesis,
-                    ),
-                    units: collab_types::record_unit(change),
-                });
-            }
-            collab_types::claim::claims_of(std::slice::from_ref(change), collab_types::record_unit)
-                .map(|mut one| one.remove(0))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let claims = collab_types::claim::claims_of(&changes, collab_types::record_unit)?;
     Ok(with_footprints(app_id, claims))
-}
-
-/// Whether `change` is a store's schema stamp as it was written before a
-/// record's first change named itself: no deps, and every op a put of an
-/// old schema version key (`tilo_resource::evolution::LEGACY_VERSION_KEYS`)
-/// on the document's root.
-fn is_schema_stamp(change: &automerge::Change) -> bool {
-    use automerge::legacy::{Key, ObjectId};
-    if !change.deps().is_empty() {
-        return false;
-    }
-    let expanded = change.decode();
-    !expanded.operations.is_empty()
-        && expanded.operations.iter().all(|op| {
-            op.obj == ObjectId::Root
-                && !op.insert
-                && matches!(&op.key, Key::Map(key)
-                    if tilo_resource::evolution::LEGACY_VERSION_KEYS.contains(&key.as_str()))
-                && matches!(op.action, automerge::legacy::OpType::Put(_))
-        })
 }
 
 /// Why a workspace refuses `mutation`, a change this process made to `record` of
@@ -335,41 +294,6 @@ pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Only a store's old schema stamp is claimed by what it is: a root change with no deps
-    /// that only sets the schema version. Any other change that names nothing stays unclaimed.
-    #[test]
-    fn an_unnamed_schema_stamp_is_claimed_as_the_records_genesis_and_nothing_else_is() {
-        use automerge::transaction::Transactable as _;
-        let claimed = |doc: &mut automerge::AutoCommit, after: &[automerge::ChangeHash]| {
-            claims_of(
-                "test.stamps",
-                &collab_types::DocumentMutation::Incremental(doc.save_after(after)),
-            )
-        };
-        // The key a store wrote its first change with before records named theirs.
-        let legacy_key = tilo_resource::evolution::LEGACY_VERSION_KEYS[0];
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, legacy_key, 1_u64).unwrap();
-        let stamp = doc.commit().unwrap();
-        let claims = claimed(&mut doc, &[]).unwrap();
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].change, stamp.0);
-        assert_eq!(
-            claims[0].action,
-            collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
-        );
-        // The same write on top of the record is no creation of it.
-        doc.put(automerge::ROOT, legacy_key, 2_u64).unwrap();
-        doc.commit();
-        assert!(claimed(&mut doc, &[stamp]).is_err());
-        // Nor is a first change that writes anything else.
-        let mut other = automerge::AutoCommit::new();
-        other.put(automerge::ROOT, legacy_key, 1_u64).unwrap();
-        other.put(automerge::ROOT, "title", "x").unwrap();
-        other.commit();
-        assert!(claimed(&mut other, &[]).is_err());
-    }
 
     #[test]
     fn only_the_kinds_a_surface_marks_are_the_persons() {
