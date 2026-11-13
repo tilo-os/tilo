@@ -728,6 +728,43 @@ fn the_system_open_stands_a_new_place() {
     assert_eq!(verb, "place", "opening is one arranging step");
 }
 
+/// The app: a conversation and three things opened beside it, each a published resource.
+struct Things;
+impl Published for Things {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        ["conversation", "tasks", "mail", "notes"]
+            .into_iter()
+            .map(|id| {
+                let mut resource =
+                    ResourceSpec::new(format!("tl:test.anchor:{id}"), "test.thing", id)
+                        .with_action(view_action("open-thing"))
+                        .with_view(
+                            ResourceViewSpec::new("page", "Page", "open-thing").with_primary(true),
+                        );
+                // An app's resource: the arrangement places what an app publishes, the way
+                // every app's own resources are.
+                resource.app_id = Some("test.anchor".to_owned());
+                resource
+            })
+            .collect()
+    }
+
+    fn invoke(
+        &mut self,
+        _: &ActionAddress,
+        _: &serde_json::Map<String, serde_json::Value>,
+        _: &mut tilo_session_core::door::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        Ok(ui::host_operation::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 /// The live run's failure (shell.md §3, "a place next to where it came from"): an agent that
 /// opened tasks, mail and notes beside its conversation saw every place stand over the
 /// conversation or below it, and some off the screen. Three places opened beside one anchor stand
@@ -738,43 +775,6 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
-    // The app: a conversation and three things opened beside it, each a published resource.
-    struct Things;
-    impl Published for Things {
-        fn resources(&mut self) -> Vec<ResourceSpec> {
-            ["conversation", "tasks", "mail", "notes"]
-                .into_iter()
-                .map(|id| {
-                    let mut resource =
-                        ResourceSpec::new(format!("tl:test.anchor:{id}"), "test.thing", id)
-                            .with_action(view_action("open-thing"))
-                            .with_view(
-                                ResourceViewSpec::new("page", "Page", "open-thing")
-                                    .with_primary(true),
-                            );
-                    // An app's resource: the arrangement places what an app publishes, the way
-                    // every app's own resources are.
-                    resource.app_id = Some("test.anchor".to_owned());
-                    resource
-                })
-                .collect()
-        }
-
-        fn invoke(
-            &mut self,
-            _: &ActionAddress,
-            _: &serde_json::Map<String, serde_json::Value>,
-            _: &mut tilo_session_core::door::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-            Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ))
-        }
-
-        fn accessible_labels(&mut self) -> Vec<String> {
-            Vec::new()
-        }
-    }
     session.publish(Rc::new(std::cell::RefCell::new(Things)));
     step(&mut session);
     step(&mut session);
@@ -856,6 +856,51 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
     }
 }
 
+/// The app: a mailbox root and a thread inside it, as an app publishes its record.
+struct Mail;
+impl Published for Mail {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        let mut root = ResourceSpec::new("tl:so.tilo.lang.mail:root-a1b2c3", "mail.mail", "Mail")
+            .with_action(view_action("open-mailbox"))
+            .with_view(
+                ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox").with_primary(true),
+            );
+        root.app_id = Some("so.tilo.lang.mail".to_owned());
+        let mut thread = ResourceSpec::new(
+            "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+            "mail.thread",
+            "sam@rivera.example",
+        )
+        .with_action(view_action("open-thread"))
+        .with_view(ResourceViewSpec::new("thread", "Thread", "open-thread").with_primary(true));
+        thread.app_id = Some("so.tilo.lang.mail".to_owned());
+        let mut other = ResourceSpec::new(
+            "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01",
+            "mail.thread",
+            "news@example",
+        )
+        .with_action(view_action("open-news"))
+        .with_view(ResourceViewSpec::new("thread", "Thread", "open-news").with_primary(true));
+        other.app_id = Some("so.tilo.lang.mail".to_owned());
+        vec![root.with_child(thread), other]
+    }
+
+    fn invoke(
+        &mut self,
+        _: &ActionAddress,
+        _: &serde_json::Map<String, serde_json::Value>,
+        _: &mut tilo_session_core::door::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        Ok(ui::host_operation::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 // (8) The live run's failure: an agent asked to show the person their mails stood one Mail place of
 // the mailbox (the `Inbox` tab) and a second of a thread in it (the `sam@rivera.example` tab), so
 // the person had two windows of one mailbox. Opening a resource of a root already standing — the
@@ -866,52 +911,6 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
-    // The app: a mailbox root and a thread inside it, as an app publishes its record.
-    struct Mail;
-    impl Published for Mail {
-        fn resources(&mut self) -> Vec<ResourceSpec> {
-            let mut root =
-                ResourceSpec::new("tl:so.tilo.lang.mail:root-a1b2c3", "mail.mail", "Mail")
-                    .with_action(view_action("open-mailbox"))
-                    .with_view(
-                        ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox")
-                            .with_primary(true),
-                    );
-            root.app_id = Some("so.tilo.lang.mail".to_owned());
-            let mut thread = ResourceSpec::new(
-                "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
-                "mail.thread",
-                "sam@rivera.example",
-            )
-            .with_action(view_action("open-thread"))
-            .with_view(ResourceViewSpec::new("thread", "Thread", "open-thread").with_primary(true));
-            thread.app_id = Some("so.tilo.lang.mail".to_owned());
-            let mut other = ResourceSpec::new(
-                "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01",
-                "mail.thread",
-                "news@example",
-            )
-            .with_action(view_action("open-news"))
-            .with_view(ResourceViewSpec::new("thread", "Thread", "open-news").with_primary(true));
-            other.app_id = Some("so.tilo.lang.mail".to_owned());
-            vec![root.with_child(thread), other]
-        }
-
-        fn invoke(
-            &mut self,
-            _: &ActionAddress,
-            _: &serde_json::Map<String, serde_json::Value>,
-            _: &mut tilo_session_core::door::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-            Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ))
-        }
-
-        fn accessible_labels(&mut self) -> Vec<String> {
-            Vec::new()
-        }
-    }
     session.publish(Rc::new(std::cell::RefCell::new(Mail)));
     step(&mut session);
     step(&mut session);

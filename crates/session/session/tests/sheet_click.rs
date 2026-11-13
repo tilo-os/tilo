@@ -87,15 +87,17 @@ fn where_shown(session: &Session, name: &str) -> (f64, f64, f64, f64) {
         .controls()
         .into_iter()
         .find(|control| control.name == name)
-        .map(|control| control.rect)
-        .unwrap_or_else(|| {
-            let names: Vec<String> = session
-                .controls()
-                .into_iter()
-                .map(|control| control.name)
-                .collect();
-            panic!("no control named {name:?}; the session shows {names:?}")
-        })
+        .map_or_else(
+            || {
+                let names: Vec<String> = session
+                    .controls()
+                    .into_iter()
+                    .map(|control| control.name)
+                    .collect();
+                panic!("no control named {name:?}; the session shows {names:?}")
+            },
+            |control| control.rect,
+        )
 }
 
 /// Press and release the left button at `(x, y)` on the session's display, as the person does.

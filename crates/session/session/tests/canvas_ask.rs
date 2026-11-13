@@ -147,8 +147,10 @@ fn root_of(session: &Session, app: &str) -> String {
         .resources()
         .into_iter()
         .find(|spec| spec.id.as_str().starts_with(&prefix))
-        .map(|spec| spec.id.as_str().to_owned())
-        .unwrap_or_else(|| panic!("{app}'s root is published"))
+        .map_or_else(
+            || panic!("{app}'s root is published"),
+            |spec| spec.id.as_str().to_owned(),
+        )
 }
 
 /// The canvas point of the strip `place` stands in, and its workspace.
@@ -158,11 +160,7 @@ fn canvas_point(
 ) -> (i64, i64, String) {
     let strip = crate::common::strip(session, crate::common::number(&place.strip))
         .expect("the place has its strip");
-    (
-        strip.canvas_x.into(),
-        strip.canvas_y.into(),
-        strip.workspace,
-    )
+    (strip.canvas_x, strip.canvas_y, strip.workspace)
 }
 
 /// `arguments` placed on the canvas as the agent, and the place showing `record` once it stands.
@@ -204,10 +202,13 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let notes = placed_as_agent(&mut session, notes_id, beside.clone());
 
     let (x, y, workspace) = canvas_point(&session, &notes);
-    let (ix, iy, inbox_in) = canvas_point(&session, &inbox);
-    assert_eq!(workspace, inbox_in, "it stands in the anchor's workspace");
-    assert_eq!(y, iy, "it stands at the anchor's line");
-    assert!(x > ix, "it stands to the anchor's right: {x} against {ix}");
+    let (anchor_x, anchor_y, anchor_in) = canvas_point(&session, &inbox);
+    assert_eq!(workspace, anchor_in, "it stands in the anchor's workspace");
+    assert_eq!(y, anchor_y, "it stands at the anchor's line");
+    assert!(
+        x > anchor_x,
+        "it stands to the anchor's right: {x} against {anchor_x}"
+    );
     let (who, verb) = session
         .arrangement()
         .borrow_mut()

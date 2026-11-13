@@ -102,8 +102,10 @@ fn root_of(session: &Session, app: &str) -> String {
         .resources()
         .into_iter()
         .find(|spec| spec.id.as_str().starts_with(&prefix))
-        .map(|spec| spec.id.as_str().to_owned())
-        .unwrap_or_else(|| panic!("{app}'s root is published"))
+        .map_or_else(
+            || panic!("{app}'s root is published"),
+            |spec| spec.id.as_str().to_owned(),
+        )
 }
 
 /// Open `resource` beside the place showing `beside`, through the arrangement's own `open`, as an
