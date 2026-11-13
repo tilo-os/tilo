@@ -189,7 +189,7 @@ impl TestTree {
         use automerge::ReadDoc as _;
         use automerge::transaction::Transactable as _;
         use tilo_desktop_model::projection::{
-            WORKSPACE_NAME_KEY, WORKSPACE_OWNER_KEY, project_workspace_sandbox,
+            WORKSPACE_ID_KEY, WORKSPACE_NAME_KEY, WORKSPACE_OWNER_KEY, project_workspace_sandbox,
             workspace_sandbox_of,
         };
         let Some(workspace) = self
@@ -209,6 +209,10 @@ impl TestTree {
                 .and_then(|(value, _)| value.as_str().map(str::to_owned))
         };
         let mut wrote = false;
+        let room = workspace.id().to_string();
+        if text(doc, WORKSPACE_ID_KEY).as_deref() != Some(room.as_str()) {
+            wrote = doc.put(automerge::ROOT, WORKSPACE_ID_KEY, room).is_ok();
+        }
         if text(doc, WORKSPACE_NAME_KEY).as_deref() != Some(workspace.name.as_str()) {
             wrote = doc
                 .put(automerge::ROOT, WORKSPACE_NAME_KEY, workspace.name.clone())

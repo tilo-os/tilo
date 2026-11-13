@@ -108,14 +108,15 @@ impl Published for Mailbox {
 /// A session on a device that holds its workspaces, as a person's own device does: the desk it
 /// shows is a workspace's, and what the arrangement does to it is that workspace's layout.
 fn session() -> Session {
-    crate::common::seated_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], |state| {
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            state: Some(state.to_path_buf()),
+            state: Some(crate::common::seated_state()),
             collab: false,
             ..Options::default()
-        }
-    })
+        },
+    )
 }
 
 fn step(session: &mut Session) {
@@ -322,7 +323,7 @@ fn session_searching(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            state: None,
+            state: Some(crate::common::seated_state()),
             collab: false,
             search: tilo_session::SearchOptions {
                 indexes: Some(std::sync::Arc::new(SessionIndexes::new(index, None))),

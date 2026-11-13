@@ -1149,7 +1149,8 @@ mod tests {
         let pane = pane_over(&mut tree);
         assert!(
             pane.entries().len() >= 3,
-            "grants, a revoke and the rename stay; setup writes do not, got {}",
+            "the workspace being made, its grants, a revoke and the rename stay; setup writes do \
+             not, got {}",
             pane.entries().len()
         );
         let summaries: Vec<&str> = pane.entries().iter().map(|e| e.summary.as_str()).collect();
@@ -1170,11 +1171,15 @@ mod tests {
             "a flush that granted nothing must not read as a grant: {summaries:?}"
         );
         assert!(
-            summaries.iter().all(|s| {
-                !s.starts_with("Opened")
-                    && !s.contains("Recorded workspace")
-                    && !s.contains("Created the workspace")
-            }),
+            summaries
+                .iter()
+                .any(|s| s.contains("Created the workspace")),
+            "the workspace being made is a change: {summaries:?}"
+        );
+        assert!(
+            summaries
+                .iter()
+                .all(|s| { !s.starts_with("Opened") && !s.contains("Recorded workspace") }),
             "setup bookkeeping, with the windows a workspace is made with, is not a change: {summaries:?}"
         );
     }

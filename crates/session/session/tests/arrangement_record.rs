@@ -33,21 +33,22 @@ fn session() -> Session {
     session_in(None)
 }
 
-/// A session of `person` 's, on a device with no state of its own.
+/// A session of `person` 's: the device's desk is a workspace's layout, so it is one that holds
+/// its workspaces.
 fn session_as(person: &str) -> Session {
     crate::common::headless(Options {
         person: person.to_owned(),
-        state: None,
+        state: Some(crate::common::seated_state()),
         collab: false,
         ..Options::default()
     })
 }
 
-/// A session that keeps its state in `state` when it is given.
+/// A session that keeps its state in `state` when it is given, else in this test's own device.
 fn session_in(state: Option<std::path::PathBuf>) -> Session {
     crate::common::headless(Options {
         person: ADA.to_owned(),
-        state,
+        state: Some(state.unwrap_or_else(crate::common::seated_state)),
         collab: false,
         ..Options::default()
     })
@@ -1099,7 +1100,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
 fn salted_session() -> Session {
     crate::common::headless(Options {
         person: ADA.to_owned(),
-        state: None,
+        state: Some(crate::common::seated_state()),
         collab: false,
         salt: 0x8000,
         ..Options::default()

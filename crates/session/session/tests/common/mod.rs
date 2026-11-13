@@ -486,18 +486,20 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
     .expect("session")
 }
 
-/// [`headless_on`] on a device that holds its workspaces: a home of its own, the throwaway identity
-/// `dist/dev/nested-session.sh` mints, a secret store and the state directory the session keeps
-/// them in, so the desk it shows is one the engine holds and its changes can be written. `options`
-/// is made from the state directory. The home lives as long as the test does.
+/// The state directory of a device that holds its workspaces: a home of its own, the throwaway
+/// identity `dist/dev/nested-session.sh` mints, and a secret store. Made once for the test's
+/// process, and kept there: the home lives as long as the test does.
 ///
 /// # Panics
-/// The home, the identity or the session cannot be made.
-#[track_caller]
-pub fn seated_on(
-    outputs: &[OutputConfig],
-    options: impl FnOnce(&std::path::Path) -> Options,
-) -> Session {
+/// The home, the identity or their directories cannot be made.
+pub fn seated_state() -> std::path::PathBuf {
+    thread_local! {
+        static STATE: std::path::PathBuf = seat();
+    }
+    STATE.with(Clone::clone)
+}
+
+fn seat() -> std::path::PathBuf {
     let home = Box::leak(Box::new(tilo_test_env::TestHome::new().expect("a home")));
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
@@ -511,7 +513,7 @@ pub fn seated_on(
         tilo_identity_host::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
-    headless_on(outputs, options(home.state()))
+    home.state().to_path_buf()
 }
 
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
