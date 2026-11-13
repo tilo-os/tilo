@@ -18,22 +18,45 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "CaptureKind",
+    "Facing",
+    "ScanEntry",
+    "SharedCapture",
     "Camera",
 ]
 
+CaptureKind = Literal["photo", "video"]
+
+Facing = Literal["back", "front", "wide"]
+
+class ScanEntry(TypedDict):
+    raw: str
+    ts: int
+
+class SharedCapture(TypedDict):
+    id: str
+    media_id: str
+    kind: CaptureKind
+    ts: int
+    w: int
+    h: int
+    dur_ms: int
+    label: str
+    facing: Facing
+
 class Camera(Resource):
     """Camera — `camera`."""
-    __surface__ = "so.tilo.camera@18dea311f732a035"
+    __surface__ = "so.tilo.camera@334a749412a4e922"
     @property
-    def scans(self) -> Any:
+    def scans(self) -> list[ScanEntry]:
         """Read only."""
         return self.fields["scans"]
     @property
-    def recent(self) -> Any:
+    def recent(self) -> SharedCapture | None:
         """Read only."""
         return self.fields["recent"]
 
-    def register_capture(self, *, capture: Any) -> Run | None:
+    def register_capture(self, *, capture: SharedCapture) -> Run | None:
         """Runs the app's action."""
         return self.action("register-capture", capture=capture)
 

@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.api-tester@1b9454972cc61625";
+export const SURFACE = "so.tilo.api-tester@d6b32f527d6a5c3a";
 
 /** One of "none", "bearer", "basic", "api_key". */
 export type AuthScheme = "none" | "bearer" | "basic" | "api_key";

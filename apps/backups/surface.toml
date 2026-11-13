@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "backups.workspace"
 label = "Backups"

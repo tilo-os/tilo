@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calculator@e852dcdbed36b5fa";
+export const SURFACE = "so.tilo.calculator@272ee377b4cb7c5b";
 
 export interface HistoryEntry {
   expr: string;

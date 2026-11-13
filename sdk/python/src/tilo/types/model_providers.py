@@ -23,7 +23,7 @@ __all__ = [
 
 class Root(Resource):
     """Model providers — `model-providers.root`."""
-    __surface__ = "so.tilo.model-providers@40f36b4f0f767d0f"
+    __surface__ = "so.tilo.model-providers@b51895cd946a2d5e"
     def list_presets(self) -> None:
         """Runs the app's action."""
         return self.action("list-presets")

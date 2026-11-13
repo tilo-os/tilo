@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.activity@e0b48ca6887742be";
+export const SURFACE = "so.tilo.activity@f7fe2955835947ba";
 
 /** Workspace activity — `activity.filter`. */
 export interface Filter extends tilo.Resource {

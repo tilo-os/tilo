@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.print-centre@67d355f33bdecced";
+export const SURFACE = "so.tilo.print-centre@6466f33654445572";
 
 /** Print Centre — `print-centre.defaults`. */
 export interface Defaults extends tilo.Resource {

@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@ffb84614df228207";
+export const SURFACE = "so.tilo.terminal@54ffe4e754ac58fe";
 
 /** One of "error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change". */
 export type ItemKind = "error" | "warning" | "location" | "url" | "test-passed" | "test-failed" | "test-ignored" | "change";

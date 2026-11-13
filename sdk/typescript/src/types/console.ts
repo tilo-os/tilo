@@ -20,11 +20,11 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@aab123dc70040e2a";
+export const SURFACE = "so.tilo.console@c7c6f7a7da957f0d";
 
 /** Agent runs shown — `console.view`. */
 export interface View extends tilo.Resource {
-  agent: unknown;
+  agent: string;
   // the app's `workspace` field is the SDK's own `workspace`.
   showEverything(): Promise<tilo.Run | void>;
 }

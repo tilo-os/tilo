@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "ebook.library"
 label = "Books"
@@ -51,7 +53,7 @@ fields = [
   { path = "annotations.*.start", type = "int" },
   { path = "annotations.*.end", type = "int" },
   { path = "annotations.*.excerpt", type = "text", label = true },
-  { path = "annotations.*.text", type = "rich_text", ops = "sha256:10bf507639fdd4f3" },
+  { path = "annotations.*.text", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
   { path = "annotations.*.color", type = "any" },
   { path = "annotations.*.created", type = "int" },
   { path = "annotations.*.group", type = "text", readonly = true },
@@ -66,7 +68,7 @@ params = [
   { name = "author", type = "text", required = true, schema = { type = "string" } },
   { name = "subject", type = "text", required = true, schema = { type = "string" } },
   { name = "shared", type = "bool", required = true, schema = { type = "boolean" } },
-  { name = "content", type = { option = { named = "StoredContent" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { hash = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["hash", "size"] } },
+  { name = "content", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }] } },
 ]
 
 [[resources.verbs]]
@@ -93,7 +95,7 @@ id = "index-book"
 kind = "undoable"
 params = [
   { name = "book", type = "text", required = true, schema = { type = "string" } },
-  { name = "index", type = { named = "StoredContent" }, required = true, schema = { type = "object", additionalProperties = false, properties = { hash = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["hash", "size"] } },
+  { name = "index", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } },
 ]
 
 [[resources.verbs]]
@@ -339,13 +341,6 @@ fields = [
   { name = "scheme_id", type = "text" },
   { name = "mode", type = { named = "ReadMode" } },
   { name = "composition", type = { named = "CompositionStyle" } },
-]
-
-[[resources.types]]
-name = "StoredContent"
-fields = [
-  { name = "hash", type = "text" },
-  { name = "size", type = "int" },
 ]
 
 [[resources]]

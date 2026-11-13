@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.feeds@29a254263539388d";
+export const SURFACE = "so.tilo.feeds@a405395fdcfa75c6";
 
 export interface Article {
   feed_id: string;

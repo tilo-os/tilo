@@ -20,13 +20,31 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.db-client@2ed1a840d562110d";
+export const SURFACE = "so.tilo.db-client@ff2837e66ce4dd02";
+
+/** One of "sqlite", "postgres", "mysql". */
+export type Engine = "sqlite" | "postgres" | "mysql";
+
+export interface SavedConnection {
+  name: string;
+  engine: Engine;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  file_path: string;
+}
+
+export interface SavedQuery {
+  name: string;
+  sql: string;
+}
 
 /** Database — `db-client.workspace`. */
 export interface Workspace extends tilo.Resource {
-  connections: unknown;
-  saved_queries: unknown;
-  sql: unknown;
+  connections: SavedConnection[];
+  saved_queries: SavedQuery[];
+  sql: string;
   addConnection(args: {
     name: string;
     engine: string;

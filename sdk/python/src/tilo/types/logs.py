@@ -26,7 +26,7 @@ Priority = Literal["emerg", "alert", "crit", "err", "warning", "notice", "info",
 
 class Journal(Resource):
     """System journal — `logs.journal`."""
-    __surface__ = "so.tilo.logs@8357b071bb28aac5"
+    __surface__ = "so.tilo.logs@2428af2372c28388"
     severity: Priority
     unit: str
     boot: str

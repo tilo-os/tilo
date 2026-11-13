@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.imager@1f8dfe0ce0ddb4f8";
+export const SURFACE = "so.tilo.imager@9efd41f7d0f7c3f4";
 
 /** One of "btrfs", "ext4", "xfs". */
 export type Filesystem = "btrfs" | "ext4" | "xfs";

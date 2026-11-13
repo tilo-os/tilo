@@ -18,27 +18,46 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Comparison",
+    "HunkChoice",
+    "MergeInputs",
     "Session",
 ]
 
+class Comparison(TypedDict):
+    left_label: str
+    left: str
+    right_label: str
+    right: str
+
+HunkChoice = Literal["ours", "theirs", "both"]
+
+class MergeInputs(TypedDict):
+    base_label: str
+    base: str
+    ours_label: str
+    ours: str
+    theirs_label: str
+    theirs: str
+
 class Session(Resource):
     """Diff & Merge — `diffmerge.session`."""
-    __surface__ = "so.tilo.diffmerge@ddf89499bfa36ad7"
+    __surface__ = "so.tilo.diffmerge@6e3e0e40ba1c3ff2"
     @property
-    def comparison(self) -> Any:
+    def comparison(self) -> Comparison | None:
         """Read only."""
         return self.fields["comparison"]
     @property
-    def merge(self) -> Any:
+    def merge(self) -> MergeInputs | None:
         """Read only."""
         return self.fields["merge"]
-    merged: Any
+    merged: str
     @property
-    def resolutions(self) -> Any:
+    def resolutions(self) -> dict[str, HunkChoice]:
         """Read only."""
         return self.fields["resolutions"]
     @property
-    def written(self) -> Any:
+    def written(self) -> dict[str, str]:
         """Read only."""
         return self.fields["written"]
 

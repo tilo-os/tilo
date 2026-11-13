@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@c0f0bb93ba1205e5";
+export const SURFACE = "so.tilo.mail@cc453f20b5a856e1";
 
 export interface DraftAttachment {
   content_id: string;
@@ -245,7 +245,7 @@ export interface Mailbox extends tilo.Resource {
     to?: string;
     cc?: string;
     date?: string;
-    folder?: unknown;
+    folder?: string;
     read?: boolean;
     reply_to?: string;
     conversation?: string;

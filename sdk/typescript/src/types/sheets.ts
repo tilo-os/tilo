@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@9ade0694b6a2e150";
+export const SURFACE = "so.tilo.sheets@be9693405e43cb95";
 
 export interface Area {
   top: string;

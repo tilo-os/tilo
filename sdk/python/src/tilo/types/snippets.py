@@ -18,13 +18,27 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Language",
+    "Snippet",
     "Library",
 ]
 
+Language = Literal["text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile"]
+
+class Snippet(TypedDict):
+    title: str
+    body: str
+    description: str
+    favorite: bool
+    folder: str
+    language: Language
+    tags: list[str]
+    uses: int
+
 class Library(Resource):
-    """Snippets — `snippets.library`."""
-    __surface__ = "so.tilo.snippets@ac8a87311686dc62"
-    snippets: Any
+    """Snippet library — `snippets.library`."""
+    __surface__ = "so.tilo.snippets@530e3c69f46d7e0c"
+    snippets: list[Snippet]
 
     def new_snippet(self,
         *,

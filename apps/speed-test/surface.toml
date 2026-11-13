@@ -1,34 +1,48 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "speed-test.results"
 label = "Internet speed test"
 version = 1
 fields = [
-  { path = "results", type = "Collection<Measurement>", readonly = true, stored = "collection" },
-  { path = "results.*.at_ms", type = "i64" },
-  { path = "results.*.ping", type = "f64" },
-  { path = "results.*.jitter", type = "f64" },
-  { path = "results.*.download", type = "f64" },
-  { path = "results.*.upload", type = "f64" },
-  { path = "results.*.server", type = "String" },
-  { path = "results.*.device", type = "String" },
+  { path = "results", type = { collection = { named = "Measurement" } }, readonly = true, stored = "collection" },
+  { path = "results.*.at_ms", type = "int" },
+  { path = "results.*.ping", type = "float" },
+  { path = "results.*.jitter", type = "float" },
+  { path = "results.*.download", type = "float" },
+  { path = "results.*.upload", type = "float" },
+  { path = "results.*.server", type = "text" },
+  { path = "results.*.device", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "record"
 kind = "undoable"
 params = [
-  { name = "ping", required = true, schema = { type = "number" } },
-  { name = "jitter", required = true, schema = { type = "number" } },
-  { name = "download", required = true, schema = { type = "number" } },
-  { name = "upload", required = true, schema = { type = "number" } },
-  { name = "server", required = true, schema = { type = "string" } },
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "ping", type = "float", required = true, schema = { type = "number" } },
+  { name = "jitter", type = "float", required = true, schema = { type = "number" } },
+  { name = "download", type = "float", required = true, schema = { type = "number" } },
+  { name = "upload", type = "float", required = true, schema = { type = "number" } },
+  { name = "server", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "clear"
 destructive = true
 kind = "undoable"
+
+[[resources.types]]
+name = "Measurement"
+fields = [
+  { name = "at_ms", type = "int" },
+  { name = "ping", type = "float" },
+  { name = "jitter", type = "float" },
+  { name = "download", type = "float" },
+  { name = "upload", type = "float" },
+  { name = "server", type = "text" },
+  { name = "device", type = "text" },
+]
 

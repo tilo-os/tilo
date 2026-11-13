@@ -20,14 +20,34 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chip-design@994cb5cd1f2f6a7b";
+export const SURFACE = "so.tilo.chip-design@fa1a68b0cfa3e301";
+
+export interface Connection {
+  from_node: string;
+  from_port: string;
+  to_node: string;
+  to_port: string;
+}
+
+/** One of "input", "gate_input", "norm_weight_input", "rms_norm", "apply_norm_weight", "silu", "multiply", "projection_input", "matrix_weight_input", "linear_projection", "add". */
+export type OperatorKind = "input" | "gate_input" | "norm_weight_input" | "rms_norm" | "apply_norm_weight" | "silu" | "multiply" | "projection_input" | "matrix_weight_input" | "linear_projection" | "add";
+
+export interface OperatorNode {
+  id: string;
+  kind: OperatorKind;
+  shape: number[];
+  normalization_width: number;
+  output_width: number | null;
+  x: number;
+  y: number;
+}
 
 /** Chip Design — `chip_design.project`. */
 export interface Project extends tilo.Resource {
-  readonly reports: unknown;
-  readonly verifications: unknown;
-  nodes: unknown;
-  readonly connections: unknown;
+  readonly reports: Record<string, string>;
+  readonly verifications: Record<string, string>;
+  nodes: OperatorNode[];
+  readonly connections: Connection[];
   importReport(args: {
     json: string;
   }): Promise<tilo.Run | void>;
@@ -42,7 +62,7 @@ export interface Project extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   addNode(args: {
     node: string;
-    kind: string;
+    kind: OperatorKind;
     shape: number[];
     x: number;
     y: number;

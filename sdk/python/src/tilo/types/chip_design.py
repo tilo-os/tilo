@@ -18,23 +18,43 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "Connection",
+    "OperatorKind",
+    "OperatorNode",
     "Project",
 ]
 
+class Connection(TypedDict):
+    from_node: str
+    from_port: str
+    to_node: str
+    to_port: str
+
+OperatorKind = Literal["input", "gate_input", "norm_weight_input", "rms_norm", "apply_norm_weight", "silu", "multiply", "projection_input", "matrix_weight_input", "linear_projection", "add"]
+
+class OperatorNode(TypedDict):
+    id: str
+    kind: OperatorKind
+    shape: list[int]
+    normalization_width: int
+    output_width: int | None
+    x: int
+    y: int
+
 class Project(Resource):
     """Chip Design — `chip_design.project`."""
-    __surface__ = "so.tilo.chip-design@994cb5cd1f2f6a7b"
+    __surface__ = "so.tilo.chip-design@fa1a68b0cfa3e301"
     @property
-    def reports(self) -> Any:
+    def reports(self) -> dict[str, str]:
         """Read only."""
         return self.fields["reports"]
     @property
-    def verifications(self) -> Any:
+    def verifications(self) -> dict[str, str]:
         """Read only."""
         return self.fields["verifications"]
-    nodes: Any
+    nodes: list[OperatorNode]
     @property
-    def connections(self) -> Any:
+    def connections(self) -> list[Connection]:
         """Read only."""
         return self.fields["connections"]
 
@@ -57,7 +77,7 @@ class Project(Resource):
     def add_node(self,
         *,
         node: str,
-        kind: str,
+        kind: OperatorKind,
         shape: list[int],
         x: int,
         y: int,

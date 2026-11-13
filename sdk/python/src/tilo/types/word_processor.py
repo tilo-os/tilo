@@ -80,7 +80,7 @@ ReadDocument = TypedDict("ReadDocument", {
 
 class Document(Resource):
     """Document — `word-processor.document`."""
-    __surface__ = "so.tilo.word-processor@888e6bf56c260211"
+    __surface__ = "so.tilo.word-processor@d6a33f5b43133b78"
     body: str
     comments: list[Comment]
 

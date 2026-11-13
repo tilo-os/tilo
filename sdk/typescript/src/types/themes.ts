@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.themes@19e215a1dfe522b0";
+export const SURFACE = "so.tilo.themes@aece4838e9a21ddc";
 
 export interface Ink {
   primary: number;

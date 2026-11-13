@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "tasks.tracker"
 label = "Tasks"
@@ -8,7 +10,7 @@ fields = [
   { path = "issues", type = { collection = { named = "Issue" } }, stored = "collection", unit = true },
   { path = "issues.*.number", type = "int", readonly = true },
   { path = "issues.*.title", type = "text", label = true },
-  { path = "issues.*.body", type = "rich_text", ops = "sha256:10bf507639fdd4f3" },
+  { path = "issues.*.body", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
   { path = "issues.*.status", type = { named = "Status" } },
   { path = "issues.*.assignee", type = { option = "text" }, readonly = true },
   { path = "issues.*.labels", type = { set = "text" } },

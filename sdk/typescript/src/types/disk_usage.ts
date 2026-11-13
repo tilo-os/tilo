@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.disk-usage@201da2e058d30dcf";
+export const SURFACE = "so.tilo.disk-usage@142cf5e7136a5290";
 
 /** Disk Usage Analyzer — `disk-usage`. */
 export interface DiskUsage extends tilo.Resource {
@@ -33,7 +33,7 @@ export function diskUsage(ws: tilo.Workspace, path: string): DiskUsage {
 
 /** Recent folders — `disk-usage.recent-folders`. */
 export interface RecentFolders extends tilo.Resource {
-  devices: unknown;
+  devices: Record<string, unknown>;
   remember(args: {
     device: string;
     folder: string;

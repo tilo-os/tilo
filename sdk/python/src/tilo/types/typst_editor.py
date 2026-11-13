@@ -18,13 +18,19 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "TypstFile",
     "Workspace",
 ]
 
+class TypstFile(TypedDict):
+    name: str
+    path: str | None
+    source: str
+
 class Workspace(Resource):
     """Typst workspace — `typst-editor.workspace`."""
-    __surface__ = "so.tilo.typst-editor@44e128454ed53c59"
-    files: Any
+    __surface__ = "so.tilo.typst-editor@f31407ab794a3630"
+    files: list[TypstFile]
 
     def new_file(self,
         *,

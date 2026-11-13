@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "notes.notebook"
 label = "Notebook"
@@ -8,7 +10,7 @@ fields = [
   { path = "pages", type = { collection = { named = "Page" } }, stored = "collection" },
   { path = "pages.*.title", type = "text", label = true, readonly = true },
   { path = "pages.*.parent", type = { option = "text" }, readonly = true },
-  { path = "pages.*.body", type = "rich_text", ops = "sha256:10bf507639fdd4f3" },
+  { path = "pages.*.body", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
   { path = "pages.*.tags", type = { set = "text" } },
   { path = "pages.*.creator", type = { option = "text" }, readonly = true },
   { path = "pages.*.reactions", type = "reactions" },
@@ -122,7 +124,7 @@ params = [
 id = "keep-image"
 kind = "undoable"
 params = [
-  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } },
+  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } },
 ]
 
 [[resources.verbs]]
@@ -130,7 +132,7 @@ id = "place-image"
 kind = "undoable"
 params = [
   { name = "page", type = "text", required = true, schema = { type = "string" } },
-  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } },
+  { name = "bytes", required = true, schema = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } },
   { name = "alt", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -149,7 +151,7 @@ kind = "undoable"
 params = [
   { name = "title", type = "text", required = true, schema = { type = "string" } },
   { name = "markdown", type = "text", required = true, schema = { type = "string" } },
-  { name = "images", required = true, schema = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}$" }] } } },
+  { name = "images", type = { list = "any" }, required = true, schema = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } } },
   { name = "note", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
