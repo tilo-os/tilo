@@ -315,58 +315,62 @@ fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn video_packets_round_trip_and_bound_untrusted_lengths() {
-        {
-            let packet = VideoPacket {
-                width: 1280,
-                height: 720,
-                presentation_time_us: 33_333,
-                keyframe: true,
-                annex_b: vec![0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f],
-            };
-            let mut wire = Vec::new();
-            packet.write_to(&mut wire).expect("encode packet");
-            assert_eq!(
-                VideoPacket::read_from(wire.as_slice()).expect("decode packet"),
-                packet
-            );
-        }
-        {
-            let mut wire = Vec::new();
-            wire.extend_from_slice(&VIDEO_PACKET_MAGIC);
-            wire.extend_from_slice(&1280u32.to_be_bytes());
-            wire.extend_from_slice(&720u32.to_be_bytes());
-            wire.extend_from_slice(&0u64.to_be_bytes());
-            wire.push(0);
-            wire.extend_from_slice(&u32::MAX.to_be_bytes());
-            let error = VideoPacket::read_from(wire.as_slice()).expect_err("oversize rejected");
-            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_stream_bounds_its_packets_and_its_ceilings;
 
-    #[test]
-    fn stream_ceilings_follow_user_and_receiver_capabilities() {
+        phase video_packets_round_trip_and_bound_untrusted_lengths;
         {
-            let policy = DisplayStreamPolicy {
-                adaptive: true,
-                resolution_limit: DisplayResolutionLimit::P2160,
-                max_fps: 60,
-            };
-            let profile = policy.ceiling(Some((1920, 1080)));
-            assert_eq!((profile.max_width, profile.max_height), (1920, 1080));
-
-            let policy = DisplayStreamPolicy {
-                resolution_limit: DisplayResolutionLimit::P720,
-                ..policy
-            };
-            let profile = policy.ceiling(Some((3840, 2160)));
-            assert_eq!((profile.max_width, profile.max_height), (1280, 720));
+            {
+                let packet = VideoPacket {
+                    width: 1280,
+                    height: 720,
+                    presentation_time_us: 33_333,
+                    keyframe: true,
+                    annex_b: vec![0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f],
+                };
+                let mut wire = Vec::new();
+                packet.write_to(&mut wire).expect("encode packet");
+                assert_eq!(
+                    VideoPacket::read_from(wire.as_slice()).expect("decode packet"),
+                    packet
+                );
+            }
+            {
+                let mut wire = Vec::new();
+                wire.extend_from_slice(&VIDEO_PACKET_MAGIC);
+                wire.extend_from_slice(&1280u32.to_be_bytes());
+                wire.extend_from_slice(&720u32.to_be_bytes());
+                wire.extend_from_slice(&0u64.to_be_bytes());
+                wire.push(0);
+                wire.extend_from_slice(&u32::MAX.to_be_bytes());
+                let error = VideoPacket::read_from(wire.as_slice()).expect_err("oversize rejected");
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            }
         }
+
+        phase stream_ceilings_follow_user_and_receiver_capabilities;
         {
-            let profile = DisplayStreamPolicy::default().ceiling(Some((2560, 1440)));
-            assert_eq!((profile.max_width, profile.max_height), (2560, 1440));
-            assert_eq!(profile.fps, 60);
+            {
+                let policy = DisplayStreamPolicy {
+                    adaptive: true,
+                    resolution_limit: DisplayResolutionLimit::P2160,
+                    max_fps: 60,
+                };
+                let profile = policy.ceiling(Some((1920, 1080)));
+                assert_eq!((profile.max_width, profile.max_height), (1920, 1080));
+
+                let policy = DisplayStreamPolicy {
+                    resolution_limit: DisplayResolutionLimit::P720,
+                    ..policy
+                };
+                let profile = policy.ceiling(Some((3840, 2160)));
+                assert_eq!((profile.max_width, profile.max_height), (1280, 720));
+            }
+            {
+                let profile = DisplayStreamPolicy::default().ceiling(Some((2560, 1440)));
+                assert_eq!((profile.max_width, profile.max_height), (2560, 1440));
+                assert_eq!(profile.fps, 60);
+            }
         }
     }
 }
