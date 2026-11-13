@@ -1197,4 +1197,54 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     });
     assert_eq!(moved.1, iy, "it stands at the inbox's line: {moved:?}");
     assert!(moved.0 > ix, "to the inbox's right: {moved:?} against {ix}");
+/// The page a place draws names the workspace's agent by the name its keeper gave it as soon as
+/// the name exists, never staying on Chat's fallback word for an agent it was not told the name
+/// of.
+///
+/// The names live in the workspace's agents record, a different record from the conversation's
+/// own, and the byline reads them through the session's one store. When the page was read before
+/// the ask recorded the name, it fell back to "Agent" and stayed there until something else moved
+/// the conversation — the person asked why their assistant was called "Agent". The service says
+/// its reading moved, so the shell reads the page again and the byline says "Assistant".
+#[test]
+fn the_page_names_the_agent_the_workspace_gave_it_never_chats_fallback() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let summons = asked(&mut session, "what is on my task list?");
+    // The turn's reply is the agent's words, so the page draws a byline for the agent at all.
+    let mut took = serde_json::Map::new();
+    took.insert(
+        "work".into(),
+        serde_json::json!({"state": "doing", "did": "Reading the tasks"}),
+    );
+    took.insert(
+        "say".into(),
+        serde_json::json!("Looking at your task list now."),
+    );
+    session
+        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &took)
+        .unwrap_or_else(|error| panic!("Chat records the work: {error}"));
+    // The whole conversation, opened as the person opens it, draws the page; its byline says the
+    // name the workspace gave its agent.
+    open_the_conversation(&mut session);
+    until(&mut session, "the agent's byline by its name", |session| {
+        session.shell_says("Assistant")
+    });
+    let reading = session
+        .read(&format!("chat.workspace/channels/{}", summons.channel))
+        .unwrap_or_else(|| panic!("the session serves the channel {}", summons.channel));
+    let named = reading["people"]
+        .as_array()
+        .and_then(|people| {
+            people
+                .iter()
+                .find(|person| person["id"].as_str() == Some(summons.agent.as_str()))
+                .map(|person| person["name"].as_str().unwrap_or_default().to_owned())
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        named, "Assistant",
+        "the page names the agent the workspace keeps by its keeper's name: {reading}"
+    );
 }

@@ -392,13 +392,18 @@ impl Session {
         // each workspace keeps, both read from Chat's record of them: made
         // here, before the door, because what text that asks does reads them
         // and the desk in front (shell.md §8.1, "Asking from the canvas").
+        // The session's records are opened through one `SessionOwners`: the
+        // conversations, the agents and the workspace settings' tabs share
+        // it, so a record one writes the others read at once, never a second
+        // record set over the same store.
+        let owners = crate::owners::SessionOwners::new(cli::data_home());
         let conversations = Rc::new(crate::conversations::Conversations::new(
-            cli::data_home(),
+            owners.clone(),
             options.wake.handle(),
             Some(arrangement.borrow().targets()),
         ));
         let agents = Rc::new(crate::agents::Agents::new(
-            cli::data_home(),
+            owners.clone(),
             options.wake.handle(),
         ));
         let ask: crate::arrangement::Ask = {
@@ -1252,7 +1257,7 @@ impl Session {
             Rc::clone(&services),
         );
         let workspace_tabs =
-            crate::workspace_settings::WorkspaceTabs::new(cli::data_home(), options.wake.handle());
+            crate::workspace_settings::WorkspaceTabs::new(owners.clone(), options.wake.handle());
         let directory_store = crate::directory::Store::default();
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community = crate::community::Community::for_site(crate::directory::community_site());

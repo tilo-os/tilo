@@ -6,7 +6,6 @@
 //! when something changed.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
 
 use collab_types::caps::{Effect, Expiry};
 use tilo_action_policy::agent_answers::AnswerScope;
@@ -41,12 +40,13 @@ pub(crate) struct WorkspaceTabs {
 }
 
 impl WorkspaceTabs {
-    /// The two records over the store at `root` , waking the session's loop through `wake` when a
+    /// The two records over the store `owners` hold — the session's one, shared with the
+    /// conversations and the workspace's agents — waking the session's loop through `wake` when a
     /// change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(owners: crate::owners::SessionOwners, wake: tilo_service::Wake) -> Self {
         Self {
-            agents: AgentsTab::new(root.clone(), wake.clone()),
-            emoji: EmojiTab::new(root, wake),
+            agents: AgentsTab::new(owners.clone(), wake.clone()),
+            emoji: EmojiTab::new(owners, wake),
         }
     }
 }

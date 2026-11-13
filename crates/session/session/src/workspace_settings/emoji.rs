@@ -25,7 +25,6 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
 use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small, wake_when_tools_are_in};
 
@@ -50,7 +49,7 @@ const PICTURES: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 pub(crate) struct Emoji {
     /// Where this device keeps its apps' records: the one store Chat keeps the record in too, which
     /// every app of the workspace opens.
-    owners: RecordOwners,
+    owners: crate::owners::SessionOwners,
     /// Wakes the session's loop when another replica's change arrives, and when the image tools a
     /// chosen picture waits for are in.
     wake: ui::WakeScope,
@@ -99,15 +98,15 @@ struct Waiting {
 }
 
 impl Emoji {
-    /// The workspace's emoji in the store rooted at `root` , waking the session's loop through
+    /// The workspace's emoji over the store `owners` hold, waking the session's loop through
     /// `wake` when a change or the image tools land.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(owners: crate::owners::SessionOwners, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
             tracing::warn!(%error, "the workspace's emoji are not woken");
         }
         Self {
-            owners: RecordOwners::new(root),
+            owners,
             wake: scope,
             open: RefCell::default(),
             shown: RefCell::default(),
@@ -256,7 +255,7 @@ impl Emoji {
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = WorkspaceRecords::in_workspace(
-            self.owners.clone(),
+            self.owners.owners(),
             workspace_id.clone(),
             author.clone(),
         );

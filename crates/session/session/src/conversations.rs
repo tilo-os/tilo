@@ -15,7 +15,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -26,8 +25,8 @@ use tilo_app::framework::WorkspaceRecord;
 use tilo_clock::wall;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, PermissionContext, UserId};
+use ui::record::RecordId;
 use ui::record::workspace::WorkspaceRecords;
-use ui::record::{RecordId, RecordOwners};
 
 /// The app that keeps the conversations: its own record of a workspace.
 const CHAT_OWNER: &str = "so.tilo.chat";
@@ -277,8 +276,10 @@ pub(crate) struct WorkspaceFacts {
 /// holds.
 pub(crate) struct Conversations {
     runs: Arc<Runs>,
-    /// Where this device keeps its apps' records.
-    owners: RecordOwners,
+    /// The session's one open of the store its apps' records are kept in: the same one the
+    /// workspace's agents and its settings' tabs open theirs through, so what one writes the
+    /// others read at once ([`crate::owners::SessionOwners`]).
+    owners: crate::owners::SessionOwners,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
@@ -302,14 +303,41 @@ struct Opened {
     chat: Option<WorkspaceRecord<chat::Chat>>,
     /// The head of the messages' chain, and the part it holds here.
     part: Option<(u64, WorkspaceRecord<chat::parts::ChatPart>)>,
+    /// The workspace's agents record, once a page has needed its names: the record the workspace
+    /// settings keep too, opened here through the session's one store so a name the ask has just
+    /// recorded is read at once, never the state before the write. `None` where the workspace
+    /// keeps no agents record — reading one creates none.
+    agents: RefCell<Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>>>,
+    /// Whether a page of the workspace was read here, and so draws its people by the names this
+    /// workspace keeps: only such a page is read again when a name arrives. A workspace no place
+    /// shows costs the pass nothing.
+    page_read: std::cell::Cell<bool>,
+    /// The revision of the workspace's agents record the page last read its people at: `None`
+    /// where the workspace kept no agents record then. Compared each pass
+    /// ([`ChatViewService::poll`]) to say the reading moved, so a name that arrives after the page
+    /// fell back to Chat's word for an agent is drawn by the name the workspace gave it.
+    names_at: std::cell::Cell<Option<u64>>,
+}
+
+impl Opened {
+    /// Note that this workspace's names stand at `at`, and say whether they moved since the pages
+    /// last read them: when they did, what the service publishes is read again, so a byline that
+    /// fell back to Chat's word for an agent is drawn with the name the workspace gave it.
+    fn note_names(&self, at: Option<u64>) -> bool {
+        if self.names_at.get() == at {
+            return false;
+        }
+        self.names_at.set(at);
+        true
+    }
 }
 
 impl Conversations {
-    /// The conversations over the store at `root` , waking the session's loop through `wake` when a
-    /// change lands. `catalog` is what the session publishes now, by id: what an attachment names
-    /// itself by when the composer's `post` takes it into a message.
+    /// The conversations over the store `owners` hold, waking the session's loop through `wake`
+    /// when a change lands. `catalog` is what the session publishes now, by id: what an attachment
+    /// names itself by when the composer's `post` takes it into a message.
     pub(crate) fn new(
-        root: PathBuf,
+        owners: crate::owners::SessionOwners,
         wake: tilo_service::Wake,
         catalog: Option<Rc<RefCell<crate::arrangement::Catalog>>>,
     ) -> Self {
@@ -320,7 +348,7 @@ impl Conversations {
         }
         Self {
             runs: Arc::new(Runs::new(wake)),
-            owners: RecordOwners::new(root),
+            owners,
             wake: scope,
             open: RefCell::default(),
             drafts: RefCell::default(),
@@ -462,9 +490,16 @@ impl Conversations {
             ),
             agents: BTreeMap::new(),
         };
+        // A page of this workspace is read here: what the workspace names its people by is what
+        // the service follows, so a name that arrives after this read is drawn at the next one.
+        opened.page_read.set(true);
         let record = Self::workspace_agents(opened);
         if let Some(record) = record {
             let state = record.get();
+            // The revision the page's names are read at: the service compares it each pass, so a
+            // page drawn before the workspace named its agent is read again once the name is in
+            // ([`ChatViewService::poll`]).
+            opened.names_at.set(Some(record.revision()));
             for agent in state.active() {
                 let name = agent.name.trim();
                 if !name.is_empty() {
@@ -478,10 +513,17 @@ impl Conversations {
     /// The workspace's agents record `opened` holds, opened here where it is not: the names a
     /// conversation's agents go by. `None` where the workspace keeps none — reading an app's
     /// record creates none, as [`Self::opened_with`] reads Chat's.
+    ///
+    /// Opened once and kept in `opened`: the record is the workspace's one, written by the ask
+    /// that makes its agent through this session's one store, so a name that was written a moment
+    /// ago is read now rather than from the state the page was first drawn at.
     fn workspace_agents(
         opened: &Opened,
     ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
         use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
+        if let Some(record) = opened.agents.borrow().as_ref() {
+            return Some(record.clone());
+        }
         let id = collab_types::workspace_record_id(AGENTS_KIND);
         let held = opened
             .records
@@ -496,13 +538,15 @@ impl Conversations {
         );
         let permissions = PermissionContext::from_standing(&opened.policy.workspace, standing)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
+        let record = WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
             &opened.records,
             AGENTS_OWNER,
             CHAT_APP,
             Some(LivePermissions::fixed(permissions)),
             None,
-        )
+        );
+        *opened.agents.borrow_mut() = record.clone();
+        record
     }
 
     /// Attach `resource` to the draft the composer for `channel` writes: the resource a drop on
@@ -1014,12 +1058,15 @@ impl Conversations {
         let opened = open.entry(id).or_insert_with(|| Opened {
             policy: workspace.policy.clone(),
             records: WorkspaceRecords::in_workspace(
-                self.owners.clone(),
+                self.owners.owners(),
                 workspace.workspace.clone(),
                 UserId(person.to_owned()),
             ),
             chat: None,
             part: None,
+            agents: RefCell::default(),
+            page_read: std::cell::Cell::new(false),
+            names_at: std::cell::Cell::new(None),
         });
         let permissions = PermissionContext::from_standing(
             &workspace.workspace,
@@ -1480,6 +1527,34 @@ impl tilo_service::Service for ChatViewService {
             .or_else(|| resource.strip_prefix("chat.workspace.channels:"))?;
         let reading = self.conversations.channel_reading(channel)?;
         serde_json::to_value(&reading).ok()
+    }
+
+    /// Read the workspace's agents record each open workspace has, and say whether the names its
+    /// pages draw their people by moved since they were last read.
+    ///
+    /// The names live in the workspace's agents record, a different record from the conversation's
+    /// own, so nothing else moves the page when they change: the person's ask makes the agent and
+    /// then places a page of the conversation in one pass — but the page was read before the agent
+    /// existed, and its byline says Chat's own word for an unnamed agent ("Agent") until something
+    /// re-reads it. Saying the reading moved has the shell re-read what this service publishes, so
+    /// the byline says the name the ask just gave it in the pass after.
+    ///
+    /// Only a workspace whose page was read is followed here: a name that arrives before any page
+    /// is drawn is read with the page's first reading, which opens the record through the same
+    /// session store the ask wrote it through.
+    fn poll(&mut self) -> bool {
+        let open = self.conversations.open.borrow();
+        let mut moved = false;
+        for opened in open.values() {
+            if opened.chat.is_none() || !opened.page_read.get() {
+                continue;
+            }
+            let at = Conversations::workspace_agents(opened).map(|record| record.revision());
+            if opened.note_names(at) {
+                moved = true;
+            }
+        }
+        moved
     }
 
     fn invoke(
@@ -2467,5 +2542,125 @@ mod tests {
         assert_eq!(at.reference.kind, "tube.video");
         assert_eq!(at.reference.id, "tube.video:vid_1");
         assert_eq!(label, "vid_1");
+    }
+
+    /// A channel whose page names its people by the workspace's agents record is read again when
+    /// that record names an agent: the page's byline stops falling back to Chat's own word for an
+    /// agent it was not told the name of, without anything else about the conversation moving.
+    ///
+    /// The workspace's agents record is a different record from the conversation's own, so
+    /// nothing in the conversation wakes the page when a name arrives. The service says its
+    /// reading moved, so the shell reads what it publishes again — and the page is read through
+    /// the session's one owners, so the name the ask just wrote is there to read.
+    #[test]
+    fn a_page_whose_agents_name_arrives_is_named_and_read_again() {
+        use tilo_app::tilo_workspace_agent::{OWNER as AGENTS_OWNER, WorkspaceAgents};
+
+        let store = Rc::new(durable_store::MemoryStore::new());
+        let owners = crate::owners::SessionOwners::over(ui::record::RecordOwners::with_store(
+            Rc::clone(&store) as Rc<dyn durable_store::DurableStore>,
+        ));
+        let policy = WorkspacePolicy::new("w1", ME);
+        let workspace = WorkspaceFacts {
+            workspace: "00000000-0000-4000-8000-0000000000aa".to_owned(),
+            policy: policy.clone(),
+        };
+        let conversations =
+            Conversations::new(owners.clone(), Arc::new(|| {}) as tilo_service::Wake, None);
+        // The workspace's conversation between the person and its agent, made as an ask makes it.
+        // Its item names the channel the two of them share, derived from their participant keys.
+        let item = conversations
+            .ask(
+                ME,
+                &workspace.workspace,
+                &policy,
+                AGENT,
+                "what is on my task list?",
+            )
+            .expect("the ask made the conversation");
+        let channel = format!(
+            "chat.workspace/channels/{}",
+            item.rsplit('/').next().expect("the item names the channel")
+        );
+        let id = channel
+            .rsplit('/')
+            .next()
+            .expect("the address names the channel")
+            .to_owned();
+        // The agent answers the person's message, as the turn's `record-work` writes it: the reply
+        // is authored as the agent, so the page names it among the people it draws.
+        let summons = conversations
+            .channel_reading(&id)
+            .expect("the session serves the channel")
+            .messages
+            .first()
+            .map(|message| message.id.clone())
+            .expect("the person's message is on the page");
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "work".into(),
+            serde_json::json!({"state": "doing", "did": "Reading"}),
+        );
+        arguments.insert("say".into(), serde_json::json!("Looking at it now."));
+        conversations
+            .record_work(
+                &tilo_actions::ActionInvoker::actor(AGENT_ACTOR),
+                &format!("chat.workspace/messages/{summons}"),
+                &arguments,
+            )
+            .expect("the turn records its work as the agent");
+        // The page is read once before the name arrives: this is the page the shell drew, and the
+        // record it read its people by is what the service follows from then on.
+        let before = conversations
+            .channel_reading(&id)
+            .expect("the session serves the channel");
+        let named = |reading: &chat::views::Channel| {
+            reading
+                .people
+                .iter()
+                .find(|person| person.id == AGENT_ACTOR)
+                .map(|person| person.name.clone())
+        };
+        assert_eq!(
+            named(&before).as_deref(),
+            Some("Agent"),
+            "nothing named the agent yet, so the page says what Chat says of an unnamed agent \
+             (apps/chat/locales/en-US.ftl's `chat-agent-kind`), never its id"
+        );
+        // The workspace's agents record names it, written through the session's own owners as the
+        // ask writes it: the ask's `keep_one` makes the agent before the conversation is asked in.
+        let records = WorkspaceRecords::in_workspace(
+            owners.owners(),
+            workspace.workspace.clone(),
+            UserId(ME.to_owned()),
+        );
+        let record =
+            WorkspaceRecord::<WorkspaceAgents>::open(&records, AGENTS_OWNER, CHAT_APP, None, None)
+                .expect("the workspace's agents record is made");
+        let made = record.invoke(&WorkspaceAgents::CREATE_AGENT.with(
+            tilo_app::tilo_workspace_agent::workspace_agents::CreateAgent {
+                name: tilo_resource::NonBlank::parse("Assistant").expect("a name"),
+                keeper: Some(ME.to_owned()),
+                id: Some(AGENT.to_owned()),
+                model: None,
+                colour: None,
+            },
+        ));
+        made.expect("the workspace names its agent");
+        // The service noticed the names moved, so the shell reads what it publishes again.
+        let mut service = ChatViewService::new(Rc::new(conversations));
+        assert!(
+            tilo_service::Service::poll(&mut service),
+            "the service noticed the name arrive, so its page is read again"
+        );
+        let after = tilo_service::Service::read(&service, &channel)
+            .expect("the session serves the channel");
+        let after: chat::views::Channel =
+            serde_json::from_value(after).expect("the page reads back");
+        assert_eq!(
+            named(&after).as_deref(),
+            Some("Assistant"),
+            "the page names its agent by the name the workspace gave it, never its id"
+        );
     }
 }

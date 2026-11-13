@@ -240,6 +240,8 @@ mod options;
 #[cfg(target_os = "linux")]
 mod owner_session;
 #[cfg(target_os = "linux")]
+mod owners;
+#[cfg(target_os = "linux")]
 mod pairing;
 #[cfg(target_os = "linux")]
 mod panels;

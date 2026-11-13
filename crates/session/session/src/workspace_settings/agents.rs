@@ -16,7 +16,6 @@
 //! record is the one truth the tab shows.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_action_policy::{Standing, Subject};
@@ -32,7 +31,6 @@ use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_resource::Id;
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
 
 /// How workspace settings' history names where a change came from.
@@ -42,7 +40,7 @@ const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 pub(crate) struct Agents {
     /// Where this device keeps its apps' records: the one store Chat keeps the agents in too, which
     /// every app of the workspace opens.
-    owners: RecordOwners,
+    owners: crate::owners::SessionOwners,
     /// Wakes the session's loop when another replica's change arrives.
     wake: ui::WakeScope,
     /// The record, once the tab showed it: the workspace, the person and the grants it was opened
@@ -84,15 +82,15 @@ struct Review<'a> {
 }
 
 impl Agents {
-    /// The workspace's agents in the store rooted at `root` , waking the session's loop through
+    /// The workspace's agents over the store `owners` hold, waking the session's loop through
     /// `wake` when a change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(owners: crate::owners::SessionOwners, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
             tracing::warn!(%error, "the workspace's agents are not woken");
         }
         Self {
-            owners: RecordOwners::new(root),
+            owners,
             wake: scope,
             open: RefCell::default(),
             shown: RefCell::default(),
@@ -419,7 +417,7 @@ impl Agents {
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = WorkspaceRecords::in_workspace(
-            self.owners.clone(),
+            self.owners.owners(),
             workspace_id.clone(),
             ui::permissions::UserId(person.clone()),
         );

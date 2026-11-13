@@ -221,6 +221,11 @@ label = "App content store contract"
 run = "python3 tools/policy/check_app_content_store.py"
 
 [[step]]
+name = "record-owners"
+label = "The session opens its records through one RecordOwners"
+run = "python3 tools/policy/check_record_owners.py"
+
+[[step]]
 name = "document-engine-boundary"
 label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"

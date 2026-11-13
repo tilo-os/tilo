@@ -11,7 +11,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{Standing, WorkspacePolicy};
@@ -21,7 +20,6 @@ use tilo_app::tilo_workspace_agent::{
 };
 use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
 
 /// How this session names a record it opened, where the record's history is told.
@@ -72,8 +70,10 @@ impl tilo_action_broker::services::AgentRoster for Roster {
 /// The workspaces' agents, read from each workspace's record of them.
 pub(crate) struct Agents {
     roster: Arc<Roster>,
-    /// Where this device keeps its apps' records.
-    owners: RecordOwners,
+    /// The session's one open of the store its apps' records are kept in: the same one the
+    /// conversations and the settings' tabs open theirs through, so what one writes the others
+    /// read at once ([`crate::owners::SessionOwners`]).
+    owners: crate::owners::SessionOwners,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
     /// Each workspace's records and its agents record, opened here and kept at the grants they were
@@ -92,16 +92,16 @@ struct Opened {
 }
 
 impl Agents {
-    /// The workspaces' agents over the store at `root` , waking the session's loop through `wake`
-    /// when a change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    /// The workspaces' agents over the store `owners` hold, waking the session's loop through
+    /// `wake` when a change lands.
+    pub(crate) fn new(owners: crate::owners::SessionOwners, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
             tracing::warn!(%error, "the workspaces' agents are not woken");
         }
         Self {
             roster: Arc::default(),
-            owners: RecordOwners::new(root),
+            owners,
             wake: scope,
             open: RefCell::default(),
         }
@@ -258,7 +258,7 @@ impl Agents {
         let opened = open.entry(workspace.to_owned()).or_insert_with(|| Opened {
             policy: policy.clone(),
             records: WorkspaceRecords::in_workspace(
-                self.owners.clone(),
+                self.owners.owners(),
                 workspace.to_owned(),
                 ui::permissions::UserId(person.to_owned()),
             ),
