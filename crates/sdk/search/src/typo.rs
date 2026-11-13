@@ -42,7 +42,7 @@ impl Vocabulary {
     }
 
     /// The words within `distance` edits of `query` (a transposition is one
-    /// edit).
+    /// edit), the parts of a dotted name among them.
     pub(crate) fn near<'a>(
         &'a self,
         query: &'a [char],
@@ -50,7 +50,7 @@ impl Vocabulary {
     ) -> impl Iterator<Item = &'a str> + 'a {
         self.words
             .iter()
-            .filter(move |(_, (_, word))| within(query, word, distance))
+            .filter(move |(_, (_, word))| matches_word(query, word, distance))
             .map(|(text, _)| text.as_str())
     }
 }
@@ -96,6 +96,18 @@ impl Typos {
 /// changed is most often another real word ("cats" is not "cuts" mistyped),
 /// while "nots" is still "notes" with a letter dropped.
 const SUBSTITUTION_SCALARS: usize = 5;
+
+/// Whether `word`, or one of the parts of a dotted name it is, is within
+/// `distance` edits of `query`: a person remembers "github" of
+/// "github.com", and mistypes that. A dot joins letters into one word
+/// ([`crate::tokenizer::words`]), so the part is what they are typing.
+#[must_use]
+pub(crate) fn matches_word(query: &[char], word: &[char], distance: usize) -> bool {
+    within(query, word, distance)
+        || word
+            .split(|scalar| *scalar == '.')
+            .any(|part| within(query, part, distance))
+}
 
 /// Whether `word` is within `distance` optimal-string-alignment edits of
 /// `query`: the same word, mistyped. A query shorter than
@@ -184,6 +196,22 @@ mod tests {
         assert!(!near("netflix", "network", 2));
         assert!(near("einstelungen", "einstellungen", 1));
         assert!(!near("abcdef", "uvwxyz", 2));
+    }
+
+    #[test]
+    fn a_dotted_name_is_mistyped_in_any_of_its_parts() {
+        let part = |query: &str, word: &str| {
+            let query: Vec<char> = query.chars().collect();
+            let word: Vec<char> = word.chars().collect();
+            matches_word(&query, &word, 1)
+        };
+        assert!(part("githbu", "github.com"), "a mistyped host");
+        assert!(part("github", "github.com"), "the host typed whole");
+        assert!(
+            !part("hello", "helligkeit.com"),
+            "a part is a whole word too"
+        );
+        assert!(!part("zzz", "abc.de"));
     }
 
     #[test]
