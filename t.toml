@@ -2780,7 +2780,9 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "nested-session"
-egress = { to = ["code.tilo.so:443"], pinned = true }
+# The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json) the Browser among the apps
+# renders with, and the build scripts' pinned assets.
+egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 needs = ["image-env-runtime-dev-tree-x86_64"]
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
