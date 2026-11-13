@@ -441,39 +441,45 @@ view deck(d: Deck) {
         assert_eq!(texts(view.tree())[17], "seventeen");
     }
 
+    /// Whatever the collection holds when it is handed over (nothing, one item, hundreds): the
+    /// one insert is one row.
     #[test]
     fn a_collection_handed_to_a_view_follows_one_insert_with_one_row() {
-        let rows = Rows::new(2000);
-        let mut view = rows.view("handed");
-        let opened = view.stats();
-        assert_eq!(
-            opened.boundaries, 2002,
-            "the view, the one it hands to, a row per item"
-        );
-        let built = rows.rt.items_built();
-        rows.call(
-            "add",
-            vec![Value::resource(&rows.bag), Value::text("one more")],
-        );
-        let patches = view.poll_patches().unwrap();
-        assert_eq!(
-            view.stats().renders - opened.renders,
-            1,
-            "only the new item's row ran: neither view holding the collection did"
-        );
-        assert!(
-            rows.rt.items_built() - built <= 2,
-            "the collection was not read whole: {} items built",
-            rows.rt.items_built() - built
-        );
-        assert!(
-            matches!(patches.as_slice(), [Patch::Insert { index: 2000, .. }]),
-            "{patches:?}"
-        );
-        assert_eq!(
-            texts(view.tree()).last().map(String::as_str),
-            Some("one more")
-        );
+        for n in [0, 1, 300] {
+            let rows = Rows::new(n);
+            let mut view = rows.view("handed");
+            let opened = view.stats();
+            assert_eq!(
+                opened.boundaries,
+                n + 2,
+                "{n} items: the view, the one it hands to, a row per item"
+            );
+            let built = rows.rt.items_built();
+            rows.call(
+                "add",
+                vec![Value::resource(&rows.bag), Value::text("one more")],
+            );
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().renders - opened.renders,
+                1,
+                "{n} items: only the new item's row ran: neither view holding the collection did"
+            );
+            assert!(
+                rows.rt.items_built() - built <= 2,
+                "{n} items: the collection was not read whole: {} items built",
+                rows.rt.items_built() - built
+            );
+            assert!(
+                matches!(patches.as_slice(), [Patch::Insert { index, .. }] if *index == n),
+                "{n} items: {patches:?}"
+            );
+            assert_eq!(
+                texts(view.tree()).last().map(String::as_str),
+                Some("one more"),
+                "{n} items"
+            );
+        }
     }
 
     #[test]

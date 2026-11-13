@@ -438,6 +438,34 @@ mod tests {
         assert!(f.get(-1).is_err());
     }
 
+    /// Frame serials wrap ([`SERIAL_RANGE`]). A frame of every serial, the wrapped ones and
+    /// zero included, resolves the handles it issued and no handle of the frame around it or
+    /// of the frame that ended inside it.
+    #[test]
+    fn handles_stay_scoped_to_their_frame_when_serials_wrap() {
+        let mut f = Frames::default();
+        // Two frames a round: the serials go round twice, each frame once outer and once inner.
+        for round in 0..SERIAL_RANGE.saturating_add(1) {
+            f.push(module(), FrameKind::Pure);
+            let outer = f.alloc(Value::Int(7)).unwrap();
+            assert_eq!(f.get(outer).unwrap(), &Value::Int(7), "round {round}");
+            f.push(module(), FrameKind::Pure);
+            assert!(
+                f.get(outer).is_err(),
+                "round {round}: an outer frame's handle must not resolve"
+            );
+            let inner = f.alloc(Value::Int(8)).unwrap();
+            assert_eq!(f.get(inner).unwrap(), &Value::Int(8), "round {round}");
+            f.pop();
+            assert!(
+                f.get(inner).is_err(),
+                "round {round}: an ended frame's handle must not resolve"
+            );
+            assert_eq!(f.get(outer).unwrap(), &Value::Int(7), "round {round}");
+            f.pop();
+        }
+    }
+
     #[test]
     fn retained_values_outlive_frames() {
         let mut f = Frames::default();
