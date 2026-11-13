@@ -1,11 +1,5 @@
 //! Which relays a Tilo endpoint uses, and whether number 0's DNS may find its peers.
 //!
-//! A device relays through number 0's public relays and finds its peers on number 0's directory
-//! unless its person said otherwise (`settings_store::relay`). Said otherwise, the device uses
-//! the relay they named — or no relay at all — and nothing it does reaches number 0: no
-//! publication, no lookup. Peers are then found through the addresses a ticket or an invitation
-//! carries, and on the local network ([`crate::lan`]).
-//!
 //! This is the one reading of that setting: [`relays`] is what every endpoint of a person's
 //! device binds with (the session's, the filesystem's, a runtime's), so the same setting decides
 //! them all.
@@ -24,14 +18,12 @@ pub struct EndpointRelays {
     pub n0_dns: bool,
 }
 
-/// The relays this device's endpoints use, as the person has the setting now.
 #[must_use]
 pub fn relays() -> EndpointRelays {
     EndpointRelays::for_choice(&settings_store::relay::relays())
 }
 
 impl EndpointRelays {
-    /// What the person's `choice` asks for.
     #[must_use]
     pub fn for_choice(choice: &Relays) -> Self {
         match choice {
@@ -150,7 +142,6 @@ mod tests {
         endpoint.close().await;
     }
 
-    /// No relay at all: direct and local-network connections only.
     #[test]
     fn no_relay_leaves_the_map_empty_and_number_0_dns_off() {
         let none = EndpointRelays::for_choice(&Relays::None);
