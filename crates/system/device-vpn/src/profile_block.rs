@@ -15,10 +15,6 @@
 //! when the session starts: after a crash the block holds while the next
 //! shell starts and is taken over, with the servers looked up before, and
 //! only what the person turned off meanwhile is lifted.
-//!
-//! Nothing runs, and `NetworkManager` is not followed, until some profile
-//! has its kill switch on. What blocks goes to the caller of [`start`] each
-//! time it changes, to be published with the device VPN's status for Settings.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -34,7 +30,6 @@ use settings_store::live::LiveSettings;
 use tilo_nm::{ActiveState, VpnReading, VpnWatch};
 use tokio::sync::watch;
 
-/// How long a request to the helper may take.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 /// A block the helper could not hold is asked for again after this long,
 /// doubling up to [`RETRY_MOST`], while it is still wanted.
@@ -45,13 +40,11 @@ const RETRY_MOST: Duration = Duration::from_secs(60);
 /// `NetworkManager`'s VPNs come from.
 #[derive(Clone, Debug)]
 pub struct Sources {
-    /// The helper's socket.
     pub helper: std::path::PathBuf,
     pub vpns: Vpns,
 }
 
 impl Sources {
-    /// The machine's own: the installed helper and its `NetworkManager`.
     #[must_use]
     pub fn system() -> Self {
         Self {
@@ -61,18 +54,15 @@ impl Sources {
     }
 }
 
-/// Where a follower gets `NetworkManager`'s active VPNs.
 #[derive(Clone, Debug, Default)]
 pub enum Vpns {
     /// The machine's `NetworkManager`, followed once some profile has its
     /// kill switch on.
     #[default]
     System,
-    /// A reading fed in from elsewhere.
     Fed(VpnWatch),
 }
 
-/// What the person chose, as the settings say.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Choices {
     switches: BTreeMap<String, ProfileKillSwitch>,
@@ -174,7 +164,6 @@ async fn vpns_change(vpns: &mut Option<VpnWatch>) {
     }
 }
 
-/// Keep `intent` in the settings; whether it was written.
 fn keep(intent: &ProfileIntent) -> bool {
     let value = match serde_json::to_value(intent) {
         Ok(value) => value,
@@ -234,7 +223,6 @@ async fn run(
     }
 }
 
-/// What a profile's activity is, as the decisions name it.
 const fn activity(state: ActiveState) -> Option<Activity> {
     match state {
         ActiveState::Activating => Some(Activity::Activating),
@@ -244,35 +232,24 @@ const fn activity(state: ActiveState) -> Option<Activity> {
     }
 }
 
-/// What the helper holds, as far as the follower knows.
 #[derive(Debug)]
 enum Applied {
-    /// Not asked yet: a block an earlier shell left may be up.
     Unknown,
-    /// The helper agreed to hold this block, or none.
     Agreed(Option<ProfileBlock>),
 }
 
-/// What the follower keeps between steps.
 struct Follow {
     intent: Intent,
-    /// The last release request acted on.
     release_seen: Option<u64>,
-    /// The intent as last kept in the settings.
     kept: ProfileIntent,
-    /// Per profile, how often `NetworkManager` said it went down on purpose.
     ended_seen: BTreeMap<String, u64>,
-    /// Each profile's servers, from the last lookup that found any.
     servers: BTreeMap<String, Vec<IpAddr>>,
-    /// Each profile's activity at the last step.
     activities: BTreeMap<String, Activity>,
-    /// What the helper was last told and agreed to.
     applied: Applied,
     status: ProfileBlockStatus,
 }
 
 impl Follow {
-    /// Take over the intent `kept` from before this session.
     fn new(kept: ProfileIntent) -> Self {
         Self {
             intent: Intent::adopt(kept.connecting.keys().cloned()),
@@ -291,7 +268,6 @@ impl Follow {
         }
     }
 
-    /// The profiles turned off on purpose since the last step.
     fn released(&mut self, choices: &Choices, reading: &VpnReading) -> Vec<String> {
         let mut released = Vec::new();
         if let Some(release) = &choices.release
@@ -376,7 +352,6 @@ impl Follow {
         held
     }
 
-    /// Look up the servers of the profiles [`Self::to_look_up`] names.
     async fn look_up_servers(
         &mut self,
         switches: &BTreeMap<String, Switch>,
@@ -393,13 +368,10 @@ impl Follow {
             .retain(|profile, _| switches.contains_key(profile));
     }
 
-    /// The profiles whose servers to look up now, each once, in order: each
-    /// with its switch on that starts connecting (the network is open
-    /// then); each set to connect and connected without servers yet (its
-    /// switch turned on while it was up), so a drop blocks at once with
-    /// its servers let through rather than looking them up first while
-    /// traffic leaves outside the tunnel; and each that must block and has
-    /// none yet.
+/// The profiles whose servers to look up now, each once, in order: a switch turned on
+/// that starts connecting, one set to connect and connected without servers, and one
+/// that must block and has none yet. Looking up before a drop lets the block go up with
+/// its servers, instead of traffic leaving outside the tunnel while a lookup runs.
     fn to_look_up(
         &self,
         switches: &BTreeMap<String, Switch>,
@@ -428,13 +400,11 @@ impl Follow {
         wanted
     }
 
-    /// Have the helper hold `block` (or nothing); whether it does.
     async fn apply(&mut self, block: Option<ProfileBlock>, helper: &Path) -> bool {
         if matches!(&self.applied, Applied::Agreed(agreed) if *agreed == block) {
             return true;
         }
         let installed = helper.exists();
-        // Nothing to lift on a device without the helper.
         if block.is_none() && !installed {
             self.applied = Applied::Agreed(None);
             return true;
@@ -630,11 +600,9 @@ mod tests {
         );
     }
 
-    /// A profile whose kill switch is turned on while it is connected has
-    /// its servers looked up while connected, not when it drops: the block
-    /// then goes up at once, letting its servers through, instead of
-    /// waiting on a lookup while traffic leaves outside the tunnel. Once
-    /// known, they are not looked up again.
+/// A profile whose kill switch is turned on while it is connected has its servers looked
+/// up then, so the block goes up at once with them rather than waiting on a lookup while
+/// traffic leaves outside the tunnel. Once known, they are not looked up again.
     #[test]
     fn a_profile_switched_on_while_connected_has_its_servers_looked_up_before_it_drops() {
         let mut follow = Follow::new(ProfileIntent::default());

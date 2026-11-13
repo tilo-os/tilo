@@ -9,12 +9,9 @@ const UDP: u8 = 17;
 const HEADER_LEN: usize = 20;
 const UDP_HEADER_LEN: usize = 8;
 const TTL: u8 = 64;
-/// The "don't fragment" flag in the flags-and-offset field.
 const DONT_FRAGMENT: u16 = 0x4000;
-/// The fragment offset bits.
 const OFFSET_MASK: u16 = 0x1fff;
 
-/// An IPv4 packet whose header and length agree.
 #[derive(Clone, Copy, Debug)]
 pub struct Ipv4Packet<'a> {
     bytes: &'a [u8],
@@ -83,7 +80,6 @@ impl<'a> Ipv4Packet<'a> {
         self.bytes.get(self.header_len..).unwrap_or_default()
     }
 
-    /// The ports and payload of a whole (unfragmented) UDP datagram.
     #[must_use]
     pub fn udp(&self) -> Option<(u16, u16, &'a [u8])> {
         if self.protocol() != UDP || self.flags_and_offset() & (OFFSET_MASK | 0x2000) != 0 {
@@ -113,7 +109,6 @@ impl<'a> Ipv4Packet<'a> {
     }
 }
 
-/// The internet checksum of `chunks`, taken as one byte string.
 fn checksum(chunks: &[&[u8]]) -> u16 {
     let mut sum: u32 = 0;
     let mut pending: Option<u8> = None;
@@ -196,7 +191,6 @@ pub fn udp_packet(
     pseudo[9] = UDP;
     pseudo[10..12].copy_from_slice(&udp_len.to_be_bytes());
     let sum = match checksum(&[&pseudo, &udp]) {
-        // Zero means "no checksum" in UDP; all ones says the same sum.
         0 => 0xffff,
         sum => sum,
     };

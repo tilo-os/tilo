@@ -16,7 +16,6 @@ pub struct CredentialOwner {
     device: String,
     broker: Arc<OnceLock<Arc<Mutex<CredentialBroker>>>>,
     open: Option<Arc<dyn Fn() -> SecretStore + Send + Sync>>,
-    /// Set once a thread was started to open the vault.
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     opening: Arc<AtomicBool>,
     pub(super) requests: Arc<super::pending::PendingRequests>,
@@ -70,7 +69,6 @@ impl CredentialOwner {
             Ok(item.id)
         })?
     }
-    /// Prepare the original native vault lazily, without opening/provisioning it.
     pub fn deferred(
         principal: &str,
         device: &str,
@@ -122,13 +120,11 @@ impl CredentialOwner {
     pub fn device(&self) -> &str {
         &self.device
     }
-    /// Match an already initialized native broker without opening custody.
     pub fn owns_broker(&self, broker: &Arc<Mutex<CredentialBroker>>) -> bool {
         self.broker
             .get()
             .is_some_and(|current| Arc::ptr_eq(current, broker))
     }
-    /// Whether the vault is open, so reading it waits on nothing.
     pub fn is_open(&self) -> bool {
         self.broker.get().is_some()
     }
@@ -194,14 +190,12 @@ impl CredentialOwner {
             .get_or_init(|| Arc::new(Mutex::new(CredentialBroker::new(open()))))
             .clone())
     }
-    /// Password-manager reads through the same owner; nothing is serialized.
     pub fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
         current.refresh();
         Ok(read(&current.store))
     }
-    /// Password-manager edits through the same owner. Apps are not lent this door.
     pub fn edit<T>(&self, edit: impl FnOnce(&mut SecretStore) -> T) -> Result<T, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
@@ -217,7 +211,6 @@ impl CredentialOwner {
         drop(current);
         Ok(result)
     }
-    /// Nonblocking UI invalidation; neither initializes storage nor waits for I/O.
     pub fn revision(&self) -> Option<u64> {
         self.broker
             .get()?
@@ -225,14 +218,12 @@ impl CredentialOwner {
             .ok()
             .map(|broker| broker.revision.saturating_add(self.requests.revision()))
     }
-    /// Current grants include the original broker's session permissions.
     pub fn grants(&self) -> Result<Vec<CredentialGrant>, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
         current.refresh();
         Ok(current.current_grants())
     }
-    /// Revoke through the real broker, including its current session grant.
     pub fn revoke_grant(&self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;

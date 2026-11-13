@@ -1,8 +1,4 @@
 //! Runtime sync health reported by account consumers.
-//!
-//! Connection settings and secrets have different writers and lifecycles from
-//! operational health, so this is a separate atomic document. Mail, Calendar
-//! and file sync workers report transitions here; Settings only reads them.
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;

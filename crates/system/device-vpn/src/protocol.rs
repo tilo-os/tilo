@@ -1,14 +1,4 @@
 //! What the shell says to the device VPN helper, and its answers.
-//!
-//! One JSON request per connection, one JSON answer back, each a single
-//! line. Only the compositor of the person at the seat is answered (see the
-//! service's `peer` module); anyone else is refused before the request is
-//! read. The vocabulary is closed: a request names addresses, prefixes, ports
-//! and switches, never an interface, a path, a command or a rule, and
-//! [`ClientLink::check`], [`ExitLink::check`] and [`ProfileBlock::check`]
-//! bound every value before the helper acts on it. An opened tunnel's TUN
-//! descriptor comes back with the [`Response::Opened`] line as `SCM_RIGHTS`
-//! ancillary data.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
@@ -19,53 +9,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::net::{self, Ipv4Net, MAX_MTU, MIN_MTU};
 
-/// Where the helper listens.
 pub const SOCKET_PATH: &str = "/run/tilo-device-vpn/control.sock";
 
 /// Bumped when a request or answer changes shape incompatibly.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// The longest line either side accepts.
 pub const MAX_LINE_BYTES: u64 = 16 * 1024;
 
-/// The most home networks a client routes through an exit.
 pub const MAX_NETWORKS: usize = 16;
-/// The most local UDP ports the carrier is sent from.
 pub const MAX_CARRIER_PORTS: usize = 8;
-/// The most relay addresses the carrier is exempted towards.
 pub const MAX_RELAYS: usize = 16;
-/// The most server addresses a VPN profile's block lets through.
 pub const MAX_PROFILE_SERVERS: usize = 16;
 
-/// What a client sends through the tunnel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Routes {
-    /// Everything but the local network.
     All,
-    /// Only these networks: the exit's home networks.
     Networks { networks: Vec<Ipv4Net> },
 }
 
-/// How the tunnel's own packets find the exit without entering the tunnel.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Carrier {
-    /// The local UDP ports of the shell's peer endpoint.
     pub udp_ports: Vec<u16>,
-    /// The relays the connection may fall back to.
     pub relays: Vec<IpAddr>,
 }
 
-/// A client tunnel, as the exit offered it and the person chose it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientLink {
-    /// This device's address in the tunnel network, given by the exit.
     pub address: Ipv4Addr,
     pub mtu: u16,
     pub routes: Routes,
-    /// Resolve names through the exit.
     pub dns: bool,
-    /// Block this person's traffic while the tunnel is down.
     pub kill_switch: bool,
     pub carrier: Carrier,
 }
@@ -107,7 +81,6 @@ impl ClientLink {
     }
 }
 
-/// An exit tunnel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitLink {
     pub mtu: u16,
@@ -122,21 +95,17 @@ impl ExitLink {
     }
 }
 
-/// The block that holds while one of the person's `NetworkManager` VPN
-/// profiles is set to connect and is not connected: nothing leaves this
-/// computer but through a tunnel interface, to the profile's servers,
-/// address configuration (DHCP, neighbour discovery) and, when the person
-/// allows it, the local network.
+/// The block that holds while one of the person's `NetworkManager` VPN profiles is set to
+/// connect and is not connected: nothing leaves but through a tunnel interface, to the
+/// profile's servers, address configuration (DHCP, neighbour discovery) and, when the
+/// person allows it, the local network.
 ///
-/// It names the servers by address only. The tunnel is let through by the
-/// kind of its interface (TUN, `WireGuard`, PPP) or its `IPsec` policy, never
-/// by a name the caller gives.
+/// Servers are named by address only; the tunnel is let through by the kind of its
+/// interface (TUN, `WireGuard`, PPP) or its `IPsec` policy, never by a caller-given name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileBlock {
-    /// Where the profiles' servers are: their tunnels' own packets go there.
     pub servers: Vec<IpAddr>,
-    /// Let the local network through: printers, file shares, the router.
     pub allow_local: bool,
 }
 
@@ -168,20 +137,14 @@ fn check_mtu(mtu: u16) -> Result<(), String> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    /// What is open now.
     Status,
     /// Open (or replace) this device's client tunnel. The answer carries the
     /// TUN descriptor.
     OpenClient { link: ClientLink },
-    /// Undo the client tunnel: routes, DNS and the kill switch.
     CloseClient,
-    /// Open this device's exit. The answer carries the TUN descriptor.
     OpenExit { link: ExitLink },
-    /// Undo the exit: forwarding and masquerade.
     CloseExit,
-    /// Hold (or replace) the block of the person's VPN profiles.
     HoldProfileBlock { block: ProfileBlock },
-    /// Lift the block of the person's VPN profiles.
     ReleaseProfileBlock,
 }
 
@@ -191,15 +154,12 @@ pub struct Envelope {
     pub request: Request,
 }
 
-/// A client tunnel the helper keeps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientState {
     pub link: ClientLink,
-    /// Whether the TUN still exists. A kill switch outlives it.
     pub interface_up: bool,
 }
 
-/// An exit the helper keeps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitState {
     pub link: ExitLink,
@@ -212,21 +172,17 @@ pub enum Response {
     Status {
         client: Option<ClientState>,
         exit: Option<ExitState>,
-        /// The block of the person's VPN profiles, while it holds.
         #[serde(default)]
         profile_block: Option<ProfileBlock>,
     },
-    /// The tunnel is up; its TUN descriptor rides with this line.
     Opened {
         interface: String,
         mtu: u16,
     },
     Done,
-    /// The caller may not ask this.
     Refused {
         reason: String,
     },
-    /// The request was allowed and could not be carried out.
     Failed {
         message: String,
     },
@@ -262,7 +218,6 @@ pub fn call(
             io::ErrorKind::InvalidData,
             "the helper opened a tunnel but sent no descriptor",
         )),
-        // A descriptor with any other answer is dropped, closing it.
         (_, _) => Ok((response, None)),
     }
 }
@@ -394,7 +349,6 @@ pub(crate) mod tests {
         assert!(line.contains(r#""op":"hold_profile_block""#));
         let back: Envelope = serde_json::from_str(&line).unwrap();
         assert_eq!(back.request, Request::HoldProfileBlock { block: block() });
-        // An interface or a rule is not something a block can carry.
         assert!(
             serde_json::from_str::<Envelope>(
                 r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":[],"allow_local":false,"interface":"eth0"}}}"#
@@ -412,7 +366,6 @@ pub(crate) mod tests {
     #[test]
     fn every_profile_block_value_is_bounded() {
         assert_eq!(block().check(), Ok(()));
-        // A profile whose servers could not be looked up still blocks.
         let none = ProfileBlock {
             servers: vec![],
             allow_local: true,

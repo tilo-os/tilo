@@ -1,13 +1,7 @@
-//! The kill switch of the person's VPN profiles in a network namespace: the
-//! helper's own Linux backend puts the nftables block up and takes it down
-//! as the profile's state changes, refuses a caller that is not the seat's
-//! shell, keeps the block when the session deciding it or the helper dies,
-//! and lifts it only on reset at boot or when the person turns it off.
-//!
-//! Each test runs itself again under `unshare --user --map-root-user --net`,
-//! where it may change the namespace's firewall, and checks from inside what
-//! a program there can still send: a send the block refuses fails with
-//! "operation not permitted" at once.
+//! The kill switch of the person's VPN profiles in a network namespace: the helper's
+//! Linux backend puts the nftables block up and takes it down as the profile's state
+//! changes, refuses a caller that is not the seat's shell, and keeps the block when the
+//! session deciding it or the helper dies.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -37,13 +31,9 @@ const ROLE: &str = "TILO_DEVICE_VPN_PROFILE_ROLE";
 const STATE: &str = "TILO_DEVICE_VPN_PROFILE_STATE";
 const TABLE: &str = "tilo_device_vpn_profile";
 const PROFILE: &str = "work";
-/// The profile's server, out through the uplink.
 const SERVER: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 7);
-/// Somewhere on the internet, out through the uplink.
 const ELSEWHERE: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 1);
-/// A printer on the local network, out through the uplink.
 const PRINTER: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10);
-/// An address the tunnel interface routes.
 const THROUGH_TUNNEL: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 5);
 
 fn run(program: &Path, args: &str) -> bool {
@@ -60,7 +50,6 @@ fn ip(args: &str) {
     assert!(run(&Config::default().ip, args), "ip {args}");
 }
 
-/// Whether the block's table is in the namespace's ruleset.
 fn table_present() -> bool {
     run(&Config::default().nft, &format!("list table inet {TABLE}"))
 }
@@ -170,22 +159,16 @@ fn follows_the_profile_state(state: &Path) {
     };
     let on = Some(Switch { allow_local: false });
     assert_open();
-    // Set to connect: NetworkManager brings it up.
     step(on, Some(Activity::Activating), &[]);
     assert_blocking(false);
-    // Connected: the tunnel carries the traffic, nothing blocks.
     step(on, Some(Activity::Activated), &[]);
     assert_open();
-    // The tunnel drops, not on purpose.
     step(on, None, &[]);
     assert_blocking(false);
-    // The person allows the local network meanwhile.
     step(Some(Switch { allow_local: true }), None, &[]);
     assert_blocking(true);
-    // Turned off on purpose.
     step(on, None, &[PROFILE.to_owned()]);
     assert_open();
-    // Up again, then the person turns the kill switch off while it drops.
     step(on, Some(Activity::Activated), &[]);
     step(on, Some(Activity::Deactivating), &[]);
     assert_blocking(false);
@@ -230,7 +213,6 @@ fn serve(
     (serving, stop)
 }
 
-/// Ask over the socket at `socket`, as any local program can.
 fn ask(socket: &Path, request: Request) -> Response {
     let mut stream = UnixStream::connect(socket).unwrap();
     stream
@@ -311,7 +293,6 @@ fn a_foreign_caller_is_refused(state: &Path) {
     assert_open();
 }
 
-/// Run this test program as `role`, a process that dies by aborting.
 fn crashing(role: &str, test: &str, state: &Path) {
     let status = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -339,7 +320,6 @@ fn a_crashed_helpers_block_is_kept_until_reset(state: &Path) {
         assert_blocking(false);
     };
 
-    // Reset, as the reset unit does at boot.
     crash(state);
     let mut next = helper(state);
     assert!(
@@ -423,11 +403,9 @@ fn a_crashed_controllers_block_is_taken_over(state: &Path) {
     apply(&mut service, None);
     assert_open();
 
-    // Turned off on purpose while no controller ran.
     takeover(&[PROFILE.to_owned()], &on);
     assert_open();
 
-    // Its kill switch turned off while no controller ran.
     takeover(&[], &BTreeMap::new());
     assert_open();
 }
@@ -460,7 +438,6 @@ fn netns_profile_controller() {
     std::process::abort();
 }
 
-/// A helper that holds the block and dies without lifting it.
 #[test]
 #[ignore = "run by a_crashed_helpers_block_is_kept_until_reset inside its namespace"]
 fn netns_profile_crasher() {
@@ -479,7 +456,6 @@ fn netns_profile_crasher() {
     std::process::abort();
 }
 
-/// One test's body, inside its own user and network namespace.
 #[test]
 #[ignore = "run by the tests below inside a namespace"]
 fn netns_profile_role() {
@@ -497,9 +473,7 @@ fn netns_profile_role() {
     }
 }
 
-/// What the tests need from the machine, or what is missing.
 fn machine_ready() -> Result<(), String> {
-    // The probe .config/nextest-capabilities.toml names for these tests.
     tilo_test_env::network_tunnel().map_err(|error| error.to_string())?;
     let config = Config::default();
     for (name, path) in [("ip", &config.ip), ("nft", &config.nft)] {
@@ -510,7 +484,6 @@ fn machine_ready() -> Result<(), String> {
     Ok(())
 }
 
-/// Run `role` in a fresh user and network namespace and require it passes.
 fn in_namespace(role: &str) {
     let dir = tempfile::tempdir().unwrap();
     let status = Command::new("unshare")

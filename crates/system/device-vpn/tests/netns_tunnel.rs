@@ -1,12 +1,6 @@
 //! A UDP exchange between two network namespaces, through real TUN devices
 //! the helper's own Linux backend sets up and a loopback pair of iroh
 //! endpoints carrying the packets.
-//!
-//! The test runs itself twice more under `unshare --user --map-root-user
-//! --net`: once as the client device, once as the exit. Each child opens its
-//! side through `Service<LinuxBackend>`, the way the root helper does, and
-//! hands the TUN descriptor back over a Unix socket. The parent, outside
-//! both namespaces, runs the tunnel between the two descriptors.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -42,10 +36,8 @@ const SOCKET: &str = "TILO_DEVICE_VPN_NETNS_SOCKET";
 const STATE: &str = "TILO_DEVICE_VPN_NETNS_STATE";
 const BOUND: Duration = Duration::from_secs(30);
 const CLIENT_ADDRESS: Ipv4Addr = Ipv4Addr::new(100, 100, 64, 2);
-/// An address on a network only the exit's namespace is attached to.
 const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 1), 7777);
 
-/// `ip` where the helper finds it.
 fn ip(args: &str) {
     let program = Config::default().ip;
     let status = Command::new(&program)
@@ -85,7 +77,6 @@ fn line(stream: &UnixStream) -> String {
     line.trim().to_owned()
 }
 
-/// One side, inside its own user and network namespace.
 #[test]
 #[ignore = "run by packets_cross_two_network_namespaces inside a namespace"]
 fn netns_role() {
@@ -115,7 +106,6 @@ fn netns_role() {
             drop(fd);
             let mut buf = [0_u8; 512];
             let (length, from) = server.recv_from(&mut buf).unwrap();
-            // Through the tunnel, the client's own address arrives.
             assert_eq!(from.ip(), std::net::IpAddr::V4(CLIENT_ADDRESS));
             let mut answer = b"pong:".to_vec();
             answer.extend_from_slice(&buf[..length]);
@@ -128,7 +118,6 @@ fn netns_role() {
                 address: CLIENT_ADDRESS,
                 mtu: 1280,
                 routes: Routes::All,
-                // NetworkManager is not in the namespace.
                 dns: false,
                 kill_switch: true,
                 carrier: Carrier {
@@ -217,7 +206,6 @@ impl Authority for Allow {
     }
 }
 
-/// The exit TUN the exit namespace opened, handed over once.
 struct Handed(Mutex<Option<OwnedFd>>);
 
 impl ExitDevices for Handed {
@@ -246,9 +234,7 @@ async fn endpoint() -> Endpoint {
         .unwrap()
 }
 
-/// What the test needs from the machine, or what is missing.
 fn machine_ready() -> Result<(), String> {
-    // The probe .config/nextest-capabilities.toml names for these tests.
     tilo_test_env::network_tunnel().map_err(|error| error.to_string())?;
     let config = Config::default();
     for (name, path) in [("ip", &config.ip), ("nft", &config.nft)] {
@@ -301,7 +287,6 @@ fn packets_cross_two_network_namespaces() {
                 .unwrap()
                 .unwrap(),
         );
-        // The exit gives the address the client's helper configured.
         assert_eq!(tunnel.address, CLIENT_ADDRESS);
         let device = Arc::new(TunDevice::new(client_fd).unwrap());
         let running = tokio::spawn({

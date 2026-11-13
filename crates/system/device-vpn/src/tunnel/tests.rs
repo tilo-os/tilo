@@ -168,7 +168,6 @@ fn udp(from: SocketAddrV4, to: SocketAddrV4, payload: &[u8]) -> Vec<u8> {
 async fn another_persons_device_is_refused_and_nothing_opens() {
     let pair = Pair::new(unused_dns()).await;
     pair.turn_exit(true);
-    // The client is not among the person's devices.
     let refused = within(client::connect(&pair.client, pair.exit_addr.clone())).await;
     assert_eq!(refused.err(), Some(ClientError::Refused(Refusal::NotYours)));
     let probed = within(client::probe(&pair.client, pair.exit_addr.clone())).await;
@@ -242,7 +241,6 @@ async fn packets_cross_both_ways_and_stop_ends_the_tunnel() {
     exit_stack.inject(inward.clone()).await;
     assert_eq!(within(client_stack.delivered()).await.unwrap(), inward);
 
-    // The spoofed packet was dropped: the next packet the exit sees is this.
     let second = udp(local, web, b"again");
     client_stack.inject(second.clone()).await;
     assert_eq!(within(exit_stack.delivered()).await.unwrap(), second);
@@ -258,7 +256,6 @@ async fn packets_cross_both_ways_and_stop_ends_the_tunnel() {
         within(running).await.unwrap(),
         Ended::Refused(Refusal::Stopped)
     );
-    // The last session gone, the exit TUN closes.
     within(pair.closes.recv()).await.unwrap();
     assert!(pair.exit.sessions().is_empty());
     pair.shutdown().await;
@@ -350,7 +347,6 @@ async fn a_packet_too_large_for_the_path_is_answered_with_the_size_that_fits() {
         async move { client::run(&tunnel, Arc::new(device)).await }
     });
     let fits = tunnel.connection.max_datagram_size().unwrap();
-    // A full Ethernet-sized packet: more than any datagram the path carries.
     assert!(fits < 1500);
     let payload = vec![0_u8; 1500 - 28];
     let local = SocketAddrV4::new(tunnel.address, 50_000);
