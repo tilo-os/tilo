@@ -728,7 +728,11 @@ impl AppBrokerState {
             // another device's over this door; nor does it read another
             // device's workspace content through it.
             | RemoteActionMessage::ContentPutRequest { .. }
-            | RemoteActionMessage::ContentGetRequest { .. } => None,
+            | RemoteActionMessage::ContentGetRequest { .. }
+            // Nor does it search or follow another device's workspace
+            // through it: those are an agent's and the person's.
+            | RemoteActionMessage::SearchRequest { .. }
+            | RemoteActionMessage::ChangesRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -742,6 +746,8 @@ impl AppBrokerState {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::SearchResponse { .. }
+            | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {

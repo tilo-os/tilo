@@ -589,8 +589,11 @@ fn by(version: &Version) -> String {
 /// What a change's entry records, as data: what was done (`what`, with
 /// field paths, values and verb arguments), to which `item`, by which
 /// `actor` (`id`, `kind`, the person it acted `for`, and for an agent with a
-/// name the `name` and `colour` it shows by), in which `run`, and what kind
-/// of action and change it was.
+/// name the `name` and `colour` it shows by), in which `run`, through which
+/// `invocation` of the action door, as part of which undo `step` (its
+/// gesture), and what kind of action and change it was. The invocation and
+/// the step are what a caller that ran an action finds its own changes by,
+/// to take exactly those back (`undo` with `step`).
 fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<String, Value>) {
     if let Some(what) = &context.what {
         out.insert("what".into(), json!(what));
@@ -622,6 +625,12 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
     }
     if let Some(kind) = context.kind {
         out.insert("kind".into(), json!(kind));
+    }
+    if let Some(invocation) = context.source_invocation {
+        out.insert("invocation".into(), invocation.0.to_string().into());
+    }
+    if let Some(gesture) = context.gesture {
+        out.insert("step".into(), gesture.0.to_string().into());
     }
     if !context.change.is_content() {
         out.insert("change_kind".into(), json!(context.change));
@@ -808,6 +817,34 @@ pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value
             "version": version_name(&checkpoint.heads),
         })).collect::<Vec<_>>(),
     })
+}
+
+/// The changes of `doc` made after the version `after` (every change, for
+/// none), oldest first, each as `history` lists it, whole: what a feed of a
+/// workspace's changes reports of one record, as the record's own history
+/// would.
+pub fn entries_after(
+    doc: &AutoCommit,
+    after: &[ChangeHash],
+    words: &dyn HistoryWords,
+) -> Vec<Value> {
+    let since: HashSet<ChangeHash> = doc
+        .committed_document()
+        .get_changes_meta(after)
+        .iter()
+        .map(|meta| meta.hash)
+        .collect();
+    if since.is_empty() {
+        return Vec::new();
+    }
+    let undone = steps::undone(doc);
+    let checkpoints = steps::checkpoints(doc);
+    tilo_resource::history::committed_versions(doc)
+        .iter()
+        .filter(|version| since.contains(&version.hash))
+        .filter(|version| !steps::is_schema_genesis(version))
+        .map(|version| entry(version, &undone, &checkpoints, words))
+        .collect()
 }
 
 /// Answer a history view.

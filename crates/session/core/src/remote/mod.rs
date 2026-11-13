@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
-    ConfirmedInvocation, ContentGetAnswer, ContentPutAnswer, InvocationReceipt, InvocationState,
-    InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    UpdateMark, pending, serve,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
+    ConfirmedInvocation, ContentGetAnswer, ContentPutAnswer, Found, InvocationReceipt,
+    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, UpdateMark, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -27,6 +27,7 @@ use web_time::Instant;
 mod gets;
 #[cfg(not(target_arch = "wasm32"))]
 mod puts;
+mod workspace;
 
 /// How long a request waits for the device's answer.
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(30);
@@ -115,6 +116,8 @@ struct Waiting {
     puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
     gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
     confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
+    searches: HashMap<u64, Asked<Answered<Vec<Found>>>>,
+    changes: HashMap<u64, Asked<Answered<ChangePage>>>,
 }
 
 /// An invocation the device accepted, as it last answered for it.
@@ -168,6 +171,12 @@ impl Waiting {
         for (_, asked) in self.confirms.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
+        for (_, asked) in self.searches.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
+        for (_, asked) in self.changes.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
     }
 
     /// The requests past their deadline, answered as unanswered.
@@ -194,6 +203,12 @@ impl Waiting {
         for asked in expired(&mut self.confirms, now) {
             give.push(giving(asked, Err(late())));
         }
+        for asked in expired(&mut self.searches, now) {
+            give.push(giving(asked, Err(late())));
+        }
+        for asked in expired(&mut self.changes, now) {
+            give.push(giving(asked, Err(late())));
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -204,6 +219,8 @@ impl Waiting {
             && self.puts.is_empty()
             && self.gets.is_empty()
             && self.confirms.is_empty()
+            && self.searches.is_empty()
+            && self.changes.is_empty()
     }
 
     /// The requests `message` answers.
@@ -267,6 +284,22 @@ impl Waiting {
             } => {
                 if let Some(asked) = self.confirms.remove(&correlation) {
                     give.push(giving(asked, result.map(|confirmed| *confirmed)));
+                }
+            }
+            RemoteActionMessage::SearchResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.searches.remove(&correlation) {
+                    give.push(giving(asked, result));
+                }
+            }
+            RemoteActionMessage::ChangesResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.changes.remove(&correlation) {
+                    give.push(giving(asked, result));
                 }
             }
             _ => {}
@@ -549,6 +582,16 @@ impl Inner {
 }
 
 impl ActionHost for SessionActions {
+    /// The device's own search of its workspace, asked over the session.
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        Some(Arc::new(workspace::SessionSearch(self.clone())))
+    }
+
+    /// The device's feed of its workspace's changes, asked over the session.
+    fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
+        Some(Arc::new(workspace::SessionChanges(self.clone())))
+    }
+
     /// Uploads into the content store of the device's workspace, step by step
     /// over the session: a caller off a page waits for each answer.
     #[cfg(not(target_arch = "wasm32"))]

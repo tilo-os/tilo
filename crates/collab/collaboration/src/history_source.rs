@@ -7,6 +7,7 @@
 //! history through the same code.
 
 pub mod authors;
+pub mod feed;
 pub mod revert;
 pub mod steps;
 pub mod typing;
