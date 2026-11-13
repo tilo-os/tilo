@@ -12,7 +12,6 @@ use super::{Failure, Staging, TransferObserver, copy, publish, sync_parent};
 /// published, so putting it back is a rename.
 const QUARANTINE_PREFIX: &str = ".tilo-transfer-source-";
 
-/// Hide `source` under a free hidden name of its own folder.
 pub(crate) fn quarantine(
     source: &Path,
     observer: &mut impl TransferObserver,

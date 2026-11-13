@@ -25,7 +25,6 @@ pub(crate) fn copy_tree(
     copy_tree_to(&directory, Path::new(name), source, observer)
 }
 
-/// Copy the tree at `source` to `name` below `destination`.
 pub(crate) fn copy_tree_to(
     destination: &cap_std::fs::Dir,
     name: &Path,

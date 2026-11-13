@@ -1,20 +1,12 @@
 //! Extended file attributes.
-//!
-//! The Tilo filesystem projection exposes metadata and accepts control
-//! commands as extended attributes. Where the host has no extended attributes
-//! every operation fails with [`io::ErrorKind::Unsupported`] and changes
-//! nothing, so a control command is never acknowledged by storing an
-//! unrelated local attribute.
 
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::path::Path;
 
-/// Whether this host has extended attributes.
 pub const SUPPORTED: bool = cfg!(unix);
 
-/// Read attribute `name` of `path`; `Ok(None)` when it is not set.
 #[inline]
 pub fn get(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<Option<Vec<u8>>> {
     #[cfg(unix)]
@@ -54,7 +46,6 @@ pub fn remove(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<()>
     }
 }
 
-/// Read attribute `name` of an open file; `Ok(None)` when it is not set.
 #[inline]
 pub fn get_open(file: &File, name: impl AsRef<OsStr>) -> io::Result<Option<Vec<u8>>> {
     #[cfg(unix)]
@@ -93,29 +84,17 @@ fn unavailable() -> io::Error {
 /// filesystem projection's control attributes) answers with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
-    /// The attribute is not set (`ENODATA`).
     NoData,
-    /// The request is already in effect (`EALREADY`).
     Already,
-    /// The object is busy (`EBUSY`).
     Busy,
-    /// Try again later (`EAGAIN`).
     Again,
-    /// No such file (`ENOENT`).
     NotFound,
-    /// Read-only filesystem (`EROFS`).
     ReadOnlyFilesystem,
-    /// Access denied (`EACCES`).
     AccessDenied,
-    /// Operation not permitted (`EPERM`).
     NotPermitted,
-    /// Operation not supported (`ENOTSUP`).
     NotSupported,
-    /// Invalid argument (`EINVAL`).
     InvalidArgument,
-    /// Value too large (`E2BIG`).
     TooBig,
-    /// The request started work that is still running (`EINPROGRESS`).
     InProgress,
 }
 

@@ -12,9 +12,7 @@ use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
 use super::publish::{self, Names};
 use super::{Failure, TransferObserver, copy};
 
-/// The folder a transfer stages its copies in, inside the receiving folder.
 pub(crate) const STAGING_PREFIX: &str = ".tilo-transfer-";
-/// The leaf a one-shot transfer stages its one copy at.
 pub(crate) const PAYLOAD: &str = "payload";
 
 /// A private staging folder, and the copies in it.
@@ -29,7 +27,6 @@ pub(crate) const PAYLOAD: &str = "payload";
 pub struct Staging {
     receiving: File,
     receiving_dir: cap_std::fs::Dir,
-    /// The receiving folder as a person sees it, for messages only.
     receiving_display: PathBuf,
     container: PathBuf,
     name: OsString,
@@ -45,7 +42,6 @@ pub fn staging_path(destination: &Path) -> PathBuf {
 }
 
 impl Staging {
-    /// Make a private staging folder in `destination`.
     pub(crate) fn create(destination: &Path) -> io::Result<Self> {
         let receiving = File::open(destination)?;
         let receiving_dir =
@@ -137,19 +133,16 @@ impl Staging {
         })
     }
 
-    /// The staging folder itself.
     #[must_use]
     pub(crate) fn path(&self) -> &Path {
         &self.container
     }
 
-    /// The path the copy `name` takes in the staging folder.
     #[must_use]
     pub(crate) fn leaf(&self, name: &OsStr) -> PathBuf {
         self.container.join(name)
     }
 
-    /// The path a one-shot transfer's copy takes here.
     #[must_use]
     pub(crate) fn payload(&self) -> PathBuf {
         self.leaf(OsStr::new(PAYLOAD))
@@ -179,7 +172,6 @@ impl Staging {
         Ok(())
     }
 
-    /// Create the file `relative` in staging, exclusively and owner-only.
     pub fn create_file(&self, relative: &Path) -> io::Result<File> {
         let name = relative
             .file_name()

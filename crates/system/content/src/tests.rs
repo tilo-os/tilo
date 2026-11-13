@@ -6,7 +6,6 @@
 use super::*;
 use std::io::Read;
 
-/// A 1x1 PNG.
 const TINY_PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
@@ -65,7 +64,6 @@ fn memory_and_directory_stores_round_trip_by_address() {
         let missing = hash_bytes(b"never stored");
         assert_eq!(store.read(&missing), None);
         assert_eq!(store.state(&missing), ContentState::Unavailable);
-        // Storing the same content again is a no-op that names the same address.
         assert_eq!(store.put(TINY_PNG).unwrap(), hash);
     }
 }
@@ -85,7 +83,6 @@ fn a_store_is_a_handle_not_a_process_global() {
 fn directory_writes_and_reads_stream() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContentStore::in_dir(dir.path());
-    // Larger than the copy buffer, so the write takes several chunks.
     let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
     let stored = store
         .put_reader(&mut big.as_slice(), "application/octet-stream")
@@ -124,7 +121,6 @@ fn corrupt_content_is_never_observable() {
         std::io::ErrorKind::InvalidData,
         "a streaming read fails at the end"
     );
-    // Storing the real content replaces the corrupt file.
     assert_eq!(store.put(b"good").unwrap(), hash);
     assert_eq!(store.read(&hash).as_deref(), Some(b"good".as_slice()));
 }
@@ -236,12 +232,10 @@ fn inputs_dedupe_and_persist_into_a_store() {
     let store = ContentStore::memory();
     store.put_inputs(&inputs).unwrap();
     assert!(store.has(&a));
-    // A chain answers from the first source that has the content.
     let chain = (NoContent, &store);
     assert_eq!(chain.content(&a).as_deref(), Some(TINY_PNG));
 }
 
-/// A store over a directory backend the test can still inspect.
 fn probed(backend: DirBackend) -> (ContentStore, Arc<DirBackend>) {
     let backend = Arc::new(backend);
     (ContentStore::from_backend(backend.clone()), backend)
@@ -411,7 +405,6 @@ fn durable_publish_syncs_the_directory_and_regenerable_does_not() {
     assert_eq!(count(&backend.probes().dir_syncs), 0);
 }
 
-/// Every file under `root`, read whole.
 fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
@@ -503,7 +496,6 @@ fn plain_references_still_read_and_reseal_on_the_next_write() {
     assert_eq!(store.read(&resealed).as_deref(), Some(TINY_PNG));
     assert!(store.reseal(&"0".repeat(64)).is_none(), "content not here");
 
-    // Once nothing names the plain copy, it goes; the sealed one stays.
     let live = BTreeSet::from([resealed.clone()]);
     let collected = store.collect_unreferenced(&live).unwrap();
     assert_eq!(collected.hashes, vec![old.clone()]);
@@ -572,7 +564,6 @@ fn another_device_keeps_sealed_content_exactly_from_its_reference_and_bytes() {
     );
 }
 
-/// A store whose members hold `secret`.
 struct Members<B>(B, tilo_seal::SymmetricKey);
 
 impl<B: ContentBackend> ContentBackend for Members<B> {
@@ -663,7 +654,6 @@ fn a_large_item_is_sealed_from_a_file_beside_the_store() {
     let sealed = store.put_reader(&mut reader, "image/png").unwrap();
     assert_eq!(read.get(), picture.len(), "read once");
 
-    // What sealing the plaintext whole under its key names: the buffered path's reference.
     let mut hash = convergent_hasher(&secret);
     hash.update(&picture);
     let key = tilo_seal::SymmetricKey::from_bytes(*hash.finalize().as_bytes());
@@ -682,7 +672,6 @@ fn a_large_item_is_sealed_from_a_file_beside_the_store() {
         .count();
     assert_eq!(leftover, 0, "no spill file is left behind");
 
-    // A store with no directory of its own keeps what it hashes in memory, and names it alike.
     let in_memory = ContentStore::new(Members(MemoryBackend::default(), secret)).sealing();
     let mut again = Metered {
         bytes: &picture,
@@ -721,7 +710,6 @@ fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
     // by its reference, as any sealed item.
     let reader = ContentStore::in_dir(dir.path());
     assert_eq!(reader.read(&reference).as_deref(), Some(picture.as_slice()));
-    // A reference an earlier writer sealed under a fresh key still opens.
     let fresh = reader.sealing().put(&picture).unwrap();
     assert_ne!(fresh, reference);
     assert_eq!(store.read(&fresh).as_deref(), Some(picture.as_slice()));

@@ -12,20 +12,6 @@
 //! its own name. When the copy cannot be published, the source comes back out
 //! of hiding; when even that is refused, the complete copy is retained and the
 //! failure says where it is. Nothing is ever half of either.
-//!
-//! [`Staging`] is the staging folder and its copies, for a caller that stages
-//! many items before publishing any of them and records what it is doing in a
-//! receipt of its own. [`transfer`] is the one-shot copy or move;
-//! [`transfer_bytes`] receives bytes that are already in memory, and
-//! [`receive_file`]/[`receive_bytes`] do the same into a folder held open by
-//! its descriptor rather than named by a path.
-//!
-//! # Who may be told what
-//!
-//! A hosting caller can wrap each step in its own admission through
-//! [`TransferObserver`]. The paths are presentation only: a host that lends an
-//! app its filesystem supplies descriptor-rooted paths and revalidates its own
-//! authority at these boundaries.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -50,22 +36,15 @@ use source::{quarantine, restore_failed_cut, rollback_quarantined_source};
 
 pub use cap_std::fs::{Dir as SourceDirectory, OpenOptions as SourceOpenOptions};
 
-/// What a transfer could not do.
 #[derive(Debug)]
 pub enum Failure {
-    /// The name to publish under is not one leaf name.
     InvalidName,
-    /// The source has no file name, so it has no name to take.
     NoSourceName,
-    /// The item is already in the folder it was asked to move into.
     AlreadyHere,
     /// A folder cannot be copied or moved into itself.
     IntoItself,
-    /// A name to publish under could not be examined.
     Inspect { path: PathBuf, error: io::Error },
-    /// Every numbered name for `name` in `dir` is taken.
     NamesExhausted { name: OsString, dir: PathBuf },
-    /// The transfer stopped, and this says what of it stands.
     Refused(String),
 }
 
@@ -104,7 +83,6 @@ impl From<String> for Failure {
     }
 }
 
-/// Host admission around the transfer algorithm.
 pub trait TransferObserver {
     /// Open a leaf of a retained source directory. A host may implement its
     /// platform's nonblocking open without putting platform flags in the app.
@@ -125,12 +103,10 @@ pub trait TransferObserver {
         Ok(())
     }
 
-    /// Persist recovery intent before the source is hidden.
     fn before_source_quarantine(&mut self, _source: &Path, _quarantine: &Path) -> io::Result<()> {
         Ok(())
     }
 
-    /// Whether a move may be a plain rename instead of a staged copy.
     fn allow_direct_rename(&self) -> bool {
         true
     }
@@ -159,7 +135,6 @@ pub trait TransferObserver {
         Ok(())
     }
 
-    /// Revalidate current authority before restoring a Cut source.
     fn before_source_restore(&mut self, _source: &Path, _staged: &Path) -> io::Result<()> {
         Ok(())
     }
@@ -215,7 +190,6 @@ pub trait TransferObserver {
     }
 }
 
-/// A transfer that just happens: no admission to answer to.
 impl TransferObserver for () {}
 
 /// Copy `source` into `dest_dir` under its own name, or the first free
@@ -271,7 +245,6 @@ pub fn transfer_named(
     if let Err(error) = observer.staged_source(&staging.payload()) {
         return Err(staging.refuse(error));
     }
-    // The copy is whole on disk before its source goes and its name is taken.
     if let Err(error) = staging.sync() {
         return Err(staging.refuse(error));
     }

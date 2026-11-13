@@ -81,7 +81,6 @@ pub(crate) fn sync_child_directory(receiving: &File, name: &OsStr) -> io::Result
     File::from(handle).sync_all()
 }
 
-/// Flush the folder `path` is in.
 pub fn sync_parent(path: &Path) -> io::Result<()> {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => sync_directory(parent),

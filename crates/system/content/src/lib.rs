@@ -5,36 +5,6 @@
 //! library was imported from, an image placed in a document, a mail attachment. Those are
 //! *binary inputs*. A resource refers to one by its content hash, and the bytes live here, once,
 //! however many documents and versions refer to them.
-//!
-//! This crate is that store, and the one supported way for an app to keep opaque bytes:
-//!
-//! - [`ContentStore`] is a cheap handle an app creates at startup (`tilo_content_device::for_app`)
-//!   and passes to whatever needs it; nothing here is process-global. Writes and reads stream
-//!   ([`ContentStore::put_reader`], [`ContentStore::open`]) and every read is verified against the
-//!   hash that named it.
-//! - [`ContentBackend`] is what a store runs on. The device content store behind the filesystem
-//!   daemon, reached through the capability the launcher hands the app
-//!   (`tilo_content_device::DeviceBackend`), is what makes content reach an app's other devices
-//!   and collaborators; [`DirBackend`] keeps content in a local directory for a process started
-//!   without one. The device backend lives in its own crate so this one depends on no daemon
-//!   protocol: the resource layer, and the low-level types it stores, can name content without
-//!   sitting above the filesystem.
-//! - [`ContentSource`] is the read side pure code takes (an exporter embedding images), and
-//!   [`ContentInputs`] is what pure code hands back (an importer that found images) for the caller
-//!   to persist. Neither does I/O of its own.
-//!
-//! Content a record references is sealed before it leaves the writer
-//! ([`ContentStore::sealing`]): each item under a key of its own, stored and
-//! carried under the address of its ciphertext, named by a reference that
-//! carries the key ([`ContentRef`]). Only the record's readers open it;
-//! whoever stores or serves it holds ciphertext alone. Where the members'
-//! content secret is at hand ([`ContentBackend::content_secret`]) the key
-//! derives from it and the bytes, so the same bytes stored twice are one
-//! item.
-//!
-//! Content is kept until someone who knows every reference collects the rest
-//! ([`ContentStore::collect_unreferenced`]): a store never guesses what is garbage, so content a
-//! version of a document still names is never lost.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,14 +35,12 @@ pub use tilo_content_types::{
 #[cfg(feature = "dir")]
 pub use workspaces::WorkspaceStores;
 
-/// The app-files owner of a page's content store (see [`ContentStore::local_for_app`]).
 #[cfg(feature = "dir")]
 const PAGE_STORE_OWNER: &str = "so.tilo.content";
 /// A page's largest content item: the largest a device keeps of a record's
 /// content, which a page holds whole while it stores it.
 #[cfg(feature = "dir")]
 const PAGE_MAX_ITEM_BYTES: usize = 64 * 1024 * 1024;
-/// Largest whole store a page keeps: the page holds its app files in memory.
 #[cfg(feature = "dir")]
 const PAGE_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 
@@ -115,7 +83,6 @@ fn convergent_hasher(secret: &tilo_seal::SymmetricKey) -> blake3::Hasher {
     ))
 }
 
-/// How much of the plaintext a sealing store hashes stays in memory.
 const KEEP_PLAINTEXT: usize = 1024 * 1024;
 
 static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -154,7 +121,6 @@ impl Gathered {
         Ok(())
     }
 
-    /// Everything kept, from its start.
     fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
         if let Some(spill) = &mut self.spill {
             return spill.source();
@@ -172,7 +138,6 @@ struct Spill {
 }
 
 impl Spill {
-    /// A spill file in `dir`, holding `kept` so far.
     fn open(dir: &Path, kept: &[u8]) -> Result<Self, ContentError> {
         std::fs::create_dir_all(dir)?;
         let serial = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -192,7 +157,6 @@ impl Spill {
         Ok(())
     }
 
-    /// Everything spilled, from its start.
     fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
         self.file.rewind()?;
         Ok(Box::new(&mut self.file))
@@ -216,9 +180,7 @@ pub fn verify(hash: &str, bytes: &[u8]) -> bool {
 /// flight and one that will never complete; the two must be distinguishable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ContentState {
-    /// The content is here; [`ContentStore::read`] returns it.
     Resolved,
-    /// Not here yet, and the backend is fetching it from somewhere that has it.
     Pending,
     /// Not here, and none of the devices that could hand it over is connected right now. It is
     /// fetched the moment one connects; nothing waits on a timer.
@@ -232,7 +194,6 @@ pub enum ContentState {
 /// of tiny items must not be able to turn a bounded byte budget into an unbounded index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentLimits {
-    /// Largest accepted individual item.
     pub max_item_bytes: usize,
     /// Largest aggregate payload retained.
     pub max_total_bytes: usize,
@@ -286,14 +247,12 @@ impl From<std::io::Error> for ContentError {
     }
 }
 
-/// Content stored under its address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stored {
     pub hash: String,
     pub len: u64,
 }
 
-/// What a collection pass removed, in lexical order of address.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Collected {
     pub hashes: Vec<String>,
@@ -316,10 +275,8 @@ pub trait ContentBackend: Send + Sync {
     /// Quota, integrity or I/O failures. Nothing is stored on error.
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError>;
 
-    /// A streaming, verifying read of the content at `hash`, or `None` when it is not here.
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError>;
 
-    /// Whether the content at `hash` is here and intact.
     fn has(&self, hash: &str) -> bool;
 
     /// Where the content at `hash` has got to. A backend that can fetch from elsewhere reports
@@ -470,12 +427,10 @@ impl std::fmt::Debug for ContentStore {
 }
 
 impl ContentStore {
-    /// A store over `backend`.
     pub fn new(backend: impl ContentBackend + 'static) -> Self {
         Self::from_backend(Arc::new(backend))
     }
 
-    /// A store over a shared backend.
     pub fn from_backend(backend: Arc<dyn ContentBackend>) -> Self {
         Self {
             backend,
@@ -507,17 +462,14 @@ impl ContentStore {
         }
     }
 
-    /// Whether this store seals what it stores ([`Self::sealing`]).
     pub const fn seals(&self) -> bool {
         self.seals
     }
 
-    /// Content that lives and dies with this handle and its clones: tests, headless tools.
     pub fn memory() -> Self {
         Self::new(MemoryBackend::default())
     }
 
-    /// Content in the directory `root`, created on first write.
     #[cfg(feature = "dir")]
     pub fn in_dir(root: impl Into<PathBuf>) -> Self {
         Self::new(DirBackend::new(root))
@@ -779,12 +731,10 @@ impl ContentStore {
         }
     }
 
-    /// Whether the content `reference` names is here.
     pub fn has(&self, reference: &str) -> bool {
         self.backend.has(&address_of(reference))
     }
 
-    /// Where the content `reference` names has got to.
     pub fn state(&self, reference: &str) -> ContentState {
         self.backend.state(&address_of(reference))
     }
@@ -869,14 +819,12 @@ impl<T: ContentSource + ?Sized> ContentSource for &T {
     }
 }
 
-/// The first source that has the content wins.
 impl<A: ContentSource, B: ContentSource> ContentSource for (A, B) {
     fn content(&self, hash: &str) -> Option<Cow<'_, [u8]>> {
         self.0.content(hash).or_else(|| self.1.content(hash))
     }
 }
 
-/// A source with no content at all, for documents known to reference none.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoContent;
 
@@ -918,14 +866,12 @@ impl ContentInputs {
         self.entries.is_empty()
     }
 
-    /// Every input, in address order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.entries
             .iter()
             .map(|(hash, bytes)| (hash.as_str(), bytes.as_slice()))
     }
 
-    /// Move every input of `other` into this set.
     pub fn append(&mut self, other: &mut Self) {
         self.entries.append(&mut other.entries);
     }
@@ -958,7 +904,6 @@ pub struct Verifying<R> {
 
 #[cfg(feature = "dir")]
 impl<R> Verifying<R> {
-    /// Verify what `inner` yields against the address `expected`.
     pub fn new(inner: R, expected: &str) -> Self {
         Self {
             inner,
