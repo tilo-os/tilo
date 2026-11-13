@@ -292,9 +292,10 @@ impl BrowserWidget {
             let (resource, action) = self.library_command();
             row = row.push(Box::new(
                 self.bind_button(
+                    // The library's own mark, as in the window bar's slots.
                     Button::icon_only(
                         "browser.library",
-                        Icon::History,
+                        Icon::Layers,
                         &t(if self.show_library {
                             "browser-library-close"
                         } else {

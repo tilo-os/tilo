@@ -199,8 +199,11 @@ impl BrowserWidget {
             )
             .enabled(page && !bookmarked)
             .on(bookmarked),
+            // The library: its own mark, not the clock the window's History
+            // control wears a few slots along, which would read as the same
+            // button twice.
             bar.entry(
-                "history",
+                "layers",
                 t(if self.show_library {
                     "browser-library-close"
                 } else {

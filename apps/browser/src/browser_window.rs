@@ -1682,7 +1682,7 @@ mod tests {
                     .map(|action| action.icon.as_str())
                     .collect::<Vec<_>>(),
                 [
-                    "refresh", "star", "history", "globe", "plus", "box", "shield", "settings"
+                    "refresh", "star", "layers", "globe", "plus", "box", "shield", "settings"
                 ],
                 "the row's buttons, then the More menu's commands"
             );
