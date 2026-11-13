@@ -348,12 +348,15 @@ install_apps() {
 }
 
 # Install the package at `tapp` into the session's own store, as `tilo-install` installs a
-# person's app: signed with this session's key, which the launcher's trust file names.
+# person's app: signed with this session's key, which the launcher's trust file names. The
+# store reads the same file, so a package this session built and signed installs under the
+# local-build ceiling: a `thin-dev` build is compiled for speed, not size, and is never published.
 install_tapp() {
     local tapp=$1
     shift
     env HOME="$home" XDG_DATA_HOME="$home/.local/share" \
         TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+        TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         "$bin/tilo-install" install "$tapp" --allow-self-signed "$@" \
         >/dev/null
