@@ -41,9 +41,10 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
     );
 }
 
-#[test]
-fn editor_layout_uses_available_width_and_reflows_for_large_text() {
-    eprintln!("phase large_text_theme_reflows_the_real_editor_layout");
+tilo_test_env::scenario! {
+    fn editor_layout_uses_available_width_and_reflows_for_large_text;
+
+    phase large_text_theme_reflows_the_real_editor_layout;
     {
         // The same words, set at twice the size, take more lines: the note is laid out
         // again rather than only styled again.
@@ -68,7 +69,7 @@ fn editor_layout_uses_available_width_and_reflows_for_large_text() {
         );
     }
 
-    eprintln!("phase editor_keeps_margins_and_a_readable_measure_and_status_visible");
+    phase editor_keeps_margins_and_a_readable_measure_and_status_visible;
     {
         let readable = f64::from(ui::Theme::dark().tokens.metrics.readable_width);
         for viewport in [(480, 600), (1000, 700), (1708, 1400)] {
@@ -97,7 +98,7 @@ fn editor_layout_uses_available_width_and_reflows_for_large_text() {
         }
     }
 
-    eprintln!("phase the_note_is_set_in_the_ui_face_of_the_theme");
+    phase the_note_is_set_in_the_ui_face_of_the_theme;
     {
         let theme = ui::Theme::dark();
         let note = theme.text(scratchpad::NOTE_ROLE).family;
@@ -114,9 +115,10 @@ fn editor_layout_uses_available_width_and_reflows_for_large_text() {
     }
 }
 
-#[test]
-fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
-    eprintln!("phase typed_note_survives_close_and_reopen_without_a_save_step");
+tilo_test_env::scenario! {
+    fn saved_note_persists_and_is_protected_from_overwrite_and_corruption;
+
+    phase typed_note_survives_close_and_reopen_without_a_save_step;
     {
         let directory = tempfile::tempdir().unwrap();
         {
@@ -129,7 +131,7 @@ fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
         assert_eq!(app.state().body, "Hello macOS — café 日本語");
     }
 
-    eprintln!("phase a_second_instance_shares_the_open_note_without_overwriting_it");
+    phase a_second_instance_shares_the_open_note_without_overwriting_it;
     {
         let directory = tempfile::tempdir().unwrap();
         let mut first = open(directory.path());
@@ -145,7 +147,7 @@ fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
         assert_eq!(open(directory.path()).state().body, "second window");
     }
 
-    eprintln!("phase corrupt_saved_content_is_not_replaced_with_an_empty_note");
+    phase corrupt_saved_content_is_not_replaced_with_an_empty_note;
     {
         let directory = tempfile::tempdir().unwrap();
         {
@@ -164,9 +166,10 @@ fn saved_note_persists_and_is_protected_from_overwrite_and_corruption() {
     }
 }
 
-#[test]
-fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
-    eprintln!("phase typing_is_undoable_and_recorded_in_history");
+tilo_test_env::scenario! {
+    fn edits_are_undoable_permissioned_and_merge_to_identical_heads;
+
+    phase typing_is_undoable_and_recorded_in_history;
     {
         let directory = tempfile::tempdir().unwrap();
         let mut app = open(directory.path());
@@ -184,7 +187,7 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         assert_eq!(app.state().body, "second thought");
     }
 
-    eprintln!("phase typed_words_undo_one_at_a_time_not_the_whole_note");
+    phase typed_words_undo_one_at_a_time_not_the_whole_note;
     {
         let directory = tempfile::tempdir().unwrap();
         let mut app = open(directory.path());
@@ -203,14 +206,14 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         assert_eq!(app.state().body, "pick up ");
     }
 
-    eprintln!("phase a_viewer_cannot_edit_the_note");
+    phase a_viewer_cannot_edit_the_note;
     {
         let mut app = HeadlessApp::<Scratchpad>::with_role(ui::Role::Viewer).unwrap();
         assert!(app.invoke(write("not mine")).is_err());
         assert_eq!(app.state().body, "");
     }
 
-    eprintln!("phase edits_replay_to_identical_document_heads");
+    phase edits_replay_to_identical_document_heads;
     {
         let mut origin = Replica::<Note>::new();
         let mut peer = origin.fork();
@@ -224,7 +227,7 @@ fn edits_are_undoable_permissioned_and_merge_to_identical_heads() {
         assert_eq!(peer.state().unwrap().body, "Same note, on another replica.");
     }
 
-    eprintln!("phase independent_edits_merge_without_replacing_the_text_object");
+    phase independent_edits_merge_without_replacing_the_text_object;
     {
         use ui::automerge::{ROOT, ReadDoc};
         let body = |replica: &Replica<Note>| replica.doc().get(ROOT, "body").unwrap().unwrap().1;
