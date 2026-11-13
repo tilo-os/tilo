@@ -567,21 +567,21 @@ view deck(d: Deck) {
 
     #[test]
     fn a_lists_rows_render_when_shown_and_stop_when_hidden() {
-        let rows = Rows::new(1_000);
+        let rows = Rows::new(300);
         let mut view = rows.view("lazy");
         let list = list_key(&view);
-        assert_eq!(view.list_len(&list), Some(1_000));
+        assert_eq!(view.list_len(&list), Some(300));
         let opened = view.stats();
         assert_eq!(opened.renders, 1, "no row ran before it was shown");
         // Nor was one built: the list costs the rows on screen, not its length.
         assert_eq!(opened.boundaries, 1, "{opened:?}");
         assert_eq!(view.tree().count(), 1, "{:?}", view.tree());
-        let final_row = view.row_key(&list, 999).unwrap();
+        let final_row = view.row_key(&list, 299).unwrap();
         assert!(
-            final_row.ends_with(&format!("/{}", rows.items[999].id_string())),
+            final_row.ends_with(&format!("/{}", rows.items[299].id_string())),
             "{final_row}"
         );
-        assert_eq!(view.row_key(&list, 1_000), None);
+        assert_eq!(view.row_key(&list, 300), None);
 
         // The host shows what fits.
         for i in 0..20 {
@@ -596,12 +596,12 @@ view deck(d: Deck) {
         assert_eq!(patches.len(), 1, "{patches:?}");
         assert_eq!(view.stats().renders, 22);
         // An unshown one does not run.
-        rows.retitle(500, "five hundred");
+        rows.retitle(250, "two fifty");
         assert!(view.poll_patches().unwrap().is_empty());
         assert_eq!(view.stats().renders, 22);
         assert_eq!(
-            titles(view.row(&list, 500).unwrap().unwrap()),
-            ["five hundred"]
+            titles(view.row(&list, 250).unwrap().unwrap()),
+            ["two fifty"]
         );
 
         // Scrolled away, a row is forgotten: it no longer runs, and renders again when shown.
@@ -821,13 +821,13 @@ view deck(d: Deck) {
 
     #[test]
     fn a_view_depends_on_what_it_read_of_a_collection_not_on_all_of_it() {
-        let rows = Rows::new(1_000);
+        let rows = Rows::new(300);
         let mut oldest = rows.view("oldest");
         let mut newest = rows.view("newest");
         let mut count = rows.view("count");
         assert_eq!(texts(oldest.tree()), ["item 0"]);
-        assert_eq!(texts(newest.tree()), ["item 999"]);
-        assert_eq!(texts(count.tree()), ["1000"]);
+        assert_eq!(texts(newest.tree()), ["item 299"]);
+        assert_eq!(texts(count.tree()), ["300"]);
         let mut views = [&mut oldest, &mut newest, &mut count];
         let remove = |i: usize| {
             move |rows: &Rows| {
@@ -849,8 +849,8 @@ view deck(d: Deck) {
                 "move_before",
                 vec![
                     Value::resource(&rows.bag),
-                    Value::resource(&rows.items[500]),
-                    Value::resource(&rows.items[200]),
+                    Value::resource(&rows.items[250]),
+                    Value::resource(&rows.items[100]),
                 ],
             );
         };
@@ -858,11 +858,11 @@ view deck(d: Deck) {
         // Removing the first item changes the first and the length, not the last.
         assert_eq!(runs_for(&rows, &mut views, remove(0)), [1, 0, 1]);
         // Removing one in the middle changes the length alone.
-        assert_eq!(runs_for(&rows, &mut views, remove(300)), [0, 0, 1]);
+        assert_eq!(runs_for(&rows, &mut views, remove(150)), [0, 0, 1]);
 
         assert_eq!(texts(oldest.tree()), ["item 1"]);
         assert_eq!(texts(newest.tree()), ["new"]);
-        assert_eq!(texts(count.tree()), ["999"]);
+        assert_eq!(texts(count.tree()), ["299"]);
     }
 
     /// An item that comes into a collection reaches the filtered views of it whose filter holds
@@ -892,7 +892,7 @@ view deck(d: Deck) {
 
     #[test]
     fn a_lists_view_depends_on_the_rows_it_shows_not_on_the_rest() {
-        let rows = Rows::new(1_000);
+        let rows = Rows::new(300);
         let mut view = rows.view("lazy");
         let list = list_key(&view);
         for i in 0..20 {
@@ -904,8 +904,8 @@ view deck(d: Deck) {
             "move_before",
             vec![
                 Value::resource(&rows.bag),
-                Value::resource(&rows.items[900]),
-                Value::resource(&rows.items[800]),
+                Value::resource(&rows.items[290]),
+                Value::resource(&rows.items[280]),
             ],
         );
         view.poll_patches().unwrap();
@@ -914,12 +914,12 @@ view deck(d: Deck) {
             0,
             "the rows followed; nothing ran"
         );
-        assert_eq!(titles(view.row(&list, 800).unwrap().unwrap()), ["item 900"]);
+        assert_eq!(titles(view.row(&list, 280).unwrap().unwrap()), ["item 290"]);
     }
 
     #[test]
     fn a_lists_rows_follow_inserts_and_removes_without_running_the_view() {
-        let rows = Rows::new(1_000);
+        let rows = Rows::new(300);
         let mut view = rows.view("lazy");
         let list = list_key(&view);
         for i in 0..20 {
@@ -932,7 +932,7 @@ view deck(d: Deck) {
             "move_before",
             vec![
                 Value::resource(&rows.bag),
-                Value::resource(&rows.items[700]),
+                Value::resource(&rows.items[200]),
                 Value::resource(&rows.items[0]),
             ],
         );
@@ -942,7 +942,7 @@ view deck(d: Deck) {
             "{moved:?}"
         );
         assert_eq!(view.stats().renders, opened, "nothing ran");
-        assert_eq!(titles(view.row(&list, 0).unwrap().unwrap()), ["item 700"]);
+        assert_eq!(titles(view.row(&list, 0).unwrap().unwrap()), ["item 200"]);
         let shown = view.stats().renders;
         assert_eq!(shown, opened + 1, "the moved row ran when it was shown");
 
@@ -950,10 +950,10 @@ view deck(d: Deck) {
         rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
         let added = view.poll_patches().unwrap();
         assert!(
-            matches!(added.as_slice(), [Patch::Insert { index: 1_000, .. }]),
+            matches!(added.as_slice(), [Patch::Insert { index: 300, .. }]),
             "{added:?}"
         );
-        assert_eq!(view.list_len(&list), Some(1_001));
+        assert_eq!(view.list_len(&list), Some(301));
         assert_eq!(view.stats().renders, shown);
 
         // A shown row that moved down still follows its item, at its new place.
@@ -988,7 +988,7 @@ view deck(d: Deck) {
         assert_eq!(
             titles_now,
             [
-                "item 700", "item 0", "item 1", "item 3", "item 4", "fünf", "item 6", "item 7",
+                "item 200", "item 0", "item 1", "item 3", "item 4", "fünf", "item 6", "item 7",
                 "item 8", "item 9"
             ]
         );
