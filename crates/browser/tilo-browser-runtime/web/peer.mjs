@@ -491,9 +491,16 @@ async function connect({
   const ownColor = () => runtime.presenceColor(userPublicKey);
   // Who the host is and where it is dialled: as the page's own site names
   // it, handed on by the entry that took it (`enterOnSession`), else asked
-  // of the host here.
+  // of the host here. An answer from a door says where the host's packet
+  // relay answers and nothing of how a page reaches the host itself (the
+  // WebTransport origin, and the certificate a page pins when the host's is
+  // not trusted by the browser): the site's own naming of the host has
+  // that, and the host is the same one, so it is kept.
   const named = siteHost(origin)?.info;
   let host = answered?.address ? answered : named ?? JSON.parse(await runtime.hostInfo(post));
+  if (answered?.address && !answered.address.web && named?.address?.web) {
+    host = {...answered, address: {...answered.address, web: named.address.web}};
+  }
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
