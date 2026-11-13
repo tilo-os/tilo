@@ -272,14 +272,15 @@ impl Instance {
                     continue;
                 }
             };
-            // The item its page draws, when it lists the items it shows: a press that selects a
-            // row moves the page, and what is typed into it is that item's.
-            view.in_place = in_place_of(view.view.borrow().tree());
             if patches.is_empty() {
                 changed |= stale;
                 continue;
             }
             changed = true;
+            // The item its page draws, when it lists the items it shows: a press that selects a
+            // row moves the page, and what is typed into it is that item's. A tree no patch
+            // changed draws the page it drew.
+            view.in_place = in_place_of(view.view.borrow().tree());
             let lists = virtual_list_paths(view.view.borrow().tree());
             let sorted = sort(patches, &lists);
             let mut messages = Vec::new();

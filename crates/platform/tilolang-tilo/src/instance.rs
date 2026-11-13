@@ -927,7 +927,7 @@ impl Instance {
     fn field_name(host: &Host, binding: &Binding) -> String {
         announced(binding, |target, field| {
             type_of(host, &target.ty)
-                .and_then(|(_, ty)| {
+                .and_then(|ty| {
                     ty.fields
                         .iter()
                         .find(|declared| declared.id == field)
@@ -2694,17 +2694,16 @@ fn used_packages(host: &Host, app: &str) -> Vec<Package> {
         .collect()
 }
 
-/// The package that declares the type `ty` (an id), with the type.
+/// The type `ty` (an id), as the package that declares it declares it.
 #[must_use]
-pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
+pub fn type_of(host: &Host, ty: &str) -> Option<TypeMeta> {
     host.find_in_packages(|package| {
-        let declared = package
+        package
             .meta
             .types
             .iter()
-            .find(|declared| declared.id == ty)?
-            .clone();
-        Some((package.meta.clone(), declared))
+            .find(|declared| declared.id == ty)
+            .cloned()
     })
 }
 

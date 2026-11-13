@@ -697,13 +697,7 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&key.resource, &key.field));
-            self.reach_colls(
-                core,
-                (&key.resource, &key.field),
-                false,
-                checked,
-                &mut reach,
-            );
+            self.reach_colls(core, (&key.resource, &key.field), None, checked, &mut reach);
             for (id, field) in self.index.loop_holders(&key.resource, &key.field) {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
@@ -764,7 +758,7 @@ impl Live {
             // and the rows of a virtual list over one find where the item is now.
             if let Some((parent, coll, item)) = item_in(core, &key.resource) {
                 let (parent, coll) = (parent.as_str(), coll.as_str());
-                self.reach_colls(core, (parent, coll), true, checked, &mut reach);
+                self.reach_colls(core, (parent, coll), Some(&key.field), checked, &mut reach);
                 for (id, field) in self.index.loop_holders(parent, coll) {
                     let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                     for rows in held
@@ -789,14 +783,16 @@ impl Live {
     }
 
     /// The boundaries that saw something of the collection `field` of `resource` (or of any
-    /// collection of it, for [`ANY_FIELD`]) that no longer holds: of its filtered views alone
-    /// when `filtered`. What `checked` holds was checked against the store as it is now by an
-    /// earlier field of the same changes, and is not checked again.
+    /// collection of it, for [`ANY_FIELD`]) that no longer holds. When only the field
+    /// `item_field` of one of its items changed, of the views of it whose filter or order reads
+    /// that field alone: no other view of it holds other items or orders them otherwise. What
+    /// `checked` holds was checked against the store as it is now by an earlier field of the same
+    /// changes, and is not checked again.
     fn reach_colls(
         &self,
         core: &Core,
         (resource, field): (&str, &str),
-        filtered: bool,
+        item_field: Option<&str>,
         checked: &mut CollChecks,
         reach: &mut Reach,
     ) {
@@ -809,7 +805,9 @@ impl Live {
                 .iter()
                 .enumerate()
                 .filter(|(_, seen)| seen.resource == resource && seen.coll.field == coll)
-                .filter(|(_, seen)| !filtered || seen.coll.derived())
+                .filter(|(_, seen)| {
+                    item_field.is_none_or(|read| seen.coll.derived() && seen.coll.reads_field(read))
+                })
                 .any(|(at, seen)| checked.stale(core, (id, at), seen));
             if stale {
                 reach.hit.push(id);
