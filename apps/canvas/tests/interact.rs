@@ -1352,7 +1352,10 @@ fn pixel_pinch_and_trackpad_wheel_follow_small_deltas_instead_of_jumping_whole_z
         let focal = canvas.center();
         desk.app.harness().click_at(focal.x, focal.y);
         let anchor = desk.art().marks.last().unwrap().shape.clone();
-        desk.hold(held);
+        // With no key to hold, nothing is sent before the inputs themselves.
+        if !held.is_empty() {
+            desk.hold(held);
+        }
         for _ in 0..20 {
             desk.app.harness().send(&event);
         }
