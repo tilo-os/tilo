@@ -323,29 +323,33 @@ mod tests {
         }
     }
 
-    /// A column that hugs what it holds names the well a width and no height: the well still
-    /// stands a window's shape, so the window in it has a face to draw rather than a line.
-    #[test]
-    fn a_well_in_a_column_that_hugs_stands_a_window_height() {
-        let (width, height) = well_in(column(taffy::Dimension::auto()));
-        assert!(
-            (width - 800.0).abs() < 1.0,
-            "the well takes the column's width, {width}"
-        );
-        assert!(
-            (height - 800.0 / WINDOW_ASPECT).abs() < 1.0,
-            "the well stands a window's height, not a line: {height}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_well_stands_a_windows_shape_or_fills_its_frame;
 
-    /// A frame that names the well a height gets it back whole: the well fills the room it was
-    /// given, whatever shape a window is.
-    #[test]
-    fn a_well_in_a_framed_column_fills_the_height_it_is_given() {
-        let (_, height) = well_in(column(taffy::Dimension::length(300.0)));
-        assert!(
-            (height - 300.0).abs() < 1.0,
-            "the well fills its frame: {height}"
-        );
+        phase a_well_in_a_column_that_hugs_stands_a_window_height;
+        // A column that hugs what it holds names the well a width and no height: the well still
+        // stands a window's shape, so the window in it has a face to draw rather than a line.
+        {
+            let (width, height) = well_in(column(taffy::Dimension::auto()));
+            assert!(
+                (width - 800.0).abs() < 1.0,
+                "the well takes the column's width, {width}"
+            );
+            assert!(
+                (height - 800.0 / WINDOW_ASPECT).abs() < 1.0,
+                "the well stands a window's height, not a line: {height}"
+            );
+        }
+
+        phase a_well_in_a_framed_column_fills_the_height_it_is_given;
+        // A frame that names the well a height gets it back whole: the well fills the room it was
+        // given, whatever shape a window is.
+        {
+            let (_, height) = well_in(column(taffy::Dimension::length(300.0)));
+            assert!(
+                (height - 300.0).abs() < 1.0,
+                "the well fills its frame: {height}"
+            );
+        }
     }
 }

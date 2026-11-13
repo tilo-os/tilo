@@ -261,53 +261,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn emoji_are_found_by_name_and_by_written_form() {
-        let emoji = WorkspaceEmoji::new(vec![named("tilo"), named("party_parrot"), named("tilo")]);
-        assert_eq!(emoji.len(), 2, "a name given twice keeps its first");
-        assert_eq!(emoji.get("tilo").map(|e| e.name.as_str()), Some("tilo"));
-        assert!(emoji.resolve(":party_parrot:").is_some());
-        assert!(emoji.resolve("party_parrot").is_none());
-        assert!(emoji.resolve(":missing:").is_none());
-        let found: Vec<&str> = emoji.search("PA").iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(found, ["party_parrot"]);
-        let found: Vec<&str> = emoji.search(":t").iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(
-            found,
-            ["tilo", "party_parrot"],
-            "a name starting with it first"
-        );
-        assert!(
-            emoji.image("tilo").is_none(),
-            "a broken picture draws nothing"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn workspace_emoji_are_found_made_small_and_none_outside_a_window;
 
-    #[test]
-    fn a_picture_is_made_a_small_png() {
-        let mut large = image::RgbaImage::new(300, 150);
-        for (x, y, pixel) in large.enumerate_pixels_mut() {
-            *pixel = image::Rgba([(x % 256) as u8, (y % 256) as u8, 90, 255]);
+        phase emoji_are_found_by_name_and_by_written_form;
+        {
+            let emoji = WorkspaceEmoji::new(vec![named("tilo"), named("party_parrot"), named("tilo")]);
+            assert_eq!(emoji.len(), 2, "a name given twice keeps its first");
+            assert_eq!(emoji.get("tilo").map(|e| e.name.as_str()), Some("tilo"));
+            assert!(emoji.resolve(":party_parrot:").is_some());
+            assert!(emoji.resolve("party_parrot").is_none());
+            assert!(emoji.resolve(":missing:").is_none());
+            let found: Vec<&str> = emoji.search("PA").iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(found, ["party_parrot"]);
+            let found: Vec<&str> = emoji.search(":t").iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                found,
+                ["tilo", "party_parrot"],
+                "a name starting with it first"
+            );
+            assert!(
+                emoji.image("tilo").is_none(),
+                "a broken picture draws nothing"
+            );
         }
-        let mut encoded = Vec::new();
-        image::DynamicImage::ImageRgba8(large)
-            .write_to(
-                &mut std::io::Cursor::new(&mut encoded),
-                image::ImageFormat::Jpeg,
-            )
-            .unwrap();
-        let Small::Ready(png) = make_small(&encoded) else {
-            panic!("a JPEG is made a small PNG");
-        };
-        assert!(png.len() <= MAX_IMAGE_BYTES);
-        let small = image::load_from_memory(&png).unwrap();
-        assert_eq!((small.width(), small.height()), (64, 32), "aspect kept");
-        assert_eq!(make_small(b"not a picture"), Small::NotAPicture);
-    }
 
-    #[test]
-    fn no_window_has_no_emoji() {
-        assert!(current().is_none());
-        assert!(emoji().is_empty());
+        phase a_picture_is_made_a_small_png;
+        {
+            let mut large = image::RgbaImage::new(300, 150);
+            for (x, y, pixel) in large.enumerate_pixels_mut() {
+                *pixel = image::Rgba([(x % 256) as u8, (y % 256) as u8, 90, 255]);
+            }
+            let mut encoded = Vec::new();
+            image::DynamicImage::ImageRgba8(large)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut encoded),
+                    image::ImageFormat::Jpeg,
+                )
+                .unwrap();
+            let Small::Ready(png) = make_small(&encoded) else {
+                panic!("a JPEG is made a small PNG");
+            };
+            assert!(png.len() <= MAX_IMAGE_BYTES);
+            let small = image::load_from_memory(&png).unwrap();
+            assert_eq!((small.width(), small.height()), (64, 32), "aspect kept");
+            assert_eq!(make_small(b"not a picture"), Small::NotAPicture);
+        }
+
+        phase no_window_has_no_emoji;
+        {
+            assert!(current().is_none());
+            assert!(emoji().is_empty());
+        }
     }
 }

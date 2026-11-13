@@ -39,54 +39,124 @@ fn view(query: &str, told: &Told) -> QueryView {
     .kept(kept(query))
 }
 
-#[test]
-fn a_functions_view_offers_the_bars_search_and_is_told_what_is_typed() {
-    let told = Told::default();
-    let mut root = view("", &told);
-    assert_eq!(
-        InPlace::of(&mut root),
-        InPlace::Query,
-        "the bar's search acts on the app's view"
-    );
+tilo_test_env::scenario! {
+    fn a_query_view_answers_the_bars_search;
 
-    let mut driver = SearchDriver::default();
-    driver.open(InPlace::Query);
-    driver.drive(&mut root, "", FindOptions::default(), None, false);
-    assert_eq!(*told.borrow(), [""], "an open search with nothing typed");
+    phase a_functions_view_offers_the_bars_search_and_is_told_what_is_typed;
+    {
+        let told = Told::default();
+        let mut root = view("", &told);
+        assert_eq!(
+            InPlace::of(&mut root),
+            InPlace::Query,
+            "the bar's search acts on the app's view"
+        );
 
-    assert!(
-        driver.drive(&mut root, "ada", FindOptions::default(), None, false),
-        "what is typed shows"
-    );
-    assert_eq!(
-        *told.borrow(),
-        ["", "ada"],
-        "the view is told what is typed"
-    );
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::Query);
+        driver.drive(&mut root, "", FindOptions::default(), None, false);
+        assert_eq!(*told.borrow(), [""], "an open search with nothing typed");
 
-    // The app built the view its resource now asks for: the same query is
-    // not carried again, and the bar counts what that view kept.
-    let mut narrowed = view("ada", &told);
-    driver.drive(&mut narrowed, "ada", FindOptions::default(), None, false);
-    assert_eq!(*told.borrow(), ["", "ada"], "the same query runs once");
-    assert_eq!(
-        driver.count(),
-        Some(kept("ada")),
-        "the bar shows what the view kept"
-    );
-    assert_eq!(
-        driver.count().map(FilterCount::label).as_deref(),
-        Some("2 of 4")
-    );
+        assert!(
+            driver.drive(&mut root, "ada", FindOptions::default(), None, false),
+            "what is typed shows"
+        );
+        assert_eq!(
+            *told.borrow(),
+            ["", "ada"],
+            "the view is told what is typed"
+        );
 
-    assert!(driver.drive(&mut narrowed, "ada", FindOptions::default(), None, true));
-    assert_eq!(
-        told.borrow().last().map(String::as_str),
-        Some(""),
-        "the close leaves nothing typed"
-    );
-    assert_eq!(driver.count(), None, "no count with the search closed");
-    assert_eq!(driver.in_place(), InPlace::Nothing);
+        // The app built the view its resource now asks for: the same query is
+        // not carried again, and the bar counts what that view kept.
+        let mut narrowed = view("ada", &told);
+        driver.drive(&mut narrowed, "ada", FindOptions::default(), None, false);
+        assert_eq!(*told.borrow(), ["", "ada"], "the same query runs once");
+        assert_eq!(
+            driver.count(),
+            Some(kept("ada")),
+            "the bar shows what the view kept"
+        );
+        assert_eq!(
+            driver.count().map(FilterCount::label).as_deref(),
+            Some("2 of 4")
+        );
+
+        assert!(driver.drive(&mut narrowed, "ada", FindOptions::default(), None, true));
+        assert_eq!(
+            told.borrow().last().map(String::as_str),
+            Some(""),
+            "the close leaves nothing typed"
+        );
+        assert_eq!(driver.count(), None, "no count with the search closed");
+        assert_eq!(driver.in_place(), InPlace::Nothing);
+    }
+
+    phase the_bars_field_counts_a_query_view_as_it_counts_a_narrowed_list;
+    {
+        let mut names = Names { shown: ROWS.len() };
+        let mut listed = WindowSearch::new();
+        listed.open(InPlace::of(&mut names), MotionSource::Keyboard);
+        assert_eq!(listed.in_place(), InPlace::List, "the list narrows itself");
+        typed(&mut listed, "ada");
+        assert!(listed.drive(&mut names));
+
+        let told = Told::default();
+        let mut root: Box<dyn Widget> = Box::new(view("", &told));
+        let mut asked = WindowSearch::new();
+        asked.open(InPlace::of(&mut *root), MotionSource::Keyboard);
+        assert_eq!(
+            asked.in_place(),
+            InPlace::Query,
+            "the app's view answers the query"
+        );
+        typed(&mut asked, "ada");
+        asked.drive(&mut *root);
+        let mut narrowed = view("ada", &told);
+        asked.drive(&mut narrowed);
+
+        assert_eq!(told.borrow().last().map(String::as_str), Some("ada"));
+        assert_eq!(
+            asked.count(),
+            Some(FilterCount::new(2, ROWS.len())),
+            "the count is the rows the view kept of all of them"
+        );
+        assert_eq!(
+            asked.count(),
+            listed.count(),
+            "the bar reads a view's count as it reads a list's"
+        );
+    }
+
+    phase a_view_answers_only_while_it_offers_a_query;
+    // A view that answers the search only while it offers a query (a page among
+    // pages a list narrows to) is passed over otherwise, and hears the search
+    // open and close as such.
+    {
+        let offered = Rc::new(std::cell::Cell::new(false));
+        let told = Told::default();
+        let (typed, opened, closed) = (Rc::clone(&told), Rc::clone(&told), Rc::clone(&told));
+        let on = Rc::clone(&offered);
+        let mut root = QueryView::new(Column::new().into_widget(), move |text| {
+            typed.borrow_mut().push(text.to_owned());
+        })
+        .offered_while(move || on.get())
+        .opening(move || opened.borrow_mut().push("opened".to_owned()))
+        .closing(move || closed.borrow_mut().push("closed".to_owned()));
+        assert_eq!(
+            InPlace::of(&mut root),
+            InPlace::Nothing,
+            "a view offering no query leaves the search to the rest of the window"
+        );
+        offered.set(true);
+        assert_eq!(InPlace::of(&mut root), InPlace::Query);
+
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::Query);
+        driver.drive(&mut root, "ada", FindOptions::default(), None, false);
+        driver.drive(&mut root, "ada", FindOptions::default(), None, true);
+        assert_eq!(*told.borrow(), ["opened", "ada", "closed"]);
+    }
 }
 
 struct Names {
@@ -123,70 +193,4 @@ impl Widget for Names {
 
 fn typed(search: &mut WindowSearch, query: &str) {
     search.field.set_query(query);
-}
-
-#[test]
-fn the_bars_field_counts_a_query_view_as_it_counts_a_narrowed_list() {
-    let mut names = Names { shown: ROWS.len() };
-    let mut listed = WindowSearch::new();
-    listed.open(InPlace::of(&mut names), MotionSource::Keyboard);
-    assert_eq!(listed.in_place(), InPlace::List, "the list narrows itself");
-    typed(&mut listed, "ada");
-    assert!(listed.drive(&mut names));
-
-    let told = Told::default();
-    let mut root: Box<dyn Widget> = Box::new(view("", &told));
-    let mut asked = WindowSearch::new();
-    asked.open(InPlace::of(&mut *root), MotionSource::Keyboard);
-    assert_eq!(
-        asked.in_place(),
-        InPlace::Query,
-        "the app's view answers the query"
-    );
-    typed(&mut asked, "ada");
-    asked.drive(&mut *root);
-    let mut narrowed = view("ada", &told);
-    asked.drive(&mut narrowed);
-
-    assert_eq!(told.borrow().last().map(String::as_str), Some("ada"));
-    assert_eq!(
-        asked.count(),
-        Some(FilterCount::new(2, ROWS.len())),
-        "the count is the rows the view kept of all of them"
-    );
-    assert_eq!(
-        asked.count(),
-        listed.count(),
-        "the bar reads a view's count as it reads a list's"
-    );
-}
-
-/// A view that answers the search only while it offers a query (a page among
-/// pages a list narrows to) is passed over otherwise, and hears the search
-/// open and close as such.
-#[test]
-fn a_view_answers_only_while_it_offers_a_query() {
-    let offered = Rc::new(std::cell::Cell::new(false));
-    let told = Told::default();
-    let (typed, opened, closed) = (Rc::clone(&told), Rc::clone(&told), Rc::clone(&told));
-    let on = Rc::clone(&offered);
-    let mut root = QueryView::new(Column::new().into_widget(), move |text| {
-        typed.borrow_mut().push(text.to_owned());
-    })
-    .offered_while(move || on.get())
-    .opening(move || opened.borrow_mut().push("opened".to_owned()))
-    .closing(move || closed.borrow_mut().push("closed".to_owned()));
-    assert_eq!(
-        InPlace::of(&mut root),
-        InPlace::Nothing,
-        "a view offering no query leaves the search to the rest of the window"
-    );
-    offered.set(true);
-    assert_eq!(InPlace::of(&mut root), InPlace::Query);
-
-    let mut driver = SearchDriver::default();
-    driver.open(InPlace::Query);
-    driver.drive(&mut root, "ada", FindOptions::default(), None, false);
-    driver.drive(&mut root, "ada", FindOptions::default(), None, true);
-    assert_eq!(*told.borrow(), ["opened", "ada", "closed"]);
 }

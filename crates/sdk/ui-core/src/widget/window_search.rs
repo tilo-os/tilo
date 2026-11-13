@@ -1904,125 +1904,165 @@ mod tests {
         search.field.set_query(query);
     }
 
-    #[test]
-    fn a_document_highlights_its_matches_with_n_of_m_and_steps_through_them() {
-        let mut doc = Doc {
-            text: "Cat cat concat cat".into(),
-            ..Doc::default()
-        };
-        assert_eq!(InPlace::of(&mut doc), InPlace::Document);
-        let mut search = WindowSearch::new();
-        search.open(InPlace::Document, MotionSource::Keyboard);
-        typed(&mut search, "cat");
-        assert!(search.drive(&mut doc), "the document changed what it shows");
-        assert_eq!(search.position(), Some((1, 4)));
-        assert_eq!(
-            search.count(),
-            Some(FilterCount::new(1, 4)),
-            "the field reads 1 of 4"
-        );
-        assert_eq!(doc.current, Some(0), "the first match is shown");
+    tilo_test_env::scenario! {
+        fn the_search_drives_what_the_window_offers_in_place;
 
-        search.step(true);
-        search.drive(&mut doc);
-        assert_eq!(search.position(), Some((2, 4)));
-        search.step(false);
-        search.step(false);
-        search.drive(&mut doc);
-        assert_eq!(doc.current, Some(0), "only the last step asked counts");
+        phase a_document_highlights_its_matches_with_n_of_m_and_steps_through_them;
+        {
+            let mut doc = Doc {
+                text: "Cat cat concat cat".into(),
+                ..Doc::default()
+            };
+            assert_eq!(InPlace::of(&mut doc), InPlace::Document);
+            let mut search = WindowSearch::new();
+            search.open(InPlace::Document, MotionSource::Keyboard);
+            typed(&mut search, "cat");
+            assert!(search.drive(&mut doc), "the document changed what it shows");
+            assert_eq!(search.position(), Some((1, 4)));
+            assert_eq!(
+                search.count(),
+                Some(FilterCount::new(1, 4)),
+                "the field reads 1 of 4"
+            );
+            assert_eq!(doc.current, Some(0), "the first match is shown");
 
-        assert!(
-            !search.drive(&mut doc),
-            "nothing new: the app is left alone"
-        );
+            search.step(true);
+            search.drive(&mut doc);
+            assert_eq!(search.position(), Some((2, 4)));
+            search.step(false);
+            search.step(false);
+            search.drive(&mut doc);
+            assert_eq!(doc.current, Some(0), "only the last step asked counts");
 
-        search.close(MotionSource::Keyboard);
-        assert!(search.drive(&mut doc));
-        assert!(doc.cleared, "closing stops the highlights");
-        assert_eq!(search.in_place(), InPlace::Nothing);
-    }
+            assert!(
+                !search.drive(&mut doc),
+                "nothing new: the app is left alone"
+            );
 
-    #[test]
-    fn a_find_the_document_ran_on_its_own_shows_its_query_and_steps_on_from_its_match() {
-        let mut doc = Doc {
-            text: "Cat cat concat cat".into(),
-            ..Doc::default()
-        };
-        let mut search = WindowSearch::new();
-        search.open(InPlace::Document, MotionSource::Keyboard);
-        search.drive(&mut doc);
+            search.close(MotionSource::Keyboard);
+            assert!(search.drive(&mut doc));
+            assert!(doc.cleared, "closing stops the highlights");
+            assert_eq!(search.in_place(), InPlace::Nothing);
+        }
 
-        let whole_word = FindOptions {
-            whole_word: true,
-            ..FindOptions::default()
-        };
-        doc.own = Some(crate::widget::find_bar::OwnFind {
-            query: "cat".into(),
-            options: whole_word,
-            current: 2,
-        });
-        assert!(search.drive(&mut doc));
-        assert_eq!(search.query(), "cat", "the field shows the query");
-        assert_eq!(search.options(), whole_word, "and its options");
-        assert_eq!(search.position(), Some((3, 4)), "the match it went to");
-        assert_eq!(search.count(), Some(FilterCount::new(3, 4)));
-        assert_eq!(doc.current, Some(2), "the view stays on that match");
-        assert!(
-            !search.drive(&mut doc),
-            "the field's query is the one found: nothing runs again"
-        );
+        phase a_find_the_document_ran_on_its_own_shows_its_query_and_steps_on_from_its_match;
+        {
+            let mut doc = Doc {
+                text: "Cat cat concat cat".into(),
+                ..Doc::default()
+            };
+            let mut search = WindowSearch::new();
+            search.open(InPlace::Document, MotionSource::Keyboard);
+            search.drive(&mut doc);
 
-        search.step(true);
-        search.drive(&mut doc);
-        assert_eq!(search.position(), Some((4, 4)), "it steps on from there");
-        assert_eq!(doc.current, Some(3));
-    }
+            let whole_word = FindOptions {
+                whole_word: true,
+                ..FindOptions::default()
+            };
+            doc.own = Some(crate::widget::find_bar::OwnFind {
+                query: "cat".into(),
+                options: whole_word,
+                current: 2,
+            });
+            assert!(search.drive(&mut doc));
+            assert_eq!(search.query(), "cat", "the field shows the query");
+            assert_eq!(search.options(), whole_word, "and its options");
+            assert_eq!(search.position(), Some((3, 4)), "the match it went to");
+            assert_eq!(search.count(), Some(FilterCount::new(3, 4)));
+            assert_eq!(doc.current, Some(2), "the view stays on that match");
+            assert!(
+                !search.drive(&mut doc),
+                "the field's query is the one found: nothing runs again"
+            );
 
-    #[test]
-    fn an_app_in_its_own_process_shows_the_find_it_took_over_without_sending_it_back() {
-        use crate::window_toolbar::{AdoptedQuery, ToolbarEvent};
-        let mut search = WindowSearch::new();
-        search.open_remote(InPlace::Document, MotionSource::Keyboard);
-        let _ = search.take_remote_events();
-        let adopted = AdoptedQuery {
-            serial: 1,
-            query: "cat".into(),
-            options: FindOptions::default(),
-        };
-        search.set_remote_adopted(&adopted);
-        assert_eq!(search.query(), "cat", "the field shows the app's query");
-        assert!(
-            !search
-                .take_remote_events()
-                .iter()
-                .any(|event| matches!(event, ToolbarEvent::Search { .. })),
-            "the app already runs it"
-        );
-        typed(&mut search, "dog");
-        search.set_remote_adopted(&adopted);
-        assert_eq!(
-            search.query(),
-            "dog",
-            "a find already shown never overwrites what is typed since"
-        );
-    }
+            search.step(true);
+            search.drive(&mut doc);
+            assert_eq!(search.position(), Some((4, 4)), "it steps on from there");
+            assert_eq!(doc.current, Some(3));
+        }
 
-    #[test]
-    fn a_list_narrows_to_what_matches_and_comes_back_whole_on_close() {
-        let mut names = Names {
-            all: vec!["Ada", "Grace", "Adele", "Linus"],
-            shown: 4,
-        };
-        assert_eq!(InPlace::of(&mut names), InPlace::List);
-        let mut search = WindowSearch::new();
-        search.open(InPlace::List, MotionSource::Pointer);
-        typed(&mut search, "ad");
-        assert!(search.drive(&mut names));
-        assert_eq!(search.count(), Some(FilterCount::new(2, 4)), "2 of 4");
-        assert!(!search.drive(&mut names), "the same query narrows once");
-        search.close(MotionSource::Pointer);
-        search.drive(&mut names);
-        assert_eq!(names.shown, 4, "the whole list is back");
+        phase an_app_in_its_own_process_shows_the_find_it_took_over_without_sending_it_back;
+        {
+            use crate::window_toolbar::{AdoptedQuery, ToolbarEvent};
+            let mut search = WindowSearch::new();
+            search.open_remote(InPlace::Document, MotionSource::Keyboard);
+            let _ = search.take_remote_events();
+            let adopted = AdoptedQuery {
+                serial: 1,
+                query: "cat".into(),
+                options: FindOptions::default(),
+            };
+            search.set_remote_adopted(&adopted);
+            assert_eq!(search.query(), "cat", "the field shows the app's query");
+            assert!(
+                !search
+                    .take_remote_events()
+                    .iter()
+                    .any(|event| matches!(event, ToolbarEvent::Search { .. })),
+                "the app already runs it"
+            );
+            typed(&mut search, "dog");
+            search.set_remote_adopted(&adopted);
+            assert_eq!(
+                search.query(),
+                "dog",
+                "a find already shown never overwrites what is typed since"
+            );
+        }
+
+        phase a_list_narrows_to_what_matches_and_comes_back_whole_on_close;
+        {
+            let mut names = Names {
+                all: vec!["Ada", "Grace", "Adele", "Linus"],
+                shown: 4,
+            };
+            assert_eq!(InPlace::of(&mut names), InPlace::List);
+            let mut search = WindowSearch::new();
+            search.open(InPlace::List, MotionSource::Pointer);
+            typed(&mut search, "ad");
+            assert!(search.drive(&mut names));
+            assert_eq!(search.count(), Some(FilterCount::new(2, 4)), "2 of 4");
+            assert!(!search.drive(&mut names), "the same query narrows once");
+            search.close(MotionSource::Pointer);
+            search.drive(&mut names);
+            assert_eq!(names.shown, 4, "the whole list is back");
+        }
+
+        phase a_query_view_app_hears_the_open_each_keystroke_enter_and_the_close;
+        {
+            let mut views = Views::default();
+            assert_eq!(InPlace::of(&mut views), InPlace::Query);
+            let mut search = WindowSearch::new();
+            search.set_app_name("Music");
+            search.open(InPlace::Query, MotionSource::Keyboard);
+            assert!(search.drive(&mut views));
+            assert_eq!(
+                views.opened, 1,
+                "the field is focused before anything is typed"
+            );
+            assert_eq!(views.texts, [""]);
+            typed(&mut search, "aur");
+            search.drive(&mut views);
+            typed(&mut search, "aurora");
+            search.drive(&mut views);
+            assert_eq!(
+                views.texts,
+                ["", "aur", "aurora"],
+                "each keystroke goes out"
+            );
+            assert!(!search.drive(&mut views), "the same text goes out once");
+            search.step(true);
+            assert!(
+                !search.has_keyboard(),
+                "Enter hands the keyboard to the results"
+            );
+            search.drive(&mut views);
+            assert_eq!(views.entered, 1);
+            search.close(MotionSource::Keyboard);
+            search.drive(&mut views);
+            assert_eq!(views.closed, 1, "Escape returns to the view before");
+            assert_eq!(views.opened, 1);
+        }
     }
 
     #[derive(Default)]
@@ -2063,160 +2103,128 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_query_view_app_hears_the_open_each_keystroke_enter_and_the_close() {
-        let mut views = Views::default();
-        assert_eq!(InPlace::of(&mut views), InPlace::Query);
-        let mut search = WindowSearch::new();
-        search.set_app_name("Music");
-        search.open(InPlace::Query, MotionSource::Keyboard);
-        assert!(search.drive(&mut views));
-        assert_eq!(
-            views.opened, 1,
-            "the field is focused before anything is typed"
-        );
-        assert_eq!(views.texts, [""]);
-        typed(&mut search, "aur");
-        search.drive(&mut views);
-        typed(&mut search, "aurora");
-        search.drive(&mut views);
-        assert_eq!(
-            views.texts,
-            ["", "aur", "aurora"],
-            "each keystroke goes out"
-        );
-        assert!(!search.drive(&mut views), "the same text goes out once");
-        search.step(true);
-        assert!(
-            !search.has_keyboard(),
-            "Enter hands the keyboard to the results"
-        );
-        search.drive(&mut views);
-        assert_eq!(views.entered, 1);
-        search.close(MotionSource::Keyboard);
-        search.drive(&mut views);
-        assert_eq!(views.closed, 1, "Escape returns to the view before");
-        assert_eq!(views.opened, 1);
-    }
+    tilo_test_env::scenario! {
+        fn the_search_control_rests_widens_and_gives_way_in_the_bar;
 
-    #[test]
-    fn the_resting_control_names_what_it_searches_and_its_key() {
-        let mut search = WindowSearch::new();
-        search.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
-        let anchor = Rect::new(100.0, 8.0, 128.0, 36.0);
-        search.place(anchor, 600.0);
-        let (rect, tip) = search
-            .tooltip_target_at(anchor.center())
-            .expect("the control has a tooltip");
-        assert_eq!(rect, anchor);
-        assert_eq!(tip, "Search in this window (Ctrl+F)");
-        let node = search.accessibility().expect("the control is announced");
-        assert_eq!(node.name.as_deref(), Some("Search in this window"));
-    }
+        phase the_resting_control_names_what_it_searches_and_its_key;
+        {
+            let mut search = WindowSearch::new();
+            search.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            let anchor = Rect::new(100.0, 8.0, 128.0, 36.0);
+            search.place(anchor, 600.0);
+            let (rect, tip) = search
+                .tooltip_target_at(anchor.center())
+                .expect("the control has a tooltip");
+            assert_eq!(rect, anchor);
+            assert_eq!(tip, "Search in this window (Ctrl+F)");
+            let node = search.accessibility().expect("the control is announced");
+            assert_eq!(node.name.as_deref(), Some("Search in this window"));
+        }
 
-    #[test]
-    fn a_folded_search_asks_for_no_frame() {
-        let mut search = WindowSearch::new();
-        search.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
-        search.mark_drawn();
-        assert!(!search.is_open());
-        assert!(
-            !search.needs_redraw(),
-            "a folded search changed nothing it draws"
-        );
-        assert!(!search.needs_animation_frame());
-        search.open(InPlace::Document, MotionSource::Keyboard);
-        assert!(search.needs_redraw(), "an opening search is drawn");
-    }
+        phase a_folded_search_asks_for_no_frame;
+        {
+            let mut search = WindowSearch::new();
+            search.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
+            search.mark_drawn();
+            assert!(!search.is_open());
+            assert!(
+                !search.needs_redraw(),
+                "a folded search changed nothing it draws"
+            );
+            assert!(!search.needs_animation_frame());
+            search.open(InPlace::Document, MotionSource::Keyboard);
+            assert!(search.needs_redraw(), "an opening search is drawn");
+        }
 
-    #[test]
-    fn the_search_widens_from_the_view_to_the_app_to_everywhere() {
-        let mut search = WindowSearch::new();
-        search.open(InPlace::Document, MotionSource::Keyboard);
-        search.activate(Part::App);
-        search.activate(Part::Everywhere);
-        assert_eq!(
-            search.take_requests(),
-            [
-                WindowSearchRequest::Widen(SearchReach::App),
-                WindowSearchRequest::Widen(SearchReach::Everywhere)
-            ]
-        );
-        let mut closed = WindowSearch::new();
-        closed.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
-        assert!(!closed.is_open());
-        assert_eq!(
-            InPlace::of(&mut crate::widget::Spacer::new()),
-            InPlace::Nothing
-        );
-    }
+        phase the_search_widens_from_the_view_to_the_app_to_everywhere;
+        {
+            let mut search = WindowSearch::new();
+            search.open(InPlace::Document, MotionSource::Keyboard);
+            search.activate(Part::App);
+            search.activate(Part::Everywhere);
+            assert_eq!(
+                search.take_requests(),
+                [
+                    WindowSearchRequest::Widen(SearchReach::App),
+                    WindowSearchRequest::Widen(SearchReach::Everywhere)
+                ]
+            );
+            let mut closed = WindowSearch::new();
+            closed.place(Rect::new(100.0, 8.0, 128.0, 36.0), 600.0);
+            assert!(!closed.is_open());
+            assert_eq!(
+                InPlace::of(&mut crate::widget::Spacer::new()),
+                InPlace::Nothing
+            );
+        }
 
-    #[test]
-    fn the_open_search_gives_way_from_the_widest_reach_inwards_on_a_narrow_bar() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut search = WindowSearch::new();
-        search.set_app_name("Notes");
-        search.open(InPlace::Document, MotionSource::Keyboard);
-        search.place(Rect::new(100.0, 6.0, 128.0, 34.0), 1100.0);
-        search.layout(1.0, &mut text, &theme);
-        let parts: Vec<Part> = search.parts.iter().map(|(p, _)| *p).collect();
-        assert_eq!(
-            parts,
-            [
-                Part::Previous,
-                Part::Next,
-                Part::Options,
-                Part::App,
-                Part::Everywhere,
-                Part::Close
-            ]
-        );
-        let field_min = field_min(&theme);
-        assert!(search.field_rect.width() >= field_min);
-        assert!(search.parts.iter().all(|(_, r)| r.x1 <= 1100.0));
+        phase the_open_search_gives_way_from_the_widest_reach_inwards_on_a_narrow_bar;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut search = WindowSearch::new();
+            search.set_app_name("Notes");
+            search.open(InPlace::Document, MotionSource::Keyboard);
+            search.place(Rect::new(100.0, 6.0, 128.0, 34.0), 1100.0);
+            search.layout(1.0, &mut text, &theme);
+            let parts: Vec<Part> = search.parts.iter().map(|(p, _)| *p).collect();
+            assert_eq!(
+                parts,
+                [
+                    Part::Previous,
+                    Part::Next,
+                    Part::Options,
+                    Part::App,
+                    Part::Everywhere,
+                    Part::Close
+                ]
+            );
+            let field_min = field_min(&theme);
+            assert!(search.field_rect.width() >= field_min);
+            assert!(search.parts.iter().all(|(_, r)| r.x1 <= 1100.0));
 
-        search.place(Rect::new(100.0, 6.0, 128.0, 34.0), 520.0);
-        search.layout(1.0, &mut text, &theme);
-        let parts: Vec<Part> = search.parts.iter().map(|(p, _)| *p).collect();
-        assert!(
-            !parts.contains(&Part::Everywhere),
-            "everywhere gives way first"
-        );
-        assert!(
-            parts.contains(&Part::Close),
-            "the search can always be closed"
-        );
-        assert!(search.field_rect.width() >= field_min);
-        assert!(search.parts.iter().all(|(_, r)| r.x1 <= 520.0 + 0.5));
+            search.place(Rect::new(100.0, 6.0, 128.0, 34.0), 520.0);
+            search.layout(1.0, &mut text, &theme);
+            let parts: Vec<Part> = search.parts.iter().map(|(p, _)| *p).collect();
+            assert!(
+                !parts.contains(&Part::Everywhere),
+                "everywhere gives way first"
+            );
+            assert!(
+                parts.contains(&Part::Close),
+                "the search can always be closed"
+            );
+            assert!(search.field_rect.width() >= field_min);
+            assert!(search.parts.iter().all(|(_, r)| r.x1 <= 520.0 + 0.5));
 
-        search.layout(0.5, &mut text, &theme);
-        assert!(search.field_rect.width() > CONTROL_PX);
-        assert!(
-            search.field_rect.x0 == 100.0,
-            "it grows from where the control stands"
-        );
+            search.layout(0.5, &mut text, &theme);
+            assert!(search.field_rect.width() > CONTROL_PX);
+            assert!(
+                search.field_rect.x0 == 100.0,
+                "it grows from where the control stands"
+            );
 
-        let narrow = |reach: f64, search: &mut WindowSearch, text: &mut TextRenderer| {
-            search.place(Rect::new(40.0, 6.0, 68.0, 34.0), 40.0 + reach);
-            search.layout(1.0, text, &theme);
-            search.parts.iter().map(|(p, _)| *p).collect::<Vec<Part>>()
-        };
-        let one_step = field_min + 3.0 * CONTROL_PX + 2.0 * f64::from(theme.tokens.spacing.s2);
-        assert_eq!(
-            narrow(
-                one_step + 4.0 * f64::from(theme.tokens.spacing.s1),
-                &mut search,
-                &mut text
-            ),
-            [Part::Next, Part::Options, Part::Close],
-            "Previous gives way before Next"
-        );
-        assert_eq!(
-            narrow(200.0, &mut search, &mut text),
-            [Part::Options, Part::Close],
-            "the options never give way"
-        );
-        assert!(search.parts.iter().all(|(_, r)| r.x1 <= 240.0 + 0.5));
+            let narrow = |reach: f64, search: &mut WindowSearch, text: &mut TextRenderer| {
+                search.place(Rect::new(40.0, 6.0, 68.0, 34.0), 40.0 + reach);
+                search.layout(1.0, text, &theme);
+                search.parts.iter().map(|(p, _)| *p).collect::<Vec<Part>>()
+            };
+            let one_step = field_min + 3.0 * CONTROL_PX + 2.0 * f64::from(theme.tokens.spacing.s2);
+            assert_eq!(
+                narrow(
+                    one_step + 4.0 * f64::from(theme.tokens.spacing.s1),
+                    &mut search,
+                    &mut text
+                ),
+                [Part::Next, Part::Options, Part::Close],
+                "Previous gives way before Next"
+            );
+            assert_eq!(
+                narrow(200.0, &mut search, &mut text),
+                [Part::Options, Part::Close],
+                "the options never give way"
+            );
+            assert!(search.parts.iter().all(|(_, r)| r.x1 <= 240.0 + 0.5));
+        }
     }
 }

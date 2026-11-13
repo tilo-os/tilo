@@ -16,73 +16,102 @@ fn location(label: &str) -> WindowToolbar {
     }
 }
 
-#[test]
-fn events_go_back_to_the_app_that_declared_the_tab_and_die_with_it() {
-    let mut toolbars = WindowSlots::default();
-    assert!(toolbars.declare(7, 41, Some(location("example.org"))));
-    assert!(!toolbars.declare(7, 41, Some(location("example.org"))));
-    assert!(toolbars.route(
-        7,
-        ToolbarEvent::Commit {
-            text: "rust".into()
-        }
-    ));
-    assert!(
-        !toolbars.route(8, ToolbarEvent::Back),
-        "no app declared tab 8"
-    );
-    assert_eq!(
-        toolbars.take_outbox(),
-        vec![(
-            41,
+tilo_test_env::scenario! {
+    fn slots_route_events_to_the_app_that_declared_or_offered;
+
+    phase events_go_back_to_the_app_that_declared_the_tab_and_die_with_it;
+    {
+        let mut toolbars = WindowSlots::default();
+        assert!(toolbars.declare(7, 41, Some(location("example.org"))));
+        assert!(!toolbars.declare(7, 41, Some(location("example.org"))));
+        assert!(toolbars.route(
+            7,
             ToolbarEvent::Commit {
                 text: "rust".into()
             }
-        )]
-    );
-    assert!(toolbars.disconnected(41));
-    assert!(toolbars.toolbar(7).is_none());
-    assert_eq!(toolbars.cleared, vec![7]);
-}
-
-#[test]
-fn the_bars_search_and_history_go_to_the_app_that_offered_its_window() {
-    use crate::window_toolbar::{HistoryOffer, SearchOffer};
-    let mut toolbars = WindowSlots::default();
-    let offer = WindowOffer {
-        search: SearchOffer::Document,
-        count: None,
-        history: Some(HistoryOffer::Closed),
-        ..WindowOffer::default()
-    };
-    // Notes declares no slots, only what its window offers the bar.
-    assert!(toolbars.offer(3, 52, offer.clone()));
-    assert!(
-        !toolbars.offer(3, 52, offer),
-        "an equal offer is nothing new"
-    );
-    assert!(toolbars.toolbar(3).is_none());
-    for event in [
-        ToolbarEvent::Search {
-            query: "cat".into(),
-        },
-        ToolbarEvent::SearchStep { forward: true },
-        ToolbarEvent::SearchClose,
-        ToolbarEvent::History,
-    ] {
-        assert!(toolbars.route(3, event));
+        ));
+        assert!(
+            !toolbars.route(8, ToolbarEvent::Back),
+            "no app declared tab 8"
+        );
+        assert_eq!(
+            toolbars.take_outbox(),
+            vec![(
+                41,
+                ToolbarEvent::Commit {
+                    text: "rust".into()
+                }
+            )]
+        );
+        assert!(toolbars.disconnected(41));
+        assert!(toolbars.toolbar(7).is_none());
+        assert_eq!(toolbars.cleared, vec![7]);
     }
-    assert!(
-        !toolbars.route(3, ToolbarEvent::Back),
-        "slots nobody declared go nowhere"
-    );
-    let outbox = toolbars.take_outbox();
-    assert_eq!(outbox.len(), 4);
-    assert!(outbox.iter().all(|(connection, _)| *connection == 52));
-    assert!(toolbars.disconnected(52));
-    assert!(toolbars.window_offer(3).is_none());
-    assert_eq!(toolbars.offers_cleared, vec![3]);
-    assert!(!toolbars.route(3, ToolbarEvent::History));
+
+    phase the_bars_search_and_history_go_to_the_app_that_offered_its_window;
+    {
+        use crate::window_toolbar::{HistoryOffer, SearchOffer};
+        let mut toolbars = WindowSlots::default();
+        let offer = WindowOffer {
+            search: SearchOffer::Document,
+            count: None,
+            history: Some(HistoryOffer::Closed),
+            ..WindowOffer::default()
+        };
+        // Notes declares no slots, only what its window offers the bar.
+        assert!(toolbars.offer(3, 52, offer.clone()));
+        assert!(
+            !toolbars.offer(3, 52, offer),
+            "an equal offer is nothing new"
+        );
+        assert!(toolbars.toolbar(3).is_none());
+        for event in [
+            ToolbarEvent::Search {
+                query: "cat".into(),
+            },
+            ToolbarEvent::SearchStep { forward: true },
+            ToolbarEvent::SearchClose,
+            ToolbarEvent::History,
+        ] {
+            assert!(toolbars.route(3, event));
+        }
+        assert!(
+            !toolbars.route(3, ToolbarEvent::Back),
+            "slots nobody declared go nowhere"
+        );
+        let outbox = toolbars.take_outbox();
+        assert_eq!(outbox.len(), 4);
+        assert!(outbox.iter().all(|(connection, _)| *connection == 52));
+        assert!(toolbars.disconnected(52));
+        assert!(toolbars.window_offer(3).is_none());
+        assert_eq!(toolbars.offers_cleared, vec![3]);
+        assert!(!toolbars.route(3, ToolbarEvent::History));
+    }
+
+    phase an_app_hears_when_its_window_floats_and_when_it_stands_again;
+    {
+        let mut toolbars = WindowSlots::default();
+        let mut window = group(&[5]);
+        toolbars.declare(5, 61, Some(location("chat")));
+        toolbars.sync_groups([&mut window]);
+        assert!(
+            toolbars.take_outbox().is_empty(),
+            "a strip window is told nothing"
+        );
+        window.set_floating(true);
+        toolbars.sync_groups([&mut window]);
+        toolbars.sync_groups([&mut window]);
+        assert_eq!(
+            toolbars.take_outbox(),
+            vec![(61, ToolbarEvent::Floating { floating: true })]
+        );
+        window.set_floating(false);
+        toolbars.sync_groups([&mut window]);
+        assert_eq!(
+            toolbars.take_outbox(),
+            vec![(61, ToolbarEvent::Floating { floating: false })]
+        );
+    }
 }
 
 fn new_contact() -> WindowToolbar {
@@ -138,178 +167,157 @@ fn apps_sharing_a_thread_each_declare_on_their_own_window() {
     );
 }
 
-#[test]
-fn a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app() {
-    let window = HostedWindow::new();
-    let mut groups = [group(&[5])];
-    let mut slots = WindowSlots::default();
-    window.declare(Some(new_contact()));
-    let windows = [(5, window.clone())];
-    let sync = slots.sync_hosted(&windows, groups.iter_mut());
-    assert!(sync.changed);
-    assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
-    assert!(slots.route(5, ToolbarEvent::Action { id: "new".into() }));
-    assert!(slots.take_outbox().is_empty(), "no connection carries it");
-    assert!(slots.sync_hosted(&windows, groups.iter_mut()).changed);
-    assert_eq!(
-        window.take_events(),
-        vec![ToolbarEvent::Action { id: "new".into() }]
-    );
-    let sync = slots.sync_hosted(&[], groups.iter_mut());
-    assert!(sync.changed);
-    assert_eq!(groups[0].tab_toolbar(5), None);
-}
+tilo_test_env::scenario! {
+    fn a_hosted_windows_bar_carries_its_slots_its_reactions_and_the_desktops_items;
 
-#[test]
-fn a_hosted_windows_reactions_reach_its_bar_and_presses_reach_its_app() {
-    use crate::window_toolbar::{REACTION_ACTION_PREFIX, ToolbarReaction, ToolbarReactions};
-    let window = HostedWindow::new();
-    let mut groups = [group(&[5])];
-    let mut slots = WindowSlots::default();
-    let reactions = ToolbarReactions {
-        pills: vec![ToolbarReaction {
-            emoji: "🎉".into(),
-            count: 2,
-            mine: false,
-            names: vec!["Ada".into()],
-        }],
-        can_react: true,
-    };
-    window.show_reactions(Some(reactions.clone()));
-    let windows = [(5, window.clone())];
-    assert!(slots.sync_hosted(&windows, groups.iter_mut()).changed);
-    assert_eq!(
-        groups[0]
-            .tab_toolbar(5)
-            .and_then(|toolbar| toolbar.reactions.as_ref()),
-        Some(&reactions),
-        "a window with no slots of its own still shows them"
-    );
-    assert!(slots.route(
-        5,
-        ToolbarEvent::Action {
-            id: format!("{REACTION_ACTION_PREFIX}🎉")
-        }
-    ));
-    slots.sync_hosted(&windows, groups.iter_mut());
-    assert_eq!(window.take_reaction_presses(), vec!["🎉".to_owned()]);
-    assert!(
-        window.take_events().is_empty(),
-        "never among the app's slot events"
-    );
-}
+    phase a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app;
+    {
+        let window = HostedWindow::new();
+        let mut groups = [group(&[5])];
+        let mut slots = WindowSlots::default();
+        window.declare(Some(new_contact()));
+        let windows = [(5, window.clone())];
+        let sync = slots.sync_hosted(&windows, groups.iter_mut());
+        assert!(sync.changed);
+        assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
+        assert!(slots.route(5, ToolbarEvent::Action { id: "new".into() }));
+        assert!(slots.take_outbox().is_empty(), "no connection carries it");
+        assert!(slots.sync_hosted(&windows, groups.iter_mut()).changed);
+        assert_eq!(
+            window.take_events(),
+            vec![ToolbarEvent::Action { id: "new".into() }]
+        );
+        let sync = slots.sync_hosted(&[], groups.iter_mut());
+        assert!(sync.changed);
+        assert_eq!(groups[0].tab_toolbar(5), None);
+    }
 
-/// The desktop's own "Share to channel…" ends the menu of a window whose app has a bar,
-/// and choosing it reaches the desktop, never the app.
-#[test]
-fn the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop() {
-    let window = HostedWindow::new();
-    let bare = HostedWindow::new();
-    let mut groups = [group(&[5]), group(&[6])];
-    let mut slots = WindowSlots::default();
-    window.declare(Some(new_contact()));
-    let share = ToolbarAction::new("tilo.desktop.share", "screen-share", "Share to channel…");
-    slots.set_host_items(5, vec![share.clone()]);
-    slots.set_host_items(6, vec![share.clone()]);
-    slots.set_host_items(5, vec![ToolbarAction::new("own", "x", "Not the desktop's")]);
-    assert!(!slots.host_items.contains_key(&5), "only the desktop's ids");
-    slots.set_host_items(5, vec![share]);
-    let windows = [(5, window.clone()), (6, bare.clone())];
-    slots.sync_hosted(&windows, groups.iter_mut());
-    let shown = groups[0].tab_toolbar(5).expect("its bar");
-    assert_eq!(shown.actions.len(), 2);
-    assert!(
-        shown.actions[1].menu,
-        "in the overflow menu, after the app's"
-    );
-    assert!(
-        groups[1]
-            .tab_toolbar(6)
-            .is_some_and(WindowToolbar::menu_only),
-        "a window without a bar carries the menu alone"
-    );
+    phase a_hosted_windows_reactions_reach_its_bar_and_presses_reach_its_app;
+    {
+        use crate::window_toolbar::{REACTION_ACTION_PREFIX, ToolbarReaction, ToolbarReactions};
+        let window = HostedWindow::new();
+        let mut groups = [group(&[5])];
+        let mut slots = WindowSlots::default();
+        let reactions = ToolbarReactions {
+            pills: vec![ToolbarReaction {
+                emoji: "🎉".into(),
+                count: 2,
+                mine: false,
+                names: vec!["Ada".into()],
+            }],
+            can_react: true,
+        };
+        window.show_reactions(Some(reactions.clone()));
+        let windows = [(5, window.clone())];
+        assert!(slots.sync_hosted(&windows, groups.iter_mut()).changed);
+        assert_eq!(
+            groups[0]
+                .tab_toolbar(5)
+                .and_then(|toolbar| toolbar.reactions.as_ref()),
+            Some(&reactions),
+            "a window with no slots of its own still shows them"
+        );
+        assert!(slots.route(
+            5,
+            ToolbarEvent::Action {
+                id: format!("{REACTION_ACTION_PREFIX}🎉")
+            }
+        ));
+        slots.sync_hosted(&windows, groups.iter_mut());
+        assert_eq!(window.take_reaction_presses(), vec!["🎉".to_owned()]);
+        assert!(
+            window.take_events().is_empty(),
+            "never among the app's slot events"
+        );
+    }
 
-    assert!(slots.route(
-        5,
-        ToolbarEvent::Action {
-            id: "tilo.desktop.share".into()
-        }
-    ));
-    slots.sync_hosted(&windows, groups.iter_mut());
-    assert!(window.take_events().is_empty(), "the app never hears it");
-    assert_eq!(
-        slots.take_host_actions(),
-        vec![(5, "tilo.desktop.share".to_owned())]
-    );
+    phase the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop;
+    // The desktop's own "Share to channel…" ends the menu of a window whose app has a bar,
+    // and choosing it reaches the desktop, never the app.
+    {
+        let window = HostedWindow::new();
+        let bare = HostedWindow::new();
+        let mut groups = [group(&[5]), group(&[6])];
+        let mut slots = WindowSlots::default();
+        window.declare(Some(new_contact()));
+        let share = ToolbarAction::new("tilo.desktop.share", "screen-share", "Share to channel…");
+        slots.set_host_items(5, vec![share.clone()]);
+        slots.set_host_items(6, vec![share.clone()]);
+        slots.set_host_items(5, vec![ToolbarAction::new("own", "x", "Not the desktop's")]);
+        assert!(!slots.host_items.contains_key(&5), "only the desktop's ids");
+        slots.set_host_items(5, vec![share]);
+        let windows = [(5, window.clone()), (6, bare.clone())];
+        slots.sync_hosted(&windows, groups.iter_mut());
+        let shown = groups[0].tab_toolbar(5).expect("its bar");
+        assert_eq!(shown.actions.len(), 2);
+        assert!(
+            shown.actions[1].menu,
+            "in the overflow menu, after the app's"
+        );
+        assert!(
+            groups[1]
+                .tab_toolbar(6)
+                .is_some_and(WindowToolbar::menu_only),
+            "a window without a bar carries the menu alone"
+        );
 
-    slots.set_host_items(5, Vec::new());
-    slots.sync_hosted(&windows, groups.iter_mut());
-    assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
-}
+        assert!(slots.route(
+            5,
+            ToolbarEvent::Action {
+                id: "tilo.desktop.share".into()
+            }
+        ));
+        slots.sync_hosted(&windows, groups.iter_mut());
+        assert!(window.take_events().is_empty(), "the app never hears it");
+        assert_eq!(
+            slots.take_host_actions(),
+            vec![(5, "tilo.desktop.share".to_owned())]
+        );
 
-/// A window whose app declared no bar still offers the desktop's own items: they are its
-/// only slots, a menu alone, which leaves its title where it is.
-#[test]
-fn a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone() {
-    let bare = HostedWindow::new();
-    let mut groups = [group(&[6])];
-    let mut slots = WindowSlots::default();
-    let windows = [(6, bare.clone())];
-    slots.sync_hosted(&windows, groups.iter_mut());
-    assert_eq!(groups[0].tab_toolbar(6), None);
+        slots.set_host_items(5, Vec::new());
+        slots.sync_hosted(&windows, groups.iter_mut());
+        assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
+    }
 
-    let share = ToolbarAction::new(
-        "tilo.desktop.share-to-channel",
-        "screen-share",
-        "Share to channel…",
-    );
-    slots.set_host_items(6, vec![share]);
-    slots.sync_hosted(&windows, groups.iter_mut());
-    let shown = groups[0].tab_toolbar(6).expect("the menu");
-    assert!(shown.menu_only(), "{shown:?}");
-    assert_eq!(shown.actions.len(), 1);
-    assert_eq!(shown.actions[0].id, "tilo.desktop.share-to-channel");
-    assert!(shown.location.is_none(), "the title stays in its tab");
+    phase a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone;
+    // A window whose app declared no bar still offers the desktop's own items: they are its
+    // only slots, a menu alone, which leaves its title where it is.
+    {
+        let bare = HostedWindow::new();
+        let mut groups = [group(&[6])];
+        let mut slots = WindowSlots::default();
+        let windows = [(6, bare.clone())];
+        slots.sync_hosted(&windows, groups.iter_mut());
+        assert_eq!(groups[0].tab_toolbar(6), None);
 
-    assert!(slots.route(
-        6,
-        ToolbarEvent::Action {
-            id: "tilo.desktop.share-to-channel".into()
-        }
-    ));
-    slots.sync_hosted(&windows, groups.iter_mut());
-    assert!(bare.take_events().is_empty(), "the app never hears it");
-    assert_eq!(
-        slots.take_host_actions(),
-        vec![(6, "tilo.desktop.share-to-channel".to_owned())]
-    );
+        let share = ToolbarAction::new(
+            "tilo.desktop.share-to-channel",
+            "screen-share",
+            "Share to channel…",
+        );
+        slots.set_host_items(6, vec![share]);
+        slots.sync_hosted(&windows, groups.iter_mut());
+        let shown = groups[0].tab_toolbar(6).expect("the menu");
+        assert!(shown.menu_only(), "{shown:?}");
+        assert_eq!(shown.actions.len(), 1);
+        assert_eq!(shown.actions[0].id, "tilo.desktop.share-to-channel");
+        assert!(shown.location.is_none(), "the title stays in its tab");
 
-    slots.set_host_items(6, Vec::new());
-    slots.sync_hosted(&windows, groups.iter_mut());
-    assert_eq!(groups[0].tab_toolbar(6), None, "bare again");
-}
+        assert!(slots.route(
+            6,
+            ToolbarEvent::Action {
+                id: "tilo.desktop.share-to-channel".into()
+            }
+        ));
+        slots.sync_hosted(&windows, groups.iter_mut());
+        assert!(bare.take_events().is_empty(), "the app never hears it");
+        assert_eq!(
+            slots.take_host_actions(),
+            vec![(6, "tilo.desktop.share-to-channel".to_owned())]
+        );
 
-#[test]
-fn an_app_hears_when_its_window_floats_and_when_it_stands_again() {
-    let mut toolbars = WindowSlots::default();
-    let mut window = group(&[5]);
-    toolbars.declare(5, 61, Some(location("chat")));
-    toolbars.sync_groups([&mut window]);
-    assert!(
-        toolbars.take_outbox().is_empty(),
-        "a strip window is told nothing"
-    );
-    window.set_floating(true);
-    toolbars.sync_groups([&mut window]);
-    toolbars.sync_groups([&mut window]);
-    assert_eq!(
-        toolbars.take_outbox(),
-        vec![(61, ToolbarEvent::Floating { floating: true })]
-    );
-    window.set_floating(false);
-    toolbars.sync_groups([&mut window]);
-    assert_eq!(
-        toolbars.take_outbox(),
-        vec![(61, ToolbarEvent::Floating { floating: false })]
-    );
+        slots.set_host_items(6, Vec::new());
+        slots.sync_hosted(&windows, groups.iter_mut());
+        assert_eq!(groups[0].tab_toolbar(6), None, "bare again");
+    }
 }
