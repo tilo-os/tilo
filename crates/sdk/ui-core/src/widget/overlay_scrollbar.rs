@@ -215,86 +215,90 @@ mod tests {
         ScrollMetrics::new(1000.0, 100.0, offset)
     }
 
-    #[test]
-    fn the_bar_shows_when_the_content_scrolls_and_fades_at_rest() {
-        let theme = Theme::dark();
-        let mut bar = OverlayScrollbar::vertical();
-        bar.set_theme(&theme);
-        bar.note_offset(0.0);
-        assert!(bar.opacity() <= 0.003, "nothing scrolled yet");
-        let mut scene = Scene::new();
-        bar.paint(&mut scene, Affine::IDENTITY, AREA, overflowing(0.0), &theme);
-        assert!(scene.encoding().is_empty(), "a bar at rest paints nothing");
+    tilo_test_env::scenario! {
+        fn the_overlay_bar_shows_fades_and_takes_no_room;
 
-        bar.note_offset(40.0);
-        assert!(bar.opacity() > 0.99, "a scroll shows the bar");
-        bar.paint(
-            &mut scene,
-            Affine::IDENTITY,
-            AREA,
-            overflowing(40.0),
-            &theme,
-        );
-        assert!(!scene.encoding().is_empty(), "a shown bar paints its thumb");
-        assert!(
-            bar.next_wake_deadline().is_some(),
-            "the host wakes when the fade starts"
-        );
-        let later = crate::time::now() + crate::time::Duration::from_secs(10);
-        assert!(bar.fade.get().opacity_at(later, false) <= 0.003);
-    }
+        phase the_bar_shows_when_the_content_scrolls_and_fades_at_rest;
+        {
+            let theme = Theme::dark();
+            let mut bar = OverlayScrollbar::vertical();
+            bar.set_theme(&theme);
+            bar.note_offset(0.0);
+            assert!(bar.opacity() <= 0.003, "nothing scrolled yet");
+            let mut scene = Scene::new();
+            bar.paint(&mut scene, Affine::IDENTITY, AREA, overflowing(0.0), &theme);
+            assert!(scene.encoding().is_empty(), "a bar at rest paints nothing");
 
-    #[test]
-    fn reduced_motion_and_the_pointer_keep_the_bar_shown() {
-        let mut theme = Theme::dark();
-        theme.reduce_motion = true;
-        let mut bar = OverlayScrollbar::vertical();
-        bar.set_theme(&theme);
-        assert!(bar.held(), "reduced motion never fades the bar");
-        assert_eq!(bar.next_wake_deadline(), None);
+            bar.note_offset(40.0);
+            assert!(bar.opacity() > 0.99, "a scroll shows the bar");
+            bar.paint(
+                &mut scene,
+                Affine::IDENTITY,
+                AREA,
+                overflowing(40.0),
+                &theme,
+            );
+            assert!(!scene.encoding().is_empty(), "a shown bar paints its thumb");
+            assert!(
+                bar.next_wake_deadline().is_some(),
+                "the host wakes when the fade starts"
+            );
+            let later = crate::time::now() + crate::time::Duration::from_secs(10);
+            assert!(bar.fade.get().opacity_at(later, false) <= 0.003);
+        }
 
-        theme.reduce_motion = false;
-        bar.set_theme(&theme);
-        assert!(bar.update_pointer(AREA, overflowing(0.0), bar.lane(AREA).center()));
-        assert!(bar.held(), "the pointer at the bar holds it");
-        assert!(bar.opacity() > 0.99);
-        assert!(bar.pointer_left());
-        assert!(!bar.held());
-    }
+        phase reduced_motion_and_the_pointer_keep_the_bar_shown;
+        {
+            let mut theme = Theme::dark();
+            theme.reduce_motion = true;
+            let mut bar = OverlayScrollbar::vertical();
+            bar.set_theme(&theme);
+            assert!(bar.held(), "reduced motion never fades the bar");
+            assert_eq!(bar.next_wake_deadline(), None);
 
-    #[test]
-    fn the_bar_lies_over_the_trailing_edge_and_takes_no_space() {
-        let theme = Theme::dark();
-        let mut bar = OverlayScrollbar::vertical();
-        bar.set_theme(&theme);
-        let lane = bar.lane(AREA);
-        assert_eq!(lane.x1, AREA.x1);
-        assert_eq!(
-            lane.width(),
-            f64::from(theme.tokens.metrics.scrollbar_gutter)
-        );
-        assert_eq!(
-            bar.track(AREA),
-            Scrollbar::vertical().track_in(lane, &theme),
-            "the thumb stands where a Scrollable's does"
-        );
-    }
+            theme.reduce_motion = false;
+            bar.set_theme(&theme);
+            assert!(bar.update_pointer(AREA, overflowing(0.0), bar.lane(AREA).center()));
+            assert!(bar.held(), "the pointer at the bar holds it");
+            assert!(bar.opacity() > 0.99);
+            assert!(bar.pointer_left());
+            assert!(!bar.held());
+        }
 
-    #[test]
-    fn a_faded_bar_takes_no_press() {
-        let theme = Theme::dark();
-        let mut bar = OverlayScrollbar::vertical();
-        bar.set_theme(&theme);
-        let on_thumb = bar.track(AREA).center();
-        assert_eq!(
-            bar.press(AREA, overflowing(450.0), on_thumb),
-            PressOutcome::Miss
-        );
-        bar.wake();
-        assert_eq!(
-            bar.press(AREA, overflowing(450.0), on_thumb),
-            PressOutcome::Thumb
-        );
-        assert!(bar.release());
+        phase the_bar_lies_over_the_trailing_edge_and_takes_no_space;
+        {
+            let theme = Theme::dark();
+            let mut bar = OverlayScrollbar::vertical();
+            bar.set_theme(&theme);
+            let lane = bar.lane(AREA);
+            assert_eq!(lane.x1, AREA.x1);
+            assert_eq!(
+                lane.width(),
+                f64::from(theme.tokens.metrics.scrollbar_gutter)
+            );
+            assert_eq!(
+                bar.track(AREA),
+                Scrollbar::vertical().track_in(lane, &theme),
+                "the thumb stands where a Scrollable's does"
+            );
+        }
+
+        phase a_faded_bar_takes_no_press;
+        {
+            let theme = Theme::dark();
+            let mut bar = OverlayScrollbar::vertical();
+            bar.set_theme(&theme);
+            let on_thumb = bar.track(AREA).center();
+            assert_eq!(
+                bar.press(AREA, overflowing(450.0), on_thumb),
+                PressOutcome::Miss
+            );
+            bar.wake();
+            assert_eq!(
+                bar.press(AREA, overflowing(450.0), on_thumb),
+                PressOutcome::Thumb
+            );
+            assert!(bar.release());
+        }
     }
 }

@@ -83,300 +83,304 @@ impl Widget for Fixed {
     }
 }
 
-#[test]
-fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
-    let _settled = crate::motion::testing::settled();
-    {
-        let mut p = opened();
-        assert_eq!(p.highlighted(), 1, "opens on the selected row");
-        assert!(dispatch(&mut p, &key(NamedKey::ArrowDown)));
-        assert_eq!(p.highlighted(), 2);
-        assert!(dispatch(&mut p, &key(NamedKey::ArrowUp)));
-        assert_eq!(p.highlighted(), 1);
-    }
+tilo_test_env::scenario! {
+    fn a_popover_menu_is_placed_painted_and_driven_by_keys_and_pointer;
 
+    phase menu_keyboard_moves_clamps_selects_and_swallows_keys;
     {
-        let mut p = opened();
-        dispatch(&mut p, &key(NamedKey::End));
-        assert_eq!(p.highlighted(), 4);
-        dispatch(&mut p, &key(NamedKey::Home));
-        assert_eq!(p.highlighted(), 0);
-        for _ in 0..10 {
+        let _settled = crate::motion::testing::settled();
+        {
+            let mut p = opened();
+            assert_eq!(p.highlighted(), 1, "opens on the selected row");
+            assert!(dispatch(&mut p, &key(NamedKey::ArrowDown)));
+            assert_eq!(p.highlighted(), 2);
+            assert!(dispatch(&mut p, &key(NamedKey::ArrowUp)));
+            assert_eq!(p.highlighted(), 1);
+        }
+
+        {
+            let mut p = opened();
+            dispatch(&mut p, &key(NamedKey::End));
+            assert_eq!(p.highlighted(), 4);
+            dispatch(&mut p, &key(NamedKey::Home));
+            assert_eq!(p.highlighted(), 0);
+            for _ in 0..10 {
+                dispatch(&mut p, &key(NamedKey::ArrowDown));
+            }
+            assert_eq!(p.highlighted(), 4, "no wrap past the end");
+            for _ in 0..10 {
+                dispatch(&mut p, &key(NamedKey::ArrowUp));
+            }
+            assert_eq!(p.highlighted(), 0, "no wrap past the start");
+        }
+
+        {
+            let mut p = opened();
             dispatch(&mut p, &key(NamedKey::ArrowDown));
+            dispatch(&mut p, &key(NamedKey::ArrowDown));
+            assert!(dispatch(&mut p, &key(NamedKey::Enter)));
+            assert!(!p.is_open());
+            assert_eq!(p.take_selection(), Some(3));
+            assert_eq!(p.take_selection(), None, "drained once");
+            assert_eq!(p.selected(), Some(3));
+
+            let mut p = opened();
+            assert!(dispatch(&mut p, &key(NamedKey::Escape)));
+            assert!(!p.is_open());
+            assert_eq!(p.take_selection(), None);
         }
-        assert_eq!(p.highlighted(), 4, "no wrap past the end");
-        for _ in 0..10 {
-            dispatch(&mut p, &key(NamedKey::ArrowUp));
+
+        {
+            let mut p = opened();
+            assert!(dispatch(&mut p, &key_event(Key::Character("x".into()))));
+            assert!(dispatch(&mut p, &key(NamedKey::Tab)));
+            assert!(p.is_open());
+            assert_eq!(p.take_selection(), None);
         }
-        assert_eq!(p.highlighted(), 0, "no wrap past the start");
     }
 
+    phase menu_pointer_selection_and_dismissal;
     {
+        let _settled = crate::motion::testing::settled();
         let mut p = opened();
-        dispatch(&mut p, &key(NamedKey::ArrowDown));
-        dispatch(&mut p, &key(NamedKey::ArrowDown));
-        assert!(dispatch(&mut p, &key(NamedKey::Enter)));
-        assert!(!p.is_open());
-        assert_eq!(p.take_selection(), Some(3));
-        assert_eq!(p.take_selection(), None, "drained once");
-        assert_eq!(p.selected(), Some(3));
-
-        let mut p = opened();
-        assert!(dispatch(&mut p, &key(NamedKey::Escape)));
-        assert!(!p.is_open());
-        assert_eq!(p.take_selection(), None);
-    }
-
-    {
-        let mut p = opened();
-        assert!(dispatch(&mut p, &key_event(Key::Character("x".into()))));
-        assert!(dispatch(&mut p, &key(NamedKey::Tab)));
-        assert!(p.is_open());
-        assert_eq!(p.take_selection(), None);
-    }
-}
-
-#[test]
-fn menu_pointer_selection_and_dismissal() {
-    let _settled = crate::motion::testing::settled();
-    let mut p = opened();
-    let row2 = p.item_rect(2).expect("published row geometry");
-    assert_eq!(p.item_at(row2.center()), Some(2));
-    assert!(p.item_rect(p.items().len()).is_none());
-    assert!(
-        row2.height() >= f64::from(Theme::dark().tokens.metrics.min_pointer_target),
-        "a row is a pointer target"
-    );
-    dispatch(&mut p, &cursor_at(row2.center()));
-    assert_eq!(p.highlighted(), 2, "the pointer moves the highlight");
-    assert!(dispatch(&mut p, &mouse_press()));
-    assert_eq!(p.take_selection(), Some(2));
-    assert!(!p.is_open());
-
-    let dismissed = std::rc::Rc::new(std::cell::Cell::new(false));
-    let flag = dismissed.clone();
-    let mut p = opened().on_dismiss(move || flag.set(true));
-    let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
-    dispatch(&mut p, &cursor_at(outside));
-    assert!(
-        dispatch(&mut p, &mouse_press()),
-        "the outside click is swallowed"
-    );
-    assert!(!p.is_open());
-    let doc = automerge::AutoCommit::new();
-    assert!(
-        crate::resources::resources(&p, &doc).is_empty(),
-        "a closed popover offers no way to close it"
-    );
-    assert!(dismissed.get());
-    assert_eq!(p.take_selection(), None);
-}
-
-#[test]
-fn menu_semantics_focus_and_reopen() {
-    use crate::a11y::Role;
-    let _settled = crate::motion::testing::settled();
-    let p = opened();
-    let node = Widget::accessibility(&p).expect("a menu is semantic");
-    assert_eq!(node.role, Role::Menu);
-    assert_eq!(node.name.as_deref(), Some("Refresh interval"));
-    assert_eq!(node.state.expanded, Some(true));
-    assert_eq!(node.children.len(), 5);
-    for (i, child) in node.children.iter().enumerate() {
-        assert_eq!(child.role, Role::MenuItem);
-        assert_eq!(child.pos_in_set, Some(i + 1));
-        assert_eq!(child.set_size, Some(5));
-    }
-    assert!(node.children[1].state.focused && node.children[1].state.selected);
-    assert!(Widget::traps_focus(&p) && Widget::modal_capture(&p).is_some());
-
-    let closed = Popover::new().with_items(["a", "b"]);
-    let node = Widget::accessibility(&closed).unwrap();
-    assert!(node.state.hidden);
-    assert_eq!(node.state.expanded, Some(false));
-    assert!(!Widget::traps_focus(&closed) && Widget::modal_capture(&closed).is_none());
-
-    let mut p = opened();
-    p.select(3);
-    assert_eq!(p.take_selection(), Some(3));
-    p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
-    assert_eq!(p.highlighted(), 3, "reopening lands on the applied option");
-}
-
-#[test]
-fn text_content_is_laid_out_on_one_line() {
-    let _settled = crate::motion::testing::settled();
-    let theme = Theme::light();
-    let mut tr = TextRenderer::new();
-    let label = "Shared with Ana, Ben and Chloé";
-    let mut p = Popover::with_content(crate::widget::Text::new(label))
-        .anchored(Rect::new(640.0, 150.0, 760.0, 182.0))
-        .with_viewport(WINDOW)
-        .open(true);
-    p.place(&mut tr, &theme);
-    let (w, h) = tr.measure_style(label, None, &theme.text(crate::tokens::TextRole::Body));
-    let content = p.content().get_rect();
-    assert!(
-        content.width() >= f64::from(w) - 0.5 && content.height() < f64::from(h) * 1.5,
-        "one line: content {content:?}, text {w}x{h}, panel {:?}",
-        p.rect()
-    );
-}
-
-#[test]
-fn placement_flips_and_stays_in_the_window() {
-    let _settled = crate::motion::testing::settled();
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-
-    {
-        let anchor = Rect::new(200.0, 100.0, 280.0, 132.0);
-        let mut p = Popover::with_content(Fixed {
-            rect: Rect::ZERO,
-            w: 120.0,
-            h: 60.0,
-        })
-        .anchored(anchor)
-        .with_viewport(WINDOW)
-        .open(true);
-        p.place(&mut tr, &theme);
-        assert_eq!(p.resolved_side(), PopoverSide::Below);
-        assert!(p.rect().y0 > anchor.y1 && (p.rect().x0 - anchor.x0).abs() < 1e-9);
-        let pad = f64::from(theme.tokens.spacing.s4);
+        let row2 = p.item_rect(2).expect("published row geometry");
+        assert_eq!(p.item_at(row2.center()), Some(2));
+        assert!(p.item_rect(p.items().len()).is_none());
         assert!(
-            (p.rect().width() - (121.0 + pad * 2.0)).abs() < 0.5,
-            "hugs content (plus the pixel of rounding slack)"
+            row2.height() >= f64::from(Theme::dark().tokens.metrics.min_pointer_target),
+            "a row is a pointer target"
         );
+        dispatch(&mut p, &cursor_at(row2.center()));
+        assert_eq!(p.highlighted(), 2, "the pointer moves the highlight");
+        assert!(dispatch(&mut p, &mouse_press()));
+        assert_eq!(p.take_selection(), Some(2));
+        assert!(!p.is_open());
+
+        let dismissed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = dismissed.clone();
+        let mut p = opened().on_dismiss(move || flag.set(true));
+        let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
+        dispatch(&mut p, &cursor_at(outside));
+        assert!(
+            dispatch(&mut p, &mouse_press()),
+            "the outside click is swallowed"
+        );
+        assert!(!p.is_open());
+        let doc = automerge::AutoCommit::new();
+        assert!(
+            crate::resources::resources(&p, &doc).is_empty(),
+            "a closed popover offers no way to close it"
+        );
+        assert!(dismissed.get());
+        assert_eq!(p.take_selection(), None);
+    }
+
+    phase menu_semantics_focus_and_reopen;
+    {
+        use crate::a11y::Role;
+        let _settled = crate::motion::testing::settled();
+        let p = opened();
+        let node = Widget::accessibility(&p).expect("a menu is semantic");
+        assert_eq!(node.role, Role::Menu);
+        assert_eq!(node.name.as_deref(), Some("Refresh interval"));
+        assert_eq!(node.state.expanded, Some(true));
+        assert_eq!(node.children.len(), 5);
+        for (i, child) in node.children.iter().enumerate() {
+            assert_eq!(child.role, Role::MenuItem);
+            assert_eq!(child.pos_in_set, Some(i + 1));
+            assert_eq!(child.set_size, Some(5));
+        }
+        assert!(node.children[1].state.focused && node.children[1].state.selected);
+        assert!(Widget::traps_focus(&p) && Widget::modal_capture(&p).is_some());
+
+        let closed = Popover::new().with_items(["a", "b"]);
+        let node = Widget::accessibility(&closed).unwrap();
+        assert!(node.state.hidden);
+        assert_eq!(node.state.expanded, Some(false));
+        assert!(!Widget::traps_focus(&closed) && Widget::modal_capture(&closed).is_none());
+
+        let mut p = opened();
+        p.select(3);
+        assert_eq!(p.take_selection(), Some(3));
+        p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
+        assert_eq!(p.highlighted(), 3, "reopening lands on the applied option");
+    }
+
+    phase text_content_is_laid_out_on_one_line;
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::light();
+        let mut tr = TextRenderer::new();
+        let label = "Shared with Ana, Ben and Chloé";
+        let mut p = Popover::with_content(crate::widget::Text::new(label))
+            .anchored(Rect::new(640.0, 150.0, 760.0, 182.0))
+            .with_viewport(WINDOW)
+            .open(true);
+        p.place(&mut tr, &theme);
+        let (w, h) = tr.measure_style(label, None, &theme.text(crate::tokens::TextRole::Body));
         let content = p.content().get_rect();
         assert!(
-            (content.x0 - (p.rect().x0 + pad)).abs() < 0.5,
-            "content sits inside the padding"
+            content.width() >= f64::from(w) - 0.5 && content.height() < f64::from(h) * 1.5,
+            "one line: content {content:?}, text {w}x{h}, panel {:?}",
+            p.rect()
         );
     }
 
+    phase placement_flips_and_stays_in_the_window;
     {
-        let anchor = Rect::new(200.0, 540.0, 280.0, 572.0);
-        let mut p = Popover::with_content(Fixed {
-            rect: Rect::ZERO,
-            w: 120.0,
-            h: 120.0,
-        })
-        .anchored(anchor)
-        .with_viewport(WINDOW)
-        .open(true);
-        p.place(&mut tr, &theme);
-        assert_eq!(p.resolved_side(), PopoverSide::Above);
-        assert!(p.rect().y1 < anchor.y0);
-    }
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
 
-    {
-        let anchor = Rect::new(760.0, 100.0, 790.0, 130.0);
-        let mut p = opened();
-        p.open_at(anchor, None);
-        p.place(&mut tr, &theme);
-        assert!(p.rect().x1 <= WINDOW.x1 + 1e-9, "{:?}", p.rect());
-    }
-
-    {
-        let anchor = Rect::new(200.0, 560.0, 280.0, 590.0);
-        let mut p = Popover::new()
-            .with_items(["One", "Two", "Three"])
-            .with_label("Count");
-        p.open_at(anchor, None);
-        present(&mut p, &theme);
-        assert_eq!(p.resolved_side(), PopoverSide::Above);
-    }
-}
-
-#[test]
-fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
-    let _settled = crate::motion::testing::settled();
-    {
-        let mut p = opened();
-        let mut scene = Scene::new();
-        p.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert!(scene.encoding().draw_tags.is_empty());
-        assert!(
-            !present(&mut p, &Theme::dark())
-                .encoding()
-                .draw_tags
-                .is_empty()
-        );
-        let mut closed = Popover::new().with_items(["a"]);
-        let scene = present(&mut closed, &Theme::dark());
-        assert!(
-            scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .all(|t| *t != DrawTag::COLOR)
-        );
-    }
-
-    {
-        use crate::a11y::relative_luminance;
-        for theme in [
-            Theme::dark(),
-            Theme::named("dark-soft").unwrap(),
-            Theme::named("dark-cool").unwrap(),
-        ] {
-            let panel = crate::chrome::panel_ground(&theme);
-            let content = theme.tokens.colors.surfaces.content;
-            let base = theme.tokens.colors.surfaces.base;
+        {
+            let anchor = Rect::new(200.0, 100.0, 280.0, 132.0);
+            let mut p = Popover::with_content(Fixed {
+                rect: Rect::ZERO,
+                w: 120.0,
+                h: 60.0,
+            })
+            .anchored(anchor)
+            .with_viewport(WINDOW)
+            .open(true);
+            p.place(&mut tr, &theme);
+            assert_eq!(p.resolved_side(), PopoverSide::Below);
+            assert!(p.rect().y0 > anchor.y1 && (p.rect().x0 - anchor.x0).abs() < 1e-9);
+            let pad = f64::from(theme.tokens.spacing.s4);
             assert!(
-                relative_luminance(panel) > relative_luminance(content)
-                    && relative_luminance(panel) > relative_luminance(base),
-                "{}: a menu is lighter than the window and the desktop on dark",
-                theme.name
+                (p.rect().width() - (121.0 + pad * 2.0)).abs() < 0.5,
+                "hugs content (plus the pixel of rounding slack)"
+            );
+            let content = p.content().get_rect();
+            assert!(
+                (content.x0 - (p.rect().x0 + pad)).abs() < 0.5,
+                "content sits inside the padding"
+            );
+        }
+
+        {
+            let anchor = Rect::new(200.0, 540.0, 280.0, 572.0);
+            let mut p = Popover::with_content(Fixed {
+                rect: Rect::ZERO,
+                w: 120.0,
+                h: 120.0,
+            })
+            .anchored(anchor)
+            .with_viewport(WINDOW)
+            .open(true);
+            p.place(&mut tr, &theme);
+            assert_eq!(p.resolved_side(), PopoverSide::Above);
+            assert!(p.rect().y1 < anchor.y0);
+        }
+
+        {
+            let anchor = Rect::new(760.0, 100.0, 790.0, 130.0);
+            let mut p = opened();
+            p.open_at(anchor, None);
+            p.place(&mut tr, &theme);
+            assert!(p.rect().x1 <= WINDOW.x1 + 1e-9, "{:?}", p.rect());
+        }
+
+        {
+            let anchor = Rect::new(200.0, 560.0, 280.0, 590.0);
+            let mut p = Popover::new()
+                .with_items(["One", "Two", "Three"])
+                .with_label("Count");
+            p.open_at(anchor, None);
+            present(&mut p, &theme);
+            assert_eq!(p.resolved_side(), PopoverSide::Above);
+        }
+    }
+
+    phase the_panel_is_painted_in_the_top_layer_lighter_than_the_window;
+    {
+        let _settled = crate::motion::testing::settled();
+        {
+            let mut p = opened();
+            let mut scene = Scene::new();
+            p.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(scene.encoding().draw_tags.is_empty());
+            assert!(
+                !present(&mut p, &Theme::dark())
+                    .encoding()
+                    .draw_tags
+                    .is_empty()
+            );
+            let mut closed = Popover::new().with_items(["a"]);
+            let scene = present(&mut closed, &Theme::dark());
+            assert!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .iter()
+                    .all(|t| *t != DrawTag::COLOR)
+            );
+        }
+
+        {
+            use crate::a11y::relative_luminance;
+            for theme in [
+                Theme::dark(),
+                Theme::named("dark-soft").unwrap(),
+                Theme::named("dark-cool").unwrap(),
+            ] {
+                let panel = crate::chrome::panel_ground(&theme);
+                let content = theme.tokens.colors.surfaces.content;
+                let base = theme.tokens.colors.surfaces.base;
+                assert!(
+                    relative_luminance(panel) > relative_luminance(content)
+                        && relative_luminance(panel) > relative_luminance(base),
+                    "{}: a menu is lighter than the window and the desktop on dark",
+                    theme.name
+                );
+            }
+        }
+
+        // Case `the_armed_row_is_a_neutral_lift_as_in_every_menu`.
+        // Arming a row is hover, and hover never takes the accent: the armed
+        // row is the panel's neutral lift.
+        {
+            let theme = Theme::dark();
+            let (armed, _) = crate::widget::floating_surface::armed_row(&theme);
+            let oklch = crate::color::Oklch::from_color(armed);
+            assert!(oklch.c <= 0.011, "no hue in the highlight: {oklch:?}");
+            let mut p = opened();
+            let scene = present(&mut p, &theme);
+            let armed_rgba = armed.premultiply().to_rgba8().to_u32();
+            assert!(
+                scene.encoding().draw_data.contains(&armed_rgba),
+                "the armed row is the panel's lift (HIG §9.3), as in the \
+             dropdown list and the context menu"
             );
         }
     }
 
-    // Case `the_armed_row_is_a_neutral_lift_as_in_every_menu`.
-    // Arming a row is hover, and hover never takes the accent: the armed
-    // row is the panel's neutral lift.
+    // Whatever the anchor's edges are, the panel's edges land on the display's
+    // pixels: the frame draws the popover where it placed it.
+    phase popover_edges_land_on_device_pixels;
     {
-        let theme = Theme::dark();
-        let (armed, _) = crate::widget::floating_surface::armed_row(&theme);
-        let oklch = crate::color::Oklch::from_color(armed);
-        assert!(oklch.c <= 0.011, "no hue in the highlight: {oklch:?}");
-        let mut p = opened();
-        let scene = present(&mut p, &theme);
-        let armed_rgba = armed.premultiply().to_rgba8().to_u32();
-        assert!(
-            scene.encoding().draw_data.contains(&armed_rgba),
-            "the armed row is the panel's lift (HIG §9.3), as in the \
-             dropdown list and the context menu"
-        );
-    }
-}
-
-/// Whatever the anchor's edges are, the panel's edges land on the display's
-/// pixels: the frame draws the popover where it placed it.
-#[test]
-fn popover_edges_land_on_device_pixels() {
-    for scale in [1.25_f64, 1.5, 2.0, 3.0] {
-        let _grid = crate::widget::enter_device_scale(scale);
-        let mut tr = TextRenderer::new();
-        let mut p = Popover::new()
-            .with_label("Refresh interval")
-            .with_items(["1 second", "2 seconds"]);
-        p.set_viewport(WINDOW);
-        p.open_at(Rect::new(100.3, 40.7, 180.6, 68.4), Some(1));
-        p.place(&mut tr, &Theme::dark());
-        let rect = p.get_rect();
-        for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
-            let pixels = edge * scale;
-            assert!(
-                (pixels - pixels.round()).abs() < 1e-6,
-                "{edge} is not a device pixel at {scale}x: {rect:?}"
-            );
+        for scale in [1.25_f64, 1.5, 2.0, 3.0] {
+            let _grid = crate::widget::enter_device_scale(scale);
+            let mut tr = TextRenderer::new();
+            let mut p = Popover::new()
+                .with_label("Refresh interval")
+                .with_items(["1 second", "2 seconds"]);
+            p.set_viewport(WINDOW);
+            p.open_at(Rect::new(100.3, 40.7, 180.6, 68.4), Some(1));
+            p.place(&mut tr, &Theme::dark());
+            let rect = p.get_rect();
+            for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
+                let pixels = edge * scale;
+                assert!(
+                    (pixels - pixels.round()).abs() < 1e-6,
+                    "{edge} is not a device pixel at {scale}x: {rect:?}"
+                );
+            }
         }
     }
 }

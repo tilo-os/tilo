@@ -350,80 +350,84 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_answer_line_led_by_a_reference_shows_it_as_a_chip() {
-        let refs = [card()];
-        let line = r#"@board.Card:root/cards:c1 "Write the release notes" column: @board.Column:root/columns:todo "To do""#;
-        let (resource, rest) = leading_reference(line, &refs).expect("the card leads the line");
-        assert_eq!(resource, &refs[0]);
-        assert_eq!(
-            rest, r#"column: @board.Column:root/columns:todo "To do""#,
-            "the label is the chip's, the fields stay"
-        );
-        assert_eq!(labelled_only(rest), r#"column: "To do""#);
-        assert_eq!(labelled_only("due: 2026-10-30"), "due: 2026-10-30");
-        assert!(leading_reference("// 3 items", &refs).is_none());
-        assert!(
-            leading_reference(r#"@board.Card:root/cards:c9 "Other""#, &refs).is_none(),
-            "a reference the step does not name stays code"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_program_step_shows_its_answer_and_what_its_host_can_do;
 
-    #[test]
-    fn the_view_offers_only_what_its_host_can_do() {
-        fn ids(widget: &dyn crate::widget::Widget, out: &mut Vec<String>) {
-            if let Some(id) = widget.test_id() {
-                out.push(id.to_owned());
-            }
-            for child in widget.children() {
-                ids(child, out);
-            }
+        phase an_answer_line_led_by_a_reference_shows_it_as_a_chip;
+        {
+            let refs = [card()];
+            let line = r#"@board.Card:root/cards:c1 "Write the release notes" column: @board.Column:root/columns:todo "To do""#;
+            let (resource, rest) = leading_reference(line, &refs).expect("the card leads the line");
+            assert_eq!(resource, &refs[0]);
+            assert_eq!(
+                rest, r#"column: @board.Column:root/columns:todo "To do""#,
+                "the label is the chip's, the fields stay"
+            );
+            assert_eq!(labelled_only(rest), r#"column: "To do""#);
+            assert_eq!(labelled_only("due: 2026-10-30"), "due: 2026-10-30");
+            assert!(leading_reference("// 3 items", &refs).is_none());
+            assert!(
+                leading_reference(r#"@board.Card:root/cards:c9 "Other""#, &refs).is_none(),
+                "a reference the step does not name stays code"
+            );
         }
-        let step = ProgramStep {
-            program: "board.move(@board.Card:root/cards:c1, column: \"Done\")".into(),
-            outcome: StepOutcome::Done,
-            answer: (0..9).map(|n| format!("// line {n}")).collect(),
-            refs: vec![card()],
-            changes: vec![StepChange {
-                resource: card(),
-                action: "Move to Done".into(),
-            }],
-            previews: vec![StepPreview {
-                invocation: ResourceAt {
-                    app: "so.tilo.lang.todo".into(),
-                    record: None,
-                    reference: ResourceRef::whole("tl.invocation", "inv-1", "Check"),
-                },
-                action: "Check the todo".into(),
-                summary: String::new(),
-            }],
-            planned: Vec::new(),
-        };
-        let mut bare = Vec::new();
-        ids(
-            ProgramStepView::new("s1", step.clone())
-                .into_widget()
-                .as_ref(),
-            &mut bare,
-        );
-        assert!(bare.iter().any(|id| id == "s1-answer"), "{bare:?}");
-        assert!(!bare.iter().any(|id| id.ends_with("-undo")), "{bare:?}");
-        assert!(!bare.iter().any(|id| id.ends_with("-approve")), "{bare:?}");
 
-        let mut full = Vec::new();
-        ids(
-            ProgramStepView::new("s1", step)
-                .answering(|_| {})
-                .into_widget()
-                .as_ref(),
-            &mut full,
-        );
-        for id in [
-            "s1-change-0-undo",
-            "s1-preview-0-approve",
-            "s1-preview-0-decline",
-        ] {
-            assert!(full.iter().any(|shown| shown == id), "{id} in {full:?}");
+        phase the_view_offers_only_what_its_host_can_do;
+        {
+            fn ids(widget: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+                if let Some(id) = widget.test_id() {
+                    out.push(id.to_owned());
+                }
+                for child in widget.children() {
+                    ids(child, out);
+                }
+            }
+            let step = ProgramStep {
+                program: "board.move(@board.Card:root/cards:c1, column: \"Done\")".into(),
+                outcome: StepOutcome::Done,
+                answer: (0..9).map(|n| format!("// line {n}")).collect(),
+                refs: vec![card()],
+                changes: vec![StepChange {
+                    resource: card(),
+                    action: "Move to Done".into(),
+                }],
+                previews: vec![StepPreview {
+                    invocation: ResourceAt {
+                        app: "so.tilo.lang.todo".into(),
+                        record: None,
+                        reference: ResourceRef::whole("tl.invocation", "inv-1", "Check"),
+                    },
+                    action: "Check the todo".into(),
+                    summary: String::new(),
+                }],
+                planned: Vec::new(),
+            };
+            let mut bare = Vec::new();
+            ids(
+                ProgramStepView::new("s1", step.clone())
+                    .into_widget()
+                    .as_ref(),
+                &mut bare,
+            );
+            assert!(bare.iter().any(|id| id == "s1-answer"), "{bare:?}");
+            assert!(!bare.iter().any(|id| id.ends_with("-undo")), "{bare:?}");
+            assert!(!bare.iter().any(|id| id.ends_with("-approve")), "{bare:?}");
+
+            let mut full = Vec::new();
+            ids(
+                ProgramStepView::new("s1", step)
+                    .answering(|_| {})
+                    .into_widget()
+                    .as_ref(),
+                &mut full,
+            );
+            for id in [
+                "s1-change-0-undo",
+                "s1-preview-0-approve",
+                "s1-preview-0-decline",
+            ] {
+                assert!(full.iter().any(|shown| shown == id), "{id} in {full:?}");
+            }
         }
     }
 }

@@ -1697,85 +1697,89 @@ mod tests;
 mod protected_placement_tests {
     use super::*;
 
-    #[test]
-    fn protected_measured_panel_uses_shared_opposite_placement_without_moving_anchor() {
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let anchor = Rect::new(350.0, 250.0, 370.0, 270.0);
-        let protected = Rect::new(375.0, 230.0, 700.0, 400.0);
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+    tilo_test_env::scenario! {
+        fn a_protected_panel_is_placed_clear_of_what_it_protects;
+
+        phase protected_measured_panel_uses_shared_opposite_placement_without_moving_anchor;
+        {
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let anchor = Rect::new(350.0, 250.0, 370.0, 270.0);
+            let protected = Rect::new(375.0, 230.0, 700.0, 400.0);
+            for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+                let mut panel = Popover::new()
+                    .with_items(["Message", "Queue task", "Steer current task"])
+                    .anchored(anchor)
+                    .side(PopoverSide::Right)
+                    .fallback_side(PopoverSide::Above)
+                    .with_viewport(viewport)
+                    .confined_to_viewport()
+                    .open(true);
+                panel.set_protected_rect(Some(protected));
+                let room = panel.room(&theme);
+                let capacity = panel.available_content_width(&theme);
+                assert!(f64::from(capacity) <= room.width() - 2.0 * panel.padding(&theme));
+                panel.place(&mut TextRenderer::new(), &theme);
+                assert_eq!(
+                    panel.anchor, anchor,
+                    "placement never changes the source input locus"
+                );
+                assert!(room.contains_rect(panel.rect()));
+                assert_eq!(panel.rect().intersect(protected).area(), 0.0);
+                assert_eq!(panel.resolved_side(), PopoverSide::Left);
+            }
+        }
+
+        // A panel protected from a wide block of text low in the viewport:
+        // neither side nor below has room, so it goes above the block.
+        phase a_protected_panel_tries_the_fallback_axis_both_ways;
+        {
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let block = Rect::new(40.0, 420.0, 760.0, 560.0);
+            let theme = Theme::dark();
             let mut panel = Popover::new()
                 .with_items(["Message", "Queue task", "Steer current task"])
-                .anchored(anchor)
+                .anchored(block)
                 .side(PopoverSide::Right)
-                .fallback_side(PopoverSide::Above)
+                .fallback_side(PopoverSide::Below)
                 .with_viewport(viewport)
                 .confined_to_viewport()
                 .open(true);
-            panel.set_protected_rect(Some(protected));
-            let room = panel.room(&theme);
-            let capacity = panel.available_content_width(&theme);
-            assert!(f64::from(capacity) <= room.width() - 2.0 * panel.padding(&theme));
+            panel.set_avoid(Some(block));
             panel.place(&mut TextRenderer::new(), &theme);
             assert_eq!(
-                panel.anchor, anchor,
-                "placement never changes the source input locus"
+                panel.rect().intersect(block).area(),
+                0.0,
+                "{:?}",
+                panel.rect()
             );
-            assert!(room.contains_rect(panel.rect()));
-            assert_eq!(panel.rect().intersect(protected).area(), 0.0);
-            assert_eq!(panel.resolved_side(), PopoverSide::Left);
+            assert_eq!(panel.resolved_side(), PopoverSide::Above);
         }
-    }
 
-    /// A panel protected from a wide block of text low in the viewport:
-    /// neither side nor below has room, so it goes above the block.
-    #[test]
-    fn a_protected_panel_tries_the_fallback_axis_both_ways() {
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let block = Rect::new(40.0, 420.0, 760.0, 560.0);
-        let theme = Theme::dark();
-        let mut panel = Popover::new()
-            .with_items(["Message", "Queue task", "Steer current task"])
-            .anchored(block)
-            .side(PopoverSide::Right)
-            .fallback_side(PopoverSide::Below)
-            .with_viewport(viewport)
-            .confined_to_viewport()
-            .open(true);
-        panel.set_avoid(Some(block));
-        panel.place(&mut TextRenderer::new(), &theme);
-        assert_eq!(
-            panel.rect().intersect(block).area(),
-            0.0,
-            "{:?}",
-            panel.rect()
-        );
-        assert_eq!(panel.resolved_side(), PopoverSide::Above);
-    }
-
-    /// With no room clear of the protected text anywhere, the panel covers
-    /// as little of it as it can rather than sitting on its preferred side.
-    #[test]
-    fn a_protected_panel_without_clear_room_covers_the_least() {
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let block = Rect::new(0.0, 0.0, 700.0, 600.0);
-        let theme = Theme::dark();
-        let mut panel = Popover::new()
-            .with_items(["Message", "Queue task", "Steer current task"])
-            .anchored(block)
-            .side(PopoverSide::Below)
-            .fallback_side(PopoverSide::Right)
-            .with_viewport(viewport)
-            .confined_to_viewport()
-            .open(true);
-        panel.set_avoid(Some(block));
-        panel.place(&mut TextRenderer::new(), &theme);
-        let rect = panel.rect();
-        let covered = rect.intersect(block).area();
-        assert!(covered > 0.0, "nowhere is clear: {rect:?}");
-        assert!(
-            covered < rect.area(),
-            "the panel uses the free column beside the text: {rect:?}"
-        );
-        assert_eq!(panel.resolved_side(), PopoverSide::Right);
+        // With no room clear of the protected text anywhere, the panel covers
+        // as little of it as it can rather than sitting on its preferred side.
+        phase a_protected_panel_without_clear_room_covers_the_least;
+        {
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let block = Rect::new(0.0, 0.0, 700.0, 600.0);
+            let theme = Theme::dark();
+            let mut panel = Popover::new()
+                .with_items(["Message", "Queue task", "Steer current task"])
+                .anchored(block)
+                .side(PopoverSide::Below)
+                .fallback_side(PopoverSide::Right)
+                .with_viewport(viewport)
+                .confined_to_viewport()
+                .open(true);
+            panel.set_avoid(Some(block));
+            panel.place(&mut TextRenderer::new(), &theme);
+            let rect = panel.rect();
+            let covered = rect.intersect(block).area();
+            assert!(covered > 0.0, "nowhere is clear: {rect:?}");
+            assert!(
+                covered < rect.area(),
+                "the panel uses the free column beside the text: {rect:?}"
+            );
+            assert_eq!(panel.resolved_side(), PopoverSide::Right);
+        }
     }
 }

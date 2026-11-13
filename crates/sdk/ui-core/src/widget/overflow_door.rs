@@ -424,107 +424,111 @@ impl Widget for OverflowDoor {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_row_that_holds_them_all_shows_no_door() {
-        assert_eq!(plan(400.0, [40.0, 40.0, 40.0], 8.0, 40.0), 3);
-    }
+    tilo_test_env::scenario! {
+        fn what_does_not_fit_a_row_waits_behind_its_door;
 
-    #[test]
-    fn what_does_not_fit_is_named_behind_the_door_not_dropped() {
-        // Four 40 px controls and their gaps want 184 px; a 170 px row has
-        // room for two of them beside the door's own 40 px, so the last two
-        // move behind it.
-        assert_eq!(plan(170.0, [40.0, 40.0, 40.0, 40.0], 8.0, 40.0), 2);
-    }
+        phase a_row_that_holds_them_all_shows_no_door;
+        {
+            assert_eq!(plan(400.0, [40.0, 40.0, 40.0], 8.0, 40.0), 3);
+        }
 
-    #[test]
-    fn a_row_too_narrow_for_one_control_still_offers_it() {
-        assert_eq!(plan(30.0, [40.0, 40.0], 8.0, 40.0), 0);
-    }
+        phase what_does_not_fit_is_named_behind_the_door_not_dropped;
+        {
+            // Four 40 px controls and their gaps want 184 px; a 170 px row has
+            // room for two of them beside the door's own 40 px, so the last two
+            // move behind it.
+            assert_eq!(plan(170.0, [40.0, 40.0, 40.0, 40.0], 8.0, 40.0), 2);
+        }
 
-    #[test]
-    fn the_door_holds_the_ones_after_the_last_that_fits() {
-        // 40 + 8 + 40 + 8 + 40 = 136 fits in 200 - 40 = 160; the fourth does not.
-        assert_eq!(plan(200.0, [40.0, 40.0, 40.0, 60.0], 8.0, 40.0), 3);
-    }
+        phase a_row_too_narrow_for_one_control_still_offers_it;
+        {
+            assert_eq!(plan(30.0, [40.0, 40.0], 8.0, 40.0), 0);
+        }
 
-    #[test]
-    fn an_empty_row_has_no_door() {
-        assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
-    }
+        phase the_door_holds_the_ones_after_the_last_that_fits;
+        {
+            // 40 + 8 + 40 + 8 + 40 = 136 fits in 200 - 40 = 160; the fourth does not.
+            assert_eq!(plan(200.0, [40.0, 40.0, 40.0, 60.0], 8.0, 40.0), 3);
+        }
 
-    /// The rows a header keeps behind the door read as the menu of the run they came from:
-    /// a run of three stands as one row, and choosing its second member chooses the second
-    /// action behind the door, not the row.
-    #[test]
-    fn a_run_behind_the_door_is_one_row_that_picks_its_own_member() {
-        let mut door = OverflowDoor::new("more");
-        let rows = vec![
-            (0, MenuItem::selection("Complete")),
-            (1, MenuItem::selection("Today").with_group("Due")),
-            (2, MenuItem::selection("Tomorrow").with_group("Due")),
-            (3, MenuItem::selection("Delete")),
-        ];
-        door.open_numbered(rows, Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert_eq!(
-            door.menu_labels(),
-            ["Complete", "Due", "Delete"],
-            "the two of one run fold into its row"
-        );
-        door.choose(0);
-        assert_eq!(door.take_choice(), Some(0), "a row on its own");
-        door.open_numbered(
-            vec![
+        phase an_empty_row_has_no_door;
+        {
+            assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
+        }
+
+        // The rows a header keeps behind the door read as the menu of the run they came from:
+        // a run of three stands as one row, and choosing its second member chooses the second
+        // action behind the door, not the row.
+        phase a_run_behind_the_door_is_one_row_that_picks_its_own_member;
+        {
+            let mut door = OverflowDoor::new("more");
+            let rows = vec![
                 (0, MenuItem::selection("Complete")),
                 (1, MenuItem::selection("Today").with_group("Due")),
                 (2, MenuItem::selection("Tomorrow").with_group("Due")),
                 (3, MenuItem::selection("Delete")),
-            ],
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        door.choose(1);
-        assert_eq!(door.take_choice(), None, "a run's own row runs nothing");
-        assert_eq!(
-            door.pick_of(1, 1),
-            Some(2),
-            "the run's second member is the second action behind the door"
-        );
-        assert_eq!(
-            door.pick_of(2, 0),
-            Some(3),
-            "the row after it keeps its place"
-        );
-    }
+            ];
+            door.open_numbered(rows, Rect::new(0.0, 0.0, 800.0, 600.0));
+            assert_eq!(
+                door.menu_labels(),
+                ["Complete", "Due", "Delete"],
+                "the two of one run fold into its row"
+            );
+            door.choose(0);
+            assert_eq!(door.take_choice(), Some(0), "a row on its own");
+            door.open_numbered(
+                vec![
+                    (0, MenuItem::selection("Complete")),
+                    (1, MenuItem::selection("Today").with_group("Due")),
+                    (2, MenuItem::selection("Tomorrow").with_group("Due")),
+                    (3, MenuItem::selection("Delete")),
+                ],
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            door.choose(1);
+            assert_eq!(door.take_choice(), None, "a run's own row runs nothing");
+            assert_eq!(
+                door.pick_of(1, 1),
+                Some(2),
+                "the run's second member is the second action behind the door"
+            );
+            assert_eq!(
+                door.pick_of(2, 0),
+                Some(3),
+                "the row after it keeps its place"
+            );
+        }
 
-    #[test]
-    fn the_commands_behind_the_door_are_named_to_assistive_technology() {
-        let mut door = OverflowDoor::new("more");
-        door.set_shown(true);
-        let shut = door.accessibility().expect("the button names itself");
-        assert_eq!(shut.role, crate::a11y::Role::Button);
-        assert_eq!(shut.name.as_deref(), Some("More actions"));
-        assert_eq!(shut.state.expanded, Some(false));
-        assert!(shut.children.is_empty(), "a shut door names no command");
-        assert!(
-            door.accessibility_represents_child(0),
-            "the door is the button: the button is not named again beside it"
-        );
+        phase the_commands_behind_the_door_are_named_to_assistive_technology;
+        {
+            let mut door = OverflowDoor::new("more");
+            door.set_shown(true);
+            let shut = door.accessibility().expect("the button names itself");
+            assert_eq!(shut.role, crate::a11y::Role::Button);
+            assert_eq!(shut.name.as_deref(), Some("More actions"));
+            assert_eq!(shut.state.expanded, Some(false));
+            assert!(shut.children.is_empty(), "a shut door names no command");
+            assert!(
+                door.accessibility_represents_child(0),
+                "the door is the button: the button is not named again beside it"
+            );
 
-        door.open(
-            vec![
-                MenuItem::selection("Snooze until…"),
-                MenuItem::selection("Remove"),
-            ],
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        );
-        let open = door.accessibility().expect("the button names itself");
-        assert_eq!(open.state.expanded, Some(true));
-        let menu = open.children.first().expect("the menu is named while up");
-        let rows: Vec<Option<&str>> = menu
-            .children
-            .iter()
-            .map(|row| row.name.as_deref())
-            .collect();
-        assert_eq!(rows, [Some("Snooze until…"), Some("Remove")]);
+            door.open(
+                vec![
+                    MenuItem::selection("Snooze until…"),
+                    MenuItem::selection("Remove"),
+                ],
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+            );
+            let open = door.accessibility().expect("the button names itself");
+            assert_eq!(open.state.expanded, Some(true));
+            let menu = open.children.first().expect("the menu is named while up");
+            let rows: Vec<Option<&str>> = menu
+                .children
+                .iter()
+                .map(|row| row.name.as_deref())
+                .collect();
+            assert_eq!(rows, [Some("Snooze until…"), Some("Remove")]);
+        }
     }
 }
