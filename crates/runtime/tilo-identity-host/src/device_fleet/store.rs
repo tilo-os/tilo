@@ -11,9 +11,10 @@ use std::time::{Duration, SystemTime};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    revocation_signing_digest, verify_device_cert, verify_device_cert_at, verify_revocation_entry,
+    AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
+    decode_enrollment_token, device_cert_signing_digest, encode_enrollment_token,
+    mint_enrollment_token, revocation_signing_digest, verify_device_cert, verify_device_cert_at,
+    verify_revocation_entry,
 };
 
 use super::{DeviceFleet, FLEET_SCHEMA_VERSION};
@@ -438,6 +439,46 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
+    /// Root-certify `agent_public_key` as an agent's grant reaching `scope`, named `label`, from
+    /// `issued_at_ns` until `expires_at_ns`, and keep it with `identity_id`'s fleet: a key the
+    /// person gave an agent when they started a session for it. It is listed with their devices
+    /// and ends as one does, by a revocation their root signs ([`Self::revoke`]).
+    ///
+    /// # Errors
+    ///
+    /// This device does not hold the identity's root, the grant is one no verifier takes (it
+    /// outlives an agent's grant), or the fleet cannot be written.
+    pub fn certify_agent_grant(
+        &self,
+        identity_id: &str,
+        agent_public_key: [u8; 32],
+        scope: AgentScope,
+        label: &str,
+        issued_at_ns: u64,
+        expires_at_ns: u64,
+    ) -> io::Result<DeviceCert> {
+        let (root, profile) = self.identity(identity_id)?;
+        let mut cert = DeviceCert {
+            user_public_key: profile.user_public_key,
+            device_public_key: agent_public_key,
+            device_label: label.to_owned(),
+            capabilities: DeviceCapabilities::agent_grant(scope),
+            issued_at_ns,
+            expires_at_ns: Some(expires_at_ns),
+            signature: [0; 64],
+            issuer: None,
+        };
+        let digest = device_cert_signing_digest(&cert)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        cert.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        verify_device_cert_at(&cert, issued_at_ns)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        self.insert_certificate(identity_id, cert.clone())?;
+        Ok(cert)
+    }
+
     /// The person's secret-sync key, when this device holds the root of
     /// `identity_id`.
     pub fn secret_sync_key(&self, identity_id: &str) -> io::Result<tilo_seal::SecretKey> {
@@ -724,6 +765,71 @@ fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
 mod tests {
     use super::*;
     use crate::device_fleet::ConsumedEnrollment;
+
+    #[test]
+    fn an_agent_grant_is_certified_into_the_fleet_and_revoked_as_a_device() {
+        let root = tempfile::tempdir().expect("temp root");
+        let identity_dir = root.path().join("config/identity");
+        let paths = IdentityPaths::under(root.path().join("system"));
+        crate::provisioning::ensure_collaboration_identity(
+            &identity_dir,
+            &paths,
+            crate::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision");
+        let identity_id = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            .load()
+            .expect("registry")
+            .default_identity
+            .expect("default identity");
+        let store = DeviceFleetStore::at(&identity_dir, paths);
+        let now = store.load(&identity_id).expect("fleet").certificates[0].issued_at_ns;
+        let agent = ed25519_dalek::SigningKey::from_bytes(&[17; 32])
+            .verifying_key()
+            .to_bytes();
+        let day = 24 * 60 * 60 * 1_000_000_000_u64;
+
+        let cert = store
+            .certify_agent_grant(
+                &identity_id,
+                agent,
+                AgentScope::AllWorkspaces,
+                "Agent key",
+                now,
+                now + 30 * day,
+            )
+            .expect("the root certifies it");
+        assert_eq!(cert.capabilities.agent, Some(AgentScope::AllWorkspaces));
+        assert!(!cert.capabilities.can_admit_devices && !cert.capabilities.server_key);
+        verify_device_cert_at(&cert, now).expect("a verifier takes it");
+        let fleet = store.load(&identity_id).expect("fleet");
+        assert!(
+            fleet
+                .certificates
+                .iter()
+                .any(|kept| kept.device_public_key == agent),
+            "kept with the person's devices"
+        );
+
+        // An agent's grant expires within what any verifier takes.
+        assert!(
+            store
+                .certify_agent_grant(
+                    &identity_id,
+                    agent,
+                    AgentScope::AllWorkspaces,
+                    "Agent key",
+                    now,
+                    now + 400 * day,
+                )
+                .is_err()
+        );
+
+        store
+            .revoke(&identity_id, agent, RevocationReason::Retired, now + 1)
+            .expect("revoked as a device is");
+        assert!(store.load(&identity_id).expect("fleet").is_revoked(&agent));
+    }
 
     #[test]
     #[allow(

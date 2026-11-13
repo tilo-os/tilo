@@ -20,6 +20,7 @@
 //! an agent of its own (`claude-code@host#2`), so its work is attributed to it, and the person's
 //! Stop ends it alone.
 
+mod agent_key;
 mod environments;
 mod seats;
 mod service_steps;
@@ -198,6 +199,8 @@ struct Request {
     as_person: bool,
     /// The workspace it asks to work in, by id; `None` for the one in front.
     workspace: Option<String>,
+    /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
+    key: Option<String>,
     /// The seat it is served at, once the person answers.
     seat: u64,
     /// Answered by the loop once the person decided and the agent is a member; dropped by the
@@ -386,6 +389,8 @@ pub(crate) struct Loop {
     remote: Option<Arc<Remote>>,
     /// The doors of the confined environments open now, and the instance each agent reached.
     environments: environments::Doors,
+    /// The agent key the person started the session with, when they did.
+    agent_key: Option<agent_key::AgentKey>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -457,6 +462,7 @@ pub(crate) fn mount_named(
         wake: options.wake.handle(),
         state: options.state.as_deref(),
         admits: &options.admit_repl,
+        agent_key: options.agent_key.as_deref(),
         doors,
         control,
         seats,
@@ -480,6 +486,8 @@ pub(crate) struct Doorway<'a> {
     wake: Wake,
     state: Option<&'a Path>,
     admits: &'a [PathBuf],
+    /// The file holding the agent key the person started the session with.
+    agent_key: Option<&'a Path>,
     doors: Arc<SessionDoors>,
     control: Arc<crate::test_control::Door>,
     seats: Arc<Seats>,
@@ -499,10 +507,12 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         wake,
         state,
         admits,
+        agent_key,
         doors,
         control,
         seats,
     } = doorway;
+    let agent_key = agent_key.and_then(agent_key::AgentKey::kept);
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
     let environments = environments::Doors::new(
@@ -554,6 +564,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         seats,
         remote: None,
         environments,
+        agent_key,
     };
     Ok(Mounted { door })
 }
@@ -602,8 +613,15 @@ impl Loop {
         self.accept();
         self.accept_remote();
         self.environments.follow(handle, person);
+        if let Some(key) = self.agent_key.as_mut() {
+            key.certify(person);
+        }
         while let Ok(request) = self.asked.try_recv() {
-            self.request(handle, request, person);
+            if request.key.is_some() {
+                self.admit_by_key(handle, request, person);
+            } else {
+                self.request(handle, request, person);
+            }
         }
         self.settle_waiting(person);
     }
@@ -692,6 +710,7 @@ impl Loop {
             workspace: asked,
             seat,
             decide,
+            ..
         } = request;
         let Some(questions) = self.questions.clone() else {
             let _ = decide.send(Consent::Refuse(
@@ -907,6 +926,11 @@ impl Loop {
     /// the next time it connects, as if the person had never said "always allow". What it works on
     /// now is ended by whoever asked ([`crate::agent_door::Seats::stop`]).
     pub(super) fn revoke(&mut self, agent: &str) {
+        if let Some(key) = self.agent_key.as_mut()
+            && same_program(&key.agent(), agent)
+        {
+            key.revoke();
+        }
         self.always
             .retain(|_, admitted| !same_program(admitted, agent));
         self.session
@@ -2645,6 +2669,7 @@ fn ask(
         facts,
         as_person: hello.as_person,
         workspace: hello.workspace.clone(),
+        key: hello.key.clone(),
         seat,
         decide,
     };

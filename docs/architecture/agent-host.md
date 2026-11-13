@@ -134,6 +134,35 @@ attribution, plus `tilo_devices` on every door: the person's devices as this
 one knows them, with each one's endpoint id and whether its door answers now
 — how an agent finds the boxes it can be connected to.
 
+## An agent on a session nobody sits at: the agent key
+
+A session started for an agent (`cargo headless`, a test, a box with no one
+at it) has no one to answer its door's sheet. The person decides as they
+start it instead: `tilo-session --agent-key FILE` keeps a secret key in FILE
+(made there, 0600, when FILE is empty or absent), and once the session knows
+its person, their root certifies an agent's grant for it
+(`DeviceCapabilities::agent_grant`, all their workspaces, 30 days, renewed as
+the session starts) and keeps it with their devices
+(`DeviceFleetStore::certify_agent_grant`). The grant's key is derived from
+the secret, so whoever holds FILE holds the grant.
+
+An MCP client presents the key in its `initialize`
+(`params.capabilities.experimental["so.tilo"].key`); `tilo mcp` and
+`tilo-runtime-mcp --connect` write the key the file in `TILO_AGENT_KEY`
+names. The door admits it as the grant's agent without a sheet
+(`agent-key-<8 hex>@<place>#<n>`, shown with the client's own name), in the
+workspace in front or the one it asked for, in a run of its own like any
+admitted connection, so what it does is attributed to that grant. It is
+revoked as a device is: from the person's device list, or with Revoke on the
+agent's card, which has their root sign the revocation; the door then refuses
+the key, saying why, and a revoked key is never certified again (a new key is
+a new FILE). A key the session was not started with is refused, never asked
+about. The key never reaches the request the door goes on to answer, its
+log or the sheet (`crates/session/session/src/agent_door/agent_key.rs`).
+`cargo headless` starts its session with `STATE/agent.key`, and
+`cargo headless --check` proves an agent with it is admitted, lists the apps
+and opens one.
+
 Device-to-device *actions* (`tilo.own-device`) still admit only the person at
 the device, never an agent: an agent reaches another device through that
 device's agent door, where its person decides.

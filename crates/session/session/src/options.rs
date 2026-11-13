@@ -165,6 +165,14 @@ pub struct Options {
     /// without the sheet. Only a connection whose executable is one of these and that asks to act
     /// as the person is; any other is asked about as before.
     pub admit_repl: Vec<std::path::PathBuf>,
+    /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
+    /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
+    /// certifies an agent's grant for it, listed with their devices. A program presenting the key
+    /// at the agent door ([`tilo_runtime::session_door::AGENT_KEY_ENV`]) is admitted as that
+    /// grant's agent without asking them: what a session started for an agent, with no one to
+    /// answer the door, lets the agent in by. Revoking the grant, as a device or from the agent's
+    /// card, ends it.
+    pub agent_key: Option<std::path::PathBuf>,
     /// Where the development test-control socket opens ([`crate::test_control`]), which
     /// `tilo-control` drives the session over: `tilo-session --test-control PATH` , honoured by
     /// development builds only. `None` : there is none.
@@ -413,6 +421,7 @@ impl Default for Options {
             action_plane: ActionPlane::default(),
             agent_door: None,
             admit_repl: Vec::new(),
+            agent_key: None,
             test_control: None,
             admin_control: None,
             launches: std::sync::Arc::default(),

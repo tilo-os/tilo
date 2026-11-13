@@ -1158,48 +1158,74 @@ pub fn connect(
     if let Some(forward) = forward {
         crate::remote_door::ask_forward(&mut stream, forward)?;
     }
-    bridge_stdio(stream, workspace)
+    bridge_stdio(
+        stream,
+        Asking {
+            workspace: workspace.map(str::to_owned),
+            key: crate::session_door::agent_key()?,
+        },
+    )
 }
 
-/// `line` with the workspace `workspace` asked for, when it is the client's
-/// `initialize` ([`crate::session_door::WORKSPACE`]); `None` for any other
-/// line, which goes to the door as it is.
-fn asking_for_workspace(line: &[u8], workspace: &str) -> Option<Vec<u8>> {
-    let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
-    if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
-        return None;
+/// What the relay writes into a client's `initialize`, under
+/// `params.capabilities.experimental["so.tilo"]`: the workspace it asks for
+/// ([`crate::session_door::WORKSPACE`]) and the agent key it presents
+/// ([`crate::session_door::KEY`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Asking {
+    pub(crate) workspace: Option<String>,
+    pub(crate) key: Option<String>,
+}
+
+impl Asking {
+    fn is_empty(&self) -> bool {
+        self.workspace.is_none() && self.key.is_none()
     }
-    let params = request
-        .as_object_mut()?
-        .entry("params")
-        .or_insert_with(|| serde_json::json!({}));
-    let mut at = params;
-    for key in ["capabilities", "experimental", "so.tilo"] {
-        at = at
+
+    /// `line` with what this asks written in, when it is the client's `initialize`; `None` for
+    /// any other line, which goes to the door as it is.
+    fn written_into(&self, line: &[u8]) -> Option<Vec<u8>> {
+        let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
+        if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
+            return None;
+        }
+        let params = request
             .as_object_mut()?
-            .entry(key)
+            .entry("params")
             .or_insert_with(|| serde_json::json!({}));
+        let mut at = params;
+        for key in ["capabilities", "experimental", "so.tilo"] {
+            at = at
+                .as_object_mut()?
+                .entry(key)
+                .or_insert_with(|| serde_json::json!({}));
+        }
+        let ours = at.as_object_mut()?;
+        if let Some(workspace) = &self.workspace {
+            ours.insert("workspace".into(), serde_json::json!(workspace));
+        }
+        if let Some(key) = &self.key {
+            ours.insert("key".into(), serde_json::json!(key));
+        }
+        serde_json::to_vec(&request).ok()
     }
-    at.as_object_mut()?
-        .insert("workspace".into(), serde_json::json!(workspace));
-    serde_json::to_vec(&request).ok()
 }
 
 /// Relay this process's stdin to `stream` and `stream` to its stdout; the
-/// client's `initialize` asks for `workspace`, when it names one.
-pub(crate) fn bridge_stdio(mut stream: UnixStream, workspace: Option<&str>) -> io::Result<()> {
+/// client's `initialize` says what `asking` asks, when it asks anything.
+pub(crate) fn bridge_stdio(mut stream: UnixStream, asking: Asking) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
-    let workspace = workspace.map(str::to_owned);
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())
         .spawn(move || {
-            let result = match &workspace {
-                Some(workspace) => relay_asking(
+            let result = if asking.is_empty() {
+                relay(&mut io::stdin().lock(), &mut writer)
+            } else {
+                relay_asking(
                     &mut io::BufReader::new(io::stdin().lock()),
                     &mut writer,
-                    workspace,
-                ),
-                None => relay(&mut io::stdin().lock(), &mut writer),
+                    &asking,
+                )
             };
             let _ = writer.shutdown(std::net::Shutdown::Write);
             result
@@ -1208,12 +1234,13 @@ pub(crate) fn bridge_stdio(mut stream: UnixStream, workspace: Option<&str>) -> i
     Ok(())
 }
 
-/// [`relay`], with the client's `initialize` asking for `workspace`: the lines
-/// before it, and it, are read whole; everything after is copied as it comes.
+/// [`relay`], with the client's `initialize` saying what `asking` asks: the
+/// lines before it, and it, are read whole; everything after is copied as it
+/// comes.
 pub(crate) fn relay_asking(
     from: &mut impl io::BufRead,
     to: &mut impl io::Write,
-    workspace: &str,
+    asking: &Asking,
 ) -> io::Result<u64> {
     /// The most the client sends before its `initialize` is through, as the
     /// door reads it.
@@ -1228,7 +1255,7 @@ pub(crate) fn relay_asking(
         }
         total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
         let body = line.strip_suffix(b"\n").unwrap_or(&line);
-        let asked = asking_for_workspace(body, workspace);
+        let asked = asking.written_into(body);
         match &asked {
             Some(rewritten) => {
                 to.write_all(rewritten)?;

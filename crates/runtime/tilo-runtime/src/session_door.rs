@@ -46,7 +46,57 @@ pub fn desktop_door() -> io::Result<Option<PathBuf>> {
 pub fn bridge(door: &Path) -> io::Result<()> {
     let stream = tilo_files::native::socket::connect(door)
         .map_err(|error| unreachable_door(door, &error))?;
-    crate::daemon::bridge_stdio(stream, None)
+    crate::daemon::bridge_stdio(
+        stream,
+        crate::daemon::Asking {
+            workspace: None,
+            key: agent_key()?,
+        },
+    )
+}
+
+/// The variable naming the file that holds the agent key this client presents: the key a person
+/// started their session with for an agent (`tilo-session --agent-key FILE`), which the session's
+/// door admits without asking them, as the agent the key's grant names.
+pub const AGENT_KEY_ENV: &str = "TILO_AGENT_KEY";
+
+/// The agent key in the file [`AGENT_KEY_ENV`] names, when it names one.
+///
+/// # Errors
+/// The variable names a file that cannot be read, or holds no key.
+pub fn agent_key() -> io::Result<Option<String>> {
+    let Some(path) = std::env::var_os(AGENT_KEY_ENV).filter(|path| !path.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "{AGENT_KEY_ENV} names {}, which could not be read: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    key_text(&text).map(Some).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{AGENT_KEY_ENV} names {}, which holds no agent key",
+                path.display()
+            ),
+        )
+    })
+}
+
+/// The most characters an agent key is.
+const MAX_KEY: usize = 128;
+
+/// `text` as an agent key: one word of printable ASCII, at most [`MAX_KEY`] long.
+fn key_text(text: &str) -> Option<String> {
+    let key = text.trim();
+    (!key.is_empty() && key.len() <= MAX_KEY && key.bytes().all(|byte| byte.is_ascii_graphic()))
+        .then(|| key.to_owned())
 }
 
 /// Where a `--connect` client goes.
@@ -161,6 +211,10 @@ pub struct Hello {
     /// decides, admitted only for a workspace they may let an agent into. `None` asks for the
     /// workspace in front of them.
     pub workspace: Option<String>,
+    /// The agent key the client presents ([`KEY`]): the one the person started the session with
+    /// for an agent, which admits it as that key's agent without asking them; one the session does
+    /// not hold, or one taken back, is refused. Kept out of [`Self::request`].
+    pub key: Option<String>,
 }
 
 /// Where a client's `initialize` asks to act as the person (`"person"`) rather than as an
@@ -170,6 +224,10 @@ pub const ACTS_AS: &str = "/params/capabilities/experimental/so.tilo/actsAs";
 /// Where a client's `initialize` names the workspace it asks to work in, by id:
 /// `params.capabilities.experimental["so.tilo"].workspace`. `--connect --workspace ID` writes it.
 pub const WORKSPACE: &str = "/params/capabilities/experimental/so.tilo/workspace";
+
+/// Where a client's `initialize` presents an agent key: `params.capabilities.experimental
+/// ["so.tilo"].key`. `--connect` and `tilo mcp` write the key [`AGENT_KEY_ENV`] names.
+pub const KEY: &str = "/params/capabilities/experimental/so.tilo/key";
 
 /// The provider the session's own resources (its desk, arrangement, windows and notices) are
 /// published under on its doors: what the catalogue lists them under and an invocation names.
@@ -254,8 +312,16 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
         Some(DISCOVER) => return Err(HelloError::Discover(id)),
         _ => return Err(HelloError::NotInitialize(id)),
     }
+    // The key is the client's secret: it is read here and kept nowhere the request goes.
+    let mut request = request;
+    let key = request
+        .pointer_mut("/params/capabilities/experimental/so.tilo")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|ours| ours.remove("key"))
+        .and_then(|key| key.as_str().and_then(key_text));
     let info = request.pointer("/params/clientInfo");
     Ok(Hello {
+        key,
         client_name: bounded_text(info.and_then(|info| info.get("name")))
             .unwrap_or_else(|| "MCP client".to_owned()),
         client_version: bounded_text(info.and_then(|info| info.get("version"))),
