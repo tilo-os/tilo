@@ -735,139 +735,144 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     assert!(matches!(host.receipt(&report), Err(Error::ReceiptMismatch)));
 }
 
-///
-/// The custody a desktop installs over a startup is that desktop's own
-/// (`tilo_desktop::feedback::install`): this crate only opens the host.
-#[test]
-fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant() {
-    let mut missing = enrollment();
-    missing.permissions = no_member(&hex::encode([12; 32]));
-    assert!(missing.authorize().is_err());
-    // Filing feedback is commenting: a commenter files, a viewer cannot.
-    let mut commenter = enrollment();
-    commenter.permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Commenter)
-            .at_unix_time(0);
-    assert!(commenter.authorize().is_ok());
-    let mut viewer = enrollment();
-    viewer.permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
-            .at_unix_time(0);
-    assert!(viewer.authorize().is_err());
-    let mut other = enrollment();
-    other.destination.room = "other".into();
-    assert!(other.authorize().is_err());
-    // A workspace's owner holds everything; a member's grants can be refused.
-    let mut blocked = enrollment();
-    blocked.permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
-            .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
-            .at_unix_time(0);
-    let mut editor = blocked.clone();
-    editor.permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
-            .at_unix_time(0);
-    assert!(editor.authorize().is_ok());
-    assert!(blocked.authorize().is_err());
-}
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+    fn the_reporter_side_refuses_what_admission_and_receipts_do_not_cover;
 
-#[test]
-fn changed_reporter_before_dispatch_cannot_enqueue_under_another_identity() {
-    let current = Rc::new(RefCell::new(enrollment()));
-    let admission = current.clone();
-    let sends = Rc::new(RefCell::new(0));
-    let observed = sends.clone();
-    let mut transport = SessionTransport::new(
-        Box::new(move || Ok(admission.borrow().clone())),
-        Box::new(move |_, _| {
-            *observed.borrow_mut() += 1;
-            Ok(())
-        }),
-        Box::new(|_| Ok(None)),
-    );
-    transport.enrollment().unwrap();
-    current.borrow_mut().reporter = Caller::authenticated(
-        [15; 32],
-        SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
-    )
-    .in_workspace(WORKSPACE);
-    current.borrow_mut().permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([15; 32]), Role::Owner);
-    assert!(matches!(
-        transport.enqueue(&submission()),
-        Err(Error::ReceiptMismatch)
-    ));
-    assert_eq!(*sends.borrow(), 0);
-}
+    phase startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant;
+    //
+    // The custody a desktop installs over a startup is that desktop's own
+    // (`tilo_desktop::feedback::install`): this crate only opens the host.
+    {
+        let mut missing = enrollment();
+        missing.permissions = no_member(&hex::encode([12; 32]));
+        assert!(missing.authorize().is_err());
+        // Filing feedback is commenting: a commenter files, a viewer cannot.
+        let mut commenter = enrollment();
+        commenter.permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Commenter)
+                .at_unix_time(0);
+        assert!(commenter.authorize().is_ok());
+        let mut viewer = enrollment();
+        viewer.permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+                .at_unix_time(0);
+        assert!(viewer.authorize().is_err());
+        let mut other = enrollment();
+        other.destination.room = "other".into();
+        assert!(other.authorize().is_err());
+        // A workspace's owner holds everything; a member's grants can be refused.
+        let mut blocked = enrollment();
+        blocked.permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
+                .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
+                .at_unix_time(0);
+        let mut editor = blocked.clone();
+        editor.permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
+                .at_unix_time(0);
+        assert!(editor.authorize().is_ok());
+        assert!(blocked.authorize().is_err());
+    }
 
-#[test]
-fn ordinary_projection_json_and_oversized_acknowledgments_cannot_be_promoted() {
-    let receipt = Receipt {
-        id: ID.into(),
-        digest: submission().digest().unwrap(),
-        destination: enrollment().destination,
-        report: format!("chat.message:m_feedback_{ID}"),
-    };
-    assert!(SignedReceipt::decode(&serde_json::to_vec(&receipt).unwrap()).is_err());
-    assert!(matches!(
-        SignedReceipt::decode(&vec![0; 4097]),
-        Err(Error::Full)
-    ));
-}
+    phase changed_reporter_before_dispatch_cannot_enqueue_under_another_identity;
+    {
+        let current = Rc::new(RefCell::new(enrollment()));
+        let admission = current.clone();
+        let sends = Rc::new(RefCell::new(0));
+        let observed = sends.clone();
+        let mut transport = SessionTransport::new(
+            Box::new(move || Ok(admission.borrow().clone())),
+            Box::new(move |_, _| {
+                *observed.borrow_mut() += 1;
+                Ok(())
+            }),
+            Box::new(|_| Ok(None)),
+        );
+        transport.enrollment().unwrap();
+        current.borrow_mut().reporter = Caller::authenticated(
+            [15; 32],
+            SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
+        )
+        .in_workspace(WORKSPACE);
+        current.borrow_mut().permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([15; 32]), Role::Owner);
+        assert!(matches!(
+            transport.enqueue(&submission()),
+            Err(Error::ReceiptMismatch)
+        ));
+        assert_eq!(*sends.borrow(), 0);
+    }
 
-#[test]
-fn expired_snapshot_grants_and_failed_host_clocks_cannot_authorize_send() {
-    let now = tilo_clock::try_unix_now().unwrap();
-    assert!(now > 0, "execution clock must be observable");
-    let mut expired = enrollment();
-    expired.permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
-            .with_grant(
-                submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
-                    .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
-            )
-            .at_unix_time(now.saturating_sub(1));
-    assert!(expired.authorize().is_err());
-    let mut unavailable = enrollment();
-    unavailable.permissions =
-        unavailable
-            .permissions
-            .with_policy_time_sampler(std::sync::Arc::new(|| {
-                Err("retained host clock unavailable".into())
-            }));
-    assert!(unavailable.authorize().is_err());
-    assert!(unavailable.authorize_receipt(&submission()).is_err());
-}
+    phase ordinary_projection_json_and_oversized_acknowledgments_cannot_be_promoted;
+    {
+        let receipt = Receipt {
+            id: ID.into(),
+            digest: submission().digest().unwrap(),
+            destination: enrollment().destination,
+            report: format!("chat.message:m_feedback_{ID}"),
+        };
+        assert!(SignedReceipt::decode(&serde_json::to_vec(&receipt).unwrap()).is_err());
+        assert!(matches!(
+            SignedReceipt::decode(&vec![0; 4097]),
+            Err(Error::Full)
+        ));
+    }
 
-#[test]
-fn persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorization() {
-    let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-    let current = Rc::new(RefCell::new(enrollment()));
-    let setup = Startup::new(
-        enrollment(),
-        Box::new(session(
-            current.clone(),
-            Rc::new(RefCell::new(None)),
-            Rc::new(RefCell::new(vec![])),
-        )),
-        Box::new(NoCapture),
-    )
-    .unwrap();
-    let mut host = Host::open(store.clone(), setup).unwrap();
-    current.borrow_mut().permissions =
-        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer);
-    assert!(host.send(&submission()).is_err());
-    drop(host);
-    let mut changed = enrollment();
-    changed.owner = Caller::authenticated(
-        [11; 32],
-        SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
-    )
-    .in_workspace(WORKSPACE);
-    assert!(matches!(
-        Host::open(store, startup(changed)),
-        Err(Error::ReceiptMismatch)
-    ));
+    phase expired_snapshot_grants_and_failed_host_clocks_cannot_authorize_send;
+    {
+        let now = tilo_clock::try_unix_now().unwrap();
+        assert!(now > 0, "execution clock must be observable");
+        let mut expired = enrollment();
+        expired.permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+                .with_grant(
+                    submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
+                        .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
+                )
+                .at_unix_time(now.saturating_sub(1));
+        assert!(expired.authorize().is_err());
+        let mut unavailable = enrollment();
+        unavailable.permissions =
+            unavailable
+                .permissions
+                .with_policy_time_sampler(std::sync::Arc::new(|| {
+                    Err("retained host clock unavailable".into())
+                }));
+        assert!(unavailable.authorize().is_err());
+        assert!(unavailable.authorize_receipt(&submission()).is_err());
+    }
+
+    phase persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorization;
+    {
+        let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
+        let current = Rc::new(RefCell::new(enrollment()));
+        let setup = Startup::new(
+            enrollment(),
+            Box::new(session(
+                current.clone(),
+                Rc::new(RefCell::new(None)),
+                Rc::new(RefCell::new(vec![])),
+            )),
+            Box::new(NoCapture),
+        )
+        .unwrap();
+        let mut host = Host::open(store.clone(), setup).unwrap();
+        current.borrow_mut().permissions =
+            PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer);
+        assert!(host.send(&submission()).is_err());
+        drop(host);
+        let mut changed = enrollment();
+        changed.owner = Caller::authenticated(
+            [11; 32],
+            SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
+        )
+        .in_workspace(WORKSPACE);
+        assert!(matches!(
+            Host::open(store, startup(changed)),
+            Err(Error::ReceiptMismatch)
+        ));
+    }
 }
 
 #[test]
