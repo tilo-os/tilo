@@ -129,53 +129,102 @@ mod tests {
     use super::*;
     use ui::search::system::MAX_PROVIDER_SCORE;
 
-    /// The package id in full, or its last segment, identifies exactly one
-    /// app and weighs as its name: `hex-editor` typed for
-    /// `so.tilo.hex-editor` must outrank an incidental substring.
-    #[test]
-    fn application_identity_matches_name_id_and_last_segment() {
-        let ranker =
-            ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
-        let rows = [
-            application_fields("Sheets", "so.tilo.sheets", None),
-            application_fields("Hex Editor", "so.tilo.hex-editor", None),
-        ];
-        assert_eq!(
-            rank_rows(&ranker, "sheets", &rows)[0],
-            Some(MAX_PROVIDER_SCORE)
-        );
-        assert_eq!(
-            rank_rows(&ranker, "hex-editor", &rows)[1],
-            Some(MAX_PROVIDER_SCORE)
-        );
-        assert_eq!(rank_rows(&ranker, "zzz", &rows)[0], None);
-    }
+    tilo_test_env::scenario! {
+        fn a_name_begun_matches_and_a_near_miss_does_not;
 
-    /// An app row is found by a word that names it begun — its name, its
-    /// kind, a word it is known by — never by a near miss or by a word it
-    /// appears inside: "notes" is Notes, not Nodes or Footnotes, and not the
-    /// tenth of the catalogue whose blurb mentions notes.
-    #[test]
-    fn an_app_is_found_by_a_name_begun_never_by_a_near_miss() {
-        let ranker =
-            ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
-        let rows = [
-            application_fields("Notes", "so.tilo.notes", Some("Office")),
-            application_fields("Nodes", "so.tilo.nodes", None),
-            application_fields("Footnotes", "so.tilo.footnotes", None),
-            application_fields("Notepad", "so.tilo.notepad", None),
-        ];
-        let ranks = rank_rows(&ranker, "notes", &rows);
-        assert!(ranks[0].is_some(), "the app called Notes");
-        assert_eq!(ranks[1], None, "a name one typo away is not its name");
-        assert_eq!(ranks[2], None, "nor is the word inside another");
-        assert_eq!(ranks[3], None, "nor is one that begins with less typed");
-        let begun = rank_rows(
-            &ranker,
-            "note",
-            &[application_fields("Notepad", "so.tilo.notepad", None)],
-        )[0];
-        assert!(begun.is_some(), "a name begun is: Note for Notepad");
+        phase application_identity_matches_name_id_and_last_segment;
+        // The package id in full, or its last segment, identifies exactly one
+        // app and weighs as its name: `hex-editor` typed for
+        // `so.tilo.hex-editor` must outrank an incidental substring.
+        {
+            let ranker =
+                ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
+            let rows = [
+                application_fields("Sheets", "so.tilo.sheets", None),
+                application_fields("Hex Editor", "so.tilo.hex-editor", None),
+            ];
+            assert_eq!(
+                rank_rows(&ranker, "sheets", &rows)[0],
+                Some(MAX_PROVIDER_SCORE)
+            );
+            assert_eq!(
+                rank_rows(&ranker, "hex-editor", &rows)[1],
+                Some(MAX_PROVIDER_SCORE)
+            );
+            assert_eq!(rank_rows(&ranker, "zzz", &rows)[0], None);
+        }
+
+        phase an_app_is_found_by_a_name_begun_never_by_a_near_miss;
+        // An app row is found by a word that names it begun — its name, its
+        // kind, a word it is known by — never by a near miss or by a word it
+        // appears inside: "notes" is Notes, not Nodes or Footnotes, and not the
+        // tenth of the catalogue whose blurb mentions notes.
+        {
+            let ranker =
+                ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
+            let rows = [
+                application_fields("Notes", "so.tilo.notes", Some("Office")),
+                application_fields("Nodes", "so.tilo.nodes", None),
+                application_fields("Footnotes", "so.tilo.footnotes", None),
+                application_fields("Notepad", "so.tilo.notepad", None),
+            ];
+            let ranks = rank_rows(&ranker, "notes", &rows);
+            assert!(ranks[0].is_some(), "the app called Notes");
+            assert_eq!(ranks[1], None, "a name one typo away is not its name");
+            assert_eq!(ranks[2], None, "nor is the word inside another");
+            assert_eq!(ranks[3], None, "nor is one that begins with less typed");
+            let begun = rank_rows(
+                &ranker,
+                "note",
+                &[application_fields("Notepad", "so.tilo.notepad", None)],
+            )[0];
+            assert!(begun.is_some(), "a name begun is: Note for Notepad");
+        }
+
+        phase a_word_merely_beginning_alike_does_not_find_the_setting_rows;
+        // Typing a word that merely begins like another finds neither the theme
+        // rows nor Brightness, though each holds a word of that beginning: a
+        // typo is a whole word mistyped, and a word begun is the row's own name
+        // from its start.
+        {
+            let words: Vec<String> = APPEARANCE_STYLE.map(str::to_owned).to_vec();
+            let rows = [
+                ("Light mode", words.as_slice(), "Theme"),
+                ("Dark mode", words.as_slice(), "Theme"),
+                ("Brightness", words.as_slice(), "Display"),
+            ];
+            let scores = |needle: &str| {
+                action_match_scores(
+                    needle,
+                    rows.iter().map(|(label, words, on)| (*label, *words, *on)),
+                )
+            };
+            assert_eq!(scores("hello"), [None, None, None]);
+            assert!(scores("hellmodus")[0].is_some(), "the German name of it");
+            assert!(scores("theme")[0].is_some() && scores("theme")[1].is_some());
+        }
+
+        phase a_prefix_match_outranks_a_typo;
+        // A row found by a prefix of its name outranks one found only by a
+        // typo of its name: what a person is typing leads what they remember
+        // wrongly.
+        {
+            let rows = [
+                ("Bookends", Vec::new(), "Desktop"),
+                ("Books", Vec::new(), "Desktop"),
+            ];
+            let scores = action_match_scores(
+                "booke",
+                rows.iter()
+                    .map(|(label, words, on)| (*label, words.as_slice(), *on)),
+            );
+            let (prefix, typo) = (
+                scores[0].expect("Bookends begun"),
+                scores[1].expect("Books mistyped"),
+            );
+            assert!(prefix > typo, "{prefix} > {typo}");
+            assert_eq!(prefix, MAX_PROVIDER_SCORE, "a name begun is a perfect hit");
+        }
     }
 
     /// Words of the appearance setting's rows, as the settings service
@@ -189,49 +238,4 @@ mod tests {
         "hellmodus",
         "helligkeit",
     ];
-
-    /// Typing a word that merely begins like another finds neither the theme
-    /// rows nor Brightness, though each holds a word of that beginning: a
-    /// typo is a whole word mistyped, and a word begun is the row's own name
-    /// from its start.
-    #[test]
-    fn a_word_merely_beginning_alike_does_not_find_the_setting_rows() {
-        let words: Vec<String> = APPEARANCE_STYLE.map(str::to_owned).to_vec();
-        let rows = [
-            ("Light mode", words.as_slice(), "Theme"),
-            ("Dark mode", words.as_slice(), "Theme"),
-            ("Brightness", words.as_slice(), "Display"),
-        ];
-        let scores = |needle: &str| {
-            action_match_scores(
-                needle,
-                rows.iter().map(|(label, words, on)| (*label, *words, *on)),
-            )
-        };
-        assert_eq!(scores("hello"), [None, None, None]);
-        assert!(scores("hellmodus")[0].is_some(), "the German name of it");
-        assert!(scores("theme")[0].is_some() && scores("theme")[1].is_some());
-    }
-
-    /// A row found by a prefix of its name outranks one found only by a
-    /// typo of its name: what a person is typing leads what they remember
-    /// wrongly.
-    #[test]
-    fn a_prefix_match_outranks_a_typo() {
-        let rows = [
-            ("Bookends", Vec::new(), "Desktop"),
-            ("Books", Vec::new(), "Desktop"),
-        ];
-        let scores = action_match_scores(
-            "booke",
-            rows.iter()
-                .map(|(label, words, on)| (*label, words.as_slice(), *on)),
-        );
-        let (prefix, typo) = (
-            scores[0].expect("Bookends begun"),
-            scores[1].expect("Books mistyped"),
-        );
-        assert!(prefix > typo, "{prefix} > {typo}");
-        assert_eq!(prefix, MAX_PROVIDER_SCORE, "a name begun is a perfect hit");
-    }
 }

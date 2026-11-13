@@ -932,121 +932,520 @@ mod tests {
         }
     }
 
-    /// A window's search is over the one app it shows: what that app published, never another's.
-    #[test]
-    fn a_window_reads_only_its_own_apps_entries() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        publish(
-            &index,
-            "so.tilo.chat",
-            None,
-            vec![note("c_voice", "voice", false)],
-        );
-        publish(
-            &index,
-            "so.tilo.mail",
-            None,
-            vec![note("inbox", "Inbox", false)],
-        );
-        let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
-        let window = content.for_app("so.tilo.chat");
-        assert_eq!(window.query("voice").len(), 1);
-        assert!(
-            window.query("inbox").is_empty(),
-            "another app's entry is not the window's"
-        );
-        assert_eq!(
-            content.query("inbox").len(),
-            1,
-            "the whole index still finds it"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_indexed_entry_reads_as_what_it_is_and_opens_what_it_names;
 
-    /// An item's entry names the `open` of the record holding it, which every window showing
-    /// anything of the record publishes, and the hit tells that `open` the item: one no window
-    /// shows still opens.
-    #[test]
-    fn a_hit_on_an_item_asks_its_record_to_open_it() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        let mut task = note("tl:tasks:doc/t1", "Book the ferry", false);
-        task.action = Some(IndexAction {
-            resource: "tl:tasks:doc".into(),
-            action: OPEN_ACTION.into(),
-        });
-        publish(&index, "tasks", None, vec![task]);
-        let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
-        let hits = content.query("ferry");
-        let Target::Invoke(target) = &hits[0].target else {
-            panic!("an entry runs its record's open");
-        };
-        assert_eq!(
-            target.address,
-            tilo_actions::ActionAddress::new("tl:tasks:doc", OPEN_ACTION)
-        );
-        assert_eq!(target.arguments[OPEN_ANCHOR], "tl:tasks:doc/t1");
-    }
+        phase a_window_reads_only_its_own_apps_entries;
+        // A window's search is over the one app it shows: what that app published, never another's.
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            publish(
+                &index,
+                "so.tilo.chat",
+                None,
+                vec![note("c_voice", "voice", false)],
+            );
+            publish(
+                &index,
+                "so.tilo.mail",
+                None,
+                vec![note("inbox", "Inbox", false)],
+            );
+            let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
+            let window = content.for_app("so.tilo.chat");
+            assert_eq!(window.query("voice").len(), 1);
+            assert!(
+                window.query("inbox").is_empty(),
+                "another app's entry is not the window's"
+            );
+            assert_eq!(
+                content.query("inbox").len(),
+                1,
+                "the whole index still finds it"
+            );
+        }
 
-    #[test]
-    fn a_hit_opens_its_app_at_the_entry_by_address() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        publish(
-            &index,
-            "so.tilo.notes",
-            None,
-            vec![note("n1", "Groceries", false)],
-        );
-        let content = IndexedContent::new(Arc::clone(&index), |app| format!("{app}!"), "");
-        let hits = content.query("groceries");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("so.tilo.notes!"));
-        let Target::Invoke(target) = &hits[0].target else {
-            panic!("an entry runs its app's open");
-        };
-        assert_eq!(
-            target.address,
-            tilo_actions::ActionAddress::new("n1", OPEN_ACTION)
-        );
-        assert_eq!(target.arguments[OPEN_ANCHOR], "n1");
-        assert!(content.covers("so.tilo.notes", "workspace", "n1"));
-        assert_eq!(
-            content
-                .resolve(&hits[0].id, "")
-                .map(|hit| hit.title)
-                .as_deref(),
-            Some("Groceries")
-        );
-    }
+        phase a_hit_on_an_item_asks_its_record_to_open_it;
+        // An item's entry names the `open` of the record holding it, which every window showing
+        // anything of the record publishes, and the hit tells that `open` the item: one no window
+        // shows still opens.
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            let mut task = note("tl:tasks:doc/t1", "Book the ferry", false);
+            task.action = Some(IndexAction {
+                resource: "tl:tasks:doc".into(),
+                action: OPEN_ACTION.into(),
+            });
+            publish(&index, "tasks", None, vec![task]);
+            let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
+            let hits = content.query("ferry");
+            let Target::Invoke(target) = &hits[0].target else {
+                panic!("an entry runs its record's open");
+            };
+            assert_eq!(
+                target.address,
+                tilo_actions::ActionAddress::new("tl:tasks:doc", OPEN_ACTION)
+            );
+            assert_eq!(target.arguments[OPEN_ANCHOR], "tl:tasks:doc/t1");
+        }
 
-    /// An entry an app publishes as an item of a resource (a note in a
-    /// notebook) is a reference: the row says which item it is, so the
-    /// palette can draw it as the app lists it, and it opens there. An entry
-    /// that names no item is drawn as the generic row.
-    #[test]
-    fn an_entry_that_names_an_item_carries_its_reference() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        let mut page = note("page-7", "Trip plan", false);
-        page.resource = "notes.notebook/pages/page-7".into();
-        publish(&index, "so.tilo.notes", None, vec![page.clone()]);
-        let content = IndexedContent::new(index, |_| String::new(), "");
-        let hits = content.query("trip");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(
-            hits[0].row,
-            Some(ui::search::SearchRow::item(
+        phase a_hit_opens_its_app_at_the_entry_by_address;
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            publish(
+                &index,
                 "so.tilo.notes",
-                "notes.notebook.pages",
-                "page-7"
-            ))
-        );
-        // The row addresses the resource the hit opens.
-        assert_eq!(
-            hits[0]
-                .row
-                .as_ref()
-                .and_then(ui::search::SearchRow::item_resource)
-                .as_deref(),
-            Some(page.resource.as_str())
-        );
+                None,
+                vec![note("n1", "Groceries", false)],
+            );
+            let content = IndexedContent::new(Arc::clone(&index), |app| format!("{app}!"), "");
+            let hits = content.query("groceries");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].subtitle.as_deref(), Some("so.tilo.notes!"));
+            let Target::Invoke(target) = &hits[0].target else {
+                panic!("an entry runs its app's open");
+            };
+            assert_eq!(
+                target.address,
+                tilo_actions::ActionAddress::new("n1", OPEN_ACTION)
+            );
+            assert_eq!(target.arguments[OPEN_ANCHOR], "n1");
+            assert!(content.covers("so.tilo.notes", "workspace", "n1"));
+            assert_eq!(
+                content
+                    .resolve(&hits[0].id, "")
+                    .map(|hit| hit.title)
+                    .as_deref(),
+                Some("Groceries")
+            );
+        }
+
+        phase an_entry_that_names_an_item_carries_its_reference;
+        // An entry an app publishes as an item of a resource (a note in a
+        // notebook) is a reference: the row says which item it is, so the
+        // palette can draw it as the app lists it, and it opens there. An entry
+        // that names no item is drawn as the generic row.
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            let mut page = note("page-7", "Trip plan", false);
+            page.resource = "notes.notebook/pages/page-7".into();
+            publish(&index, "so.tilo.notes", None, vec![page.clone()]);
+            let content = IndexedContent::new(index, |_| String::new(), "");
+            let hits = content.query("trip");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                hits[0].row,
+                Some(ui::search::SearchRow::item(
+                    "so.tilo.notes",
+                    "notes.notebook.pages",
+                    "page-7"
+                ))
+            );
+            // The row addresses the resource the hit opens.
+            assert_eq!(
+                hits[0]
+                    .row
+                    .as_ref()
+                    .and_then(ui::search::SearchRow::item_resource)
+                    .as_deref(),
+                Some(page.resource.as_str())
+            );
+        }
+
+        phase what_an_entry_is_names_the_section_it_sits_in;
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            publish(
+                &index,
+                "so.tilo.chat",
+                None,
+                vec![
+                    shaped(
+                        note("chat.agent/agents/a_ada", "Ada", false),
+                        IndexKind::Agent,
+                        vec![person(
+                            "Ada",
+                            "agent:a_ada",
+                            "chat.agent/agents/a_ada",
+                            true,
+                        )],
+                    ),
+                    shaped(
+                        note("chat.workspace/channels/c_crit", "Ada's design crit", false),
+                        IndexKind::Conversation,
+                        vec![person("Ada", "agent:a_ada", "", true)],
+                    ),
+                    shaped(
+                        note("chat.workspace/messages/m_1", "Ada, can you look?", false),
+                        IndexKind::Message,
+                        vec![person("Ada", "agent:a_ada", "", true)],
+                    ),
+                ],
+            );
+            let content = IndexedContent::new(index, str::to_owned, "");
+            let kinds: Vec<ResourceKind> = content
+                .query("ada")
+                .into_iter()
+                .map(|hit| hit.kind)
+                .collect();
+            let labels: Vec<String> = kinds
+                .iter()
+                .map(|kind| match kind {
+                    ResourceKind::Custom(label) => label.clone(),
+                    other => other.label().to_owned(),
+                })
+                .collect();
+            assert_eq!(labels, ["Agents", "Conversations", "Messages"]);
+            // The groups keep that order whatever their strongest hit.
+            let mut sorted = kinds.clone();
+            sorted.sort_by_key(ResourceKind::sort_key);
+            assert_eq!(
+                sorted.first().map(ResourceKind::sort_key),
+                kinds.first().map(ResourceKind::sort_key)
+            );
+        }
+
+        phase an_agent_reads_as_the_person_it_is_kept_by;
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            let mut agent = shaped(
+                note("chat.agent/agents/a_ada", "Ada", false),
+                IndexKind::Agent,
+                vec![person(
+                    "Ada",
+                    "agent:a_ada",
+                    "chat.agent/agents/a_ada",
+                    true,
+                )],
+            );
+            agent.icon = Some("sparkles".into());
+            agent.keeper = Some(person("", "u_me", "", false));
+            publish(&index, "so.tilo.chat", None, vec![agent]);
+            let content = IndexedContent::new(index, str::to_owned, "u_me");
+            let hits = content.query("ada");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by you"));
+            let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
+                panic!("an agent is drawn with its own face: {:?}", hits[0].row);
+            };
+            assert_eq!(
+                row.avatar,
+                Some(("Ada".to_owned(), "agent:a_ada".to_owned()))
+            );
+
+            let other =
+                IndexedContent::new(Arc::clone(content.index()), str::to_owned, "u_someone_else");
+            // The keeper `u_me` is not this person: the row says who keeps it.
+            let mut kept = shaped(
+                note("chat.agent/agents/a_ada", "Ada", false),
+                IndexKind::Agent,
+                vec![person("Ada", "agent:a_ada", "", true)],
+            );
+            kept.keeper = Some(person("Sam", "u_me", "", false));
+            publish(content.index(), "so.tilo.chat", None, vec![kept]);
+            let hits = other.query("ada");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by Sam"));
+        }
+
+        phase a_conversation_lists_the_people_in_it;
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            publish(
+                &index,
+                "so.tilo.chat",
+                None,
+                vec![shaped(
+                    note("chat.workspace/channels/c_crit", "Ada's design crit", false),
+                    IndexKind::Conversation,
+                    vec![
+                        person("Aria", "person:u_aria", "", false),
+                        person("Ada", "agent:a_ada", "", true),
+                    ],
+                )],
+            );
+            let content = IndexedContent::new(index, str::to_owned, "u_me");
+            let hits = content.query("crit");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].subtitle.as_deref(), Some("Aria, Ada"));
+            let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
+                panic!("a conversation shows its people: {:?}", hits[0].row);
+            };
+            let names: Vec<&str> = row.faces.iter().map(|face| face.name.as_str()).collect();
+            assert_eq!(names, ["Aria", "Ada"]);
+            assert!(row.faces[1].is_agent);
+            assert_eq!(row.avatar, None);
+        }
+
+        phase a_box_finds_agents_people_and_conversations_never_messages_or_itself;
+        // A box's recipients are what the workspace's apps publish of their
+        // agents, people and conversations: never a message, never the person
+        // asking, each once — and an empty query opens on what is there, the
+        // most recent first.
+        {
+            use ui::floating_surface::RecipientKind;
+
+            let index = Arc::new(AppContentIndex::in_memory());
+            let mut agent = shaped(
+                note("chat.agent/agents/a_ada", "Ada", false),
+                IndexKind::Agent,
+                vec![person(
+                    "Ada",
+                    "agent:a_ada",
+                    "chat.agent/agents/a_ada",
+                    true,
+                )],
+            );
+            agent.keeper = Some(person("Me", "u_me", "", false));
+            agent.when = Some(20);
+            let mut conversation = shaped(
+                note("chat.workspace/channels/c_ada", "Ada", false),
+                IndexKind::Conversation,
+                vec![
+                    person("Me", "person:u_me", "", false),
+                    person("Ada", "agent:a_ada", "", true),
+                ],
+            );
+            conversation.when = Some(30);
+            publish(
+                &index,
+                "so.tilo.chat",
+                None,
+                vec![
+                    agent,
+                    conversation,
+                    shaped(
+                        note("chat.workspace/people/u_me", "Me", false),
+                        IndexKind::Person,
+                        vec![person(
+                            "Me",
+                            "person:u_me",
+                            "chat.workspace/people/u_me",
+                            false,
+                        )],
+                    ),
+                    shaped(
+                        note("chat.workspace/people/u_ada", "Ada", false),
+                        IndexKind::Person,
+                        vec![person(
+                            "Ada",
+                            "person:u_ada",
+                            "chat.workspace/people/u_ada",
+                            false,
+                        )],
+                    ),
+                    shaped(
+                        note("chat.workspace/messages/m_ada", "Ada, can you look?", false),
+                        IndexKind::Message,
+                        vec![person("Ada", "person:u_ada", "", false)],
+                    ),
+                ],
+            );
+            let content = IndexedContent::new(index, str::to_owned, "u_me");
+
+            // Typing a name: what it names, never the message that mentions it
+            // and never the person typing.
+            let found = content.recipients("ada");
+            let listed: Vec<(RecipientKind, &str)> = found
+                .iter()
+                .map(|recipient| (recipient.kind, recipient.id.as_str()))
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    (RecipientKind::Agent, "a_ada"),
+                    (RecipientKind::Person, "u_ada"),
+                ],
+                "the direct conversation with the agent is the agent, listed once"
+            );
+            assert_eq!(
+                found[0].detail.as_deref(),
+                Some("you"),
+                "the agent says this person keeps it"
+            );
+
+            // Before anything is typed, what the workspace holds, most recent
+            // first.
+            let held = content.recipients("  ");
+            let all: Vec<(RecipientKind, &str)> = held
+                .iter()
+                .map(|recipient| (recipient.kind, recipient.id.as_str()))
+                .collect();
+            assert_eq!(
+                all,
+                [
+                    (RecipientKind::Agent, "a_ada"),
+                    (RecipientKind::Person, "u_ada"),
+                ]
+            );
+        }
+
+        phase a_box_finds_an_agent_by_name_among_many;
+        // Of a workspace's 55 agents, the one called what was typed leads, then
+        // those whose name starts with it, then those with a word that does; a
+        // conversation that matches some other way comes before an agent that
+        // does, the most recent first.
+        {
+            use ui::floating_surface::{Recipient, RecipientKind};
+
+            let index = Arc::new(AppContentIndex::in_memory());
+            let mut entries = Vec::new();
+            let mut agent = |id: &str, name: &str, when: i64| {
+                let mut entry = shaped(
+                    note(&format!("chat.agent/agents/{id}"), name, false),
+                    IndexKind::Agent,
+                    vec![person(name, &format!("agent:{id}"), "", true)],
+                );
+                entry.when = Some(when);
+                entries.push(entry);
+            };
+            for number in 0..52 {
+                agent(
+                    &format!("a_{number}"),
+                    &format!("Helper {number}"),
+                    100 + i64::from(number),
+                );
+            }
+            agent("a_weekly", "Weekly digest", 1);
+            agent("a_digester", "Digester", 2);
+            agent("a_digest", "Digest", 3);
+            publish(&index, "so.tilo.chat", None, entries);
+            let content = IndexedContent::new(index, str::to_owned, "u_me");
+
+            let ids = |found: Vec<Recipient>| -> Vec<String> {
+                found.into_iter().map(|recipient| recipient.id).collect()
+            };
+            assert_eq!(
+                ids(content.recipients("Digest"))[..3],
+                ["a_digest", "a_digester", "a_weekly"]
+            );
+            assert_eq!(
+                ids(content.recipients("helper 7"))
+                    .first()
+                    .map(String::as_str),
+                Some("a_7")
+            );
+            assert_eq!(ids(content.recipients("helper 4"))[0], "a_4");
+
+            let conversation = |name: &str| Recipient::found(RecipientKind::Conversation, "c", name);
+            let named = |name: &str| Recipient::found(RecipientKind::Agent, "a", name);
+            assert!(
+                Standing::of("ada", &conversation("Design crit"))
+                    > Standing::of("ada", &named("Reviewer"))
+            );
+            assert!(
+                Standing::of("ada", &named("Ada's helper"))
+                    > Standing::of("ada", &conversation("Crit"))
+            );
+            assert!(Standing::of("ada", &named("Ada")) > Standing::of("ada", &named("Adam")));
+        }
+
+        phase a_message_says_who_said_it_where_and_when;
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            let text = "We shipped the new palette yesterday and the animations still stutter \
+                    when the window resizes; Ada, can you look at the wheel again before \
+                    the demo tomorrow morning?";
+            let mut message = shaped(
+                note("chat.workspace/messages/m_wheel", text, false),
+                IndexKind::Message,
+                vec![person(
+                    "",
+                    "person:u_aria",
+                    "chat.workspace/people/u_aria",
+                    false,
+                )],
+            );
+            message.place = Some(person(
+                "",
+                "c_crit",
+                "chat.workspace/channels/c_crit",
+                false,
+            ));
+            message.when = Some(
+                i64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("the clock is after the epoch")
+                        .as_secs(),
+                )
+                .expect("seconds fit")
+                    - 3600,
+            );
+            publish(
+                &index,
+                "so.tilo.chat",
+                None,
+                vec![
+                    shaped(
+                        note("chat.workspace/people/u_aria", "Aria", false),
+                        IndexKind::Person,
+                        vec![person("Aria", "person:u_aria", "", false)],
+                    ),
+                    shaped(
+                        note("chat.workspace/channels/c_crit", "Ada's design crit", false),
+                        IndexKind::Conversation,
+                        vec![person("Aria", "person:u_aria", "", false)],
+                    ),
+                    message,
+                ],
+            );
+            let content = IndexedContent::new(index, str::to_owned, "u_me");
+            let hits = content.query("ada");
+            let hit = hits
+                .iter()
+                .find(|hit| hit.title.contains("can you look"))
+                .expect("the message is found by what it says");
+            assert_eq!(
+                hit.subtitle.as_deref(),
+                Some(format!("Aria in Ada's design crit, {}", ui::format::relative(3600)).as_str())
+            );
+            assert!(
+                hit.title.starts_with('\u{2026}'),
+                "a long message shows the line around the match: {:?}",
+                hit.title
+            );
+            let Some(ui::search::SearchRow::Command(row)) = &hit.row else {
+                panic!("a message is drawn with its sender's face: {:?}", hit.row);
+            };
+            assert_eq!(
+                row.avatar,
+                Some(("Aria".to_owned(), "person:u_aria".to_owned()))
+            );
+            let Target::Invoke(target) = &hit.target else {
+                panic!("a message opens where it lives");
+            };
+            assert_eq!(target.address.resource, "chat.workspace/messages/m_wheel");
+            assert_eq!(
+                target.arguments[OPEN_ANCHOR],
+                "chat.workspace/messages/m_wheel"
+            );
+        }
+
+        phase a_locked_vault_offers_only_to_unlock_it;
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            publish(
+                &index,
+                "so.tilo.passwords",
+                Some(false),
+                vec![note("l1", "GitHub", true)],
+            );
+            let content = IndexedContent::new(index, str::to_owned, "");
+            let hits = content.query("github");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                hits[0].title,
+                "Unlock so.tilo.passwords to search for “github”"
+            );
+            assert_eq!(
+                hits[0].target,
+                Target::Launch {
+                    app: "so.tilo.passwords".into(),
+                    place: LaunchPlace::Focus,
+                }
+            );
+        }
     }
 
     /// A person as an entry names them.
@@ -1067,400 +1466,5 @@ mod tests {
             people,
             ..entry
         }
-    }
-
-    #[test]
-    fn what_an_entry_is_names_the_section_it_sits_in() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        publish(
-            &index,
-            "so.tilo.chat",
-            None,
-            vec![
-                shaped(
-                    note("chat.agent/agents/a_ada", "Ada", false),
-                    IndexKind::Agent,
-                    vec![person(
-                        "Ada",
-                        "agent:a_ada",
-                        "chat.agent/agents/a_ada",
-                        true,
-                    )],
-                ),
-                shaped(
-                    note("chat.workspace/channels/c_crit", "Ada's design crit", false),
-                    IndexKind::Conversation,
-                    vec![person("Ada", "agent:a_ada", "", true)],
-                ),
-                shaped(
-                    note("chat.workspace/messages/m_1", "Ada, can you look?", false),
-                    IndexKind::Message,
-                    vec![person("Ada", "agent:a_ada", "", true)],
-                ),
-            ],
-        );
-        let content = IndexedContent::new(index, str::to_owned, "");
-        let kinds: Vec<ResourceKind> = content
-            .query("ada")
-            .into_iter()
-            .map(|hit| hit.kind)
-            .collect();
-        let labels: Vec<String> = kinds
-            .iter()
-            .map(|kind| match kind {
-                ResourceKind::Custom(label) => label.clone(),
-                other => other.label().to_owned(),
-            })
-            .collect();
-        assert_eq!(labels, ["Agents", "Conversations", "Messages"]);
-        // The groups keep that order whatever their strongest hit.
-        let mut sorted = kinds.clone();
-        sorted.sort_by_key(ResourceKind::sort_key);
-        assert_eq!(
-            sorted.first().map(ResourceKind::sort_key),
-            kinds.first().map(ResourceKind::sort_key)
-        );
-    }
-
-    #[test]
-    fn an_agent_reads_as_the_person_it_is_kept_by() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        let mut agent = shaped(
-            note("chat.agent/agents/a_ada", "Ada", false),
-            IndexKind::Agent,
-            vec![person(
-                "Ada",
-                "agent:a_ada",
-                "chat.agent/agents/a_ada",
-                true,
-            )],
-        );
-        agent.icon = Some("sparkles".into());
-        agent.keeper = Some(person("", "u_me", "", false));
-        publish(&index, "so.tilo.chat", None, vec![agent]);
-        let content = IndexedContent::new(index, str::to_owned, "u_me");
-        let hits = content.query("ada");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by you"));
-        let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
-            panic!("an agent is drawn with its own face: {:?}", hits[0].row);
-        };
-        assert_eq!(
-            row.avatar,
-            Some(("Ada".to_owned(), "agent:a_ada".to_owned()))
-        );
-
-        let other =
-            IndexedContent::new(Arc::clone(content.index()), str::to_owned, "u_someone_else");
-        // The keeper `u_me` is not this person: the row says who keeps it.
-        let mut kept = shaped(
-            note("chat.agent/agents/a_ada", "Ada", false),
-            IndexKind::Agent,
-            vec![person("Ada", "agent:a_ada", "", true)],
-        );
-        kept.keeper = Some(person("Sam", "u_me", "", false));
-        publish(content.index(), "so.tilo.chat", None, vec![kept]);
-        let hits = other.query("ada");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by Sam"));
-    }
-
-    #[test]
-    fn a_conversation_lists_the_people_in_it() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        publish(
-            &index,
-            "so.tilo.chat",
-            None,
-            vec![shaped(
-                note("chat.workspace/channels/c_crit", "Ada's design crit", false),
-                IndexKind::Conversation,
-                vec![
-                    person("Aria", "person:u_aria", "", false),
-                    person("Ada", "agent:a_ada", "", true),
-                ],
-            )],
-        );
-        let content = IndexedContent::new(index, str::to_owned, "u_me");
-        let hits = content.query("crit");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Aria, Ada"));
-        let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
-            panic!("a conversation shows its people: {:?}", hits[0].row);
-        };
-        let names: Vec<&str> = row.faces.iter().map(|face| face.name.as_str()).collect();
-        assert_eq!(names, ["Aria", "Ada"]);
-        assert!(row.faces[1].is_agent);
-        assert_eq!(row.avatar, None);
-    }
-
-    /// A box's recipients are what the workspace's apps publish of their
-    /// agents, people and conversations: never a message, never the person
-    /// asking, each once — and an empty query opens on what is there, the
-    /// most recent first.
-    #[test]
-    fn a_box_finds_agents_people_and_conversations_never_messages_or_itself() {
-        use ui::floating_surface::RecipientKind;
-
-        let index = Arc::new(AppContentIndex::in_memory());
-        let mut agent = shaped(
-            note("chat.agent/agents/a_ada", "Ada", false),
-            IndexKind::Agent,
-            vec![person(
-                "Ada",
-                "agent:a_ada",
-                "chat.agent/agents/a_ada",
-                true,
-            )],
-        );
-        agent.keeper = Some(person("Me", "u_me", "", false));
-        agent.when = Some(20);
-        let mut conversation = shaped(
-            note("chat.workspace/channels/c_ada", "Ada", false),
-            IndexKind::Conversation,
-            vec![
-                person("Me", "person:u_me", "", false),
-                person("Ada", "agent:a_ada", "", true),
-            ],
-        );
-        conversation.when = Some(30);
-        publish(
-            &index,
-            "so.tilo.chat",
-            None,
-            vec![
-                agent,
-                conversation,
-                shaped(
-                    note("chat.workspace/people/u_me", "Me", false),
-                    IndexKind::Person,
-                    vec![person(
-                        "Me",
-                        "person:u_me",
-                        "chat.workspace/people/u_me",
-                        false,
-                    )],
-                ),
-                shaped(
-                    note("chat.workspace/people/u_ada", "Ada", false),
-                    IndexKind::Person,
-                    vec![person(
-                        "Ada",
-                        "person:u_ada",
-                        "chat.workspace/people/u_ada",
-                        false,
-                    )],
-                ),
-                shaped(
-                    note("chat.workspace/messages/m_ada", "Ada, can you look?", false),
-                    IndexKind::Message,
-                    vec![person("Ada", "person:u_ada", "", false)],
-                ),
-            ],
-        );
-        let content = IndexedContent::new(index, str::to_owned, "u_me");
-
-        // Typing a name: what it names, never the message that mentions it
-        // and never the person typing.
-        let found = content.recipients("ada");
-        let listed: Vec<(RecipientKind, &str)> = found
-            .iter()
-            .map(|recipient| (recipient.kind, recipient.id.as_str()))
-            .collect();
-        assert_eq!(
-            listed,
-            [
-                (RecipientKind::Agent, "a_ada"),
-                (RecipientKind::Person, "u_ada"),
-            ],
-            "the direct conversation with the agent is the agent, listed once"
-        );
-        assert_eq!(
-            found[0].detail.as_deref(),
-            Some("you"),
-            "the agent says this person keeps it"
-        );
-
-        // Before anything is typed, what the workspace holds, most recent
-        // first.
-        let held = content.recipients("  ");
-        let all: Vec<(RecipientKind, &str)> = held
-            .iter()
-            .map(|recipient| (recipient.kind, recipient.id.as_str()))
-            .collect();
-        assert_eq!(
-            all,
-            [
-                (RecipientKind::Agent, "a_ada"),
-                (RecipientKind::Person, "u_ada"),
-            ]
-        );
-    }
-
-    /// Of a workspace's 55 agents, the one called what was typed leads, then
-    /// those whose name starts with it, then those with a word that does; a
-    /// conversation that matches some other way comes before an agent that
-    /// does, the most recent first.
-    #[test]
-    fn a_box_finds_an_agent_by_name_among_many() {
-        use ui::floating_surface::{Recipient, RecipientKind};
-
-        let index = Arc::new(AppContentIndex::in_memory());
-        let mut entries = Vec::new();
-        let mut agent = |id: &str, name: &str, when: i64| {
-            let mut entry = shaped(
-                note(&format!("chat.agent/agents/{id}"), name, false),
-                IndexKind::Agent,
-                vec![person(name, &format!("agent:{id}"), "", true)],
-            );
-            entry.when = Some(when);
-            entries.push(entry);
-        };
-        for number in 0..52 {
-            agent(
-                &format!("a_{number}"),
-                &format!("Helper {number}"),
-                100 + i64::from(number),
-            );
-        }
-        agent("a_weekly", "Weekly digest", 1);
-        agent("a_digester", "Digester", 2);
-        agent("a_digest", "Digest", 3);
-        publish(&index, "so.tilo.chat", None, entries);
-        let content = IndexedContent::new(index, str::to_owned, "u_me");
-
-        let ids = |found: Vec<Recipient>| -> Vec<String> {
-            found.into_iter().map(|recipient| recipient.id).collect()
-        };
-        assert_eq!(
-            ids(content.recipients("Digest"))[..3],
-            ["a_digest", "a_digester", "a_weekly"]
-        );
-        assert_eq!(
-            ids(content.recipients("helper 7"))
-                .first()
-                .map(String::as_str),
-            Some("a_7")
-        );
-        assert_eq!(ids(content.recipients("helper 4"))[0], "a_4");
-
-        let conversation = |name: &str| Recipient::found(RecipientKind::Conversation, "c", name);
-        let named = |name: &str| Recipient::found(RecipientKind::Agent, "a", name);
-        assert!(
-            Standing::of("ada", &conversation("Design crit"))
-                > Standing::of("ada", &named("Reviewer"))
-        );
-        assert!(
-            Standing::of("ada", &named("Ada's helper"))
-                > Standing::of("ada", &conversation("Crit"))
-        );
-        assert!(Standing::of("ada", &named("Ada")) > Standing::of("ada", &named("Adam")));
-    }
-
-    #[test]
-    fn a_message_says_who_said_it_where_and_when() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        let text = "We shipped the new palette yesterday and the animations still stutter \
-                    when the window resizes; Ada, can you look at the wheel again before \
-                    the demo tomorrow morning?";
-        let mut message = shaped(
-            note("chat.workspace/messages/m_wheel", text, false),
-            IndexKind::Message,
-            vec![person(
-                "",
-                "person:u_aria",
-                "chat.workspace/people/u_aria",
-                false,
-            )],
-        );
-        message.place = Some(person(
-            "",
-            "c_crit",
-            "chat.workspace/channels/c_crit",
-            false,
-        ));
-        message.when = Some(
-            i64::try_from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("the clock is after the epoch")
-                    .as_secs(),
-            )
-            .expect("seconds fit")
-                - 3600,
-        );
-        publish(
-            &index,
-            "so.tilo.chat",
-            None,
-            vec![
-                shaped(
-                    note("chat.workspace/people/u_aria", "Aria", false),
-                    IndexKind::Person,
-                    vec![person("Aria", "person:u_aria", "", false)],
-                ),
-                shaped(
-                    note("chat.workspace/channels/c_crit", "Ada's design crit", false),
-                    IndexKind::Conversation,
-                    vec![person("Aria", "person:u_aria", "", false)],
-                ),
-                message,
-            ],
-        );
-        let content = IndexedContent::new(index, str::to_owned, "u_me");
-        let hits = content.query("ada");
-        let hit = hits
-            .iter()
-            .find(|hit| hit.title.contains("can you look"))
-            .expect("the message is found by what it says");
-        assert_eq!(
-            hit.subtitle.as_deref(),
-            Some(format!("Aria in Ada's design crit, {}", ui::format::relative(3600)).as_str())
-        );
-        assert!(
-            hit.title.starts_with('\u{2026}'),
-            "a long message shows the line around the match: {:?}",
-            hit.title
-        );
-        let Some(ui::search::SearchRow::Command(row)) = &hit.row else {
-            panic!("a message is drawn with its sender's face: {:?}", hit.row);
-        };
-        assert_eq!(
-            row.avatar,
-            Some(("Aria".to_owned(), "person:u_aria".to_owned()))
-        );
-        let Target::Invoke(target) = &hit.target else {
-            panic!("a message opens where it lives");
-        };
-        assert_eq!(target.address.resource, "chat.workspace/messages/m_wheel");
-        assert_eq!(
-            target.arguments[OPEN_ANCHOR],
-            "chat.workspace/messages/m_wheel"
-        );
-    }
-
-    #[test]
-    fn a_locked_vault_offers_only_to_unlock_it() {
-        let index = Arc::new(AppContentIndex::in_memory());
-        publish(
-            &index,
-            "so.tilo.passwords",
-            Some(false),
-            vec![note("l1", "GitHub", true)],
-        );
-        let content = IndexedContent::new(index, str::to_owned, "");
-        let hits = content.query("github");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(
-            hits[0].title,
-            "Unlock so.tilo.passwords to search for “github”"
-        );
-        assert_eq!(
-            hits[0].target,
-            Target::Launch {
-                app: "so.tilo.passwords".into(),
-                place: LaunchPlace::Focus,
-            }
-        );
     }
 }

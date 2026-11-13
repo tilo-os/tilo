@@ -551,26 +551,30 @@ mod tests {
         convert(typed).map(|conversion| conversion.to)
     }
 
-    #[test]
-    fn quantities_convert_within_their_dimension() {
-        assert_eq!(answer("10 km in mi").as_deref(), Some("6.2137 mi"));
-        assert_eq!(answer("5 kg to lb").as_deref(), Some("11.0231 lb"));
-        assert_eq!(answer("100 °F").as_deref(), Some("37.7778 °C"));
-        assert_eq!(answer("0 c in f").as_deref(), Some("32 °F"));
-        assert_eq!(answer("1 GB in MiB").as_deref(), Some("953.6743 MiB"));
-        assert_eq!(answer("2,5 l").as_deref(), Some("0.6604 gal"));
-        assert_eq!(answer("90 min in h").as_deref(), Some("1.5 h"));
-        assert_eq!(answer("100 km/h").as_deref(), Some("62.1371 mph"));
-        assert_eq!(answer("3 fuß nach cm").as_deref(), Some("91.44 cm"));
-    }
+    tilo_test_env::scenario! {
+        fn a_conversion_answers_a_quantity_and_nothing_else;
 
-    #[test]
-    fn nothing_that_is_not_a_quantity_converts() {
-        assert_eq!(answer("10 km in kg"), None, "different dimensions");
-        assert_eq!(answer("10"), None);
-        assert_eq!(answer("notes"), None);
-        assert_eq!(answer("10 apples"), None);
-        assert_eq!(answer("5 s"), None, "no usual target for seconds");
-        assert_eq!(answer("1 km in km"), None);
+        phase quantities_convert_within_their_dimension;
+        {
+            assert_eq!(answer("10 km in mi").as_deref(), Some("6.2137 mi"));
+            assert_eq!(answer("5 kg to lb").as_deref(), Some("11.0231 lb"));
+            assert_eq!(answer("100 °F").as_deref(), Some("37.7778 °C"));
+            assert_eq!(answer("0 c in f").as_deref(), Some("32 °F"));
+            assert_eq!(answer("1 GB in MiB").as_deref(), Some("953.6743 MiB"));
+            assert_eq!(answer("2,5 l").as_deref(), Some("0.6604 gal"));
+            assert_eq!(answer("90 min in h").as_deref(), Some("1.5 h"));
+            assert_eq!(answer("100 km/h").as_deref(), Some("62.1371 mph"));
+            assert_eq!(answer("3 fuß nach cm").as_deref(), Some("91.44 cm"));
+        }
+
+        phase nothing_that_is_not_a_quantity_converts;
+        {
+            assert_eq!(answer("10 km in kg"), None, "different dimensions");
+            assert_eq!(answer("10"), None);
+            assert_eq!(answer("notes"), None);
+            assert_eq!(answer("10 apples"), None);
+            assert_eq!(answer("5 s"), None, "no usual target for seconds");
+            assert_eq!(answer("1 km in km"), None);
+        }
     }
 }

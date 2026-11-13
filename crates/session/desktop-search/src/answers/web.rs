@@ -255,51 +255,55 @@ pub fn fallback_search_url(query: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_service_is_named_by_its_name_a_keyword_or_its_start() {
-        let youtube = Service::by_id("youtube").expect("YouTube is known");
-        let maps = Service::by_id("maps").expect("Maps is known");
-        assert_eq!(named("youtube"), Some(Named::Service(youtube)));
-        assert_eq!(named("YouTube"), Some(Named::Service(youtube)));
-        assert_eq!(named("yout"), Some(Named::Service(youtube)));
-        assert_eq!(
-            named("youtube cats"),
-            Some(Named::Search(youtube, "cats".into()))
-        );
-        assert_eq!(
-            named("YT Lo-Fi Mix"),
-            Some(Named::Search(youtube, "Lo-Fi Mix".into())),
-            "the query keeps how it was typed"
-        );
-        assert_eq!(
-            named("google maps berlin"),
-            Some(Named::Search(maps, "berlin".into())),
-            "the longest naming word wins"
-        );
-        assert_eq!(named("yo"), None, "too short to name one thing");
-        assert_eq!(named("youtubers"), None);
-        assert_eq!(named("weather"), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_web_service_is_named_searched_and_addressed;
 
-    #[test]
-    fn a_serving_app_is_searched_by_its_own_uri() {
-        assert_eq!(
-            Service::by_id("youtube")
-                .and_then(|service| service.app_search("cats & dogs"))
-                .map(|(uri, _)| uri)
-                .as_deref(),
-            Some("tube:search?q=cats%20%26%20dogs")
-        );
-    }
+        phase a_service_is_named_by_its_name_a_keyword_or_its_start;
+        {
+            let youtube = Service::by_id("youtube").expect("YouTube is known");
+            let maps = Service::by_id("maps").expect("Maps is known");
+            assert_eq!(named("youtube"), Some(Named::Service(youtube)));
+            assert_eq!(named("YouTube"), Some(Named::Service(youtube)));
+            assert_eq!(named("yout"), Some(Named::Service(youtube)));
+            assert_eq!(
+                named("youtube cats"),
+                Some(Named::Search(youtube, "cats".into()))
+            );
+            assert_eq!(
+                named("YT Lo-Fi Mix"),
+                Some(Named::Search(youtube, "Lo-Fi Mix".into())),
+                "the query keeps how it was typed"
+            );
+            assert_eq!(
+                named("google maps berlin"),
+                Some(Named::Search(maps, "berlin".into())),
+                "the longest naming word wins"
+            );
+            assert_eq!(named("yo"), None, "too short to name one thing");
+            assert_eq!(named("youtubers"), None);
+            assert_eq!(named("weather"), None);
+        }
 
-    #[test]
-    fn a_query_is_encoded_whole() {
-        assert_eq!(percent_encode("wetter köln"), "wetter%20k%C3%B6ln");
-        assert_eq!(percent_encode("a&b=c/d"), "a%26b%3Dc%2Fd");
-        assert_eq!(web_search_uri("a b"), "web+search:a%20b");
-        assert_eq!(
-            fallback_search_url("a b"),
-            "https://duckduckgo.com/?q=a%20b"
-        );
+        phase a_serving_app_is_searched_by_its_own_uri;
+        {
+            assert_eq!(
+                Service::by_id("youtube")
+                    .and_then(|service| service.app_search("cats & dogs"))
+                    .map(|(uri, _)| uri)
+                    .as_deref(),
+                Some("tube:search?q=cats%20%26%20dogs")
+            );
+        }
+
+        phase a_query_is_encoded_whole;
+        {
+            assert_eq!(percent_encode("wetter köln"), "wetter%20k%C3%B6ln");
+            assert_eq!(percent_encode("a&b=c/d"), "a%26b%3Dc%2Fd");
+            assert_eq!(web_search_uri("a b"), "web+search:a%20b");
+            assert_eq!(
+                fallback_search_url("a b"),
+                "https://duckduckgo.com/?q=a%20b"
+            );
+        }
     }
 }

@@ -344,26 +344,86 @@ impl Source for Files {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_file_is_found_by_name_and_opens_by_its_address() {
-        let home = PathBuf::from("/home/mara");
-        let names = FileNames::from_paths([
-            (home.join("Documents/Budget 2026.ods"), false),
-            (home.join("Documents"), true),
-        ]);
-        let files = Files::new(home, names, None);
-        let hits = files.query("budget");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Documents"));
-        assert_eq!(
-            hits[0].target,
-            Target::Open {
-                uri: "file:///home/mara/Documents/Budget%202026.ods".into(),
-                fallback: None
-            }
-        );
-        assert_eq!(files.query("documents")[0].kind, ResourceKind::Folder);
-        assert!(files.query("").is_empty());
+    tilo_test_env::scenario! {
+        fn files_are_found_by_name_as_the_walk_and_its_changes_bring_them;
+
+        phase a_file_is_found_by_name_and_opens_by_its_address;
+        {
+            let home = PathBuf::from("/home/mara");
+            let names = FileNames::from_paths([
+                (home.join("Documents/Budget 2026.ods"), false),
+                (home.join("Documents"), true),
+            ]);
+            let files = Files::new(home, names, None);
+            let hits = files.query("budget");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].subtitle.as_deref(), Some("Documents"));
+            assert_eq!(
+                hits[0].target,
+                Target::Open {
+                    uri: "file:///home/mara/Documents/Budget%202026.ods".into(),
+                    fallback: None
+                }
+            );
+            assert_eq!(files.query("documents")[0].kind, ResourceKind::Folder);
+            assert!(files.query("").is_empty());
+        }
+
+        phase the_walk_finds_names_without_hidden_folders;
+        {
+            let home = tempfile::tempdir().expect("a home");
+            std::fs::create_dir_all(home.path().join("Notes")).expect("a folder");
+            std::fs::create_dir_all(home.path().join(".cache")).expect("a cache");
+            std::fs::write(home.path().join("Notes/plan.txt"), "x").expect("a file");
+            std::fs::write(home.path().join(".cache/plan-cache.txt"), "x").expect("a file");
+            let names = FileNames::scan(home.path().to_path_buf());
+            let files = Files::new(home.path().to_path_buf(), names, None);
+            let titles = found_when(&files, "plan", |titles| !titles.is_empty());
+            assert_eq!(titles, ["plan.txt"]);
+        }
+
+        phase names_follow_files_made_renamed_and_removed_after_the_walk;
+        {
+            let home = tempfile::tempdir().expect("a home");
+            std::fs::create_dir_all(home.path().join("Notes")).expect("a folder");
+            std::fs::write(home.path().join("Notes/plan.txt"), "x").expect("a file");
+            let names = FileNames::scan(home.path().to_path_buf());
+            let files = Files::new(home.path().to_path_buf(), names, None);
+            assert_eq!(found_when(&files, "plan", |t| !t.is_empty()), ["plan.txt"]);
+
+            std::fs::write(home.path().join("Notes/budget.ods"), "x").expect("a new file");
+            assert_eq!(
+                found_when(&files, "budget", |t| !t.is_empty()),
+                ["budget.ods"]
+            );
+
+            // A folder moved in from one search skips brings what it holds;
+            // what stays in the skipped one is not kept.
+            let staging = home.path().join(".staging");
+            std::fs::create_dir_all(staging.join("Trips/2026")).expect("a folder");
+            std::fs::write(staging.join("Trips/2026/itinerary.md"), "x").expect("a file");
+            std::fs::write(staging.join("itinerary-old.md"), "x").expect("a file");
+            std::fs::rename(staging.join("Trips"), home.path().join("Trips")).expect("a move");
+            assert_eq!(
+                found_when(&files, "itinerary", |t| !t.is_empty()),
+                ["itinerary.md"]
+            );
+
+            std::fs::rename(
+                home.path().join("Notes/plan.txt"),
+                home.path().join("Notes/schedule.txt"),
+            )
+            .expect("a rename");
+            assert!(found_when(&files, "plan", |t| t.is_empty()).is_empty());
+            assert_eq!(
+                found_when(&files, "schedule", |t| !t.is_empty()),
+                ["schedule.txt"]
+            );
+
+            std::fs::remove_dir_all(home.path().join("Trips")).expect("a folder removed");
+            assert!(found_when(&files, "itinerary", |t| t.is_empty()).is_empty());
+            assert!(found_when(&files, "2026", |t| t.is_empty()).is_empty());
+        }
     }
 
     /// The titles `files` finds for `needle` once `done` holds of them, at
@@ -382,61 +442,5 @@ mod tests {
             }
             std::thread::park_timeout(std::time::Duration::from_millis(10));
         }
-    }
-
-    #[test]
-    fn the_walk_finds_names_without_hidden_folders() {
-        let home = tempfile::tempdir().expect("a home");
-        std::fs::create_dir_all(home.path().join("Notes")).expect("a folder");
-        std::fs::create_dir_all(home.path().join(".cache")).expect("a cache");
-        std::fs::write(home.path().join("Notes/plan.txt"), "x").expect("a file");
-        std::fs::write(home.path().join(".cache/plan-cache.txt"), "x").expect("a file");
-        let names = FileNames::scan(home.path().to_path_buf());
-        let files = Files::new(home.path().to_path_buf(), names, None);
-        let titles = found_when(&files, "plan", |titles| !titles.is_empty());
-        assert_eq!(titles, ["plan.txt"]);
-    }
-
-    #[test]
-    fn names_follow_files_made_renamed_and_removed_after_the_walk() {
-        let home = tempfile::tempdir().expect("a home");
-        std::fs::create_dir_all(home.path().join("Notes")).expect("a folder");
-        std::fs::write(home.path().join("Notes/plan.txt"), "x").expect("a file");
-        let names = FileNames::scan(home.path().to_path_buf());
-        let files = Files::new(home.path().to_path_buf(), names, None);
-        assert_eq!(found_when(&files, "plan", |t| !t.is_empty()), ["plan.txt"]);
-
-        std::fs::write(home.path().join("Notes/budget.ods"), "x").expect("a new file");
-        assert_eq!(
-            found_when(&files, "budget", |t| !t.is_empty()),
-            ["budget.ods"]
-        );
-
-        // A folder moved in from one search skips brings what it holds;
-        // what stays in the skipped one is not kept.
-        let staging = home.path().join(".staging");
-        std::fs::create_dir_all(staging.join("Trips/2026")).expect("a folder");
-        std::fs::write(staging.join("Trips/2026/itinerary.md"), "x").expect("a file");
-        std::fs::write(staging.join("itinerary-old.md"), "x").expect("a file");
-        std::fs::rename(staging.join("Trips"), home.path().join("Trips")).expect("a move");
-        assert_eq!(
-            found_when(&files, "itinerary", |t| !t.is_empty()),
-            ["itinerary.md"]
-        );
-
-        std::fs::rename(
-            home.path().join("Notes/plan.txt"),
-            home.path().join("Notes/schedule.txt"),
-        )
-        .expect("a rename");
-        assert!(found_when(&files, "plan", |t| t.is_empty()).is_empty());
-        assert_eq!(
-            found_when(&files, "schedule", |t| !t.is_empty()),
-            ["schedule.txt"]
-        );
-
-        std::fs::remove_dir_all(home.path().join("Trips")).expect("a folder removed");
-        assert!(found_when(&files, "itinerary", |t| t.is_empty()).is_empty());
-        assert!(found_when(&files, "2026", |t| t.is_empty()).is_empty());
     }
 }

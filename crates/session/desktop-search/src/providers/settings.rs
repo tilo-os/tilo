@@ -319,97 +319,101 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_page_is_found_by_its_name_in_any_language_and_opens_at_its_anchor() {
-        let settings = Settings::new("workspace");
-        for needle in ["network", "wlan"] {
-            let hits = settings.query(needle);
-            let page = hits
-                .iter()
-                .find(|hit| hit.id == "page:network")
-                .unwrap_or_else(|| panic!("{needle} finds Network"));
-            assert_eq!(
-                opens(page),
-                (
-                    "settings.section:network".to_owned(),
-                    "settings.section:network".to_owned()
-                )
-            );
-            assert_eq!(page.icon, Some(ui::icons::Icon::Wifi));
+    tilo_test_env::scenario! {
+        fn settings_pages_and_settings_are_found_by_name_and_open_where_they_stand;
+
+        phase a_page_is_found_by_its_name_in_any_language_and_opens_at_its_anchor;
+        {
+            let settings = Settings::new("workspace");
+            for needle in ["network", "wlan"] {
+                let hits = settings.query(needle);
+                let page = hits
+                    .iter()
+                    .find(|hit| hit.id == "page:network")
+                    .unwrap_or_else(|| panic!("{needle} finds Network"));
+                assert_eq!(
+                    opens(page),
+                    (
+                        "settings.section:network".to_owned(),
+                        "settings.section:network".to_owned()
+                    )
+                );
+                assert_eq!(page.icon, Some(ui::icons::Icon::Wifi));
+            }
+            assert!(settings.query("").is_empty());
         }
-        assert!(settings.query("").is_empty());
-    }
 
-    #[test]
-    fn a_setting_named_leads_its_page_and_opens_at_the_setting() {
-        let settings = Settings::new("workspace");
-        let hits = settings.query("keyboard layout");
-        let best = hits
-            .iter()
-            .max_by_key(|hit| hit.score)
-            .expect("the layout is found");
-        assert_eq!(best.id, "setting:keyboard.layout");
-        assert_eq!(opens(best).0, "settings.setting:keyboard.layout");
-        assert!(
-            settings
-                .query("wifi")
+        phase a_setting_named_leads_its_page_and_opens_at_the_setting;
+        {
+            let settings = Settings::new("workspace");
+            let hits = settings.query("keyboard layout");
+            let best = hits
                 .iter()
-                .all(|hit| hit.id != "setting:network.wifi"),
-            "a quick action answers Wi-Fi"
-        );
-        assert_eq!(
-            settings
-                .resolve("setting:keyboard.layout")
-                .map(|hit| hit.id),
-            Some("setting:keyboard.layout".into())
-        );
-    }
+                .max_by_key(|hit| hit.score)
+                .expect("the layout is found");
+            assert_eq!(best.id, "setting:keyboard.layout");
+            assert_eq!(opens(best).0, "settings.setting:keyboard.layout");
+            assert!(
+                settings
+                    .query("wifi")
+                    .iter()
+                    .all(|hit| hit.id != "setting:network.wifi"),
+                "a quick action answers Wi-Fi"
+            );
+            assert_eq!(
+                settings
+                    .resolve("setting:keyboard.layout")
+                    .map(|hit| hit.id),
+                Some("setting:keyboard.layout".into())
+            );
+        }
 
-    /// A page is found by its name in every language it is known by, never
-    /// by a word merely beginning alike: "hello" is not "hell" (light), so
-    /// it finds neither Appearance nor Brightness.
-    #[test]
-    fn a_word_merely_beginning_alike_finds_no_page() {
-        let settings = Settings::new("workspace");
-        assert!(settings.query("hello").is_empty());
-        assert!(
-            settings
-                .query("theme")
-                .iter()
-                .any(|hit| hit.id == "page:appearance"),
-            "the theme is Appearance"
-        );
-    }
+        phase a_word_merely_beginning_alike_finds_no_page;
+        // A page is found by its name in every language it is known by, never
+        // by a word merely beginning alike: "hello" is not "hell" (light), so
+        // it finds neither Appearance nor Brightness.
+        {
+            let settings = Settings::new("workspace");
+            assert!(settings.query("hello").is_empty());
+            assert!(
+                settings
+                    .query("theme")
+                    .iter()
+                    .any(|hit| hit.id == "page:appearance"),
+                "the theme is Appearance"
+            );
+        }
 
-    /// A setting the settings service publishes as an action of its own is found as that action,
-    /// which is the change itself: a row opening Settings at it would only stand beside it.
-    #[test]
-    fn a_setting_changed_where_it_stands_is_left_to_its_action() {
-        let switch = tilo_actions::ResourceSpec::new(
-            "setting:keyboard.layout",
-            "settings.setting",
-            "Keyboard layout",
-        )
-        .with_action(tilo_actions::ActionSpec::immediate_encoded(
-            "set",
-            "Set the keyboard layout",
-            tilo_actions::ExecutionLocus::ClientLocal,
-            tilo_actions::EncodedAction {
-                type_id: "test.setting".into(),
-                payload: Vec::new(),
-            },
-        ));
-        let published = tilo_actions::door::survey(&[switch]);
-        let offered = |settings: &Settings| {
-            settings
-                .query("keyboard layout")
-                .into_iter()
-                .any(|hit| hit.id == "setting:keyboard.layout")
-        };
-        assert!(offered(&Settings::new("workspace")), "Settings offers it");
-        assert!(
-            !offered(&Settings::of_published("workspace", &published)),
-            "the change is the row"
-        );
+        phase a_setting_changed_where_it_stands_is_left_to_its_action;
+        // A setting the settings service publishes as an action of its own is found as that action,
+        // which is the change itself: a row opening Settings at it would only stand beside it.
+        {
+            let switch = tilo_actions::ResourceSpec::new(
+                "setting:keyboard.layout",
+                "settings.setting",
+                "Keyboard layout",
+            )
+            .with_action(tilo_actions::ActionSpec::immediate_encoded(
+                "set",
+                "Set the keyboard layout",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "test.setting".into(),
+                    payload: Vec::new(),
+                },
+            ));
+            let published = tilo_actions::door::survey(&[switch]);
+            let offered = |settings: &Settings| {
+                settings
+                    .query("keyboard layout")
+                    .into_iter()
+                    .any(|hit| hit.id == "setting:keyboard.layout")
+            };
+            assert!(offered(&Settings::new("workspace")), "Settings offers it");
+            assert!(
+                !offered(&Settings::of_published("workspace", &published)),
+                "the change is the row"
+            );
+        }
     }
 }

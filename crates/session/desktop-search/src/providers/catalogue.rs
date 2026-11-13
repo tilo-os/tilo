@@ -301,128 +301,132 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tilo_app_to_get_opens_and_its_documents_and_actions_come_with_it() {
-        let mut sheets = entry("so.tilo.sheets", "Sheets", tilo());
-        sheets.resource_types = vec![ResourceType {
-            kind: "sheets.workbook".into(),
-            label: "Workbook".into(),
-        }];
-        let mut calendar = entry("so.tilo.calendar", "Calendar", tilo());
-        calendar.actions = vec![CatalogueAction {
-            resource: "calendar.calendar".into(),
-            action: "show-tasks".into(),
-            label: "Show tasks".into(),
-            description: None,
-        }];
-        let catalogue = StoreCatalogue::new(vec![sheets, calendar], "workspace");
-        let app = &catalogue.query("sheets")[0];
-        assert_eq!(
-            app.target,
-            Target::Launch {
-                app: "so.tilo.sheets".into(),
-                place: LaunchPlace::Focus,
-            }
-        );
-        assert!(app.score < MAX_PROVIDER_SCORE, "below an installed app");
-        assert_eq!(
-            app.kind,
-            store_kind(),
-            "an app to get is the Store's, not one the person has"
-        );
-        assert_eq!(
-            app.icon,
-            Some(ui::icons::app_glyph("so.tilo.sheets", None)),
-            "the row wears the app's own glyph"
-        );
-        let workbook = catalogue.query("workbook");
-        assert_eq!(workbook[0].subtitle.as_deref(), Some("Sheets"));
-        assert_eq!(workbook[0].kind, store_kind(), "nor is its document");
-        let tasks = catalogue.query("show tasks");
-        let Target::Invoke(target) = &tasks[0].target else {
-            panic!("an offered action runs by address");
-        };
-        assert_eq!(target.app, "so.tilo.calendar");
-        assert_eq!(target.workspace, "workspace");
-        assert_eq!(
-            target.address,
-            tilo_actions::ActionAddress::new("calendar.calendar", "show-tasks")
-        );
-        assert_eq!(
-            tasks[0].kind,
-            store_kind(),
-            "an offered action is the Store's too: the person has neither it \
+    tilo_test_env::scenario! {
+        fn the_catalogue_offers_apps_to_get_and_opens_each_where_it_is_got;
+
+        phase a_tilo_app_to_get_opens_and_its_documents_and_actions_come_with_it;
+        {
+            let mut sheets = entry("so.tilo.sheets", "Sheets", tilo());
+            sheets.resource_types = vec![ResourceType {
+                kind: "sheets.workbook".into(),
+                label: "Workbook".into(),
+            }];
+            let mut calendar = entry("so.tilo.calendar", "Calendar", tilo());
+            calendar.actions = vec![CatalogueAction {
+                resource: "calendar.calendar".into(),
+                action: "show-tasks".into(),
+                label: "Show tasks".into(),
+                description: None,
+            }];
+            let catalogue = StoreCatalogue::new(vec![sheets, calendar], "workspace");
+            let app = &catalogue.query("sheets")[0];
+            assert_eq!(
+                app.target,
+                Target::Launch {
+                    app: "so.tilo.sheets".into(),
+                    place: LaunchPlace::Focus,
+                }
+            );
+            assert!(app.score < MAX_PROVIDER_SCORE, "below an installed app");
+            assert_eq!(
+                app.kind,
+                store_kind(),
+                "an app to get is the Store's, not one the person has"
+            );
+            assert_eq!(
+                app.icon,
+                Some(ui::icons::app_glyph("so.tilo.sheets", None)),
+                "the row wears the app's own glyph"
+            );
+            let workbook = catalogue.query("workbook");
+            assert_eq!(workbook[0].subtitle.as_deref(), Some("Sheets"));
+            assert_eq!(workbook[0].kind, store_kind(), "nor is its document");
+            let tasks = catalogue.query("show tasks");
+            let Target::Invoke(target) = &tasks[0].target else {
+                panic!("an offered action runs by address");
+            };
+            assert_eq!(target.app, "so.tilo.calendar");
+            assert_eq!(target.workspace, "workspace");
+            assert_eq!(
+                target.address,
+                tilo_actions::ActionAddress::new("calendar.calendar", "show-tasks")
+            );
+            assert_eq!(
+                tasks[0].kind,
+                store_kind(),
+                "an offered action is the Store's too: the person has neither it \
              nor the app it runs in"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn the_catalogue_offers_the_nearest_rows_of_a_wide_query() {
-        let mut tasks = entry("so.tilo.tasks", "Tasks", tilo());
-        let action = |at: usize, label: &str| CatalogueAction {
-            resource: "tasks.task".into(),
-            action: format!("add-{at}"),
-            label: label.into(),
-            description: None,
-        };
-        tasks.actions = (0..MAX_ROWS + 4)
-            // Every one of these matches the query's word as one of its own:
-            // nothing tells them apart but the order the catalogue offers
-            // them in.
-            .map(|at| action(at, &format!("Add task {at}")))
-            // The nearest comes last: the row the query names is nearer than
-            // the rows that only say the word, so a catalogue that kept the
-            // rows that came first would leave it out.
-            .chain([action(MAX_ROWS + 4, "Task")])
-            .collect();
-        let catalogue = StoreCatalogue::new(vec![tasks], "workspace");
-        let hits = catalogue.query("task");
-        assert_eq!(hits.len(), MAX_ROWS, "the card is not the Store");
-        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
-        assert!(
-            titles.contains(&"Task"),
-            "the rows kept are the nearest, not whichever came first: {titles:?}"
-        );
-        let mut scores: Vec<i32> = hits.iter().map(|hit| hit.score).collect();
-        scores.sort_unstable_by(|a, b| b.cmp(a));
-        assert!(
-            scores.first() > scores.last(),
-            "the rows are cut from the nearest down: {scores:?}"
-        );
-    }
+        phase the_catalogue_offers_the_nearest_rows_of_a_wide_query;
+        {
+            let mut tasks = entry("so.tilo.tasks", "Tasks", tilo());
+            let action = |at: usize, label: &str| CatalogueAction {
+                resource: "tasks.task".into(),
+                action: format!("add-{at}"),
+                label: label.into(),
+                description: None,
+            };
+            tasks.actions = (0..MAX_ROWS + 4)
+                // Every one of these matches the query's word as one of its own:
+                // nothing tells them apart but the order the catalogue offers
+                // them in.
+                .map(|at| action(at, &format!("Add task {at}")))
+                // The nearest comes last: the row the query names is nearer than
+                // the rows that only say the word, so a catalogue that kept the
+                // rows that came first would leave it out.
+                .chain([action(MAX_ROWS + 4, "Task")])
+                .collect();
+            let catalogue = StoreCatalogue::new(vec![tasks], "workspace");
+            let hits = catalogue.query("task");
+            assert_eq!(hits.len(), MAX_ROWS, "the card is not the Store");
+            let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+            assert!(
+                titles.contains(&"Task"),
+                "the rows kept are the nearest, not whichever came first: {titles:?}"
+            );
+            let mut scores: Vec<i32> = hits.iter().map(|hit| hit.score).collect();
+            scores.sort_unstable_by(|a, b| b.cmp(a));
+            assert!(
+                scores.first() > scores.last(),
+                "the rows are cut from the nearest down: {scores:?}"
+            );
+        }
 
-    #[test]
-    fn a_flathub_app_opens_its_store_page_and_never_installs() {
-        let mut steam = entry("com.valvesoftware.Steam", "Steam", flathub());
-        steam.not_built_for_this_device = true;
-        let catalogue = StoreCatalogue::new(vec![steam], "workspace");
-        let hits = catalogue.query("steam");
-        assert_eq!(
-            hits[0].target,
-            Target::Open {
-                uri: "tilo-store:app/com.valvesoftware.Steam".into(),
-                fallback: None
-            }
-        );
-        assert_eq!(
-            hits[0].facts,
-            [
-                crate::i18n::t("search-catalogue-flathub"),
-                crate::i18n::t("search-catalogue-not-for-device")
-            ],
-            "where it comes from, and that it is not for this device"
-        );
-        assert_eq!(
-            hits[0].outcome.as_deref(),
-            Some(crate::i18n::t("search-catalogue-open-store").as_str()),
-            "choosing it opens its Store page, it does not install"
-        );
-        assert_eq!(
-            hits[0].icon,
-            Some(ui::icons::app_glyph("com.valvesoftware.Steam", None)),
-            "the row wears the app's glyph, whoever offers it"
-        );
-        assert!(catalogue.intent(&hits[0]) < 0.0);
-        assert_eq!(store_page("bad id"), None);
+        phase a_flathub_app_opens_its_store_page_and_never_installs;
+        {
+            let mut steam = entry("com.valvesoftware.Steam", "Steam", flathub());
+            steam.not_built_for_this_device = true;
+            let catalogue = StoreCatalogue::new(vec![steam], "workspace");
+            let hits = catalogue.query("steam");
+            assert_eq!(
+                hits[0].target,
+                Target::Open {
+                    uri: "tilo-store:app/com.valvesoftware.Steam".into(),
+                    fallback: None
+                }
+            );
+            assert_eq!(
+                hits[0].facts,
+                [
+                    crate::i18n::t("search-catalogue-flathub"),
+                    crate::i18n::t("search-catalogue-not-for-device")
+                ],
+                "where it comes from, and that it is not for this device"
+            );
+            assert_eq!(
+                hits[0].outcome.as_deref(),
+                Some(crate::i18n::t("search-catalogue-open-store").as_str()),
+                "choosing it opens its Store page, it does not install"
+            );
+            assert_eq!(
+                hits[0].icon,
+                Some(ui::icons::app_glyph("com.valvesoftware.Steam", None)),
+                "the row wears the app's glyph, whoever offers it"
+            );
+            assert!(catalogue.intent(&hits[0]) < 0.0);
+            assert_eq!(store_page("bad id"), None);
+        }
     }
 }

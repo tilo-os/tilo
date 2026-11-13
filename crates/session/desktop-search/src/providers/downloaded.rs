@@ -425,103 +425,107 @@ mod tests {
         ))])
     }
 
-    #[test]
-    fn an_app_is_found_by_its_name_and_starts_through_the_host() {
-        let downloaded = Downloaded::new("workspace", reading(), &locate());
-        let hits = downloaded.query("dropped");
-        assert_eq!(hits.len(), 3, "the app, and what can be done with it");
-        assert_eq!(hits[0].title, "Dropped Tool");
-        assert_eq!(hits[0].kind, ResourceKind::Application);
-        assert_eq!(hits[0].facts, ["AppImage"]);
-        assert_eq!(
-            hits[0].target,
-            Target::Launch {
-                app: "host:tilo-downloaded-Dropped".into(),
-                place: LaunchPlace::Focus,
-            }
-        );
-        assert!(
-            hits[1..].iter().all(|hit| hit.score < hits[0].score),
-            "the app comes before the actions on it"
-        );
-        assert_eq!(downloaded.query("").len(), 2, "browsing lists the apps");
-    }
+    tilo_test_env::scenario! {
+        fn a_downloaded_app_is_found_started_and_offered_its_own_actions;
 
-    /// The app's row comes with the two rows that act on it: uninstalling it,
-    /// which asks the session first, and taking it off the apps, which is the
-    /// registry's action.
-    #[test]
-    fn an_app_offers_uninstalling_it_and_taking_it_off_the_apps() {
-        let downloaded = Downloaded::new("workspace", reading(), &locate());
-        let hits = downloaded.query("dropped");
-        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            [
-                "Dropped Tool",
-                "Uninstall Dropped Tool",
-                "Remove Dropped Tool from apps"
-            ]
-        );
-        let Target::Invoke(uninstall) = &hits[1].target else {
-            panic!("uninstalling is asked first");
-        };
-        assert_eq!(
-            uninstall.address,
-            ActionAddress::new(APPS_RESOURCE, ASK_UNINSTALL)
-        );
-        assert_eq!(uninstall.arguments[APP_PARAM], "tilo-downloaded-Dropped");
-        assert!(uninstall.descriptor.is_none());
-        let Target::Invoke(remove) = &hits[2].target else {
-            panic!("taking it off the apps is the registry's action");
-        };
-        assert_eq!(
-            remove.address,
-            ActionAddress::new(wire::app("tilo-downloaded-Dropped"), wire::REMOVE)
-        );
-        assert!(remove.arguments.is_empty());
-    }
+        phase an_app_is_found_by_its_name_and_starts_through_the_host;
+        {
+            let downloaded = Downloaded::new("workspace", reading(), &locate());
+            let hits = downloaded.query("dropped");
+            assert_eq!(hits.len(), 3, "the app, and what can be done with it");
+            assert_eq!(hits[0].title, "Dropped Tool");
+            assert_eq!(hits[0].kind, ResourceKind::Application);
+            assert_eq!(hits[0].facts, ["AppImage"]);
+            assert_eq!(
+                hits[0].target,
+                Target::Launch {
+                    app: "host:tilo-downloaded-Dropped".into(),
+                    place: LaunchPlace::Focus,
+                }
+            );
+            assert!(
+                hits[1..].iter().all(|hit| hit.score < hits[0].score),
+                "the app comes before the actions on it"
+            );
+            assert_eq!(downloaded.query("").len(), 2, "browsing lists the apps");
+        }
 
-    #[test]
-    fn an_offer_is_the_row_to_add_that_program() {
-        let downloaded = Downloaded::new("workspace", reading(), &locate());
-        let hits = downloaded.query("waiting");
-        assert_eq!(hits.len(), 1, "the app it would become is not an app yet");
-        assert_eq!(hits[0].title, "Add Waiting to apps");
-        let Target::Invoke(target) = &hits[0].target else {
-            panic!("adding an app is an action");
-        };
-        assert_eq!(
-            target.address,
-            ActionAddress::new(wire::RESOURCE, wire::ADD)
-        );
-        assert_eq!(
-            target.arguments[wire::FILE_PARAM],
-            "/home/ana/Downloads/Waiting.AppImage"
-        );
-    }
+        phase an_app_offers_uninstalling_it_and_taking_it_off_the_apps;
+        // The app's row comes with the two rows that act on it: uninstalling it,
+        // which asks the session first, and taking it off the apps, which is the
+        // registry's action.
+        {
+            let downloaded = Downloaded::new("workspace", reading(), &locate());
+            let hits = downloaded.query("dropped");
+            let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+            assert_eq!(
+                titles,
+                [
+                    "Dropped Tool",
+                    "Uninstall Dropped Tool",
+                    "Remove Dropped Tool from apps"
+                ]
+            );
+            let Target::Invoke(uninstall) = &hits[1].target else {
+                panic!("uninstalling is asked first");
+            };
+            assert_eq!(
+                uninstall.address,
+                ActionAddress::new(APPS_RESOURCE, ASK_UNINSTALL)
+            );
+            assert_eq!(uninstall.arguments[APP_PARAM], "tilo-downloaded-Dropped");
+            assert!(uninstall.descriptor.is_none());
+            let Target::Invoke(remove) = &hits[2].target else {
+                panic!("taking it off the apps is the registry's action");
+            };
+            assert_eq!(
+                remove.address,
+                ActionAddress::new(wire::app("tilo-downloaded-Dropped"), wire::REMOVE)
+            );
+            assert!(remove.arguments.is_empty());
+        }
 
-    #[test]
-    fn an_app_whose_file_is_gone_says_so_and_asks_where_it_is() {
-        let downloaded = Downloaded::new("workspace", reading(), &locate());
-        let hits = downloaded.query("gone");
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Can't find this app"));
-        assert_eq!(hits[0].facts, ["Program"]);
-        let Target::Invoke(target) = &hits[0].target else {
-            panic!("finding the file is an action");
-        };
-        assert_eq!(
-            target.address,
-            ActionAddress::new(wire::app("tilo-downloaded-Gone").as_str(), wire::LOCATE)
-        );
-        let descriptor = target
-            .descriptor
-            .as_ref()
-            .expect("the row asks for the file");
-        assert_eq!(descriptor.action_label, "Locate Gone Tool");
-        assert_eq!(
-            hits[1].title, "Uninstall Gone Tool",
-            "an app whose file went away still leaves the person's apps"
-        );
+        phase an_offer_is_the_row_to_add_that_program;
+        {
+            let downloaded = Downloaded::new("workspace", reading(), &locate());
+            let hits = downloaded.query("waiting");
+            assert_eq!(hits.len(), 1, "the app it would become is not an app yet");
+            assert_eq!(hits[0].title, "Add Waiting to apps");
+            let Target::Invoke(target) = &hits[0].target else {
+                panic!("adding an app is an action");
+            };
+            assert_eq!(
+                target.address,
+                ActionAddress::new(wire::RESOURCE, wire::ADD)
+            );
+            assert_eq!(
+                target.arguments[wire::FILE_PARAM],
+                "/home/ana/Downloads/Waiting.AppImage"
+            );
+        }
+
+        phase an_app_whose_file_is_gone_says_so_and_asks_where_it_is;
+        {
+            let downloaded = Downloaded::new("workspace", reading(), &locate());
+            let hits = downloaded.query("gone");
+            assert_eq!(hits[0].subtitle.as_deref(), Some("Can't find this app"));
+            assert_eq!(hits[0].facts, ["Program"]);
+            let Target::Invoke(target) = &hits[0].target else {
+                panic!("finding the file is an action");
+            };
+            assert_eq!(
+                target.address,
+                ActionAddress::new(wire::app("tilo-downloaded-Gone").as_str(), wire::LOCATE)
+            );
+            let descriptor = target
+                .descriptor
+                .as_ref()
+                .expect("the row asks for the file");
+            assert_eq!(descriptor.action_label, "Locate Gone Tool");
+            assert_eq!(
+                hits[1].title, "Uninstall Gone Tool",
+                "an app whose file went away still leaves the person's apps"
+            );
+        }
     }
 }

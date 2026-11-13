@@ -88,62 +88,66 @@ mod tests {
         entry_for(id).unwrap_or_else(|| panic!("the registry lists {id}"))
     }
 
-    #[test]
-    fn each_platform_runs_only_the_apps_that_declare_it() {
-        let terminal = app("so.tilo.terminal");
-        assert!(!terminal.platforms.contains(&"web"));
-        assert!(!runs_on(terminal.id, &["web"]), "no terminal in a browser");
-        assert!(runs_on(terminal.id, &["macos"]));
-        assert!(runs_on(terminal.id, &["tilo-os", "linux"]));
-        assert!(runs_on("dev.tilo.terminal", &["linux"]), "a local build");
-        assert!(!runs_on("dev.tilo.terminal", &["web"]));
+    tilo_test_env::scenario! {
+        fn where_an_app_runs_and_what_it_is_come_from_its_manifest;
 
-        let os_only = catalog()
-            .iter()
-            .find(|app| app.platforms == ["tilo-os"])
-            .expect("the registry has a Tilo-OS-only app");
-        assert!(!runs_on(os_only.id, &["macos"]));
-        assert!(!runs_on(os_only.id, &["web"]));
-        assert!(runs_on(os_only.id, &["tilo-os", "linux"]));
+        phase each_platform_runs_only_the_apps_that_declare_it;
+        {
+            let terminal = app("so.tilo.terminal");
+            assert!(!terminal.platforms.contains(&"web"));
+            assert!(!runs_on(terminal.id, &["web"]), "no terminal in a browser");
+            assert!(runs_on(terminal.id, &["macos"]));
+            assert!(runs_on(terminal.id, &["tilo-os", "linux"]));
+            assert!(runs_on("dev.tilo.terminal", &["linux"]), "a local build");
+            assert!(!runs_on("dev.tilo.terminal", &["web"]));
 
-        assert!(runs_on("so.tilo.notes", &["web"]));
-        assert!(
-            runs_on("node-app:7", &["web"]),
-            "not the registry's to judge"
-        );
+            let os_only = catalog()
+                .iter()
+                .find(|app| app.platforms == ["tilo-os"])
+                .expect("the registry has a Tilo-OS-only app");
+            assert!(!runs_on(os_only.id, &["macos"]));
+            assert!(!runs_on(os_only.id, &["web"]));
+            assert!(runs_on(os_only.id, &["tilo-os", "linux"]));
 
-        let web: Vec<_> = catalog()
-            .iter()
-            .filter(|app| runs_on(app.id, &["web"]))
-            .collect();
-        assert!(!web.is_empty());
-        assert!(web.iter().all(|app| app.platforms.contains(&"web")));
-    }
+            assert!(runs_on("so.tilo.notes", &["web"]));
+            assert!(
+                runs_on("node-app:7", &["web"]),
+                "not the registry's to judge"
+            );
 
-    #[test]
-    fn an_app_that_does_not_run_here_says_where_it_does() {
-        assert_eq!(
-            runs_elsewhere("so.tilo.terminal", "the browser"),
-            "Terminal runs in Tilo on a computer, not in the browser"
-        );
-        let os_only = catalog()
-            .iter()
-            .find(|app| app.platforms == ["tilo-os"])
-            .expect("the registry has a Tilo-OS-only app");
-        assert_eq!(
-            runs_elsewhere(os_only.id, "the browser"),
-            format!("{} runs on Tilo OS, not in the browser", os_only.name)
-        );
-        assert_eq!(
-            runs_elsewhere("node-app:7", "the browser"),
-            "This app isn't part of Tilo in the browser"
-        );
-    }
+            let web: Vec<_> = catalog()
+                .iter()
+                .filter(|app| runs_on(app.id, &["web"]))
+                .collect();
+            assert!(!web.is_empty());
+            assert!(web.iter().all(|app| app.platforms.contains(&"web")));
+        }
 
-    #[test]
-    fn categories_come_from_the_manifest() {
-        assert_eq!(category_for("so.tilo.calendar"), Some("Office"));
-        assert_eq!(category_for("dev.tilo.calendar"), Some("Office"));
-        assert_eq!(category_for("node-app:7"), None);
+        phase an_app_that_does_not_run_here_says_where_it_does;
+        {
+            assert_eq!(
+                runs_elsewhere("so.tilo.terminal", "the browser"),
+                "Terminal runs in Tilo on a computer, not in the browser"
+            );
+            let os_only = catalog()
+                .iter()
+                .find(|app| app.platforms == ["tilo-os"])
+                .expect("the registry has a Tilo-OS-only app");
+            assert_eq!(
+                runs_elsewhere(os_only.id, "the browser"),
+                format!("{} runs on Tilo OS, not in the browser", os_only.name)
+            );
+            assert_eq!(
+                runs_elsewhere("node-app:7", "the browser"),
+                "This app isn't part of Tilo in the browser"
+            );
+        }
+
+        phase categories_come_from_the_manifest;
+        {
+            assert_eq!(category_for("so.tilo.calendar"), Some("Office"));
+            assert_eq!(category_for("dev.tilo.calendar"), Some("Office"));
+            assert_eq!(category_for("node-app:7"), None);
+        }
     }
 }

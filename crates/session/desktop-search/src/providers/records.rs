@@ -271,137 +271,141 @@ mod tests {
         }
     }
 
-    /// A record with a minted id is found by the name its index gives it,
-    /// which is its row's title: an id names nothing a person types.
-    #[test]
-    fn a_minted_record_is_found_by_the_name_its_index_gives_it() {
-        let mut form = held(
-            "uuid:6d1c1f36-0000-4000-8000-0000000000aa",
-            "pdf.document",
-            true,
-            None,
-        );
-        form.name = Some("application.pdf".into());
-        form.package = "so.tilo.pdf-viewer".into();
-        let records = Records::new("here", vec![form]);
-        let hits = records.query("application");
-        let hit = hits.first().expect("the form is found by its name");
-        assert_eq!(hit.title, "application.pdf");
-        assert_eq!(
-            hit.target,
-            Target::Launch {
-                app: record_launch(
-                    "so.tilo.pdf-viewer",
-                    "uuid:6d1c1f36-0000-4000-8000-0000000000aa"
-                ),
-                place: LaunchPlace::Focus,
-            },
-            "a record this workspace holds opens in its app, as a link to it does"
-        );
-        assert!(records.query("passport").is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn records_are_found_by_name_here_and_in_the_other_workspaces;
 
-    #[test]
-    fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
-        let records = Records::new(
-            "here",
-            vec![held(
-                "file:/work/Quarterly plan.odt",
-                "tilo.rich-text",
-                false,
-                Some("Lounge"),
-            )],
-        );
-        let hits = records.query("quarterly");
-        assert_eq!(hits.len(), 1);
-        let hit = &hits[0];
-        assert_eq!(hit.title, "Quarterly plan.odt");
-        assert_eq!(hit.kind, ResourceKind::Record);
-        assert_eq!(
-            hit.facts[0], "in Lounge",
-            "the row says which workspace holds it"
-        );
-        let Target::Invoke(target) = &hit.target else {
-            panic!("a record is brought here by address");
-        };
-        assert_eq!(target.app, DESKTOP_APP);
-        assert_eq!(
-            target.address,
-            tilo_actions::ActionAddress::new(RECORDS_RESOURCE, BRING_HERE)
-        );
-        assert_eq!(
-            target.arguments[RECORD_PARAM], "file:/work/Quarterly plan.odt",
-            "the record travels as its own id: no bytes, no new identity"
-        );
-        assert_eq!(
-            target.arguments[KIND_PARAM], "tilo.rich-text",
-            "the row carries the kind as the index keeps it: a kind is the name \
-             its app writes"
-        );
-        assert_eq!(target.arguments[PACKAGE_PARAM], "so.tilo.notes");
-        assert_eq!(
-            target.workspace, "here",
-            "and it is brought into this workspace"
-        );
-        assert!(records.query("zzz").is_empty());
-    }
+        phase a_minted_record_is_found_by_the_name_its_index_gives_it;
+        // A record with a minted id is found by the name its index gives it,
+        // which is its row's title: an id names nothing a person types.
+        {
+            let mut form = held(
+                "uuid:6d1c1f36-0000-4000-8000-0000000000aa",
+                "pdf.document",
+                true,
+                None,
+            );
+            form.name = Some("application.pdf".into());
+            form.package = "so.tilo.pdf-viewer".into();
+            let records = Records::new("here", vec![form]);
+            let hits = records.query("application");
+            let hit = hits.first().expect("the form is found by its name");
+            assert_eq!(hit.title, "application.pdf");
+            assert_eq!(
+                hit.target,
+                Target::Launch {
+                    app: record_launch(
+                        "so.tilo.pdf-viewer",
+                        "uuid:6d1c1f36-0000-4000-8000-0000000000aa"
+                    ),
+                    place: LaunchPlace::Focus,
+                },
+                "a record this workspace holds opens in its app, as a link to it does"
+            );
+            assert!(records.query("passport").is_empty());
+        }
 
-    /// Nothing typed lists the records of the other workspaces, each saying
-    /// where it lives, and never one this workspace already holds: its row
-    /// has no reference to add, so choosing it would do nothing.
-    #[test]
-    fn nothing_typed_lists_the_records_of_the_other_workspaces() {
-        let records = Records::new(
-            "here",
-            vec![
-                held("file:/work/notes.md", "document", true, None),
-                held(
+        phase a_record_of_another_workspace_is_found_by_name_and_brought_here;
+        {
+            let records = Records::new(
+                "here",
+                vec![held(
                     "file:/work/Quarterly plan.odt",
-                    "document",
+                    "tilo.rich-text",
                     false,
                     Some("Lounge"),
-                ),
-                held("file:/other/budget.ods", "document", false, None),
-            ],
-        );
-        let hits = records.query("");
-        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["Quarterly plan.odt", "budget.ods"],
-            "the named workspace's record first, this workspace's never"
-        );
-        assert_eq!(hits[0].facts[0], "in Lounge");
-        assert_eq!(hits[1].facts[0], "in another workspace");
-        assert!(
-            hits[0].score > hits[1].score,
-            "they stand in this order while nothing is typed"
-        );
-    }
+                )],
+            );
+            let hits = records.query("quarterly");
+            assert_eq!(hits.len(), 1);
+            let hit = &hits[0];
+            assert_eq!(hit.title, "Quarterly plan.odt");
+            assert_eq!(hit.kind, ResourceKind::Record);
+            assert_eq!(
+                hit.facts[0], "in Lounge",
+                "the row says which workspace holds it"
+            );
+            let Target::Invoke(target) = &hit.target else {
+                panic!("a record is brought here by address");
+            };
+            assert_eq!(target.app, DESKTOP_APP);
+            assert_eq!(
+                target.address,
+                tilo_actions::ActionAddress::new(RECORDS_RESOURCE, BRING_HERE)
+            );
+            assert_eq!(
+                target.arguments[RECORD_PARAM], "file:/work/Quarterly plan.odt",
+                "the record travels as its own id: no bytes, no new identity"
+            );
+            assert_eq!(
+                target.arguments[KIND_PARAM], "tilo.rich-text",
+                "the row carries the kind as the index keeps it: a kind is the name \
+             its app writes"
+            );
+            assert_eq!(target.arguments[PACKAGE_PARAM], "so.tilo.notes");
+            assert_eq!(
+                target.workspace, "here",
+                "and it is brought into this workspace"
+            );
+            assert!(records.query("zzz").is_empty());
+        }
 
-    #[test]
-    fn a_record_held_here_says_so_and_a_kind_names_a_minted_one() {
-        let records = Records::new(
-            "here",
-            vec![
-                held("file:/work/notes.md", "document", true, None),
-                held(
-                    "uuid:6c0a2f2e-0d5f-4d3e-9f5e-2b8b0b0c9d11",
-                    "note",
-                    false,
-                    None,
-                ),
-            ],
-        );
-        let here = records.query("notes");
-        assert_eq!(here[0].facts[0], "in this workspace");
-        // The minted record's own identity, which no other row carries.
-        let minted = records.query("6c0a2f2e");
-        assert_eq!(minted.len(), 1);
-        assert_eq!(
-            minted[0].title, "note",
-            "a minted id has no name but its kind"
-        );
-        assert_eq!(minted[0].facts[0], "in another workspace");
+        phase nothing_typed_lists_the_records_of_the_other_workspaces;
+        // Nothing typed lists the records of the other workspaces, each saying
+        // where it lives, and never one this workspace already holds: its row
+        // has no reference to add, so choosing it would do nothing.
+        {
+            let records = Records::new(
+                "here",
+                vec![
+                    held("file:/work/notes.md", "document", true, None),
+                    held(
+                        "file:/work/Quarterly plan.odt",
+                        "document",
+                        false,
+                        Some("Lounge"),
+                    ),
+                    held("file:/other/budget.ods", "document", false, None),
+                ],
+            );
+            let hits = records.query("");
+            let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+            assert_eq!(
+                titles,
+                ["Quarterly plan.odt", "budget.ods"],
+                "the named workspace's record first, this workspace's never"
+            );
+            assert_eq!(hits[0].facts[0], "in Lounge");
+            assert_eq!(hits[1].facts[0], "in another workspace");
+            assert!(
+                hits[0].score > hits[1].score,
+                "they stand in this order while nothing is typed"
+            );
+        }
+
+        phase a_record_held_here_says_so_and_a_kind_names_a_minted_one;
+        {
+            let records = Records::new(
+                "here",
+                vec![
+                    held("file:/work/notes.md", "document", true, None),
+                    held(
+                        "uuid:6c0a2f2e-0d5f-4d3e-9f5e-2b8b0b0c9d11",
+                        "note",
+                        false,
+                        None,
+                    ),
+                ],
+            );
+            let here = records.query("notes");
+            assert_eq!(here[0].facts[0], "in this workspace");
+            // The minted record's own identity, which no other row carries.
+            let minted = records.query("6c0a2f2e");
+            assert_eq!(minted.len(), 1);
+            assert_eq!(
+                minted[0].title, "note",
+                "a minted id has no name but its kind"
+            );
+            assert_eq!(minted[0].facts[0], "in another workspace");
+        }
     }
 }
