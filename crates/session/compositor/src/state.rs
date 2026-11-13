@@ -8,7 +8,8 @@
     reason = "smithay geometry: logical and physical coordinates of outputs and windows, far from i32 limits"
 )]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -47,6 +48,7 @@ use crate::app_liveness;
 use crate::input::InputEvent;
 use crate::keys::HostKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
+use tilo_session_core::super_tap::{self, SuperTap};
 use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers, SurfaceHost};
 
 /// Per-client data every Wayland client carries.
@@ -274,6 +276,9 @@ pub struct State {
     /// What is offered every input before the desktop sees it, and takes what it answers `true` to.
     pub(crate) input_observer:
         Option<Arc<dyn Fn(crate::input::ObservedInput) -> bool + Send + Sync>>,
+    /// Super alone, as the person presses and lets go of it: the desktop reads what it asked for
+    /// on its own pass. `None` when nobody asks.
+    pub(crate) super_tap: Option<Rc<RefCell<SuperTap>>>,
     /// Pongs counted per `xdg_wm_base` , the only way a client answers a ping.
     pub(crate) shell_pongs: app_liveness::Pongs,
     /// The pings in flight, one per client that was given input.
@@ -427,6 +432,7 @@ impl State {
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
             input_observer: None,
+            super_tap: None,
             redraw: Vec::new(),
             loop_handle: None,
             key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
@@ -871,6 +877,28 @@ impl State {
                 .is_some_and(|observer| observer(observed))
         {
             return;
+        }
+        // Super alone, before the keys are routed: a key or a button between Super's press and its
+        // release makes it a chord's modifier, so the desktop must hear the press that did before
+        // it hears the chord. A locked session, and one whose client holds the shortcuts, take
+        // Super for their own.
+        if let Some(tap) = &self.super_tap {
+            let withheld = self.locked() || self.shortcut_inhibit.is_active();
+            let now = Instant::now();
+            let mut tap = tap.borrow_mut();
+            match &event {
+                InputEvent::Key { keycode, pressed } => {
+                    if super_tap::is_super_key(*keycode) {
+                        tap.super_key(*pressed, now, withheld);
+                    } else if *pressed {
+                        tap.chord();
+                    }
+                }
+                InputEvent::PointerButton { pressed: true, .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::TouchDown { .. } => tap.pointer(),
+                _ => {}
+            }
         }
         // Pointing changes what shows: hover, a press, the pointer itself. A key does not: what
         // takes it shows the answer (a client's commit, a hosted surface's frame, the focus or

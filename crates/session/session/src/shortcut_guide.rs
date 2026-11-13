@@ -35,16 +35,43 @@ impl ShortcutGuide {
         self.seat.as_ref().map(tilo_sheets::Seat::presentation)
     }
 
+    /// Whether the guide is up.
+    pub(crate) fn up(&self) -> bool {
+        self.state.up()
+    }
+
     /// The person asked for the guide, or asked for it to go: put it up with the keys as they are,
     /// or take it down.
     pub(crate) fn toggle(&self) {
+        if self.state.up() {
+            self.hide();
+        } else {
+            self.show();
+        }
+    }
+
+    /// Put the guide up with the keys as they are: what F1 does, and what holding Super does for
+    /// as long as it is held. A guide already up stays as it is.
+    pub(crate) fn show(&self) {
         let Some(seat) = &self.seat else {
             return;
         };
-        if self.state.toggle() {
-            seat.show(self.state.shaped());
-            seat.presentation().open(true);
-        } else {
+        if self.state.up() {
+            return;
+        }
+        self.state.set_up(true);
+        seat.show(self.state.shaped());
+        seat.presentation().open(true);
+    }
+
+    /// Take the guide down while it is up: what F1 does again, and what letting Super go does to
+    /// the guide a hold showed.
+    pub(crate) fn hide(&self) {
+        if !self.state.up() {
+            return;
+        }
+        self.state.set_up(false);
+        if let Some(seat) = &self.seat {
             seat.presentation().close();
         }
     }

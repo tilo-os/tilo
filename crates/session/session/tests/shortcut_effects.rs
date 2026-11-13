@@ -250,6 +250,12 @@ fn searching(session: &Session) -> bool {
     published(session, HOST_SEARCH)
 }
 
+/// Whether the desk's own search is open: it publishes it while it is, and the host search door
+/// (`tilo.host:search`) is published whenever the search app is there at all.
+fn search_open(session: &Session) -> bool {
+    published(session, SEARCH_RESOURCE)
+}
+
 /// The tab the window menu is up for, while it is.
 fn menu_tab(session: &Session) -> Option<String> {
     session
@@ -428,6 +434,90 @@ fn super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in() {
         session.quick_settings_open(),
         "the pass that ran Super+V put the panel up"
     );
+}
+
+/// Tapping Super alone opens search: a press and a release with nothing between, well inside the
+/// hold's threshold. A chord with it does not: the second key makes Super that chord's modifier,
+/// so Super+W closes the window in front and opens no search.
+#[test]
+fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
+    let _panel = panel_environment();
+    let mut session = session_with(desk_tree());
+    key(&mut session, KEY_LEFT_META, true);
+    key(&mut session, KEY_LEFT_META, false);
+    until(&mut session, "the search", |session| search_open(session));
+
+    // Super+W: the chord of the second key, not a tap of Super.
+    let mut session = session_with(desk_tree());
+    key(&mut session, KEY_LEFT_META, true);
+    key(&mut session, KEY_W, true);
+    key(&mut session, KEY_W, false);
+    key(&mut session, KEY_LEFT_META, false);
+    until(&mut session, "the window closed", |session| {
+        session
+            .handle()
+            .read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs.len() == 1)
+    });
+    for _ in 0..10 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    assert!(
+        !search_open(&session),
+        "Super+W is a chord of Super's, not a tap of it"
+    );
+}
+
+/// Holding Super alone shows the shortcut guide's keys, and letting it go takes them away again.
+/// A key pressed while the hold shows them ends the hold's hints and still runs.
+#[test]
+fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
+    let _panel = panel_environment();
+    let mut session = session_with(desk_tree());
+    key(&mut session, KEY_LEFT_META, true);
+    until(&mut session, "the keys", |session| guide_up(session));
+    key(&mut session, KEY_LEFT_META, false);
+    until(&mut session, "the keys gone", |session| !guide_up(session));
+
+    // Held again, the hints go with the chord the person presses while holding: the window in
+    // front closes, and the keys go rather than holding the chord back.
+    key(&mut session, KEY_LEFT_META, true);
+    until(&mut session, "the keys", |session| guide_up(session));
+    key(&mut session, KEY_W, true);
+    key(&mut session, KEY_W, false);
+    until(&mut session, "the keys gone with the chord", |session| {
+        !guide_up(session)
+    });
+    until(&mut session, "the window closed", |session| {
+        session
+            .handle()
+            .read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs.len() == 1)
+    });
+    key(&mut session, KEY_LEFT_META, false);
+}
+
+/// A pointer action between Super's press and its release is no tap: the person was using the
+/// pointer, not reaching for the search.
+#[test]
+fn a_pointer_action_between_supers_press_and_release_opens_no_search() {
+    let _panel = panel_environment();
+    let mut session = session_with(desk_tree());
+    key(&mut session, KEY_LEFT_META, true);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 640.0, y: 500.0 })
+        .expect("the pointer");
+    session
+        .compositor()
+        .input(InputEvent::PointerAxis {
+            horizontal: 0.0,
+            vertical: -15.0,
+        })
+        .expect("the wheel");
+    key(&mut session, KEY_LEFT_META, false);
+    for _ in 0..10 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    assert!(!search_open(&session), "Super and a wheel are no tap");
 }
 
 /// The chord a menu row shows, by the row's id.

@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_actions::ActionAddress;
+use tilo_session_core::super_tap::SuperTap;
 use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
@@ -424,6 +425,9 @@ pub(crate) struct SessionKeys {
     /// When each display's bar shows over the window covering it: Super asks for it, and the app
     /// under it has nothing of that press.
     reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+    /// Super alone, as the compositor reads it: the guide a hold showed is the guide's own while
+    /// it is up, and the key that ends the hold is the person's.
+    super_tap: Rc<RefCell<SuperTap>>,
 }
 
 impl SessionKeys {
@@ -435,6 +439,7 @@ impl SessionKeys {
         displays: Option<tilo_sheets::Presentation>,
         controller: ControllerKeys,
         reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+        super_tap: Rc<RefCell<SuperTap>>,
     ) -> Self {
         let Presses {
             invocations,
@@ -458,6 +463,7 @@ impl SessionKeys {
             controller,
             controller_keys,
             reveals,
+            super_tap,
         }
     }
 
@@ -647,6 +653,12 @@ impl SessionKeys {
         }
     }
 
+    /// Whether `press` is the key that ended a hold's hints: the guide is going with it, so the
+    /// key runs where it would otherwise be the guide's to hold back.
+    fn ends_the_hints(&self) -> bool {
+        self.super_tap.borrow().hints_ending()
+    }
+
     /// How the session claims `press`, offered before the focused window or panel gets it.
     pub(crate) fn claim(&self, press: &Press, locked: bool, inhibited: bool) -> KeyClaim {
         // Super going down asks for the bar over the window that covers the display, as reaching
@@ -658,7 +670,7 @@ impl SessionKeys {
                 .push(Invocation::new(CHROME_RESOURCE, "reveal-top-bar"));
             return KeyClaim::Take;
         }
-        if self.guide.up() {
+        if self.guide.up() && !self.ends_the_hints() {
             if self.guide.listening().is_some() {
                 // The guide waits for a shortcut's new keys: every press is that chord, and none of
                 // them reaches what is behind it.
@@ -716,7 +728,7 @@ impl SessionKeys {
         if !self.controller_keys.get() {
             self.controller.set(None);
         }
-        if self.guide.up() {
+        if self.guide.up() && !self.ends_the_hints() {
             self.guide_key(press);
             return;
         }
@@ -799,6 +811,7 @@ mod tests {
             desk,
             None,
             ControllerKeys::default(),
+            Rc::default(),
             Rc::default(),
         );
         NativeKeys::new(keys, None, commands)

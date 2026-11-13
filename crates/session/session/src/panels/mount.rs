@@ -51,6 +51,9 @@ pub(crate) struct KeyContext {
     pub(crate) desk: Rc<crate::overlays::Overlays>,
     /// When each display's bar shows over the window covering it, which Super asks for.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+    /// Super alone, as the compositor reads it: the guide a hold showed is the guide's own while
+    /// it is up, and the key that ends the hold is the person's.
+    pub(crate) super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>,
     /// What the keys ask the panel's own app, when this device draws it.
     pub(crate) panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
@@ -86,6 +89,7 @@ pub(crate) fn mount_controls(
         overlays,
         desk,
         reveals,
+        super_tap,
         panel,
     }: KeyContext,
     scale: f64,
@@ -122,6 +126,7 @@ pub(crate) fn mount_controls(
                 own: controller_keys,
             },
             reveals,
+            super_tap,
         ),
         portal,
         Rc::clone(&commands),

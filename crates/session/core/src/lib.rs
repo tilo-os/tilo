@@ -11,4 +11,5 @@ pub mod notice;
 pub mod presence;
 pub mod remote;
 pub mod shell;
+pub mod super_tap;
 pub mod surface;

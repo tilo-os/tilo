@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use tilo_actions::{ActionAddress, DoorError};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
+use tilo_session_core::super_tap::Ask;
 use tilo_session_core::surface::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use ui::host_operation::ResourceOperationStart;
+use ui::shortcut_table::ShortcutAction;
 use ui::winit::keyboard::{Key, NamedKey};
 use xkeysym::key as keysyms;
 
@@ -375,6 +377,43 @@ impl SurfaceHost for NativeKeys {
 }
 
 impl Shared {
+    /// What tapping or holding Super alone asked for, as the compositor read it: the search of a
+    /// tap, the shortcut guide of a hold, and the guide going with the key that ended the hold.
+    pub(crate) fn follow_super_tap(&self, locked: bool) {
+        let asks = {
+            let mut tap = self.super_tap.borrow_mut();
+            if locked {
+                tap.withheld();
+            }
+            tap.take(Instant::now())
+        };
+        for ask in asks {
+            match ask {
+                Ask::Search => self
+                    .invocations
+                    .borrow_mut()
+                    .push(Invocation::shortcut(ShortcutAction::Search)),
+                Ask::Hints => {
+                    // A guide the person put up themselves (F1) is not the hold's to replace.
+                    if self.shortcut_guide.up() {
+                        self.super_tap.borrow_mut().took_hints();
+                    } else {
+                        self.shortcut_guide.show();
+                        if !self.shortcut_guide.up() {
+                            self.super_tap.borrow_mut().took_hints();
+                        }
+                    }
+                }
+                Ask::HintsGone => self.shortcut_guide.hide(),
+            }
+        }
+    }
+
+    /// When a held Super turns into the shortcut guide.
+    pub(crate) fn super_tap_deadline(&self) -> Option<Instant> {
+        self.super_tap.borrow().deadline()
+    }
+
     /// What the touchpad gestures the desktop took asked, as the chrome's published actions.
     pub(crate) fn follow_gestures(&self) {
         let gestures = self.desktop.take_gestures();

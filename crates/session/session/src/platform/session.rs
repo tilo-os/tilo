@@ -288,6 +288,9 @@ impl Session {
         // band, the chrome and the input that reaches for the bar read the one
         // model.
         let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
+        // Super alone, as the compositor reads it: a tap opens the search and a hold shows the
+        // keys, until a key or a click makes it a chord's modifier.
+        let super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>> = Rc::default();
         // The desk a login shows is built before its first frame: this pair
         // is the phase between the compositor coming up and the frame that
         // draws it (tools/perf/startup_marks.py).
@@ -482,6 +485,9 @@ impl Session {
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
         compositor.set_hosted(!options.machine.is_owned());
+        // What Super alone means is read where every input arrives once, and answered on the
+        // session's own pass.
+        compositor.set_super_tap(Rc::clone(&super_tap));
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
         options.wake.bind(compositor.waker());
@@ -998,6 +1004,7 @@ impl Session {
                 overlays: overlays.clone(),
                 desk: Rc::clone(&desk_overlays),
                 reveals: Rc::clone(&reveals),
+                super_tap: Rc::clone(&super_tap),
                 panel: panel_keys.clone(),
             },
             options.scale,
@@ -1416,6 +1423,7 @@ impl Session {
             doors,
             invocations,
             triggered,
+            super_tap,
             commands,
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),

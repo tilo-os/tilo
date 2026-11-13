@@ -112,6 +112,9 @@ pub(crate) struct Shared {
     /// Chords pressed that run a saved shortcut, waiting for the automation
     /// host.
     pub(crate) triggered: crate::keys::PressedChords,
+    /// Super alone, as the compositor reads it: the search a tap opens and
+    /// the keys a hold shows, which the pass answers.
+    pub(crate) super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>,
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
     pub(crate) commands: Rc<RefCell<Vec<crate::controls::SessionCommand>>>,

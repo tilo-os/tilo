@@ -176,6 +176,9 @@ impl Session {
         self.follow_text_inputs();
         self.follow_notifications();
         self.shared.open_notifications();
+        // What Super alone asked for: the search of a tap, and the keys a hold shows or takes
+        // away, before the pass that runs the chord ending them.
+        self.shared.follow_super_tap(self.compositor.locked());
         self.settle()?;
         self.follow_bars();
         self.follow_switcher();
@@ -393,6 +396,8 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            // A Super held alone turns into the keys at one instant, whatever else is due.
+            self.shared.super_tap_deadline(),
             // The caret the clipboard panel waits for stops being waited for on the compositor's
             // clock.
             self.shared

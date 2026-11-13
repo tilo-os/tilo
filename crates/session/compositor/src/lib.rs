@@ -1884,6 +1884,12 @@ impl Compositor {
         self.data.state.input_observer = observer;
     }
 
+    /// Offer `tap` the person's every input as it arrives: Super alone is the desktop's, and what
+    /// its press, its hold and its release mean is read from there, before the keys are routed.
+    pub fn set_super_tap(&mut self, tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>) {
+        self.data.state.super_tap = Some(tap);
+    }
+
     /// The mapped windows an app may capture: its foreign-toplevel identifier, app id and title,
     /// bottom first.
     #[must_use]
