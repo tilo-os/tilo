@@ -13,9 +13,6 @@ use ush::store::Store;
 
 use crate::serve_handoff::{RUNTIME, fixture_images, guest_unavailable};
 
-/// A guest has a runtime directory of its own, as a session on a machine
-/// does: `XDG_RUNTIME_DIR` names a 0700 tmpfs at `/run/user/<uid>` that the
-/// guest's user owns, where programs keep their sockets and locks.
 #[test]
 fn a_guest_has_a_private_runtime_directory() {
     tilo_test_env::require_capability!(

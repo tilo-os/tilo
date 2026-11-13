@@ -1,23 +1,14 @@
-//! The broker.
+//! The broker: the one route from inside a guest to the environment record.
 //!
-//! Starts with the session, runs on the host, outlives nothing. Every
-//! request from inside the guest that reaches past it arrives here as a line
-//! of JSON on a Unix socket, is decided, and is written to [`crate::audit`]
-//! whichever way it went.
+//! It starts with the session and runs on the host. A request from the guest that
+//! reaches past it arrives as a line of JSON on a Unix socket, is decided, and is
+//! written to [`crate::audit`] whichever way it went. Neither the record nor the store
+//! is bound into the namespace, so this is also the only writer of what was asked for.
 //!
-//! # Why a broker at all
-//!
-//! The guest cannot reach the environment record or the store: neither is
-//! bound into the namespace at any path. The broker is the only route to the
-//! record that decides what the *next* session is — its tools and its
-//! grants — and the only writer of the record of what was asked for.
-//!
-//! A new tool or a new bind needs a new mount namespace, so `pkg install`
-//! and `perm trust-dir` answer with [`Response::NeedsRestart`] and the user
-//! runs `restart` — pretending otherwise would mean a change that appears
-//! made and has not. A host grant is different: the session's DNS stub and
-//! filter take it at once, so `perm allow-host` (and revoking one) answers
-//! [`Response::Applied`].
+//! A new tool or bind needs a new mount namespace, so `pkg install` and `perm trust-dir`
+//! answer [`Response::NeedsRestart`] rather than claim a change they have not made. A
+//! host grant is different: the DNS stub and filter take it at once, so
+//! `perm allow-host` and its revocation answer [`Response::Applied`].
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
@@ -38,16 +29,13 @@ use crate::audit::{AuditLog, AuditRecord};
 use crate::policy::Policy;
 use crate::records::Records;
 
-/// What a guest can ask for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Request {
-    /// Update one installed app, or every installed app when absent.
     AppUpdate {
         package: Option<String>,
     },
     SystemUpdate,
-    /// Update apps and stage the system image, matching `tilo update`.
     AllUpdates,
     /// Read-only app discovery operations.
     AppList {
@@ -61,55 +49,39 @@ pub enum Request {
     SystemStatus {
         json: bool,
     },
-    /// `perm trust-dir <dir>` — read and write, for good.
     TrustDir {
         path: PathBuf,
     },
-    /// `perm allow-host <host>` — let the guest reach a host, for good.
     AllowHost {
         host: String,
     },
-    /// `perm list` — the grants in force.
     ListPerms,
-    /// `perm revoke <id>`.
     Revoke {
         id: String,
     },
-    /// May this path be read / written? Answers `scan`.
     Check {
         path: PathBuf,
         write: bool,
     },
-    /// `pkg install` — build a tool image for the packages and add it.
     AddTool {
         packages: Vec<String>,
     },
-    /// `pkg remove` — take the tools providing the packages out.
     RemoveTool {
         packages: Vec<String>,
     },
-    /// `pkg list` — the runtime and the tools.
     ListTools,
-    /// Which image a guest path comes from. Answers `scan`.
     Provenance {
         path: PathBuf,
     },
-    /// `guard status`.
     Status,
-    /// `restart` — rebuild the guest in place.
     Restart,
-    /// A legacy app's command shim: run `app` in the user's legacy VM, in
-    /// `cwd` when the VM can see it. Its windows open in the current strip.
     LegacyLaunch {
         app: String,
         args: Vec<String>,
         cwd: PathBuf,
     },
-    /// One file command (`cp`, `mv`, `rm`, …, `history restore`): the
-    /// environment record's verb, invoked as the session's person.
     FileAction {
         action: crate::file_actions::FileAction,
-        /// The shell's run it is part of: what History groups it under.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run: Option<RunGroup>,
     },
@@ -117,12 +89,10 @@ pub enum Request {
 
 pub use crate::file_actions::command::{COMMAND_RUN, RunGroup};
 
-/// What the broker answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 pub enum Response {
     Ok,
-    /// Allowed, and it will be in force after `restart`.
     NeedsRestart {
         detail: String,
     },
@@ -133,15 +103,12 @@ pub enum Response {
     Denied {
         reason: String,
     },
-    /// A host command's exit status. Its output reached the guest as it was
-    /// produced, in output frames ahead of this answer.
     Command {
         code: i32,
     },
     Perms {
         entries: Vec<PermEntry>,
     },
-    /// The file action ran as the record's entry `id`, undone from History.
     FileAction {
         id: String,
         operations: usize,
@@ -205,8 +172,6 @@ struct HostCommand {
     args: Vec<String>,
     binary: PathBuf,
     mutating: bool,
-    /// `None` for a legacy app launch, which lasts as long as the person
-    /// keeps the app open.
     time_limit: Option<Duration>,
 }
 
@@ -278,11 +243,8 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
     })
 }
 
-/// The host side of every legacy app shim.
 const LEGACY_PROGRAM: &str = "tilo-legacy";
 
-/// Where the host keeps `program`, relative to its root: Tilo's own programs
-/// live off PATH in /usr/libexec/tilo, the commands people type in /usr/bin.
 fn host_program_dir(program: &str) -> &'static str {
     if program == LEGACY_PROGRAM {
         "usr/libexec/tilo"
@@ -325,7 +287,6 @@ fn legacy_launch_args(
     Some(out)
 }
 
-/// One line of `pkg list`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolEntry {
     pub id: String,
@@ -355,16 +316,14 @@ pub struct SessionStatus {
     pub network: NetworkStatus,
 }
 
-/// What the session's egress enforces, for `guard status` — which tests it
-/// from inside the guest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "mode", rename_all = "kebab-case")]
 pub enum NetworkStatus {
-    /// A `*` grant: every host, through the guest's own namespace.
     Unrestricted,
     /// Only the addresses the DNS stub answered for these hosts.
-    Filtered { hosts: Vec<String> },
-    /// No route out of the namespace at all.
+    Filtered {
+        hosts: Vec<String>,
+    },
     Offline,
 }
 
@@ -378,22 +337,15 @@ impl NetworkStatus {
     }
 }
 
-/// The environment a session was built from, and the way back to its record.
 #[derive(Debug, Clone)]
 pub struct EnvironmentHandle {
-    /// The environment's own `/var` state, as the guest sees it bound at
-    /// `/var/lib` and `/var/cache` — where its recoverable store lives.
     pub var_dir: PathBuf,
     pub records: Records,
     pub key: String,
-    /// The record as the session was built from it.
     pub built_from: Environment,
 }
 
 impl EnvironmentHandle {
-    /// The record as it stands now — another device or Terminal may have
-    /// changed it since the session started. Falls back to what the session
-    /// was built from when the record cannot be read.
     pub fn current(&self) -> Environment {
         match self.records.load(&self.key) {
             Ok(Some(env)) => env,
@@ -410,28 +362,17 @@ impl EnvironmentHandle {
     }
 }
 
-/// The state one broker owns for the life of a session.
 pub struct BrokerState {
     pub session_id: String,
     pub environment: EnvironmentHandle,
     pub audit: AuditLog,
-    /// Set by `restart`; read by the supervisor after the guest exits.
     pub restart_requested: bool,
-    /// The machine's root, where the management commands live.
     pub host_root: PathBuf,
-    /// The images the guest was built from, `(label, root)`, topmost first —
-    /// what `scan` reports provenance against.
     pub images: Vec<(String, PathBuf)>,
-    /// How `pkg install` builds a tool image.
     pub builder: Arc<dyn ToolBuilder>,
-    /// For `guard status`, filled in by the supervisor at start.
     pub landlock: String,
-    /// The session's egress, which takes host grants at once. `None` where
-    /// no guest network was built (tests of the policy surface).
     pub egress: Option<Arc<tilo_egress::Egress>>,
-    /// The session's person, by principal id: who its file commands are by.
     pub person: String,
-    /// This device, as the environment's file actions name it.
     pub device: String,
 }
 
@@ -516,7 +457,6 @@ impl BrokerState {
         }
     }
 
-    /// A legacy app's shim: the user's own legacy VM runs it.
     fn legacy_launch(&self, app: &str, args: &[String], cwd: &Path) -> Response {
         if legacy_launch_args(&self.environment.policy(), app, args, cwd).is_some() {
             Response::Denied {
@@ -529,7 +469,6 @@ impl BrokerState {
         }
     }
 
-    /// Apply one action to the session's environment record, logging it.
     fn apply(
         &self,
         operation: &str,
@@ -629,7 +568,6 @@ impl BrokerState {
         }
     }
 
-    /// Give the session's egress the record's host grants as they stand.
     fn sync_network(&self) -> Result<(), String> {
         let Some(egress) = &self.egress else {
             return Err("this session has no network of its own".into());
@@ -659,7 +597,6 @@ impl BrokerState {
         }
     }
 
-    /// What `pkg install` will build, or the answer when there is nothing to.
     fn plan_add_tool(&self, packages: &[String]) -> Result<ToolPlan, Response> {
         let packages: Vec<String> = packages
             .iter()
@@ -877,8 +814,6 @@ impl BrokerState {
     }
 }
 
-/// The runtime as `pkg list` and `guard status` show it: the release and
-/// this node's image.
 fn runtime_label(env: &Environment) -> String {
     match env.runtime.images.get(host_arch()) {
         Some(id) => format!("{} ({id})", env.runtime.release),
@@ -886,7 +821,6 @@ fn runtime_label(env: &Environment) -> String {
     }
 }
 
-/// A tool build the broker has decided to run.
 #[derive(Debug, Clone)]
 struct ToolPlan {
     runtime: tilo_environment::PackageId,
@@ -942,14 +876,12 @@ impl SocketAddress {
     }
 }
 
-/// A running broker: a listener and the thread serving it.
 pub struct Broker {
     state: Arc<Mutex<BrokerState>>,
     socket: PathBuf,
     address: SocketAddress,
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
-    /// Carries out the record's file actions for this device as they arrive.
     files: Option<std::thread::JoinHandle<()>>,
     connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
     /// Anything connected. Only the guest can reach the socket, and its first
@@ -1047,13 +979,10 @@ impl Broker {
         &self.state
     }
 
-    /// Did the guest's first process run? `false` after the guest exits means
-    /// `bwrap` failed to build the sandbox, before anything of the guest ran.
     pub fn guest_connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
     }
 
-    /// Did the guest ask for a restart?
     pub fn restart_requested(&self) -> bool {
         self.state.lock().is_ok_and(|s| s.restart_requested)
     }
@@ -1061,7 +990,6 @@ impl Broker {
 
 impl Drop for Broker {
     fn drop(&mut self) {
-        // Wakes every connection, idle or serving a host command, at once.
         self.shared.stop();
         if let Some(thread) = self.thread.take()
             && UnixStream::connect(&self.address.path).is_ok()
@@ -1169,7 +1097,6 @@ struct HostUpdateGate {
     released: WakeFd,
 }
 
-/// A held [`HostUpdateGate`]; dropping it lets the next update start.
 struct HostUpdateGuard<'a> {
     held: Option<std::sync::MutexGuard<'a, ()>>,
     released: &'a WakeFd,
@@ -1211,16 +1138,12 @@ pub(crate) const fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
     }
 }
 
-/// One `poll(2)`. A signal returns early with nothing ready; the caller's
-/// loop looks again.
 pub(crate) fn poll_fds(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> std::io::Result<()> {
     let count = libc::nfds_t::try_from(fds.len()).map_err(std::io::Error::other)?;
     // Round up, so a timed-out poll means the time really passed.
     let millis = timeout.map_or(-1, |timeout| {
         i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
     });
-    // SAFETY: `fds` is a valid, exclusively borrowed array of `count` pollfd
-    // entries for the duration of the call.
     if unsafe { libc::poll(fds.as_mut_ptr(), count, millis) } >= 0 {
         return Ok(());
     }
@@ -1239,8 +1162,6 @@ pub(crate) fn poll_fds(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> s
 /// meanwhile are not among them, so they cannot keep the broker awake.
 const GUEST_GONE: libc::c_short = libc::POLLRDHUP;
 
-/// Whether `revents` of a [`GUEST_GONE`] wait say the guest left, or its
-/// connection failed.
 const fn guest_left(revents: libc::c_short) -> bool {
     revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
 }
@@ -1288,15 +1209,12 @@ fn next_line(reader: &mut BufReader<UnixStream>, shared: &Shared) -> Option<Stri
     }
 }
 
-/// A descriptor that becomes readable when `child` exits, or `None` where the
-/// kernel has no `pidfd_open`.
 fn exit_fd(child: &Child) -> Option<OwnedFd> {
     let pid = libc::pid_t::try_from(child.id()).ok()?;
     // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or
     // -1. The child is unreaped, so its pid still names exactly it.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     let fd = RawFd::try_from(fd).ok().filter(|fd| *fd >= 0)?;
-    // SAFETY: the kernel returned a fresh descriptor this call now owns.
     Some(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
@@ -1340,7 +1258,6 @@ fn start_host_command(
     })
 }
 
-/// The guest hung up (Ctrl-C ends the client) or the broker is stopping.
 #[derive(Debug)]
 struct Cancelled;
 
@@ -1358,8 +1275,6 @@ fn acquire_host_mutation<'a>(
     let gate = &shared.host_updates;
     let mut told = false;
     loop {
-        // Drain before trying: a release racing the try rings again and
-        // wakes the wait below.
         gate.released.drain();
         if let Some(guard) = gate.try_acquire() {
             return Ok(Some(guard));
@@ -1424,7 +1339,6 @@ fn capped_output(
     frames
 }
 
-/// Record, and answer, a command the broker stopped at its time limit.
 fn past_time_limit(command: &HostCommand, state: &Arc<Mutex<BrokerState>>) -> Response {
     let reason = format!(
         "`{} {}` did not finish within {} and was stopped",
@@ -1443,9 +1357,6 @@ fn past_time_limit(command: &HostCommand, state: &Arc<Mutex<BrokerState>>) -> Re
     Response::Denied { reason }
 }
 
-/// Run a host management command without retaining the state lock,
-/// forwarding its output as it is produced. `writer` is the guest's
-/// connection. Returns true when the complete response reached the guest.
 fn serve_host_command(
     command: &HostCommand,
     state: &Arc<Mutex<BrokerState>>,
@@ -1503,24 +1414,17 @@ fn serve_host_command(
     complete_host_command(writer, Response::Command { code }, mutation_guard)
 }
 
-/// How serving a running host command ended.
 enum Pumped {
-    /// It exited and closed its output, having printed `forwarded` bytes.
     Exited { code: i32, forwarded: usize },
-    /// The guest left or the broker is stopping.
     Disconnected,
-    /// Its time limit passed.
     TimedOut,
 }
 
-/// A running host command's output on its way to the guest.
 struct HostOutput<'a> {
     command: &'a HostCommand,
-    /// stdout, then stderr; each `None` once it closed.
     pipes: [Option<std::fs::File>; 2],
     /// Bytes the command printed so far, shown or not.
     forwarded: usize,
-    /// When the guest was last sent something.
     last_activity: Instant,
 }
 
@@ -1535,8 +1439,6 @@ impl HostOutput<'_> {
             .map(|pipe| pipe.as_ref().map_or(-1, std::os::fd::AsRawFd::as_raw_fd))
     }
 
-    /// Forward what the pipes `ready` names hold. False when the guest
-    /// stopped reading.
     fn forward(&mut self, ready: [bool; 2], writer: &mut UnixStream) -> bool {
         let mut buffer = [0_u8; 8192];
         for ((pipe, ready), stderr) in self.pipes.iter_mut().zip(ready).zip([false, true]) {
@@ -1681,9 +1583,6 @@ fn log_disconnected(state: &Arc<Mutex<BrokerState>>, command: &HostCommand) {
     }
 }
 
-/// Build a tool without holding the state lock, streaming the builder's
-/// output to the guest as it comes. Returns true when the complete response
-/// reached the guest.
 fn serve_add_tool(
     packages: &[String],
     state: &Arc<Mutex<BrokerState>>,
@@ -1714,7 +1613,6 @@ fn serve_add_tool(
     write_frame(writer, &WireFrame::Complete { response })
 }
 
-/// Progress output, framed for the guest.
 struct FrameWriter<'a> {
     stream: &'a mut UnixStream,
 }
@@ -1815,7 +1713,6 @@ pub(crate) mod tests {
             Scope::FsPath("/var/home/you/src".into()),
             Access::Write,
         )]);
-        // phase: a trusted directory is shared for the launch
         {
             let args = legacy_launch_args(
                 &policy,
@@ -1859,7 +1756,6 @@ pub(crate) mod tests {
                 .unwrap();
             assert!(!args.contains(&"--share-cwd".to_string()));
         }
-        // phase: option-looking names and relative directories are refused
         {
             for app in ["--image", "../x", "", "a b"] {
                 assert!(legacy_launch_args(&policy, app, &[], Path::new("/x")).is_none());
@@ -1868,7 +1764,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// An executable fake of the host's `/usr/bin/<program>` under `dir`.
     fn fake_host_program(dir: &Path, program: &str, script: &str) {
         use std::os::unix::fs::PermissionsExt;
 
@@ -1879,7 +1774,6 @@ pub(crate) mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// Ask over the socket; the answer and everything streamed ahead of it.
     fn ask_capturing(socket: &Path, req: &Request) -> (Response, String, String) {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -1891,8 +1785,6 @@ pub(crate) mod tests {
         )
     }
 
-    /// Output written to it arrives on a channel, as the guest CLI would
-    /// print it.
     struct ChannelWriter(std::sync::mpsc::Sender<Vec<u8>>);
 
     impl Write for ChannelWriter {
@@ -1917,7 +1809,6 @@ pub(crate) mod tests {
 
     #[test]
     fn host_management_commands_run_on_the_base_and_nothing_else() {
-        // phase: commands run on the host base, stream both streams and keep their status
         {
             let dir = tempfile::tempdir().unwrap();
             fake_host_program(
@@ -1981,7 +1872,6 @@ pub(crate) mod tests {
             );
             assert!(!ran.exists());
         }
-        // phase: management_protocol_has_no_arbitrary_program_variant
         {
             assert!(
                 serde_json::from_str::<Request>(
@@ -2086,7 +1976,6 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let blocked = !worker.is_finished();
-        // Always retire the fixture socket and join before asserting, even on failure.
         peer.shutdown(std::net::Shutdown::Both).unwrap();
         assert!(!worker.join().unwrap());
         assert!(completed, "production command did not reach completion");
@@ -2347,9 +2236,6 @@ pub(crate) mod tests {
             stopped, pids,
             "the command process group survived its guest connection"
         );
-        // Observing a terminated process can precede the broker's wait/reap
-        // returning and its subsequent cancellation audit. Join the actual
-        // connection worker before observing that final production record.
         let state = broker.state().clone();
         drop(broker);
         let audit = state.lock().unwrap().audit.read_all();
@@ -2364,7 +2250,6 @@ pub(crate) mod tests {
 
     #[test]
     fn trust_requests_resolve_validate_and_persist_grants() {
-        // phase: trusting_a_directory_saves_the_decision_and_asks_for_a_restart
         {
             let dir = tempfile::tempdir().unwrap();
             let target = dir.path().join("src");
@@ -2379,7 +2264,6 @@ pub(crate) mod tests {
             // In the record, so the next session picks it up.
             assert_eq!(trusted(&s).len(), 1);
         }
-        // phase: trusting_a_guest_owned_path_is_refused_and_recorded
         {
             let dir = tempfile::tempdir().unwrap();
             let mut s = state(dir.path());
@@ -2416,7 +2300,6 @@ pub(crate) mod tests {
                 "the grant must name the resolved directory, not the symlink"
             );
         }
-        // phase: trusting_a_path_that_is_not_there_is_refused
         {
             let dir = tempfile::tempdir().unwrap();
             let mut s = state(dir.path());
@@ -2425,7 +2308,6 @@ pub(crate) mod tests {
             });
             assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
         }
-        // phase: check_answers_from_the_saved_policy
         {
             let dir = tempfile::tempdir().unwrap();
             let target = dir.path().join("src");
@@ -2675,7 +2557,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_broker_socket_is_owner_only_and_answers_every_request() {
-        // phase: a_malformed_request_is_refused_rather_than_dropping_the_connection
         {
             let dir = tempfile::tempdir().unwrap();
             let sock = dir.path().join("broker.sock");
@@ -2691,7 +2572,6 @@ pub(crate) mod tests {
             assert!(line.contains("denied"), "{line}");
             drop(broker);
         }
-        // phase: a_request_round_trips_over_the_socket
         {
             let dir = tempfile::tempdir().unwrap();
             let target = dir.path().join("src");
@@ -2724,7 +2604,6 @@ pub(crate) mod tests {
             ask(&sock, &Request::Restart).unwrap();
             assert!(broker.restart_requested());
         }
-        // phase: the_socket_is_owner_only
         {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();

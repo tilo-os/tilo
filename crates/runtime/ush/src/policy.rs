@@ -1,27 +1,14 @@
 //! Evaluating an environment's grants.
 //!
-//! # There is no `ush` permission type
+//! There is no `ush` permission type: a grant is a `collab_types::caps::CapOverride` in
+//! the environment record, evaluated by the same `decide_capability` the compositor's
+//! permissions panel and the FUSE mount use. `perm trust-dir ~/src` mints exactly what the
+//! compositor writes for "Always allow" on a filesystem prompt (see
+//! [`tilo_environment::dir_grant`]).
 //!
-//! A grant is a `collab_types::caps::CapOverride` in the environment record,
-//! evaluated by the same `decide_capability` the compositor's permissions
-//! panel and `tilo-launcher`/the FUSE mount use. `perm trust-dir ~/src` mints
-//! exactly:
-//!
-//! ```text
-//! CapOverride { subject: Principal::App("so.tilo.ush"),
-//!               scope:   Scope::FsPath("/var/home/you/src"),
-//!               effect:  Effect::Grant,
-//!               verb:    Access::Write }
-//! ```
-//!
-//! byte-for-byte what the compositor writes for "Always allow" on a
-//! filesystem prompt (see [`tilo_environment::dir_grant`]).
-//!
-//! # Deny by default
-//!
-//! Only a `Grant` nominates a path, only one the runtime is willing to bind
-//! ([`tilo_environment::is_grantable`]), and only while `decide_capability`
-//! still allows it — a `Restrict` narrows it, an expired grant is gone.
+//! Deny by default: only a `Grant` nominates a path, only one the runtime is willing to
+//! bind ([`tilo_environment::is_grantable`]), and only while `decide_capability` still
+//! allows it — a `Restrict` narrows it and an expired grant is gone.
 
 use std::path::{Path, PathBuf};
 
@@ -31,7 +18,6 @@ use collab_types::caps::{
 };
 use tilo_environment::{RUNTIME_APP_ID, is_grantable};
 
-/// An environment's grants, ready to be asked about.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
     pub capabilities: Vec<CapOverride>,
@@ -50,7 +36,6 @@ impl Policy {
         Actor::app(RUNTIME_APP_ID)
     }
 
-    /// Every directory the guest may write, as of `now`.
     pub fn trusted_dirs(&self, now: Option<u64>) -> Vec<PathBuf> {
         self.paths_where(Access::Write, now)
     }
@@ -129,13 +114,11 @@ impl Policy {
         out
     }
 
-    /// What the guest's network allows, as of `now`.
     pub fn egress(&self, now: Option<u64>) -> tilo_egress::EgressPolicy {
         let hosts = self.net_hosts(now);
         tilo_egress::EgressPolicy::from_grants(hosts.iter().map(String::as_str))
     }
 
-    /// Is `path` reachable at `verb`? The question `scan` and the broker ask.
     pub fn permits(&self, path: &Path, verb: Access, now: Option<u64>) -> bool {
         tilo_environment::files::permits(&self.capabilities, path, verb, now)
     }

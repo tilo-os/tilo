@@ -1,21 +1,14 @@
 //! Environment records, opened where Terminal keeps its own.
 //!
-//! An environment is a Terminal record (`#[resource(kind = "environment")]`,
-//! see `tilo-environment`), so it lives in Terminal's own records and syncs
-//! with them: `<data home>/tilo-rooms/<workspace>/so.tilo.terminal` is the
-//! directory the launcher gives Terminal opened in a workspace, and its
-//! `.local/share` is the data home Terminal's own record store writes under,
-//! in that workspace's room. The supervisor joins the record's shared
-//! writers there, applies actions through the record layer — so every
-//! change carries history and an author — and appends.
+//! An environment is a Terminal record, so it lives in Terminal's record store and syncs
+//! with them: `<data home>/tilo-rooms/<workspace>/so.tilo.terminal`, whose `.local/share`
+//! is the data home Terminal's store writes under. The supervisor joins the record's
+//! shared writers there and applies actions through the record layer, so every change
+//! carries history and an author.
 //!
-//! Each workspace's environments are in its own room
-//! ([`crate::workspace`]); the primary workspace's room is `personal`, where
-//! every environment made before environments belonged to a workspace is,
-//! unmoved.
-//!
-//! An app names a record by key only ([`tilo_environment::is_record_key`]);
-//! the room and the owning app are fixed here, never taken from a request.
+//! Each workspace's environments are in its own room ([`crate::workspace`]). An app names
+//! a record by key only ([`tilo_environment::is_record_key`]); the room and the owning app
+//! are fixed here, never taken from a request.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -29,18 +22,12 @@ use tilo_resource::{Invoke, Replica, Resource};
 use crate::images::Images;
 use crate::workspace::Confinement;
 
-/// The primary workspace's room ([`crate::workspace::PRIMARY`]).
 pub const ROOM: &str = crate::workspace::PRIMARY;
 
-/// The directory under the user's data home with one directory per
-/// workspace, as the launcher lays them out.
 pub const ROOMS_DIR: &str = "tilo-rooms";
 
-/// The author every change the supervisor makes is attributed to.
 pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
 
-/// The data home Terminal's records in the room `room` are written under,
-/// for a user whose data home is `data_home`.
 pub fn terminal_data_home(data_home: &Path, room: &str) -> PathBuf {
     data_home
         .join(ROOMS_DIR)
@@ -66,17 +53,14 @@ pub enum RecordError {
     NoRuntime(String),
 }
 
-/// The environment records of one workspace's room under one data home.
 #[derive(Debug, Clone)]
 pub struct Records {
     root: PathBuf,
     room: String,
-    /// What the room's environments may be granted of the device's files.
     confinement: Option<Confinement>,
 }
 
 impl Records {
-    /// The primary workspace's records under `root`.
     pub fn at(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
@@ -101,7 +85,6 @@ impl Records {
         &self.root
     }
 
-    /// The room these records are kept in: their workspace's id.
     pub fn room(&self) -> &str {
         &self.room
     }
@@ -146,8 +129,6 @@ impl Records {
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 
-    /// The document `store` holds, brought up to the environment's storage
-    /// version when an older Tilo wrote it, the migration kept with it.
     fn load_current(store: &mut DocStore) -> Result<Option<tilo_resource::Doc>, RecordError> {
         let Some(mut doc) = store
             .load()
@@ -165,10 +146,6 @@ impl Records {
         Ok(Some(doc))
     }
 
-    /// The environment `key`, or `None` when no record has been made.
-    ///
-    /// # Errors
-    /// Returns an error for a bad key, or a stored record that cannot be read.
     pub fn load(&self, key: &str) -> Result<Option<Environment>, RecordError> {
         let mut store = self.open(key)?;
         let Some(doc) = Self::load_current(&mut store)? else {
@@ -296,7 +273,6 @@ impl Records {
         Ok(true)
     }
 
-    /// Every environment record there is, by key.
     pub fn keys(&self) -> Result<Vec<String>, RecordError> {
         let dir = self.record_dir(DEFAULT_RECORD)?;
         let Some(room) = dir.parent() else {
@@ -317,12 +293,6 @@ impl Records {
         Ok(keys)
     }
 
-    /// Whether [`Self::resolve`] of `key` would succeed, without creating the
-    /// default environment: the supervisor answers an open with this before
-    /// it hands out a terminal, and leaves the first write to the session.
-    ///
-    /// # Errors
-    /// What [`Self::resolve`] would return, except a failure to write.
     pub fn resolvable(&self, key: Option<&str>, images: &dyn Images) -> Result<(), RecordError> {
         let key = key.unwrap_or(DEFAULT_RECORD);
         if self.load(key)?.is_some() {
@@ -370,8 +340,6 @@ impl Records {
         Ok((key.to_owned(), env))
     }
 
-    /// Apply one action to the record `key` and return the environment as it
-    /// stands after it.
     pub fn apply(
         &self,
         key: &str,
@@ -386,7 +354,6 @@ impl Records {
             .state()
             .map_err(|e| RecordError::Model(e.to_string()))?;
         self.check_room(key, &before)?;
-        // The person asked for this at the shell: that is the confirmation.
         replica
             .apply_confirmed(invoke)
             .map_err(|e| RecordError::Refused(e.to_string()))?;
@@ -404,12 +371,9 @@ impl Records {
     }
 }
 
-/// Who an action on a record is attributed to, in its History.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invoker {
-    /// A person, by their principal id: what they type at a guest's shell.
     Person(String),
-    /// An agent acting for a person.
     Agent { agent: String, person: String },
 }
 
@@ -430,11 +394,6 @@ impl Records {
         self.act_within(key, invoker, None, act)
     }
 
-    /// [`Self::act`], with every action stamped as part of `run`: one
-    /// command line of a shell, attributed and undone as one.
-    ///
-    /// # Errors
-    /// As [`Self::act`].
     pub fn act_within<T>(
         &self,
         key: &str,
@@ -472,8 +431,6 @@ impl Records {
         Ok(answer)
     }
 
-    /// The record `key`'s History: every change, oldest first, with the
-    /// action, its actor and the compensation its undo applies.
     pub fn history(&self, key: &str) -> Result<Vec<tilo_resource::history::Version>, RecordError> {
         let mut store = self.open(key)?;
         let mut doc =
@@ -562,8 +519,6 @@ mod tests {
         ));
     }
 
-    /// The supervisor's check before it hands out a terminal answers as
-    /// `resolve` would, but leaves the default's creation to the session.
     #[test]
     fn whether_an_environment_resolves_is_answered_without_creating_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -643,8 +598,6 @@ mod tests {
             .for_workspace(&crate::workspace::WorkspaceId::parse(Some(id)).unwrap())
     }
 
-    /// Each workspace's environments are in its own room, named by it;
-    /// listing one room lists only its own.
     #[test]
     fn a_workspace_keeps_its_environments_in_its_own_room() {
         let dir = tempfile::tempdir().unwrap();
@@ -676,7 +629,6 @@ mod tests {
         // A record moved into another workspace's room is not its to open.
         let w1_dir = w1.record_dir("env-only-w1").unwrap();
         let w2_dir = w2.record_dir("env-only-w1").unwrap();
-        // (Asking for it above left an empty directory there.)
         std::fs::remove_dir_all(&w2_dir).unwrap();
         std::fs::rename(&w1_dir, &w2_dir).unwrap();
         assert!(matches!(
@@ -689,9 +641,6 @@ mod tests {
         ));
     }
 
-    /// An environment made before environments belonged to a workspace —
-    /// in `personal`, naming none — is the primary workspace's: it opens
-    /// as it did, with everything it held, and is no other workspace's.
     #[test]
     fn an_environment_from_before_workspaces_is_the_primary_workspaces() {
         let dir = tempfile::tempdir().unwrap();
@@ -701,7 +650,6 @@ mod tests {
         let mut old = Environment::new("Old", "2026.10", tilo_environment::host_arch(), &image(1));
         old.grants
             .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
-        // As an older Tilo wrote it: no workspace.
         let mut doc_store = legacy.open(DEFAULT_RECORD).unwrap();
         let mut doc = doc_store.new_document();
         old.write_record(&mut doc).unwrap();
@@ -733,10 +681,6 @@ mod tests {
         );
     }
 
-    /// An environment of a workspace is granted its own files and nothing
-    /// else of the device's: a grant of another workspace's tree, or of the
-    /// files folder holding them all, is refused and changes nothing, and
-    /// one that reached the record anyway is not read.
     #[test]
     fn a_workspace_environment_is_refused_another_workspaces_files() {
         let dir = tempfile::tempdir().unwrap();

@@ -18,7 +18,6 @@ fn the_shells_own_commands_run_on_the_host_and_a_session_keeps_its_place() {
     assert_eq!(echoed.cwd, files.to_string_lossy());
     assert!(echoed.refusal.is_none() && !echoed.truncated);
 
-    // A redirect is the environment's write, on the workspace's directory.
     let wrote = shells
         .run(
             "ws-1",
@@ -36,14 +35,11 @@ fn the_shells_own_commands_run_on_the_host_and_a_session_keeps_its_place() {
     let listed = shells.run("ws-1", "s1", "cd src && ls", true).unwrap();
     assert_eq!(listed.exit, 0, "{}", text(&listed));
     assert!(text(&listed).contains("main.rs"), "{}", text(&listed));
-    // The session stays where the last command left it; another starts at
-    // the workspace's directory.
     let here = shells.run("ws-1", "s1", "pwd", true).unwrap();
     assert_eq!(text(&here).trim(), files.join("src").to_string_lossy());
     let other = shells.run("ws-1", "s2", "pwd", true).unwrap();
     assert_eq!(text(&other).trim(), files.to_string_lossy());
 
-    // Nothing outside the workspace's directory is the shell's to read.
     let outside = shells.run("ws-1", "s1", "cat /etc/hostname", true).unwrap();
     assert_ne!(outside.exit, 0);
 }

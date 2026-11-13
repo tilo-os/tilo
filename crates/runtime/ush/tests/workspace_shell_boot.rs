@@ -1,16 +1,12 @@
-//! A hosted workspace's shell on a host that runs real VMs: a command that
-//! needs a Linux program runs in the workspace's jailed VM, metered, and an
-//! account with no card on file is refused it, typed, in the words an agent
-//! is given.
+//! A hosted workspace's shell on a host that runs real VMs: a command that needs a Linux
+//! program runs in the workspace's jailed VM, metered, and an account with no card on file is
+//! refused it in the words an agent is given.
 //!
-//! It boots VMs, so it is ignored by default. On a host with `/dev/kvm`,
-//! with the hosted-VM service's machine and jail set up as for
-//! `legacy-vm`'s `hosted_jailed_boot` (see its docs; the jail is used when
-//! `TILO_HOSTED_JAIL_HELPER` is set):
+//! It boots VMs, so it is ignored by default. On a host with `/dev/kvm` and the hosted-VM
+//! service's machine and jail set up as for `legacy-vm`'s `hosted_jailed_boot`:
 //!
 //! ```text
-//! TILO_HOSTED_FIRECRACKER=… TILO_HOSTED_KERNEL=… TILO_HOSTED_INITRAMFS=… \
-//! TILO_LEGACY_BIN=… it workspace_shell_boot --ignored --nocapture
+//! TILO_HOSTED_FIRECRACKER=… TILO_HOSTED_KERNEL=… TILO_HOSTED_INITRAMFS=… //! TILO_LEGACY_BIN=… it workspace_shell_boot --ignored --nocapture
 //! ```
 
 #![allow(
@@ -124,8 +120,6 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
         plans: Some(plans.clone()),
     };
 
-    // With a card: ush's own commands run on the host, the Linux program in
-    // the workspace's VM, its output back in the run.
     let shells = WorkspaceShells::new(scratch.path().join("shells"), Some(target("acct-card")));
     let ran = shells
         .run(
@@ -140,8 +134,6 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
     assert_eq!(text(&ran.output), "on the host\nLinux\nin the vm\n");
     assert!(ran.refusal.is_none());
 
-    // A build in the VM writes into the workspace's files, which the host
-    // sees: the VM works on the same files as ush.
     let built = shells
         .run(
             "ws-1",
@@ -161,8 +153,6 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
         "built\n"
     );
 
-    // The VM's time is metered for the account: its run reaches the ledger
-    // when the service suspends the VM, once it is idle.
     let usage = || {
         let reply = control::ask(
             &socket,
@@ -192,8 +182,6 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
     );
     eprintln!("metered: {records:?}");
 
-    // Without a card: the agent is refused at once, typed, and told what to
-    // ask of the person; nothing ran.
     let shells = WorkspaceShells::new(scratch.path().join("shells-2"), Some(target("acct-none")));
     let ran = shells.run("ws-2", "s1", "uname -s", true).unwrap();
     assert_eq!(ran.exit, 126);

@@ -21,7 +21,6 @@ use ush::supervisor::{ServeResponse, recv_with_fd};
 
 const OWNER: [u8; 32] = [7; 32];
 
-/// A device whose owner is `owner`, with `signed_in` signed in to the session.
 fn identities(root: &Path, owner: [u8; 32], signed_in: [u8; 32]) -> tilo_test_env::ScopedEnv {
     let system = root.join("system");
     std::fs::create_dir_all(system.join("user-identity")).unwrap();
@@ -62,8 +61,6 @@ fn serving(dir: &Path) -> (PathBuf, Store) {
     (socket, store)
 }
 
-/// Ask for the host shell as `app` (`None`: a process outside every
-/// sandbox, as the shell hosting Terminal is).
 fn ask(
     socket: &Path,
     app: Option<&str>,
@@ -87,7 +84,6 @@ fn ask(
     (response, fd, stream)
 }
 
-/// Record an allow as `app` (`None`: the shell) would.
 fn allow(socket: &Path, app: Option<&str>, expiry: Expiry) -> ServeResponse {
     let stream = UnixStream::connect(socket).unwrap();
     if let Some(app) = app {
@@ -112,13 +108,11 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
     let _env = identities(dir.path(), OWNER, OWNER);
     let (socket, store) = serving(dir.path());
 
-    // A sandboxed Terminal cannot allow itself.
     let response = allow(&socket, Some(TERMINAL_APP_ID), Expiry::Never);
     assert!(reason(&response).contains("shell"), "{response:?}");
     let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
     assert!(matches!(response, ServeResponse::HostNotAllowed { .. }));
 
-    // "Allow": one session, then asked again.
     assert_eq!(
         allow(&socket, None, Expiry::AfterUse),
         ServeResponse::Allowed
@@ -154,7 +148,6 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
         "a session's allow is never written to disk"
     );
 
-    // "Always": on disk.
     assert_eq!(allow(&socket, None, Expiry::Never), ServeResponse::Allowed);
     assert!(HostPolicy::load(&HostPolicy::path(&store)).allows_host_shell(TERMINAL_APP_ID, None));
 }
@@ -191,12 +184,10 @@ fn the_host_shell_is_terminal_only_owner_only_and_asked_for_once() {
     let (response, fd, _) = ask(&socket, Some("so.tilo.notes"), "person");
     assert!(reason(&response).contains("only Terminal"), "{response:?}");
     assert!(fd.is_none());
-    // An agent is refused even through Terminal.
     let (response, fd, _) = ask(&socket, Some(TERMINAL_APP_ID), "agent");
     assert!(reason(&response).contains("agents"), "{response:?}");
     assert!(fd.is_none());
 
-    // Terminal, for the person, after the allow: a login shell on a pty.
     let (response, fd, _lifetime) = ask(&socket, None, "person");
     assert!(
         matches!(response, ServeResponse::Session { .. }),
@@ -227,7 +218,6 @@ fn someone_else_signed_in_to_the_owners_device_gets_no_host_shell() {
 }
 
 fn read_until(master: &std::fs::File, needle: &str, timeout: Duration) -> String {
-    // SAFETY: the descriptor is the pty master this test owns.
     unsafe {
         let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
         libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
@@ -252,8 +242,6 @@ fn read_until(master: &std::fs::File, needle: &str, timeout: Duration) -> String
     seen
 }
 
-/// One directory request over the service socket, as Terminal's environments
-/// panel asks it, and the environments the answer names.
 fn directory(socket: &Path, request: &serde_json::Value) -> Vec<(String, String)> {
     let stream = UnixStream::connect(socket).unwrap();
     let mut line = serde_json::to_vec(request).unwrap();
@@ -270,13 +258,10 @@ fn directory(socket: &Path, request: &serde_json::Value) -> Vec<(String, String)
     }
 }
 
-/// The environments panel's requests: a new environment named in it is made,
-/// and listed from then on, by name, under a record key of its own.
 #[test]
 fn an_environment_named_over_the_socket_is_made_and_listed() {
     let dir = tempfile::tempdir().unwrap();
     let (socket, store) = serving(dir.path());
-    // A new environment starts on the default environment's runtime.
     ush::records::Records::at(store.records_root())
         .create(
             tilo_environment::DEFAULT_RECORD,

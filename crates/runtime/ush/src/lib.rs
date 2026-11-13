@@ -1,63 +1,22 @@
-//! `ush` — an application runtime that hosts a shell.
+//! `ush`: an application runtime that hosts a shell. It builds a guest from an
+//! environment record — `/usr` and `/etc` a read-only stack of images, its home its
+//! own, granted directories bound at their own paths — puts a shell inside it, and
+//! brokers every request that would reach past it. See `docs/app-model/ush.md`.
 //!
-//! Not a shell language. `ush` builds a guest from an environment record —
-//! its `/usr` and `/etc` a read-only stack of images, its home its own, the
-//! directories it was granted bound at their own paths — puts a shell inside
-//! it, and brokers every request that would reach past it. See
-//! `docs/app-model/environments.md` for the model and
-//! `docs/app-model/ush.md` for this runtime.
+//! Three parties, in decreasing authority:
 //!
-//! # Why this exists in Tilo
+//! 1. the supervisor ([`supervisor`], [`broker`]), Tilo code outside any app sandbox,
+//!    which needs `unshare`/`mount`/`pivot_root` because it creates the confinement;
+//! 2. the guest ([`guest`]), untrusted: the real uid in its own user namespace, a
+//!    network namespace reaching only the hosts its record grants ([`tilo_egress`]),
+//!    and a seccomp filter denying the namespace syscalls so it cannot climb out;
+//! 3. an app, which cannot reach this runtime at all: `apps/terminal` asks the
+//!    supervisor over its service socket for a target and gets back a pty.
 //!
-//! `apps/terminal` cannot `exec` `$SHELL`: the app sandbox binds the loader,
-//! fonts, `/sys` and the CA bundle but no executable directory, and adding
-//! the host's `/usr/bin` would hand every app the host's whole command set.
-//! A guest whose root is built from images gives a shell `/usr/bin`,
-//! terminfo and `/etc/passwd` by construction, not as a grant.
-//!
-//! # The trust boundary
-//!
-//! Three principals, in decreasing authority. Read this before changing
-//! anything in [`guest`], [`broker`] or [`seccomp`].
-//!
-//! 1. **The supervisor** ([`supervisor`], [`broker`]) is Tilo code, running
-//!    in the user's session *outside* any app sandbox. It needs
-//!    `unshare`/`mount`/`pivot_root` — syscalls apps are blanket-denied —
-//!    because it is what *creates* the confinement, the same way `bwrap`
-//!    is. It owns the store, the environment records and the audit log,
-//!    none of which is visible inside a guest.
-//!
-//! 2. **The guest** ([`guest`]) is everything the user runs — untrusted. It
-//!    runs as the real uid in its own user namespace, which maps that one id
-//!    and nothing else, so nothing in it is root and a file it writes to a
-//!    granted directory is the user's. It has a network namespace of its
-//!    own, reaching only the hosts its record grants ([`tilo_egress`]),
-//!    owned by a user namespace above its own. Its seccomp filter denies
-//!    `unshare`/`mount`/`pivot_root`/`setns`/`chroot`, so it cannot open a
-//!    second namespace and climb out of the first — `bwrap` installs the
-//!    filter after mounting and immediately before exec, so the supervisor's
-//!    need for those syscalls never propagates.
-//!
-//! 3. **An app**, launched through `tilo-launcher`, is untrusted and cannot
-//!    reach this runtime by executing it — a sandboxed app has neither the
-//!    syscalls nor a path to the binary. `apps/terminal` asks the
-//!    supervisor over its service socket for a target and gets back a pty,
-//!    not a namespace.
-//!
-//! # The images are read-only
-//!
-//! Nothing below an image is writable: there is no overlay upper. A guest
-//! adds software only by asking — `pkg install` builds a tool image and adds
-//! it to the record — so what an environment is is always what its record
-//! says, on every device it opens on.
-//!
-//! # Permissions are Tilo's, not a second system
-//!
-//! `perm trust-dir`, and every other decision the broker makes, is a
-//! `collab_types::caps::CapOverride` in the environment record evaluated by
-//! `decide_capability` — the same record the compositor shows in its
-//! permissions panel and can revoke. There is no `ush`-local permission type.
-//! See [`policy`].
+//! Images are read-only, with no overlay upper: a guest adds software only by asking
+//! (`pkg install` builds a tool image and adds it to the record). Permissions are the
+//! record's `CapOverride`s, evaluated by `decide_capability` ([`policy`]), not a
+//! second system.
 
 pub mod agent_door;
 pub mod approved_checks;
@@ -94,19 +53,17 @@ pub mod workspace;
 pub mod workspace_shell;
 
 pub use store::Store;
-/// The package id every `ush` grant is written against.
 pub use tilo_environment::RUNTIME_APP_ID;
 
-/// Where the guest can see the runtime's own binary and its command shims:
-/// a `tmpfs` the supervisor populates, first on `PATH`, not guest-writable.
+/// Where the guest sees the runtime's binary and its command shims: a `tmpfs` the
+/// supervisor populates, first on `PATH`, not guest-writable.
 pub const GUEST_BIN_DIR: &str = "/run/ush/bin";
 
-/// The broker socket, as the guest sees it.
 pub const GUEST_BROKER_SOCK: &str = "/run/ush/broker.sock";
 
-/// Names the runtime answers to from inside a guest, dispatched on `argv[0]`.
-/// These are symlinks to the runtime binary rather than shell builtins, so
-/// they behave identically under `bash`, `fish`, a script, or `xargs`.
+/// Names the runtime answers to from inside a guest, dispatched on `argv[0]`. Symlinks
+/// to the runtime binary rather than shell builtins, so they behave the same under any
+/// shell, a script or `xargs`.
 pub const GUEST_COMMANDS: &[&str] = &[
     "pkg",
     "perm",
@@ -114,17 +71,15 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "guard",
     "quarantine",
     "restart",
-    // These are deliberately host-brokered: the guest's images are not the
-    // user's apps or system, and its private /run cannot reach systemd for
-    // image updates.
+    // Deliberately host-brokered: the guest's images are not the user's apps or system, and
+    // its private /run cannot reach systemd for image updates.
     "tilo",
     "app",
     "store",
     "system",
-    // The file actions: GNU's names, each one the environment record's own
-    // verb, checked against its grants and undone from its History. A guest
-    // that ships its own copy of one of these gets this one instead, because
-    // the copy could neither see the grants nor be an action.
+    // GNU's names, each one the environment record's own verb, checked against its grants
+    // and undone from its History. A guest that ships its own copy gets this one instead,
+    // because the copy could neither see the grants nor be an action.
     "cp",
     "mv",
     "rm",
@@ -132,22 +87,16 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "rmdir",
     "ln",
     "truncate",
-    // Changing a text file's contents is what a note, a list or a paragraph
-    // is for, and with only `truncate` and `cp` the only way was to rewrite
-    // the whole file; `touch` creates without truncating, `append` adds.
+    // With only `truncate` and `cp`, changing a file's contents meant rewriting it;
+    // `touch` creates without truncating and `append` adds.
     "touch",
     "append",
     "history",
-    // A coding agent's MCP server, `tilo-runtime --connect`, as on the host:
-    // relayed to the environment's own agent door (`crate::agent_door`).
     "tilo-runtime",
     "tilo-runtime-mcp",
-    // A file's own history, read and restored through the mount's own
-    // protocols, so a script or an agent reads the same revisions the file
-    // manager's History view lists instead of a second store beside them.
+    // A file's history, read and restored through the mount's own protocols, so a script
+    // reads the same revisions the file manager's History view lists.
     "version",
-    // The session's shell (`crate::shell_host`): Tilo's own commands
-    // in-process, everything else in this guest.
     "ush-sh",
 ];
 
@@ -176,13 +125,11 @@ pub fn legacy_command_names(registry: &legacy_vm::apps::Registry) -> Vec<String>
     names
 }
 
-/// Whether a command shim belongs in a guest built from `base`.
 pub fn guest_command_available(base: &std::path::Path, command: &str) -> bool {
     match command {
-        // `system` is an argv0 convenience alias for `tilo system`, not a
-        // generic name for any machine with the `tilo` client installed.  Do
-        // not put it on a guest's PATH unless this is actually a Tilo system
-        // image with the deployment provider behind the client.
+        // `system` is an argv0 convenience alias for `tilo system`, not a generic name for any
+        // machine with the `tilo` client installed. Do not put it on a guest's PATH unless this
+        // is a Tilo system image with the deployment provider behind the client.
         "system" => system_provider_available(base),
         "tilo" => base.join("usr/bin/tilo").is_file(),
         "app" | "store" => base.join("usr/bin/app").is_file(),
@@ -194,9 +141,6 @@ fn system_provider_available(base: &std::path::Path) -> bool {
     base.join("usr/bin/tilo").is_file() && base.join("usr/libexec/tilo-deployment").is_file()
 }
 
-/// Whether this machine runs the helper from a native loader it may trust. A
-/// nested runner that maps the host's root-owned files to its caller owns them
-/// as root-equivalent, and the helper refuses every host loader there.
 #[cfg(test)]
 macro_rules! require_trusted_loader {
     () => {

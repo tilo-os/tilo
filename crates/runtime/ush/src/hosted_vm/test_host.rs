@@ -1,14 +1,12 @@
-//! A host that sells Linux VMs, for tests: everything a hosted session
-//! meets, with no hypervisor and no payment provider.
+//! A host that sells Linux VMs, for tests: everything a hosted session meets, with no
+//! hypervisor and no payment provider.
 //!
-//! It answers the hosted-VM service's socket ([`legacy_vm::hosted::control`])
-//! by admitting each wake through the real plan guard
-//! ([`legacy_vm::hosted::plan::admit`]) against its plans file, which sells a
-//! "Pro" plan on tilo.sh. An account it does not name has no card on file.
-//! [`TestHost::add_card`] does what the provider does once a card is added:
-//! it writes the account into the plans file. An admitted program runs in a
-//! stand-in for the VM's agent that answers every launch with
-//! `ran <argv>` on standard output and exit status 0.
+//! It answers the hosted-VM service's socket ([`legacy_vm::hosted::control`]) by admitting
+//! each wake through the real plan guard ([`legacy_vm::hosted::plan::admit`]) against its
+//! plans file, which sells a "Pro" plan. An account it does not name has no card on file,
+//! and [`TestHost::add_card`] writes it into the plans file as the provider does. An
+//! admitted program runs in a stand-in for the VM's agent that answers `ran <argv>` with
+//! exit status 0.
 
 #![allow(
     clippy::expect_used,
@@ -31,13 +29,9 @@ use tilo_actions::remote::host_account::{Limits, PlanOffer};
 
 use super::HostedTarget;
 
-/// The page the test host's provider adds a card on.
 pub const ADD_CARD: &str = "https://tilo.sh/billing/card?account={account}";
-/// The page it manages billing on.
 pub const MANAGE_BILLING: &str = "https://tilo.sh/billing?account={account}";
 
-/// The plans file of a host selling one plan on tilo.sh and naming no
-/// account yet.
 #[must_use]
 pub fn selling() -> Plans {
     Plans {
@@ -64,21 +58,13 @@ pub fn selling() -> Plans {
     }
 }
 
-/// A running test host. Its threads end with the test process.
 pub struct TestHost {
     dir: PathBuf,
-    /// Every wake it was asked for, by account.
     asked: Arc<Mutex<Vec<String>>>,
-    /// How many wakes from now it answers that it has no room yet.
     full_for: Arc<Mutex<usize>>,
 }
 
 impl TestHost {
-    /// Serve a host selling [`selling`] from `dir`.
-    ///
-    /// # Panics
-    ///
-    /// When its sockets or plans file cannot be made in `dir`.
     #[must_use]
     pub fn start(dir: &Path) -> Self {
         let host = Self {
@@ -123,7 +109,6 @@ impl TestHost {
         self.dir.join("agent.sock")
     }
 
-    /// Where a session of `account` runs its programs on this host.
     #[must_use]
     pub fn target(&self, account: &str) -> HostedTarget {
         HostedTarget {
@@ -134,8 +119,6 @@ impl TestHost {
         }
     }
 
-    /// What the provider does once `account` adds a card: the account is
-    /// on the Pro plan from now on.
     pub fn add_card(&self, account: &str) {
         let mut plans = Plans::load(&self.plans()).expect("the plans file");
         plans.accounts.insert(
@@ -151,13 +134,10 @@ impl TestHost {
         self.write(&plans);
     }
 
-    /// Have no room for the next `wakes` wakes: each is answered as a
-    /// full host answers, with [`legacy_vm::hosted::service::BUSY`].
     pub fn full_for(&self, wakes: usize) {
         *self.full_for.lock().unwrap_or_else(PoisonError::into_inner) = wakes;
     }
 
-    /// How many wakes it was asked for.
     #[must_use]
     pub fn wakes_asked(&self) -> usize {
         self.asked
@@ -224,7 +204,6 @@ fn answer(
     let _ = FRAMING.write_value(&mut stream, &reply);
 }
 
-/// The VM's agent: `CONNECT`, the handshake, then each launch "runs".
 fn run_agent(mut stream: UnixStream) {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];

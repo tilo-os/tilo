@@ -1,10 +1,9 @@
-//! The Tilo-side shell over a real environment record: reads under its
-//! grants with no guest, a redirect as its action in History, and programs
-//! in a guest started once for the session.
+//! The Tilo-side shell over a real environment record: reads under its grants with no guest,
+//! a redirect as its action in History, and programs in a guest started once for the session.
 //!
-//! The guest here is the program server ([`crate::guest_exec::serve`]) on a
-//! thread of this process, not a `bwrap` sandbox, so these run where no
-//! guest can; `tests/serve_handoff.rs` runs the same session in a real one.
+//! The guest here is the program server ([`crate::guest_exec::serve`]) on a thread of this
+//! process, not a `bwrap` sandbox, so these run where no guest can;
+//! `tests/serve_handoff.rs` runs the same session in a real one.
 
 use std::path::PathBuf;
 
@@ -18,8 +17,6 @@ fn null() -> OwnedFd {
     std::fs::File::open("/dev/null").unwrap().into()
 }
 
-/// A guest that is the program server on a thread, counting how often it
-/// was started.
 fn local_guest() -> Box<Launch> {
     Box::new(|| {
         let (control, served) = UnixStream::pair()?;
@@ -40,8 +37,6 @@ struct Fixture {
     err: ush_shell::io::Captured,
 }
 
-/// The Tilo-side shell of the environment `state` brokers, with `env` and
-/// starting in `cwd`, its programs in a local guest.
 fn session_shell(
     state: &Arc<Mutex<BrokerState>>,
     env: Vec<(String, String)>,
@@ -184,7 +179,6 @@ fn a_program_starts_the_guest_once_for_the_session_and_its_output_is_piped_back(
     assert_eq!(out, "LINUX\n");
     assert_eq!(f.guest.starts(), 1);
 
-    // The same guest serves the next ones: the server is their parent.
     let (status, out, err) = f.run("sh -c 'echo $PPID'; sh -c 'echo $PPID; exit 4'");
     assert_eq!(status, 4, "{err}");
     let parents: Vec<&str> = out.lines().collect();
@@ -213,9 +207,6 @@ fn a_program_on_the_terminal_gets_the_sessions_own_descriptor() {
     );
 }
 
-/// A redirect far past what an action carries inside it is still one
-/// action: its content streamed into the environment's content store, one
-/// History entry in the command line's run, undone from there.
 #[test]
 fn a_ten_megabyte_redirect_is_one_undoable_history_entry() {
     let mut f = fixture();
@@ -260,8 +251,6 @@ fn a_ten_megabyte_redirect_is_one_undoable_history_entry() {
     );
 }
 
-/// `~` is the workspace's folder: an environment opened where the
-/// workspace is gets it as its home, granted, and `cd ~` reaches it.
 #[test]
 fn cd_home_reaches_the_workspace_folder() {
     let dir = tempfile::tempdir().unwrap();
@@ -303,10 +292,6 @@ fn cd_home_reaches_the_workspace_folder() {
     );
 }
 
-/// An environment opened in a workspace other than the primary one has
-/// that workspace's own files as `~` — its tree of the device's files, made
-/// on first open — and its shell reads none of another workspace's files,
-/// nor of the files folder around them, and cannot be granted them.
 #[test]
 fn a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers() {
     const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -323,7 +308,6 @@ fn a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers() {
         .with_workspace(&files)
         .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
 
-    // The records the supervisor opens for the workspace.
     let mut state = crate::broker::tests::state(&root);
     let records = crate::records::Records::of(&store);
     let made = records
@@ -347,8 +331,6 @@ fn a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers() {
     let home = crate::home::home_of(&environment, &crate::guest::GuestUser::current());
     assert_eq!(home, w1_tree);
 
-    // Asked from inside the guest, the other workspace's files and the
-    // folder holding every workspace's are refused.
     for path in [w2_tree.clone(), files.clone(), files.join("Documents")] {
         let answer = state.handle(crate::broker::Request::TrustDir { path: path.clone() });
         assert!(
@@ -392,9 +374,6 @@ fn a_workspace_environment_has_its_own_files_as_home_and_none_of_anothers() {
     let _ = err.take();
 }
 
-/// An environment from before `~` was the workspace's folder gets it
-/// without losing anything: its tools and grants stay, and what its old
-/// home in the store holds stays where it was, readable there.
 #[test]
 fn an_existing_environment_gets_home_without_losing_anything() {
     let dir = tempfile::tempdir().unwrap();
@@ -437,7 +416,6 @@ fn an_existing_environment_gets_home_without_losing_anything() {
         std::fs::read_dir(&workspace).unwrap().next().is_none(),
         "nothing copied into the workspace either"
     );
-    // Opening it again changes nothing more.
     let again = crate::home::with_home(
         &state.environment.records,
         &store,
@@ -470,8 +448,6 @@ fn an_existing_environment_gets_home_without_losing_anything() {
     assert!(old_home.join(".bashrc").is_file());
 }
 
-// The shell at its prompt on a terminal, as Terminal runs it.
-
 const KEY: &str = "0123456789abcdef0123456789abcdef";
 
 fn b64(text: &str) -> String {
@@ -487,8 +463,6 @@ fn open_pty(cols: u16) -> (std::fs::File, std::fs::File) {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // SAFETY: both fds are out-parameters `openpty` fills in; `size` is a
-    // properly initialised `winsize`.
     let rc = unsafe {
         libc::openpty(
             &raw mut master,
@@ -508,10 +482,6 @@ fn open_pty(cols: u16) -> (std::fs::File, std::fs::File) {
     }
 }
 
-/// Play Terminal on the pty's `master`: keep what the shell shows on
-/// `screen`, and answer each of the line editor's history questions with
-/// the whole of `history`, as one last page, noting `skip:query` in
-/// `asked`.
 fn play_terminal(
     master: &std::fs::File,
     history: &[&str],
@@ -558,7 +528,6 @@ fn play_terminal(
     });
 }
 
-/// Whether the terminal `fd` is taking keys one at a time, unechoed.
 fn raw(fd: &std::fs::File) -> bool {
     // SAFETY: tcgetattr writes only into the termios we own.
     unsafe {
@@ -568,10 +537,6 @@ fn raw(fd: &std::fs::File) -> bool {
     }
 }
 
-/// A Tilo-side shell interactive on a pty: keys go in on the master, and
-/// what the shell draws on the terminal comes out of it. Terminal is
-/// played by a thread that answers the line editor's history questions
-/// with `history`, newest first.
 struct Prompt {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -584,7 +549,6 @@ struct Prompt {
     host: TiloHost,
 }
 
-/// What the shell's standard output collected, readable while it runs.
 struct Tee(Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Tee {
@@ -602,8 +566,6 @@ fn prompt(history: &[&str]) -> Prompt {
     prompt_with(history, None)
 }
 
-/// [`prompt`], with Terminal's native editor capability served at the
-/// prompt when `field` is given.
 fn prompt_with(history: &[&str], field: Option<&Arc<SessionField>>) -> Prompt {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -706,8 +668,6 @@ impl Prompt {
         }
     }
 
-    /// Type `exit` and wait for the session to end: the command lines
-    /// Terminal was told ran, and what they printed.
     fn exit(mut self) -> (Vec<String>, String) {
         self.type_keys("exit\r");
         let status = self.session.take().unwrap().join().unwrap();
@@ -740,15 +700,11 @@ impl Prompt {
     }
 }
 
-/// At the prompt the session's terminal takes keys one at a time and
-/// unechoed, the line editor's emacs keys edit the line, and the terminal
-/// is given back as it was for what the line runs.
 #[test]
 fn the_prompt_edits_on_the_sessions_terminal_in_raw_mode() {
     let p = prompt(&[]);
     assert!(raw(&p.slave), "the prompt has the terminal raw");
     assert_eq!(ush_shell::Host::columns(&p.host), 100, "as wide as the pty");
-    // Ctrl+A, Ctrl+E; Alt+B, Alt+D; Ctrl+W.
     p.type_keys("cho hi\x01e\x05 there\r");
     p.wait_out("hi there");
     p.type_keys("echo first second\x1bb\x1bb\x1bdthird\r");
@@ -762,9 +718,6 @@ fn the_prompt_edits_on_the_sessions_terminal_in_raw_mode() {
     assert_eq!(printed, "hi there\nthird second\none three\n");
 }
 
-/// Up recalls the person's history, which Terminal holds and answers on
-/// the session's terminal; Ctrl+R searches it; Tab completes a path the
-/// grants show.
 #[test]
 fn up_and_ctrl_r_recall_the_persons_history_and_tab_completes_paths() {
     let p = prompt(&["echo newest", "echo older", "echo oldest"]);
@@ -784,9 +737,6 @@ fn up_and_ctrl_r_recall_the_persons_history_and_tab_completes_paths() {
     );
 }
 
-/// A program that stops itself (as Ctrl+Z on its terminal does) stops the
-/// line it ran in: the prompt comes back, `jobs` lists it stopped, and `fg`
-/// continues it in its process group to its end.
 #[test]
 fn a_program_stopped_in_the_guest_gives_the_prompt_back_and_fg_continues_it() {
     let p = prompt(&[]);
@@ -801,14 +751,11 @@ fn a_program_stopped_in_the_guest_gives_the_prompt_back_and_fg_continues_it() {
     assert!(printed.ends_with("resumed\n"), "{printed}");
 }
 
-/// Ctrl+Z that reaches the shell (the program does not hold the
-/// terminal) stops the job in the foreground, and its program with it.
 #[test]
 fn ctrl_z_that_reaches_the_shell_stops_the_foreground_program() {
     let p = prompt(&[]);
     p.type_keys("sh -c 'echo $$ > pid; echo up-$((6*7)) >&2; sleep 30'\r");
     p.wait_for("up-42");
-    // SAFETY: the shell's own handler takes it (DevicePlace::install).
     unsafe { libc::kill(libc::getpid(), libc::SIGTSTP) };
     p.wait_for("Stopped");
     let pid = std::fs::read_to_string(p.root.join("allowed/pid")).unwrap();
@@ -820,8 +767,6 @@ fn ctrl_z_that_reaches_the_shell_stops_the_foreground_program() {
     assert!(printed.ends_with("ended 143\n"), "{printed}");
 }
 
-/// A background job's program is stopped, continued and ended through its
-/// process group in the guest.
 #[test]
 fn a_background_program_is_stopped_continued_and_ended_as_its_job() {
     let mut f = fixture();
@@ -845,8 +790,6 @@ fn a_background_program_is_stopped_continued_and_ended_as_its_job() {
     assert!(out.ends_with("ended 143\n"), "{out}");
 }
 
-/// Tab offers the programs of the images the guest is built from, along
-/// `PATH`.
 #[test]
 fn the_guests_programs_are_named_from_its_images_along_path() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -865,7 +808,6 @@ fn the_guests_programs_are_named_from_its_images_along_path() {
     assert_eq!(names, ["bash", "ls", "rg", "sh"]);
 }
 
-/// What Terminal's client was answered, for the test to wait on.
 struct Answered(std::sync::mpsc::Sender<Result<(), tilo_process::editor::Failure>>);
 
 impl tilo_process::editor::Completion for Answered {
@@ -881,10 +823,6 @@ impl tilo_process::editor::Completion for Answered {
     }
 }
 
-/// Terminal's native editing and dictation at a ush prompt: Terminal's own
-/// client of the editor capability reads the line's lease, puts text in at
-/// the cursor as if typed, takes it back and makes it again; an edit of a
-/// line that changed since is refused, and Enter runs what the line holds.
 #[test]
 fn terminals_editor_client_edits_the_line_at_a_ush_prompt() {
     use runtime_portal::editor::{Request, Status};
@@ -955,7 +893,6 @@ fn terminals_editor_client_edits_the_line_at_a_ush_prompt() {
     );
     lease_at(17);
 
-    // A key makes the line the person's again: the old lease is stale.
     p.type_keys("!");
     lease_at(18);
     assert_eq!(
@@ -977,8 +914,6 @@ fn terminals_editor_client_edits_the_line_at_a_ush_prompt() {
     assert_eq!(runs, ["echo hello wörld!"], "{printed}");
 }
 
-/// A command line long enough to span several reads, with every character
-/// a shell gives meaning to, unlike any other `n`.
 fn busy_line(n: usize) -> String {
     let mut line = format!(": {n} 'a >> b' \"c\\nd\" 'e | f; g && h || i' '$HOME' \\> \\>\\> x");
     while line.len() < 1500 {
@@ -1028,10 +963,6 @@ impl Prompt {
     }
 }
 
-/// What Terminal's `run` types reaches the shell byte for byte, however
-/// busy the machine: each line is sent the moment the prompt is marked, as
-/// Terminal sends it, while every core is taken; the shell's own marks say
-/// it ran exactly the lines that were sent, in order.
 #[test]
 fn a_run_reaches_the_shell_byte_exact_on_a_busy_machine() {
     const LINES: usize = 16;
