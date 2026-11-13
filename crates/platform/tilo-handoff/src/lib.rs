@@ -1,27 +1,14 @@
 //! Source-held handoff for an installation prepared on another computer.
 //!
 //! The medium carries the ordinary encrypted preparation package and a small
-//! public descriptor. The descriptor names one opaque peer ticket, the package
-//! digest and the package's person identity; it contains no path, profile
-//! name, credential or content key. The preparation computer stays available
-//! and, after the destination has a real device identity, approves that exact
-//! device and delivers the package over the authenticated peer transport.
+//! public descriptor naming one opaque peer ticket, the package digest and the
+//! person identity, and no path, profile name, credential or content key. After
+//! the destination has a real device identity, the preparing computer approves
+//! that exact device and delivers the package over the authenticated peer
+//! transport.
 //!
-//! The package keeps its existing password envelope and the existing
-//! first-boot consumer. The password is generated for this operation and
-//! sealed with HPKE to an ephemeral X25519 key. The destination proves that
-//! key and its certified device key together, in a signature bound to the
-//! operation, the descriptor, the package and the person identity. The source
-//! releases no key before a person approves that exact request. The source
-//! reports the package as imported only after the destination's canonical
-//! importer returns a receipt for the exact package digest; that is a package
-//! receipt, not a claim that Home or application migration has finished.
-//!
-//! This crate contains that transport and the native preflight for the
-//! prepared setup's public TPM sidecar. The installer and the first-boot
-//! importer own the package and its canonical adoption; the shell does not
-//! link the whole installer backend to receive one package, and the installer's
-//! extractor verifies the sidecar here without depending on that backend.
+//! The password is generated for this operation and sealed with HPKE to an
+//! ephemeral X25519 key, so it leaves only to the device the person approved.
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -40,22 +27,18 @@ pub use receiver::{Received, Receiver, ReceiverIdentity};
 #[cfg(all(unix, feature = "peer"))]
 pub use transport::Source;
 
-/// The endpoint-bound rendezvous the preparation computer publishes before the
-/// medium is written. It is portable metadata; only a Unix-hosted source can
-/// bind and serve the endpoint.
+/// The endpoint-bound rendezvous the preparing computer publishes before the medium
+/// is written: portable metadata, which only a Unix-hosted source can bind and
+/// serve.
 #[derive(Clone, Debug)]
 pub struct HandoffIdentity {
     pub operation_id: String,
     pub ticket: String,
-    /// The person identity the prepared package carries. The destination
-    /// refuses a descriptor for any other already-active identity.
     pub identity_public_key: [u8; 32],
     pub expires_at_ns: u64,
 }
 
 /// What the preparing computer tells its person while it serves the package.
-/// This is portable presentation state; only a Unix-hosted source can bind and
-/// serve the endpoint that produces it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceState {
     Waiting,
@@ -64,8 +47,6 @@ pub enum SourceState {
         code: String,
         approval: String,
     },
-    /// A fresh destination asked to join this person before it can receive
-    /// the package. The person compares this code with the destination.
     JoinRequested {
         label: String,
         code: String,
@@ -82,8 +63,6 @@ pub enum SourceState {
     AwaitingReceipt {
         label: String,
     },
-    /// The destination's canonical importer confirmed this exact package.
-    /// Home and application migration can still be finishing there.
     PackageImported {
         label: String,
     },
@@ -97,8 +76,6 @@ pub const SCHEMA: u32 = 2;
 pub const DIRECTORY: &str = ".tilo-installer";
 pub const DESCRIPTOR_FILE: &str = "other-device.json";
 pub const ALPN: &[u8] = b"tilo-migration-handoff/2";
-/// One frame is chunk data plus its envelope. The package itself is bounded by
-/// the existing prepared-setup limit.
 pub const MAX_FRAME: usize = 2 * 1024 * 1024;
 pub const CHUNK: usize = 512 * 1024;
 pub const MAX_PACKAGE: u64 = 32 * 1024 * 1024 + 16 * 1024;
@@ -113,10 +90,6 @@ fn valid_operation(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
 }
 
-/// The endpoint-bound rendezvous published on the medium. It is not a bearer
-/// capability: the source authenticates and a person approves every receiver.
-/// Every field is public metadata; it names no source path, credential, token
-/// or content key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicHandoff {
@@ -130,7 +103,6 @@ pub struct PublicHandoff {
 }
 
 impl PublicHandoff {
-    /// Bind the reviewed descriptor to the exact delivered ciphertext.
     pub fn from_identity(
         identity: &HandoffIdentity,
         package_sha256: impl Into<String>,
@@ -161,7 +133,6 @@ impl PublicHandoff {
             && (48..=MAX_PACKAGE).contains(&self.package_bytes)
     }
 
-    /// A descriptor is not usable after its operation window closes.
     pub fn valid_at(&self, now_ns: u64) -> bool {
         self.valid() && now_ns < self.expires_at_ns
     }
@@ -170,8 +141,7 @@ impl PublicHandoff {
     ///
     /// # Errors
     ///
-    /// Returns an error when the descriptor's digest is not 32 hex-encoded
-    /// bytes.
+    /// When the descriptor's digest is not 32 hex-encoded bytes.
     pub fn digest(&self) -> io::Result<[u8; 32]> {
         let bytes =
             hex::decode(&self.package_sha256).map_err(|_| invalid("Invalid package digest"))?;
@@ -180,9 +150,6 @@ impl PublicHandoff {
             .map_err(|_| invalid("Invalid package digest"))
     }
 
-    /// The descriptor as it is published on the medium. It has no private
-    /// source path, profile name, token or content key.
-    /// Encode the descriptor as published on the medium.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         if !self.valid() {
             return Err(invalid("Invalid other-computer handoff"));
@@ -190,7 +157,6 @@ impl PublicHandoff {
         serde_json::to_vec(self).map_err(|_| invalid("Invalid other-computer handoff"))
     }
 
-    /// Decode a bounded descriptor from the medium.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() as u64 > MAX_DESCRIPTOR {
             return Err(invalid("Other-computer handoff is too large"));
@@ -205,10 +171,9 @@ impl PublicHandoff {
 }
 
 pub(crate) fn valid_ticket(ticket: &str) -> bool {
-    // An iroh endpoint ticket is JSON naming the endpoint id and its relay and
-    // direct addresses; relay URLs contain `/`. It is opaque public routing
-    // data, never a filesystem path, so accept every graphic ASCII byte and
-    // let the peer endpoint reject a ticket that does not parse.
+    // An iroh endpoint ticket is JSON naming the endpoint id and its relay and direct
+    // addresses, and relay URLs contain `/`; it is opaque public routing data, never a
+    // filesystem path, so the peer endpoint rejects one that does not parse.
     !ticket.is_empty()
         && ticket.len() <= MAX_TICKET
         && ticket.bytes().all(|byte| byte.is_ascii_graphic())
@@ -221,9 +186,6 @@ pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-/// The exact package, operation and person a sealed package password belongs
-/// to. HPKE already binds its recipient key; this binds the plaintext to the
-/// delivery the person approved.
 #[cfg(feature = "peer")]
 pub(crate) fn handoff_aad(
     operation_id: &str,
@@ -237,10 +199,6 @@ pub(crate) fn handoff_aad(
     aad
 }
 
-/// A short human-comparable authenticator. Source and destination derive the
-/// same value from the operation, the certified device and its ephemeral key,
-/// the exact package and the person identity; the person compares the two
-/// screens before approving.
 #[cfg(feature = "peer")]
 pub(crate) fn verification_code(
     operation_id: &str,
@@ -267,7 +225,6 @@ mod descriptor;
 #[cfg(unix)]
 pub use descriptor::read_descriptor;
 
-/// Native verification of the prepared setup's public TPM sidecar.
 #[cfg(unix)]
 pub mod prepared;
 
