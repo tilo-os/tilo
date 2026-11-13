@@ -467,25 +467,62 @@ fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
     );
 }
 
-/// Holding Super alone shows the shortcut guide's keys, and letting it go takes them away again.
-/// A key pressed while the hold shows them ends the hold's hints and still runs.
+/// Holding Super alone shows the keys it reaches, from the table the guide explains, and letting
+/// it go takes them away again. They are a glance, not the guide: nothing opens, nothing takes the
+/// focus, and a chord pressed while they show runs and takes them away.
 #[test]
 fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
     let _panel = panel_environment();
     let mut session = session_with(desk_tree());
+    let focused = session
+        .compositor()
+        .focused_window()
+        .map(|window| window.id);
     key(&mut session, KEY_LEFT_META, true);
-    until(&mut session, "the keys", |session| guide_up(session));
+    until(&mut session, "the keys", |session| {
+        session.super_peek().is_up()
+    });
+    let groups = session.super_peek().groups().expect("the keys while up");
+    let search = groups
+        .iter()
+        .flat_map(|(_, hints)| hints)
+        .find(|hint| hint.keys.len() == 1 && hint.keys[0] == ui::keycaps::active().key("space"))
+        .expect("Super+Space is search, as the table binds it");
+    assert!(
+        !search.label.is_empty(),
+        "each key says what it does: {search:?}"
+    );
+    assert!(
+        groups.iter().flat_map(|(_, hints)| hints).all(|hint| !hint
+            .keys
+            .iter()
+            .any(|key| key == &ui::keycaps::active().token("Super"))),
+        "Super is held already, so no row asks for it again"
+    );
+    assert!(!guide_up(&session), "a hold is no guide: nothing opens");
+    assert_eq!(
+        session
+            .compositor()
+            .focused_window()
+            .map(|window| window.id),
+        focused,
+        "the keys take no focus"
+    );
     key(&mut session, KEY_LEFT_META, false);
-    until(&mut session, "the keys gone", |session| !guide_up(session));
+    until(&mut session, "the keys gone", |session| {
+        !session.super_peek().is_up()
+    });
 
-    // Held again, the hints go with the chord the person presses while holding: the window in
-    // front closes, and the keys go rather than holding the chord back.
+    // Held again, the keys go with the chord the person presses while holding: the window in
+    // front closes.
     key(&mut session, KEY_LEFT_META, true);
-    until(&mut session, "the keys", |session| guide_up(session));
+    until(&mut session, "the keys", |session| {
+        session.super_peek().is_up()
+    });
     key(&mut session, KEY_W, true);
     key(&mut session, KEY_W, false);
     until(&mut session, "the keys gone with the chord", |session| {
-        !guide_up(session)
+        !session.super_peek().is_up()
     });
     until(&mut session, "the window closed", |session| {
         session

@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_actions::ActionAddress;
-use tilo_session_core::super_tap::SuperTap;
 use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
@@ -425,9 +424,6 @@ pub(crate) struct SessionKeys {
     /// When each display's bar shows over the window covering it: Super asks for it, and the app
     /// under it has nothing of that press.
     reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
-    /// Super alone, as the compositor reads it: the guide a hold showed is the guide's own while
-    /// it is up, and the key that ends the hold is the person's.
-    super_tap: Rc<RefCell<SuperTap>>,
 }
 
 impl SessionKeys {
@@ -439,7 +435,6 @@ impl SessionKeys {
         displays: Option<tilo_sheets::Presentation>,
         controller: ControllerKeys,
         reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
-        super_tap: Rc<RefCell<SuperTap>>,
     ) -> Self {
         let Presses {
             invocations,
@@ -463,7 +458,6 @@ impl SessionKeys {
             controller,
             controller_keys,
             reveals,
-            super_tap,
         }
     }
 
@@ -653,12 +647,6 @@ impl SessionKeys {
         }
     }
 
-    /// Whether `press` is the key that ended a hold's hints: the guide is going with it, so the
-    /// key runs where it would otherwise be the guide's to hold back.
-    fn ends_the_hints(&self) -> bool {
-        self.super_tap.borrow().hints_ending()
-    }
-
     /// How the session claims `press`, offered before the focused window or panel gets it.
     pub(crate) fn claim(&self, press: &Press, locked: bool, inhibited: bool) -> KeyClaim {
         // Super going down asks for the bar over the window that covers the display, as reaching
@@ -670,7 +658,7 @@ impl SessionKeys {
                 .push(Invocation::new(CHROME_RESOURCE, "reveal-top-bar"));
             return KeyClaim::Take;
         }
-        if self.guide.up() && !self.ends_the_hints() {
+        if self.guide.up() {
             if self.guide.listening().is_some() {
                 // The guide waits for a shortcut's new keys: every press is that chord, and none of
                 // them reaches what is behind it.
@@ -728,7 +716,7 @@ impl SessionKeys {
         if !self.controller_keys.get() {
             self.controller.set(None);
         }
-        if self.guide.up() && !self.ends_the_hints() {
+        if self.guide.up() {
             self.guide_key(press);
             return;
         }
@@ -811,7 +799,6 @@ mod tests {
             desk,
             None,
             ControllerKeys::default(),
-            Rc::default(),
             Rc::default(),
         );
         NativeKeys::new(keys, None, commands)
@@ -1429,58 +1416,6 @@ mod tests {
         assert_eq!(guide.take_caught(), [Caught::Cancelled]);
         assert_eq!(guide.listening(), None);
         assert!(guide.up(), "the guide itself stays up");
-    }
-
-    /// A key pressed while a hold shows the keys is the person's, not the guide's: the hold is
-    /// over with that key, and the chord it makes runs where the guide would hold it back.
-    #[test]
-    fn a_key_that_ends_a_hold_runs_where_the_guide_would_hold_it_back() {
-        use std::time::Instant;
-        use tilo_session_core::super_tap::HOLD;
-
-        let guide: Rc<GuideState> = Rc::default();
-        guide.set_up(true);
-        let tap: Rc<RefCell<SuperTap>> = Rc::default();
-        let mut keys = NativeKeys::new(
-            SessionKeys::new(
-                Rc::default(),
-                Presses::default(),
-                Rc::clone(&guide),
-                DeskKeys::default(),
-                None,
-                ControllerKeys::default(),
-                Rc::default(),
-                Rc::clone(&tap),
-            ),
-            None,
-            Rc::default(),
-        );
-        // The hold showed the guide, and the keys are up.
-        let at = Instant::now();
-        tap.borrow_mut().super_key(true, at, false);
-        assert_eq!(
-            tap.borrow_mut().take(at + HOLD),
-            [tilo_session_core::super_tap::Ask::Hints]
-        );
-        // Held with the guide up, Super+W is the guide's to swallow.
-        let close = key(keysyms::w, Some('w'), held("l"));
-        assert_eq!(keys.claim_key(&close, false, false), KeyClaim::Take);
-        keys.key(&close);
-        assert!(asked(&keys).is_empty(), "the guide holds the chord back");
-        assert!(guide.up());
-
-        // The press that ends the hold is not: the keys go with it, and Super+W closes the
-        // window in front.
-        tap.borrow_mut().chord();
-        assert_eq!(keys.claim_key(&close, false, false), KeyClaim::Take);
-        keys.key(&close);
-        assert_eq!(
-            asked(&keys),
-            vec![
-                Invocation::new(CHROME_RESOURCE, "fixed-shortcut")
-                    .with("action", "fixed-close-tab")
-            ]
-        );
     }
 
     #[test]

@@ -581,6 +581,8 @@ impl Session {
         // Alt+Tab's panel: the desk's walk says what it shows, the chrome draws it, and the
         // compositor pictures the windows its cards name.
         let switcher = tilo_desktop::window_switcher::Switcher::default();
+        // The keys a held Super reaches: the session says them, the chrome draws them.
+        let super_peek = tilo_desktop::super_peek::SuperPeek::default();
         // The surfaces the desk shows over its windows, and where each stands: the shell's own
         // views, or the quick settings' app where the device has one and the desk draws it. The
         // desk's door and the chrome's door open them through it.
@@ -831,6 +833,7 @@ impl Session {
                 },
                 engine: engine.clone(),
                 hints: hints.clone(),
+                peek: super_peek.clone(),
             },
             sync.clone(),
             &overview,
@@ -1073,7 +1076,6 @@ impl Session {
                 overlays: overlays.clone(),
                 desk: Rc::clone(&desk_overlays),
                 reveals: Rc::clone(&reveals),
-                super_tap: Rc::clone(&super_tap),
                 panel: panel_keys.clone(),
             },
             options.scale,
@@ -1500,6 +1502,7 @@ impl Session {
             invocations,
             triggered,
             super_tap,
+            super_peek,
             commands,
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),

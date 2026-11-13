@@ -40,6 +40,7 @@ use crate::search_overlay::SearchOverlay;
 use crate::shortcuts::{page_fixed_action, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
+use crate::super_peek::SuperPeek;
 use crate::topbar::{Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{Switcher, SwitcherAsk};
@@ -133,6 +134,8 @@ pub struct DesktopChrome {
     notices: Option<NotificationLayer>,
     /// Alt+Tab's panel, as the desk's walk last said what it shows.
     switcher: Switcher,
+    /// The keys a held Super reaches, as the session says them.
+    peek: SuperPeek,
     /// The desktop's control hints, what this frame shows them, and the person's record as the
     /// settings last held it.
     hints: ControlHints,
@@ -165,17 +168,20 @@ enum PaintedOverlay {
     Search,
     /// Alt+Tab's panel of windows.
     Switcher,
+    /// The keys a held Super reaches.
+    Peek,
 }
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::StripLabels,
         Self::Emoji,
         Self::Hint,
         Self::Identify,
         Self::Search,
         Self::Switcher,
+        Self::Peek,
     ];
 
     /// The key its node keeps in the chrome's tree, so the id survives the other overlays opening
@@ -188,6 +194,7 @@ impl PaintedOverlay {
             Self::Identify => "chrome-display-identify",
             Self::Search => "chrome-search-palette",
             Self::Switcher => "chrome-window-switcher",
+            Self::Peek => "chrome-super-peek",
         })
     }
 
@@ -200,6 +207,7 @@ impl PaintedOverlay {
             Self::Identify => chrome.identify.is_up(ui::time::now()),
             Self::Search => chrome.search.is_open(),
             Self::Switcher => chrome.switcher.is_up(),
+            Self::Peek => chrome.peek.is_up(),
         }
     }
 }
@@ -260,6 +268,7 @@ impl DesktopChrome {
             search,
             notices,
             switcher: Switcher::default(),
+            peek: SuperPeek::default(),
             hints: ControlHints::new(ui::control_hints::Learned::default()),
             hints_frame: HintFrame::default(),
             hints_feed: None,
@@ -272,6 +281,11 @@ impl DesktopChrome {
     /// pictures stand in its wells.
     pub fn set_switcher(&mut self, switcher: Switcher) {
         self.switcher = switcher;
+    }
+
+    /// Draw the keys a held Super reaches as `peek` says them.
+    pub fn set_super_peek(&mut self, peek: SuperPeek) {
+        self.peek = peek;
     }
 
     /// Follow the bars' reveal with `reveals` , which the desk's band reads too: when each bar
@@ -601,6 +615,7 @@ impl DesktopChrome {
             PaintedOverlay::Identify => self.identify.accessibility(ui::time::now()),
             PaintedOverlay::Search => self.search.accessibility(),
             PaintedOverlay::Switcher => self.switcher.accessibility(),
+            PaintedOverlay::Peek => self.peek.accessibility(),
         }
     }
 
@@ -1751,6 +1766,7 @@ impl DesktopChrome {
             || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
             || self.switcher.needs_redraw()
+            || self.peek.needs_redraw(ui::time::now())
             || self
                 .children()
                 .iter()
@@ -2421,6 +2437,9 @@ impl Widget for DesktopChrome {
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);
         self.switcher.draw(scene, transform, text, theme, host);
+        // Over all of it, and in the way of nothing: the keys a held Super reaches take no input,
+        // so the switcher a chord of them opens is never under them for long.
+        self.peek.draw(scene, transform, text, theme, host);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -2677,6 +2696,7 @@ impl Widget for DesktopChrome {
         self.hints.needs_animation_frame(ui::time::now())
             || self.emoji.needs_animation_frame()
             || self.fullscreen_hint.is_moving(ui::time::now())
+            || self.peek.is_moving(ui::time::now())
             || self.identify.is_moving(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
             || self
@@ -2703,6 +2723,7 @@ impl Widget for DesktopChrome {
         )
         .chain(self.reveals.borrow().deadline())
         .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
+        .chain(self.peek.next_wake_deadline(ui::time::now()))
         .chain(self.identify.next_wake_deadline(ui::time::now()))
         .chain(self.hints.next_wake_deadline(ui::time::now()))
         .min()

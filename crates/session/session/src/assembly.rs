@@ -115,6 +115,8 @@ pub(crate) struct Shared {
     /// Super alone, as the compositor reads it: the search a tap opens and
     /// the keys a hold shows, which the pass answers.
     pub(crate) super_tap: Rc<RefCell<tilo_session_core::super_tap::SuperTap>>,
+    /// The keys a hold shows, which the chrome draws over the desk.
+    pub(crate) super_peek: tilo_desktop::super_peek::SuperPeek,
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
     pub(crate) commands: Rc<RefCell<Vec<crate::controls::SessionCommand>>>,

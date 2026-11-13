@@ -378,7 +378,7 @@ impl SurfaceHost for NativeKeys {
 
 impl Shared {
     /// What tapping or holding Super alone asked for, as the compositor read it: the search of a
-    /// tap, the shortcut guide of a hold, and the guide going with the key that ended the hold.
+    /// tap, the keys a hold reaches, and those going with the release or the chord that ended it.
     pub(crate) fn follow_super_tap(&self, locked: bool) {
         let asks = {
             let mut tap = self.super_tap.borrow_mut();
@@ -394,22 +394,43 @@ impl Shared {
                     .borrow_mut()
                     .push(Invocation::shortcut(ShortcutAction::Search)),
                 Ask::Hints => {
-                    // A guide the person put up themselves (F1) is not the hold's to replace.
+                    // The guide the person put up themselves (F1) already says every key.
                     if self.shortcut_guide.up() {
                         self.super_tap.borrow_mut().took_hints();
                     } else {
-                        self.shortcut_guide.show();
-                        if !self.shortcut_guide.up() {
-                            self.super_tap.borrow_mut().took_hints();
-                        }
+                        self.super_peek
+                            .show(self.shortcut_guide.peek(self.peek_desk()));
                     }
                 }
-                Ask::HintsGone => self.shortcut_guide.hide(),
+                Ask::HintsGone => self.super_peek.hide(),
             }
         }
     }
 
-    /// When a held Super turns into the shortcut guide.
+    /// What the desk holds where the person works: the windows of the shown strip, and the tabs
+    /// of the focused one.
+    fn peek_desk(&self) -> tilo_sheets::shortcut_guide::PeekDesk {
+        self.handle
+            .read(|tree| {
+                let strip_id = tree.active_strip_id()?;
+                let strip = tree
+                    .active_workspace()?
+                    .strips
+                    .iter()
+                    .find(|strip| strip.id == strip_id)?;
+                let tabs = tree
+                    .active_group_for(strip_id)
+                    .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
+                    .map_or(0, |group| group.tabs.len());
+                Some(tilo_sheets::shortcut_guide::PeekDesk {
+                    windows: strip.window_groups.len(),
+                    tabs,
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// When a held Super turns into the keys it reaches.
     pub(crate) fn super_tap_deadline(&self) -> Option<Instant> {
         self.super_tap.borrow().deadline()
     }
