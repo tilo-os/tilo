@@ -706,11 +706,11 @@ try {
   const first = await stranger.tab.evaluate(opened).catch(() => '');
   if (first) await fail(`a workspace named ${named} was open before the person made one: ${first}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
-  const second = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
-  if (second === report.returned?.room) await fail(`the second workspace is the first one again: ${second}`);
-  report.secondWorkspace = {room: second, name: named, title: await stranger.tab.evaluate(`document.title`)};
+  const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
+  if (made === report.returned?.room) await fail(`the second workspace is the first one again: ${made}`);
+  report.secondWorkspace = {room: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
-  console.log(`ok: the person made and opened a second workspace (${named}, ${second})`);
+  console.log(`ok: the person made and opened a second workspace (${named}, ${made})`);
   mark('the person made a second workspace');
 
   // -- 6. a visitor with no invitation is still out --------------------------
