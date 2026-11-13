@@ -246,10 +246,12 @@ fn no_page_shows_a_block_nothing_painted() {
                         run < PAINTED_BLACK * (scale as usize) * (scale as usize),
                         "{what} is black where the page paints its own surface"
                     );
-                    // The last page of a size is drawn once more by a renderer
-                    // of its own: every page before it went through the kept
-                    // one, and none of them may show in what it draws now.
-                    if Category::ALL.last() == Some(&category) && look == "light" {
+                    // The last page of a size is drawn once more, in each
+                    // look, by a renderer of its own: every page before it
+                    // went through the kept one, the dark frame after a light
+                    // one and the light frame after a dark one, and none of
+                    // them may show in what it draws now.
+                    if Category::ALL.last() == Some(&category) {
                         assert!(
                             harness.render_rgba() == rgba,
                             "{what}: the renderer kept across pages draws what a new one draws"
