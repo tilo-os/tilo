@@ -639,6 +639,9 @@ pub struct TextInput {
     /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
     /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
     selection_event: Option<crate::component::Event>,
+    /// Escape let go of what was being typed ([`Self::set_cancel_event`]): the field clears, and
+    /// what holds it is told, so a caret on a canvas goes away with it.
+    cancel_event: crate::component::Event,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
     /// Enter's submit, published as the field's view action `submit`
@@ -973,6 +976,7 @@ impl TextInput {
             document_inset: false,
             on_submit: None,
             selection_event: None,
+            cancel_event: crate::component::Event::None,
             submit_action: None,
             submit_view: None,
             submitted: None,
@@ -3999,6 +4003,22 @@ impl TextInput {
     pub fn with_selection_event(mut self, event: crate::component::Event) -> Self {
         self.selection_event = Some(event);
         self
+    }
+
+    /// Tell `event` when Escape lets go of what is being typed: the field clears first.
+    pub fn set_cancel_event(&mut self, event: crate::component::Event) {
+        self.cancel_event = event;
+    }
+
+    /// Escape let go of the field: what holds it is told, and nothing typed is kept. `false`
+    /// when nothing listens, so Escape is the field's as it always was.
+    pub(crate) fn cancel(&mut self) -> bool {
+        if self.cancel_event.is_none() {
+            return false;
+        }
+        self.set_text("");
+        self.cancel_event.fire(None);
+        true
     }
 
     pub fn set_selection_event(&mut self, event: crate::component::Event) {

@@ -66,7 +66,7 @@ fn session(root: &std::path::Path) -> Session {
     .expect("session");
     common::show_preset(&mut session, "Frames");
     common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+        common::on_screen(session, common::CANVAS).is_some()
     });
     session
 }
@@ -599,24 +599,12 @@ fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn
     let root = common::private_home();
     let mut session = common::seeded_session(root.path());
     common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+        common::on_screen(session, common::CANVAS).is_some()
     });
     // The person asks the workspace's agent a question: the session opens the conversation and
     // places it on the canvas.
-    common::press(&mut session, common::CANVAS_ENTRY);
-    common::type_text(&mut session, "what is left?");
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(tilo_compositor::InputEvent::Key {
-                keycode: 28,
-                pressed,
-            })
-            .expect("a key");
-        session
-            .step(std::time::Duration::from_millis(1))
-            .expect("a frame");
-    }
+    let at = common::free_point(&mut session);
+    common::point_and_say(&mut session, at, "what is left?");
     let placed = common::wait_for(&mut session, "the conversation placed", |session| {
         common::places(session)
             .into_iter()
@@ -919,11 +907,10 @@ fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_on
     let root = common::private_home();
     let mut session = common::seeded_session(root.path());
     common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+        common::on_screen(session, common::CANVAS).is_some()
     });
-    common::press(&mut session, common::CANVAS_ENTRY);
-    common::type_text(&mut session, "what is left?");
-    press_enter(&mut session);
+    let at = common::free_point(&mut session);
+    common::point_and_say(&mut session, at, "what is left?");
     let address = common::wait_for(&mut session, "the conversation placed", |session| {
         common::places(session)
             .into_iter()

@@ -3392,6 +3392,8 @@ pub use send_to::{SendToBox, SendToFocus};
 pub mod attached;
 mod hover_toolbar;
 pub use hover_toolbar::HoverToolbar;
+mod canvas_place;
+pub use canvas_place::{CanvasPlace, PlaceProps};
 mod swipe_row;
 pub use attached::{
     Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,

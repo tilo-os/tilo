@@ -641,6 +641,16 @@ name = "y"
 required = false
 type = "int"
 
+[[resources.verbs.params]]
+name = "width"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "height"
+required = false
+type = "int"
+
 [[resources.verbs]]
 id = "open"
 kind = "undoable"

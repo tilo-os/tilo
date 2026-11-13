@@ -37,7 +37,7 @@ use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+use common::{CANVAS, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// Click the shell's control `name` through the test-control socket, as the person does: the
 /// socket takes the click, and what it presses is what stands there.
@@ -146,7 +146,7 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
     click(&mut session, &socket, "Frames");
     assert!(
         reached(&mut session, |session| session
-            .shell_control(CANVAS_ENTRY)
+            .shell_control(CANVAS)
             .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0)),
         "the canvas: {:?}",
         session.accessible_labels()
@@ -417,10 +417,10 @@ fn written(shot: &image::RgbaImage, rect: (f64, f64, f64, f64)) -> usize {
     light
 }
 
-/// Text typed through the socket into the canvas's entry reaches it: a click on the entry puts
-/// the caret there, and what is typed stands in the field as the person's own typing does.
+/// Text typed through the socket at the canvas's caret reaches it: a click on the canvas's free
+/// ground puts the caret there, and what is typed stands at it as the person's own typing does.
 #[test]
-fn text_typed_through_the_socket_reaches_the_canvas_entry() {
+fn text_typed_through_the_socket_reaches_the_canvas_caret() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
@@ -443,15 +443,15 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
     click(&mut session, &socket, "Frames");
     assert!(
         reached(&mut session, |session| session
-            .shell_control(CANVAS_ENTRY)
+            .shell_control(CANVAS)
             .is_some()),
         "the canvas: {:?}",
         session.accessible_labels()
     );
 
-    // The press a person's pointer makes on the field, waited out as a hand's is (the frame it
-    // lands on is the one that shows it), then text as the socket writes it.
-    let (x, y, w, h) = session.shell_control(CANVAS_ENTRY).expect("the entry");
+    // The press a person's pointer makes on the canvas's free ground, waited out as a hand's is
+    // (the frame it lands on is the one that shows it), then text as the socket writes it.
+    let (x, y, w, h) = session.shell_control(CANVAS).expect("the canvas");
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     assert_eq!(
         ask(
@@ -460,11 +460,11 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
             &json!({"op": "click_at", "x": cx, "y": cy})
         ),
         json!({"ok": {}}),
-        "the click on the entry is taken"
+        "the click on the canvas is taken"
     );
     assert!(
         session.compositor().host_takes_keys(),
-        "the press put the caret in the entry: {:?}",
+        "the press put the caret on the canvas: {:?}",
         session.accessible_labels()
     );
     let typed = ask(
@@ -475,7 +475,7 @@ fn text_typed_through_the_socket_reaches_the_canvas_entry() {
     assert_eq!(typed, json!({"ok": {}}), "the text is typed");
     assert!(
         reached(&mut session, |session| session.shell_says("groceries")),
-        "the entry shows what was typed: {:?}; the shell refused {:?}",
+        "the caret shows what was typed: {:?}; the shell refused {:?}",
         session.accessible_labels(),
         session.shell_refusals()
     );
@@ -513,7 +513,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         .is_some()));
     click(&mut session, &socket, "Frames");
     assert!(reached(&mut session, |session| session
-        .shell_control(CANVAS_ENTRY)
+        .shell_control(CANVAS)
         .is_some()));
 
     let (workspace, row) = {

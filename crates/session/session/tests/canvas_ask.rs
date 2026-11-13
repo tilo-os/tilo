@@ -38,16 +38,13 @@ use tilo_compositor::InputEvent;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use common::{
-    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
-};
+use common::{CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for};
 
 /// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and the one the session
 /// makes first when the workspace keeps none.
 const AGENT: &str = "assistant";
 
 /// Enter, the key that submits the canvas entry.
-const KEY_ENTER: u32 = 28;
 
 /// This computer as the person "Quinn Davis": a device of theirs, certified under the person's
 /// root key, kept in an identity root of the test's own — so the session seats them by their root
@@ -103,7 +100,7 @@ fn session(root: &std::path::Path) -> Session {
     });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     session
 }
@@ -140,21 +137,11 @@ fn channels(chat: &Chat) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Type `text` in the canvas entry and press Enter: the person asking, through the shell's own
-/// action.
+/// Point at the canvas's free ground and say `text` there: the person asking, through the
+/// caret pointing puts down and the shell's own action.
 fn ask(session: &mut Session, text: &str) {
-    common::press(session, CANVAS_ENTRY);
-    common::type_text(session, text);
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::Key {
-                keycode: KEY_ENTER,
-                pressed,
-            })
-            .expect("a key");
-        session.step(Duration::from_millis(1)).expect("a frame");
-    }
+    let at = common::free_point(session);
+    common::point_and_say(session, at, text);
 }
 
 /// What the person's ask made: the agent the workspace keeps, the message they asked on, the

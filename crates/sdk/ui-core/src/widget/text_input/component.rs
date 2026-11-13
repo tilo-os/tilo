@@ -57,6 +57,10 @@ pub struct TextInputProps {
     /// keeps its selection private.
     #[component(event(value = String))]
     pub select: Event,
+    /// Escape let go of what was being typed: the field clears, and what it stands in goes
+    /// (a caret on the canvas).
+    #[component(event)]
+    pub cancel: Event,
 }
 
 impl Default for TextInputProps {
@@ -76,6 +80,7 @@ impl Default for TextInputProps {
             key: None,
             submit: Event::None,
             select: Event::None,
+            cancel: Event::None,
         }
     }
 }
@@ -113,6 +118,7 @@ impl Described for TextInput {
             key: _,
             submit,
             select,
+            cancel,
         } = props;
         // Text given beside a field it binds nothing to is read-only: a message body, a log.
         let read_only = read_only || text.is_some();
@@ -168,6 +174,7 @@ impl Described for TextInput {
             input = input.on_submit(move |text| submit.fire(Some(Value::Text(text.to_owned()))));
         }
         input = input.with_selection_event(select);
+        input.set_cancel_event(cancel);
         input
     }
 
@@ -189,6 +196,7 @@ impl Described for TextInput {
             key: _,
             submit,
             select,
+            cancel,
         } = props;
         let read_only = read_only || text.is_some();
         if !self.follows(&value.state) {
@@ -237,6 +245,7 @@ impl Described for TextInput {
         }
         self.enter_submits = self.enter_submits || title || entry;
         self.set_selection_event(select);
+        self.set_cancel_event(cancel);
         true
     }
 }

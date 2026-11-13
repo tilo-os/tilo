@@ -49,6 +49,20 @@ impl HoverToolbar {
     /// `row`, with `controls` shown over it on hover and focus.
     #[must_use]
     pub fn new(row: Element, controls: Vec<Element>) -> Self {
+        Self::around(crate::widget::arrange::Slot::new(row), controls)
+    }
+
+    /// `row` filling the room it is given — content standing at a size of its own, a place on a
+    /// canvas — with `controls` shown over it on hover and focus.
+    #[must_use]
+    pub fn filling(row: Element, controls: Vec<Element>) -> Self {
+        let mut slot = crate::widget::arrange::Slot::new(row);
+        slot.fit = crate::widget::arrange::Fit::fill(1.0);
+        Self::around(slot, controls)
+    }
+
+    /// The row in `row`, with `controls` shown over it on hover and focus.
+    fn around(row: crate::widget::arrange::Slot, controls: Vec<Element>) -> Self {
         let shown = Rc::new(Shown::default());
         let mut bar = Row::row().gap(Rhythm::Tight);
         for control in controls {
@@ -63,7 +77,7 @@ impl HoverToolbar {
             shown: Rc::clone(&shown),
         };
         let layers = Layers::layers()
-            .push(row)
+            .push_slot(row)
             // Over the row's top edge, half above it: a one-line message keeps its text clear.
             .push_straddling(Box::new(face), At::TopTrailing);
         Self {

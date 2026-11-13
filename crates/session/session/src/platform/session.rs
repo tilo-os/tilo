@@ -346,7 +346,8 @@ impl Session {
                         .map(|held| (held.id().to_string(), held.policy.clone()))
                 })?;
                 let agent = agents.keep_one(&workspace, &policy, &person)?;
-                let channel = conversations.ask(&person, &workspace, &policy, &agent, text)?;
+                let asked = conversations.ask(&person, &workspace, &policy, &agent, text)?;
+                let channel = asked.conversation.clone();
                 // A channel the ask just made is a resource the arrangement may place the moment
                 // it is asked to: search has not read Chat's record yet, so the resource as Chat
                 // publishes it — its default `page` view among them — is put where the catalog is
@@ -360,7 +361,13 @@ impl Session {
                         &crate::i18n::t("session-ask-conversation"),
                         false,
                     ));
-                Some(channel)
+                // The turn the ask opened, likewise: its view is what stands where the person
+                // asked (canvas.md §3).
+                let question = asked.turn.rsplit('/').next().unwrap_or_default().to_owned();
+                catalog
+                    .borrow_mut()
+                    .remember_resource(&crate::conversations::turn_resource(&question, text));
+                Some(asked)
             })
         };
         doors.add(Rc::new(RefCell::new(

@@ -277,6 +277,12 @@ pub enum ArrangementAction {
         x: i64,
         #[serde(default)]
         y: i64,
+        /// The size of the rectangle the person dragged, zero for a click: what is found is laid
+        /// out to it.
+        #[serde(default)]
+        width: i64,
+        #[serde(default)]
+        height: i64,
     },
     /// Float the place `place` above its workspace's windows at `float`:
     /// every member sees it there, and the strip it stands in is untouched,
@@ -327,11 +333,57 @@ pub struct Surface {
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
 /// What the canvas does with text that is a question, or that nothing matches (shell.md §8.1,
-/// "Asking from the canvas"): the session posts it as the person into their ask conversation with
-/// the workspace's agent, and answers the resource that conversation is, so the text typed stands
-/// as a place of it. `None` when the session cannot ask — no agent to ask, no workspace to ask in —
-/// and the text then fails to place as it always did.
-pub type Ask = Rc<dyn Fn(&str) -> Option<String>>;
+/// "Asking from the canvas"; canvas.md §3): the session posts it as the person into their ask
+/// conversation with the workspace's agent, and answers what that made ([`Asked`]): the
+/// conversation, and the turn the message opened, whose view stands where the person typed.
+/// `None` when the session cannot ask — no agent to ask, no workspace to ask in — and the text
+/// then fails to place as it always did.
+pub type Ask = Rc<dyn Fn(&str) -> Option<Asked>>;
+
+/// What an ask made: the conversation the person's message was posted in, and the turn it opened
+/// (the message and the agent's reply to it), each by the resource the session publishes it as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    /// The conversation, by its address (`chat.workspace/channels/<id>`): what an agent's step in
+    /// the turn names as the place its turn is in.
+    pub conversation: String,
+    /// The turn, by its address: the resource whose `turn` view stands at the caret.
+    pub turn: String,
+}
+
+/// The view a turn stands on the canvas through (canvas.md §3): the person's line, the agent's
+/// reply under it, its steps folded.
+pub const TURN_VIEW: &str = "turn";
+
+/// How wide a turn stands when the person only clicked: the measure an answer reads at.
+const TURN_WIDTH: i64 = 520;
+/// How tall a turn stands when the person only clicked, and the most of a dragged rectangle it
+/// takes at its top: the rest is the room the agent's views fill.
+const TURN_HEIGHT: i64 = 240;
+/// The gap between a turn standing at a rectangle's top and the room left under it.
+const TURN_GAP: i64 = 16;
+/// The least room under a turn that the agent's views fill: a rectangle shorter than this is
+/// filled whole, and the turn's own view keeps its band over it.
+const LEAST_ROOM: i64 = 160;
+
+/// A rectangle on the canvas, in canvas pixels: its top-left corner and its size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanvasRect {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
+/// Where the places an agent makes in a turn stand (canvas.md §3, §6): the turn's own place, and
+/// the room the person dragged for its answer while nothing has filled it yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TurnAnchor {
+    /// The place the turn's view stands in.
+    place: u64,
+    /// The rectangle the person dragged, under the turn: the first place the turn makes fills it.
+    room: Option<CanvasRect>,
+}
 
 /// What a text typed on the canvas found, and where it stands: the inputs of
 /// [`Arrangement::place_found`] besides the arrangement itself.
@@ -347,10 +399,13 @@ pub struct Found<'a> {
     pub strip: Option<u64>,
     /// Where on the canvas it stands.
     pub at: (i64, i64),
+    /// The size of the rectangle the person dragged, when they dragged one: what is found fills
+    /// it, and an answer's views fill it (canvas.md §1). `None` for a click.
+    pub size: Option<(i64, i64)>,
     /// The system's search, [`Find`].
     pub find: &'a dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
     /// The ask for text that asks, [`Ask`].
-    pub ask: &'a dyn Fn(&str) -> Option<String>,
+    pub ask: &'a dyn Fn(&str) -> Option<Asked>,
     /// Whether anyone else's change is still in flight.
     pub busy: Busy,
 }
@@ -607,6 +662,10 @@ pub struct Arrangement {
     /// Actions that arrived under a gesture or while the person typed: they run in order once it
     /// ends.
     waiting: RefCell<VecDeque<(String, ArrangementAction)>>,
+    /// Each conversation's latest turn asked on the canvas, by the conversation's address: where
+    /// the places an agent's step in it makes stand. A turn is the session's while it runs, never
+    /// the record's: the record holds the places it made.
+    turns: RefCell<BTreeMap<String, TurnAnchor>>,
 }
 
 impl Arrangement {
@@ -622,6 +681,7 @@ impl Arrangement {
             names,
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
+            turns: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -767,6 +827,7 @@ impl Arrangement {
             view,
             strip,
             at,
+            size,
             find,
             ask,
             busy,
@@ -775,6 +836,9 @@ impl Arrangement {
         if text.is_empty() {
             return Err("nothing is typed to place".into());
         }
+        // A rectangle the person dragged is its size; a click names none, and what stands there
+        // takes its own.
+        let size = size.filter(|(width, height)| *width > 0 && *height > 0);
         let found_resource = found(text, find, |resource| {
             self.catalog.borrow().get(resource).is_some()
         });
@@ -783,24 +847,19 @@ impl Arrangement {
         // (shell.md §8.1).
         let asked_agent =
             tilo_desktop_search::answers::question::asks(text) || found_resource.is_none();
-        let resource = if asked_agent {
-            ask(text)
-        } else {
-            found_resource
-        };
-        let Some(resource) = resource else {
+        if asked_agent {
+            let Some(turn) = ask(text) else {
+                return Err(format!("nothing matches {text:?}"));
+            };
+            return self.place_turn(asked, &turn, strip, at, size, busy);
+        }
+        let Some(resource) = found_resource else {
             return Err(format!("nothing matches {text:?}"));
         };
-        // A text that asks brings the conversation it is with forward rather than standing a second
-        // place of it: the same conversation belongs in one place (shell.md §8.1). Text that finds
-        // a resource places it where the person typed, as it always has — a second place of a note
-        // is the person's to make.
-        if asked_agent && let Some(held) = self.place_of(&resource) {
-            // The ask succeeded: its message is posted whether or not the conversation stood in
-            // front already, so bringing it forward tolerates that (`bring_forward`).
-            self.bring_forward(asked, held, busy)?;
-            return Ok(Some(held));
-        }
+        // What the text finds stands where the person pointed: at the point at its own size, or
+        // laid out to the rectangle they dragged (canvas.md §1). A second place of a note is the
+        // person's to make.
+        let (width, height) = size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -811,11 +870,71 @@ impl Arrangement {
             view: view.to_owned(),
             x: at.0,
             y: at.1,
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
+            width,
+            height,
             float: None,
         };
         self.ask(asked, action, busy)?;
+        Ok(Some(surface.place))
+    }
+
+    /// Stand the turn an ask opened where the person asked (canvas.md §3): its `turn` view at the
+    /// caret — at the measure an answer reads at for a click, or across the top of the rectangle
+    /// they dragged — and the turn kept as its conversation's anchor, so the places the agent's
+    /// steps in it make fill the rest of that rectangle, or stand beside the turn. One arranging
+    /// step of the person's; the conversation itself stays where it is, Chat's channel, and is
+    /// not placed.
+    fn place_turn(
+        &mut self,
+        asked: &str,
+        turn: &Asked,
+        strip: Option<u64>,
+        at: (i64, i64),
+        size: Option<(i64, i64)>,
+        busy: Busy,
+    ) -> Result<Option<u64>, String> {
+        if let Some(held) = self.place_of(&turn.turn) {
+            self.bring_forward(asked, held, busy)?;
+            return Ok(Some(held));
+        }
+        let (width, height, room) = match size {
+            None => (TURN_WIDTH, TURN_HEIGHT, None),
+            Some((width, height)) => {
+                let band = TURN_HEIGHT.min(height);
+                let left = height - band - TURN_GAP;
+                // The room under the turn's band is what the answer's views fill; a rectangle
+                // with too little of it under the band leaves them to stand beside the turn.
+                let room = (left >= LEAST_ROOM).then_some(CanvasRect {
+                    x: at.0,
+                    y: at.1 + band + TURN_GAP,
+                    width,
+                    height: left,
+                });
+                (width, band, room)
+            }
+        };
+        let surface = self.surface_at_strip(strip)?;
+        let action = ArrangementAction::Place {
+            workspace: surface.workspace,
+            row: surface.row,
+            strip: surface.strip,
+            place: surface.place,
+            resource: turn.turn.clone(),
+            view: TURN_VIEW.to_owned(),
+            x: at.0,
+            y: at.1,
+            width,
+            height,
+            float: None,
+        };
+        self.ask(asked, action, busy)?;
+        self.turns.borrow_mut().insert(
+            turn.conversation.clone(),
+            TurnAnchor {
+                place: surface.place,
+                room,
+            },
+        );
         Ok(Some(surface.place))
     }
 
@@ -943,7 +1062,34 @@ impl Arrangement {
             self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
-        let anchor = self.anchor_of(beside);
+        // A turn asked on the canvas anchors what its agent's steps make (canvas.md §3): the
+        // first place fills the rectangle the person dragged for the answer, and any other stands
+        // beside the turn's own place.
+        let turn = self.turn_of(beside);
+        if let Some(room) = turn.and_then(|turn| turn.room) {
+            let surface = self.surface_at()?;
+            let action = ArrangementAction::Place {
+                workspace: surface.workspace,
+                row: surface.row,
+                strip: surface.strip,
+                place: surface.place,
+                resource: resource.to_owned(),
+                view: view.to_owned(),
+                x: room.x,
+                y: room.y,
+                width: room.width,
+                height: room.height,
+                float: None,
+            };
+            self.ask(asked, action, Busy::default())?;
+            if let Some(held) = self.turns.borrow_mut().get_mut(beside.trim()) {
+                held.room = None;
+            }
+            return Ok(Some(surface.place));
+        }
+        let anchor = turn
+            .map(|turn| turn.place)
+            .or_else(|| self.anchor_of(beside));
         let surface = self.surface_at()?;
         // Where the new place stands: the free space next to the anchor (`free_place_next_to`),
         // its trailing side first, then below it, then further down the two columns the anchor
@@ -970,6 +1116,14 @@ impl Arrangement {
         };
         self.ask(asked, action, Busy::default())?;
         Ok(Some(surface.place))
+    }
+
+    /// The turn asked on the canvas in the conversation `beside` names, while its place stands.
+    fn turn_of(&self, beside: &str) -> Option<TurnAnchor> {
+        let turn = *self.turns.borrow().get(beside.trim())?;
+        self.handle
+            .read(|tree| locate(tree, turn.place).is_some())
+            .then_some(turn)
     }
 
     /// The place `beside` names: a place of the arrangement by its own resource
@@ -2338,6 +2492,18 @@ fn place_found_action() -> ActionSpec {
             ),
             optional("x", ParamType::Integer, "Its canvas x"),
             optional("y", ParamType::Integer, "Its canvas y"),
+            // A rectangle the person dragged: what is found is laid out to it, and an answer's
+            // views fill it. Left out, it stands at its own size.
+            optional(
+                "width",
+                ParamType::Integer,
+                "The width of the rectangle it fills, in canvas pixels; its own when left out",
+            ),
+            optional(
+                "height",
+                ParamType::Integer,
+                "The height of the rectangle it fills, in canvas pixels; its own when left out",
+            ),
         ],
         |args| ArrangementAction::PlaceFound {
             text: text(args, "text"),
@@ -2348,6 +2514,8 @@ fn place_found_action() -> ActionSpec {
                 .filter(|strip| *strip != 0),
             x: args.integer("x").unwrap_or_default(),
             y: args.integer("y").unwrap_or_default(),
+            width: args.integer("width").unwrap_or_default(),
+            height: args.integer("height").unwrap_or_default(),
         },
     )
 }
@@ -2594,9 +2762,12 @@ impl Door {
             strip,
             x,
             y,
+            width,
+            height,
         } = &action
         {
             let spot = (*x, *y);
+            let size = (*width > 0 && *height > 0).then_some((*width, *height));
             let find = Rc::clone(&self.find);
             let ask = Rc::clone(&self.ask);
             let placed = self.arrangement.borrow_mut().place_found(Found {
@@ -2605,6 +2776,7 @@ impl Door {
                 view,
                 strip: *strip,
                 at: spot,
+                size,
                 find: &*find,
                 ask: &*ask,
                 busy,
@@ -2791,116 +2963,5 @@ impl Door {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{found, most_specific, placed};
-    use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
-
-    /// A row text typed on the canvas would stand for: what it opens, and what it is.
-    fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {
-        Hit {
-            row: None,
-            preview: None,
-            faces: Vec::new(),
-            outcome: None,
-            kind,
-            provider: "test".into(),
-            id: resource.into(),
-            title: title.into(),
-            subtitle: None,
-            facts: Vec::new(),
-            score: 0,
-            icon: None,
-            target: Target::Invoke(Box::new(InvokeTarget::open("test", "", resource))),
-        }
-    }
-
-    /// A row for an action an app publishes on `resource` : `find` answers it (it is a row a caller
-    /// acts on) but a place does not stand it, so it is never what typing `text` places.
-    fn acting(resource: &str, action: &str) -> Hit {
-        Hit {
-            row: None,
-            preview: None,
-            faces: Vec::new(),
-            outcome: None,
-            kind: ResourceKind::Action,
-            provider: "test".into(),
-            id: format!("{resource}#{action}"),
-            title: action.into(),
-            subtitle: None,
-            facts: Vec::new(),
-            score: 0,
-            icon: None,
-            target: Target::Invoke(Box::new(InvokeTarget::action("test", "", resource, action))),
-        }
-    }
-
-    #[test]
-    fn the_text_places_the_top_result_of_the_hits_a_place_can_show() {
-        let hits = vec![
-            opening(
-                "settings.section:agent_models",
-                "Chat models",
-                ResourceKind::Record,
-            ),
-            opening("tl:so.tilo.lang.chat", "Chat", ResourceKind::Application),
-        ];
-        let showable = |resource: &str| resource == "tl:so.tilo.lang.chat";
-        assert_eq!(
-            found("Chat", &|_| hits.clone(), showable).as_deref(),
-            Some("tl:so.tilo.lang.chat"),
-            "a hit the arrangement cannot place does not stand in the way of one it can"
-        );
-        assert_eq!(
-            found("Chat", &|_| hits.clone(), |_| false),
-            None,
-            "and with nothing placeable, nothing is placed"
-        );
-    }
-
-    #[test]
-    fn the_text_places_the_hit_whose_resource_it_names() {
-        let named = [
-            (0, "notes", "Groceries"),
-            (1, "notes/i1", "Groceries"),
-            (2, "notes/i2", "Groceries"),
-        ];
-        assert_eq!(
-            most_specific(&named, "Groceries"),
-            Some(1),
-            "a note titled like its notebook is the note, and the top of them"
-        );
-        assert_eq!(
-            most_specific(&named, "my notes"),
-            Some(0),
-            "a resource the text only describes stays itself"
-        );
-        assert_eq!(
-            most_specific(&[(0, "inbox", "Inbox")], "inbox"),
-            Some(0),
-            "and the top stays when nothing inside it carries the same name"
-        );
-    }
-
-    #[test]
-    fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
-        // "my mails" ranks Mail's actions far above Mail's root, as the search does: the root's own
-        // row stands last of the rows about it.
-        let hits = vec![
-            acting("tl:so.tilo.lang.mail:root", "rename_label"),
-            acting("tl:so.tilo.lang.mail:root/account", "set_signature"),
-            opening("tl:so.tilo.lang.mail:root", "Mail", ResourceKind::Record),
-        ];
-        let at = placed(&hits, "my mails", |_| true);
-        assert_eq!(
-            at,
-            Some(2),
-            "the row typing the text stands is the row that opens the resource, \
-             not another row about it"
-        );
-        assert_eq!(
-            found("my mails", &|_| hits.clone(), |_| true).as_deref(),
-            Some("tl:so.tilo.lang.mail:root"),
-            "and the canvas stands its resource"
-        );
-    }
-}
+#[path = "arrangement_tests.rs"]
+mod tests;

@@ -784,10 +784,10 @@ impl Conversations {
     /// and both are made with Chat's own actions on its own record: the
     /// session invents no record, no conversation and no message.
     ///
-    /// Returns the resource the conversation is published as
-    /// (`chat.workspace/channels/<id>`), so the canvas places the very
-    /// channel Chat shows, drawn by Chat's own view — never a second chat
-    /// (shell.md §8.1, "The view"). `None` when there is no workspace in
+    /// Returns what the ask made: the conversation as it is published
+    /// (`chat.workspace/channels/<id>`), and the turn the message opened
+    /// (`chat.workspace/turns/<message>`), which the canvas stands where the
+    /// person asked (canvas.md §3). `None` when there is no workspace in
     /// front to ask in, no agent the workspace keeps, or Chat refused.
     pub(crate) fn ask(
         &self,
@@ -796,7 +796,7 @@ impl Conversations {
         policy: &WorkspacePolicy,
         agent: &str,
         text: &str,
-    ) -> Option<String> {
+    ) -> Option<crate::arrangement::Asked> {
         let Some((chat, part)) = self.opened_with(
             &WorkspaceFacts {
                 workspace: workspace.to_owned(),
@@ -862,12 +862,57 @@ impl Conversations {
             tracing::warn!(%error, %workspace, "the person's question was not posted");
             return None;
         }
-        // The conversation as Chat publishes a channel: its item resource, so a place of it is the
-        // channel Chat's own window shows, drawn by Chat's `conversation` view
+        // The message the post made: the newest one the person wrote in the conversation with
+        // these words. Chat mints its id as it posts, so it is read back from the part.
+        let question = Self::newest_question(&chat, &part, id.as_str(), text)?;
+        // The conversation as Chat publishes a channel: its item resource
         // (`chat.workspace/channels/<id>`), never the record as a whole.
-        Some(tilo_resource::items::item_resource_id::<chat::Chat>(
-            "channels", &id,
-        ))
+        Some(crate::arrangement::Asked {
+            conversation: tilo_resource::items::item_resource_id::<chat::Chat>("channels", &id),
+            turn: turn_address(&question),
+        })
+    }
+
+    /// The newest message a person wrote in `channel` that says `text`: the question a post just
+    /// made.
+    fn newest_question(
+        chat: &WorkspaceRecord<chat::Chat>,
+        part: &WorkspaceRecord<chat::parts::ChatPart>,
+        channel: &str,
+        text: &str,
+    ) -> Option<String> {
+        let chat = chat.get();
+        let held = chat::parts::ChatPart::clone(part.get().as_ref());
+        // The part number does not matter to a read of one part's rows.
+        let messages = chat::messages::Messages::new(vec![(0, std::rc::Rc::new(held))]);
+        chat.message_rows(&messages, channel)
+            .iter()
+            .rev()
+            .find(|row| person_of(&row.author).is_some() && row.text.trim() == text.trim())
+            .map(|row| row.id.clone())
+    }
+
+    /// The turn the message `question` opened, as its place draws it (canvas.md §3): the message
+    /// and what the agent answered, read from the conversation holding it. `None` where no open
+    /// workspace holds the message.
+    #[must_use]
+    pub fn turn_reading(&self, question: &str) -> Option<chat::views::Turn> {
+        let channel = self.channel_of_message(question)?;
+        let page = self.channel_reading(&channel)?;
+        chat::views::Turn::of(&page, question)
+    }
+
+    /// The conversation the message `message` was posted in, by its id.
+    fn channel_of_message(&self, message: &str) -> Option<String> {
+        let open = self.open.borrow();
+        open.values().find_map(|opened| {
+            let (_, part) = opened.part.as_ref()?;
+            let part = part.get();
+            part.messages
+                .iter()
+                .find(|(id, _)| id.as_str() == message)
+                .map(|(_, held)| held.channel.as_str().to_owned())
+        })
     }
 
     /// Read each workspace's conversations as `person`, and hand the turns
@@ -1115,6 +1160,36 @@ pub(crate) fn channel_resource(
         .with_action(detach_action())
 }
 
+/// Where a turn is published: `chat.workspace/turns/<message>`, by the message that asked.
+const TURNS: &str = "chat.workspace/turns/";
+
+/// The turn the message `question` opened, by its address.
+#[must_use]
+pub(crate) fn turn_address(question: &str) -> String {
+    format!("{TURNS}{question}")
+}
+
+/// One turn as a place's resource (canvas.md §3): the message `question` a person asked an agent
+/// in, named by what they asked, through Chat's `turn` view, with the failure row's `retry`.
+#[must_use]
+pub(crate) fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
+    let label = asked.lines().next().unwrap_or_default().trim();
+    let mut spec =
+        tilo_actions::ResourceSpec::new(turn_address(question), chat::views::TURN_KIND, label)
+            .with_view(tilo_actions::ResourceViewSpec::new(
+                crate::arrangement::TURN_VIEW,
+                label.to_owned(),
+                "open",
+            ))
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new("answer", "answers"),
+                app: tilo_actions::Noun::new("Chat", "Chat"),
+                root: false,
+            });
+    spec.app_id = Some("chat".to_owned());
+    spec.with_action(retry_action())
+}
+
 /// The channel's `attach` action: what a drop on the composer runs. It takes the resource the
 /// drag carried and appends it to the composer's draft, which `post` then carries into the
 /// message the person sends.
@@ -1347,6 +1422,23 @@ impl tilo_service::Service for ChatViewService {
                     channel_resource(id.as_str(), &conversation.name, conversation.is_channel());
                 specs.push(spec);
             }
+            // Each question a person asked an agent, as the turn it opened: what a place on the
+            // canvas shows where they asked (canvas.md §3). Only conversations with an agent in
+            // them have turns.
+            if let Some((_, part)) = &opened.part {
+                let part = part.get();
+                for (id, message) in part.messages.iter() {
+                    if person_of(&message.author.0).is_none() || message.text.trim().is_empty() {
+                        continue;
+                    }
+                    let with_agent = chat.conversation_participants(&message.channel).iter().any(
+                        |participant| matches!(participant, chat::record::Participant::Agent(_)),
+                    );
+                    if with_agent {
+                        specs.push(turn_resource(id.as_str(), &message.text));
+                    }
+                }
+            }
             // Each turn's summons, as Chat publishes a message's item: the message a person
             // asked the agent in, which Chat's own `record-work` writes the answer to. The
             // agent's address *is* that answer's — derived from the summons and the agent
@@ -1379,6 +1471,10 @@ impl tilo_service::Service for ChatViewService {
     }
 
     fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        if let Some(question) = resource.strip_prefix(TURNS) {
+            let reading = self.conversations.turn_reading(question)?;
+            return serde_json::to_value(&reading).ok();
+        }
         let channel = resource
             .strip_prefix("chat.workspace/channels/")
             .or_else(|| resource.strip_prefix("chat.workspace.channels:"))?;

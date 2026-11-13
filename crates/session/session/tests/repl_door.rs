@@ -28,9 +28,9 @@ use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    CANVAS_ENTRY, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen,
-    place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
-    seeded_session, show_preset, until,
+    CANVAS, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen, place_the_inbox,
+    placed, placed_resources, press_sheet, private_home, repl_session, seeded_session, show_preset,
+    until,
 };
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
@@ -143,7 +143,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     // The framed canvas, as the person shows it.
     show_preset(session, "Frames");
     until(session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
 
     // A `tilo` program places the note on the arrangement, as the person.
@@ -620,7 +620,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -695,7 +695,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
     });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -1092,7 +1092,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -1175,7 +1175,7 @@ fn the_repl_finds_what_place_found_places() {
     });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);

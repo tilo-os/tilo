@@ -128,7 +128,7 @@ fn session(root: &std::path::Path) -> Session {
     );
     common::show_preset(&mut session, "Frames");
     common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+        common::on_screen(session, common::CANVAS).is_some()
     });
     session
 }

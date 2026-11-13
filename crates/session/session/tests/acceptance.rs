@@ -29,8 +29,8 @@ use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
-    CANVAS_ENTRY, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources,
-    preset_menu, press, press_sheet, private_home, seeded_session, type_text, until,
+    CANVAS, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, preset_menu,
+    press, press_sheet, private_home, seeded_session, type_text, until,
 };
 
 /// Step 1: the session starts with the tilolang shell as the whole screen — its bar across the top,
@@ -79,7 +79,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         on_screen(session, "Frames").is_none()
     });
     assert!(
-        on_screen(&session, CANVAS_ENTRY).is_none(),
+        on_screen(&session, CANVAS).is_none(),
         "the strips stand first, not the canvas"
     );
 
@@ -172,7 +172,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
 
     // The framed canvas first: the entry typed at stands, and no strip does.
     assert!(
-        on_screen(&session, CANVAS_ENTRY).is_some(),
+        on_screen(&session, CANVAS).is_some(),
         "the canvas stands: {:?}",
         session.accessible_labels()
     );
@@ -184,7 +184,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
-        on_screen(session, CANVAS_ENTRY).is_none()
+        on_screen(session, CANVAS).is_none()
             && preset_menu(session).as_deref() == Some("Showing Strips")
     });
 
@@ -533,19 +533,22 @@ fn title_field(session: &Session, value: &str) -> Option<(usize, ui::accesskit::
     None
 }
 
-/// What the person types in the canvas's entry stands in it as they type: the entry keeps its words
-/// while the shell's record moves under it.
+/// What the person types at the caret they pointed stands in it as they type: the caret keeps its
+/// words while the shell's record moves under it.
 #[test]
-fn typing_in_the_canvas_entry_shows_what_is_typed() {
+fn typing_at_the_canvas_caret_shows_what_is_typed() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    until(&mut session, "the canvas entry", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
-    });
-    press(&mut session, CANVAS_ENTRY);
+    let at = common::free_point(&mut session);
+    common::click(&mut session, at);
+    until(
+        &mut session,
+        "the caret where the person pointed",
+        |session| on_screen(session, common::CANVAS_CARET).is_some(),
+    );
     type_text(&mut session, "groceries");
-    until(&mut session, "the typed words in the entry", |session| {
+    until(&mut session, "the typed words at the caret", |session| {
         session.shell_says("groceries")
     });
 }

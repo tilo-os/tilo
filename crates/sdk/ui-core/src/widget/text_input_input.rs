@@ -441,6 +441,9 @@ impl TextInput {
             Key::Named(NamedKey::Home) => self.handle_home(shift, ctrl, handled),
             Key::Named(NamedKey::End) => self.handle_end(shift, ctrl, handled),
             Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, handled),
+            Key::Named(NamedKey::Escape) if self.cancel() => {
+                *handled = true;
+            }
             Key::Named(NamedKey::Escape) if self.entry && !self.text.is_empty() => {
                 // A list's entry is a draft until it is committed: Escape drops it, leaving no
                 // item behind.

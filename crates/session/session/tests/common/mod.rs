@@ -37,10 +37,16 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 
-/// The canvas's entry, as assistive technology names it: a field bound to a view's state takes the
-/// name the view gives it for a person to read, its own words, rather than the state's name in the
-/// code (`typed`).
-pub const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The canvas, as assistive technology names it: the map the framed desk style draws its places
+/// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.
+pub const CANVAS: &str = "Canvas";
+/// The caret pointing puts on the canvas (canvas.md §1), as assistive technology names it: the
+/// field's own words for a person to read.
+pub const CANVAS_CARET: &str = "Find or ask";
+/// The Enter key, as the compositor's keyboard reads it.
+pub const KEY_ENTER: u32 = 28;
+/// The Escape key.
+pub const KEY_ESCAPE: u32 = 1;
 /// The launcher's field, announced the same way: the view's own words for it, not the state's name
 /// in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
@@ -298,6 +304,91 @@ pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
             .unwrap();
         session.step(Duration::from_millis(1)).unwrap();
     }
+}
+
+/// Move the pointer to the screen point `at`.
+pub fn point_to(session: &mut Session, at: (f64, f64)) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: at.0, y: at.1 })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+}
+
+/// Press or let go of the left button where the pointer is.
+fn left(session: &mut Session, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed,
+        })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+}
+
+/// Click the screen point `at`, as the person does.
+pub fn click(session: &mut Session, at: (f64, f64)) {
+    point_to(session, at);
+    left(session, true);
+    left(session, false);
+}
+
+/// Drag from the screen point `from` to `to` with the left button, in steps, as a hand does.
+pub fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
+    point_to(session, from);
+    left(session, true);
+    for step in 1..=8 {
+        let t = f64::from(step) / 8.0;
+        point_to(
+            session,
+            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t),
+        );
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    left(session, false);
+}
+
+/// Press and let go of the key `keycode`.
+pub fn key(session: &mut Session, keycode: u32) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+/// A screen point on the canvas's free ground: in its lower right, where no place stands until
+/// something is put there.
+pub fn free_point(session: &mut Session) -> (f64, f64) {
+    let (x, y, w, h) = wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
+    (x + w * 0.7, y + h * 0.75)
+}
+
+/// Point at the screen point `at` on the canvas's free ground and say `text` there: the click puts
+/// the caret there, the keys type into it and Enter sends it (canvas.md §1). The one way every
+/// test asks or finds on the canvas.
+pub fn point_and_say(session: &mut Session, at: (f64, f64), text: &str) {
+    click(session, at);
+    say(session, text);
+}
+
+/// Drag a rectangle on the canvas's free ground from `from` to `to` and say `text` in it: the
+/// caret stands inside the rectangle, and what the words find fills it (canvas.md §1).
+pub fn frame_and_say(session: &mut Session, from: (f64, f64), to: (f64, f64), text: &str) {
+    drag(session, from, to);
+    say(session, text);
+}
+
+/// Say `text` at the caret pointing put on the canvas: type it, then Enter.
+pub fn say(session: &mut Session, text: &str) {
+    until(session, "the caret where the person pointed", |session| {
+        on_screen(session, CANVAS_CARET).is_some()
+    });
+    type_text(session, text);
+    key(session, KEY_ENTER);
 }
 
 /// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a time,
@@ -608,7 +699,7 @@ pub fn seeded_session_at(
     .expect("session");
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     session
 }

@@ -556,6 +556,44 @@
       }
     },
     {
+      "name": "Place",
+      "doc": "A resource's view standing on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the place shows, as its handle names it and assistive technology reads it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "carries",
+          "doc": "The resource the place shows, by its published address: what picking the handle up carries, so letting it go on the canvas moves the place and on a composer attaches it.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        }
+      ],
+      "slots": [
+        {
+          "name": "controls",
+          "doc": "The handle's controls after the name: the resource's actions, pin and close.",
+          "accepts": "view"
+        },
+        {
+          "name": "body",
+          "doc": "The view the place shows, filling it.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "Card",
       "doc": "A summary of one thing on a surface of its own: a dashboard's tile, a resource's preview. Pressing it opens what it stands for.",
       "props": [
@@ -5040,6 +5078,10 @@
           "name": "select",
           "doc": "The selection settled (a drag let go, a double click, a select all, shift and an arrow key): carries the run selected as `<start>:<end>`, byte offsets into the text, or nothing when the selection collapsed. A read-only field reports it so what reads it — a message answered on just the words someone chose — can act on the run; a field being typed in keeps its selection private.",
           "value": "text"
+        },
+        {
+          "name": "cancel",
+          "doc": "Escape let go of what was being typed: the field clears, and what it stands in goes (a caret on the canvas)."
         }
       ],
       "bindings": [

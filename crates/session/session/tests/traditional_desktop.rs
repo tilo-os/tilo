@@ -27,7 +27,7 @@ use std::time::Duration;
 use tilo_compositor::InputEvent;
 use tilo_session::Session;
 
-use common::{CANVAS_ENTRY, on_screen, until};
+use common::{CANVAS, on_screen, until};
 
 /// The bar's control that opens the notification centre, as assistive technology names it.
 const BELL: &str = "Notifications";
@@ -89,11 +89,11 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     }
     match preset {
         "Frames" | "Spaces" => until(session, "the canvas", |session| {
-            on_screen(session, CANVAS_ENTRY).is_some()
+            on_screen(session, CANVAS).is_some()
         }),
         "Desktop" => until(session, "the desktop", |session| preset_menu_gone(session)),
         _ => until(session, "the strips", |session| {
-            on_screen(session, CANVAS_ENTRY).is_none()
+            on_screen(session, CANVAS).is_none()
         }),
     }
 }
