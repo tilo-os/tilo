@@ -754,6 +754,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn what_the_registry_reconciles;
 
         phase a_personal_cluster_is_the_cluster_of_the_identity_it_derives_from;

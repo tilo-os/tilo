@@ -672,6 +672,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn backups_round_trip_and_fail_closed;
 
         phase new_backups_are_v2_seal_envelopes_and_reject_tampering;
@@ -736,6 +740,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn imports_refuse_replaced_tampered_linked_or_existing_inputs;
 
         phase matching_import_rejects_a_backup_replaced_after_verification;

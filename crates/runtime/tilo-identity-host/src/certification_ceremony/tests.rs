@@ -123,6 +123,10 @@ const fn device(byte: u8) -> [u8; 32] {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_certification_ceremony;
 
     phase one_device_holding_the_whole_key_certifies_alone;

@@ -535,6 +535,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn reading_recovery_words;
 
         phase unknown_words_are_found_where_they_were_typed;

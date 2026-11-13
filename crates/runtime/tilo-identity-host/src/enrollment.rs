@@ -419,6 +419,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn enrolling_a_device;
 
         phase token_redeems_once_across_both_entry_points;

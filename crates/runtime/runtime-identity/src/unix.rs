@@ -2746,6 +2746,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn import_publication_cleanup;
 
         phase import_publication_cleanup_preserves_second_write_and_secret;

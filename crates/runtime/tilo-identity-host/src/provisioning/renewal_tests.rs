@@ -107,6 +107,10 @@ pub(crate) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths
 
 tilo_test_env::scenario! {
     #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_device_holding_its_root_keeps_its_certificate_renewed;
 
     phase a_session_starting_after_its_certificate_expired_renews_it_and_keeps_its_device;
