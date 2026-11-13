@@ -401,6 +401,82 @@ mod tests {
             ]
         );
         assert!(parse_page("not xml").is_empty());
+        assert!(parse_page("").is_empty());
+    }
+
+    /// What a page keeps of one entry: a book has a catalogue number and a
+    /// title, and anything else is left out.
+    #[test]
+    fn a_catalogue_entry_reads_as_a_book_or_as_nothing() {
+        const BOOK: &str = "https://www.gutenberg.org/ebooks/11.opds";
+        let alice = |author: &str| StoreBook {
+            id: 11,
+            title: "Alice".into(),
+            author: author.into(),
+        };
+        for (what, entries, expected) in [
+            ("a feed without entries", String::new(), vec![]),
+            (
+                "a book without an author",
+                format!("<entry><id>{BOOK}</id><title>Alice</title></entry>"),
+                vec![alice("")],
+            ),
+            (
+                "space around each text",
+                format!(
+                    "<entry><id> {BOOK} </id><title> Alice </title>\
+                     <content type=\"text\"> Lewis Carroll </content></entry>"
+                ),
+                vec![alice("Lewis Carroll")],
+            ),
+            (
+                "no title",
+                format!(
+                    "<entry><id>{BOOK}</id><content type=\"text\">Lewis Carroll</content></entry>"
+                ),
+                vec![],
+            ),
+            (
+                "a title of spaces",
+                format!("<entry><id>{BOOK}</id><title>  </title></entry>"),
+                vec![],
+            ),
+            (
+                "an empty title",
+                format!("<entry><id>{BOOK}</id><title></title></entry>"),
+                vec![],
+            ),
+            (
+                "no id",
+                "<entry><title>Alice</title></entry>".to_owned(),
+                vec![],
+            ),
+            (
+                "an id that is no number",
+                "<entry><id>https://www.gutenberg.org/ebooks/subjects.opds</id>\
+                 <title>Subjects</title></entry>"
+                    .to_owned(),
+                vec![],
+            ),
+            (
+                "an id that is no catalogue page",
+                "<entry><id>https://www.gutenberg.org/ebooks/11</id><title>Alice</title></entry>"
+                    .to_owned(),
+                vec![],
+            ),
+            (
+                "a number no catalogue reaches",
+                "<entry><id>https://www.gutenberg.org/ebooks/99999999999999999999999.opds</id>\
+                 <title>Alice</title></entry>"
+                    .to_owned(),
+                vec![],
+            ),
+        ] {
+            let xml = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>"#
+            );
+            assert_eq!(parse_page(&xml), expected, "{what}");
+        }
     }
 
     #[test]

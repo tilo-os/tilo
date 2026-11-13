@@ -42,6 +42,91 @@ fn the_catalogue_reads_as_its_texts_with_their_authors_as_people_write_them() {
         "an illustrator is not the author"
     );
     assert_eq!(frankenstein[1].author, "Mary Wollstonecraft Shelley");
+    assert_eq!(rights.author, "United States", "a name without a comma");
+}
+
+/// What one row of the catalogue reads as: a row that is no text with a
+/// number and a title is left out, and its first author is the book's.
+#[test]
+fn a_catalogue_row_reads_as_a_book_or_as_nothing() {
+    const HEADER: &str = "Text#,Type,Issued,Title,Language,Authors,Subjects,LoCC,Bookshelves";
+    let iliad = |author: &str| vec![(6130, "Iliad".to_owned(), author.to_owned())];
+    for (what, csv, expected) in [
+        ("no rows at all", String::new(), vec![]),
+        ("the header alone", format!("{HEADER}\r\n"), vec![]),
+        (
+            "a header without the authors",
+            "Text#,Type,Issued,Title\r\n6130,Text,2004-07-01,Iliad\r\n".to_owned(),
+            vec![],
+        ),
+        (
+            "a number that is none",
+            format!("{HEADER}\r\nsix,Text,2004-07-01,Iliad,en,Homer,,,\r\n"),
+            vec![],
+        ),
+        (
+            "no title",
+            format!("{HEADER}\r\n6130,Text,2004-07-01,,en,Homer,,,\r\n"),
+            vec![],
+        ),
+        (
+            "a row cut short",
+            format!("{HEADER}\r\n6130,Text\r\n"),
+            vec![],
+        ),
+        (
+            "a recording",
+            format!("{HEADER}\r\n6130,Sound,2004-07-01,Iliad,en,Homer,,,\r\n"),
+            vec![],
+        ),
+        (
+            "a last row without its line end",
+            format!("{HEADER}\r\n6130,Text,2004-07-01,Iliad,en,Homer,,,"),
+            iliad("Homer"),
+        ),
+        (
+            "bare line feeds",
+            format!("{HEADER}\n6130,Text,2004-07-01,Iliad,en,Homer,,,\n"),
+            iliad("Homer"),
+        ),
+        (
+            "an author with dates",
+            format!(
+                "{HEADER}\r\n6130,Text,2004-07-01,Iliad,en,\"Homer, 751? BCE-651? BCE\",,,\r\n"
+            ),
+            iliad("Homer"),
+        ),
+        (
+            "a translator before the author",
+            format!(
+                "{HEADER}\r\n6130,Text,2004-07-01,Iliad,en,\
+                 \"Butler, Samuel, 1835-1902 [Translator]; Homer, 751? BCE-651? BCE\",,,\r\n"
+            ),
+            iliad("Homer"),
+        ),
+        (
+            "a translator and no author",
+            format!(
+                "{HEADER}\r\n6130,Text,2004-07-01,Iliad,en,\
+                 \"Butler, Samuel, 1835-1902 [Translator]\",,,\r\n"
+            ),
+            iliad(""),
+        ),
+        (
+            "no author",
+            format!("{HEADER}\r\n6130,Text,2004-07-01,Iliad,en,,,,\r\n"),
+            iliad(""),
+        ),
+    ] {
+        let index = CatalogueIndex::parse(&csv);
+        assert_eq!(index.len(), expected.len(), "{what}");
+        let found: Vec<(u64, String, String)> = index
+            .search(&words("iliad"), 10)
+            .into_iter()
+            .map(|book| (book.id, book.title, book.author))
+            .collect();
+        assert_eq!(found, expected, "{what}");
+    }
 }
 
 #[test]
@@ -61,6 +146,15 @@ fn every_word_must_match_and_a_title_match_comes_before_an_author_match() {
     assert!(index.search(&words("moby austen"), 10).is_empty());
     assert!(index.search(&[], 10).is_empty());
     assert_eq!(index.search(&words("the"), 2).len(), 2);
+    assert!(
+        index.search(&words("the"), 0).is_empty(),
+        "none are asked for"
+    );
+    assert_eq!(
+        index.search(&words("the"), usize::MAX).len(),
+        4,
+        "all that have the word, however many are asked for"
+    );
 }
 
 #[test]
@@ -68,9 +162,15 @@ fn the_compressed_copy_reads_like_the_catalogue() {
     use std::io::Write as _;
     let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     gzip.write_all(CATALOGUE.as_bytes()).unwrap();
-    let index = CatalogueIndex::from_gzip(&gzip.finish().unwrap()).unwrap();
+    let copy = gzip.finish().unwrap();
+    let index = CatalogueIndex::from_gzip(&copy).unwrap();
     assert_eq!(index.len(), 5);
     assert!(CatalogueIndex::from_gzip(b"not gzip").is_none());
+    assert!(CatalogueIndex::from_gzip(&[]).is_none(), "no bytes at all");
+    assert!(
+        CatalogueIndex::from_gzip(&copy[..copy.len() / 2]).is_none(),
+        "a copy cut short is no catalogue"
+    );
 }
 
 #[test]

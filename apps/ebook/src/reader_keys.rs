@@ -128,6 +128,67 @@ mod tests {
         assert_eq!(keys.shortcut("bookmark", "b"), "x");
     }
 
+    /// Each key that is refused, and why; a refusal binds nothing and leaves
+    /// the keys already chosen as they were.
+    #[test]
+    fn a_refused_key_binds_nothing() {
+        let mut keys = ReaderKeys::default();
+        assert!(keys.set_shortcut("next-page", "j"));
+        for (key, why) in [
+            ("", "no key at all"),
+            (" ", "a space"),
+            ("\u{a0}", "a no-break space"),
+            ("\t", "a tab"),
+            ("\u{0}", "a control character"),
+            ("\u{7f}", "delete"),
+            ("jj", "one key twice"),
+            ("J", "another command has it, in capitals"),
+            ("T", "reserved, in capitals"),
+            ("4", "a reserved digit"),
+            ("=", "reserved"),
+        ] {
+            assert!(!keys.set_shortcut("bookmark", key), "{why}: {key:?}");
+            assert_eq!(keys.shortcut("bookmark", "b"), "b", "{why}: {key:?}");
+            assert_eq!(keys.shortcut("next-page", "."), "j", "{why}: {key:?}");
+        }
+        assert!(
+            keys.set_shortcut("next-page", "J"),
+            "a command may be given the key it has"
+        );
+        assert_eq!(keys.shortcut("next-page", "."), "j");
+    }
+
+    /// No more bindings are kept than the bound: one command more is
+    /// refused, while a command that has a key can still change it.
+    #[test]
+    fn the_bindings_kept_are_bounded() {
+        let key = |n: usize| {
+            char::from_u32(0x4e00 + u32::try_from(n).unwrap())
+                .unwrap()
+                .to_string()
+        };
+        let mut keys = ReaderKeys::default();
+        for n in 0..MAX_BINDINGS {
+            assert!(
+                keys.set_shortcut(&format!("command-{n}"), &key(n)),
+                "binding {n} of {MAX_BINDINGS}"
+            );
+        }
+        let spare = key(MAX_BINDINGS);
+        assert!(
+            !keys.set_shortcut("one-more", &spare),
+            "a command beyond the bound is refused"
+        );
+        assert_eq!(keys.shortcut("one-more", "m"), "m");
+        assert!(
+            keys.set_shortcut("command-0", &spare),
+            "a command that has a key changes it at the bound"
+        );
+        assert_eq!(keys.shortcut("command-0", "0"), spare);
+        let last = MAX_BINDINGS - 1;
+        assert_eq!(keys.shortcut(&format!("command-{last}"), "0"), key(last));
+    }
+
     /// The keys a person chooses are their own settings, which roam to
     /// their other devices.
     #[test]
