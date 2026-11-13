@@ -42,6 +42,10 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
 const ANSWERS: [Answer; 3] = [Answer::Deny, Answer::Ask, Answer::Allow];
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+    )]
     fn the_most_specific_and_strictest_grant_wins;
 
     phase answers_are_ordered_deny_ask_allow;
@@ -387,6 +391,10 @@ fn wall_clock_context_accepts_native_system_time() {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+    )]
     fn a_grant_lives_as_long_as_its_lifetime;
 
     phase wall_clock_context_preserves_epoch_and_expiry;
@@ -1978,6 +1986,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: clippy exempts a test function's body, not a phase's closure"
+    )]
     fn roles_grant_what_the_presets_say;
 
     phase the_owner_is_structural;
