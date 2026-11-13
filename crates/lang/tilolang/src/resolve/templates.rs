@@ -207,7 +207,7 @@ fn qualify_ui(
                 param, at, action, ..
             } => {
                 scope.push();
-                for p in [param, at].into_iter().flatten() {
+                for p in [param.as_mut(), at.as_mut().as_mut()].into_iter().flatten() {
                     if let Some(ty) = &mut p.ty {
                         qualify_type(ty, alias, package, names);
                     }
