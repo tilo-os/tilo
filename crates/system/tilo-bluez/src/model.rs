@@ -76,11 +76,18 @@ pub struct AdapterInfo {
 pub enum PairingPrompt {
     /// `RequestConfirmation` — both ends display the same 6-digit number and the user confirms
     /// they match. The most common modern flow.
-    ConfirmPasskey { passkey: u32 },
+    ConfirmPasskey {
+        passkey: u32,
+    },
     /// `DisplayPasskey` — we show a number for the user to type on the *other* device.
     /// `entered` is how many digits `BlueZ` has seen so far. Informational: nothing to answer.
-    DisplayPasskey { passkey: u32, entered: u16 },
-    DisplayPinCode { pin: String },
+    DisplayPasskey {
+        passkey: u32,
+        entered: u16,
+    },
+    DisplayPinCode {
+        pin: String,
+    },
     RequestPasskey,
     RequestPinCode,
     /// `RequestAuthorization` — just-works pairing with no number to compare. The weakest flow;
@@ -88,7 +95,9 @@ pub enum PairingPrompt {
     ConfirmPairing,
     /// `AuthorizeService` — an already-paired device wants to use a profile (A2DP, HID, …) it
     /// has not been authorised for.
-    AuthorizeService { uuid: String },
+    AuthorizeService {
+        uuid: String,
+    },
 }
 
 impl PairingPrompt {
