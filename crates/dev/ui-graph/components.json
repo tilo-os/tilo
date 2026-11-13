@@ -2840,6 +2840,28 @@
           "at": {
             "list": "int"
           }
+        },
+        {
+          "name": "press",
+          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag. What it reports is where the press landed at the camera the map looks with, so the point is right at any pan or zoom; the view decides what stands there (the shell's canvas opens its caret at it).",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "frame",
+          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn as a light outline while the drag lasts (the theme's focus colour, never a colour of its own), and the view lays what it answers into that rectangle.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "context",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
         }
       ],
       "semantics": {
