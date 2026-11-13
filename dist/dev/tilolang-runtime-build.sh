@@ -22,18 +22,21 @@ out=${out:-$target/tilolang-runtime}
 # sources are read-only.
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 
+# The `thin-dev` profile, the one dist/dev/nested-session-build.sh builds the session's apps
+# and runtime in: this binary links that build's libruntime_dylib.so, and a session swaps it in
+# beside the library it already runs.
 runtime_plan=$(python3 tools/apps/app_release.py --collection default)
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
     BUILD_PACKAGES=tilolang-app \
     APP_FEATURES=$(jq -r '.features | join(",")' <<<"$runtime_plan") \
-    TARGET_DIR=$target \
+    TARGET_DIR=$target PROFILE=thin-dev \
     os/scripts/build-thin-apps.sh
 
 rm -rf "$out"
 mkdir -p "$out"
-cp -p "$target/thin-app/tilolang-app" "$target/thin-app/libruntime_dylib.so" "$out/"
+cp -p "$target/thin-dev/tilolang-app" "$target/thin-dev/libruntime_dylib.so" "$out/"
 # Which tree made these: the runtime a session swaps in (`tilolang dev --build-runtime`) and
-# the `thin-app` build beside it must be this tree's, and a run that reuses either checks the
+# the `thin-dev` build beside it must be this tree's, and a run that reuses either checks the
 # record before it starts (dist/dev/build-provenance.sh).
-"$repo_root/dist/dev/build-provenance.sh" write "$out" "$target/thin-app"
+"$repo_root/dist/dev/build-provenance.sh" write "$out" "$target/thin-dev"
 printf 'built the thin tilolang runtime in %s\n' "$out"

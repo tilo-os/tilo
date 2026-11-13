@@ -551,3 +551,110 @@ fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
         "the desk shows the style a named press chose, within {frames} frames: {labels:?}"
     );
 }
+
+/// Step 4 of shell.md §6, "Two ways to change a desk", without an agent: the desktop style's
+/// dock rides the foot, and the style's own action `dock_on` — the one its settings control
+/// runs — moves it to the leading edge, and the desk draws the dock there. The settings are the
+/// style's own plain tilolang state with defaults, changed by typed actions, and the change
+/// applies live.
+///
+/// This fails without the change: before it the desktop had no settings view of its own and no
+/// entry opened one from the desk, so a person could not change where the desktop's dock rides
+/// from the place they pick the style.
+#[test]
+fn the_desktops_dock_edge_setting_moves_the_dock() {
+    let _settled = ui::motion::testing::settled();
+    common::app_store();
+    let root = common::private_home();
+    let mut session = common::seeded_session(root.path());
+    until(&mut session, |session| {
+        common::preset_menu(session).is_some()
+    });
+    // The desktop, by the style switch's own action: `show_style` names the view the desk draws
+    // (`Viewing.style`), through the shell's door as the switch's row runs. The desktop's own
+    // bar drops the style menu, so a press on the bar cannot pick it back.
+    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, shown: \"so.tilo.shell:desktop\")",
+    );
+    assert!(!failed, "the desk shows the desktop: {answer}");
+    until(&mut session, |session| {
+        common::preset_menu(session).is_none()
+    });
+    // The dock rides the foot before the setting: its control stands across the bottom edge.
+    let before = common::wait_for(&mut session, "the dock on the foot", |session| {
+        common::on_screen(session, "Dock")
+    });
+    assert!(
+        before.1 > f64::from(HEIGHT) / 2.0,
+        "the dock rides the foot first: {before:?}"
+    );
+    // The style's own setting, the action its settings control runs: the dock to the leading
+    // edge, through the shell's record the desk reads.
+    session
+        .run_shell_setting("dock_on", vec![serde_json::json!("left")])
+        .unwrap_or_else(|why| panic!("the dock moves to the leading edge: {why}"));
+    let after = common::wait_for(&mut session, "the dock on the leading edge", |session| {
+        let held = common::on_screen(session, "Dock")?;
+        (held.0 < f64::from(WIDTH) / 4.0).then_some(held)
+    });
+    assert!(
+        after.0 < f64::from(WIDTH) / 4.0,
+        "the dock stands on the leading edge after the setting: {after:?}"
+    );
+}
+
+/// Step 4's third part (`shell.md` §6, "Agents make styles with the same commands a person
+/// types"): the settings and the switch are ordinary actions the REPL — the person typing what
+/// the agent would — calls by the same names, so it switches to the desktop and moves its dock
+/// to the leading edge with the calls a Settings control runs, and the desk draws it there.
+///
+/// This fails without the change: the settings were reached only through the shell's own
+/// `run_shell_setting` (a test's back door, not a broker action every caller has), so the REPL
+/// could switch the style but not change what the style shows.
+#[test]
+fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
+    let _settled = ui::motion::testing::settled();
+    common::app_store();
+    let root = common::private_home();
+    let mut session = common::seeded_session(root.path());
+    until(&mut session, |session| {
+        common::preset_menu(session).is_some()
+    });
+    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    // The desktop, through the REPL's own door: the style is a view of the arrangement and the
+    // switch is `show_style`, an action of the person's viewing record.
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, shown: \"so.tilo.shell:desktop\")",
+    );
+    assert!(!failed, "the REPL shows the desktop: {answer}");
+    until(&mut session, |session| {
+        common::preset_menu(session).is_none()
+    });
+    let before = common::wait_for(&mut session, "the dock on the foot", |session| {
+        common::on_screen(session, "Dock")
+    });
+    assert!(
+        before.1 > f64::from(HEIGHT) / 2.0,
+        "the dock rides the foot: {before:?}"
+    );
+    // The style's own setting, as the person types what the agent would: the dock to the
+    // leading edge.
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.dock_on(shell.shell, edge: shell.Edge.left)",
+    );
+    assert!(!failed, "the REPL moves the dock: {answer}");
+    let after = common::wait_for(&mut session, "the dock on the leading edge", |session| {
+        let held = common::on_screen(session, "Dock")?;
+        (held.0 < f64::from(WIDTH) / 4.0).then_some(held.0)
+    });
+    assert!(
+        after < f64::from(WIDTH) / 4.0,
+        "the dock stands on the leading edge after the REPL's call: {after}"
+    );
+}

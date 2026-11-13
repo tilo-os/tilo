@@ -1841,6 +1841,34 @@
           ]
         },
         {
+          "id": "notify",
+          "label": "Tell the person something, as an app's `notify` does",
+          "description": "Tell the person something, as an app's `notify` does. It rises as a banner over the desk and waits in the centre until they dismiss it: the one way a script, an agent or the REPL posts the same notice an app's `notify` does, so what they say reaches the person the same way.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "title",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "body",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "from",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "clear-notices",
           "label": "Clear the notification centre, which Undo puts back",
           "description": "Clear the notification centre, which Undo puts back.",
