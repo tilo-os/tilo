@@ -48,11 +48,18 @@ export HOME=$home
 umask 077
 
 # A device keeps its own runtime directory, caches and state: there is no
-# systemd here to make one, so this makes the one a login would have.
+# systemd here to make one, so this makes the ones a login would have, and
+# names them as a login does. The session keeps its channel keys under its
+# state directory and takes none it was not named: without it the workspace's
+# records stay sealed to it, and Browser cannot open one.
 runtime=${TILO_SESSION_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$home/.local/share/tilo/runtime}}
 mkdir -p -m 700 "$runtime" "$home/.cache" "$home/.config" \
     "$home/.local/state" "$home/.local/share"
 export XDG_RUNTIME_DIR=$runtime
+export XDG_STATE_HOME=${XDG_STATE_HOME:-$home/.local/state}
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$home/.config}
+export XDG_DATA_HOME=${XDG_DATA_HOME:-$home/.local/share}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$home/.cache}
 
 # The VM has no GPU: the session and every app it starts draw with Mesa's
 # software Vulkan driver, and an empty TILO_DMABUF_DEVICE advertises no render
