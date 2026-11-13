@@ -786,178 +786,184 @@ mod tests {
         (c, r)
     }
 
-    #[test]
-    fn a_landmark_names_its_group_for_assistive_technology() {
-        assert!(Container::new().accessibility().is_none());
-        let node = Container::new()
-            .landmark("Settings", "settings.app")
-            .with_child(Box::new(Container::new()))
-            .accessibility()
-            .expect("a landmark is in the tree");
-        assert_eq!(node.role, crate::a11y::Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Settings"));
-        assert_eq!(node.semantic_key.as_deref(), Some("settings.app"));
-    }
+    tilo_test_env::scenario! {
+        /// A container's sizing, alignment and landmark.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_container_sizes_aligns_and_names_its_content;
 
-    #[test]
-    fn a_readable_container_keeps_to_the_leading_edge() {
-        for scale in [1.0_f32, 1.5] {
-            let theme = Theme::dark().with_ui_scale(scale);
-            let mut outer = Container::new()
-                .with_no_padding()
-                .with_child(Box::new(Container::new().with_no_padding().readable()));
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = outer.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(2400.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                )
-                .unwrap();
-            outer.apply_layout(&taffy, node, Point::ZERO);
-            let inner = outer.children()[0].get_rect();
-            assert!(inner.x0.abs() < 0.5, "leading, not centred: {inner:?}");
-            let readable = f64::from(theme.tokens.metrics.readable_width);
-            assert!((inner.width() - readable).abs() < 0.5, "{inner:?}");
+        phase a_landmark_names_its_group_for_assistive_technology;
+        {
+            assert!(Container::new().accessibility().is_none());
+            let node = Container::new()
+                .landmark("Settings", "settings.app")
+                .with_child(Box::new(Container::new()))
+                .accessibility()
+                .expect("a landmark is in the tree");
+            assert_eq!(node.role, crate::a11y::Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Settings"));
+            assert_eq!(node.semantic_key.as_deref(), Some("settings.app"));
         }
-        let (narrow, _) = lay_out(
-            Container::new()
-                .with_no_padding()
-                .with_width(400.0)
-                .with_child(Box::new(Container::new().readable())),
-        );
-        assert!((narrow.children()[0].get_rect().width() - 400.0).abs() < 0.5);
-    }
 
-    #[test]
-    fn a_hugging_container_takes_its_content_width_and_lifts_past_it() {
-        let (hugging, _) = lay_out(
-            Container::new().with_no_padding().with_child(Box::new(
+        phase a_readable_container_keeps_to_the_leading_edge;
+        {
+            for scale in [1.0_f32, 1.5] {
+                let theme = Theme::dark().with_ui_scale(scale);
+                let mut outer = Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(Container::new().with_no_padding().readable()));
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = outer.build_layout(&mut taffy, &theme, &mut node_map);
+                taffy
+                    .compute_layout(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(2400.0),
+                            height: taffy::AvailableSpace::Definite(600.0),
+                        },
+                    )
+                    .unwrap();
+                outer.apply_layout(&taffy, node, Point::ZERO);
+                let inner = outer.children()[0].get_rect();
+                assert!(inner.x0.abs() < 0.5, "leading, not centred: {inner:?}");
+                let readable = f64::from(theme.tokens.metrics.readable_width);
+                assert!((inner.width() - readable).abs() < 0.5, "{inner:?}");
+            }
+            let (narrow, _) = lay_out(
                 Container::new()
-                    .hug()
-                    .interactive("open", || {})
-                    .with_child(Box::new(Container::new().with_size(120.0, 30.0))),
-            )),
-        );
-        let inner = hugging.children()[0];
-        let rect = inner.get_rect();
-        assert!((rect.width() - 120.0).abs() < 0.5, "{rect:?}");
-        assert!(rect.x0.abs() < 0.5, "no inset of its own");
-        let theme = Theme::dark();
-        let related = f64::from(theme.tokens.spacing.rhythm.related);
-        assert_eq!(
-            inner.cursor_shape(Point::new(rect.x0 - related / 2.0, rect.center().y)),
-            Some(winit::window::CursorIcon::Pointer),
-            "the lifted bleed takes the pointer"
-        );
-    }
-
-    #[test]
-    fn container_sizing_padding_centering_and_fill() {
-        fn with_width_pins_outer_width() {
-            let (_c, rect) = lay_out(Container::new().with_width(280.0));
-            assert!(
-                (rect.width() - 280.0).abs() < 0.5,
-                "with_width(280) must pin the container to 280 px, got {}",
-                rect.width()
+                    .with_no_padding()
+                    .with_width(400.0)
+                    .with_child(Box::new(Container::new().readable())),
             );
-            assert!(
-                rect.width() < 799.0,
-                "a pinned-width container must NOT fill the 800 px viewport"
-            );
+            assert!((narrow.children()[0].get_rect().width() - 400.0).abs() < 0.5);
         }
 
-        fn with_size_pins_both_dimensions() {
-            let (_c, rect) = lay_out(Container::new().with_size(120.0, 64.0));
-            assert!((rect.width() - 120.0).abs() < 0.5, "width pinned to 120");
-            assert!((rect.height() - 64.0).abs() < 0.5, "height pinned to 64");
-        }
-
-        fn default_container_still_fills_width() {
-            let (_c, rect) = lay_out(Container::new());
-            assert!(
-                (rect.width() - 800.0).abs() < 0.5,
-                "default container must fill the viewport width, got {}",
-                rect.width()
+        phase a_hugging_container_takes_its_content_width_and_lifts_past_it;
+        {
+            let (hugging, _) = lay_out(
+                Container::new().with_no_padding().with_child(Box::new(
+                    Container::new()
+                        .hug()
+                        .interactive("open", || {})
+                        .with_child(Box::new(Container::new().with_size(120.0, 30.0))),
+                )),
             );
-        }
-
-        fn padding_override_insets_child_without_losing_fluid_width() {
-            let (container, rect) = lay_out(
-                Container::new()
-                    .with_padding(8.0)
-                    .with_child(Box::new(Container::new().with_size(10.0, 10.0))),
-            );
-            let child = container.children()[0].get_rect();
-            assert!((rect.width() - 800.0).abs() < 0.5);
-            assert!((child.x0 - 8.0).abs() < 0.5);
-            assert!((child.y0 - 8.0).abs() < 0.5);
-            assert!((rect.y1 - child.y1 - 8.0).abs() < 0.5);
-        }
-
-        fn centered_max_width_caps_wide_parent_and_remains_fluid() {
-            let (wide, _) = lay_out(
-                Container::new()
-                    .with_child(Box::new(Container::new().with_centered_max_width(480.0))),
-            );
-            let wide_child = wide.children()[0].get_rect();
-            assert!((wide_child.width() - 480.0).abs() < 0.5);
-            assert!(
-                (wide_child.x0 - 160.0).abs() < 0.5,
-                "capped child must be centred, got {wide_child:?}"
-            );
-
-            let (_narrow, narrow_rect) = lay_out(Container::new().with_centered_max_width(960.0));
-            assert!(
-                (narrow_rect.width() - 800.0).abs() < 0.5,
-                "cap above available width must remain fluid"
-            );
-        }
-
-        fn interactive_containers_lift_and_activate() {
+            let inner = hugging.children()[0];
+            let rect = inner.get_rect();
+            assert!((rect.width() - 120.0).abs() < 0.5, "{rect:?}");
+            assert!(rect.x0.abs() < 0.5, "no inset of its own");
             let theme = Theme::dark();
-            let hits = std::rc::Rc::new(std::cell::Cell::new(0));
-            let counter = hits.clone();
-            let mut c = Container::new()
-                .with_background()
-                .interactive("open-channel", move || counter.set(counter.get() + 1));
-            let rest = c.surface_fill(&theme);
-            assert_eq!(rest, Some(theme.tokens.colors.surfaces.raised));
-            c.activation.state.hovered = true;
-            assert_ne!(c.surface_fill(&theme), rest, "hover lifts");
-            c.activation.state.pressed = true;
-            let pressed = c.surface_fill(&theme);
-            c.activation.state.pressed = false;
-            assert_ne!(pressed, c.surface_fill(&theme), "press lifts further");
-            let bare = Container::new();
+            let related = f64::from(theme.tokens.spacing.rhythm.related);
             assert_eq!(
-                bare.surface_fill(&theme),
-                None,
-                "a plain container paints nothing"
+                inner.cursor_shape(Point::new(rect.x0 - related / 2.0, rect.center().y)),
+                Some(winit::window::CursorIcon::Pointer),
+                "the lifted bleed takes the pointer"
             );
-            assert!(c.is_focusable());
-            let mut doc = automerge::AutoCommit::new();
-            assert!(Widget::perform_action(
-                &mut c,
-                &crate::a11y::Action::Activate,
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT
-            ));
-            assert_eq!(hits.get(), 1);
-            let node = Widget::accessibility(&c).unwrap();
-            assert_eq!(node.role, crate::a11y::Role::Button);
         }
 
-        with_width_pins_outer_width();
-        with_size_pins_both_dimensions();
-        default_container_still_fills_width();
-        padding_override_insets_child_without_losing_fluid_width();
-        centered_max_width_caps_wide_parent_and_remains_fluid();
-        interactive_containers_lift_and_activate();
+        phase container_sizing_padding_centering_and_fill;
+        {
+            fn with_width_pins_outer_width() {
+                let (_c, rect) = lay_out(Container::new().with_width(280.0));
+                assert!(
+                    (rect.width() - 280.0).abs() < 0.5,
+                    "with_width(280) must pin the container to 280 px, got {}",
+                    rect.width()
+                );
+                assert!(
+                    rect.width() < 799.0,
+                    "a pinned-width container must NOT fill the 800 px viewport"
+                );
+            }
+
+            fn with_size_pins_both_dimensions() {
+                let (_c, rect) = lay_out(Container::new().with_size(120.0, 64.0));
+                assert!((rect.width() - 120.0).abs() < 0.5, "width pinned to 120");
+                assert!((rect.height() - 64.0).abs() < 0.5, "height pinned to 64");
+            }
+
+            fn default_container_still_fills_width() {
+                let (_c, rect) = lay_out(Container::new());
+                assert!(
+                    (rect.width() - 800.0).abs() < 0.5,
+                    "default container must fill the viewport width, got {}",
+                    rect.width()
+                );
+            }
+
+            fn padding_override_insets_child_without_losing_fluid_width() {
+                let (container, rect) = lay_out(
+                    Container::new()
+                        .with_padding(8.0)
+                        .with_child(Box::new(Container::new().with_size(10.0, 10.0))),
+                );
+                let child = container.children()[0].get_rect();
+                assert!((rect.width() - 800.0).abs() < 0.5);
+                assert!((child.x0 - 8.0).abs() < 0.5);
+                assert!((child.y0 - 8.0).abs() < 0.5);
+                assert!((rect.y1 - child.y1 - 8.0).abs() < 0.5);
+            }
+
+            fn centered_max_width_caps_wide_parent_and_remains_fluid() {
+                let (wide, _) = lay_out(
+                    Container::new()
+                        .with_child(Box::new(Container::new().with_centered_max_width(480.0))),
+                );
+                let wide_child = wide.children()[0].get_rect();
+                assert!((wide_child.width() - 480.0).abs() < 0.5);
+                assert!(
+                    (wide_child.x0 - 160.0).abs() < 0.5,
+                    "capped child must be centred, got {wide_child:?}"
+                );
+
+                let (_narrow, narrow_rect) = lay_out(Container::new().with_centered_max_width(960.0));
+                assert!(
+                    (narrow_rect.width() - 800.0).abs() < 0.5,
+                    "cap above available width must remain fluid"
+                );
+            }
+
+            fn interactive_containers_lift_and_activate() {
+                let theme = Theme::dark();
+                let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+                let counter = hits.clone();
+                let mut c = Container::new()
+                    .with_background()
+                    .interactive("open-channel", move || counter.set(counter.get() + 1));
+                let rest = c.surface_fill(&theme);
+                assert_eq!(rest, Some(theme.tokens.colors.surfaces.raised));
+                c.activation.state.hovered = true;
+                assert_ne!(c.surface_fill(&theme), rest, "hover lifts");
+                c.activation.state.pressed = true;
+                let pressed = c.surface_fill(&theme);
+                c.activation.state.pressed = false;
+                assert_ne!(pressed, c.surface_fill(&theme), "press lifts further");
+                let bare = Container::new();
+                assert_eq!(
+                    bare.surface_fill(&theme),
+                    None,
+                    "a plain container paints nothing"
+                );
+                assert!(c.is_focusable());
+                let mut doc = automerge::AutoCommit::new();
+                assert!(Widget::perform_action(
+                    &mut c,
+                    &crate::a11y::Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT
+                ));
+                assert_eq!(hits.get(), 1);
+                let node = Widget::accessibility(&c).unwrap();
+                assert_eq!(node.role, crate::a11y::Role::Button);
+            }
+
+            with_width_pins_outer_width();
+            with_size_pins_both_dimensions();
+            default_container_still_fills_width();
+            padding_override_insets_child_without_losing_fluid_width();
+            centered_max_width_caps_wide_parent_and_remains_fluid();
+            interactive_containers_lift_and_activate();
+        }
     }
 }

@@ -305,20 +305,50 @@ mod tests {
     use super::*;
     use crate::widget::Spacer;
 
-    #[test]
-    fn invalidation_is_read_once_and_settled_by_a_fresh_composition() {
-        let mut composed = Composed::default();
-        assert!(!composed.take_structure_dirty());
-        composed.invalidate();
-        assert!(composed.take_structure_dirty());
-        assert!(!composed.take_structure_dirty(), "reading clears it");
+    tilo_test_env::scenario! {
+        /// Invalidation and input of a composed widget.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_composed_widget_settles_invalidation_and_keeps_its_input;
 
-        composed.invalidate();
-        composed.replace(Box::new(Spacer::new()));
-        assert!(
-            !composed.take_structure_dirty(),
-            "the rebuild it asked for happened"
-        );
+        phase invalidation_is_read_once_and_settled_by_a_fresh_composition;
+        {
+            let mut composed = Composed::default();
+            assert!(!composed.take_structure_dirty());
+            composed.invalidate();
+            assert!(composed.take_structure_dirty());
+            assert!(!composed.take_structure_dirty(), "reading clears it");
+
+            composed.invalidate();
+            composed.replace(Box::new(Spacer::new()));
+            assert!(
+                !composed.take_structure_dirty(),
+                "the rebuild it asked for happened"
+            );
+        }
+
+        phase a_composition_built_afresh_keeps_the_input_in_use;
+        {
+            let mut composed = Composed::default();
+            let first = std::rc::Rc::default();
+            composed.replace(Box::new(Probe(std::rc::Rc::clone(&first))));
+            assert_eq!(first.get(), None, "nothing told yet, nothing passed on");
+            composed.set_interaction_environment(InteractionEnvironment::TOUCH);
+            assert_eq!(first.get(), Some(InteractionEnvironment::TOUCH));
+
+            let rebuilt = std::rc::Rc::default();
+            composed.replace(Box::new(Probe(std::rc::Rc::clone(&rebuilt))));
+            assert_eq!(rebuilt.get(), Some(InteractionEnvironment::TOUCH));
+
+            let laid_out = std::rc::Rc::default();
+            let mut taffy = TaffyTree::new();
+            composed.build_layout(
+                Box::new(Probe(std::rc::Rc::clone(&laid_out))),
+                &mut taffy,
+                &Theme::light(),
+                &mut HashMap::new(),
+            );
+            assert_eq!(laid_out.get(), Some(InteractionEnvironment::TOUCH));
+        }
     }
 
     struct Probe(std::rc::Rc<std::cell::Cell<Option<InteractionEnvironment>>>);
@@ -345,29 +375,5 @@ mod tests {
         fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
             self.0.set(Some(environment));
         }
-    }
-
-    #[test]
-    fn a_composition_built_afresh_keeps_the_input_in_use() {
-        let mut composed = Composed::default();
-        let first = std::rc::Rc::default();
-        composed.replace(Box::new(Probe(std::rc::Rc::clone(&first))));
-        assert_eq!(first.get(), None, "nothing told yet, nothing passed on");
-        composed.set_interaction_environment(InteractionEnvironment::TOUCH);
-        assert_eq!(first.get(), Some(InteractionEnvironment::TOUCH));
-
-        let rebuilt = std::rc::Rc::default();
-        composed.replace(Box::new(Probe(std::rc::Rc::clone(&rebuilt))));
-        assert_eq!(rebuilt.get(), Some(InteractionEnvironment::TOUCH));
-
-        let laid_out = std::rc::Rc::default();
-        let mut taffy = TaffyTree::new();
-        composed.build_layout(
-            Box::new(Probe(std::rc::Rc::clone(&laid_out))),
-            &mut taffy,
-            &Theme::light(),
-            &mut HashMap::new(),
-        );
-        assert_eq!(laid_out.get(), Some(InteractionEnvironment::TOUCH));
     }
 }

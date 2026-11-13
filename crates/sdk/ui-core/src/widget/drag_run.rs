@@ -1186,14 +1186,103 @@ mod tests {
             .push(group_item("status", 24.0, RunGroup::Trailing))
     }
 
-    #[test]
-    fn the_run_answers_its_own_type() {
-        let mut run: Element = Box::new(DragRun::new("bar").name("Bar").push(item("a", 24.0)));
-        assert!(
-            run.as_any().is_some_and(|any| any.is::<DragRun>())
-                && run.as_any_mut().is_some_and(|any| any.is::<DragRun>()),
-            "a run is a widget the adapter reaches by its type"
-        );
+    tilo_test_env::scenario! {
+        /// How a run lays its items out.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_drag_run_lays_out_its_items_and_groups;
+
+        phase the_run_answers_its_own_type;
+        {
+            let mut run: Element = Box::new(DragRun::new("bar").name("Bar").push(item("a", 24.0)));
+            assert!(
+                run.as_any().is_some_and(|any| any.is::<DragRun>())
+                    && run.as_any_mut().is_some_and(|any| any.is::<DragRun>()),
+                "a run is a widget the adapter reaches by its type"
+            );
+        }
+
+        // Every item keeps the width its view takes, packed one sibling gap apart: a run never
+        // gives its items an equal share of its length.
+        phase a_run_is_its_items_at_their_own_size_one_gap_apart;
+        {
+            let theme = Theme::dark();
+            let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+            let host = harness(
+                DragRun::new("dock")
+                    .push(item("a", 48.0))
+                    .push(item("b", 80.0))
+                    .push(item("c", 24.0)),
+            );
+            let rects = host.root::<DragRun>().item_rects();
+            assert_eq!(rects.len(), 3);
+            assert!((rects[0].width() - 48.0).abs() < 0.5, "{rects:?}");
+            assert!((rects[1].width() - 80.0).abs() < 0.5, "{rects:?}");
+            assert!((rects[2].width() - 24.0).abs() < 0.5, "{rects:?}");
+            for pair in rects.windows(2) {
+                let [left, right] = pair else { continue };
+                assert!(
+                    (right.x0 - left.x1 - gap).abs() < 0.5,
+                    "one sibling gap between items: {rects:?}"
+                );
+            }
+        }
+
+        phase a_grouped_run_puts_its_groups_at_their_own_edges;
+        {
+            let width = 1280.0;
+            let host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                bar(),
+                (width as u32, 200),
+                Theme::dark(),
+            );
+            let rects = host.root::<DragRun>().item_rects();
+            assert_eq!(rects.len(), 5);
+            assert!((rects[0].x0).abs() < 0.5, "the mark leads: {rects:?}");
+            assert!(
+                (rects[1].x0 - rects[0].x1 - 12.0).abs() < 0.5,
+                "the menu follows the mark a sibling gap on: {rects:?}"
+            );
+            let clock = rects[2];
+            assert!(
+                (clock.center().x - f64::from(width) / 2.0).abs() < 1.0,
+                "the clock stands in the middle: {rects:?}"
+            );
+            assert!(
+                (rects[4].x1 - f64::from(width)).abs() < 0.5,
+                "the status ends at the trailing edge: {rects:?}"
+            );
+            assert!(
+                rects[4].x0 >= rects[3].x1,
+                "the status follows the people: {rects:?}"
+            );
+        }
+
+        phase a_dock_packs_its_items_where_its_distribute_says;
+        {
+            let width = 1280.0;
+            let host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                DragRun::new("dock")
+                    .distribute(crate::widget::arrange::Distribute::Center)
+                    .push(item("a", 48.0))
+                    .push(item("b", 48.0))
+                    .push(item("c", 48.0)),
+                (width as u32, 200),
+                Theme::dark(),
+            );
+            let rects = host.root::<DragRun>().item_rects();
+            let left = rects[0].x0;
+            let right = rects[2].x1;
+            assert!(
+                (left - (f64::from(width) - right)).abs() < 1.0,
+                "equal room at both ends: {rects:?}"
+            );
+            assert!(
+                (rects[1].x0 - rects[0].x1 - 12.0).abs() < 0.5,
+                "packed a sibling gap apart: {rects:?}"
+            );
+        }
     }
 
     fn harness(run: DragRun) -> crate::headless::FrameHarness {
@@ -1207,89 +1296,6 @@ mod tests {
             .push(item("b", 48.0))
             .push(item("c", 48.0))
             .push(item("d", 48.0))
-    }
-
-    /// Every item keeps the width its view takes, packed one sibling gap apart: a run never
-    /// gives its items an equal share of its length.
-    #[test]
-    fn a_run_is_its_items_at_their_own_size_one_gap_apart() {
-        let theme = Theme::dark();
-        let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
-        let host = harness(
-            DragRun::new("dock")
-                .push(item("a", 48.0))
-                .push(item("b", 80.0))
-                .push(item("c", 24.0)),
-        );
-        let rects = host.root::<DragRun>().item_rects();
-        assert_eq!(rects.len(), 3);
-        assert!((rects[0].width() - 48.0).abs() < 0.5, "{rects:?}");
-        assert!((rects[1].width() - 80.0).abs() < 0.5, "{rects:?}");
-        assert!((rects[2].width() - 24.0).abs() < 0.5, "{rects:?}");
-        for pair in rects.windows(2) {
-            let [left, right] = pair else { continue };
-            assert!(
-                (right.x0 - left.x1 - gap).abs() < 0.5,
-                "one sibling gap between items: {rects:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_grouped_run_puts_its_groups_at_their_own_edges() {
-        let width = 1280.0;
-        let host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            bar(),
-            (width as u32, 200),
-            Theme::dark(),
-        );
-        let rects = host.root::<DragRun>().item_rects();
-        assert_eq!(rects.len(), 5);
-        assert!((rects[0].x0).abs() < 0.5, "the mark leads: {rects:?}");
-        assert!(
-            (rects[1].x0 - rects[0].x1 - 12.0).abs() < 0.5,
-            "the menu follows the mark a sibling gap on: {rects:?}"
-        );
-        let clock = rects[2];
-        assert!(
-            (clock.center().x - f64::from(width) / 2.0).abs() < 1.0,
-            "the clock stands in the middle: {rects:?}"
-        );
-        assert!(
-            (rects[4].x1 - f64::from(width)).abs() < 0.5,
-            "the status ends at the trailing edge: {rects:?}"
-        );
-        assert!(
-            rects[4].x0 >= rects[3].x1,
-            "the status follows the people: {rects:?}"
-        );
-    }
-
-    #[test]
-    fn a_dock_packs_its_items_where_its_distribute_says() {
-        let width = 1280.0;
-        let host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            DragRun::new("dock")
-                .distribute(crate::widget::arrange::Distribute::Center)
-                .push(item("a", 48.0))
-                .push(item("b", 48.0))
-                .push(item("c", 48.0)),
-            (width as u32, 200),
-            Theme::dark(),
-        );
-        let rects = host.root::<DragRun>().item_rects();
-        let left = rects[0].x0;
-        let right = rects[2].x1;
-        assert!(
-            (left - (f64::from(width) - right)).abs() < 1.0,
-            "equal room at both ends: {rects:?}"
-        );
-        assert!(
-            (rects[1].x0 - rects[0].x1 - 12.0).abs() < 0.5,
-            "packed a sibling gap apart: {rects:?}"
-        );
     }
 
     /// What stands beside a taskbar's items is not an item: a press on it lifts nothing, and

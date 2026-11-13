@@ -948,286 +948,347 @@ mod tests {
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
 
-    /// A month the app feeds hands what is chosen to the app, so the
-    /// native app contract finds it bound, addressed by its name.
-    #[test]
-    fn a_fed_month_is_a_bound_control() {
-        let feed = DateFeed::new();
-        let day = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
-        feed.show(DateShown {
-            selected: day,
-            today: day,
-            marked: Vec::new(),
-        });
-        let host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            DatePicker::new(day)
-                .navigator()
-                .with_accessible_name("Month")
-                .fed_by(&feed),
-            (400, 400),
-            Theme::dark(),
-        );
-        let audit = host.native_app_audit();
-        assert!(audit.issues.is_empty(), "{audit:?}");
-        assert_eq!(
-            host.root::<DatePicker>()
-                .accessibility()
-                .and_then(|node| node.action_target),
-            Some("date-picker/day".to_owned()),
-            "a fed picker reaches its published choice where it is drawn"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A date picker: its month, selection, semantics and bindings.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_date_picker_binds_navigates_and_keeps_its_month;
 
-    #[test]
-    fn clicking_a_date_focuses_the_grid_for_keyboard_navigation() {
-        let initial = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
-        let state = crate::LocalState::new(initial);
-        let mut host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            DatePicker::from_state(&state),
-            (400, 400),
-            Theme::dark(),
-        );
-        let target = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
-        let point = host
-            .root::<DatePicker>()
-            .day_rects
-            .iter()
-            .find(|(date, _)| *date == target)
-            .unwrap()
-            .1
-            .center();
-        host.click_at(point.x, point.y);
-        assert!(host.root::<DatePicker>().is_focused());
-        assert_eq!(state.get(), target);
-        host.key("Right");
-        assert_eq!(state.get(), target.succ_opt().unwrap());
-    }
-
-    #[test]
-    fn date_picker_month_navigation_and_selection() {
-        fn date_picker_initial_state_shows_selected_month() {
-            let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
-            assert_eq!(dp.month_view(), (2024, 6));
-        }
-
-        fn date_picker_next_month_advances() {
-            let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
-            dp.advance_month();
-            assert_eq!(dp.month_view(), (2024, 7));
-
-            let mut dp_dec = DatePicker::new(NaiveDate::from_ymd_opt(2024, 12, 1).unwrap());
-            dp_dec.advance_month();
-            assert_eq!(dp_dec.month_view(), (2025, 1));
-        }
-
-        fn date_picker_clicking_day_updates_selection() {
-            let initial = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
-
-            let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
-            let captured_cb = captured.clone();
-            let mut dp = DatePicker::new(initial).on_view("date-picker", move |d| {
-                *captured_cb.borrow_mut() = Some(d);
+        // A month the app feeds hands what is chosen to the app, so the
+        // native app contract finds it bound, addressed by its name.
+        phase a_fed_month_is_a_bound_control;
+        {
+            let feed = DateFeed::new();
+            let day = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+            feed.show(DateShown {
+                selected: day,
+                today: day,
+                marked: Vec::new(),
             });
+            let host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                DatePicker::new(day)
+                    .navigator()
+                    .with_accessible_name("Month")
+                    .fed_by(&feed),
+                (400, 400),
+                Theme::dark(),
+            );
+            let audit = host.native_app_audit();
+            assert!(audit.issues.is_empty(), "{audit:?}");
+            assert_eq!(
+                host.root::<DatePicker>()
+                    .accessibility()
+                    .and_then(|node| node.action_target),
+                Some("date-picker/day".to_owned()),
+                "a fed picker reaches its published choice where it is drawn"
+            );
+        }
 
-            let theme = crate::theme::Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = dp.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout(node, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            dp.apply_layout(&taffy, node, Point::ZERO);
-
+        phase clicking_a_date_focuses_the_grid_for_keyboard_navigation;
+        {
+            let initial = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+            let state = crate::LocalState::new(initial);
+            let mut host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                DatePicker::from_state(&state),
+                (400, 400),
+                Theme::dark(),
+            );
             let target = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
-            let cell = dp
+            let point = host
+                .root::<DatePicker>()
                 .day_rects
                 .iter()
-                .find(|(d, _)| *d == target)
-                .map(|(_, r)| *r)
-                .expect("June 7 2024 cell exists in the visible grid");
-
-            let pt = cell.center();
-            let mut at_node = Dispatch::new().layout(&taffy, node);
-            at_node.send(&mut dp, &cursor_moved(pt.x, pt.y));
-            at_node.send(&mut dp, &mouse_press());
-
-            assert_eq!(dp.selected(), target);
-            assert_eq!(*captured.borrow(), None, "the choice waits to be answered");
-            assert_eq!(crate::testing::answer_controls(&mut dp), 1);
-            assert_eq!(*captured.borrow(), Some(target));
+                .find(|(date, _)| *date == target)
+                .unwrap()
+                .1
+                .center();
+            host.click_at(point.x, point.y);
+            assert!(host.root::<DatePicker>().is_focused());
+            assert_eq!(state.get(), target);
+            host.key("Right");
+            assert_eq!(state.get(), target.succ_opt().unwrap());
         }
 
-        /// winit's `KeyEvent` has no public constructor, so (as `TimePicker`'s
-        /// keyboard tests do) this drives `move_selection` directly.
-        fn date_picker_keyboard_nav_moves_selection_and_emits() {
-            let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
-            let cb = captured.clone();
-            let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 30).unwrap())
-                .on_view("date-picker", move |d| *cb.borrow_mut() = Some(d));
+        phase date_picker_month_navigation_and_selection;
+        {
+            fn date_picker_initial_state_shows_selected_month() {
+                let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+                assert_eq!(dp.month_view(), (2024, 6));
+            }
 
-            dp.move_selection(1);
-            crate::testing::answer_controls(&mut dp);
-            assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 1).unwrap());
-            assert_eq!(dp.month_view(), (2024, 7));
-            assert_eq!(
-                *captured.borrow(),
-                Some(NaiveDate::from_ymd_opt(2024, 7, 1).unwrap())
-            );
+            fn date_picker_next_month_advances() {
+                let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+                dp.advance_month();
+                assert_eq!(dp.month_view(), (2024, 7));
 
-            dp.move_selection(7);
-            assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 8).unwrap());
-        }
+                let mut dp_dec = DatePicker::new(NaiveDate::from_ymd_opt(2024, 12, 1).unwrap());
+                dp_dec.advance_month();
+                assert_eq!(dp_dec.month_view(), (2025, 1));
+            }
 
-        fn date_picker_first_day_of_week_is_monday() {
-            let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
-            let first_col: usize = dp.first_visible_col();
-            assert_eq!(first_col, 0_usize);
-        }
+            fn date_picker_clicking_day_updates_selection() {
+                let initial = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
 
-        /// Header label, chevrons, weekday row and day numbers all centre their
-        /// measured line in their band; the font size alone sat each 1.5 px low.
-        fn picker_text_centres_its_measured_line_in_every_band() {
-            let selected = NaiveDate::from_ymd_opt(2026, 5, 22).expect("valid date");
-            let mut picker = DatePicker::new(selected);
-            let rect = Rect::new(0.0, 0.0, 224.0, 240.0);
-            picker.apply_layout_external(rect);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            picker.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
-            let style = theme.text(TextRole::Caption);
-            // Draw order: header label, seven weekday labels, then day cells;
-            // the month steps are icons, not glyph runs.
-            let header_band = (rect.y0, HEADER_HEIGHT);
-            let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
-            let first_cell = picker
-                .day_rects
-                .first()
-                .map(|(_, r)| *r)
-                .expect("day cells");
-            let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
-                .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
-                .chain(std::iter::once((
-                    "27",
-                    (first_cell.y0, first_cell.height()),
-                )))
-                .collect();
-            for (index, (text, (band_y0, band_h))) in expectations.into_iter().enumerate() {
-                crate::widget::text::assert_glyph_run_centred_in_band(
-                    &scene,
-                    index,
-                    text,
-                    &style,
-                    band_y0,
-                    band_h,
+                let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
+                let captured_cb = captured.clone();
+                let mut dp = DatePicker::new(initial).on_view("date-picker", move |d| {
+                    *captured_cb.borrow_mut() = Some(d);
+                });
+
+                let theme = crate::theme::Theme::dark();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = dp.build_layout(&mut taffy, &theme, &mut node_map);
+                taffy
+                    .compute_layout(node, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                dp.apply_layout(&taffy, node, Point::ZERO);
+
+                let target = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
+                let cell = dp
+                    .day_rects
+                    .iter()
+                    .find(|(d, _)| *d == target)
+                    .map(|(_, r)| *r)
+                    .expect("June 7 2024 cell exists in the visible grid");
+
+                let pt = cell.center();
+                let mut at_node = Dispatch::new().layout(&taffy, node);
+                at_node.send(&mut dp, &cursor_moved(pt.x, pt.y));
+                at_node.send(&mut dp, &mouse_press());
+
+                assert_eq!(dp.selected(), target);
+                assert_eq!(*captured.borrow(), None, "the choice waits to be answered");
+                assert_eq!(crate::testing::answer_controls(&mut dp), 1);
+                assert_eq!(*captured.borrow(), Some(target));
+            }
+
+            /// winit's `KeyEvent` has no public constructor, so (as `TimePicker`'s
+            /// keyboard tests do) this drives `move_selection` directly.
+            fn date_picker_keyboard_nav_moves_selection_and_emits() {
+                let captured: Rc<RefCell<Option<NaiveDate>>> = Rc::new(RefCell::new(None));
+                let cb = captured.clone();
+                let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 30).unwrap())
+                    .on_view("date-picker", move |d| *cb.borrow_mut() = Some(d));
+
+                dp.move_selection(1);
+                crate::testing::answer_controls(&mut dp);
+                assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 1).unwrap());
+                assert_eq!(dp.month_view(), (2024, 7));
+                assert_eq!(
+                    *captured.borrow(),
+                    Some(NaiveDate::from_ymd_opt(2024, 7, 1).unwrap())
+                );
+
+                dp.move_selection(7);
+                assert_eq!(dp.selected(), NaiveDate::from_ymd_opt(2024, 7, 8).unwrap());
+            }
+
+            fn date_picker_first_day_of_week_is_monday() {
+                let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
+                let first_col: usize = dp.first_visible_col();
+                assert_eq!(first_col, 0_usize);
+            }
+
+            /// Header label, chevrons, weekday row and day numbers all centre their
+            /// measured line in their band; the font size alone sat each 1.5 px low.
+            fn picker_text_centres_its_measured_line_in_every_band() {
+                let selected = NaiveDate::from_ymd_opt(2026, 5, 22).expect("valid date");
+                let mut picker = DatePicker::new(selected);
+                let rect = Rect::new(0.0, 0.0, 224.0, 240.0);
+                picker.apply_layout_external(rect);
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                picker.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
                     &mut tr,
-                    theme.text_primary,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                let style = theme.text(TextRole::Caption);
+                // Draw order: header label, seven weekday labels, then day cells;
+                // the month steps are icons, not glyph runs.
+                let header_band = (rect.y0, HEADER_HEIGHT);
+                let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
+                let first_cell = picker
+                    .day_rects
+                    .first()
+                    .map(|(_, r)| *r)
+                    .expect("day cells");
+                let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
+                    .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
+                    .chain(std::iter::once((
+                        "27",
+                        (first_cell.y0, first_cell.height()),
+                    )))
+                    .collect();
+                for (index, (text, (band_y0, band_h))) in expectations.into_iter().enumerate() {
+                    crate::widget::text::assert_glyph_run_centred_in_band(
+                        &scene,
+                        index,
+                        text,
+                        &style,
+                        band_y0,
+                        band_h,
+                        &mut tr,
+                        theme.text_primary,
+                    );
+                }
+            }
+
+            fn focused_date_picker_paints_a_focus_ring() {
+                let without = picker_color_fills(false);
+                let with = picker_color_fills(true);
+                assert_eq!(
+                    with,
+                    without + 1,
+                    "a focused date picker must add exactly one focus-ring stroke ({with} vs {without})",
                 );
             }
+
+            date_picker_initial_state_shows_selected_month();
+            date_picker_next_month_advances();
+            date_picker_clicking_day_updates_selection();
+            date_picker_keyboard_nav_moves_selection_and_emits();
+            date_picker_first_day_of_week_is_monday();
+            picker_text_centres_its_measured_line_in_every_band();
+            focused_date_picker_paints_a_focus_ring();
         }
 
-        fn focused_date_picker_paints_a_focus_ring() {
-            let without = picker_color_fills(false);
-            let with = picker_color_fills(true);
+        phase date_picker_semantics_and_shared_state_track_selection;
+        {
+            fn accessibility_reports_combobox_role_and_selected_date_value() {
+                use crate::a11y::Role;
+                let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+                let node = Widget::accessibility(&dp).expect("date picker is a selector");
+                assert_eq!(node.role, Role::ComboBox);
+                assert_eq!(node.value.as_deref(), Some("2024-06-15"));
+                assert!(node.state.focusable);
+                assert_eq!(node.state.expanded, None, "the grid is rendered inline");
+            }
+
+            fn accessibility_value_tracks_new_selection() {
+                let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 1).unwrap());
+                dp.selected = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
+                let node = Widget::accessibility(&dp).unwrap();
+                assert_eq!(node.value.as_deref(), Some("2024-06-07"));
+            }
+
+            fn local_state_keeps_date_pickers_in_sync() {
+                let first = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+                let second = NaiveDate::from_ymd_opt(2027, 8, 4).unwrap();
+                let state = crate::LocalState::new(first);
+                let mut left = DatePicker::from_state(&state);
+                let mut right = DatePicker::from_state(&state);
+                let doc = AutoCommit::new();
+
+                left.set_selected(second);
+                assert_eq!(state.with(|date| *date), second);
+                Widget::sync(&mut right, &doc, &automerge::ROOT);
+                assert_eq!(right.selected(), second);
+                assert_eq!(right.month_view(), (2027, 8));
+            }
+
+            fn semantic_date_change_updates_state_and_callback() {
+                let initial = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+                let expected = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+                let state = crate::LocalState::new(initial);
+                let captured = Rc::new(RefCell::new(None));
+                let callback = Rc::clone(&captured);
+                let mut picker = DatePicker::from_state(&state).on_view("date-picker", move |date| {
+                    *callback.borrow_mut() = Some(date)
+                });
+                let mut doc = AutoCommit::new();
+
+                assert!(Widget::perform_action(
+                    &mut picker,
+                    &crate::a11y::Action::SetValue("2026-11-23".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                crate::testing::answer_controls(&mut picker);
+                assert_eq!(state.with(|date| *date), expected);
+                assert_eq!(*captured.borrow(), Some(expected));
+
+                assert!(!Widget::perform_action(
+                    &mut picker,
+                    &crate::a11y::Action::SetValue("2026-02-30".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                assert_eq!(state.with(|date| *date), expected);
+            }
+
+            accessibility_reports_combobox_role_and_selected_date_value();
+            accessibility_value_tracks_new_selection();
+            local_state_keeps_date_pickers_in_sync();
+            semantic_date_change_updates_state_and_callback();
+        }
+
+        phase a_navigator_fills_its_column_and_marks_busy_days;
+        {
+            let day = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+            let picker = DatePicker::new(day)
+                .navigator()
+                .marked([day, day.succ_opt().unwrap()]);
+            assert_eq!(picker.marked.len(), 2);
+            let narrow = picker.intrinsic_height(168.0);
+            let wide = picker.intrinsic_height(224.0);
+            assert!(narrow < wide, "cells follow the column's width");
+            let app = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(crate::column![picker.with_accessible_name("Month")]),
+                (200, 600),
+            );
+            let _ = app.targets();
+        }
+
+        phase a_bound_text_day_is_shown_and_followed;
+        {
+            let state = crate::LocalState::new("2026-06-30".to_owned());
+            let mut picker = DatePicker::from_text_state(&state);
             assert_eq!(
-                with,
-                without + 1,
-                "a focused date picker must add exactly one focus-ring stroke ({with} vs {without})",
+                picker.selected(),
+                NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+                "the day the binding holds is shown"
+            );
+            state.set("2026-07-04".to_owned());
+            picker.sync(&(), &());
+            assert_eq!(
+                picker.selected(),
+                NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+                "a day set elsewhere shows in place"
             );
         }
 
-        date_picker_initial_state_shows_selected_month();
-        date_picker_next_month_advances();
-        date_picker_clicking_day_updates_selection();
-        date_picker_keyboard_nav_moves_selection_and_emits();
-        date_picker_first_day_of_week_is_monday();
-        picker_text_centres_its_measured_line_in_every_band();
-        focused_date_picker_paints_a_focus_ring();
+        phase a_change_of_props_stays_on_the_month_the_person_walked_to;
+        {
+            let mut picker = DatePicker::new(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            picker.advance_month();
+            let walked_to = picker.month_view();
+            assert!(
+                <DatePicker as crate::component::Described>::set_props(
+                    &mut picker,
+                    crate::widget::DatePickerProps::default()
+                ),
+                "a day set elsewhere is taken where it stands"
+            );
+            assert_eq!(
+                picker.month_view(),
+                walked_to,
+                "the calendar stays on the month it was walked to"
+            );
+        }
     }
 
     use crate::synthetic_input::cursor_moved;
 
     use crate::synthetic_input::mouse_press;
-
-    #[test]
-    fn date_picker_semantics_and_shared_state_track_selection() {
-        fn accessibility_reports_combobox_role_and_selected_date_value() {
-            use crate::a11y::Role;
-            let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
-            let node = Widget::accessibility(&dp).expect("date picker is a selector");
-            assert_eq!(node.role, Role::ComboBox);
-            assert_eq!(node.value.as_deref(), Some("2024-06-15"));
-            assert!(node.state.focusable);
-            assert_eq!(node.state.expanded, None, "the grid is rendered inline");
-        }
-
-        fn accessibility_value_tracks_new_selection() {
-            let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 1).unwrap());
-            dp.selected = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
-            let node = Widget::accessibility(&dp).unwrap();
-            assert_eq!(node.value.as_deref(), Some("2024-06-07"));
-        }
-
-        fn local_state_keeps_date_pickers_in_sync() {
-            let first = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
-            let second = NaiveDate::from_ymd_opt(2027, 8, 4).unwrap();
-            let state = crate::LocalState::new(first);
-            let mut left = DatePicker::from_state(&state);
-            let mut right = DatePicker::from_state(&state);
-            let doc = AutoCommit::new();
-
-            left.set_selected(second);
-            assert_eq!(state.with(|date| *date), second);
-            Widget::sync(&mut right, &doc, &automerge::ROOT);
-            assert_eq!(right.selected(), second);
-            assert_eq!(right.month_view(), (2027, 8));
-        }
-
-        fn semantic_date_change_updates_state_and_callback() {
-            let initial = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
-            let expected = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
-            let state = crate::LocalState::new(initial);
-            let captured = Rc::new(RefCell::new(None));
-            let callback = Rc::clone(&captured);
-            let mut picker = DatePicker::from_state(&state).on_view("date-picker", move |date| {
-                *callback.borrow_mut() = Some(date)
-            });
-            let mut doc = AutoCommit::new();
-
-            assert!(Widget::perform_action(
-                &mut picker,
-                &crate::a11y::Action::SetValue("2026-11-23".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            crate::testing::answer_controls(&mut picker);
-            assert_eq!(state.with(|date| *date), expected);
-            assert_eq!(*captured.borrow(), Some(expected));
-
-            assert!(!Widget::perform_action(
-                &mut picker,
-                &crate::a11y::Action::SetValue("2026-02-30".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert_eq!(state.with(|date| *date), expected);
-        }
-
-        accessibility_reports_combobox_role_and_selected_date_value();
-        accessibility_value_tracks_new_selection();
-        local_state_keeps_date_pickers_in_sync();
-        semantic_date_change_updates_state_and_callback();
-    }
 
     fn picker_color_fills(focused: bool) -> usize {
         use vello::Scene;
@@ -1254,59 +1315,5 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
-    }
-    #[test]
-    fn a_navigator_fills_its_column_and_marks_busy_days() {
-        let day = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
-        let picker = DatePicker::new(day)
-            .navigator()
-            .marked([day, day.succ_opt().unwrap()]);
-        assert_eq!(picker.marked.len(), 2);
-        let narrow = picker.intrinsic_height(168.0);
-        let wide = picker.intrinsic_height(224.0);
-        assert!(narrow < wide, "cells follow the column's width");
-        let app = crate::headless::FrameHarness::new(
-            crate::State::new(),
-            Box::new(crate::column![picker.with_accessible_name("Month")]),
-            (200, 600),
-        );
-        let _ = app.targets();
-    }
-
-    #[test]
-    fn a_bound_text_day_is_shown_and_followed() {
-        let state = crate::LocalState::new("2026-06-30".to_owned());
-        let mut picker = DatePicker::from_text_state(&state);
-        assert_eq!(
-            picker.selected(),
-            NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
-            "the day the binding holds is shown"
-        );
-        state.set("2026-07-04".to_owned());
-        picker.sync(&(), &());
-        assert_eq!(
-            picker.selected(),
-            NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
-            "a day set elsewhere shows in place"
-        );
-    }
-
-    #[test]
-    fn a_change_of_props_stays_on_the_month_the_person_walked_to() {
-        let mut picker = DatePicker::new(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        picker.advance_month();
-        let walked_to = picker.month_view();
-        assert!(
-            <DatePicker as crate::component::Described>::set_props(
-                &mut picker,
-                crate::widget::DatePickerProps::default()
-            ),
-            "a day set elsewhere is taken where it stands"
-        );
-        assert_eq!(
-            picker.month_view(),
-            walked_to,
-            "the calendar stays on the month it was walked to"
-        );
     }
 }

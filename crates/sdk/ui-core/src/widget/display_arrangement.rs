@@ -1491,256 +1491,666 @@ mod tests {
         canvas
     }
 
-    #[test]
-    fn certified_shared_tiles_expose_independent_availability_and_reach() {
-        let mut canvas = canvas();
-        canvas.displays[0].shared = Some(SharedDisplayState {
-            device: "laptop".into(),
-            output: "edid:panel".into(),
-            online: false,
-            reachable: true,
-        });
-        canvas.displays[1].shared = Some(SharedDisplayState {
-            device: "desk".into(),
-            output: "edid:panel".into(),
-            online: true,
-            reachable: false,
-        });
-        let before = canvas.accessibility().unwrap();
-        assert!(
-            before.children[0]
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("Offline")
-        );
-        assert!(
-            !before.children[0]
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("Apart")
-        );
-        assert!(
-            before.children[1]
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("Apart")
-        );
-        assert!(
-            !before.children[1]
-                .description
-                .as_ref()
-                .unwrap()
-                .contains("Offline")
-        );
-        assert_ne!(
-            before.children[0].semantic_key,
-            before.children[1].semantic_key
-        );
-        let mapping = canvas.mapping();
-        assert!(canvas.press(mapping.to_canvas(canvas.displays[1].placement).center()));
-        assert!(canvas.drag_to(mapping.to_canvas(canvas.displays[0].placement).center()));
-        let preview = canvas.drawn();
-        assert_eq!(preview[1].0.shared, canvas.displays[1].shared);
-        let after = canvas.accessibility().unwrap();
-        assert_eq!(
-            before.children[1].semantic_key,
-            after.children[1].semantic_key
-        );
-        canvas.displays[1].shared.as_mut().unwrap().online = false;
-        let offline_excluded = canvas.accessibility().unwrap();
-        let description = offline_excluded.children[1].description.as_ref().unwrap();
-        assert!(description.contains("Offline") && description.contains("apart"));
-    }
+    tilo_test_env::scenario! {
+        /// The tiles of the display arrangement: availability, hover, accessibility, arrow keys and selection.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn displays_are_described_selected_and_hovered;
 
-    #[test]
-    fn retained_arrangement_hover_preserves_geometry_without_remeasurement() {
-        let mut host =
-            ui::headless::FrameHarness::new(ui::State::new(), Box::new(canvas()), (800, 600));
-        host.profile_frame();
-        assert!(!host.last_relayout().measured);
-        let rect = host
-            .targets()
-            .get("display.arrangement")
-            .copied()
-            .expect("the actual arrangement is mounted");
-        host.send(&crate::synthetic_input::cursor_moved(
-            rect.center().x,
-            rect.center().y,
-        ));
-        assert!(!host.last_relayout().measured);
-        host.verify_retained_geometry().unwrap();
-        let nodes = host.layout_node_ids();
-        host.resize((1200, 720)).unwrap();
-        assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
-        assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
-        assert!(
-            host.targets()
+        phase certified_shared_tiles_expose_independent_availability_and_reach;
+        {
+            let mut canvas = canvas();
+            canvas.displays[0].shared = Some(SharedDisplayState {
+                device: "laptop".into(),
+                output: "edid:panel".into(),
+                online: false,
+                reachable: true,
+            });
+            canvas.displays[1].shared = Some(SharedDisplayState {
+                device: "desk".into(),
+                output: "edid:panel".into(),
+                online: true,
+                reachable: false,
+            });
+            let before = canvas.accessibility().unwrap();
+            assert!(
+                before.children[0]
+                    .description
+                    .as_ref()
+                    .unwrap()
+                    .contains("Offline")
+            );
+            assert!(
+                !before.children[0]
+                    .description
+                    .as_ref()
+                    .unwrap()
+                    .contains("Apart")
+            );
+            assert!(
+                before.children[1]
+                    .description
+                    .as_ref()
+                    .unwrap()
+                    .contains("Apart")
+            );
+            assert!(
+                !before.children[1]
+                    .description
+                    .as_ref()
+                    .unwrap()
+                    .contains("Offline")
+            );
+            assert_ne!(
+                before.children[0].semantic_key,
+                before.children[1].semantic_key
+            );
+            let mapping = canvas.mapping();
+            assert!(canvas.press(mapping.to_canvas(canvas.displays[1].placement).center()));
+            assert!(canvas.drag_to(mapping.to_canvas(canvas.displays[0].placement).center()));
+            let preview = canvas.drawn();
+            assert_eq!(preview[1].0.shared, canvas.displays[1].shared);
+            let after = canvas.accessibility().unwrap();
+            assert_eq!(
+                before.children[1].semantic_key,
+                after.children[1].semantic_key
+            );
+            canvas.displays[1].shared.as_mut().unwrap().online = false;
+            let offline_excluded = canvas.accessibility().unwrap();
+            let description = offline_excluded.children[1].description.as_ref().unwrap();
+            assert!(description.contains("Offline") && description.contains("apart"));
+        }
+
+        phase retained_arrangement_hover_preserves_geometry_without_remeasurement;
+        {
+            let mut host =
+                ui::headless::FrameHarness::new(ui::State::new(), Box::new(canvas()), (800, 600));
+            host.profile_frame();
+            assert!(!host.last_relayout().measured);
+            let rect = host
+                .targets()
                 .get("display.arrangement")
                 .copied()
-                .expect("the actual arrangement is mounted")
-                .width()
-                > rect.width()
-        );
-        host.verify_retained_geometry().unwrap();
-        host.set_theme(ui::Theme::light());
-        assert!(host.last_relayout().rebuilt);
-        host.verify_retained_geometry().unwrap();
+                .expect("the actual arrangement is mounted");
+            host.send(&crate::synthetic_input::cursor_moved(
+                rect.center().x,
+                rect.center().y,
+            ));
+            assert!(!host.last_relayout().measured);
+            host.verify_retained_geometry().unwrap();
+            let nodes = host.layout_node_ids();
+            host.resize((1200, 720)).unwrap();
+            assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
+            assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
+            assert!(
+                host.targets()
+                    .get("display.arrangement")
+                    .copied()
+                    .expect("the actual arrangement is mounted")
+                    .width()
+                    > rect.width()
+            );
+            host.verify_retained_geometry().unwrap();
+            host.set_theme(ui::Theme::light());
+            assert!(host.last_relayout().rebuilt);
+            host.verify_retained_geometry().unwrap();
+        }
+
+        phase every_display_is_described_for_assistive_technology;
+        {
+            let node = canvas().accessibility().unwrap();
+            let names: Vec<String> = node
+                .children
+                .iter()
+                .filter_map(|child| child.name.clone())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "Display 1: Built-in display, main display",
+                    "Display 2: Desk monitor"
+                ]
+            );
+        }
+
+        phase arrow_keys_move_the_selected_display_from_the_keyboard;
+        {
+            let (mut canvas, selection) = selected_canvas();
+            selection.set("HDMI-A-1".into());
+            assert!(canvas.is_focusable(), "Tab reaches the canvas");
+            canvas.mark_drawn();
+            canvas.set_focus(true);
+            assert!(canvas.needs_redraw(), "the focus ring shows");
+            canvas.mark_drawn();
+            assert!(canvas.step(placement::Step::Left));
+            let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
+                .expect("the step is sent as the display's move");
+            assert_eq!(invocation.address.action, "move-display");
+            assert_eq!(
+                (
+                    invocation.arguments["x"].as_i64().unwrap(),
+                    invocation.arguments["y"].as_i64().unwrap()
+                ),
+                (-1920, 0),
+                "to the panel's other side, in line"
+            );
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+            assert!(canvas.needs_redraw(), "it springs there");
+            assert!(canvas.step(placement::Step::Right), "and back");
+            let back = ui::widget::controls::take_control_invocation(&mut canvas).unwrap();
+            assert_eq!(back.arguments["x"].as_i64(), Some(1920));
+            assert!(
+                !canvas.step(placement::Step::Right),
+                "nothing further that way moves nothing"
+            );
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        }
+
+        phase pressing_a_display_selects_it_in_the_shared_selection;
+        {
+            let (mut canvas, selection) = selected_canvas();
+            let monitor = canvas.mapping().to_canvas(displays()[1].placement);
+            assert!(canvas.press(monitor.center()));
+            assert_eq!(selection.with(Clone::clone), "HDMI-A-1");
+            let node = canvas.accessibility().unwrap();
+            assert!(node.children[1].state.selected, "the chosen tile says so");
+            assert!(!node.children[0].state.selected);
+            assert!(canvas.release(), "a press without a drag is just a choice");
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+            selection.set("eDP-1".into());
+            assert!(canvas.accessibility().unwrap().children[0].state.selected);
+        }
     }
 
-    #[test]
-    fn dragging_a_display_below_the_other_emits_its_settled_position() {
-        let mut canvas = canvas();
-        let mapping = canvas.mapping();
-        let monitor = mapping.to_canvas(displays()[1].placement);
-        let panel = mapping.to_canvas(displays()[0].placement);
-        let _frame = crate::motion::pin_frame();
-        assert!(canvas.press(monitor.center()));
-        let target = Point::new(
-            panel.center().x + 3.0,
-            panel.y1 + monitor.height() / 2.0 + 4.0,
-        );
-        assert!(canvas.drag_to(target));
-        assert!(canvas.release());
+    tilo_test_env::scenario! {
+        /// Dragging a display in the arrangement.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_display_drags_to_its_place;
 
-        let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
-            .expect("the drop is sent as the display's move action");
-        assert_eq!(invocation.address.action, "move-display");
-        let x = invocation.arguments["x"].as_i64().unwrap();
-        let y = invocation.arguments["y"].as_i64().unwrap();
-        assert_eq!((x, y), (0, 1080), "snapped flush under the panel");
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-    }
+        phase dragging_a_display_below_the_other_emits_its_settled_position;
+        {
+            let mut canvas = canvas();
+            let mapping = canvas.mapping();
+            let monitor = mapping.to_canvas(displays()[1].placement);
+            let panel = mapping.to_canvas(displays()[0].placement);
+            let _frame = crate::motion::pin_frame();
+            assert!(canvas.press(monitor.center()));
+            let target = Point::new(
+                panel.center().x + 3.0,
+                panel.y1 + monitor.height() / 2.0 + 4.0,
+            );
+            assert!(canvas.drag_to(target));
+            assert!(canvas.release());
 
-    #[test]
-    fn device_screens_preview_and_drop_together_preserving_native_seat_geometry() {
-        let mut canvas = canvas();
-        canvas.displays[0].movable = false;
-        canvas.displays[1].movement_group = Some("peer".into());
-        canvas.displays.push(ArrangedDisplay {
-            connector: "peer/DP-2".into(),
-            movement_group: Some("peer".into()),
-            shared: None,
-            label: "Second peer screen".into(),
-            number: 3,
-            placement: Placement::new(1920, 1080, 1280, 720),
-            primary: false,
-            movable: true,
-        });
-        let mapping = canvas.mapping();
-        let first = mapping.to_canvas(canvas.displays[1].placement);
-        let panel = mapping.to_canvas(canvas.displays[0].placement);
-        assert!(canvas.press(first.center()));
-        assert!(canvas.drag_to(Point::new(
-            panel.center().x,
-            panel.y1 + first.height() / 2.0 + 4.0
-        )));
-        let drawn = canvas.drawn();
-        assert_eq!(drawn.iter().filter(|(_, dragging)| *dragging).count(), 2);
-        assert_eq!(drawn[2].0.placement.x, drawn[1].0.placement.x);
-        assert_eq!(drawn[2].0.placement.y - drawn[1].0.placement.y, 1080);
-        assert!(canvas.release());
-        assert_eq!(
-            canvas.displays[2].placement.x,
-            canvas.displays[1].placement.x
-        );
-        assert_eq!(
-            canvas.displays[2].placement.y - canvas.displays[1].placement.y,
-            1080
-        );
-        assert_eq!(canvas.displays[2].placement.width, 1280);
-        let invocation = ui::widget::controls::take_control_invocation(&mut canvas).unwrap();
-        assert_eq!(invocation.address.action, "move-display");
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-    }
+            let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
+                .expect("the drop is sent as the display's move action");
+            assert_eq!(invocation.address.action, "move-display");
+            let x = invocation.arguments["x"].as_i64().unwrap();
+            let y = invocation.arguments["y"].as_i64().unwrap();
+            assert_eq!((x, y), (0, 1080), "snapped flush under the panel");
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        }
 
-    #[test]
-    fn immovable_local_screen_still_constrains_peer_drag() {
-        let mut canvas = canvas();
-        canvas.displays[0].movable = false;
-        let mapping = canvas.mapping();
-        let local = mapping.to_canvas(canvas.displays[0].placement);
-        let peer = mapping.to_canvas(canvas.displays[1].placement);
-        assert!(
-            canvas.press(local.center()),
-            "an immovable screen is still chosen"
-        );
-        assert!(
-            canvas.gesture.with(|gesture| gesture.drag.is_none()),
-            "but never picked up"
-        );
-        assert!(!canvas.release());
-        assert!(canvas.press(peer.center()));
-        assert!(canvas.drag_to(local.center()));
-        assert!(canvas.release());
-        assert!(
-            !canvas.displays[0]
-                .placement
-                .overlaps(canvas.displays[1].placement)
-        );
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
-    }
+        phase device_screens_preview_and_drop_together_preserving_native_seat_geometry;
+        {
+            let mut canvas = canvas();
+            canvas.displays[0].movable = false;
+            canvas.displays[1].movement_group = Some("peer".into());
+            canvas.displays.push(ArrangedDisplay {
+                connector: "peer/DP-2".into(),
+                movement_group: Some("peer".into()),
+                shared: None,
+                label: "Second peer screen".into(),
+                number: 3,
+                placement: Placement::new(1920, 1080, 1280, 720),
+                primary: false,
+                movable: true,
+            });
+            let mapping = canvas.mapping();
+            let first = mapping.to_canvas(canvas.displays[1].placement);
+            let panel = mapping.to_canvas(canvas.displays[0].placement);
+            assert!(canvas.press(first.center()));
+            assert!(canvas.drag_to(Point::new(
+                panel.center().x,
+                panel.y1 + first.height() / 2.0 + 4.0
+            )));
+            let drawn = canvas.drawn();
+            assert_eq!(drawn.iter().filter(|(_, dragging)| *dragging).count(), 2);
+            assert_eq!(drawn[2].0.placement.x, drawn[1].0.placement.x);
+            assert_eq!(drawn[2].0.placement.y - drawn[1].0.placement.y, 1080);
+            assert!(canvas.release());
+            assert_eq!(
+                canvas.displays[2].placement.x,
+                canvas.displays[1].placement.x
+            );
+            assert_eq!(
+                canvas.displays[2].placement.y - canvas.displays[1].placement.y,
+                1080
+            );
+            assert_eq!(canvas.displays[2].placement.width, 1280);
+            let invocation = ui::widget::controls::take_control_invocation(&mut canvas).unwrap();
+            assert_eq!(invocation.address.action, "move-display");
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        }
 
-    #[test]
-    fn a_click_without_movement_changes_nothing() {
-        let mut canvas = canvas();
-        let monitor = canvas.mapping().to_canvas(displays()[1].placement);
-        assert!(canvas.press(monitor.center()));
-        assert!(canvas.drag_to(monitor.center() + (1.0, 1.0)));
-        assert!(canvas.release());
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-    }
+        phase immovable_local_screen_still_constrains_peer_drag;
+        {
+            let mut canvas = canvas();
+            canvas.displays[0].movable = false;
+            let mapping = canvas.mapping();
+            let local = mapping.to_canvas(canvas.displays[0].placement);
+            let peer = mapping.to_canvas(canvas.displays[1].placement);
+            assert!(
+                canvas.press(local.center()),
+                "an immovable screen is still chosen"
+            );
+            assert!(
+                canvas.gesture.with(|gesture| gesture.drag.is_none()),
+                "but never picked up"
+            );
+            assert!(!canvas.release());
+            assert!(canvas.press(peer.center()));
+            assert!(canvas.drag_to(local.center()));
+            assert!(canvas.release());
+            assert!(
+                !canvas.displays[0]
+                    .placement
+                    .overlaps(canvas.displays[1].placement)
+            );
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
+        }
 
-    #[test]
-    fn every_display_is_described_for_assistive_technology() {
-        let node = canvas().accessibility().unwrap();
-        let names: Vec<String> = node
-            .children
-            .iter()
-            .filter_map(|child| child.name.clone())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "Display 1: Built-in display, main display",
-                "Display 2: Desk monitor"
-            ]
-        );
-    }
+        phase a_click_without_movement_changes_nothing;
+        {
+            let mut canvas = canvas();
+            let monitor = canvas.mapping().to_canvas(displays()[1].placement);
+            assert!(canvas.press(monitor.center()));
+            assert!(canvas.drag_to(monitor.center() + (1.0, 1.0)));
+            assert!(canvas.release());
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        }
 
-    #[test]
-    fn arrow_keys_move_the_selected_display_from_the_keyboard() {
-        let (mut canvas, selection) = selected_canvas();
-        selection.set("HDMI-A-1".into());
-        assert!(canvas.is_focusable(), "Tab reaches the canvas");
-        canvas.mark_drawn();
-        canvas.set_focus(true);
-        assert!(canvas.needs_redraw(), "the focus ring shows");
-        canvas.mark_drawn();
-        assert!(canvas.step(placement::Step::Left));
-        let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
-            .expect("the step is sent as the display's move");
-        assert_eq!(invocation.address.action, "move-display");
-        assert_eq!(
-            (
-                invocation.arguments["x"].as_i64().unwrap(),
-                invocation.arguments["y"].as_i64().unwrap()
-            ),
-            (-1920, 0),
-            "to the panel's other side, in line"
-        );
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-        assert!(canvas.needs_redraw(), "it springs there");
-        assert!(canvas.step(placement::Step::Right), "and back");
-        let back = ui::widget::controls::take_control_invocation(&mut canvas).unwrap();
-        assert_eq!(back.arguments["x"].as_i64(), Some(1920));
-        assert!(
-            !canvas.step(placement::Step::Right),
-            "nothing further that way moves nothing"
-        );
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        phase a_drag_repaints_every_move_and_writes_only_on_release;
+        {
+            let mut canvas = canvas();
+            let mapping = canvas.mapping();
+            let monitor = mapping.to_canvas(displays()[1].placement);
+            assert!(canvas.press(monitor.center()));
+            canvas.mark_drawn();
+            let mut writes = 0;
+            for step in 1..=24 {
+                let point =
+                    monitor.center() + Vec2::new(-12.0 * f64::from(step), 6.0 * f64::from(step));
+                assert!(canvas.drag_to(point));
+                assert!(
+                    canvas.needs_redraw() || canvas.needs_animation_frame(),
+                    "move {step} asks for its frame: the host repaints a pointer move only then"
+                );
+                assert!(!canvas.is_layout_dirty(), "move {step} lays nothing out");
+                writes +=
+                    usize::from(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
+                canvas.mark_drawn();
+                // Between moves it asks for nothing, unless the view is still
+                // springing out to keep the held display in sight.
+                let view_growing = canvas.gesture.with(|gesture| {
+                    gesture
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| view.is_moving(crate::motion::frame_now()))
+                });
+                assert!(
+                    !(canvas.needs_redraw() || canvas.needs_animation_frame()) || view_growing,
+                    "move {step} asks for nothing more"
+                );
+                let (held, _) = canvas.drawn().into_iter().find(|(_, held)| *held).unwrap();
+                let (dx, dy) = mapping.to_desktop(point);
+                let grab = mapping.to_desktop(monitor.center());
+                let free = (
+                    displays()[1].placement.x + round_to_i32(dx - grab.0),
+                    displays()[1].placement.y + round_to_i32(dy - grab.1),
+                );
+                let snapped = (held.placement.x, held.placement.y);
+                let threshold = mapping.snap_threshold();
+                assert!(
+                    (snapped.0 - free.0).abs() <= threshold && (snapped.1 - free.1).abs() <= threshold,
+                    "move {step}: {snapped:?} strays from the hand at {free:?}"
+                );
+            }
+            assert_eq!(writes, 0, "nothing is written while the display moves");
+            assert!(canvas.release());
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
+            assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        }
+
+        phase a_dragged_display_moves_without_a_relayout;
+        {
+            let bare = DisplayArrangement::new(
+                displays(),
+                Vec::new(),
+                ui::LocalState::new(ArrangementGesture::default()),
+            );
+            let mut host =
+                ui::headless::FrameHarness::new(ui::State::new(), Box::new(bare), (800, 600));
+            host.profile_frame();
+            let rect = host
+                .targets()
+                .get("display.arrangement")
+                .copied()
+                .expect("the arrangement is mounted");
+            let rebuilt = host.rebuilt_frames();
+            let start = Point::new(rect.x0 + rect.width() * 0.75, rect.center().y);
+            host.send(&crate::synthetic_input::cursor_moved(start.x, start.y));
+            host.send(&crate::synthetic_input::mouse_press());
+            let frames = host.relayout_frames();
+            for step in 1..=12 {
+                host.send(&crate::synthetic_input::cursor_moved(
+                    start.x - 6.0 * f64::from(step),
+                    start.y + 3.0 * f64::from(step),
+                ));
+                let relayout = host.last_relayout();
+                assert!(
+                    !relayout.rebuilt && !relayout.measured,
+                    "move {step} relaid the canvas out: {relayout:?}"
+                );
+            }
+            assert!(
+                host.relayout_frames() >= frames + 12,
+                "every move of the hand paints a frame"
+            );
+            assert_eq!(
+                host.rebuilt_frames(),
+                rebuilt,
+                "no move recomposed anything"
+            );
+            host.send(&crate::synthetic_input::mouse_release());
+            host.verify_retained_geometry().unwrap();
+        }
+
+        phase a_finger_drags_a_display_like_the_pointer;
+        {
+            fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
+                WindowEvent::Touch(winit::event::Touch {
+                    device_id: winit::event::DeviceId::dummy(),
+                    phase,
+                    location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                    force: None,
+                    id: 7,
+                })
+            }
+            let drop = |by_touch: bool| {
+                let _frame = crate::motion::pin_frame();
+                let mut canvas = canvas();
+                let mapping = canvas.mapping();
+                let monitor = mapping.to_canvas(displays()[1].placement);
+                let panel = mapping.to_canvas(displays()[0].placement);
+                let target = Point::new(
+                    panel.center().x + 3.0,
+                    panel.y1 + monitor.height() / 2.0 + 4.0,
+                );
+                let path = [
+                    monitor.center(),
+                    monitor.center() - Vec2::new(30.0, -20.0),
+                    target,
+                ];
+                if by_touch {
+                    let dispatch = || crate::testing::Dispatch::new();
+                    assert!(
+                        dispatch()
+                            .send(&mut canvas, &touch(TouchPhase::Started, path[0]))
+                            .handled
+                    );
+                    for point in &path[1..] {
+                        assert!(
+                            dispatch()
+                                .send(&mut canvas, &touch(TouchPhase::Moved, *point))
+                                .handled
+                        );
+                    }
+                    assert!(
+                        dispatch()
+                            .send(&mut canvas, &touch(TouchPhase::Ended, target))
+                            .handled
+                    );
+                } else {
+                    assert!(canvas.press(path[0]));
+                    for point in &path[1..] {
+                        assert!(canvas.drag_to(*point));
+                    }
+                    assert!(canvas.release());
+                }
+                let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
+                    .expect("the drop is sent");
+                (
+                    invocation.arguments["x"].as_i64().unwrap(),
+                    invocation.arguments["y"].as_i64().unwrap(),
+                )
+            };
+            assert_eq!(drop(true), drop(false));
+            assert_eq!(drop(true), (0, 1080));
+        }
+
+        phase a_dropped_display_springs_into_place_then_asks_for_nothing;
+        {
+            let mut canvas = canvas();
+            let mapping = canvas.mapping();
+            let monitor = mapping.to_canvas(displays()[1].placement);
+            assert!(!canvas.needs_animation_frame(), "idle costs nothing");
+            let _frame = crate::motion::pin_frame();
+            assert!(canvas.press(monitor.center()));
+            let over = mapping.to_canvas(displays()[0].placement).center();
+            assert!(canvas.drag_to(over));
+            let held = canvas
+                .drawn()
+                .into_iter()
+                .find(|(_, held)| *held)
+                .unwrap()
+                .0
+                .placement;
+            assert!(canvas.release());
+            let released = crate::motion::frame_now();
+            let rest = canvas.displays[1].placement;
+            assert_ne!(rest, held);
+            assert!(!rest.overlaps(canvas.displays[0].placement));
+            assert!(canvas.needs_animation_frame(), "the settle asks for frames");
+            let (_, shift, _) = canvas.drawn_at(released)[1].clone();
+            let start = Point::new(f64::from(rest.x), f64::from(rest.y)) + shift;
+            assert!(
+                (start.x - f64::from(held.x)).abs() < 2.0 && (start.y - f64::from(held.y)).abs() < 2.0,
+                "it starts where it was let go: {start:?} vs {held:?}"
+            );
+            let later = released + crate::time::Duration::from_secs(2);
+            let (_, shift, _) = canvas.drawn_at(later)[1].clone();
+            assert!(shift.hypot() < 1e-6, "and rests where it settles");
+            assert!(!canvas.settling(later), "then it asks for no frames");
+        }
+
+        phase the_view_holds_while_a_display_is_held_then_refits_after_the_drop;
+        {
+            let mut canvas = canvas();
+            let fitted = canvas.mapping();
+            let rest = fitted
+                .to_canvas(displays()[0].placement)
+                .union(fitted.to_canvas(displays()[1].placement));
+            assert!(
+                (rest.center().x - canvas.rect.center().x).abs() < 1.0
+                    && (rest.center().y - canvas.rect.center().y).abs() < 1.0,
+                "the arrangement is centred: {rest:?} in {:?}",
+                canvas.rect
+            );
+            let monitor = fitted.to_canvas(displays()[1].placement);
+            assert!(canvas.press(monitor.center()));
+            let panel = fitted.to_canvas(displays()[0].placement);
+            let hand = Point::new(panel.center().x, canvas.rect.y1 + 40.0);
+            assert!(canvas.drag_to(hand));
+            let later = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
+            let held = canvas.mapping_at(later);
+            assert_eq!(held, fitted, "the frame holds while the display is held");
+            let drawn = canvas.drawn_at(later);
+            let (panel_now, _, _) = drawn.iter().find(|(_, _, held)| !*held).unwrap();
+            assert_eq!(held.to_canvas(panel_now.placement), panel);
+            let (tile, _, _) = drawn.iter().find(|(_, _, held)| *held).unwrap();
+            let tile = held.to_canvas(tile.placement);
+            assert!(
+                (tile.center().x - hand.x).abs() <= canvas.snap_radius + 0.5
+                    && (tile.center().y - hand.y).abs() <= canvas.snap_radius + 0.5,
+                "the tile is under the hand: {tile:?} at {hand:?}"
+            );
+            assert!(canvas.release());
+            let after = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
+            let settled = canvas.mapping_at(after);
+            let expected = Mapping::frame(
+                canvas.rect,
+                canvas.fitted_view(),
+                canvas.padding,
+                canvas.snap_radius,
+            );
+            assert!(
+                (settled.scale - expected.scale).abs() < 1e-6,
+                "it refits the new arrangement after the drop"
+            );
+            let resting = settled.to_canvas(canvas.displays[1].placement);
+            assert!(
+                canvas.rect.inflate(1.0, 1.0).union(resting) == canvas.rect.inflate(1.0, 1.0),
+                "the dropped display is in sight again: {resting:?}"
+            );
+            assert!(!canvas.settling(after), "and then asks for nothing");
+        }
+
+        phase a_drag_follows_the_hand_every_frame;
+        {
+            let trace = trace_drag(
+                |t| {
+                    Vec2::new(
+                        -260.0 * t,
+                        90.0 * (t * std::f64::consts::PI).sin() + 20.0 * t,
+                    )
+                },
+                240,
+            );
+            let snap = f64::from(ui::tokens::Spacing::BASE.s2);
+            let mut report = Vec::new();
+            for axis in 0..2 {
+                let misses: Vec<(f64, bool)> = trace.misses.iter().map(|frame| frame[axis]).collect();
+                let free: Vec<f64> = misses
+                    .iter()
+                    .filter(|(_, held)| !held)
+                    .map(|(miss, _)| *miss)
+                    .collect();
+                let worst_free = free.iter().copied().fold(0.0, f64::max);
+                let worst = misses.iter().map(|(miss, _)| *miss).fold(0.0, f64::max);
+                report.push(format!(
+                    "{}: free {}/{} worst_free={worst_free:.2}px worst={worst:.2}px",
+                    ["x", "y"][axis],
+                    free.len(),
+                    misses.len()
+                ));
+                assert!(
+                    worst_free < 0.5,
+                    "off every snap line the tile is exactly under the hand: {worst_free:.2} px"
+                );
+                assert!(
+                    worst <= snap + 0.5,
+                    "a snap pulls the tile only a short way: {worst:.2} px"
+                );
+                assert!(
+                    free.len() * 2 > misses.len(),
+                    "the tile runs free most of the way: {}",
+                    report.join("; ")
+                );
+            }
+            let rescaled = trace
+                .scales
+                .windows(2)
+                .filter(|pair| (pair[0] - pair[1]).abs() > 1e-9)
+                .count();
+            let worst_step = trace
+                .tiles
+                .windows(2)
+                .zip(trace.hands.windows(2))
+                .map(|(tile, hand)| ((tile[1] - tile[0]) - (hand[1] - hand[0])).hypot())
+                .fold(0.0, f64::max);
+            eprintln!(
+                "DRAG-TRACE frames={} {} rescaled_frames={rescaled} worst_step={worst_step:.2}px snap_radius={snap}",
+                trace.misses.len(),
+                report.join("; ")
+            );
+            assert!(
+                worst_step <= 2.0 * snap + 1.0,
+                "no frame jumps the tile further than a snap: {worst_step:.2} px"
+            );
+            assert_eq!(rescaled, 0, "the view holds still while a display is held");
+        }
+
+        phase a_drag_follows_the_hand_in_every_direction;
+        {
+            // The two side-by-side 1080p displays: the monitor dragged straight
+            // right (past the arrangement's edge), left, up and down, one move
+            // per 120 Hz frame. Every frame the point it was taken by stays
+            // under the hand, off the snap lines exactly, on them within the
+            // snap's pull, and it never stands still while the hand moves.
+            let snap = f64::from(ui::tokens::Spacing::BASE.s2);
+            for (way, travel) in [
+                ("right", Vec2::new(300.0, 0.0)),
+                ("left", Vec2::new(-300.0, 0.0)),
+                ("up", Vec2::new(0.0, -210.0)),
+                ("down", Vec2::new(0.0, 210.0)),
+            ] {
+                let mut canvas = canvas();
+                let start = crate::time::now();
+                let frame =
+                    |index: u32| start + crate::time::Duration::from_micros(8_333 * u64::from(index));
+                let pressed = {
+                    let _at = crate::motion::pin_frame_at(frame(0));
+                    let monitor = canvas.mapping().to_canvas(canvas.displays[1].placement);
+                    assert!(canvas.press(monitor.center()));
+                    monitor.center()
+                };
+                let grab = canvas
+                    .gesture
+                    .with(|gesture| gesture.drag.as_ref().map(|drag| drag.grab))
+                    .unwrap();
+                let mut stuck = 0;
+                let mut last: Option<Point> = None;
+                for index in 1..=120_u32 {
+                    let _at = crate::motion::pin_frame_at(frame(index));
+                    let hand = pressed + travel * (f64::from(index) / 120.0);
+                    assert!(canvas.drag_to(hand));
+                    let now = crate::motion::frame_now();
+                    let mapping = canvas.mapping_at(now);
+                    let Some(drag) = canvas
+                        .gesture
+                        .with(|gesture| gesture.drag.clone())
+                        .filter(|drag| drag.active)
+                    else {
+                        continue;
+                    };
+                    let (held, guides) = canvas.held_at(&drag, mapping);
+                    let tile = mapping.to_canvas(held);
+                    let taken = Point::new(
+                        tile.x0 + grab.0 * tile.width(),
+                        tile.y0 + grab.1 * tile.height(),
+                    );
+                    for (miss, vertical) in [
+                        ((taken.x - hand.x).abs(), true),
+                        ((taken.y - hand.y).abs(), false),
+                    ] {
+                        let pulled = guides.iter().any(|guide| guide.vertical == vertical);
+                        let allowed = if pulled { snap + 0.5 } else { 0.5 };
+                        assert!(
+                            miss <= allowed,
+                            "{way}, frame {index}: {miss:.2} px off the hand (pulled: {pulled})"
+                        );
+                    }
+                    if guides.is_empty() && last.is_some_and(|last| last == tile.origin()) {
+                        stuck += 1;
+                    }
+                    last = Some(tile.origin());
+                }
+                assert_eq!(
+                    stuck, 0,
+                    "{way}: the display stood still under a moving hand"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1817,267 +2227,6 @@ mod tests {
         (canvas, selection)
     }
 
-    #[test]
-    fn pressing_a_display_selects_it_in_the_shared_selection() {
-        let (mut canvas, selection) = selected_canvas();
-        let monitor = canvas.mapping().to_canvas(displays()[1].placement);
-        assert!(canvas.press(monitor.center()));
-        assert_eq!(selection.with(Clone::clone), "HDMI-A-1");
-        let node = canvas.accessibility().unwrap();
-        assert!(node.children[1].state.selected, "the chosen tile says so");
-        assert!(!node.children[0].state.selected);
-        assert!(canvas.release(), "a press without a drag is just a choice");
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-        selection.set("eDP-1".into());
-        assert!(canvas.accessibility().unwrap().children[0].state.selected);
-    }
-
-    #[test]
-    fn a_drag_repaints_every_move_and_writes_only_on_release() {
-        let mut canvas = canvas();
-        let mapping = canvas.mapping();
-        let monitor = mapping.to_canvas(displays()[1].placement);
-        assert!(canvas.press(monitor.center()));
-        canvas.mark_drawn();
-        let mut writes = 0;
-        for step in 1..=24 {
-            let point =
-                monitor.center() + Vec2::new(-12.0 * f64::from(step), 6.0 * f64::from(step));
-            assert!(canvas.drag_to(point));
-            assert!(
-                canvas.needs_redraw() || canvas.needs_animation_frame(),
-                "move {step} asks for its frame: the host repaints a pointer move only then"
-            );
-            assert!(!canvas.is_layout_dirty(), "move {step} lays nothing out");
-            writes +=
-                usize::from(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
-            canvas.mark_drawn();
-            // Between moves it asks for nothing, unless the view is still
-            // springing out to keep the held display in sight.
-            let view_growing = canvas.gesture.with(|gesture| {
-                gesture
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.is_moving(crate::motion::frame_now()))
-            });
-            assert!(
-                !(canvas.needs_redraw() || canvas.needs_animation_frame()) || view_growing,
-                "move {step} asks for nothing more"
-            );
-            let (held, _) = canvas.drawn().into_iter().find(|(_, held)| *held).unwrap();
-            let (dx, dy) = mapping.to_desktop(point);
-            let grab = mapping.to_desktop(monitor.center());
-            let free = (
-                displays()[1].placement.x + round_to_i32(dx - grab.0),
-                displays()[1].placement.y + round_to_i32(dy - grab.1),
-            );
-            let snapped = (held.placement.x, held.placement.y);
-            let threshold = mapping.snap_threshold();
-            assert!(
-                (snapped.0 - free.0).abs() <= threshold && (snapped.1 - free.1).abs() <= threshold,
-                "move {step}: {snapped:?} strays from the hand at {free:?}"
-            );
-        }
-        assert_eq!(writes, 0, "nothing is written while the display moves");
-        assert!(canvas.release());
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
-        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-    }
-
-    #[test]
-    fn a_dragged_display_moves_without_a_relayout() {
-        let bare = DisplayArrangement::new(
-            displays(),
-            Vec::new(),
-            ui::LocalState::new(ArrangementGesture::default()),
-        );
-        let mut host =
-            ui::headless::FrameHarness::new(ui::State::new(), Box::new(bare), (800, 600));
-        host.profile_frame();
-        let rect = host
-            .targets()
-            .get("display.arrangement")
-            .copied()
-            .expect("the arrangement is mounted");
-        let rebuilt = host.rebuilt_frames();
-        let start = Point::new(rect.x0 + rect.width() * 0.75, rect.center().y);
-        host.send(&crate::synthetic_input::cursor_moved(start.x, start.y));
-        host.send(&crate::synthetic_input::mouse_press());
-        let frames = host.relayout_frames();
-        for step in 1..=12 {
-            host.send(&crate::synthetic_input::cursor_moved(
-                start.x - 6.0 * f64::from(step),
-                start.y + 3.0 * f64::from(step),
-            ));
-            let relayout = host.last_relayout();
-            assert!(
-                !relayout.rebuilt && !relayout.measured,
-                "move {step} relaid the canvas out: {relayout:?}"
-            );
-        }
-        assert!(
-            host.relayout_frames() >= frames + 12,
-            "every move of the hand paints a frame"
-        );
-        assert_eq!(
-            host.rebuilt_frames(),
-            rebuilt,
-            "no move recomposed anything"
-        );
-        host.send(&crate::synthetic_input::mouse_release());
-        host.verify_retained_geometry().unwrap();
-    }
-
-    #[test]
-    fn a_finger_drags_a_display_like_the_pointer() {
-        fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
-            WindowEvent::Touch(winit::event::Touch {
-                device_id: winit::event::DeviceId::dummy(),
-                phase,
-                location: winit::dpi::PhysicalPosition::new(point.x, point.y),
-                force: None,
-                id: 7,
-            })
-        }
-        let drop = |by_touch: bool| {
-            let _frame = crate::motion::pin_frame();
-            let mut canvas = canvas();
-            let mapping = canvas.mapping();
-            let monitor = mapping.to_canvas(displays()[1].placement);
-            let panel = mapping.to_canvas(displays()[0].placement);
-            let target = Point::new(
-                panel.center().x + 3.0,
-                panel.y1 + monitor.height() / 2.0 + 4.0,
-            );
-            let path = [
-                monitor.center(),
-                monitor.center() - Vec2::new(30.0, -20.0),
-                target,
-            ];
-            if by_touch {
-                let dispatch = || crate::testing::Dispatch::new();
-                assert!(
-                    dispatch()
-                        .send(&mut canvas, &touch(TouchPhase::Started, path[0]))
-                        .handled
-                );
-                for point in &path[1..] {
-                    assert!(
-                        dispatch()
-                            .send(&mut canvas, &touch(TouchPhase::Moved, *point))
-                            .handled
-                    );
-                }
-                assert!(
-                    dispatch()
-                        .send(&mut canvas, &touch(TouchPhase::Ended, target))
-                        .handled
-                );
-            } else {
-                assert!(canvas.press(path[0]));
-                for point in &path[1..] {
-                    assert!(canvas.drag_to(*point));
-                }
-                assert!(canvas.release());
-            }
-            let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
-                .expect("the drop is sent");
-            (
-                invocation.arguments["x"].as_i64().unwrap(),
-                invocation.arguments["y"].as_i64().unwrap(),
-            )
-        };
-        assert_eq!(drop(true), drop(false));
-        assert_eq!(drop(true), (0, 1080));
-    }
-
-    #[test]
-    fn a_dropped_display_springs_into_place_then_asks_for_nothing() {
-        let mut canvas = canvas();
-        let mapping = canvas.mapping();
-        let monitor = mapping.to_canvas(displays()[1].placement);
-        assert!(!canvas.needs_animation_frame(), "idle costs nothing");
-        let _frame = crate::motion::pin_frame();
-        assert!(canvas.press(monitor.center()));
-        let over = mapping.to_canvas(displays()[0].placement).center();
-        assert!(canvas.drag_to(over));
-        let held = canvas
-            .drawn()
-            .into_iter()
-            .find(|(_, held)| *held)
-            .unwrap()
-            .0
-            .placement;
-        assert!(canvas.release());
-        let released = crate::motion::frame_now();
-        let rest = canvas.displays[1].placement;
-        assert_ne!(rest, held);
-        assert!(!rest.overlaps(canvas.displays[0].placement));
-        assert!(canvas.needs_animation_frame(), "the settle asks for frames");
-        let (_, shift, _) = canvas.drawn_at(released)[1].clone();
-        let start = Point::new(f64::from(rest.x), f64::from(rest.y)) + shift;
-        assert!(
-            (start.x - f64::from(held.x)).abs() < 2.0 && (start.y - f64::from(held.y)).abs() < 2.0,
-            "it starts where it was let go: {start:?} vs {held:?}"
-        );
-        let later = released + crate::time::Duration::from_secs(2);
-        let (_, shift, _) = canvas.drawn_at(later)[1].clone();
-        assert!(shift.hypot() < 1e-6, "and rests where it settles");
-        assert!(!canvas.settling(later), "then it asks for no frames");
-    }
-
-    #[test]
-    fn the_view_holds_while_a_display_is_held_then_refits_after_the_drop() {
-        let mut canvas = canvas();
-        let fitted = canvas.mapping();
-        let rest = fitted
-            .to_canvas(displays()[0].placement)
-            .union(fitted.to_canvas(displays()[1].placement));
-        assert!(
-            (rest.center().x - canvas.rect.center().x).abs() < 1.0
-                && (rest.center().y - canvas.rect.center().y).abs() < 1.0,
-            "the arrangement is centred: {rest:?} in {:?}",
-            canvas.rect
-        );
-        let monitor = fitted.to_canvas(displays()[1].placement);
-        assert!(canvas.press(monitor.center()));
-        let panel = fitted.to_canvas(displays()[0].placement);
-        let hand = Point::new(panel.center().x, canvas.rect.y1 + 40.0);
-        assert!(canvas.drag_to(hand));
-        let later = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
-        let held = canvas.mapping_at(later);
-        assert_eq!(held, fitted, "the frame holds while the display is held");
-        let drawn = canvas.drawn_at(later);
-        let (panel_now, _, _) = drawn.iter().find(|(_, _, held)| !*held).unwrap();
-        assert_eq!(held.to_canvas(panel_now.placement), panel);
-        let (tile, _, _) = drawn.iter().find(|(_, _, held)| *held).unwrap();
-        let tile = held.to_canvas(tile.placement);
-        assert!(
-            (tile.center().x - hand.x).abs() <= canvas.snap_radius + 0.5
-                && (tile.center().y - hand.y).abs() <= canvas.snap_radius + 0.5,
-            "the tile is under the hand: {tile:?} at {hand:?}"
-        );
-        assert!(canvas.release());
-        let after = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
-        let settled = canvas.mapping_at(after);
-        let expected = Mapping::frame(
-            canvas.rect,
-            canvas.fitted_view(),
-            canvas.padding,
-            canvas.snap_radius,
-        );
-        assert!(
-            (settled.scale - expected.scale).abs() < 1e-6,
-            "it refits the new arrangement after the drop"
-        );
-        let resting = settled.to_canvas(canvas.displays[1].placement);
-        assert!(
-            canvas.rect.inflate(1.0, 1.0).union(resting) == canvas.rect.inflate(1.0, 1.0),
-            "the dropped display is in sight again: {resting:?}"
-        );
-        assert!(!canvas.settling(after), "and then asks for nothing");
-    }
-
     struct DragTrace {
         misses: Vec<[(f64, bool); 2]>,
         scales: Vec<f64>,
@@ -2150,142 +2299,5 @@ mod tests {
             trace.hands.push(hand);
         }
         trace
-    }
-
-    #[test]
-    fn a_drag_follows_the_hand_every_frame() {
-        let trace = trace_drag(
-            |t| {
-                Vec2::new(
-                    -260.0 * t,
-                    90.0 * (t * std::f64::consts::PI).sin() + 20.0 * t,
-                )
-            },
-            240,
-        );
-        let snap = f64::from(ui::tokens::Spacing::BASE.s2);
-        let mut report = Vec::new();
-        for axis in 0..2 {
-            let misses: Vec<(f64, bool)> = trace.misses.iter().map(|frame| frame[axis]).collect();
-            let free: Vec<f64> = misses
-                .iter()
-                .filter(|(_, held)| !held)
-                .map(|(miss, _)| *miss)
-                .collect();
-            let worst_free = free.iter().copied().fold(0.0, f64::max);
-            let worst = misses.iter().map(|(miss, _)| *miss).fold(0.0, f64::max);
-            report.push(format!(
-                "{}: free {}/{} worst_free={worst_free:.2}px worst={worst:.2}px",
-                ["x", "y"][axis],
-                free.len(),
-                misses.len()
-            ));
-            assert!(
-                worst_free < 0.5,
-                "off every snap line the tile is exactly under the hand: {worst_free:.2} px"
-            );
-            assert!(
-                worst <= snap + 0.5,
-                "a snap pulls the tile only a short way: {worst:.2} px"
-            );
-            assert!(
-                free.len() * 2 > misses.len(),
-                "the tile runs free most of the way: {}",
-                report.join("; ")
-            );
-        }
-        let rescaled = trace
-            .scales
-            .windows(2)
-            .filter(|pair| (pair[0] - pair[1]).abs() > 1e-9)
-            .count();
-        let worst_step = trace
-            .tiles
-            .windows(2)
-            .zip(trace.hands.windows(2))
-            .map(|(tile, hand)| ((tile[1] - tile[0]) - (hand[1] - hand[0])).hypot())
-            .fold(0.0, f64::max);
-        eprintln!(
-            "DRAG-TRACE frames={} {} rescaled_frames={rescaled} worst_step={worst_step:.2}px snap_radius={snap}",
-            trace.misses.len(),
-            report.join("; ")
-        );
-        assert!(
-            worst_step <= 2.0 * snap + 1.0,
-            "no frame jumps the tile further than a snap: {worst_step:.2} px"
-        );
-        assert_eq!(rescaled, 0, "the view holds still while a display is held");
-    }
-
-    #[test]
-    fn a_drag_follows_the_hand_in_every_direction() {
-        // The two side-by-side 1080p displays: the monitor dragged straight
-        // right (past the arrangement's edge), left, up and down, one move
-        // per 120 Hz frame. Every frame the point it was taken by stays
-        // under the hand, off the snap lines exactly, on them within the
-        // snap's pull, and it never stands still while the hand moves.
-        let snap = f64::from(ui::tokens::Spacing::BASE.s2);
-        for (way, travel) in [
-            ("right", Vec2::new(300.0, 0.0)),
-            ("left", Vec2::new(-300.0, 0.0)),
-            ("up", Vec2::new(0.0, -210.0)),
-            ("down", Vec2::new(0.0, 210.0)),
-        ] {
-            let mut canvas = canvas();
-            let start = crate::time::now();
-            let frame =
-                |index: u32| start + crate::time::Duration::from_micros(8_333 * u64::from(index));
-            let pressed = {
-                let _at = crate::motion::pin_frame_at(frame(0));
-                let monitor = canvas.mapping().to_canvas(canvas.displays[1].placement);
-                assert!(canvas.press(monitor.center()));
-                monitor.center()
-            };
-            let grab = canvas
-                .gesture
-                .with(|gesture| gesture.drag.as_ref().map(|drag| drag.grab))
-                .unwrap();
-            let mut stuck = 0;
-            let mut last: Option<Point> = None;
-            for index in 1..=120_u32 {
-                let _at = crate::motion::pin_frame_at(frame(index));
-                let hand = pressed + travel * (f64::from(index) / 120.0);
-                assert!(canvas.drag_to(hand));
-                let now = crate::motion::frame_now();
-                let mapping = canvas.mapping_at(now);
-                let Some(drag) = canvas
-                    .gesture
-                    .with(|gesture| gesture.drag.clone())
-                    .filter(|drag| drag.active)
-                else {
-                    continue;
-                };
-                let (held, guides) = canvas.held_at(&drag, mapping);
-                let tile = mapping.to_canvas(held);
-                let taken = Point::new(
-                    tile.x0 + grab.0 * tile.width(),
-                    tile.y0 + grab.1 * tile.height(),
-                );
-                for (miss, vertical) in [
-                    ((taken.x - hand.x).abs(), true),
-                    ((taken.y - hand.y).abs(), false),
-                ] {
-                    let pulled = guides.iter().any(|guide| guide.vertical == vertical);
-                    let allowed = if pulled { snap + 0.5 } else { 0.5 };
-                    assert!(
-                        miss <= allowed,
-                        "{way}, frame {index}: {miss:.2} px off the hand (pulled: {pulled})"
-                    );
-                }
-                if guides.is_empty() && last.is_some_and(|last| last == tile.origin()) {
-                    stuck += 1;
-                }
-                last = Some(tile.origin());
-            }
-            assert_eq!(
-                stuck, 0,
-                "{way}: the display stood still under a moving hand"
-            );
-        }
     }
 }

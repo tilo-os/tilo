@@ -856,199 +856,206 @@ mod tests {
 
     use crate::synthetic_input::named_key;
 
-    #[test]
-    fn a_sampled_grid_tells_each_choice_and_paints_its_samples() {
-        let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let told = std::rc::Rc::clone(&chosen);
-        let painted = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-        let counted = std::rc::Rc::clone(&painted);
-        let mut picker = ColorSwatchPicker::new(palette(), 3)
-            .with_cell(60.0)
-            .with_cell_height(40.0)
-            .with_painter(move |_, _, _, _, _, _| counted.set(counted.get() + 1))
-            .on_change_view(move |index| told.borrow_mut().push(index));
-        lay_out(&mut picker);
-        // Three cells of 60 by 40, less the gap after the last: the grid
-        // has no outer inset.
-        let gap = f64::from(crate::tokens::Spacing::BASE.s1);
-        assert_eq!(picker.get_rect().size(), (180.0 - gap, 40.0 - gap).into(),);
-        let first = picker.swatch_rects[0];
-        assert!(first.width() > first.height(), "cells are wider than tall");
-        let third = picker.swatch_rects[2].center();
+    tilo_test_env::scenario! {
+        /// A swatch and the picker of swatches.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn colour_swatches_paint_name_and_choose;
 
-        dispatch(
-            &mut picker,
-            &crate::synthetic_input::cursor_moved(third.x, third.y),
-        );
-        dispatch(&mut picker, &crate::synthetic_input::mouse_press());
-        assert_eq!(
-            crate::testing::answer_controls(&mut picker),
-            1,
-            "the choice reaches its handler when it is answered"
-        );
-        assert_eq!(*chosen.borrow(), vec![2]);
+        phase a_sampled_grid_tells_each_choice_and_paints_its_samples;
+        {
+            let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let told = std::rc::Rc::clone(&chosen);
+            let painted = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+            let counted = std::rc::Rc::clone(&painted);
+            let mut picker = ColorSwatchPicker::new(palette(), 3)
+                .with_cell(60.0)
+                .with_cell_height(40.0)
+                .with_painter(move |_, _, _, _, _, _| counted.set(counted.get() + 1))
+                .on_change_view(move |index| told.borrow_mut().push(index));
+            lay_out(&mut picker);
+            // Three cells of 60 by 40, less the gap after the last: the grid
+            // has no outer inset.
+            let gap = f64::from(crate::tokens::Spacing::BASE.s1);
+            assert_eq!(picker.get_rect().size(), (180.0 - gap, 40.0 - gap).into(),);
+            let first = picker.swatch_rects[0];
+            assert!(first.width() > first.height(), "cells are wider than tall");
+            let third = picker.swatch_rects[2].center();
 
-        picker.set_selected(Some(0));
-        assert_eq!(picker.selected, Some(0));
-        assert_eq!(*chosen.borrow(), vec![2]);
+            dispatch(
+                &mut picker,
+                &crate::synthetic_input::cursor_moved(third.x, third.y),
+            );
+            dispatch(&mut picker, &crate::synthetic_input::mouse_press());
+            assert_eq!(
+                crate::testing::answer_controls(&mut picker),
+                1,
+                "the choice reaches its handler when it is answered"
+            );
+            assert_eq!(*chosen.borrow(), vec![2]);
 
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        picker.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-        assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
-    }
+            picker.set_selected(Some(0));
+            assert_eq!(picker.selected, Some(0));
+            assert_eq!(*chosen.borrow(), vec![2]);
 
-    #[test]
-    fn a_none_swatch_paints_its_diagonal_and_no_fill() {
-        let rect = Rect::new(10.0, 10.0, 40.0, 30.0);
-        let painted = |face: &ColorSwatchFace| {
             let mut scene = Scene::new();
-            face.paint(
+            let mut text = TextRenderer::new();
+            picker.draw(
                 &mut scene,
                 Affine::IDENTITY,
-                &mut TextRenderer::new(),
+                &mut text,
                 &Theme::dark(),
+                &PresenceCtx::default(),
             );
-            let encoding = scene.encoding();
-            let fills = encoding
-                .styles
-                .iter()
-                .filter(|style| {
-                    style.flags_and_miter_limit & vello_encoding::Style::FLAGS_STYLE_BIT == 0
-                })
-                .count();
-            (encoding.draw_tags.len(), encoding.n_paths, fills)
-        };
-        let none = ColorSwatchFace::none(rect, "No colour");
-        assert_eq!(painted(&none), (2, 2, 0), "the edge and the diagonal");
-        let ink = ColorSwatchFace::new(rect, rgb(0x11, 0x22, 0x33), "Ink");
-        let (_, _, fills) = painted(&ink);
-        assert_eq!(fills, 1, "a colour swatch is filled");
-        assert_eq!(
-            none.accessibility("none").name.as_deref(),
-            Some("No colour")
-        );
-    }
+            assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
+        }
 
-    #[test]
-    fn one_face_drives_hit_help_and_checked_semantics() {
-        let visual = Rect::new(10.0, 10.0, 30.0, 30.0);
-        let target = Rect::new(6.0, 4.0, 34.0, 36.0);
-        let face = ColorSwatchFace::new(visual, rgb(0xff, 0xff, 0xff), "Text color #FFFFFF")
-            .selected(true)
-            .target_rect(target);
-        assert!(face.hit_test(Point::new(7.0, 20.0)));
-        assert_eq!(
-            face.tooltip_target(Point::new(7.0, 20.0)),
-            Some((visual, "Text color #FFFFFF".to_owned())),
-        );
-        let node = face.accessibility("text-color:ffffff");
-        assert_eq!(node.role, Role::RadioButton);
-        assert_eq!(node.state.checked, Some(true));
-        assert_eq!(node.bounds.expect("target bounds").to_rect(), target);
-    }
+        phase a_none_swatch_paints_its_diagonal_and_no_fill;
+        {
+            let rect = Rect::new(10.0, 10.0, 40.0, 30.0);
+            let painted = |face: &ColorSwatchFace| {
+                let mut scene = Scene::new();
+                face.paint(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                );
+                let encoding = scene.encoding();
+                let fills = encoding
+                    .styles
+                    .iter()
+                    .filter(|style| {
+                        style.flags_and_miter_limit & vello_encoding::Style::FLAGS_STYLE_BIT == 0
+                    })
+                    .count();
+                (encoding.draw_tags.len(), encoding.n_paths, fills)
+            };
+            let none = ColorSwatchFace::none(rect, "No colour");
+            assert_eq!(painted(&none), (2, 2, 0), "the edge and the diagonal");
+            let ink = ColorSwatchFace::new(rect, rgb(0x11, 0x22, 0x33), "Ink");
+            let (_, _, fills) = painted(&ink);
+            assert_eq!(fills, 1, "a colour swatch is filled");
+            assert_eq!(
+                none.accessibility("none").name.as_deref(),
+                Some("No colour")
+            );
+        }
 
-    #[test]
-    fn the_picker_names_each_swatch_and_chooses_by_pointer_keyboard_and_semantics() {
-        let mut picker = ColorSwatchPicker::new(palette(), 2);
-        lay_out(&mut picker);
-        let tree = Widget::accessibility(&picker).expect("picker semantics");
-        let names: Vec<_> = tree.children.iter().map(|c| c.name.clone()).collect();
-        assert_eq!(
-            names,
-            [
-                Some("Ink".to_owned()),
-                Some("#445566".to_owned()),
+        phase one_face_drives_hit_help_and_checked_semantics;
+        {
+            let visual = Rect::new(10.0, 10.0, 30.0, 30.0);
+            let target = Rect::new(6.0, 4.0, 34.0, 36.0);
+            let face = ColorSwatchFace::new(visual, rgb(0xff, 0xff, 0xff), "Text color #FFFFFF")
+                .selected(true)
+                .target_rect(target);
+            assert!(face.hit_test(Point::new(7.0, 20.0)));
+            assert_eq!(
+                face.tooltip_target(Point::new(7.0, 20.0)),
+                Some((visual, "Text color #FFFFFF".to_owned())),
+            );
+            let node = face.accessibility("text-color:ffffff");
+            assert_eq!(node.role, Role::RadioButton);
+            assert_eq!(node.state.checked, Some(true));
+            assert_eq!(node.bounds.expect("target bounds").to_rect(), target);
+        }
+
+        phase the_picker_names_each_swatch_and_chooses_by_pointer_keyboard_and_semantics;
+        {
+            let mut picker = ColorSwatchPicker::new(palette(), 2);
+            lay_out(&mut picker);
+            let tree = Widget::accessibility(&picker).expect("picker semantics");
+            let names: Vec<_> = tree.children.iter().map(|c| c.name.clone()).collect();
+            assert_eq!(
+                names,
+                [
+                    Some("Ink".to_owned()),
+                    Some("#445566".to_owned()),
+                    Some("Slate".to_owned())
+                ],
+                "a nameless swatch is spoken as its hex"
+            );
+            let centre = picker.swatch_rects[2].center();
+            assert_eq!(
+                Widget::tooltip_target_at(&picker, centre).map(|(_, name)| name),
                 Some("Slate".to_owned())
-            ],
-            "a nameless swatch is spoken as its hex"
-        );
-        let centre = picker.swatch_rects[2].center();
-        assert_eq!(
-            Widget::tooltip_target_at(&picker, centre).map(|(_, name)| name),
-            Some("Slate".to_owned())
-        );
+            );
 
-        dispatch(
-            &mut picker,
-            &crate::synthetic_input::cursor_moved(centre.x, centre.y),
-        );
-        assert!(dispatch(
-            &mut picker,
-            &crate::synthetic_input::mouse_press()
-        ));
-        assert_eq!(picker.take_choice(), Some(2));
+            dispatch(
+                &mut picker,
+                &crate::synthetic_input::cursor_moved(centre.x, centre.y),
+            );
+            assert!(dispatch(
+                &mut picker,
+                &crate::synthetic_input::mouse_press()
+            ));
+            assert_eq!(picker.take_choice(), Some(2));
 
-        Widget::set_focus(&mut picker, true);
-        assert!(dispatch(&mut picker, &named_key(NamedKey::Home)));
-        assert!(dispatch(&mut picker, &named_key(NamedKey::ArrowRight)));
-        assert!(dispatch(&mut picker, &named_key(NamedKey::Space)));
-        assert_eq!(picker.take_choice(), Some(1));
+            Widget::set_focus(&mut picker, true);
+            assert!(dispatch(&mut picker, &named_key(NamedKey::Home)));
+            assert!(dispatch(&mut picker, &named_key(NamedKey::ArrowRight)));
+            assert!(dispatch(&mut picker, &named_key(NamedKey::Space)));
+            assert_eq!(picker.take_choice(), Some(1));
 
-        assert!(Widget::perform_semantic_action(
-            &mut picker,
-            "swatch:0",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        ));
-        assert_eq!(picker.take_choice(), Some(0));
-        assert_eq!(
-            picker.swatch(0).map(|s| s.color),
-            Some(rgb(0x11, 0x22, 0x33))
-        );
-        assert!(
-            Widget::accessibility(&picker).unwrap().children[0]
-                .state
-                .selected
-        );
-    }
+            assert!(Widget::perform_semantic_action(
+                &mut picker,
+                "swatch:0",
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            ));
+            assert_eq!(picker.take_choice(), Some(0));
+            assert_eq!(
+                picker.swatch(0).map(|s| s.color),
+                Some(rgb(0x11, 0x22, 0x33))
+            );
+            assert!(
+                Widget::accessibility(&picker).unwrap().children[0]
+                    .state
+                    .selected
+            );
+        }
 
-    #[test]
-    fn swatch_cells_are_pointer_targets() {
-        let mut picker = ColorSwatchPicker::new(palette(), 2);
-        lay_out(&mut picker);
-        let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
-        let pitch = picker.swatch_rects[1].x0 - picker.swatch_rects[0].x0;
-        assert_eq!(pitch, target, "each swatch owns a full pointer-target cell");
-        assert!(picker.swatch_rects[2].y0 > picker.swatch_rects[0].y0);
-    }
-    #[test]
-    fn the_first_swatch_sits_on_the_content_edge() {
-        let mut picker = ColorSwatchPicker::new(
-            [
-                ColorSwatch::named(Color::from_rgb8(200, 40, 40), "Red"),
-                ColorSwatch::named(Color::from_rgb8(40, 200, 40), "Green"),
-            ],
-            2,
-        );
-        let theme = Theme::dark();
-        let mut tree = TaffyTree::new();
-        let node = picker.build_layout(&mut tree, &theme, &mut HashMap::new());
-        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
-            .unwrap();
-        picker.apply_layout(&tree, node, Point::new(24.0, 10.0));
-        assert_eq!(picker.swatch_rects[0].x0, 24.0);
-        assert_eq!(picker.swatch_rects[0].y0, 10.0);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        ColorSwatchFace::new(Rect::new(0.0, 0.0, 24.0, 24.0), Color::WHITE, "White")
-            .selected(true)
-            .paint(&mut scene, Affine::IDENTITY, &mut text, &Theme::light());
-        let edge = swatch_edge(
-            &Theme::light(),
-            Color::WHITE,
-            Theme::light().tokens.colors.surfaces.content,
-        );
-        assert!(
-            crate::a11y::contrast_ratio(edge, Color::WHITE) >= SWATCH_EDGE_CONTRAST - 1e-6,
-            "a white swatch keeps an edge on paper"
-        );
+        phase swatch_cells_are_pointer_targets;
+        {
+            let mut picker = ColorSwatchPicker::new(palette(), 2);
+            lay_out(&mut picker);
+            let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
+            let pitch = picker.swatch_rects[1].x0 - picker.swatch_rects[0].x0;
+            assert_eq!(pitch, target, "each swatch owns a full pointer-target cell");
+            assert!(picker.swatch_rects[2].y0 > picker.swatch_rects[0].y0);
+        }
+
+        phase the_first_swatch_sits_on_the_content_edge;
+        {
+            let mut picker = ColorSwatchPicker::new(
+                [
+                    ColorSwatch::named(Color::from_rgb8(200, 40, 40), "Red"),
+                    ColorSwatch::named(Color::from_rgb8(40, 200, 40), "Green"),
+                ],
+                2,
+            );
+            let theme = Theme::dark();
+            let mut tree = TaffyTree::new();
+            let node = picker.build_layout(&mut tree, &theme, &mut HashMap::new());
+            tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+                .unwrap();
+            picker.apply_layout(&tree, node, Point::new(24.0, 10.0));
+            assert_eq!(picker.swatch_rects[0].x0, 24.0);
+            assert_eq!(picker.swatch_rects[0].y0, 10.0);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            ColorSwatchFace::new(Rect::new(0.0, 0.0, 24.0, 24.0), Color::WHITE, "White")
+                .selected(true)
+                .paint(&mut scene, Affine::IDENTITY, &mut text, &Theme::light());
+            let edge = swatch_edge(
+                &Theme::light(),
+                Color::WHITE,
+                Theme::light().tokens.colors.surfaces.content,
+            );
+            assert!(
+                crate::a11y::contrast_ratio(edge, Color::WHITE) >= SWATCH_EDGE_CONTRAST - 1e-6,
+                "a white swatch keeps an edge on paper"
+            );
+        }
     }
 }
