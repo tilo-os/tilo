@@ -577,7 +577,11 @@ impl AppBrokerState {
             Some(run)
                 if policy.is_agent()
                     && policy.issue().is_none()
-                    && policy.id().strip_prefix("agent:").unwrap_or(policy.id()) == run.agent() =>
+                    && policy
+                        .id()
+                        .strip_prefix("agent:")
+                        .unwrap_or_else(|| policy.id())
+                        == run.agent() =>
             {
                 working = policy.clone().working_on(run.issue());
                 &working
