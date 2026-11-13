@@ -666,6 +666,7 @@ impl Conversations {
         Some((
             crate::arrangement::Asked {
                 conversation: format!("{}/channels/{channel}", chat::Chat::KIND),
+                message: question.to_owned(),
                 turn: turn_address(question),
                 opened_as: format!("{CHANNELS}{channel}"),
             },

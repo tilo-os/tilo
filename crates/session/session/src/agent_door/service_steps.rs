@@ -20,11 +20,19 @@ pub(super) fn arguments_of(
         .map_err(|error| invalid(format!("the step's arguments do not read: {error}")))
 }
 
+/// What an agent's step in `turn` stands what it opens beside: that turn, by the message that
+/// asked it (`<conversation>/messages/<message>`), never its conversation's latest — a turn asked
+/// on the canvas keeps its own room for every step taken in it. Empty outside a turn.
+pub(crate) fn turn_beside(turn: Option<&tilo_action_policy::turn::Turn>) -> String {
+    turn.map(|turn| crate::arrangement::turn_key(&turn.conversation, &turn.message))
+        .unwrap_or_default()
+}
+
 /// `arguments` of the system's `open` and `place`, with the place the asking turn is in filled in
 /// when they name none: a place they make stands beside the conversation of the turn
 /// (`docs/designs/app-language/one-app-model.md` §3) — a `place` only when it names no point of its
 /// own, which the arrangement reads. Every other action's arguments stand as they were.
-pub(super) fn with_turn_beside(
+pub(crate) fn with_turn_beside(
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     beside: &str,

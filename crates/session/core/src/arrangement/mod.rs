@@ -228,7 +228,7 @@ pub enum ArrangementAction {
     },
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): the resource
     /// `resource` placed with its view `view` (empty for its primary one) beside the place showing
-    /// `beside` — the conversation of the turn that asked, by its address — or beside the place in
+    /// `beside` — the turn that asked, by the address of its message — or beside the place in
     /// front when it names none. A resource already standing is brought forward instead. The door
     /// resolves it into the `Place` (or `Activate`) it makes before the step is recorded, so the
     /// record holds ids. Appended last.
@@ -315,9 +315,11 @@ pub type Ask = Rc<dyn Fn(&str) -> Option<u64>>;
 /// is published as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asked {
-    /// The conversation, by its address (`chat.workspace/channels/<id>`): what an agent's step in
-    /// the turn names as the place its turn is in.
+    /// The conversation, by its address (`chat.workspace/channels/<id>`).
     pub conversation: String,
+    /// The person's message that asked, by its id in the conversation: with the conversation, what
+    /// an agent's step in the turn names as the turn it is in ([`turn_key`]).
+    pub message: String,
     /// The turn, by its address: the resource whose `turn` view stands at the caret.
     pub turn: String,
     /// The conversation as its app publishes it (`chat.workspace.channels:<id>`): what the turn
@@ -570,15 +572,17 @@ pub struct Arrangement {
     /// Actions that arrived under a gesture or while the person typed: they run in order once it
     /// ends.
     waiting: RefCell<VecDeque<(String, ArrangementAction)>>,
-    /// Each conversation's latest turn asked on the canvas, by the conversation's address: where
-    /// the places an agent's step in it makes stand. A turn is the session's while it runs, never
-    /// the record's: the record holds the places it made.
+    /// Each turn asked on the canvas, by the message that asked it ([`turn_key`]): where the places
+    /// an agent's step in it makes stand. A turn is the session's while it runs, never the
+    /// record's: the record holds the places it made.
     turns: RefCell<BTreeMap<String, TurnAnchor>>,
     /// Each turn's conversation as its app publishes it, by that address: the conversation's
-    /// address the turns above are kept under.
+    /// address the turns above were asked in.
     opened_as: RefCell<BTreeMap<String, String>>,
     /// The asks sent from the canvas whose turn Chat's record does not hold yet, oldest first.
     awaiting: RefCell<Vec<AwaitedTurn>>,
+    /// Which message Chat posted for an ask, once it answered: what names a waiting ask's turn.
+    posted: RefCell<Option<Posted>>,
     /// The queries the canvas stood while their app answers them, by the key each place shows it
     /// under (`session.arrangement_query`, shell.md §8): a query is no part of the desk's record
     /// — a place still shows one while it runs — so the session keeps it here, in step with the
@@ -606,6 +610,7 @@ impl Arrangement {
             turns: RefCell::new(BTreeMap::new()),
             opened_as: RefCell::new(BTreeMap::new()),
             awaiting: RefCell::new(Vec::new()),
+            posted: RefCell::new(None),
             queries: RefCell::new(BTreeMap::new()),
             query_held: RefCell::new(BTreeMap::new()),
         }
@@ -1075,7 +1080,8 @@ impl Arrangement {
 
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): stand `resource`
     /// with its view `view` (empty for its primary one) beside the place that shows `beside`'s
-    /// resource — the conversation of the turn that asked — or beside the place in front when
+    /// resource — the turn that asked, by its [`turn_key`], or its conversation — or beside the
+    /// place in front when
     /// `beside` names nothing. A resource already standing on the desk is brought forward instead,
     /// so opening what is shown raises it rather than standing a second place.
     ///
@@ -1099,12 +1105,18 @@ impl Arrangement {
         }
         // A turn asked on the canvas anchors what its agent's steps make (canvas.md §3): the
         // first place fills the rectangle the person dragged for the answer, and any other stands
-        // beside the turn's own place.
-        let turn = self.turn_of(beside);
+        // beside the turn's own place. `beside` names the turn by the message that asked it, so
+        // each turn of a conversation keeps its own room, and a step taken before the turn's view
+        // stands goes where the turn will.
         // The room is the agent's answer's: the conversation itself, opened on request, stands
         // beside the turn instead.
-        let whole = self.conversation_opened_as(resource).as_deref() == Some(beside.trim());
-        if let Some(room) = turn.and_then(|turn| turn.room).filter(|_| !whole) {
+        let room = if self.is_conversation_of(resource, beside) {
+            self.turn_of(beside)
+                .map(|turn| TurnRoom::Beside(turn.place))
+        } else {
+            self.take_turn_room(beside)
+        };
+        if let Some(TurnRoom::Fill(room)) = room {
             let surface = self.surface_at()?;
             let action = ArrangementAction::Place {
                 workspace: surface.workspace,
@@ -1120,14 +1132,21 @@ impl Arrangement {
                 float: None,
             };
             self.ask(asked, action, Busy::default())?;
-            if let Some(held) = self.turns.borrow_mut().get_mut(beside.trim()) {
-                held.room = None;
-            }
             return Ok(Some(surface.place));
         }
-        let anchor = turn
-            .map(|turn| turn.place)
-            .or_else(|| self.anchor_of(beside));
+        // A turn asked elsewhere than the canvas stands what it opens beside its conversation.
+        let conversation = beside
+            .trim()
+            .rsplit_once("/messages/")
+            .map_or(beside, |(conversation, _)| conversation);
+        let at = match room {
+            Some(TurnRoom::BesideAsked(turn)) => self.point_beside_rect(turn),
+            Some(TurnRoom::Beside(place)) => self.point_beside(place, None),
+            _ => self
+                .anchor_of(beside)
+                .or_else(|| self.anchor_of(conversation))
+                .and_then(|place| self.point_beside(place, None)),
+        };
         let surface = self.surface_at()?;
         // Where the new place stands: the free space next to the anchor (`free_place_next_to`),
         // its trailing side first, then below it, then further down the two columns the anchor
@@ -1137,7 +1156,6 @@ impl Arrangement {
         // one anchor therefore runs right, then down, never over the anchor or over each other,
         // and never above or to the left of it (`shell.md` §3, "a place next to where it came
         // from").
-        let at = anchor.and_then(|place| self.point_beside(place, None));
         let (x, y) = at.map_or((0, 0), |at| at);
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -2704,8 +2722,8 @@ mod specs;
 use specs::{float_actions, float_coord, float_side, strip_actions};
 
 mod turns;
-use turns::{AwaitedTurn, TurnAnchor};
-pub use turns::{FindTurn, TURN_VIEW};
+use turns::{AwaitedTurn, TurnAnchor, TurnRoom};
+pub use turns::{FindTurn, Posted, TURN_VIEW, turn_key};
 
 #[cfg(test)]
 mod tests;

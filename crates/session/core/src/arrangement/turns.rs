@@ -1,6 +1,13 @@
 //! A turn asked on the canvas and the room it keeps for its answer (canvas.md §3): the turn's
 //! view stands where the person asked, and the places the agent's steps in it make fill the
 //! rectangle the person dragged, or stand beside the turn.
+//!
+//! A turn is named by the message that asked it (`<conversation>/messages/<message>`, as its
+//! steps name it), never by its conversation: two asks in one conversation are two turns, each
+//! with its own room. Where a turn stands is known when the person asks; a step the agent takes
+//! before its turn's view stands goes where the turn will, by the message Chat posted for the ask.
+
+use std::rc::Rc;
 
 use serde_json::Value as Json;
 
@@ -33,12 +40,68 @@ pub(super) struct CanvasRect {
 
 /// Where the places an agent makes in a turn stand (canvas.md §3, §6): the turn's own place, and
 /// the room the person dragged for its answer while nothing has filled it yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TurnAnchor {
     /// The place the turn's view stands in.
     pub(super) place: u64,
     /// The rectangle the person dragged, under the turn: the first place the turn makes fills it.
     pub(super) room: Option<CanvasRect>,
+    /// The conversation the turn was asked in, by its address.
+    pub(super) conversation: String,
+    /// The order the turns stood in: a later turn has a greater one.
+    pub(super) stood: u64,
+}
+
+/// What a session reads which message Chat posted for the ask numbered so through, once Chat
+/// answered: the message's id in its conversation.
+pub type Posted = Rc<dyn Fn(u64) -> Option<String>>;
+
+/// The name a turn goes by: the address of the message `message` of `conversation` that asked
+/// it, as a step taken in the turn names what it stands beside.
+#[must_use]
+pub fn turn_key(conversation: &str, message: &str) -> String {
+    format!("{}{MESSAGES}{}", conversation.trim(), message.trim())
+}
+
+/// What separates a conversation's address from its message's in a [`turn_key`].
+const MESSAGES: &str = "/messages/";
+
+/// The conversation and the message a [`turn_key`] names; `None` for anything else.
+fn key_parts(key: &str) -> Option<(&str, &str)> {
+    key.trim()
+        .rsplit_once(MESSAGES)
+        .filter(|(conversation, message)| !conversation.is_empty() && !message.is_empty())
+}
+
+/// The size a turn stands at for an ask at `at` of `size` (`None`: a click), and the room under it
+/// a dragged rectangle leaves for the answer's views.
+fn turn_geometry(at: (i64, i64), size: Option<(i64, i64)>) -> (i64, i64, Option<CanvasRect>) {
+    let Some((width, height)) = size else {
+        return (TURN_WIDTH, TURN_HEIGHT, None);
+    };
+    let band = TURN_HEIGHT.min(height);
+    let left = height.saturating_sub(band).saturating_sub(TURN_GAP);
+    // The room under the turn's band is what the answer's views fill; a rectangle with too little
+    // of it under the band leaves them to stand beside the turn.
+    let room = (left >= LEAST_ROOM).then_some(CanvasRect {
+        x: at.0,
+        y: at.1.saturating_add(band).saturating_add(TURN_GAP),
+        width,
+        height: left,
+    });
+    (width, band, room)
+}
+
+/// Where a step of a turn stands what it shows (canvas.md §3): in the room the person dragged for
+/// the answer, or next to the turn — its place once it stands, else the rectangle it will take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TurnRoom {
+    /// The room under the turn, which this step takes.
+    Fill(CanvasRect),
+    /// Beside the turn's place.
+    Beside(u64),
+    /// Beside where the turn will stand once its view does.
+    BesideAsked(CanvasRect),
 }
 
 /// An ask sent from the canvas whose turn does not stand yet: where it stands once Chat said
@@ -55,6 +118,8 @@ pub(super) struct AwaitedTurn {
     at: (i64, i64),
     /// The rectangle they dragged, when they dragged one.
     size: Option<(i64, i64)>,
+    /// A step of the turn filled the room under it before the turn stood.
+    room_taken: bool,
 }
 
 /// What a session reads an ask's turn back from: the turn the message Chat posted for the send
@@ -79,7 +144,14 @@ impl Arrangement {
             strip,
             at,
             size,
+            room_taken: false,
         });
+    }
+
+    /// Read which message Chat posted for each ask through `posted`: what names an ask's turn
+    /// before its view stands, so a step of it goes where the turn will.
+    pub fn know_posted(&self, posted: Posted) {
+        *self.posted.borrow_mut() = Some(posted);
     }
 
     /// Whether an ask sent from the canvas still waits for its turn.
@@ -102,7 +174,7 @@ impl Arrangement {
             for resource in &published {
                 self.catalog.borrow_mut().remember_resource(resource);
             }
-            match self.place_turn(&ask.asked, &turn, ask.strip, ask.at, ask.size, busy) {
+            match self.place_turn(&ask, &turn, busy) {
                 Ok(_) => stood = stood.saturating_add(1),
                 Err(why) => {
                     tracing::warn!(%why, turn = %turn.turn, "the asked turn does not stand");
@@ -118,36 +190,21 @@ impl Arrangement {
     /// steps in it make fill the rest of that rectangle, or stand beside the turn. One arranging
     /// step of the person's; the conversation itself stays where it is, Chat's channel, and is
     /// not placed.
-    pub(super) fn place_turn(
+    fn place_turn(
         &mut self,
-        asked: &str,
+        ask: &AwaitedTurn,
         turn: &Asked,
-        strip: Option<u64>,
-        at: (i64, i64),
-        size: Option<(i64, i64)>,
         busy: Busy,
     ) -> Result<Option<u64>, String> {
+        let (asked, at) = (ask.asked.as_str(), ask.at);
         if let Some(held) = self.place_of(&turn.turn) {
             self.bring_forward(asked, held, busy)?;
             return Ok(Some(held));
         }
-        let (width, height, room) = match size {
-            None => (TURN_WIDTH, TURN_HEIGHT, None),
-            Some((width, height)) => {
-                let band = TURN_HEIGHT.min(height);
-                let left = height.saturating_sub(band).saturating_sub(TURN_GAP);
-                // The room under the turn's band is what the answer's views fill; a rectangle
-                // with too little of it under the band leaves them to stand beside the turn.
-                let room = (left >= LEAST_ROOM).then_some(CanvasRect {
-                    x: at.0,
-                    y: at.1.saturating_add(band).saturating_add(TURN_GAP),
-                    width,
-                    height: left,
-                });
-                (width, band, room)
-            }
-        };
-        let surface = self.surface_at_strip(strip)?;
+        let (width, height, room) = turn_geometry(at, ask.size);
+        // A step of the turn taken before the turn stood filled the room already.
+        let room = room.filter(|_| !ask.room_taken);
+        let surface = self.surface_at_strip(ask.strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
             row: surface.row,
@@ -165,34 +222,107 @@ impl Arrangement {
         self.opened_as
             .borrow_mut()
             .insert(turn.opened_as.clone(), turn.conversation.clone());
+        let stood = self
+            .turns
+            .borrow()
+            .values()
+            .map(|anchor| anchor.stood.saturating_add(1))
+            .max()
+            .unwrap_or_default();
         self.turns.borrow_mut().insert(
-            turn.conversation.clone(),
+            turn_key(&turn.conversation, &turn.message),
             TurnAnchor {
                 place: surface.place,
                 room,
+                conversation: turn.conversation.clone(),
+                stood,
             },
         );
         Ok(Some(surface.place))
     }
 
-    /// The conversation of a turn asked on the canvas that `resource` is, as its app publishes it,
-    /// while the turn's place stands: by the address the turn's anchor is kept under.
+    /// The latest turn asked on the canvas whose conversation `resource` is, as its app publishes
+    /// it, while the turn's place stands: by its [`turn_key`].
     pub(super) fn conversation_opened_as(&self, resource: &str) -> Option<String> {
         let conversation = self.opened_as.borrow().get(resource.trim())?.clone();
-        self.turn_of(&conversation).map(|_| conversation)
+        let mut turns: Vec<(String, u64)> = self
+            .turns
+            .borrow()
+            .iter()
+            .filter(|(_, anchor)| anchor.conversation == conversation)
+            .map(|(key, anchor)| (key.clone(), anchor.stood))
+            .collect();
+        turns.sort_by_key(|(_, stood)| std::cmp::Reverse(*stood));
+        turns
+            .into_iter()
+            .map(|(key, _)| key)
+            .find(|key| self.turn_of(key).is_some())
     }
 
-    /// The turn asked on the canvas in the conversation `beside` names, while its place stands.
-    pub(super) fn turn_of(&self, beside: &str) -> Option<TurnAnchor> {
-        let turn = *self.turns.borrow().get(beside.trim())?;
+    /// Whether `resource` is, as its app publishes it, the conversation the turn `key` names was
+    /// asked in: the whole conversation, which the turn's room is not for.
+    pub(super) fn is_conversation_of(&self, resource: &str, key: &str) -> bool {
+        let Some((conversation, _)) = key_parts(key) else {
+            return false;
+        };
+        self.opened_as
+            .borrow()
+            .get(resource.trim())
+            .is_some_and(|opened| opened == conversation)
+    }
+
+    /// The turn asked on the canvas that `key` names ([`turn_key`]), while its place stands.
+    pub(super) fn turn_of(&self, key: &str) -> Option<TurnAnchor> {
+        let turn = self.turns.borrow().get(key.trim())?.clone();
         self.handle
             .read(|tree| locate(tree, turn.place).is_some())
             .then_some(turn)
     }
+
+    /// The ask still waiting for its turn's view that `key` names ([`turn_key`]), by where it is
+    /// among the waiting asks: the one Chat posted that message for.
+    fn awaited_of(&self, key: &str) -> Option<usize> {
+        let (_, message) = key_parts(key)?;
+        let posted = self.posted.borrow().clone()?;
+        self.awaiting
+            .borrow()
+            .iter()
+            .position(|ask| posted(ask.sent).as_deref() == Some(message))
+    }
+
+    /// Where a step of the turn `key` names ([`turn_key`]) stands what it shows, taking the turn's
+    /// room while it is free: the turn's own, kept from when the person asked, whether its view
+    /// stands yet or not. `None` when `key` names no turn asked on the canvas.
+    pub(super) fn take_turn_room(&self, key: &str) -> Option<TurnRoom> {
+        let key = key.trim();
+        if let Some(turn) = self.turn_of(key) {
+            let Some(room) = turn.room else {
+                return Some(TurnRoom::Beside(turn.place));
+            };
+            if let Some(held) = self.turns.borrow_mut().get_mut(key) {
+                held.room = None;
+            }
+            return Some(TurnRoom::Fill(room));
+        }
+        let at = self.awaited_of(key)?;
+        let mut awaiting = self.awaiting.borrow_mut();
+        let ask = awaiting.get_mut(at)?;
+        let (width, height, room) = turn_geometry(ask.at, ask.size);
+        if let Some(room) = room.filter(|_| !ask.room_taken) {
+            ask.room_taken = true;
+            return Some(TurnRoom::Fill(room));
+        }
+        Some(TurnRoom::BesideAsked(CanvasRect {
+            x: ask.at.0,
+            y: ask.at.1,
+            width,
+            height,
+        }))
+    }
 }
 
 impl Arrangement {
-    /// The conversation of the turn asked on the canvas that `action` would cover, while the
+    /// The turn asked on the canvas that `action` would cover, by its [`turn_key`], while the
     /// turn stands (canvas.md §3): a `show` that re-points the turn's own place, or a `place` that
     /// joins the strip the turn stands in (`names_strip`: it named one). `None` for a step that
     /// covers no turn.
@@ -205,7 +335,7 @@ impl Arrangement {
             .turns
             .borrow()
             .iter()
-            .map(|(conversation, anchor)| (conversation.clone(), anchor.place))
+            .map(|(key, anchor)| (key.clone(), anchor.place))
             .collect();
         self.handle.read(|tree| {
             let strip_of = |place: u64| {
@@ -220,7 +350,7 @@ impl Arrangement {
                         .id,
                 )
             };
-            turns.into_iter().find_map(|(conversation, turn)| {
+            turns.into_iter().find_map(|(key, turn)| {
                 let covered = match action {
                     ArrangementAction::Show { place, .. } => *place == turn,
                     ArrangementAction::Place { strip, .. } if names_strip => {
@@ -228,7 +358,7 @@ impl Arrangement {
                     }
                     _ => false,
                 };
-                (covered && locate(tree, turn).is_some()).then_some(conversation)
+                (covered && locate(tree, turn).is_some()).then_some(key)
             })
         })
     }
@@ -256,12 +386,12 @@ impl Door {
             .arrangement
             .borrow()
             .turn_covered_by(action, names_strip);
-        let Some(conversation) = covered else {
+        let Some(turn) = covered else {
             return Ok(false);
         };
         self.arrangement
             .borrow_mut()
-            .open_place(asked, resource, view, &conversation)
+            .open_place(asked, resource, view, &turn)
             .map_err(|why| tilo_actions::DoorError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: why,
