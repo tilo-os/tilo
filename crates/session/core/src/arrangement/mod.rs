@@ -2481,6 +2481,9 @@ impl Door {
             Some(actor) => actor.to_owned(),
             None => self.person(),
         };
+        if self.kept_turn(&asked, arguments, &action)? {
+            return Ok(completed());
+        }
         if address.action == "place" {
             if self.placed_beside(&asked, arguments, &action)? {
                 return Ok(completed());

@@ -477,6 +477,96 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
     );
 }
 
+/// A turn's place is the turn: an agent's step aimed at it — a `place` into the turn's strip, a
+/// `show` of something else in the turn's place — stands what it shows in the room of the
+/// rectangle under the turn, and beside the turn after that, and the turn's view stays.
+#[test]
+fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let from = (x + w * 0.1, y + h * 0.1);
+    let to = (x + w * 0.5, y + h * 0.95);
+    frame_and_say(&mut session, from, to, "what do my notes say?");
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q4");
+    let turn = wait_for(&mut session, "the turn placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+    });
+    let (tx, ty, tw, th) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
+    let root_of = |session: &Session, app: &str| {
+        let prefix = format!("tl:{app}:root-");
+        session
+            .resources()
+            .into_iter()
+            .map(|spec| spec.id.as_str().to_owned())
+            .find(|id| id.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("{app}'s root is published"))
+    };
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    let mails = root_of(&session, "so.tilo.lang.mail");
+
+    // A `place` into the turn's own strip, as a tab of it.
+    session
+        .invoke_with_actor(
+            "agent:assistant",
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({
+                "resource": notes,
+                "strip": crate::common::number(&turn.strip),
+            }),
+        )
+        .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
+    let (nx, ny, nw, _) = wait_for(&mut session, "the notes placed", |session| {
+        canvas_box(session, "so.tilo.lang.notes")
+    });
+    assert!(
+        nx == tx && nw == tw && ny >= ty + th,
+        "the notes stand in the room under the turn, not in its place: {:?} under {:?}",
+        (nx, ny, nw),
+        (tx, ty, tw, th)
+    );
+
+    // A `show` of something else in the turn's own place.
+    session
+        .invoke_with_actor(
+            "agent:assistant",
+            "shell:arrangement",
+            "show",
+            &serde_json::json!({
+                "place": format!("shell:place:{}", turn.key),
+                "resource": mails,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("the agent's show runs: {error}"));
+    let (mx, _, _, _) = wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    assert!(
+        mx >= tx + tw,
+        "with the room taken, the inbox stands beside the turn: {mx} against {:?}",
+        (tx, tw)
+    );
+    let still = places(&session)
+        .into_iter()
+        .find(|place| place.key == turn.key)
+        .expect("the turn's place still stands");
+    assert!(
+        still.record.starts_with("chat.workspace.turns:") && still.shown_as == "turn",
+        "the turn's place still shows the turn: {still:?}"
+    );
+}
+
 /// The whole conversation a turn opens on request stands on the canvas beside the turn, as Chat's
 /// own page: content, not a Chat window, and not in the room the rectangle keeps for the agent's
 /// answer. It is opened as a composed view opens anything, through `place` naming only it.
