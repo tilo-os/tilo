@@ -1,40 +1,28 @@
 //! Who is on the other end of a root service's local socket.
 //!
-//! Tilo's root services (the NTFS mount service, the device VPN helper) open
-//! their socket to every local process and decide per connection, from the
-//! kernel's account of the caller. The facts are the same for each of them:
-//!
-//! - the caller's uid, which must be the uid logind reports at the seat;
-//! - its executable, read through `/proc/<pid>/exe` and pinned with the
-//!   connection's pidfd, so a recycled process id cannot impersonate it;
-//! - whether it shares the service's user and mount namespaces, which no
-//!   sandboxed app does.
-//!
-//! The compositor (`/usr/bin/tilo-session`) of the person at the seat is recognised
-//! by all three. `kernel.yama.ptrace_scope` is 3 on Tilo, so no process can be
-//! steered from outside once running.
+//! Root services open their socket to every local process and decide per
+//! connection from the kernel's account of the caller: its uid, its executable
+//! (pinned with the connection's pidfd, so a recycled process id cannot
+//! impersonate it), and whether it shares the service's namespaces.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// What the kernel says about a connecting process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerFacts {
     pub uid: u32,
-    /// Its executable, when it is still the process that connected.
+    /// `None` once the pid is no longer the process that connected.
     pub exe: Option<PathBuf>,
-    /// Whether it shares this service's user and mount namespaces.
     pub host_namespaces: bool,
 }
 
-/// Where the facts about the seat come from.
 #[derive(Clone, Debug)]
 pub struct Seat {
     /// The compositor's executable.
     pub trusted_ui: PathBuf,
     /// logind's record of the seat (`ACTIVE_UID=`).
     pub seat: PathBuf,
-    /// logind's per-user records, present while the user has a session.
+    /// logind's per-user records; present while the user has a session.
     pub users: PathBuf,
 }
 
@@ -49,29 +37,25 @@ impl Default for Seat {
 }
 
 impl Seat {
-    /// The uid logind reports at the seat.
     pub fn active_uid(&self) -> Option<u32> {
         active_uid(&self.seat)
     }
 
-    /// Whether `uid` has a session, by logind's per-user records.
     pub fn has_session(&self, uid: u32) -> bool {
         has_session(&self.users, uid)
     }
 
-    /// Whether `peer` is the compositor of the person at the seat.
     pub fn is_seat_shell(&self, peer: &PeerFacts) -> bool {
         self.active_uid() == Some(peer.uid) && self.is_trusted_ui(peer)
     }
 
     /// Whether `peer` runs the compositor's program in the host's namespaces,
-    /// whoever's it is.
+    /// whoever started it.
     pub fn is_trusted_ui(&self, peer: &PeerFacts) -> bool {
         peer.host_namespaces && peer.exe.as_deref() == Some(self.trusted_ui.as_path())
     }
 }
 
-/// The uid logind's seat record at `seat` names as active.
 pub fn active_uid(seat: &Path) -> Option<u32> {
     fs::read_to_string(seat).ok().and_then(|text| {
         text.lines()
@@ -80,7 +64,6 @@ pub fn active_uid(seat: &Path) -> Option<u32> {
     })
 }
 
-/// Whether logind's per-user records under `users` show a session of `uid`.
 pub fn has_session(users: &Path, uid: u32) -> bool {
     users.join(uid.to_string()).exists()
 }
@@ -136,8 +119,8 @@ pub fn facts(stream: &std::os::unix::net::UnixStream) -> std::io::Result<PeerFac
             let ours = fs::read_link(Path::new("/proc/self/ns").join(ns));
             matches!((theirs, ours), (Ok(theirs), Ok(ours)) if theirs == ours)
         });
-    // The pid named the connecting process only if that process is still
-    // alive now that its facts were read: the pidfd pins it.
+    // The pid still names the connecting process only if it is alive after its
+    // facts were read.
     let still_same = pidfd.is_some_and(|pidfd| {
         // SAFETY: signal 0 only checks that the process exists.
         let sent = unsafe {
