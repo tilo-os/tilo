@@ -248,74 +248,78 @@ fn civil(realtime_us: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn priority_round_trips_through_level_and_clamps_out_of_range() {
-        for p in Priority::ALL {
-            assert_eq!(Priority::from_level(p.level()), p, "case {p:?}");
-        }
-        for level in [42, -1] {
-            assert_eq!(
-                Priority::from_level(level),
-                Priority::Debug,
-                "case level {level}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn entries_decode_priorities_times_filters_and_unit_labels;
 
-    #[test]
-    fn civil_decodes_known_instants_with_subseconds() {
-        // 2021-06-30 14:23:01.123 UTC. days to 2021-06-30 = 18808; +51781 s; +123 ms.
-        let secs = 18_808i64 * 86_400 + 14 * 3_600 + 23 * 60 + 1;
-        let cases = [
-            // 2021-01-01 00:00:00.000 UTC = 1609459200 s.
-            (
-                "new year 2021",
-                1_609_459_200_000_000,
-                (2021, 1, 1, 0, 0, 0, 0),
-            ),
-            (
-                "mid-2021 with millis",
-                secs as u64 * 1_000_000 + 123_000,
-                (2021, 6, 30, 14, 23, 1, 123),
-            ),
-        ];
-        for (name, us, want) in cases {
-            assert_eq!(civil(us), want, "case {name}");
+        phase priority_round_trips_through_level_and_clamps_out_of_range;
+        {
+            for p in Priority::ALL {
+                assert_eq!(Priority::from_level(p.level()), p, "case {p:?}");
+            }
+            for level in [42, -1] {
+                assert_eq!(
+                    Priority::from_level(level),
+                    Priority::Debug,
+                    "case level {level}"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn entry_filters_and_unit_labels() {
-        let mut e = sample();
-        e.priority = Priority::Info; // level 6
-        let f = Filter {
-            min_priority: 3,
-            ..Default::default()
-        };
-        assert!(
-            !f.passes(&e),
-            "info must be hidden at errors-only threshold"
-        );
-        e.priority = Priority::Err; // level 3
-        assert!(f.passes(&e));
+        phase civil_decodes_known_instants_with_subseconds;
+        {
+            // 2021-06-30 14:23:01.123 UTC. days to 2021-06-30 = 18808; +51781 s; +123 ms.
+            let secs = 18_808i64 * 86_400 + 14 * 3_600 + 23 * 60 + 1;
+            let cases = [
+                // 2021-01-01 00:00:00.000 UTC = 1609459200 s.
+                (
+                    "new year 2021",
+                    1_609_459_200_000_000,
+                    (2021, 1, 1, 0, 0, 0, 0),
+                ),
+                (
+                    "mid-2021 with millis",
+                    secs as u64 * 1_000_000 + 123_000,
+                    (2021, 6, 30, 14, 23, 1, 123),
+                ),
+            ];
+            for (name, us, want) in cases {
+                assert_eq!(civil(us), want, "case {name}");
+            }
+        }
 
-        let mut e = sample();
-        e.message = "Mount FAILED for /var/workspace".into();
-        for (search, passes) in [("failed", true), ("absent", false)] {
+        phase entry_filters_and_unit_labels;
+        {
+            let mut e = sample();
+            e.priority = Priority::Info; // level 6
             let f = Filter {
-                search: search.into(),
+                min_priority: 3,
                 ..Default::default()
             };
-            assert_eq!(f.passes(&e), passes, "case search {search:?}");
-        }
+            assert!(
+                !f.passes(&e),
+                "info must be hidden at errors-only threshold"
+            );
+            e.priority = Priority::Err; // level 3
+            assert!(f.passes(&e));
 
-        let mut e = sample();
-        for (unit, short) in [
-            ("quick-fs.service", "quick-fs"),
-            ("dbus.socket", "dbus.socket"),
-        ] {
-            e.unit = unit.into();
-            assert_eq!(e.unit_short(), short, "case unit {unit}");
+            let mut e = sample();
+            e.message = "Mount FAILED for /var/workspace".into();
+            for (search, passes) in [("failed", true), ("absent", false)] {
+                let f = Filter {
+                    search: search.into(),
+                    ..Default::default()
+                };
+                assert_eq!(f.passes(&e), passes, "case search {search:?}");
+            }
+
+            let mut e = sample();
+            for (unit, short) in [
+                ("quick-fs.service", "quick-fs"),
+                ("dbus.socket", "dbus.socket"),
+            ] {
+                e.unit = unit.into();
+                assert_eq!(e.unit_short(), short, "case unit {unit}");
+            }
         }
     }
 
