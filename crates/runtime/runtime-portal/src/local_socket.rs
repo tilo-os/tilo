@@ -8,10 +8,8 @@
 use std::io;
 use std::path::Path;
 
-/// Whether this host can reach local services at all.
 pub const SUPPORTED: bool = cfg!(unix);
 
-/// A connected local service stream.
 #[cfg(unix)]
 pub type Stream = tokio::net::UnixStream;
 /// A connected local service stream; never produced on this host.
@@ -43,8 +41,6 @@ pub async fn connect(path: &Path) -> io::Result<Stream> {
 /// Why [`duplicate_service`] could not produce a stream.
 #[derive(Debug)]
 pub enum ServiceStreamError {
-    /// No inherited descriptor exists for any of the names (always the case
-    /// where [`SUPPORTED`] is `false`).
     Missing,
     /// The inherited descriptor could not be duplicated.
     Duplicate(io::Error),

@@ -332,7 +332,6 @@ pub struct Receiver {
     proof: Option<OwnedFd>,
 }
 impl Receiver {
-    /// Initialize one answer to a host-selected challenge.
     #[must_use]
     pub fn new(challenge: [u8; 32], uid: u32) -> Self {
         Self {

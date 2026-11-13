@@ -1,11 +1,7 @@
-//! Typed requests from sandboxed apps to shell-owned tools, over the
-//! `tools` service.
-//!
-//! The wire deliberately cannot carry a program, package id, or argv. A caller
-//! chooses from this enum; the shell maps it to an installed Tilo package and
-//! validates the contextual data before launching anything. Intents that run
-//! a command in Terminal carry only typed operands; the argv is built here, by
-//! [`ToolIntent::terminal_argv`], from fixed programs.
+//! Typed requests from sandboxed apps to shell-owned tools, over the `tools`
+//! service. The wire cannot carry a program, a package id or an argv: a caller
+//! chooses an intent, and the shell maps it to an installed package and builds
+//! any command itself.
 
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
@@ -16,38 +12,26 @@ use std::os::unix::net::UnixStream;
 
 use serde::{Deserialize, Serialize};
 
-/// The `tools` service is part of the runtime interface and speaks its version.
 pub const TOOL_PROTOCOL_VERSION: u32 = crate::RUNTIME_INTERFACE_VERSION;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
-/// The most one request or one tool's context takes on the wire: what a
-/// server reads before it refuses a line.
 pub const MAX_WIRE_BYTES: usize = 4 * 1024;
-/// A reply may carry the drive list or the app list, so it gets more room
-/// than a request: the most apps one reply lists, each at its largest.
+/// A reply may carry the drive list or the app list, so it gets more room than
+/// a request.
 pub const MAX_REPLY_BYTES: usize = MAX_LISTED_APPS * MAX_APP_ENTRY_BYTES + 16 * 1024;
-/// The most drives one reply lists.
 pub const MAX_LISTED_DRIVES: usize = 32;
-/// The most apps one reply lists ([`ToolIntent::Applications`]).
 pub const MAX_LISTED_APPS: usize = 1024;
-/// The most one listed app takes on the wire: its id, name, icon and
-/// program, each bounded by the shell before it is listed.
 pub const MAX_APP_ENTRY_BYTES: usize = 2 * 1024;
-/// The longest app id an app may name ([`ToolIntent::UninstallApplication`]).
 pub const MAX_APP_ID_BYTES: usize = 512;
 const MAX_DRIVE_ID_BYTES: usize = 64;
-/// The longest path a request names: a Terminal's directory, a document.
 const MAX_PATH_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
 const TERMINAL_PACKAGE_ID: &str = "so.tilo.terminal";
 
-/// The engine that owns a container a Terminal shell attaches to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerEngine {
-    /// `podman exec` an interactive `/bin/sh` in a running container.
     Podman,
-    /// `distrobox enter` a distrobox.
     Distrobox,
 }
 
@@ -61,9 +45,6 @@ pub enum VpnRoute {
     Import,
 }
 
-/// Safe destinations inside the firewall tool. Settings may show status and
-/// the emergency on/off posture, while editing zones and rules stays in the
-/// dedicated expert workspace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FirewallRoute {
@@ -88,9 +69,6 @@ pub enum BackupsRoute {
     Restore,
 }
 
-/// Safe destinations inside the shell-owned workspace lens. Unlike a Studio,
-/// this does not launch a package: the shell binds the request to the
-/// requester's concrete workspace before revealing its governance controls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceSettingsRoute {
@@ -99,7 +77,6 @@ pub enum WorkspaceSettingsRoute {
     Members,
     PrivacySecurity,
     AppsFiles,
-    /// The workspace's own emoji.
     Emoji,
 }
 
@@ -128,32 +105,25 @@ pub enum ToolIntent {
         #[serde(default)]
         route: WorkspaceSettingsRoute,
     },
-    /// Open the trusted shell flow that creates and verifies an encrypted
-    /// portable copy of the active personal identity.
     IdentityBackup,
-    /// Open Terminal, with its shell started in `directory` when given and
-    /// visible to Terminal.
     Terminal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
     },
-    /// Open Terminal attached to an interactive shell in a container.
     ContainerShell {
         container: String,
         engine: ContainerEngine,
     },
-    /// List the NTFS drives this computer can open ([`ToolReply::drives`]).
     Drives,
     /// Open an NTFS drive from [`ToolIntent::Drives`] in Files. The shell
     /// asks the person first unless they chose to remember the drive; the
     /// app learns nothing more than that the request was taken.
-    OpenDrive { drive: String },
-    /// List the apps that open the document at `path`, the one this device
-    /// opens its type with today first ([`ToolReply::documents`]).
-    DocumentApps { path: String },
-    /// Open the document at `path`: in `app`, one of
-    /// [`ToolIntent::DocumentApps`], or in the app this device opens its type
-    /// with when none is named.
+    OpenDrive {
+        drive: String,
+    },
+    DocumentApps {
+        path: String,
+    },
     OpenDocument {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -162,61 +132,45 @@ pub enum ToolIntent {
     /// List the person's apps, every kind in one list ([`ToolReply::applications`]).
     /// The shell answers only Files: it is the person's own view of them.
     Applications,
-    /// Open an app from [`ToolIntent::Applications`].
-    OpenApplication { app: String },
-    /// Uninstall an app from [`ToolIntent::Applications`], or take a part of
-    /// the system off the person's apps. The shell asks the person first, in
-    /// its own sheet; the app learns nothing more than that the request was
-    /// taken.
-    UninstallApplication { app: String },
+    OpenApplication {
+        app: String,
+    },
+    UninstallApplication {
+        app: String,
+    },
 }
 
-/// What uninstalling a listed app does, as the person is asked about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppRemoval {
     /// A Flatpak: uninstalled, and its data moved to the Trash unless the
     /// person keeps it.
     UninstallWithData,
-    /// Uninstalled; nothing of the person's is touched (a Tilo app), or the
-    /// program file goes to the Trash (a downloaded program).
     Uninstall,
     /// Part of the system: it can only be taken off the person's apps.
     RemoveFromApps,
-    /// Neither: an app the system image ships.
     None,
 }
 
-/// Where a listed app came from, as the person knows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppKind {
-    /// A Tilo package.
     Tilo,
     Flatpak,
-    /// A downloaded `AppImage`.
     AppImage,
-    /// Another downloaded program, or a menu entry the person made.
     Program,
-    /// A menu entry of the operating system.
     #[default]
     System,
 }
 
-/// One app as an app lists it ([`ToolIntent::Applications`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppEntry {
-    /// The id [`ToolIntent::OpenApplication`] and
-    /// [`ToolIntent::UninstallApplication`] take.
     pub id: String,
     pub name: String,
-    /// A Tilo app's package id, for its own glyph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
-    /// The icon file, an absolute path, when the app has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// The program file of a downloaded program, an absolute path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
     pub removal: AppRemoval,
@@ -229,7 +183,6 @@ pub struct AppEntry {
 }
 
 impl AppEntry {
-    /// Whether every field fits the bound [`MAX_APP_ENTRY_BYTES`] sets.
     #[must_use]
     pub fn fits(&self) -> bool {
         let optional = |field: &Option<String>| field.as_ref().map_or(0, String::len);
@@ -247,28 +200,19 @@ impl AppEntry {
     }
 }
 
-/// One app that opens a document's type ([`ToolIntent::DocumentApps`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentApp {
-    /// The id [`ToolIntent::OpenDocument`] takes as `app`.
     pub id: String,
-    /// Human name, as the desktop shows it elsewhere.
     pub name: String,
-    /// Whether opening the document now starts this app.
     pub is_default: bool,
 }
 
-/// An NTFS drive as an app lists it: what to call it and whether it is open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriveEntry {
-    /// The id [`ToolIntent::OpenDrive`] takes.
     pub id: String,
-    /// The volume label; empty when the drive has none.
     pub label: String,
     pub size_bytes: u64,
-    /// Built into this computer, as opposed to external or removable.
     pub internal: bool,
-    /// Where it is open, when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_at: Option<String>,
 }
@@ -397,11 +341,8 @@ impl ToolIntent {
         }
     }
 
-    /// Installed package for a specialist tool, or `None` for a shell-owned
-    /// contextual surface.
     pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            // VPN lives in Settings → Network.
             Self::Vpn { .. } => Some("so.tilo.settings"),
             Self::Firewall { .. } => Some("so.tilo.firewall"),
             Self::Disks { .. } => Some("so.tilo.disks"),
@@ -420,14 +361,10 @@ impl ToolIntent {
     }
 }
 
-/// Whether `app` is an id the shell may be asked to start: bounded, and no
-/// control characters that a line or a name could be built from.
 fn is_app(app: &str) -> bool {
     !app.is_empty() && app.len() <= MAX_APP_ID_BYTES && !app.chars().any(char::is_control)
 }
 
-/// Whether `path` is an absolute path of a bounded length, free of control
-/// characters.
 fn is_path(path: &str) -> bool {
     path.starts_with('/') && path.len() <= MAX_PATH_BYTES && !path.chars().any(char::is_control)
 }
@@ -437,16 +374,10 @@ pub struct ToolRequest {
     pub protocol: u32,
     pub workspace_id: String,
     pub intent: ToolIntent,
-    /// The broker invocation the app makes this request for, when one the
-    /// broker delivered is running (an agent asked the app to open another
-    /// one): its id as 32 lowercase hex digits. The shell admits the request
-    /// as that invocation's caller; without it, only the person's own press
-    /// in the app is behind the request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
 }
 
-/// The wire form of [`ToolRequest::on_behalf_of`].
 #[must_use]
 pub fn invocation_hex(invocation: [u8; 16]) -> String {
     use std::fmt::Write as _;
@@ -462,13 +393,10 @@ pub fn invocation_hex(invocation: [u8; 16]) -> String {
 pub struct ToolReply {
     pub accepted: bool,
     pub message: String,
-    /// The answer to [`ToolIntent::Drives`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drives: Vec<DriveEntry>,
-    /// The answer to [`ToolIntent::Applications`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applications: Vec<AppEntry>,
-    /// The answer to [`ToolIntent::DocumentApps`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentApp>,
 }
@@ -489,30 +417,14 @@ pub fn open_tool(intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(
     send_tool_request(intent, on_behalf_of).map(drop)
 }
 
-/// The NTFS drives the shell can open, for an app's list of places.
-///
-/// # Errors
-///
-/// As [`open_tool`].
 pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
     send_tool_request(ToolIntent::Drives, None).map(|reply| reply.drives)
 }
 
-/// The person's apps, for Files' Applications place.
-///
-/// # Errors
-///
-/// As [`open_tool`].
 pub fn list_applications() -> Result<Vec<AppEntry>, String> {
     send_tool_request(ToolIntent::Applications, None).map(|reply| reply.applications)
 }
 
-/// The apps that open the document at `path`, the one it opens with today
-/// first, for Files' "Open with".
-///
-/// # Errors
-///
-/// As [`open_tool`].
 pub fn list_document_apps(path: &str) -> Result<Vec<DocumentApp>, String> {
     send_tool_request(
         ToolIntent::DocumentApps {
@@ -523,12 +435,6 @@ pub fn list_document_apps(path: &str) -> Result<Vec<DocumentApp>, String> {
     .map(|reply| reply.documents)
 }
 
-/// Open the document at `path` in `app`, or in the app this device opens its
-/// type with when none is named.
-///
-/// # Errors
-///
-/// As [`open_tool`].
 pub fn open_document(path: &str, app: Option<&str>) -> Result<(), String> {
     open_tool(
         ToolIntent::OpenDocument {
@@ -592,8 +498,8 @@ fn exchange(service: BorrowedFd<'_>, request: &ToolRequest) -> Result<ToolReply,
     }
     encoded.push(b'\n');
     let _exchange = EXCHANGE.lock_recover();
-    // Duplicate the inherited descriptor: dropping the per-request stream must
-    // not close the process-wide service connection retained by the sandbox.
+    // Duplicate the inherited descriptor: dropping the per-request stream must not
+    // close the process-wide service connection.
     let owned = service
         .try_clone_to_owned()
         .map_err(|e| format!("opening the shell tool service: {e}"))?;
@@ -613,7 +519,6 @@ fn exchange(service: BorrowedFd<'_>, request: &ToolRequest) -> Result<ToolReply,
     serde_json::from_str(&reply).map_err(|e| format!("decoding tool reply: {e}"))
 }
 
-/// Context passed by the trusted launcher to a newly opened tool.
 pub fn tool_intent_from_env() -> Option<ToolIntent> {
     let raw = std::env::var(TOOL_CONTEXT_ENV).ok()?;
     if raw.len() > MAX_WIRE_BYTES {
@@ -685,7 +590,6 @@ mod tests {
 
     #[test]
     fn tool_intents_name_only_typed_routes_never_executables() {
-        // Phase `protocol_cannot_name_an_executable_or_package`.
         {
             let json = serde_json::to_value(ToolIntent::Vpn {
                 route: VpnRoute::Profile,
@@ -697,7 +601,6 @@ mod tests {
             assert!(json.get("package_id").is_none());
             assert!(json.get("argv").is_none());
         }
-        // Phase `profile_route_requires_a_safe_name`.
         {
             assert!(
                 ToolIntent::Vpn {
@@ -716,7 +619,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Phase `firewall_intent_selects_only_a_typed_route`.
         {
             let intent = ToolIntent::Firewall {
                 route: FirewallRoute::Rules,
@@ -727,7 +629,6 @@ mod tests {
             assert_eq!(json["route"], "rules");
             assert!(json.get("program").is_none());
         }
-        // Phase `workspace_settings_is_a_shell_route_not_an_executable`.
         {
             let intent = ToolIntent::WorkspaceSettings {
                 route: WorkspaceSettingsRoute::PrivacySecurity,
@@ -739,7 +640,6 @@ mod tests {
             assert!(json.get("program").is_none());
             assert!(json.get("package_id").is_none());
         }
-        // Phase `identity_backup_is_a_shell_owned_typed_intent`.
         {
             let intent = ToolIntent::IdentityBackup;
             assert_eq!(intent.package_id(), None);
@@ -855,7 +755,6 @@ mod tests {
 
     #[test]
     fn terminal_intents_carry_typed_operands_and_build_fixed_commands() {
-        // Phase `plain_terminal_opens_the_package_without_a_command`.
         {
             let intent = ToolIntent::Terminal { directory: None };
             assert!(intent.validate().is_ok());
@@ -864,7 +763,6 @@ mod tests {
             let json = serde_json::to_value(&intent).unwrap();
             assert_eq!(json, serde_json::json!({ "tool": "terminal" }));
         }
-        // Phase `directory_is_an_operand_not_part_of_the_script`.
         {
             let directory = "/home/u/it's \"odd\"; rm -rf ~";
             let intent = ToolIntent::Terminal {
@@ -878,7 +776,6 @@ mod tests {
             assert_eq!(argv[4], directory);
             assert_eq!(argv.len(), 5);
         }
-        // Phase `terminal_directory_must_be_a_bounded_absolute_path`.
         {
             for bad in [
                 "relative/dir".to_string(),
@@ -897,7 +794,6 @@ mod tests {
                 );
             }
         }
-        // Phase `container_shells_use_the_engine_cli_with_the_name_as_one_argument`.
         {
             let podman = ToolIntent::ContainerShell {
                 container: "web-1.prod_a".into(),
@@ -922,7 +818,6 @@ mod tests {
             assert_eq!(json["engine"], "distrobox");
             assert!(json.get("argv").is_none());
         }
-        // Phase `container_names_cannot_become_options_or_shell_syntax`.
         {
             for bad in [
                 String::new(),

@@ -10,12 +10,10 @@ pub struct Proof {
     control: std::os::unix::net::UnixStream,
     worker: Option<std::thread::JoinHandle<io::Result<()>>>,
 }
-/// Unsupported process-proof transport on targets without Linux task custody.
 #[cfg(not(target_os = "linux"))]
 pub struct Proof;
 #[cfg(target_os = "linux")]
 impl Proof {
-    /// Start an owned responder with a total handshake deadline.
     pub fn start() -> io::Result<Self> {
         Self::start_with_timeout(std::time::Duration::from_secs(10))
     }
@@ -29,8 +27,6 @@ impl Proof {
         let worker = std::thread::Builder::new()
             .name("files-selected-open-proof".into())
             .spawn(move || {
-                // Bound the entire handshake, including peers that slowly progress
-                // across process_binding::complete's individual read timeouts.
                 let (done, finished) = std::sync::mpsc::channel();
                 let watchdog = std::thread::Builder::new()
                     .name("files-selected-open-deadline".into())
@@ -165,8 +161,6 @@ mod tests {
         // A deadline no test outlives: only the drop can end the handshake.
         let proof = Proof::start_with_timeout(std::time::Duration::from_secs(24 * 60 * 60))
             .expect("owned socketpair");
-        // Drop shuts down the exact owned endpoint and joins the responder;
-        // no discovery, unrelated process signal or childwait approximation.
         let (dropped, done) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             drop(proof);

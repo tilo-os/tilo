@@ -18,10 +18,8 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-/// The longest message either side accepts.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 
-/// What the app asks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum Request {
@@ -35,49 +33,43 @@ pub enum Request {
     InstallLanguagePack { locale: String },
 }
 
-/// A language the repositories offer a pack for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferedLanguage {
-    /// The language the pack carries, as the pack is named
-    /// ([`tilo_paths::language_of`]: `de`).
     pub locale: String,
     pub installed: bool,
 }
 
-/// Where an install is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// Choosing the repository and the build to fetch.
     Preparing,
-    /// Fetching and checking the signed package.
     Downloading,
-    /// Putting the verified pack in place.
     Installing,
 }
 
-/// The host's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Response {
-    /// The pack is installed.
     Installed,
-    /// An install is running.
     Installing {
         phase: Phase,
         received: u64,
         /// Bytes expected, once known.
         total: Option<u64>,
     },
-    /// The language packs the repositories offer.
-    LanguagePacks { offered: Vec<OfferedLanguage> },
-    /// The install stopped; asking again retries it.
-    Failed { message: String },
+    LanguagePacks {
+        offered: Vec<OfferedLanguage>,
+    },
+    Failed {
+        message: String,
+    },
     /// The host will not answer this app or this request.
-    Refused { message: String },
+    Refused {
+        message: String,
+    },
 }
 
-/// Every message is a big-endian length prefix and a JSON body; none is empty.
 const FRAMING: wire_frame::Framing =
     wire_frame::Framing::big_endian(MAX_MESSAGE_BYTES).reject_empty();
 
@@ -88,7 +80,6 @@ pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io:
     writer.flush()
 }
 
-/// Read one message; `None` when the peer closed before it began.
 pub fn read_message<R: Read, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> io::Result<Option<T>> {
@@ -100,7 +91,6 @@ pub fn read_message<R: Read, T: for<'de> Deserialize<'de>>(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// A frame too long or cut short reads as the malformed message it is.
 fn framing(error: wire_frame::FrameError) -> io::Error {
     let kind = match error {
         wire_frame::FrameError::Io(io) => return io,
@@ -123,7 +113,6 @@ type Connection = std::os::unix::net::UnixStream;
 enum Connection {}
 
 impl Client {
-    /// Claim the connection the launcher handed this app, if it did.
     #[must_use]
     pub fn from_service() -> Option<Self> {
         #[cfg(unix)]
@@ -142,7 +131,6 @@ impl Client {
         }
     }
 
-    /// A client on an explicit connection (a test host).
     #[cfg(unix)]
     #[must_use]
     pub fn from_stream(stream: std::os::unix::net::UnixStream) -> Self {

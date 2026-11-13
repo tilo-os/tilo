@@ -39,8 +39,6 @@ fn installed_program(path: &str, parent: &str) -> io::Result<File> {
     }
     Ok(helper)
 }
-/// Opaque root-local role minted from a genuine `ExecutingPeer` and the one
-/// protected installed helper image. No PID, program or UID wire constructor.
 #[cfg(target_os = "linux")]
 pub struct VerifiedHelperPeer {
     peer: Arc<ExecutingPeer>,
