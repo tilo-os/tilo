@@ -563,25 +563,42 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
 /// A window fullscreen on the display a part stands on owns that display: the part steps aside,
 /// with not a row of it over the window and no pointer taken there, and it is back over the
 /// whole screen when the window leaves fullscreen. A window fullscreen on another display
-/// leaves the part standing.
+/// leaves the part standing, and so does a surface of the desk's that is up: it is the person's
+/// to look at over any window, a fullscreen one too.
 #[test]
 fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
-    let rows: [(&[&str], bool); 3] = [
-        (&["HEADLESS-1"], true),
-        (&["HEADLESS-2"], false),
-        (&["HEADLESS-2", "HEADLESS-1"], true),
+    // The surface that is up (`""`: the desk at rest), the displays fullscreen windows take,
+    // and whether the part, which stands on `HEADLESS-1`, steps aside.
+    let rows: [(&str, &[&str], bool); 4] = [
+        ("", &["HEADLESS-1"], true),
+        ("", &["HEADLESS-2"], false),
+        ("", &["HEADLESS-2", "HEADLESS-1"], true),
+        ("centre", &["HEADLESS-1"], false),
     ];
     let packages = compiled();
-    for (fullscreen, aside) in rows {
-        let (mut part, _link) = part_of(&packages, reading(), (1280, 800));
-        assert!(!part.aside(), "no window owns the display: the part stands");
-        assert_eq!(part.widgets.placement().size, (1280, 800), "the screen");
-        // The displays fullscreen windows take: the part stands on `HEADLESS-1`.
+    for (here, fullscreen, aside) in rows {
+        let (mut part, _link) = part_of(
+            &packages,
+            DeskReading {
+                here: here.to_owned(),
+                ..reading()
+            },
+            (1280, 800),
+        );
+        assert!(
+            !part.aside(),
+            "no window owns the display: the part stands ({here:?} up)"
+        );
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 800),
+            "the screen ({here:?} up)"
+        );
         part.set_fullscreen(fullscreen.iter().map(|name| (*name).to_owned()).collect());
         assert_eq!(
             part.aside(),
             aside,
-            "with a window fullscreen on {fullscreen:?}"
+            "with a window fullscreen on {fullscreen:?} and {here:?} up"
         );
         if aside {
             // The window took the display the part stands on: it draws nothing there.
@@ -603,7 +620,7 @@ fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
             assert_eq!(
                 part.widgets.placement().size,
                 (1280, 800),
-                "the part stands over its screen with {fullscreen:?} fullscreen"
+                "the part stands over its screen with {fullscreen:?} fullscreen and {here:?} up"
             );
         }
         // The window leaves fullscreen: the part is back, over the whole screen.
