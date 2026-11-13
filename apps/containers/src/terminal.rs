@@ -30,9 +30,10 @@ pub fn open(intent: ToolIntent) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn container_shell_intents_name_the_container_and_engine() {
-        // --- phase: enter_runs_distrobox_enter ---
+    tilo_test_env::scenario! {
+        fn container_shell_intents_name_the_container_and_engine;
+
+        phase enter_runs_distrobox_enter;
         {
             let intent = distrobox_enter_intent("my-distrobox");
             assert_eq!(
@@ -41,7 +42,7 @@ mod tests {
             );
         }
 
-        // --- phase: exec_attach_runs_a_shell_in_the_container ---
+        phase exec_attach_runs_a_shell_in_the_container;
         {
             let intent = exec_attach_intent("9f3c1a7be4d2");
             assert_eq!(
@@ -50,7 +51,7 @@ mod tests {
             );
         }
 
-        // --- phase: hostile_name_is_refused_before_any_request ---
+        phase hostile_name_is_refused_before_any_request;
         {
             let intent = distrobox_enter_intent("a'; rm -rf ~ #");
             assert!(intent.validate().is_err());

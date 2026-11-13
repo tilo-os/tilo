@@ -339,69 +339,73 @@ mod tests {
         app.state().draft.get(field).to_owned()
     }
 
-    #[test]
-    fn the_draft_is_edited_by_splices_and_cleared_whole() {
-        let mut replica = Replica::<Containers>::new();
-        let image = CreateField::Image.path();
-        replica
-            .apply(Invoke::edit(&image.replace("nginx")).unwrap())
-            .unwrap();
-        replica
-            .apply(Invoke::edit(&image.splice(5, 0, ":1")).unwrap())
-            .unwrap();
-        assert_eq!(
-            replica.state().unwrap().draft.get(CreateField::Image),
-            "nginx:1"
-        );
+    tilo_test_env::scenario! {
+        fn the_create_draft_record_is_edited_merged_and_published;
 
-        replica.apply(Containers::CLEAR_CREATE.with(())).unwrap();
-        assert!(replica.state().unwrap().draft.is_empty());
-    }
-
-    #[test]
-    fn concurrent_typing_converges() {
-        let mut ours = Replica::<Containers>::new();
-        let image = CreateField::Image.path();
-        ours.apply(Invoke::edit(&image.replace("nginx")).unwrap())
-            .unwrap();
-        let mut theirs = ours.fork();
-        ours.apply(Invoke::edit(&image.splice(5, 0, ":1")).unwrap())
-            .unwrap();
-        theirs
-            .apply(Invoke::edit(&image.splice(0, 0, "docker.io/")).unwrap())
-            .unwrap();
-        theirs
-            .apply(Invoke::edit(&CreateField::Name.path().replace("web")).unwrap())
-            .unwrap();
-        ours.sync_with(&mut theirs).unwrap();
-        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
-        let merged = ours.state().unwrap().draft;
-        assert_eq!(merged.get(CreateField::Image), "docker.io/nginx:1");
-        assert_eq!(merged.get(CreateField::Name), "web");
-    }
-
-    #[test]
-    fn the_published_resource_offers_the_draft_and_no_view_state() {
-        let mut replica = Replica::<Containers>::new();
-        replica
-            .apply(Invoke::edit(&CreateField::Image.path().replace("nginx")).unwrap())
-            .unwrap();
-        let published = replica.published().unwrap();
-        assert_eq!(
-            published.kind,
-            <Containers as tilo_resource::Resource>::KIND
-        );
-        for id in ["clear-create", "field-edit"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} is offered"
+        phase the_draft_is_edited_by_splices_and_cleared_whole;
+        {
+            let mut replica = Replica::<Containers>::new();
+            let image = CreateField::Image.path();
+            replica
+                .apply(Invoke::edit(&image.replace("nginx")).unwrap())
+                .unwrap();
+            replica
+                .apply(Invoke::edit(&image.splice(5, 0, ":1")).unwrap())
+                .unwrap();
+            assert_eq!(
+                replica.state().unwrap().draft.get(CreateField::Image),
+                "nginx:1"
             );
+
+            replica.apply(Containers::CLEAR_CREATE.with(())).unwrap();
+            assert!(replica.state().unwrap().draft.is_empty());
         }
-        for gone in ["set-section", "select-container", "set-tab"] {
-            assert!(
-                published.actions.iter().all(|action| action.id != gone),
-                "`{gone}` is where a window is, not a document action"
+
+        phase concurrent_typing_converges;
+        {
+            let mut ours = Replica::<Containers>::new();
+            let image = CreateField::Image.path();
+            ours.apply(Invoke::edit(&image.replace("nginx")).unwrap())
+                .unwrap();
+            let mut theirs = ours.fork();
+            ours.apply(Invoke::edit(&image.splice(5, 0, ":1")).unwrap())
+                .unwrap();
+            theirs
+                .apply(Invoke::edit(&image.splice(0, 0, "docker.io/")).unwrap())
+                .unwrap();
+            theirs
+                .apply(Invoke::edit(&CreateField::Name.path().replace("web")).unwrap())
+                .unwrap();
+            ours.sync_with(&mut theirs).unwrap();
+            assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+            let merged = ours.state().unwrap().draft;
+            assert_eq!(merged.get(CreateField::Image), "docker.io/nginx:1");
+            assert_eq!(merged.get(CreateField::Name), "web");
+        }
+
+        phase the_published_resource_offers_the_draft_and_no_view_state;
+        {
+            let mut replica = Replica::<Containers>::new();
+            replica
+                .apply(Invoke::edit(&CreateField::Image.path().replace("nginx")).unwrap())
+                .unwrap();
+            let published = replica.published().unwrap();
+            assert_eq!(
+                published.kind,
+                <Containers as tilo_resource::Resource>::KIND
             );
+            for id in ["clear-create", "field-edit"] {
+                assert!(
+                    published.actions.iter().any(|action| action.id == id),
+                    "{id} is offered"
+                );
+            }
+            for gone in ["set-section", "select-container", "set-tab"] {
+                assert!(
+                    published.actions.iter().all(|action| action.id != gone),
+                    "`{gone}` is where a window is, not a document action"
+                );
+            }
         }
     }
 

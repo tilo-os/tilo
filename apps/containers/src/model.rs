@@ -793,9 +793,10 @@ fn sample_postgres_logs() -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn status_and_memory_values_normalise() {
-        // --- phase: status_parse_normalises_common_strings ---
+    tilo_test_env::scenario! {
+        fn status_and_memory_values_normalise;
+
+        phase status_parse_normalises_common_strings;
         {
             assert_eq!(
                 ContainerStatus::parse("Up 4 hours"),
@@ -811,7 +812,7 @@ mod tests {
             assert_eq!(ContainerStatus::parse("garbage"), ContainerStatus::Dead);
         }
 
-        // --- phase: mem_bytes_render_with_iec_binary_units ---
+        phase mem_bytes_render_with_iec_binary_units;
         {
             // Container memory is base-1024, so it wears IEC units.
             assert_eq!(ui::format::memory(512), "512 B");
@@ -820,7 +821,7 @@ mod tests {
             assert_eq!(ui::format::memory(3 * 1024 * 1024 * 1024), "3 GiB");
         }
 
-        // --- phase: mem_fraction_is_clamped ---
+        phase mem_fraction_is_clamped;
         {
             let mut s = Stats {
                 mem_bytes: 200,
@@ -833,9 +834,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sample_engine_is_consistent() {
-        // --- phase: sample_engine_is_populated_and_consistent ---
+    tilo_test_env::scenario! {
+        fn sample_engine_is_consistent;
+
+        phase sample_engine_is_populated_and_consistent;
         {
             let e = sample_engine();
             let running = e
@@ -855,7 +857,7 @@ mod tests {
             }
         }
 
-        // --- phase: sample_engine_has_volumes ---
+        phase sample_engine_has_volumes;
         {
             let e = sample_engine();
             assert!(!e.volumes.is_empty(), "sample carries named volumes");
