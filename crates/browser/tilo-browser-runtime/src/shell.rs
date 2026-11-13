@@ -675,30 +675,7 @@ impl BrowserShell {
         if chrome.shared.feedback.borrow().is_some() {
             tilo_menu = tilo_menu.with_feedback();
         }
-        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
-        // The page has one window and no compositor to give an app's card one
-        // of its own: the desk hosts the cards itself, at the place its
-        // floating column gives them.
-        let desk = DeskLayer::new(
-            Box::new(surface),
-            handle.clone(),
-            launchpad,
-            // The page offers the verbs whose apps it carries: a card for an
-            // app this page does not have would open nothing.
-            Rc::new(|| {
-                LaunchpadAction::ALL
-                    .into_iter()
-                    .filter(|card| {
-                        card.offered(|app| crate::desktop::known_application(app).is_some())
-                    })
-                    .collect()
-            }),
-            // The page has no widget layer of its own under the desk, so the
-            // layer keeps the asks to itself; `follow_asks` reads them back.
-            Rc::default(),
-            Vec::new(),
-        )
-        .with_cards();
+        let desk = page_desk(surface, &handle);
         // The desktop's shortcut table keeps the native defaults: the page
         // keeps no device settings to rebind them in.
         let mut top = DesktopChrome::new(
@@ -2201,6 +2178,30 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
     !page.is_zero_area()
         && !own_avatar.is_zero_area()
         && own_name.is_some_and(|name| !name.trim().is_empty())
+}
+
+/// The page's desk: its one window hosts the cards itself, since no compositor gives an app's card
+/// a window of its own.
+fn page_desk(surface: DesktopSurface, handle: &DesktopHandle) -> DeskLayer {
+    let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
+    DeskLayer::new(
+        Box::new(surface),
+        handle.clone(),
+        launchpad,
+        // The page offers the verbs whose apps it carries: a card for an
+        // app this page does not have would open nothing.
+        Rc::new(|| {
+            LaunchpadAction::ALL
+                .into_iter()
+                .filter(|card| card.offered(|app| crate::desktop::known_application(app).is_some()))
+                .collect()
+        }),
+        // The page has no widget layer of its own under the desk, so the
+        // layer keeps the asks to itself; `follow_asks` reads them back.
+        Rc::default(),
+        Vec::new(),
+    )
+    .with_cards()
 }
 
 #[cfg(test)]

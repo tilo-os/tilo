@@ -13,6 +13,7 @@ use tilo_desktop::desktop_host::{
     BRANCH_WORKSPACE, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK,
     SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
+#[cfg(target_os = "linux")]
 use tilo_desktop::launchpad::{LaunchpadAction, WorkspaceScope};
 use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
 use tilo_sheets::power::{Offers, PowerEffect};

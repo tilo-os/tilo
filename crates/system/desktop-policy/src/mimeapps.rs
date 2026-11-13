@@ -1,6 +1,6 @@
 //! freedesktop.org MIME association lists (`mimeapps.list`).
 //!
-//! Host applications and the tools they call (`xdg-open`, GLib, Qt) decide which
+//! Host applications and the tools they call (`xdg-open`, `GLib`, Qt) decide which
 //! program opens a file from an ordered chain of these lists. Tilo reads the same
 //! chain, so an association made with `xdg-mime` or a host app's "always open with"
 //! is honoured, and writes its resolved host defaults to
@@ -204,7 +204,7 @@ impl MimeAppsChain {
 pub const CURRENT_DESKTOP: &str = "tilo";
 
 /// Where Tilo publishes its resolved host defaults: the first list on the chain
-/// for `XDG_CURRENT_DESKTOP=tilo`, so `xdg-open`, GLib and Qt agree with the
+/// for `XDG_CURRENT_DESKTOP=tilo`, so `xdg-open`, `GLib` and Qt agree with the
 /// desktop.
 #[cfg(feature = "host-storage")]
 pub fn published_list_path() -> Option<PathBuf> {

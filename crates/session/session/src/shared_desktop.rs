@@ -188,6 +188,13 @@ struct Save {
 impl Save {
     /// Write it: the record this device writes on with the record laid into this desk's workspace
     /// and this device's own change on top, and the write of that to the workspace.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(
+            clippy::future_not_send,
+            reason = "a page's engine holds its one thread's handles; the write runs on that thread"
+        )
+    )]
     async fn write(self, engine: &Engine, person: &str, closed: &BTreeSet<u64>) -> Laid {
         let Self {
             room,

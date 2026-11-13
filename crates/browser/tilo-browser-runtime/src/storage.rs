@@ -36,7 +36,7 @@ pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
         return Err(error("invalid root identity"));
     }
     let key = DiskKey::Record {
-        package: accounts::person::ACCOUNTS_OWNER.into(),
+        app: accounts::person::ACCOUNTS_OWNER.into(),
         workspace: ui::record::person::PERSONAL_SCOPE.into(),
         record: ui::record::person::record_id(&kind).storage_key(),
     };
@@ -55,7 +55,7 @@ pub fn browser_accounts_former_key(root: &str) -> Result<String, JsValue> {
     hex::decode_to_slice(root, &mut key).map_err(|_| error("invalid root identity"))?;
     let kind = ui::record::RecordKind::new("tilo.accounts");
     let key = DiskKey::Record {
-        package: accounts::person::ACCOUNTS_OWNER.into(),
+        app: accounts::person::ACCOUNTS_OWNER.into(),
         workspace: collab_types::retired_person_workspace(&key).to_string(),
         record: ui::record::person::record_id(&kind).storage_key(),
     };
