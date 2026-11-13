@@ -783,7 +783,7 @@ mod tests {
             handlers: [(txt.clone(), "so.tilo.notes".into())].into(),
         };
         let selected = resolver
-            .resolve_document(&[txt.clone()], "ada", &personal, None)
+            .resolve_document(std::slice::from_ref(&txt), "ada", &personal, None)
             .expect("a selection");
         assert_eq!(selected.package_id, "so.tilo.notes");
         assert_eq!(selected.source, SelectionSource::PersonalDefault);
