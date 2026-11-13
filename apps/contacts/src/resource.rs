@@ -1,13 +1,11 @@
 //! The address book, its verbs, the places derived from it, and the app.
 //!
 //! A contact's fields change through the field edits every path offers
-//! (`Contacts::paths().contacts.item(&id).favorite.set(true)`), and a saved
-//! form is exactly the edits between the contact it opened and the contact
-//! it saves ([`Contacts::save`]), so a stale form never overwrites what
-//! someone else changed meanwhile. The methods below are the operations
-//! that are more than setting a field: adding, deleting and merging
-//! contacts. Groups, the favorites and likely duplicates are derived from
-//! the contacts and published as places that reveal them.
+//! (`Contacts::paths().contacts.item(&id).favorite.set(true)`), and a saved form
+//! is exactly the edits between the contact it opened and the contact it saves
+//! ([`Contacts::save`]), so a stale form never overwrites what someone else
+//! changed meanwhile. Groups, the favorites and likely duplicates are derived
+//! from the contacts and published as places that reveal them.
 
 use std::collections::HashSet;
 
@@ -41,12 +39,8 @@ pub struct Contacts {
 }
 
 impl Contacts {
-    /// What the record holds: the contacts, and the ones removed so they stay removed.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// The contacts, and the ones removed so they stay removed, read through
+    /// [`fields`](tilo_resource::read::fields).
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -153,7 +147,6 @@ impl Contacts {
 }
 
 impl Contacts {
-    /// The contact `id`.
     pub fn contact(&self, id: ContactId) -> Option<&Contact> {
         self.contacts.iter().find(|contact| contact.id == id)
     }
@@ -163,22 +156,18 @@ impl Contacts {
         Id::from_raw(id.to_string())
     }
 
-    /// Adding `contact`, whole.
     pub fn add(contact: &Contact) -> Invoke<Self> {
         Self::add_all(vec![contact.clone()])
     }
 
-    /// Adding `contacts`, whole, as one change.
     pub fn add_all(contacts: Vec<Contact>) -> Invoke<Self> {
         Self::ADD_CONTACTS.with(contacts)
     }
 
-    /// Deleting the contact `id`.
     pub fn delete(id: ContactId) -> Invoke<Self> {
         Self::DELETE_CONTACT.with(Self::key(id))
     }
 
-    /// Making the contact `id` a favorite, or no longer one.
     pub fn favorite(id: ContactId, favorite: bool) -> Edit<Self> {
         Self::paths()
             .contacts
@@ -220,10 +209,9 @@ impl Contacts {
         })
     }
 
-    /// The favorites, every group and the likely duplicates (a bounded
-    /// number), as places that reveal them. A duplicate's read is what
-    /// discloses it, so merging the two is offered to whoever may read it,
-    /// an agent too, where its review is this window's own view.
+    /// The favorites, every group and the likely duplicates (a bounded number), as
+    /// places that reveal them. A duplicate's read discloses it, so merging the two
+    /// is offered to whoever may read it, an agent too.
     fn places(&self) -> Vec<Derived<Self>> {
         let favorites = Derived::new("Favorites")
             .of_kind("favorites")
@@ -272,8 +260,7 @@ impl Contacts {
             .collect()
     }
 
-    /// Every contact is found by anything it holds — name, organisation,
-    /// numbers, addresses, notes, groups — and opens; every group reveals
+    /// Every contact is found by anything it holds and opens; every group reveals
     /// its members.
     fn search(&self) -> Vec<SearchEntry> {
         let contacts = self.contacts.iter().map(|contact| {
@@ -288,7 +275,6 @@ impl Contacts {
         contacts.chain(groups).collect()
     }
 
-    /// Whether `survivor` and `source` are still a likely duplicate.
     pub fn duplicate(&self, survivor: ContactId, source: ContactId) -> bool {
         self.contact(survivor)
             .zip(self.contact(source))
@@ -297,7 +283,6 @@ impl Contacts {
     }
 }
 
-/// The id of the favorites' place.
 pub const FAVORITES_PLACE: &str = "favorites";
 
 /// The id of the place of the group `name`, the same for every spelling
@@ -306,12 +291,10 @@ pub fn group_place(name: &str) -> String {
     format!("group:{}", normalize_text(name.trim()))
 }
 
-/// The id of the place of a likely duplicate.
 pub fn duplicate_place(survivor: ContactId, source: ContactId) -> String {
     format!("duplicate:{survivor}:{source}")
 }
 
-/// The published id of a place of the book.
 pub fn place_resource_id(place: &str) -> String {
     format!(
         "{}/derived/{place}",
@@ -319,7 +302,6 @@ pub fn place_resource_id(place: &str) -> String {
     )
 }
 
-/// The published id of the contact `id`.
 pub fn contact_resource_id(id: ContactId) -> String {
     tilo_resource::items::item_resource_id::<Contacts>("contacts", &Contacts::key(id))
 }
@@ -400,7 +382,6 @@ fn review_pair(book: &mut [Contact]) {
     survivor.emails = vec![Labeled::new("home", "ada@example.test")].into();
 }
 
-/// Framework app: the contacts widget is the surface over [`Contacts`].
 pub struct ContactsShell;
 
 /// What the binary runs instead of opening a window.
@@ -493,8 +474,6 @@ impl ResourceApp for ContactsShell {
         }
     }
 
-    /// The sample book, so a capture shows the address book doing real
-    /// work; `empty` shows a fresh install, which has none.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Contacts>> {
         let mut book = match name {
             Some("empty") => return Vec::new(),
@@ -584,8 +563,6 @@ mod agent_disclosure_tests {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::ResourceSpec;
 
-    /// The document read of the first resource of `kind` any scenario
-    /// publishes, invoked as `tilo_read` on it does.
     fn read_first(kind: &str) -> ui::serde_json::Value {
         for scenario in <super::ContactsShell as ResourceApp>::scenarios() {
             let mut app = TestApp::<super::ContactsShell>::drive(scenario)

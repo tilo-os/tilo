@@ -1,35 +1,31 @@
 //! The address book's records: a contact and its repeated rows.
 //!
-//! [`Contact`] is stored as it is: every text field merges per character,
-//! every phone, email, address and group row is stored under its own id so
-//! two people editing different rows of one contact both keep their edit.
-//! The window reads the book as it is presented: [`crate::resource::Contacts`].
+//! [`Contact`] is stored as it is: every text field merges per character, and
+//! every phone, email, address and group row has its own id, so two people
+//! editing different rows of one contact both keep their edit.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model, Ordered, Refusal};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-/// Canonical, Unicode-safe text projection used for search, group matching,
-/// and deterministic list ordering. NFC first makes canonically equivalent
-/// user input compare alike; lowercasing is deliberately scalar-based, never
-/// byte-indexed, so names in every script remain valid UTF-8 throughout.
+/// The text projection search, group matching and list ordering compare: NFC
+/// first, so canonically equivalent input compares alike, then scalar-wise
+/// lowercasing, so names in every script stay valid UTF-8.
 #[must_use]
 pub fn normalize_text(value: &str) -> String {
     value.nfc().flat_map(char::to_lowercase).collect()
 }
 
-/// Whether two user-visible group names designate the same group.
 #[must_use]
 pub fn group_names_equal(left: &str, right: &str) -> bool {
     normalize_text(left.trim()) == normalize_text(right.trim())
 }
 
-/// One deterministic display spelling for every logical group of
-/// `contacts`, in the order of their identity. The key is the same
-/// NFC/case-folded identity filtering and resource addressing use; choosing
-/// the lexical spelling makes separate peers publish the same label even
-/// when Automerge projects rows in a different order.
+/// One display spelling per logical group of `contacts`, in the order of their
+/// identity. The key is the same NFC and case-folded identity filtering uses;
+/// the lexical spelling makes peers publish the same label whichever order
+/// Automerge projects rows in.
 pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
     let mut groups = std::collections::BTreeMap::<String, String>::new();
     for contact in contacts {
@@ -51,8 +47,7 @@ pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
     groups.into_values().collect()
 }
 
-/// Stable identifier for a single contact record. Backs every
-/// cross-reference and the CRDT map key.
+/// A contact's stable id, which every cross-reference and the CRDT map key use.
 pub type ContactId = Uuid;
 
 /// A typed, repeatable single-value field — a phone number or an email
@@ -164,7 +159,6 @@ impl Default for Address {
 }
 
 impl Address {
-    /// A single-line rendering for compact list / summary contexts.
     pub fn one_line(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         for p in [
@@ -231,7 +225,6 @@ impl Birthday {
         }
     }
 
-    /// Whether the date is one the calendar has.
     pub fn is_valid(&self) -> bool {
         match *self {
             Birthday::Full { year, month, day } => Self::full(year, month, day).is_some(),
@@ -239,7 +232,6 @@ impl Birthday {
         }
     }
 
-    /// Build a full date, validating the components against the calendar.
     fn full(year: i32, month: u32, day: u32) -> Option<Birthday> {
         if (1..=12).contains(&month) && (1..=crate::date::days_in_month(year, month)).contains(&day)
         {
@@ -509,8 +501,8 @@ impl Contact {
         }
     }
 
-    /// Best-effort display name: "First Last", falling back to the
-    /// organization, then to a placeholder so the row is never blank.
+    /// "First Last", else the organization, else a placeholder, so a row is never
+    /// blank.
     pub fn display_name(&self) -> String {
         let full = format!("{} {}", self.first.trim(), self.last.trim());
         let full = full.trim().to_string();
@@ -523,8 +515,8 @@ impl Contact {
         }
     }
 
-    /// The one secondary fact a list row shows under the name: the
-    /// organization, or the job title when there is none.
+    /// The one fact a list row shows under the name: the organization, or the job
+    /// title when there is none.
     pub fn subtitle(&self) -> String {
         if self.org.trim().is_empty() {
             self.title.trim().to_string()
@@ -533,9 +525,8 @@ impl Contact {
         }
     }
 
-    /// True if `query` matches anywhere in the
-    /// record — name, org, title, any phone / email / address, notes or
-    /// group. Powers the cross-field search box.
+    /// Whether `query` matches anywhere in the record: name, organization, title,
+    /// any phone, email or address, notes or group.
     pub fn matches(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
@@ -615,9 +606,8 @@ impl SortKey {
     }
 }
 
-/// What the window reads of the address book: its contacts in the orders
-/// and groupings the list shows. Order in `contacts` is not significant —
-/// every read path sorts on demand.
+/// What the window reads of the address book. The order of `contacts` is not
+/// significant; every read path sorts on demand.
 impl crate::resource::Contacts {
     /// Every distinct group across all contacts, sorted alphabetically
     /// ([`ordered_groups`]).
@@ -625,9 +615,8 @@ impl crate::resource::Contacts {
         ordered_groups(&self.contacts)
     }
 
-    /// Ids of the contacts that pass `query` (cross-field) and the
-    /// optional `group` filter, ordered by `sort`. This is the single
-    /// source of truth for what the list pane renders.
+    /// Ids of the contacts that pass `query` and the optional `group` filter,
+    /// ordered by `sort`: what the list pane renders.
     pub fn filtered_sorted(
         &self,
         query: &str,
@@ -692,8 +681,7 @@ pub(crate) fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ord
     }
 }
 
-/// Named-field bundle for [`make_sample`] — keeps each seed contact's call
-/// site self-describing instead of a wall of positional strings.
+/// Named fields for [`make_sample`], so a seed contact's call site reads.
 struct SampleSpec<'a> {
     first: &'a str,
     last: &'a str,
@@ -886,10 +874,9 @@ fn sample_contacts_part2() -> Vec<Contact> {
     ]
 }
 
-/// Seed an empty store with a varied sample address book so a fresh
-/// launch shows a populated list and a fully-filled detail pane.
-/// Each sample person keeps one identity across runs, so their avatar
-/// colour and every capture of the book are the same each time.
+/// The sample address book a fresh launch shows. Each sample person keeps one
+/// identity across runs, so their avatar colour and every capture are the same
+/// each time.
 pub fn sample_contacts() -> Vec<Contact> {
     let mut out = sample_contacts_part1();
     out.extend(sample_contacts_part2());
@@ -903,14 +890,13 @@ pub fn sample_contacts() -> Vec<Contact> {
 mod tests {
     use super::*;
 
-    /// Birthdays parse ISO, common typed and year-less formats, round-trip and pretty-print month names.
+    /// Birthdays parse ISO and common typed forms, round-trip and pretty-print.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn birthday_parses_formats_and_round_trips() {
-        // --- phase: birthday_parses_iso_to_ymd ---
         {
             let b = Birthday::parse("1815-12-10").expect("valid ISO date");
             assert_eq!(b.year(), Some(1815));
@@ -926,9 +912,7 @@ mod tests {
             );
         }
 
-        // --- phase: birthday_accepts_common_typed_formats ---
         {
-            // Year-first with any separator.
             assert_eq!(
                 Birthday::parse("2001/03/09"),
                 Some(Birthday::Full {
@@ -937,7 +921,6 @@ mod tests {
                     day: 9
                 })
             );
-            // Basic 8-digit.
             assert_eq!(
                 Birthday::parse("20010309"),
                 Some(Birthday::Full {
@@ -946,7 +929,6 @@ mod tests {
                     day: 9
                 })
             );
-            // US month-first, year-last.
             assert_eq!(
                 Birthday::parse("03/09/2001"),
                 Some(Birthday::Full {
@@ -955,7 +937,6 @@ mod tests {
                     day: 9
                 })
             );
-            // European day-first with dots.
             assert_eq!(
                 Birthday::parse("09.03.2001"),
                 Some(Birthday::Full {
@@ -964,7 +945,6 @@ mod tests {
                     day: 9
                 })
             );
-            // Ambiguous order disambiguated by an out-of-range day/month.
             assert_eq!(
                 Birthday::parse("25/12/1990"),
                 Some(Birthday::Full {
@@ -973,13 +953,11 @@ mod tests {
                     day: 25
                 })
             );
-            // Garbage is rejected, not silently coerced.
             assert_eq!(Birthday::parse("not a date"), None);
             assert_eq!(Birthday::parse(""), None);
             assert_eq!(Birthday::parse("2001-13-40"), None);
         }
 
-        // --- phase: birthday_handles_year_less_month_day ---
         {
             assert_eq!(
                 Birthday::parse("12-10"),
@@ -998,7 +976,6 @@ mod tests {
             assert_eq!((b.month(), b.day()), (12, 10));
         }
 
-        // --- phase: birthday_iso_round_trips_through_parse ---
         {
             for b in [
                 Birthday::Full {
@@ -1022,7 +999,6 @@ mod tests {
             }
         }
 
-        // --- phase: birthday_pretty_prints_month_name ---
         {
             assert_eq!(
                 Birthday::Full {
@@ -1037,10 +1013,8 @@ mod tests {
         }
     }
 
-    /// Display names fall back to org then placeholder, and matching searches across fields.
     #[test]
     fn display_names_and_field_matching() {
-        // --- phase: display_name_falls_back_to_org_then_placeholder ---
         {
             let mut c = Contact::new();
             assert_eq!(c.display_name(), "Unnamed contact");
@@ -1051,7 +1025,6 @@ mod tests {
             assert_eq!(c.display_name(), "Jane Doe");
         }
 
-        // --- phase: matches_searches_across_fields ---
         {
             let mut c = Contact::new();
             c.first = "Grace".into();
@@ -1069,13 +1042,10 @@ mod tests {
         }
     }
 
-    /// The book filters and sorts by name and group, and dedups groups case- and Unicode-insensitively.
     #[test]
     fn book_filters_sorts_and_groups() {
-        // --- phase: filtered_sorted_by_name_and_group ---
         {
             let store = book(sample_contacts());
-            // Name sort puts "Berners-Lee" before "Hopper" before "Lovelace".
             let ids = store.filtered_sorted("", None, SortKey::Name);
             let names: Vec<String> = ids
                 .iter()
@@ -1085,7 +1055,6 @@ mod tests {
             assert!(pos("Berners-Lee") < pos("Hopper"));
             assert!(pos("Hopper") < pos("Lovelace"));
 
-            // Group filter narrows to Friends only.
             let friends = store.filtered_sorted("", Some("Friends"), SortKey::Name);
             assert!(friends.iter().all(|id| {
                 store
@@ -1098,7 +1067,6 @@ mod tests {
             assert!(!friends.is_empty());
         }
 
-        // --- phase: all_groups_dedupes_case_insensitively ---
         {
             let mut a = Contact::new();
             a.groups = vec![
@@ -1112,7 +1080,6 @@ mod tests {
             assert_eq!(groups.len(), 2, "Work/work collapse: {groups:?}");
         }
 
-        // --- phase: groups_and_search_handle_canonically_equivalent_unicode ---
         {
             let mut first = Contact::new();
             first.groups.push(GroupEntry::new("Cafe\u{301}"));

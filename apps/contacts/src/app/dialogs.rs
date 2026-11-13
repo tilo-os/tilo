@@ -1,8 +1,7 @@
-//! The window's decisions: deleting a contact, leaving unsaved edits, an
-//! imported card whose identity collides with one in the book, merging a
-//! duplicate, and the format of an export. Each is a [`ModalDialog`] in the
-//! window's top layer; its buttons queue a [`DialogChoice`] that the app
-//! applies to whichever decision is open.
+//! The window's decisions: deleting a contact, leaving unsaved edits, an imported
+//! card whose identity collides with one in the book, merging a duplicate, and
+//! the format of an export. Each is a [`ModalDialog`] in the window's top layer,
+//! whose buttons queue a [`DialogChoice`] that the app applies.
 
 use std::collections::HashSet;
 
@@ -20,7 +19,6 @@ use crate::model::{Contact, ContactId};
 use crate::vcard::VCardVersion;
 use crate::view::{DialogChoice, Request, Shared, queue};
 
-/// Which decision a dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DialogKey {
     Unsaved(ContactId),
@@ -29,13 +27,10 @@ pub(super) enum DialogKey {
     Export,
 }
 
-/// The export formats, newest first: the stored value and the label.
 const FORMATS: &[(&str, &str)] = &[("4.0", "vCard 4.0"), ("3.0", "vCard 3.0, for older apps")];
 
-/// The export the person is choosing a format for.
 pub(super) struct ExportDraft {
     pub(super) ids: Vec<ContactId>,
-    /// One sentence: what is exported.
     pub(super) summary: String,
     pub(super) format: LocalState<String>,
     pub(super) selected: LocalState<HashSet<ContactId>>,
@@ -51,9 +46,8 @@ impl ExportDraft {
     }
 }
 
-/// A shared checkbox table whose six-row window follows the current type
-/// and density. The full directory remains data; layout and AT mount only
-/// its viewport rather than a checkbox widget per contact.
+/// A checkbox table whose six-row window follows the type and density: layout
+/// and assistive technology mount only its viewport, not a widget per contact.
 struct ExportSelection {
     table: ui::widget::data_table::DataTable<Contact>,
 }
@@ -128,8 +122,8 @@ pub(super) fn duplicate_field_value(contact: &Contact, field: MergeField) -> Str
     }
 }
 
-/// What two duplicate cards have in common, as a phrase: "an email, a
-/// phone number and a name".
+/// What two duplicate cards share, as a phrase: "an email, a phone number and a
+/// name".
 pub(super) fn shared_facts(reasons: &[crate::actions::DuplicateReason]) -> String {
     use crate::actions::DuplicateReason;
     let facts: Vec<String> = reasons
@@ -153,7 +147,6 @@ pub(super) fn shared_facts(reasons: &[crate::actions::DuplicateReason]) -> Strin
     }
 }
 
-/// The single-value fields two duplicates disagree on.
 pub(super) fn duplicate_conflicts(survivor: &Contact, source: &Contact) -> Vec<MergeField> {
     let differs = |left: &str, right: &str| {
         !left.trim().is_empty() && !right.trim().is_empty() && left != right
@@ -181,8 +174,6 @@ pub(super) fn duplicate_conflicts(survivor: &Contact, source: &Contact) -> Vec<M
 }
 
 impl DuplicateReview {
-    /// Open a review of `source` merging into `survivor`, keeping the
-    /// survivor's value of every field until the person chooses otherwise.
     pub(super) fn new(
         survivor: Contact,
         source: Contact,
@@ -200,7 +191,6 @@ impl DuplicateReview {
         }
     }
 
-    /// The fields whose value comes from the contact that is merged away.
     pub(super) fn take_from_source(&self) -> HashSet<MergeField> {
         self.choices
             .iter()
@@ -209,7 +199,6 @@ impl DuplicateReview {
             .collect()
     }
 
-    /// Keep the merged-away contact's value of `field` (or the survivor's).
     #[cfg(test)]
     pub(super) fn choose(&self, field: MergeField, take_source: bool) {
         if let Some((_, choice)) = self.choices.iter().find(|(f, _)| *f == field) {
@@ -219,7 +208,6 @@ impl DuplicateReview {
 }
 
 impl ContactsApp {
-    /// The decision the window asks for now, topmost first.
     pub(super) fn wanted_dialog(&self) -> Option<DialogKey> {
         if let Some(review) = &self.duplicate_review {
             return Some(DialogKey::Duplicate(review.survivor.id, review.source.id));
@@ -311,8 +299,6 @@ impl ContactsApp {
                     ui::i18n::ArgValue::Text(shared_facts(&review.reasons)),
                 )],
             ))));
-        // Each field the cards disagree on: its name and which value the
-        // merged card keeps, then both values in full.
         for (field, choice) in &review.choices {
             let label = duplicate_field_label(*field);
             let current = duplicate_field_value(&review.survivor, *field);
@@ -334,8 +320,6 @@ impl ContactsApp {
                 .with_justify(taffy::JustifyContent::SpaceBetween)
                 .push(Box::new(Text::new(label).with_role(TextRole::Subheading)))
                 .push(Box::new(menu.control_size(ControlSize::Small)));
-            // A field's name, choice and values hold together; the next
-            // field stands a section apart.
             content = content.push(Box::new(
                 Column::new()
                     .with_no_padding()
@@ -448,7 +432,6 @@ impl ContactsApp {
         ))
     }
 
-    /// Apply the person's answer to the open decision.
     pub(super) fn answer_dialog(&mut self, doc: &mut ui::widget::Edits<'_>, choice: DialogChoice) {
         let Some(key) = self.wanted_dialog() else {
             return;
@@ -540,9 +523,9 @@ impl ContactsApp {
         Ok(())
     }
 
-    /// Merge as reviewed. The host asks the person to confirm; the review
-    /// stays up behind its question and closes once the book no longer
-    /// holds the merged-away contact, so a cancelled merge returns to it.
+    /// Merge as reviewed. The host asks the person to confirm; the review stays up
+    /// behind its question and closes once the book no longer holds the merged-away
+    /// contact, so a cancelled merge returns to it.
     pub(super) fn merge_duplicate_review(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(review) = &self.duplicate_review else {
             return;

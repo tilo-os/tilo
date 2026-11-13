@@ -20,10 +20,7 @@ use super::{ContactsApp, FileWork, FileWorkGuard, ImportConflict, ParsedImport};
 use crate::model::{Contact, ContactId};
 use crate::vcard::{self, VCardVersion};
 
-/// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
-/// File reads happen on the UI-owned import completion path, so keep them
-/// bounded even when an automation supplies a path rather than the picker.
 const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMPORT_FILES: usize = 16;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
@@ -92,10 +89,6 @@ impl ImportSummary {
     }
 }
 
-/// An imported UID is only an identity hint, never proof that a file is
-/// authorised to alter an existing record.  Exact re-imports of our own
-/// export are harmless no-ops; a differing payload is surfaced as a conflict
-/// for review instead of silently overwriting personal data.
 fn same_import_payload(existing: &Contact, incoming: &Contact) -> bool {
     existing.first == incoming.first
         && existing.last == incoming.last
@@ -159,7 +152,6 @@ impl ContactsApp {
     #[cfg(test)]
     pub(super) fn import_paths(&mut self, paths: &[PathBuf]) -> ImportSummary {
         if paths.is_empty() {
-            // An empty selection (or a cancelled picker) fabricates nothing.
             return ImportSummary::default();
         }
         let mut summary = ImportSummary::default();
@@ -174,9 +166,8 @@ impl ContactsApp {
                     continue;
                 }
             };
-            // Each file may hold many, differently-shaped cards; parsing is
-            // intentionally bounded so one large or malformed import cannot
-            // monopolise the UI completion path.
+            // A file may hold many differently shaped cards, so parsing is bounded: one
+            // large or malformed import cannot monopolise the UI.
             let report = vcard::parse_vcards_report(&text);
             summary.errors += report.skipped_cards;
             summary.errors += usize::from(report.limit_reached);
@@ -199,8 +190,6 @@ impl ContactsApp {
         }
         summary
     }
-    /// Add the imported `cards` the book does not hold yet, as one change
-    /// submitted through this window's door.
     pub(super) fn absorb_import_contacts(
         &self,
         cards: impl IntoIterator<Item = Contact>,
@@ -244,8 +233,6 @@ impl ContactsApp {
         self.show_imported(&summary, first_new);
         summary
     }
-    /// Show what an import did: select the first contact it added and say
-    /// what became of the cards.
     pub(super) fn show_imported(&mut self, summary: &ImportSummary, first_new: Option<ContactId>) {
         if let Some(id) = first_new {
             self.select_awaited(id);
@@ -444,10 +431,9 @@ impl ContactsApp {
     }
 }
 
-/// Add the imported `cards` `book` does not hold yet, as one change;
-/// a card whose id names a contact already is unchanged or waits for
-/// review in `conflicts`, and one whose contact was deleted is not brought
-/// back.
+/// Add the imported `cards` `book` does not hold yet, as one change. A card
+/// whose id names a contact already is unchanged or waits in `conflicts`, and
+/// one whose contact was deleted is not brought back.
 pub(super) fn absorb(
     book: &Contacts,
     conflicts: &mut Vec<ImportConflict>,
@@ -509,8 +495,8 @@ pub(super) fn absorb(
     }
 }
 
-/// Import the vCard `files` the person chose, parsed off the UI thread and
-/// added as one change; the window shows what became of them.
+/// Import the vCard `files` the person chose, parsed off the UI thread and added
+/// as one change.
 pub(super) fn import_chosen(
     files: Vec<ChosenFile>,
     work: FileWorkGuard,
@@ -570,7 +556,6 @@ pub(super) fn import_chosen(
     ))
 }
 
-/// Claim the one file operation for `work`, until the guard drops.
 pub(super) fn begin_file_work(
     running: &Rc<Cell<Option<FileWork>>>,
     work: FileWork,
@@ -582,7 +567,6 @@ pub(super) fn begin_file_work(
     Ok(FileWorkGuard(Rc::clone(running)))
 }
 
-/// The contacts of `book` that `ids` name as one vCard file, and how many.
 pub(super) fn export_bytes(
     book: &Contacts,
     ids: &[ContactId],
@@ -601,8 +585,8 @@ pub(super) fn export_bytes(
     ))
 }
 
-/// Save `bytes`, `count` contacts as `version`, where the person chooses;
-/// the window says when they are saved.
+/// Save `bytes`, `count` contacts as `version`, where the person chooses; the
+/// window says when they are saved.
 pub(super) fn save_export(
     bytes: Vec<u8>,
     count: usize,

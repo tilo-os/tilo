@@ -1,12 +1,9 @@
 //! The selected person, as the content column shows them.
 //!
-//! The page is ordinary retained widgets: the person's avatar, name and
-//! work as a header, their groups as tags, and every detail in one
-//! [`PropertyList`] whose labels say what each value is. Phone numbers and
-//! addresses copy, the website opens; Edit, Delete and Favorite are the
-//! column header's commands, and the call, message and email verbs of the
-//! person's own number and address are the window bar's
-//! ([`crate::app::ContactsApp::window_toolbar`]).
+//! Ordinary retained widgets: the avatar, name and work as a header, the groups
+//! as tags, and every detail in one [`PropertyList`]. Edit, Delete and Favorite
+//! are the column header's commands; the call, message and email verbs are the
+//! window bar's ([`crate::app::ContactsApp::window_toolbar`]).
 
 use ui::TextRole;
 use ui::framework::Actions;
@@ -23,7 +20,7 @@ use crate::model::{Address, Contact};
 use crate::resource::Contacts;
 use crate::view::Shared;
 
-/// A vCard type ("mobile", "work") as a property label ("Mobile"). A kind
+/// A vCard type ("mobile", "work") as a property label ("Mobile"); a kind
 /// another app invented reads as the card wrote it.
 pub(crate) fn kind_label(kind: &str) -> String {
     let kind = kind.trim();
@@ -37,9 +34,9 @@ pub(crate) fn kind_label(kind: &str) -> String {
         .map_or_else(|| kind.to_owned(), |(_, label)| (*label).to_owned())
 }
 
-/// A kind with what it qualifies ("Work email", "Home address"), so facts
-/// of different sorts read apart in one list. A kind that already names
-/// the sort ("Email") stands alone.
+/// A kind with what it qualifies ("Work email", "Home address"), so facts of
+/// different sorts read apart; a kind that already names the sort ("Email") is
+/// left alone.
 fn qualified(kind: &str, noun: &str) -> String {
     let label = kind_label(kind);
     if label.eq_ignore_ascii_case(noun) {
@@ -49,8 +46,8 @@ fn qualified(kind: &str, noun: &str) -> String {
     }
 }
 
-/// A phone number's label: the kinds that are themselves a sort of line
-/// ("Mobile", "Fax", "Pager") stand alone, the rest say "phone".
+/// A phone number's label: "Mobile", "Fax" and "Pager" are sorts of line; the
+/// rest say "phone".
 fn phone_label(kind: &str) -> String {
     let label = kind_label(kind);
     match label.as_str() {
@@ -59,7 +56,6 @@ fn phone_label(kind: &str) -> String {
     }
 }
 
-/// A postal address as the lines an envelope shows.
 pub(crate) fn address_lines(address: &Address) -> String {
     let locality = [
         address.city.trim(),
@@ -81,7 +77,6 @@ pub(crate) fn address_lines(address: &Address) -> String {
     .join("\n")
 }
 
-/// The person: avatar, name, and what they do and where.
 fn header(contact: &Contact, shared: &Shared) -> Element {
     let name = contact.display_name();
     let identity = contact.id.to_string();
@@ -121,9 +116,8 @@ fn header(contact: &Contact, shared: &Shared) -> Element {
     )
 }
 
-/// The number a call or a message from this page goes to: the first number
-/// the person has, which is the one the card and the list show first.
-/// `None` when they have no number, so the bar offers no call.
+/// The number a call or message goes to: the person's first, which the card and
+/// the list show first. `None` when they have none, so the bar offers no call.
 pub(crate) fn primary_phone(contact: &Contact) -> Option<&str> {
     contact
         .phones
@@ -132,8 +126,8 @@ pub(crate) fn primary_phone(contact: &Contact) -> Option<&str> {
         .find(|number| crate::handoff::tel_uri(number).is_some())
 }
 
-/// The address an email from this page goes to: the first the person has.
-/// `None` when they have none, so the bar offers no email.
+/// The address an email goes to: the person's first. `None` when they have none,
+/// so the bar offers no email.
 pub(crate) fn primary_email(contact: &Contact) -> Option<&str> {
     contact
         .emails
@@ -142,9 +136,6 @@ pub(crate) fn primary_email(contact: &Contact) -> Option<&str> {
         .find(|address| crate::handoff::mailto_uri(address).is_some())
 }
 
-/// The page for `contact`.
-/// `scroll` keeps the page where it was when the page is rebuilt for the
-/// same person.
 pub(crate) fn contact_page(
     contact: &Contact,
     shared: &Shared,
@@ -179,8 +170,6 @@ pub(crate) fn contact_page(
         Scrollable::new_vertical()
             .with_semantic_key("contacts.detail")
             .with_persisted_offset(std::rc::Rc::clone(scroll))
-            // The facts keep to the readable column on the leading edge,
-            // the page gutter around it.
             .with_child(Box::new(
                 ui::widget::Container::new()
                     .with_inset(ui::tokens::Rhythm::Group)
@@ -190,8 +179,6 @@ pub(crate) fn contact_page(
     )
 }
 
-/// `property` with a trailing button running `effect`, when the book
-/// publishes it.
 fn with_effect(
     property: Property,
     actions: Option<&Actions<Contacts>>,
@@ -205,7 +192,6 @@ fn with_effect(
     }
 }
 
-/// `property` with an Edit button opening the contact's form on `slot`.
 fn editable(
     property: Property,
     actions: Option<&Actions<Contacts>>,
@@ -227,7 +213,6 @@ fn editable(
     )
 }
 
-/// Editable contact facts in their shared label/value column, in reading order.
 fn contact_properties(contact: &Contact, actions: Option<&Actions<Contacts>>) -> Vec<Property> {
     // Every fact in one list, so its labels and values keep one column down
     // the page; the label says what kind of fact a value is.
