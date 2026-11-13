@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn an_automation_under_an_agent_is_bounded_by_what_its_person_gave_it() {
+    fn an_automation_acts_with_its_owners_party_bounded_by_its_steps() {
         let policy = policy();
         let automation = Acting::automation("1")
             .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
@@ -302,22 +302,28 @@ mod tests {
         )];
         assert_eq!(
             answer(&automation, &policy, &turn, ActionKind::Undoable),
-            Answer::Deny,
-            "the steps an automation was given decide what it may do, and here it was given none"
+            Answer::Allow,
+            "the tree's people and software decide; the automation is its owner's"
         );
-        let given = [Grant::new(
-            "automation-1:0",
+        // A step it was given may narrow what it does there.
+        let mut granted = turn.to_vec();
+        granted.push(Grant::new(
+            "automation-1:outside",
             Grantee::person("editor"),
             TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
+            KindSet::OUTSIDE,
+            Answer::Deny,
             Grantee::person("editor"),
-        )];
-        let mut granted = turn.to_vec();
-        granted.extend(given);
+        ));
         assert_eq!(
-            answer(&automation, &policy, &granted, ActionKind::Undoable),
-            Answer::Allow
+            answer(&automation, &policy, &granted, ActionKind::Outside),
+            Answer::Deny
+        );
+        let homeless = Acting::automation("1");
+        assert_eq!(
+            answer(&homeless, &policy, &turn, ActionKind::Undoable),
+            Answer::Deny,
+            "an automation that runs for nobody allows nothing"
         );
     }
 

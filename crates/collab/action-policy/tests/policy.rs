@@ -533,7 +533,7 @@ fn every_bound_applies() {
             "agent",
             Grantee::agent("ag"),
             mail(),
-            KindSet::ALL,
+            KindSet::READ_UNDOABLE,
             Answer::Allow,
             alice(),
         ),

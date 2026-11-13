@@ -146,11 +146,12 @@ pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
 }
 
-/// Whether `grant` is an answer: given an agent, for one of its runs.
+/// Whether `grant` is an answer: given to an agent, or for one issue's runs.
 #[must_use]
 pub fn is_answer(grant: &Grant) -> bool {
-    matches!(grant.grantee, Grantee::Member(crate::MemberId::Agent(_)))
-        && grant.id.as_str().starts_with(PREFIX)
+    let id = grant.id.as_str();
+    (id.starts_with(PREFIX) && matches!(grant.grantee, Grantee::Member(crate::MemberId::Agent(_))))
+        || crate::is_issue_answer(grant)
 }
 
 /// The grant giving `agent` `answer` for actions of `kind` at `scope` in

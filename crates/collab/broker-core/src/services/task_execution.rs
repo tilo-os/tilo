@@ -276,7 +276,7 @@ pub fn is_tracker_issue(task_id: &str) -> bool {
 /// sheet records on the issue, and what its runs are decided by.
 #[must_use]
 pub fn issue_answer_prefix(issue: &str) -> String {
-    format!("issue-answer:{issue}:")
+    format!("{}{issue}:", tilo_action_policy::ISSUE_ANSWER_PREFIX)
 }
 
 /// The id of the grant keeping the person's answer for actions of `kind` at

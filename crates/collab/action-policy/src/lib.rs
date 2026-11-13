@@ -51,6 +51,17 @@ pub use decide::{Authority, Basis, Cap, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use door::{DoorError, DoorPolicy, ListingPolicy};
 pub use earlier::EarlierIds;
+/// The id prefix of the answers a person gives for one issue's runs: what
+/// "Allow for this issue" records, kept on the issue and deciding no other
+/// run of its agent ([`is_issue_answer`]).
+pub const ISSUE_ANSWER_PREFIX: &str = "issue-answer:";
+
+/// Whether `grant` is an answer a person gave for one issue's runs.
+#[must_use]
+pub fn is_issue_answer(grant: &Grant) -> bool {
+    grant.id.as_str().starts_with(ISSUE_ANSWER_PREFIX)
+}
+
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
 pub use member::{Acting, Actor, AgentSessionId, AutomationId, MemberId, ResourceId};

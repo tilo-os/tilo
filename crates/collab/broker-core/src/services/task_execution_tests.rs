@@ -330,12 +330,12 @@ fn assert_independent_task_grants(
     now: std::time::SystemTime,
     requirement: &NativeTaskActionRequirement,
 ) {
-    // Another issue run by the same agent has an independent grant set.
+    // Another issue run by the same agent has its own answers.
     let other = "tasks.tracker/issues/2".to_owned();
     peer.governance_mut()
         .put_governed_grants(
             &[Grant::new(
-                "other-task-deny",
+                format!("issue-answer:{other}:deny"),
                 Grantee::agent("scribe"),
                 TreePath::workspace(workspace),
                 KindSet::ALL,
@@ -616,7 +616,7 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
     peer.governance_mut()
         .put_governed_grants(
             &[Grant::new(
-                "issue-allows-notes",
+                format!("issue-answer:{ISSUE}:allows-notes"),
                 Grantee::agent("scribe"),
                 notes,
                 KindSet::OUTSIDE,
