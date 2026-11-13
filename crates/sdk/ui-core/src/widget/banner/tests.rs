@@ -882,6 +882,108 @@ fn the_layout_places_the_controls_without_a_paint() {
     );
 }
 
+/// A banner a stack gives no slot — it is not a container of its bands, as an
+/// arranged column is not — still has its controls placed by the layout, in the
+/// box its own geometry says, every pass it is laid out in: a frame read before
+/// it is painted — a test, assistive technology, a press — finds them in it.
+#[test]
+fn a_banner_its_stack_gives_no_slot_places_its_controls_inside_it() {
+    use crate::widget::arrange::Stack as Arranged;
+    let state = crate::LocalState::new(Some(sync_failed()));
+    let mut d = FrameHarness::for_root(
+        State::new(),
+        Arranged::stack()
+            .push(Box::new(
+                Banner::from_state(&state)
+                    .with_id("sync")
+                    .with_action(Button::new("sync.retry", "Try again")),
+            ))
+            .push(Box::new(crate::widget::Text::new("Below").with_id("below"))),
+        (640, 400),
+        Theme::dark(),
+    );
+    d.relayout();
+    // The box the banner is drawn in: its own at rest, its slot on its way.
+    let inside = |d: &FrameHarness, what: &str| {
+        let box_ = d.root_widget().children()[0].paint_bounds();
+        let action = d.targets()["sync.retry"];
+        assert!(
+            !action.is_zero_area(),
+            "{what}: the action stands where the layout put it: {action:?}"
+        );
+        assert!(
+            box_.contains(action.center()) && action.y1 <= box_.y1 + 0.5,
+            "{what}: the action {action:?} stands in the banner {box_:?}"
+        );
+    };
+    inside(&d, "at rest");
+
+    // The window goes offline, then comes back a size narrower: the banner is
+    // laid out again where it stands, and its controls follow it there.
+    let frame = crate::motion::pin_frame();
+    state.set(None);
+    d.relayout();
+    state.set(Some(sync_failed()));
+    d.relayout();
+    d.relayout_at((420, 400)).expect("lies out narrower");
+    inside(&d, "on its way, laid out narrower");
+    drop(frame);
+    let _settled = crate::motion::testing::settled();
+    d.relayout();
+    inside(&d, "at rest narrower");
+}
+
+/// The type the person chose — a face whose letterforms are told apart, and
+/// "Always distinguish similar letters" on — is the type the box the layout
+/// gives the banner and the controls it places there are both measured in: the
+/// action stands in the box the same type sized.
+#[test]
+fn a_themed_banner_measures_and_places_with_the_same_type() {
+    let mut theme = Theme::light().with_text_scale(1.5);
+    theme
+        .tokens
+        .typography
+        .set_face(crate::tokens::UiFace::Hyperlegible.name());
+    theme.tokens.typography.distinct_letters = true;
+    let notice = sync_failed().source("Illinois 1011 mail");
+    let state = crate::LocalState::new(Some(notice.clone()));
+    let banner = || {
+        Banner::from_state(&state)
+            .with_id("sync")
+            .with_action(Button::new("sync.retry", "Try again"))
+    };
+    let mut d = FrameHarness::for_root(
+        State::new(),
+        Column::new().push(Box::new(banner())),
+        (420, 400),
+        theme.clone(),
+    );
+    d.relayout();
+    let box_ = d.targets()["sync"];
+    let placed = d.targets()["sync.retry"];
+
+    // The same measurement, taken the way a caller outside the layout takes it: in the theme's
+    // own type.
+    let mut text = TextRenderer::with_font_catalog(&crate::font_catalog::fixture_catalog())
+        .expect("the fixture fonts load");
+    text.set_text_scale(theme.text_scale);
+    text.apply_typography(&theme.tokens.typography);
+    let content = BannerContent::new(notice.kind, &notice.title)
+        .with_message(notice.message.as_deref())
+        .with_source(notice.source.as_deref())
+        .action("Try again");
+    let height = Banner::height(&content, box_.width(), &mut text, &theme);
+    assert!(
+        (box_.height() - height).abs() <= 1.0,
+        "the box the layout gives it is the height its text takes: {:?} against {height}",
+        box_.height()
+    );
+    assert!(
+        !placed.is_zero_area() && box_.contains(placed.center()) && placed.y1 <= box_.y1 + 0.5,
+        "the action {placed:?} stands inside the box the same type measured {box_:?}"
+    );
+}
+
 /// A banner painted at `width`: its box, and the tops of the lines it paints, each once.
 fn lines_of(content: &BannerContent<'_>, width: f64) -> (Rect, Vec<f64>) {
     let theme = Theme::dark();

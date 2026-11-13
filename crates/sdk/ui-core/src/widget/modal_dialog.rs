@@ -1957,7 +1957,7 @@ impl Widget for ModalDialog<dyn Widget> {
         }
         self.laid_out_for = None;
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+        crate::text_render::with_layout_renderer(&theme, |tr| {
             if self.host_content.is_some() {
                 self.resolve(&theme, tr);
             } else {
@@ -2114,7 +2114,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 (f64::from(l.size.width), f64::from(l.size.height))
             });
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(theme.text_scale, |tr| self.resolve(&theme, tr));
+        crate::text_render::with_layout_renderer(&theme, |tr| self.resolve(&theme, tr));
         self.content_laid_out_in = self.body_rect().width();
         let place = |dialog: &mut Self| {
             let target = dialog.content_target();

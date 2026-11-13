@@ -120,7 +120,7 @@ impl NavPaint {
                 } else {
                     f64::from(theme.tokens.metrics.rail_width)
                 };
-                crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                crate::text_render::with_layout_renderer(theme, |text| {
                     nav_rail_item_height(theme, text, label, width)
                 })
             }
@@ -153,7 +153,7 @@ impl NavPaint {
         if spec.badge.is_some() {
             let codes: Vec<&str> = spec.section_badges.iter().map(String::as_str).collect();
             face.badge_column = Some(crate::text_render::with_layout_renderer(
-                self.theme.text_scale,
+                &self.theme,
                 |text| nav_badge_column(&self.theme, text, &codes),
             ));
         }
@@ -170,7 +170,7 @@ impl NavPaint {
         let icons: Vec<Icon> = self.actions.iter().map(|(icon, _)| *icon).collect();
         let face = NavRowFace::new(rect, "").actions(&icons, None);
         // Action geometry does not depend on measured text.
-        crate::text_render::with_layout_renderer(self.theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(&self.theme, |text| {
             let painted = nav_row_layout(&self.theme, text, &face).actions;
             painted.into_iter().map(|rect| self.target(rect)).collect()
         })
@@ -198,7 +198,7 @@ impl NavPaint {
                 branch: true, open, ..
             } => {
                 let face = NavRowFace::new(rect, "").disclosure(*open);
-                crate::text_render::with_layout_renderer(self.theme.text_scale, |text| {
+                crate::text_render::with_layout_renderer(&self.theme, |text| {
                     nav_row_layout(&self.theme, text, &face).disclosure
                 })
             }
@@ -230,7 +230,7 @@ impl NavPaint {
             NavRowKind::Item { label, spec, .. } => {
                 let face = self.item_face(spec, rect, label);
                 Some(crate::text_render::with_layout_renderer(
-                    self.theme.text_scale,
+                    &self.theme,
                     |text| nav_row_layout(&self.theme, text, &face).selection,
                 ))
             }
@@ -516,7 +516,7 @@ impl NavRow {
     fn elided_label(&self, paint: &NavPaint) -> Option<String> {
         let theme = &paint.theme;
         let row = self.rect;
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| match &self.row.kind {
+        crate::text_render::with_layout_renderer(theme, |text| match &self.row.kind {
             NavRowKind::Section { title, .. } if !paint.rail => {
                 let layout = nav_section_layout(theme, &NavSectionFace::new(row, title));
                 let style = theme.text(TextRole::Subheading);
@@ -562,7 +562,7 @@ impl RowRenameField for NavRow {
         match &self.row.kind {
             NavRowKind::Item { label, spec, .. } => {
                 let face = paint.item_face(spec, self.rect, label);
-                let layout = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                let layout = crate::text_render::with_layout_renderer(theme, |text| {
                     nav_row_layout(theme, text, &face)
                 });
                 Some((

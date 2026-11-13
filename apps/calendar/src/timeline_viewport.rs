@@ -95,7 +95,7 @@ impl TimelineTokens {
 impl Default for TimelineTokens {
     fn default() -> Self {
         let theme = Theme::dark();
-        ui::text_render::with_layout_renderer(theme.text_scale, |text| Self::of(&theme, text))
+        ui::text_render::with_layout_renderer(&theme, |text| Self::of(&theme, text))
     }
 }
 
@@ -160,9 +160,8 @@ impl TimelineViewport {
     /// Measure the theme's type for the geometry solved in `layout`, so
     /// reserve and paint read one set of tokens.
     pub fn set_layout_theme(&mut self, theme: &Theme) {
-        self.tokens = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            TimelineTokens::of(theme, text)
-        });
+        self.tokens =
+            ui::text_render::with_layout_renderer(theme, |text| TimelineTokens::of(theme, text));
     }
 
     /// The geometry of the last layout over `area`.
@@ -413,7 +412,7 @@ mod tests {
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let large = Theme::dark().with_text_scale(2.0);
-            let tokens = ui::text_render::with_layout_renderer(large.text_scale, |text| {
+            let tokens = ui::text_render::with_layout_renderer(&large, |text| {
                 TimelineTokens::of(&large, text)
             });
             let one = TimelineViewport::geometry(area);

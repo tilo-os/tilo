@@ -369,7 +369,7 @@ impl SidebarDrawer {
         self.rail_column = if self.rail_labels.is_empty() {
             f64::from(theme.tokens.metrics.rail_width)
         } else {
-            crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::text_render::with_layout_renderer(theme, |text| {
                 crate::chrome::rail_width_fitting(
                     theme,
                     text,

@@ -35,7 +35,7 @@ fn on_touch_a_step_done_is_a_fingers_target_and_a_pointers_by_mouse() {
         host.relayout_at((600, 200)).expect("the stepper lays out");
         // Its stations are where it drew them: a frame draws it.
         let theme = Theme::light();
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(&theme, |text| {
             let mut scene = vello::Scene::new();
             Widget::draw(
                 &mut *host.root_mut::<Stepper>(),

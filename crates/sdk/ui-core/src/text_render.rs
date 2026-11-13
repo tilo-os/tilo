@@ -180,16 +180,23 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Run `f` with a layout-only renderer at `text_scale`, for widgets that
-/// must measure in `apply_layout`, which is handed no renderer. Building one
-/// loads every installed font (tens of milliseconds) and layout runs every
-/// frame an animation is live, so renderers are pooled per thread; a nested
-/// call takes its own from the pool rather than borrowing the outer one.
-pub fn with_layout_renderer<R>(text_scale: f32, f: impl FnOnce(&mut TextRenderer) -> R) -> R {
+/// Run `f` with a layout-only renderer set in `theme`'s type, for widgets
+/// that must measure in `apply_layout`, which is handed no renderer: the
+/// renderer the layout measured them with is as tall and as wide as the one
+/// they are drawn with, so a box placed here lands on the text painted there.
+/// Building one loads every installed font (tens of milliseconds) and layout
+/// runs every frame an animation is live, so renderers are pooled per thread;
+/// a nested call takes its own from the pool rather than borrowing the outer
+/// one.
+pub fn with_layout_renderer<R>(
+    theme: &crate::theme::Theme,
+    f: impl FnOnce(&mut TextRenderer) -> R,
+) -> R {
     let mut renderer = LAYOUT_RENDERERS
         .with(|pool| pool.borrow_mut().pop())
         .unwrap_or_default();
-    renderer.set_text_scale(text_scale);
+    renderer.set_text_scale(theme.text_scale);
+    renderer.apply_typography(&theme.tokens.typography);
     let out = f(&mut renderer);
     LAYOUT_RENDERERS.with(|pool| pool.borrow_mut().push(renderer));
     out
@@ -4825,7 +4832,8 @@ mod tests {
     #[test]
     fn styled_line_clamping_keeps_drawn_weight_within_the_budget() {
         for scale in [1.0, 2.0] {
-            with_layout_renderer(scale, |renderer| {
+            let theme = crate::theme::Theme::light().with_text_scale(scale);
+            with_layout_renderer(&theme, |renderer| {
                 let title = "Review the launch announcement, compact navigation, translated labels, and final release checklist";
                 let style = TextStyle::new(13.0).with_weight(TextWeight::Semibold);
                 let width = 240.0;
@@ -5458,8 +5466,9 @@ mod layout_renderer_pool {
     fn layout_passes_reuse_pooled_renderers_instead_of_reloading_fonts() {
         let constructions = || FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get);
         FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+        let theme = crate::theme::Theme::light();
         for _ in 0..8 {
-            with_layout_renderer(1.0, |tr| {
+            with_layout_renderer(&theme, |tr| {
                 tr.measure("Files", 14.0, None);
             });
         }
@@ -5469,8 +5478,10 @@ mod layout_renderer_pool {
             "a repeated layout pass loads fonts once"
         );
 
-        let scales = with_layout_renderer(2.0, |outer| {
-            let inner = with_layout_renderer(1.5, |inner| inner.text_scale());
+        let wide = crate::theme::Theme::light().with_text_scale(2.0);
+        let narrow = crate::theme::Theme::light().with_text_scale(1.5);
+        let scales = with_layout_renderer(&wide, |outer| {
+            let inner = with_layout_renderer(&narrow, |inner| inner.text_scale());
             (outer.text_scale(), inner)
         });
         assert_eq!(
@@ -5479,7 +5490,7 @@ mod layout_renderer_pool {
             "a nested pass has its own renderer and scale"
         );
         assert_eq!(constructions(), 2, "nesting adds one renderer to the pool");
-        with_layout_renderer(1.0, |_| with_layout_renderer(1.0, |_| ()));
+        with_layout_renderer(&theme, |_| with_layout_renderer(&theme, |_| ()));
         assert_eq!(constructions(), 2, "and later nested passes reuse it");
     }
 }

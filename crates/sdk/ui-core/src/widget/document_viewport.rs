@@ -1257,9 +1257,7 @@ impl Widget for DocumentViewport {
         self.state.set_rect(self.rect);
         self.dirty = true;
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
-            self.place_child(&theme, tr)
-        });
+        crate::text_render::with_layout_renderer(&theme, |tr| self.place_child(&theme, tr));
         // A toolbar's request is solved once the rect it fits into, and how
         // big the content really is, are both known.
         self.apply_requested_zoom();

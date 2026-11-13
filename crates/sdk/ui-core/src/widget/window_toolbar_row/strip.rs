@@ -108,7 +108,7 @@ impl NoticeStrip {
             return false;
         }
         let gap = f64::from(theme.tokens.spacing.s2);
-        let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let measured = crate::text_render::with_layout_renderer(theme, |text| {
             let widths: Vec<f64> = actions
                 .iter()
                 .map(|name| labelled_face(Rect::ZERO, name, false).intrinsic_width(text, theme))

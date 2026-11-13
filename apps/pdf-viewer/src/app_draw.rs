@@ -2144,7 +2144,7 @@ impl PdfApp {
         let hint_y = y;
         if self.tool == Tool::Sign {
             let hint = signature_place_hint();
-            let (_, height) = ui::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            let (_, height) = ui::text_render::with_layout_renderer(theme, |tr| {
                 tr.measure_style(
                     &hint,
                     Some((x1 - x0).max(1.0) as f32),

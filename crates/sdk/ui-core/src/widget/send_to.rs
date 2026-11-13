@@ -418,7 +418,7 @@ impl SendToBox {
         if !(width.is_finite() && width >= 1.0) {
             return least;
         }
-        let (_, height) = crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
+        let (_, height) = crate::text_render::with_layout_renderer(theme, |renderer| {
             renderer.measure_style(&self.text, Some(width), &style)
         });
         (f64::from(height) + self.message_air() * 2.0).clamp(least, most)
@@ -481,7 +481,7 @@ impl SendToBox {
         let style = self.theme.text(TextRole::Body);
         let theme = &self.theme;
         f64::from(crate::text_render::with_layout_renderer(
-            theme.text_scale,
+            theme,
             |renderer| renderer.measure_style(label, None, &style).0,
         ))
     }

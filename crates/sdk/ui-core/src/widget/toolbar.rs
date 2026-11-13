@@ -590,7 +590,7 @@ impl Toolbar {
     /// when a label or the text scale changed since.
     pub fn lay_out_at(&mut self, rect: Rect, theme: &Theme) {
         if self.measured_scale != Some(theme.text_scale) || self.extents.len() != self.items.len() {
-            crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::text_render::with_layout_renderer(theme, |text| {
                 self.lay_out_in(rect, text, theme);
             });
             return;

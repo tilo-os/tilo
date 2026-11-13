@@ -356,7 +356,7 @@ impl ConvertPage {
         let chip_gap = m.gap * 0.5;
         // Each chip is as wide as its own word, measured in the face it is
         // drawn in, so a row of them reads as one row of choices.
-        let chip_widths = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let chip_widths = ui::text_render::with_layout_renderer(theme, |text| {
             let mut widths = Vec::with_capacity(convert::DIMENSIONS.len() + 1);
             for label in convert::DIMENSIONS
                 .iter()

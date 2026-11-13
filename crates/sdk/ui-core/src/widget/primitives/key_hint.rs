@@ -203,7 +203,7 @@ impl crate::widget::Widget for KeyHints {
             self.dirty = true;
             self.layout_dirty = true;
         }
-        let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let width = crate::text_render::with_layout_renderer(theme, |text| {
             KeyHintsFace::new(&self.hints).width(text, theme)
         });
         let style = taffy::Style {

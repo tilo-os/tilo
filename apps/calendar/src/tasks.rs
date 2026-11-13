@@ -154,7 +154,7 @@ fn row_face<'a>(task: &'a Task, due: &'a str, spans: &'a [(&'a str, Tone)]) -> L
 }
 
 fn content_height(source: &TasksSource<'_>, theme: &Theme) -> f64 {
-    ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+    ui::text_render::with_layout_renderer(theme, |text| {
         source
             .rows()
             .iter()

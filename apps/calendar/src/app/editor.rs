@@ -589,57 +589,56 @@ impl CalendarApp {
         let theme = self.layout_theme.clone();
         let window = self.rect;
         let notes_min = 2.0 * f64::from(theme.tokens.metrics.bar_height);
-        let (layout, form, content_h) =
-            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-                let width = self.detail_body_w();
-                let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
-                let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
-                let done = done_label();
-                let title = self.sheet_title();
-                let actions = [ModalAction::primary(&done)];
-                let natural = modal_dialog::layout(
+        let (layout, form, content_h) = ui::text_render::with_layout_renderer(&theme, |text| {
+            let width = self.detail_body_w();
+            let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
+            let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
+            let done = done_label();
+            let title = self.sheet_title();
+            let actions = [ModalAction::primary(&done)];
+            let natural = modal_dialog::layout(
+                window,
+                &Self::sheet_spec(&title, &actions, content_h),
+                text,
+                &theme,
+            );
+            // A form taller than the window scrolls inside a sheet that
+            // keeps the window's header row clear, and whose body ends
+            // between two rows rather than through one.
+            let header = f64::from(theme.tokens.metrics.header_height);
+            let chrome_h = natural.card.height() - natural.body.height();
+            let room = (window.height() - 2.0 * header - chrome_h).max(0.0);
+            let layout = if content_h <= room {
+                natural
+            } else {
+                let body_h = probe
+                    .row_bottoms()
+                    .into_iter()
+                    .filter(|y| *y <= room)
+                    .fold(0.0, f64::max);
+                let body_h = if body_h > 0.0 { body_h } else { room };
+                modal_dialog::layout(
                     window,
-                    &Self::sheet_spec(&title, &actions, content_h),
+                    &Self::sheet_spec(&title, &actions, body_h),
                     text,
                     &theme,
-                );
-                // A form taller than the window scrolls inside a sheet that
-                // keeps the window's header row clear, and whose body ends
-                // between two rows rather than through one.
-                let header = f64::from(theme.tokens.metrics.header_height);
-                let chrome_h = natural.card.height() - natural.body.height();
-                let room = (window.height() - 2.0 * header - chrome_h).max(0.0);
-                let layout = if content_h <= room {
-                    natural
-                } else {
-                    let body_h = probe
-                        .row_bottoms()
-                        .into_iter()
-                        .filter(|y| *y <= room)
-                        .fold(0.0, f64::max);
-                    let body_h = if body_h > 0.0 { body_h } else { room };
-                    modal_dialog::layout(
-                        window,
-                        &Self::sheet_spec(&title, &actions, body_h),
-                        text,
-                        &theme,
-                    )
-                };
-                let max = (content_h - layout.body.height()).max(0.0);
-                let scroll = if self.shots_detail_scroll_to_end {
-                    max
-                } else {
-                    self.detail_scroll_y.clamp(0.0, max)
-                };
-                let body = Rect::new(
-                    layout.body.x0,
-                    layout.body.y0 - scroll,
-                    layout.body.x1,
-                    layout.body.y1,
-                );
-                let form = self.form_layout(body, text, &theme);
-                (layout, form, content_h)
-            });
+                )
+            };
+            let max = (content_h - layout.body.height()).max(0.0);
+            let scroll = if self.shots_detail_scroll_to_end {
+                max
+            } else {
+                self.detail_scroll_y.clamp(0.0, max)
+            };
+            let body = Rect::new(
+                layout.body.x0,
+                layout.body.y0 - scroll,
+                layout.body.x1,
+                layout.body.y1,
+            );
+            let form = self.form_layout(body, text, &theme);
+            (layout, form, content_h)
+        });
         self.detail_scroll_max = (content_h - layout.body.height()).max(0.0);
         self.detail_scroll_y = self.detail_scroll_y.clamp(0.0, self.detail_scroll_max);
         if self.shots_detail_scroll_to_end {

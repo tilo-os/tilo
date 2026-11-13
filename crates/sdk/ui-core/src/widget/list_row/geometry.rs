@@ -638,7 +638,7 @@ impl ListRowFace<'_> {
     /// Where each hover action sits in `rect`, in order. Empty unless the
     /// row is hovered, focused or revealing its actions.
     pub fn action_rects(&self, rect: Rect, theme: &Theme) -> Vec<Rect> {
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        crate::text_render::with_layout_renderer(theme, |text| {
             self.action_rects_with(rect, &self.metrics(theme), text, theme)
         })
     }

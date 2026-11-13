@@ -187,7 +187,7 @@ impl ToolbarRow {
                     usize::MAX,
                 );
                 let metrics = StripMetrics::of(theme);
-                let laid = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                let laid = crate::text_render::with_layout_renderer(theme, |text| {
                     reaction_strip::layout(
                         &groups,
                         REACTION_SHOWER,

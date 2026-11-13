@@ -654,7 +654,7 @@ fn leading_actions_follow_the_navigation_and_views_stand_before_the_actions() {
 fn each_view_tab_is_as_wide_as_its_label() {
     let theme = Theme::dark();
     let row = calendar_row(1280.0);
-    let widths = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+    let widths = crate::text_render::with_layout_renderer(&theme, |text| {
         SegmentedFace::tab_widths(&["Month", "Week", "Day"], VIEWS_SIZE, text, &theme)
     });
     let tabs = &row.slots().views;

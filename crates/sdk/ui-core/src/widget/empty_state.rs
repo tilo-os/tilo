@@ -1204,7 +1204,7 @@ impl EmptyState {
         } else {
             let waiting = crate::workspace_sync::waiting();
             let content = shown_content(&content, waiting.as_ref());
-            crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::text_render::with_layout_renderer(&theme, |text| {
                 // The disclosure sits under the stack, and the two are centred
                 // together: the stack is laid out in what the disclosure
                 // leaves.

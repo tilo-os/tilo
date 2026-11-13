@@ -413,7 +413,7 @@ impl Editor {
     /// layout pass saw.
     pub(super) fn relayout_now(&mut self) {
         let theme = self.layout_theme.clone();
-        ui::text_render::with_layout_renderer(theme.text_scale, |tr| {
+        ui::text_render::with_layout_renderer(&theme, |tr| {
             self.relayout(tr, &theme, false);
         });
     }

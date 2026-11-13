@@ -474,13 +474,12 @@ fn the_message_wraps_and_the_box_makes_room_for_it() {
         reason = "a finite widget width in CSS pixels fits the f32 shaping API"
     )]
     let width = (send_to.layout.message.width() - 2.0 * f64::from(theme.tokens.spacing.s2)) as f32;
-    let (natural, one_line) =
-        crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
-            (
-                renderer.measure_style(words, None, &style),
-                renderer.measure_style(words, Some(width), &style),
-            )
-        });
+    let (natural, one_line) = crate::text_render::with_layout_renderer(theme, |renderer| {
+        (
+            renderer.measure_style(words, None, &style),
+            renderer.measure_style(words, Some(width), &style),
+        )
+    });
     assert!(
         f64::from(natural.0) > send_to.layout.message.width(),
         "the sentence is wider than the field, so it must wrap"
