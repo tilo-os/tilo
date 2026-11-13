@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-//! The embedded English word list, from the system `hunspell` `en_US` list (the
-//! SCOWL-derived one Fedora ships): generated, never edited by hand.
+/// The embedded English word list, from the system `hunspell` `en_US` list (the
+/// SCOWL-derived one Fedora ships): generated, never edited by hand.
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 
 /// Product names included in the built-in dictionary, and known beside a
