@@ -381,11 +381,34 @@ mod tests {
 
     #[test]
     fn builtin_connectors_are_the_panels_a_device_ships_with() {
-        for builtin in ["eDP-1", "LVDS-1", "DSI-1", "card1/eDP-2"] {
+        for builtin in [
+            "eDP-1",
+            "LVDS-1",
+            "DSI-1",
+            "card1/eDP-2",
+            // Only the connector part is judged, however deep the qualifier.
+            "card0/card1/LVDS-2",
+            "HDMI-A-1/eDP-1",
+            // The bare prefix, with no number.
+            "DSI",
+        ] {
             assert!(connector_is_builtin(builtin), "{builtin}");
         }
-        for external in ["HDMI-A-1", "DP-3", "Tilo-0", "card0/DP-1", "Virtual-1"] {
-            assert!(!connector_is_builtin(external), "{external}");
+        for external in [
+            "HDMI-A-1",
+            "DP-3",
+            "Tilo-0",
+            "card0/DP-1",
+            "Virtual-1",
+            // No name, and a name that ends in its separator, name no panel.
+            "",
+            "eDP-1/",
+            // A panel's name starts the connector part; it does not merely appear in the name.
+            "HDMI-eDP-1",
+            "DP-eDP",
+            "eDP-1/HDMI-A-1",
+        ] {
+            assert!(!connector_is_builtin(external), "{external:?}");
         }
     }
 

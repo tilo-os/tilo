@@ -412,6 +412,18 @@ mod tests {
         let text = held.hold_text(&picture_text(&picture));
         assert_eq!(fetch(&text), Some(picture.clone()));
         assert_eq!(held.hold_text(""), "");
+        // Picture text wrapped as a vCard carries it decodes to the same picture; text that is
+        // no picture is held, and loads nothing.
+        let encoded = picture_text(&picture);
+        let wrapped = format!("{}\r\n {}", &encoded[..8], &encoded[8..]);
+        assert_eq!(picture_bytes(&wrapped), Some(picture.clone()));
+        assert_eq!(fetch(&held.hold_text(&wrapped)), Some(picture.clone()));
+        for not_a_picture in ["", " \r\n", "=", "not base64!"] {
+            assert_eq!(picture_bytes(not_a_picture), None, "{not_a_picture:?}");
+        }
+        let junk = held.hold_text("not base64!");
+        assert!(held.holds(&junk));
+        assert_eq!(fetch(&junk), None);
         held.retain(&std::collections::HashSet::new());
         assert!(!held.holds(&address));
     }

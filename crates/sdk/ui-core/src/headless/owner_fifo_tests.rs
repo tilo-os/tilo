@@ -615,6 +615,8 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
 
 fn background_gate(case: &str, presentation: super::owner_background_work::Presentation) {
     use durable_store::DurableStore;
+    // The unwraps below name no case: a failure's output ends with this line.
+    eprintln!("case: {case}");
     let backend = Rc::new(durable_store::MemoryStore::new());
     let host = memory_host(backend.clone());
     let queue = OwnerWakeQueue::default();
@@ -716,6 +718,30 @@ fn background_owner_services_original_model_and_save_without_paint() {
             },
         ),
         (
+            "hidden and suspended",
+            Presentation {
+                hidden: true,
+                suspended: true,
+                gpu_ready: true,
+            },
+        ),
+        (
+            "hidden and gpu none",
+            Presentation {
+                hidden: true,
+                suspended: false,
+                gpu_ready: false,
+            },
+        ),
+        (
+            "suspended and gpu none",
+            Presentation {
+                hidden: false,
+                suspended: true,
+                gpu_ready: false,
+            },
+        ),
+        (
             "hidden, suspended and gpu none",
             Presentation {
                 hidden: true,
@@ -726,6 +752,19 @@ fn background_owner_services_original_model_and_save_without_paint() {
     ] {
         background_gate(case, presentation);
     }
+    // The other side of the gate: only a shown, running window with a GPU can paint, and what
+    // the service did is reported either way.
+    let shown = Presentation {
+        hidden: false,
+        suspended: false,
+        gpu_ready: true,
+    };
+    let outcome = super::owner_background_work::run(shown, || Ok::<usize, ()>(3)).unwrap();
+    assert_eq!(
+        (outcome.serviced, outcome.paint_available),
+        (3, true),
+        "a shown window can paint"
+    );
 }
 #[test]
 fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable() {

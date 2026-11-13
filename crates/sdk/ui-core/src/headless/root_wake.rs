@@ -196,6 +196,8 @@ mod tests {
     }
 
     fn read_in_flight(case: &str, in_layout: bool) {
+        // The expects below name no case: a failure's output ends with this line.
+        eprintln!("case: {case}");
         let reader = Reader {
             in_layout,
             rect: vello::kurbo::Rect::ZERO,

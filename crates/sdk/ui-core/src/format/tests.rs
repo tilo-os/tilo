@@ -451,13 +451,12 @@ fn the_locale_section_reads_key_by_key() {
 }
 
 /// `day_fact` for a day by how far it is from today, with and without a time of day, through
-/// midnight and the year's end. A row with no German or no tone had none asserted before the
-/// rows were gathered here.
+/// midnight and the year's end: its words in English and in German, and its tone in both.
 #[test]
 #[allow(clippy::too_many_lines, reason = "one row per case")]
 fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german() {
     let today = day(2026, 6, 30); // a Tuesday
-    let (danger, neutral) = (Some(Tone::Danger), Some(Tone::Neutral));
+    let (danger, neutral) = (Tone::Danger, Tone::Neutral);
     // (the day, its time, today, English, German, tone)
     let cases = [
         // A day alone.
@@ -466,43 +465,45 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             None,
             today,
             "Overdue since Jun 20",
-            Some("Überfällig seit 20. Juni"),
-            None,
+            "Überfällig seit 20. Juni",
+            danger,
         ),
-        (day(2026, 6, 30), None, today, "Today", Some("Heute"), None),
+        // Yesterday is a day gone by like any other: it keeps its date.
         (
-            day(2026, 7, 1),
+            day(2026, 6, 29),
             None,
             today,
-            "Tomorrow",
-            Some("Morgen"),
-            None,
+            "Overdue since Jun 29",
+            "Überfällig seit 29. Juni",
+            danger,
         ),
+        (day(2026, 6, 30), None, today, "Today", "Heute", neutral),
+        (day(2026, 7, 1), None, today, "Tomorrow", "Morgen", neutral),
         (
             day(2026, 7, 2),
             None,
             today,
             "Thursday",
-            Some("Donnerstag"),
-            None,
+            "Donnerstag",
+            neutral,
         ),
-        (day(2026, 7, 6), None, today, "Monday", Some("Montag"), None),
-        (day(2026, 7, 7), None, today, "Jul 7", Some("7. Juli"), None),
+        (day(2026, 7, 6), None, today, "Monday", "Montag", neutral),
+        (day(2026, 7, 7), None, today, "Jul 7", "7. Juli", neutral),
         (
             day(2026, 12, 31),
             None,
             today,
             "Dec 31",
-            Some("31. Dez."),
-            None,
+            "31. Dez.",
+            neutral,
         ),
         (
             day(2027, 1, 2),
             None,
             today,
             "Jan 2, 2027",
-            Some("2. Jan. 2027"),
-            None,
+            "2. Jan. 2027",
+            neutral,
         ),
         // Overdue through midnight and the year's end.
         (
@@ -510,7 +511,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((0, 0)),
             today,
             "Overdue since Jun 29 00:00",
-            None,
+            "Überfällig seit 29. Juni 00:00",
             danger,
         ),
         (
@@ -518,7 +519,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((0, 0)),
             today,
             "Today 00:00",
-            None,
+            "Heute 00:00",
             neutral,
         ),
         (
@@ -526,7 +527,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             None,
             day(2026, 12, 31),
             "Tomorrow",
-            None,
+            "Morgen",
             neutral,
         ),
         (
@@ -534,8 +535,8 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             None,
             day(2027, 1, 1),
             "Overdue since Dec 31, 2026",
-            None,
-            None,
+            "Überfällig seit 31. Dez. 2026",
+            danger,
         ),
         // A day and its time, as one fact.
         (
@@ -543,7 +544,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((9, 0)),
             today,
             "Today 09:00",
-            Some("Heute 09:00"),
+            "Heute 09:00",
             neutral,
         ),
         (
@@ -551,7 +552,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((9, 0)),
             today,
             "Tomorrow 09:00",
-            Some("Morgen 09:00"),
+            "Morgen 09:00",
             neutral,
         ),
         (
@@ -559,7 +560,24 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((14, 30)),
             today,
             "Thu 14:30",
-            Some("Do. 14:30"),
+            "Do. 14:30",
+            neutral,
+        ),
+        // The last day of the week ahead, and the first day past it.
+        (
+            day(2026, 7, 6),
+            Some((9, 0)),
+            today,
+            "Mon 09:00",
+            "Mo. 09:00",
+            neutral,
+        ),
+        (
+            day(2026, 7, 7),
+            Some((9, 0)),
+            today,
+            "Jul 7 09:00",
+            "7. Juli 09:00",
             neutral,
         ),
         (
@@ -567,7 +585,15 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((9, 0)),
             today,
             "Jul 8 09:00",
-            Some("8. Juli 09:00"),
+            "8. Juli 09:00",
+            neutral,
+        ),
+        (
+            day(2027, 1, 2),
+            Some((9, 0)),
+            today,
+            "Jan 2, 2027 09:00",
+            "2. Jan. 2027 09:00",
             neutral,
         ),
         (
@@ -575,7 +601,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((9, 0)),
             today,
             "Overdue since Jun 29, 2025 09:00",
-            Some("Überfällig seit 29. Juni 2025 09:00"),
+            "Überfällig seit 29. Juni 2025 09:00",
             danger,
         ),
         (
@@ -583,7 +609,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((14, 30)),
             today,
             "Overdue since Jun 29 14:30",
-            Some("Überfällig seit 29. Juni 14:30"),
+            "Überfällig seit 29. Juni 14:30",
             danger,
         ),
         (
@@ -591,7 +617,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((7, 5)),
             today,
             "Overdue since Jun 25 07:05",
-            Some("Überfällig seit 25. Juni 07:05"),
+            "Überfällig seit 25. Juni 07:05",
             danger,
         ),
         (
@@ -599,7 +625,7 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
             Some((7, 5)),
             today,
             "Overdue since Jun 10 07:05",
-            Some("Überfällig seit 10. Juni 07:05"),
+            "Überfällig seit 10. Juni 07:05",
             danger,
         ),
     ];
@@ -610,17 +636,15 @@ fn the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german(
     for &(when, time, today, english, _, tone) in &cases {
         let fact = H24.day_fact(when, time_of(time), today);
         assert_eq!(fact.text, english, "{when:?} {time:?} against {today:?}");
-        if let Some(tone) = tone {
-            assert_eq!(fact.tone, tone, "{when:?} {time:?} against {today:?}");
-        }
+        assert_eq!(fact.tone, tone, "{when:?} {time:?} against {today:?}");
     }
     speak("de-DE");
-    for &(when, time, today, _, german, _) in &cases {
-        let Some(german) = german else { continue };
+    for &(when, time, today, _, german, tone) in &cases {
+        let fact = H24.day_fact(when, time_of(time), today);
+        assert_eq!(fact.text, german, "{when:?} {time:?} against {today:?}");
         assert_eq!(
-            H24.day_fact(when, time_of(time), today).text,
-            german,
-            "{when:?} {time:?} against {today:?}"
+            fact.tone, tone,
+            "{when:?} {time:?} against {today:?}, in German"
         );
     }
 }

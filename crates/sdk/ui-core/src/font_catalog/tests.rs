@@ -312,6 +312,12 @@ fn a_startup_font_whose_page_digest_or_size_differs_from_the_build_is_refused() 
     };
     let error = error.to_string();
     assert!(error.contains("SHA-256 mismatch"), "{error}");
+    // A startup font the host cannot supply is refused too, not skipped.
+    let Err(error) = catalog.load_browser_startup_bytes(|_| None) else {
+        panic!("a missing startup font is refused");
+    };
+    let error = error.to_string();
+    assert!(error.contains("missing font bytes"), "{error}");
 }
 
 #[test]
@@ -324,15 +330,38 @@ fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
     let name = "NotoSansArabic[wght].ttf";
     let bytes = std::fs::read(root.join(name)).unwrap();
     let digest = super::test_sha256(&bytes);
+    // The catalog's own bytes are refused under any digest but the pinned one, compared as
+    // written: no digest, the pinned digest in upper case, the digest of other bytes.
+    let faces = fonts.db().len();
+    for (case, wrong) in [
+        ("no digest", String::new()),
+        ("the pinned digest in upper case", digest.to_uppercase()),
+        ("the digest of other bytes", super::test_sha256(&bytes[1..])),
+    ] {
+        let Err(error) = catalog.install_browser_asset(&mut fonts, name, bytes.clone(), &wrong)
+        else {
+            panic!("{case}: a digest other than the pinned one is refused");
+        };
+        let error = error.to_string();
+        assert!(error.contains("SHA-256 mismatch"), "{case}: {error}");
+    }
+    assert_eq!(fonts.db().len(), faces, "a refused asset adds no face");
     assert!(
         catalog
             .install_browser_asset(&mut fonts, name, bytes.clone(), &digest)
             .unwrap()
     );
+    let installed = fonts.db().len();
+    assert!(installed > faces, "an installed asset adds its faces");
     assert!(
         !catalog
             .install_browser_asset(&mut fonts, name, bytes.clone(), &digest)
             .unwrap()
+    );
+    assert_eq!(
+        fonts.db().len(),
+        installed,
+        "installing it again adds nothing"
     );
     let mut corrupt = bytes;
     *corrupt.last_mut().unwrap() ^= 1;
@@ -355,6 +384,18 @@ fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
                 &super::test_sha256(&[1])
             )
             .is_err()
+    );
+    let Err(error) =
+        catalog.install_browser_asset(&mut fonts, "", vec![1], &super::test_sha256(&[1]))
+    else {
+        panic!("an asset with no name is refused");
+    };
+    let error = error.to_string();
+    assert!(error.contains("unknown canonical font asset"), "{error}");
+    assert_eq!(
+        fonts.db().len(),
+        installed,
+        "a corrupt, escaping or unnamed asset adds no face"
     );
 }
 

@@ -266,6 +266,25 @@ mod tests {
             fact.caption(at(106)),
             "measured 6 s ago \u{b7} this device \u{b7} stale"
         );
+        assert_eq!(fact.source(), Some("this device"));
+        assert_eq!(fact.as_of(), Some(at(100)));
+        assert_eq!(fact.unknown_reason(), None);
+        assert_eq!(fact.age(at(102)), Some(Duration::from_secs(2)));
+        // Exactly its interval old is not yet older than it.
+        assert!(
+            !fact.is_stale(at(105)),
+            "an age equal to the interval is not stale"
+        );
+        assert_eq!(fact.caption(at(105)), "measured 5 s ago \u{b7} this device");
+        // A clock that stepped back behind the reading: an age of zero, never a negative one, and
+        // not stale.
+        assert_eq!(fact.age(at(99)), Some(Duration::ZERO));
+        assert!(!fact.is_stale(at(99)), "a reading from the future");
+        assert_eq!(fact.caption(at(99)), "measured 0 s ago \u{b7} this device");
+        // No expected interval is never judged stale, and no source leaves no separator behind.
+        let unjudged = Measured::known(Measure::new("Uptime"), "3", "", at(100), None);
+        assert!(!unjudged.is_stale(at(100 + 365 * 24 * 60 * 60)));
+        assert_eq!(unjudged.caption(at(102)), "measured 2 s ago");
     }
 
     #[test]
@@ -281,6 +300,13 @@ mod tests {
             fact.caption(at(1)),
             "not measured \u{b7} the process list is unavailable"
         );
+        assert_eq!(
+            fact.unknown_reason(),
+            Some("the process list is unavailable")
+        );
+        assert_eq!(fact.source(), None);
+        assert_eq!(fact.as_of(), None);
+        assert_eq!(fact.age(at(1)), None);
     }
 
     #[test]
@@ -304,9 +330,29 @@ mod tests {
 
     #[test]
     fn an_age_reads_in_the_largest_whole_unit() {
-        assert_eq!(age_label(Duration::from_secs(2)), "2 s");
-        assert_eq!(age_label(Duration::from_secs(125)), "2 min");
-        assert_eq!(age_label(Duration::from_secs(3 * 60 * 60)), "3 h");
-        assert_eq!(age_label(Duration::from_secs(2 * 24 * 60 * 60)), "2 d");
+        for (seconds, want) in [
+            (0, "0 s"),
+            (2, "2 s"),
+            (59, "59 s"),
+            (60, "1 min"),
+            (125, "2 min"),
+            (60 * 60 - 1, "59 min"),
+            (60 * 60, "1 h"),
+            (3 * 60 * 60, "3 h"),
+            (24 * 60 * 60 - 1, "23 h"),
+            (24 * 60 * 60, "1 d"),
+            (2 * 24 * 60 * 60, "2 d"),
+        ] {
+            assert_eq!(
+                age_label(Duration::from_secs(seconds)),
+                want,
+                "{seconds} seconds"
+            );
+        }
+        assert_eq!(
+            age_label(Duration::from_millis(999)),
+            "0 s",
+            "a part of a second is no second yet"
+        );
     }
 }

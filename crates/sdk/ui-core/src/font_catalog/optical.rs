@@ -438,6 +438,56 @@ mod tests {
             cut_where("New Computer Modern", 48.0, LIGHT, true, 400, |_| true),
             Some("New Computer Modern")
         );
+        // Too small for every cut the catalog has: the smallest one it does have.
+        assert_eq!(
+            cut_where("New Computer Modern", 10.0, LIGHT, false, 400, |family| {
+                family == "New Computer Modern"
+            }),
+            Some("New Computer Modern"),
+            "only the Regular cut installed, at a footnote's size"
+        );
+        // A small italic whose Book is left out is the Regular's, never the upright-only 8 pt.
+        assert_eq!(
+            cut_where("New Computer Modern", 11.0, LIGHT, true, 400, |family| {
+                family != "New Computer Modern Book"
+            }),
+            Some("New Computer Modern"),
+            "a small italic without Book"
+        );
+        // A display size whose Display cut is left out stays in the text cut.
+        assert_eq!(
+            cut_where("Libertinus Serif", 40.0, LIGHT, false, 400, |family| {
+                family != "Libertinus Serif Display"
+            }),
+            Some("Libertinus Serif"),
+            "Libertinus without its Display cut"
+        );
+        // With no cut installed the family still names one: its smallest in the style.
+        assert_eq!(
+            cut_where("New Computer Modern", 48.0, LIGHT, false, 400, |_| false),
+            Some("New Computer Modern 08"),
+            "nothing installed, upright"
+        );
+        assert_eq!(
+            cut_where("New Computer Modern", 48.0, LIGHT, true, 400, |_| false),
+            Some("New Computer Modern Book"),
+            "nothing installed, italic"
+        );
+        // Sizing turned off, and a family with no cuts, stay no cut whatever is installed.
+        let none = Optical {
+            sizing: OpticalSizing::None,
+            ..LIGHT
+        };
+        assert_eq!(
+            cut_where("New Computer Modern", 48.0, none, false, 400, |_| false),
+            None,
+            "sizing none, nothing installed"
+        );
+        assert_eq!(
+            cut_where("Literata", 48.0, LIGHT, false, 400, |_| false),
+            None,
+            "a family with no cuts, nothing installed"
+        );
     }
 
     #[test]
@@ -459,5 +509,32 @@ mod tests {
             ]
         );
         assert!(cuts_up_to("Literata", 19.0, LIGHT, false, 400).is_empty());
+        // Boundaries: the smallest cut alone, an italic title (the 8 pt design has no italic), a
+        // family whose larger cut lacks the weight, a cut's own name, and sizing turned off.
+        assert_eq!(
+            cuts_up_to("New Computer Modern", 10.0, LIGHT, false, 400),
+            ["New Computer Modern 08"]
+        );
+        assert_eq!(
+            cuts_up_to("New Computer Modern", 48.0, LIGHT, true, 400),
+            ["New Computer Modern Book", "New Computer Modern"]
+        );
+        assert_eq!(
+            cuts_up_to("Libertinus Serif", 40.0, LIGHT, false, 400),
+            ["Libertinus Serif", "Libertinus Serif Display"]
+        );
+        assert_eq!(
+            cuts_up_to("Libertinus Serif", 40.0, LIGHT, false, 700),
+            ["Libertinus Serif"]
+        );
+        assert_eq!(
+            cuts_up_to("New Computer Modern Book", 19.0, LIGHT, false, 400),
+            ["New Computer Modern 08", "New Computer Modern Book"]
+        );
+        let none = Optical {
+            sizing: OpticalSizing::None,
+            ..LIGHT
+        };
+        assert!(cuts_up_to("New Computer Modern", 48.0, none, false, 400).is_empty());
     }
 }

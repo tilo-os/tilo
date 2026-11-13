@@ -852,6 +852,8 @@ fn setter_topology_oscillation_refuses_with_existing_eight_bound() {
 #[test]
 fn outgoing_setter_or_draw_unwind_retires_maps_publishes_nothing_and_preserves_retry() {
     for unwinds_in in ["the outgoing blur setter", "the draw"] {
+        // The shared assertions below name no case: a failure's output ends with this line.
+        eprintln!("case: an unwind out of {unwinds_in}");
         let mut f = Fixture::new();
         f.frame.prepare_app_activation(SELECTED);
         f.old.restore_from_sync.set(true);
