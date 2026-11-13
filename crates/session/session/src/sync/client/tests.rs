@@ -317,7 +317,7 @@ fn a_list_is_kept_only_from_the_device_that_said_it() {
 }
 
 #[test]
-fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
+fn a_peer_here_is_a_member_of_the_active_workspace() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
@@ -328,12 +328,13 @@ fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
     assert_eq!(people[0].label, "Framework 16");
     assert_eq!(people[0].user, Some(person(0xaa)));
 
-    let collaborators = &tree.workspaces[0].collaborators;
-    assert_eq!(collaborators.len(), 1);
-    assert_eq!(collaborators[0].id, device(1).to_string());
-    assert_eq!(collaborators[0].name, "Framework 16");
-    assert!(collaborators[0].cursor_color.is_some());
-    assert_eq!(collaborators[0].role_id, None);
+    let members = &tree.workspaces[0].members;
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].name, "Framework 16");
+    assert!(members[0].id.is_person());
+    let here = &tree.workspaces[0].present;
+    assert_eq!(here.len(), 1);
+    assert_eq!(here[0].device, device(1).to_string());
 }
 
 /// The person came to a workspace where people already are: the bar says who is here, once, not on
@@ -452,7 +453,7 @@ fn a_peer_away_is_away_on_the_roster() {
     let people = sync.show(&mut tree, &no_records(), &|_| None);
     assert_eq!(people[0].availability, ui::Availability::Away);
     assert!(people[0].availability.dims());
-    let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+    let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].availability, ui::Availability::Away);
 
@@ -460,7 +461,7 @@ fn a_peer_away_is_away_on_the_roster() {
     heard(&sync, 1, WORKSPACE, away("focusing"));
     let mut tree = desk(WORKSPACE);
     sync.show(&mut tree, &no_records(), &|_| None);
-    let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+    let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows[0].availability, ui::Availability::Focusing);
     assert!(!rows[0].availability.dims());
 }
@@ -524,7 +525,7 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         [(true, false)],
         "the camera this device turned on is what the peer reads"
     );
-    let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
+    let rows = tilo_desktop::people::roster_rows(&tree, "me");
     assert_eq!(rows[0].call.as_deref(), Some("Voice"));
 
     // Out of the call, the peer's roster says nothing of a channel.
@@ -572,7 +573,7 @@ fn a_peer_who_leaves_leaves_the_roster() {
 
     let mut tree = desk(WORKSPACE);
     sync.show(&mut tree, &no_records(), &|_| None);
-    assert!(tree.workspaces[0].collaborators.is_empty());
+    assert!(tree.workspaces[0].members.is_empty());
 }
 
 /// Two relays nobody listens on: this endpoint never has a home relay to be published with, so the
@@ -1264,7 +1265,7 @@ fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
 /// each other's lines as their devices said them.
 #[test]
 fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
-    use tilo_desktop::collaborators::LineSource::{Observed, Written};
+    use tilo_desktop::people::LineSource::{Observed, Written};
 
     let (page_device, desk_device, agent_device) = (0xa0, 0xd0, 0xc0);
     let (page, _page_said) = Client::offline(device(page_device), saying("Ada", 2, None));
@@ -1433,7 +1434,7 @@ fn saying(label: &str, user: u8, status: Option<(&str, bool)>) -> OwnPresence {
 type RosterRow = (
     String,
     bool,
-    Option<(String, tilo_desktop::collaborators::LineSource)>,
+    Option<(String, tilo_desktop::people::LineSource)>,
     (u8, u8, u8),
 );
 

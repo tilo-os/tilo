@@ -314,7 +314,7 @@ mod owner_commit_tests {
         )
         .unwrap();
         events.borrow_mut().push(CollabEvent::Context {
-            collaborators: vec![],
+            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         });

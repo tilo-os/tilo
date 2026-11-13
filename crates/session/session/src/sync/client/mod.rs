@@ -971,7 +971,7 @@ impl Roster {
         let people = self.people(tree, notes, app_name);
         // Whose view this person follows, so the bar keeps that face when it has room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
-        tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
+        tilo_desktop::here::place_here(tree, &people, following.as_deref());
         people
     }
 

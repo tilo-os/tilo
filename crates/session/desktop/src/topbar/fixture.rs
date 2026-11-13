@@ -11,7 +11,7 @@ use std::{
 )]
 pub struct Overlays {
     pub overview: bool,
-    pub collaborators: bool,
+    pub people: bool,
     pub workspace_activity: bool,
     pub ws_settings: bool,
 }
@@ -124,11 +124,11 @@ impl DesktopChromeSource for FixtureChrome {
         state.intents.push(intent.clone());
         match intent {
             ChromeIntent::ToggleOverview => state.overlays.overview = !state.overlays.overview,
-            ChromeIntent::ToggleCollaborators => {
-                state.overlays.collaborators = !state.overlays.collaborators;
+            ChromeIntent::TogglePeople => {
+                state.overlays.people = !state.overlays.people;
             }
             // History opens as a tab the host places; no overlay moves.
-            ChromeIntent::ShowActivity(_) => state.overlays.collaborators = false,
+            ChromeIntent::ShowActivity(_) => state.overlays.people = false,
             ChromeIntent::SwitchWorkspace(delta) => {
                 let Some(index) = state
                     .tree

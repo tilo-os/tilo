@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
-    AppKind, Collaborator, DesktopTree, Strip, StripId, Tab, TileContent, UserId, WindowGroup,
-    WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceId, WorkspaceSlot,
+    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, UserId, WindowGroup, WindowWidth,
+    Workspace, WorkspaceEffectReceipt, WorkspaceId, WorkspaceSlot,
 };
 
 /// The local user every [`TestHost`] answers for.
@@ -115,11 +115,7 @@ impl TestTree {
             focus_history: Vec::new(),
         });
         let mut home = empty_workspace(slot, "Home", vec![strip]);
-        home.collaborators = vec![
-            Collaborator::new("alice", "Alice")
-                .with_cursor_color("#ec4899")
-                .with_role("editor"),
-        ];
+        home.members_here([tilo_desktop_model::Member::keyed("alice", "Alice")]);
         let mut tree = Self {
             desktop: DesktopTree {
                 workspaces: vec![home],
@@ -137,16 +133,10 @@ impl TestTree {
             .iter_mut()
             .find(|workspace| workspace.slot == research)
         {
-            workspace.collaborators.push(
-                Collaborator::new("alice", "Alice")
-                    .with_cursor_color("#ec4899")
-                    .with_role("editor"),
-            );
-            workspace.collaborators.push(
-                Collaborator::new("bob", "Bob")
-                    .with_cursor_color("#f97316")
-                    .with_role("viewer"),
-            );
+            workspace.members_here([
+                tilo_desktop_model::Member::keyed("alice", "Alice"),
+                tilo_desktop_model::Member::keyed("bob", "Bob"),
+            ]);
         }
         tree.append_empty_workspace("Design");
         tree.seed_doc_from_cache();

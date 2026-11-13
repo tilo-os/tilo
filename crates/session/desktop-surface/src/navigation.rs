@@ -618,7 +618,7 @@ pub enum ChromeEffect {
 
     /// Open or close who is here
     #[effect(view, own_device, idempotent)]
-    ToggleCollaborators,
+    TogglePeople,
 
     /// Show a person
     #[effect(view, own_device)]
@@ -1217,7 +1217,7 @@ fn admit_chrome(
         | ChromeEffect::WorkspaceSettings
         | ChromeEffect::Shortcut { .. }
         | ChromeEffect::FixedShortcut { .. }
-        | ChromeEffect::ToggleCollaborators
+        | ChromeEffect::TogglePeople
         | ChromeEffect::ShowStrips
         | ChromeEffect::ShowPerson { .. }
         | ChromeEffect::Overview { .. }

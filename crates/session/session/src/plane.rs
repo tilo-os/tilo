@@ -572,9 +572,9 @@ pub struct DeskAuthority {
     /// whose governance names them by one of those is theirs, and what the broker decides in it is
     /// as theirs.
     names: Names,
-    /// Who is here in each workspace, by the person they are, as presence names and colours them:
-    /// what the broker tells the apps there of each member ([`Self::set_people`]).
-    people: Mutex<std::collections::HashMap<String, Vec<tilo_desktop_model::Collaborator>>>,
+    /// Who is here in each workspace, as presence names and colours them: what the broker tells the
+    /// apps there of each member ([`Self::set_people`]).
+    people: Mutex<std::collections::HashMap<String, Vec<collab_types::Member>>>,
 }
 
 /// Who the person at this device is, as the broker's decisions name them.
@@ -612,7 +612,7 @@ impl DeskAuthority {
     /// every surface here draws them in. The broker tells the apps there, so a person's caret and
     /// marks in a window wear the name and colour of their face on the bar. Nothing is published
     /// while it holds still.
-    pub fn set_people(&self, workspace: &str, people: Vec<tilo_desktop_model::Collaborator>) {
+    pub fn set_people(&self, workspace: &str, people: Vec<collab_types::Member>) {
         {
             let mut held = self.people.lock_recover();
             if held.get(workspace) == Some(&people) {
@@ -631,7 +631,7 @@ impl DeskAuthority {
         let people = self.people.lock_recover();
         for workspace in &mut tree.workspaces {
             if let Some(here) = people.get(&workspace.id().to_string()) {
-                workspace.collaborators.clone_from(here);
+                workspace.members.clone_from(here);
             }
         }
     }

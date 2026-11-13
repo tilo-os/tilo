@@ -226,14 +226,14 @@ mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
     use crate::chrome::ArrivalNotice;
-    use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceSlot};
 
     fn desk() -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
-        workspace.collaborators = vec![
-            Collaborator::new("ada", "Ada Lovelace"),
-            Collaborator::new("bo", "Bo Brave"),
-        ];
+        workspace.members_here(vec![
+            Member::keyed("ada", "Ada Lovelace"),
+            Member::keyed("bo", "Bo Brave"),
+        ]);
         DesktopTree {
             active: workspace.slot,
             workspaces: vec![workspace],

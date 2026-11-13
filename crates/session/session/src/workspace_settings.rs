@@ -12,7 +12,7 @@ use tilo_action_policy::agent_answers::AnswerScope;
 use tilo_action_policy::{Answer, Refusal, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::collaborators::PeopleNames;
+use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{DesktopTree, UserId, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;

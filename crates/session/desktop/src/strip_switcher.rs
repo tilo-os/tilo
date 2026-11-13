@@ -136,24 +136,23 @@ impl SwitcherModel {
         let Some(workspace) = desktop.active_workspace() else {
             return Self::default();
         };
-        let people: Vec<(StripId, Person)> =
-            crate::collaborators::collaborator_roster_rows(desktop, local_user)
-                .into_iter()
-                .filter(|row| !row.invited && !row.own_device && row.id != own_id)
-                .filter(|row| row.id != local_user)
-                .filter_map(|row| {
-                    let strip = strip_of(desktop, &row.id)?;
-                    Some((
-                        strip,
-                        Person {
-                            id: row.id,
-                            label: row.label,
-                            color: row.color,
-                            is_agent: row.is_agent,
-                        },
-                    ))
-                })
-                .collect();
+        let people: Vec<(StripId, Person)> = crate::people::roster_rows(desktop, local_user)
+            .into_iter()
+            .filter(|row| row.id != own_id)
+            .filter(|row| row.id != local_user)
+            .filter_map(|row| {
+                let strip = strip_of(desktop, &row.id)?;
+                Some((
+                    strip,
+                    Person {
+                        id: row.id,
+                        label: row.label,
+                        color: row.color,
+                        is_agent: row.is_agent,
+                    },
+                ))
+            })
+            .collect();
         let several = workspace.strips.len() > 1;
         let strips: Vec<StripEntry> = workspace
             .strips
@@ -196,11 +195,10 @@ impl SwitcherModel {
 fn strip_of(desktop: &DesktopTree, participant_id: &str) -> Option<StripId> {
     let workspace = desktop.active_workspace()?;
     let tab = workspace
-        .collaborators
+        .present
         .iter()
-        .chain(&desktop.collaborators)
-        .find(|participant| participant.id == participant_id)?
-        .active_tab?;
+        .find(|here| here.device == participant_id)?
+        .tab?;
     workspace
         .strips
         .iter()

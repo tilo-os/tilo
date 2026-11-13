@@ -1640,7 +1640,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tilo_desktop_model::{Collaborator, IdMinter, Tab, WindowWidth, Workspace};
+    use tilo_desktop_model::{IdMinter, Member, Tab, WindowWidth, Workspace};
     use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
     use tilo_system_stats::protocol::{CpuStats, MemoryStats, SystemStats, ThermalZone};
     use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
@@ -1688,10 +1688,10 @@ mod tests {
     fn rig_with(people: &[(&str, &str)], prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
         let mut minter = IdMinter::new(7);
         let mut tree = seed_tree(&mut minter, "Desk", Vec::new());
-        tree.collaborators = people
-            .iter()
-            .map(|(id, name)| Collaborator::new(*id, *name))
-            .collect();
+        if let Some(workspace) = tree.workspaces.first_mut() {
+            workspace.members_here(people.iter().map(|(id, name)| Member::keyed(*id, *name)));
+        }
+
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
         rig_over(handle, prefs, source)
     }

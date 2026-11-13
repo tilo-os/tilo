@@ -640,7 +640,7 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
     let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
     assert_eq!(page.rows.len(), 1);
     events.borrow_mut().push(CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     });
@@ -689,7 +689,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         }));
         app.invalidate_widget_resource_cache();
         let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-            collaborators: vec![],
+            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         }]));
@@ -724,7 +724,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
 fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     let mut app = hosted_directory_fixture();
     let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     }]));
@@ -761,7 +761,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
     let mut app = hosted_directory_fixture();
     let first = crate::permissions::UserId("person:m".into());
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
+        members: vec![
             person("person:m", 2_000, true),
             person("person:z", 5_000, false),
         ],
@@ -773,7 +773,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
     assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
 
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
+        members: vec![
             person("person:a", 9_000, false),
             person("person:m", 2_000, true),
             person("person:z", 5_000, false),
@@ -791,7 +791,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
 fn complete_context_replaces_the_people_a_member_list_names() {
     let mut app = hosted_directory_fixture();
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
+        members: vec![
             collab_types::Member::of_person(
                 &collab_types::Person::new("local", "Local person"),
                 None,
@@ -813,7 +813,7 @@ fn complete_context_replaces_the_people_a_member_list_names() {
     );
 
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![
+        members: vec![
             collab_types::Member::of_person(
                 &collab_types::Person::new("local", "Local person"),
                 None,
@@ -830,7 +830,7 @@ fn complete_context_replaces_the_people_a_member_list_names() {
     );
 
     app.apply_collab_event_for_test(CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     });

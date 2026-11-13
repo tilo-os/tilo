@@ -7480,7 +7480,7 @@ fn the_shared_selection_is_the_place_its_actions_read() {
 }
 
 #[test]
-fn collaborator_presence_cannot_escape_the_canvas() {
+fn face_presence_cannot_escape_the_canvas() {
     let mut framed = drawn_focused();
     let framed = editor(&mut framed);
     let block = framed.laid.last().expect("a laid block").clone();

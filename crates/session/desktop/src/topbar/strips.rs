@@ -456,7 +456,7 @@ mod tests {
     use crate::chrome::{DesktopChromeSnapshot, DesktopChromeSource};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilo_desktop_model::{Collaborator, Strip, Tab, TileContent, WindowGroup, WindowWidth};
+    use tilo_desktop_model::{Member, Strip, Tab, TileContent, WindowGroup, WindowWidth};
     use tilo_desktop_model::{Workspace, WorkspaceSlot};
     use ui::headless::Framed;
 
@@ -507,11 +507,11 @@ mod tests {
         let mut quiet = Strip::new(StripId(12), "Quiet");
         quiet.window_groups = vec![group(2)];
         workspace.strips = vec![Strip::new(StripId(10), "Main"), games, quiet];
-        let mut ada = Collaborator::new("ada", "Ada");
-        ada.active_tab = Some(1001);
-        let mut bo = Collaborator::new("bo", "Bo");
-        bo.active_tab = Some(1002);
-        workspace.collaborators = vec![ada, bo];
+        let ada = Member::keyed("ada", "Ada");
+        let bo = Member::keyed("bo", "Bo");
+        workspace.members_here([ada.clone(), bo.clone()]);
+        workspace.present[0].tab = Some(1001);
+        workspace.present[1].tab = Some(1002);
         let mut tree = DesktopTree {
             active: workspace.slot,
             workspaces: vec![workspace],

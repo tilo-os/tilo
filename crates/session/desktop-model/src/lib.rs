@@ -1,6 +1,6 @@
 //! The canonical desktop model shared by every host.
 //!
-//! `Workspace → Strip → WindowGroup → Tab`, plus the collaborators, grants,
+//! `Workspace → Strip → WindowGroup → Tab`, plus the members, grants,
 //! sandbox and receipts a workspace carries. Everything here is plain data
 //! and pure functions over it: no windowing, rendering, transport, async
 //! runtime or host filesystem. Hosts own id minting (see [`IdMinter`]),
@@ -16,7 +16,6 @@ pub mod arrangement;
 pub mod bots;
 pub mod capability;
 pub mod closed_tabs;
-pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
 pub mod first_party;
@@ -29,6 +28,7 @@ pub mod ownership;
 pub mod partition;
 pub mod person_view;
 pub mod personal;
+pub mod present;
 pub mod projection;
 pub mod receipt;
 pub mod serde_ids;
@@ -48,13 +48,14 @@ pub use arrangement::{
 pub use bots::WorkspaceBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
-pub use collaborator::{Collaborator, Status};
+pub use collab_types::{Member, Person, PersonId};
 pub use ids::{
     FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, StripId, TabId,
     TabRef, WorkspaceId, WorkspaceSlot, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
 pub use layout::{Strip, Tab, TileContent, WindowGroup};
 pub use partition::{Display, OutputPartition};
+pub use present::{Present, Status};
 pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};

@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::collaborator::Collaborator;
 use crate::ids::{GroupId, StripId, WorkspaceId, WorkspaceSlot};
 use crate::layout::Tab;
 use crate::partition::OutputPartition;
@@ -62,12 +61,6 @@ pub struct DesktopTree {
     /// Written only by [`DesktopTree::set_fullscreen`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fullscreen: Option<GroupId>,
-    /// Legacy session-wide presence cache. Ordinary chrome must read the
-    /// active workspace's roster instead: a person present elsewhere is not
-    /// present here. Never deserialized, so no stale presence survives a
-    /// reload.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
     /// Mirror of each workspace's record index (record id → kind), pushed by
     /// the host so replication can reach it. Not persisted.
     #[serde(skip, default)]
@@ -92,7 +85,6 @@ impl Default for DesktopTree {
             active_group: HashMap::new(),
             outputs: OutputPartition::default(),
             fullscreen: None,
-            collaborators: Vec::new(),
             workspace_records_held: HashMap::new(),
             salt: 0,
         }

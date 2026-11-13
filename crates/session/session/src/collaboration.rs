@@ -46,11 +46,11 @@ impl Session {
                     .borrow()
                     .persons()
                     .into_iter()
-                    .map(|(id, name, (r, g, b))| tilo_desktop_model::Collaborator {
-                        id,
-                        name,
-                        cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
-                        ..tilo_desktop_model::Collaborator::default()
+                    .map(|(id, name, (r, g, b))| {
+                        let member = collab_types::Person::new(id, name);
+                        let colour = ui::tokens::PresenceHue::nearest_to_srgb(r, g, b)
+                            .unwrap_or(member.colour);
+                        collab_types::Member::of_person(&member.wearing(colour), None)
                     })
                     .collect();
                 plane.desk.set_people(&workspace, people);

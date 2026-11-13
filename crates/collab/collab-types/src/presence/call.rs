@@ -9,13 +9,27 @@
 ///
 /// The session, a page and an app read the same shape: the toolkit re-exports
 /// it (`ui::CallPresence`), so an app names it where it always has.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CallPresence {
     /// Chat's id of the voice channel.
     pub channel: String,
     /// What the channel is called, as the people in it say; empty when
     /// nobody named it.
     pub name: String,
+}
+
+/// Written as the one `call` text presence carries it in.
+impl serde::Serialize for CallPresence {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.encode())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CallPresence {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::decode(&text).ok_or_else(|| serde::de::Error::custom("not a call"))
+    }
 }
 
 impl CallPresence {

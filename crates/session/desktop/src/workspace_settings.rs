@@ -16,6 +16,7 @@ use tilo_sort::CompactSort as _;
 
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
+use collab_types::{Member, MemberId};
 use tilo_desktop_model::{UserId, Workspace};
 
 pub mod agent_access;
@@ -754,10 +755,6 @@ pub fn remove_member(
             edit = edit.and(revoked);
         }
     }
-    // Off the roster too, but only if the removal happened.
-    if !edit.is_empty() {
-        ws.collaborators.retain(|c| c.id != member.as_str());
-    }
     Ok(edit)
 }
 
@@ -801,30 +798,24 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
 
 /// A member by name, numbered when another member here shares it
 /// ([`ui::presence::ParticipantLabels`]), or by a shortened id.
-fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
-    ws.collaborators
+fn member_name_or_short_id(ws: &Workspace, id: &str) -> String {
+    member_named(ws, id).map_or_else(|| short_id(id), |member| member.name.trim().to_owned())
+}
+
+/// The member `id` names, when the workspace's roster holds one: a person by their root key, an
+/// agent or a bot by its key.
+fn member_named<'a>(ws: &'a Workspace, id: &str) -> Option<&'a Member> {
+    let wanted = MemberId::parse(id)?;
+    ws.members
         .iter()
-        .find(|person| person.id == user && !person.name.trim().is_empty())
-        .map_or_else(
-            || short_id(user),
-            |person| {
-                ui::presence::ParticipantLabels::by_joining(ws.collaborators.iter().map(|person| {
-                    (
-                        person.id.as_str(),
-                        person.name.as_str(),
-                        ws.policy.joined_at(&person.id),
-                    )
-                }))
-                .label(user, person.name.trim())
-            },
-        )
+        .find(|member| member.id == wanted && !member.name.trim().is_empty())
 }
 
 /// A member as the People pane names them: as the roster does, the viewer by their own name; only
 /// someone the roster has never seen falls back to the workspace's record of them.
 #[must_use]
 pub fn member_row_name(
-    names: &crate::collaborators::PeopleNames,
+    names: &crate::people::PeopleNames,
     ws: &Workspace,
     local_user: &str,
     id: &str,
@@ -838,10 +829,7 @@ pub fn member_row_name(
 /// viewer included; the viewer by the name this device knows them by when the workspace has none;
 /// else a shortened id.
 fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
-    let known = ws
-        .collaborators
-        .iter()
-        .any(|person| person.id == id && !person.name.trim().is_empty());
+    let known = member_named(ws, id).is_some();
     if id == local_user
         && !known
         && let Some(name) = ui::local_identity::bound()
@@ -1102,7 +1090,7 @@ mod members_tests {
 
     #[test]
     fn people_are_named_as_the_roster_names_them() {
-        use crate::collaborators::{PeopleNames, collaborator_roster_rows_named};
+        use crate::people::{PeopleNames, roster_rows_named};
         let owner_key = "fa4834147f".repeat(6) + "0123";
         let mut ws = Workspace::new(WorkspaceSlot::from(9), "Studio");
         ws.set_owner(owner_key.as_str());
@@ -1111,14 +1099,15 @@ mod members_tests {
                 .is_ok_and(|edit| !edit.is_empty())
         );
         // The roster knows Ada from presence; the workspace's own record of her has no name.
+        let mut listed = ws.clone();
+        listed.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
         let desktop = tilo_desktop_model::DesktopTree {
-            active: ws.slot,
-            workspaces: vec![ws.clone()],
-            collaborators: vec![tilo_desktop_model::Collaborator::new("ada", "Ada")],
+            active: listed.slot,
+            workspaces: vec![listed],
             ..tilo_desktop_model::DesktopTree::default()
         };
         let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
-        let (roster, own) = collaborator_roster_rows_named(&desktop, &owner_key, Some("Robin"));
+        let (roster, own) = roster_rows_named(&desktop, &owner_key, Some("Robin"));
         let roster_ada = roster
             .iter()
             .find(|row| row.id == "ada")
@@ -1598,12 +1587,10 @@ mod permissions_tests {
             let bea = "be".repeat(32);
             let mut ws = Workspace::new(WorkspaceSlot::from(5), "names");
             ws.set_owner(&ada);
-            ws.collaborators.push(tilo_desktop_model::Collaborator::new(
-                ada.clone(),
-                "Ada Lovelace",
-            ));
-            ws.collaborators
-                .push(tilo_desktop_model::Collaborator::new(bea.clone(), "Bea"));
+            ws.members_here([
+                tilo_desktop_model::Member::keyed(&ada, "Ada Lovelace"),
+                tilo_desktop_model::Member::keyed(&bea, "Bea"),
+            ]);
             ws.grant_as(
                 &ada,
                 CapOverride::grant(

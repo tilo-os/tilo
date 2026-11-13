@@ -112,7 +112,7 @@ impl TopBarChrome {
             // answer never stands under one. On a phone the answer stood under the one face the
             // bar shows, and a press meant for that face's card answered the ask instead.
             let edge = f64::from(theme.tokens.spacing.s2);
-            let people = self.collaborators_rect();
+            let people = self.roster_rect();
             let band_right = [self.own_avatar_rect, people]
                 .into_iter()
                 .filter(|rect| !rect.is_zero_area())
@@ -689,10 +689,10 @@ mod tests {
     #[test]
     fn the_open_ask_never_stands_over_the_faces_or_the_people_button() {
         let mut crowded = tree();
-        crowded.workspaces[0].collaborators = vec![
-            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
-            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
-        ];
+        crowded.workspaces[0].members_here(vec![
+            tilo_desktop_model::Member::keyed("agent:claude", "Claude Code"),
+            tilo_desktop_model::Member::keyed("ada", "Ada Lovelace"),
+        ]);
         for viewport in [(1280, 800), (1024, 768), (720, 900), (390, 844), (360, 780)] {
             let (frame, _) = asking_desktop_over(viewport, &crowded);
             let bar = frame.bar();
@@ -711,7 +711,7 @@ mod tests {
                 ("own avatar", bar.own_avatar_rect),
             ];
             assert!(
-                !bar.collaborators_rect().is_zero_area(),
+                !bar.roster_rect().is_zero_area(),
                 "{viewport:?}: who is here stands on the bar"
             );
             // The clock and the bar's right side stand apart: the faces that do not fit join the
@@ -751,9 +751,9 @@ mod tests {
     #[test]
     fn a_phones_face_opens_its_card_with_an_ask_open() {
         let mut here = tree();
-        let mut agent = tilo_desktop_model::Collaborator::new("agent", "Claude Code");
-        agent.role_id = Some("agent".into());
-        here.workspaces[0].collaborators = vec![agent];
+        let agent = tilo_desktop_model::Member::keyed("agent:claude", "Claude Code");
+        here.workspaces[0].member_here(agent);
+        here.workspaces[0].present[0].device = "claude".into();
         for viewport in [(390, 844), (360, 780)] {
             let (mut frame, host) = asking_desktop_over(viewport, &here);
             *host.ask.borrow_mut() = Some(AvatarAsk {
@@ -765,7 +765,7 @@ mod tests {
             settle(&mut frame);
             let face = frame
                 .bar()
-                .face_rect("agent")
+                .face_rect("claude")
                 .expect("the agent's face stands on the bar");
             let answer = frame.bar().avatar_ask_answer_rect();
             assert!(
@@ -777,7 +777,7 @@ mod tests {
             // The press folds the ask, as a press anywhere else does, and reaches the face.
             let asked = host.intents.borrow().clone();
             assert!(
-                asked.contains(&ChromeIntent::ShowPerson("agent".into()))
+                asked.contains(&ChromeIntent::ShowPerson("claude".into()))
                     && !asked.contains(&ChromeIntent::AnswerAvatarAsk),
                 "{viewport:?}: the face opens the agent's card, never the ask's answer: {asked:?}"
             );
@@ -789,9 +789,9 @@ mod tests {
     #[test]
     fn the_open_ask_never_stands_in_the_following_banner() {
         let mut followed = tree();
-        let mut agent = tilo_desktop_model::Collaborator::new("agent", "Claude Code");
-        agent.following = true;
-        followed.workspaces[0].collaborators = vec![agent];
+        let agent = tilo_desktop_model::Member::keyed("agent:claude", "Claude Code");
+        followed.workspaces[0].member_here(agent);
+        followed.workspaces[0].present[0].followed = true;
         for viewport in [(1280, 800), (1024, 768), (390, 844)] {
             let (frame, _) = asking_desktop_over(viewport, &followed);
             let bar = frame.bar();
@@ -838,10 +838,10 @@ mod tests {
     #[test]
     fn the_open_ask_stays_in_the_bar_band() {
         let mut crowded = tree();
-        crowded.workspaces[0].collaborators = vec![
-            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
-            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
-        ];
+        crowded.workspaces[0].members_here(vec![
+            tilo_desktop_model::Member::keyed("agent:claude", "Claude Code"),
+            tilo_desktop_model::Member::keyed("ada", "Ada Lovelace"),
+        ]);
         for viewport in [
             (1920, 1080),
             (1440, 900),
@@ -889,10 +889,10 @@ mod tests {
         use ui::widget::floating_surface::{PanelAlign, PopoverSide, panel_room, place_aligned};
 
         let mut crowded = tree();
-        crowded.workspaces[0].collaborators = vec![
-            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
-            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
-        ];
+        crowded.workspaces[0].members_here(vec![
+            tilo_desktop_model::Member::keyed("agent:claude", "Claude Code"),
+            tilo_desktop_model::Member::keyed("ada", "Ada Lovelace"),
+        ]);
         let theme = Theme::dark();
         let gap = f64::from(theme.tokens.spacing.s1);
         for viewport in [(1280, 800), (720, 900), (390, 844)] {

@@ -73,7 +73,10 @@ impl PresencePayload {
 /// How available a person says they are, beside their face. Emoji-free
 /// presets; idle and away also come on their own (no input for
 /// [`IDLE_AFTER`], a locked screen).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Availability {
     /// Here and open to being talked to.
     #[default]

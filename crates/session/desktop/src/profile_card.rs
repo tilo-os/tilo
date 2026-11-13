@@ -152,7 +152,7 @@ pub struct OtherPerson {
     pub id: String,
     /// What they are doing: their own words, or a line software wrote,
     /// which the card marks as automatic.
-    pub status: Option<crate::collaborators::RosterStatus>,
+    pub status: Option<crate::people::RosterStatus>,
     /// Where they are ("In Chat"), when it adds to the status.
     pub place: Option<String>,
     /// How they said they are here; `None` for an agent, which says nothing of it.
@@ -782,8 +782,8 @@ impl ProfileCard {
 
     /// What someone says they are doing: their own words plainly, a line software wrote marked as
     /// automatic.
-    fn status_row(status: &crate::collaborators::RosterStatus) -> Box<dyn Widget> {
-        let written = status.source == crate::collaborators::LineSource::Written;
+    fn status_row(status: &crate::people::RosterStatus) -> Box<dyn Widget> {
+        let written = status.source == crate::people::LineSource::Written;
         let row = ListRow::new("profile-other-status", status.text.clone()).two_line_title();
         Box::new(if written {
             row.secondary(t("profile-status-own-words"))
@@ -850,7 +850,7 @@ impl ProfileCard {
     /// The card's way out to the people here: the roster in its place.
     fn everyone_here(&self) -> Button {
         let chosen = Rc::clone(&self.chosen);
-        Button::new("profile-everyone-here", &t("topbar-show-collaborators"))
+        Button::new("profile-everyone-here", &t("topbar-show-people"))
             .with_icon(Icon::Users)
             .role(ButtonRole::Plain)
             .on_effect(move || {

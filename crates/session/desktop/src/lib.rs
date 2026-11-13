@@ -13,7 +13,6 @@
 pub mod about;
 pub mod authority;
 pub mod backdrop;
-pub mod collaborators;
 pub mod control_hints;
 pub mod desk_edges;
 pub mod desk_verbs;
@@ -33,6 +32,7 @@ pub mod overview;
 pub mod overview_panel;
 pub mod overview_picture;
 pub mod overview_tilo;
+pub mod people;
 pub mod profile_card;
 pub mod records;
 pub mod resolver;

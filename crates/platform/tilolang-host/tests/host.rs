@@ -2770,7 +2770,7 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
             );
             collaboration::history_source::authors::set_names_language("de-DE");
             inbox.borrow_mut().push_back(CollabEvent::Context {
-                collaborators: Vec::new(),
+                members: Vec::new(),
                 permissions: Vec::new(),
                 apps: vec![collab_types::history::NamedApp {
                     id: "so.tilo.lang.today".to_owned(),

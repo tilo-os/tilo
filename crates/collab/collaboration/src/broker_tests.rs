@@ -265,7 +265,7 @@ pub struct SeedPresence {
 
 #[derive(Clone)]
 pub struct SeedContext {
-    collaborators: Vec<Member>,
+    members: Vec<Member>,
     permissions: Vec<String>,
 }
 
@@ -654,7 +654,7 @@ impl FakeHost {
                 Box::pin(async move {
                     for seed in backlog {
                         feed.send(Event::Context(ContextUpdate::Snapshot {
-                            collaborators: seed.collaborators,
+                            members: seed.members,
                             permissions: seed.permissions,
                             apps: Vec::new(),
                         }));
@@ -5436,7 +5436,7 @@ fn sdk_streams_translate_to_ui_events() {
     {
         let broker = FakeBroker {
             context_backlog: vec![SeedContext {
-                collaborators: vec![
+                members: vec![
                     collab_types::Member::of_person(
                         &collab_types::Person::new("alice", "Alice")
                             .wearing(collab_types::presence::PresenceHue::Orange),
@@ -5463,10 +5463,10 @@ fn sdk_streams_translate_to_ui_events() {
             .iter()
             .filter_map(|e| match e {
                 CollabEvent::Context {
-                    collaborators,
+                    members,
                     permissions,
                     ..
-                } => Some((collaborators.clone(), permissions.clone())),
+                } => Some((members.clone(), permissions.clone())),
                 _ => None,
             })
             .collect::<Vec<_>>();

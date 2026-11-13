@@ -347,7 +347,7 @@ pub struct ChatApp {
     /// The chrome metrics of the last painted theme.
     pub(crate) chrome: Chrome,
     /// Local text preference also changes usable layout width; it is never
-    /// shared with collaborators.
+    /// shared with members.
     pub(crate) layout_text_scale: f32,
 
     // The local peer's identity: how this peer authors messages, reactions,

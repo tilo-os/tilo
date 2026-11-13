@@ -6967,10 +6967,10 @@ impl AppBrokerState {
                 payload,
             } => Self::fanout_presence_update(channels, except, user_id, key, payload),
             CollabEvent::Context {
-                collaborators,
+                members,
                 permissions,
                 apps,
-            } => Self::fanout_context(channels, except, collaborators, permissions, apps),
+            } => Self::fanout_context(channels, except, members, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
@@ -7116,12 +7116,12 @@ impl AppBrokerState {
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        collaborators: &[ui::collaboration::Member],
+        members: &[ui::collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
     ) {
         let env = ContextUpdate::Snapshot {
-            collaborators: collaborators.to_vec(),
+            members: members.to_vec(),
             permissions: permissions.to_vec(),
             apps: apps.to_vec(),
         };
@@ -7217,7 +7217,7 @@ impl AppBrokerState {
         let apps = self.installed_apps();
         if let Some(native) = native.as_ref() {
             let _ = tx.send(ContextUpdate::Snapshot {
-                collaborators: native.roster.clone(),
+                members: native.roster.clone(),
                 permissions: Vec::new(),
                 apps: apps.clone(),
             });
@@ -7306,11 +7306,12 @@ impl AppBrokerState {
                     .map(|(person, _)| person)
                     .filter(|person| !workspace.is_blocked(person))
                     .map(|person| {
+                        let wanted = collab_types::MemberId::person(person.clone());
                         let name = workspace
-                            .collaborators
+                            .members
                             .iter()
-                            .find(|row| row.id == person)
-                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                            .find(|member| member.id == wanted)
+                            .map_or_else(|| person.clone(), |member| member.name.clone());
                         (person, name)
                     })
                     .collect();
@@ -7373,18 +7374,16 @@ impl AppBrokerState {
                 let people = people
                     .into_iter()
                     .map(|(person, role)| {
-                        let row = workspace.collaborators.iter().find(|row| row.id == person);
+                        let row = workspace.members.iter().find(|member| {
+                            member.id == collab_types::MemberId::person(person.clone())
+                        });
                         // Someone presence has not named is unnamed here, never named by their
                         // key: an app calls them as it calls anyone it has no name for.
                         let name = row.map_or_else(String::new, |row| row.name.clone());
-                        // The colour presence draws them in: the one they chose, else the one
+                        // The colour their member row stores: the one they chose, else the one
                         // their identity derives.
                         let colour = row
-                            .and_then(|row| row.cursor_color.as_deref())
-                            .and_then(ui::presence::parse_hex_color)
-                            .and_then(|(red, green, blue)| {
-                                ui::tokens::PresenceHue::nearest_to_srgb(red, green, blue)
-                            })
+                            .map(|row| row.colour)
                             .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&person));
                         let mut member = collab_types::Member::of_person(
                             &collab_types::Person::new(person.clone(), name).wearing(colour),
@@ -7402,13 +7401,13 @@ impl AppBrokerState {
             .clone()
             .unwrap_or_else(|| admitted.principal_id.clone());
         let mut mine: Option<collab_types::Member> = None;
-        let mut collaborators =
+        let mut members =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
         for row in people {
             if row.id == self_id {
                 mine = Some(row);
             } else {
-                collaborators.push(row);
+                members.push(row);
             }
         }
         for (agent, keeper) in agents {
@@ -7423,7 +7422,7 @@ impl AppBrokerState {
             if row.id == self_id {
                 mine = Some(row);
             } else {
-                collaborators.push(row);
+                members.push(row);
             }
         }
         let mut me = mine.unwrap_or_else(|| {
@@ -7433,12 +7432,12 @@ impl AppBrokerState {
             )
         });
         me.name = self_name;
-        collaborators.push(me.claiming_self());
-        collaborators.extend(task_agents::self_row(admitted));
-        if collaborators.iter().filter(|row| row.is_self).count() != 1 {
+        members.push(me.claiming_self());
+        members.extend(task_agents::self_row(admitted));
+        if members.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());
         }
-        Ok(collaborators)
+        Ok(members)
     }
 
     /// Complete certified membership currently backing native Context
@@ -7726,7 +7725,7 @@ impl AppBrokerState {
                 if subscriber
                     .tx
                     .send(ContextUpdate::Snapshot {
-                        collaborators: roster.clone(),
+                        members: roster.clone(),
                         permissions: Vec::new(),
                         apps: apps.clone(),
                     })
@@ -13489,55 +13488,55 @@ pub mod tests {
             parallel.try_recv().is_err(),
             "app context must not replace a parallel authenticated native roster"
         );
-        let ContextUpdate::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = ordinary.try_recv().unwrap() else {
             panic!("ordinary context subscribers still receive app context");
         };
-        assert_eq!(collaborators.len(), 1);
-        assert_eq!(collaborators[0], forged);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0], forged);
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
-        let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
             panic!("membership refresh must be a complete snapshot");
         };
         assert!(
-            collaborators
+            members
                 .iter()
                 .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
         );
         assert!(
-            collaborators
+            members
                 .iter()
                 .all(|row| row.id != collab_types::MemberId::person(other_person))
         );
         assert!(
-            collaborators
+            members
                 .iter()
                 .any(|row| row.id == collab_types::MemberId::person(person.clone()) && row.is_self)
         );
-        let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership removal");
         };
         assert!(
-            collaborators
+            members
                 .iter()
                 .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
         );
         membership.write().workspaces[0].allow_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
-        let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
             panic!("membership addition must be a complete snapshot");
         };
         assert!(
-            collaborators
+            members
                 .iter()
                 .any(|row| row.id == collab_types::MemberId::agent(reed))
         );
-        let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership addition");
         };
         assert!(
-            collaborators
+            members
                 .iter()
                 .any(|row| row.id == collab_types::MemberId::agent("reed"))
         );

@@ -6234,7 +6234,7 @@ mod tests {
     }
 
     #[test]
-    fn pill_fills_distinguish_state_tier_and_collaborator_presence() {
+    fn pill_fills_distinguish_state_tier_and_face_presence() {
         {
             use crate::a11y::relative_luminance;
             for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {

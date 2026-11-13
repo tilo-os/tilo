@@ -232,7 +232,7 @@ impl ChromeSource for PageChrome {
         // Whom this page follows, as its own presence says: the bar keeps that face when it has
         // room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
-        tilo_desktop::here::overlay_collaborators(tree, &people, following.as_deref());
+        tilo_desktop::here::place_here(tree, &people, following.as_deref());
     }
 
     fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R {
@@ -1211,7 +1211,7 @@ impl BrowserShell {
             }
             // The bar's faces open who is here: the session's own roster, in the bar's own
             // place over the desk.
-            ChromeIntent::ToggleCollaborators => {
+            ChromeIntent::TogglePeople => {
                 self.close_bar_popovers_except(BarPopover::Chrome);
                 if !self.top.menu_open() {
                     self.people.borrow().toggle();

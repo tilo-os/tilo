@@ -17,7 +17,7 @@ use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
 };
-use tilo_desktop::collaborators::PeopleNames;
+use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{DesktopTree, UserId, Workspace};
 use tilo_desktop_surface::i18n::{t, t_args};

@@ -75,6 +75,7 @@ mod tests {
             automatic: false,
             place: None,
             user: None,
+            member: None,
             wave: None,
             layout: None,
             following: following.map(str::to_owned),
@@ -88,6 +89,7 @@ mod tests {
         Person {
             id: id.into(),
             user: None,
+            member: None,
             label: id.to_uppercase(),
             devices: Vec::new(),
             rgb: (1, 2, 3),

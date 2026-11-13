@@ -435,7 +435,7 @@ pub struct StoreState {
     /// catalogue changes so a keystroke only searches.
     search_index: std::sync::Arc<ui::search::ListIndex>,
     /// The part of the catalogue that shows. Kept locally: browsing one
-    /// catalogue must not navigate collaborators.
+    /// catalogue must not navigate members.
     view: View,
     home: Option<Home>,
     shown: usize,

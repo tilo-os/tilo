@@ -40,8 +40,8 @@ impl TopBarChrome {
         if !self.bell.only {
             controls.push(Self::CONTROL_QUICK_SETTINGS.to_string());
         }
-        if self.collaborators_visible() {
-            controls.push(Self::CONTROL_COLLABORATORS.to_string());
+        if self.roster_visible() {
+            controls.push(Self::CONTROL_PEOPLE.to_string());
         }
         if !self.invite_rect.is_zero_area() {
             controls.push(Self::CONTROL_INVITE.to_string());
@@ -81,7 +81,7 @@ impl TopBarChrome {
             Self::CONTROL_INVITE => self.invite_rect,
             // Who is here, as one control: the faces (each opening its person in the panel, the
             // badge everyone), or the people button where no face had room.
-            Self::CONTROL_COLLABORATORS => {
+            Self::CONTROL_PEOPLE => {
                 let people = if self.people_button_rect.is_zero_area() {
                     self.avatar_stack_rect
                 } else {
@@ -170,11 +170,11 @@ impl TopBarChrome {
                 .unwrap_or_else(|| t("topbar-open-notifications")),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_INVITE => t("topbar-invite"),
-            Self::CONTROL_COLLABORATORS => {
+            Self::CONTROL_PEOPLE => {
                 let named = self.sharing_viewers();
                 let watching = self.watching();
                 let name = if named.is_empty() {
-                    t("topbar-show-collaborators")
+                    t("topbar-show-people")
                 } else {
                     let viewers = named
                         .iter()
@@ -209,10 +209,7 @@ impl TopBarChrome {
                         })
                         .collect::<Vec<_>>()
                         .join("; ");
-                    t_args(
-                        "topbar-collaborators-visible",
-                        &[("viewers", viewers.into())],
-                    )
+                    t_args("topbar-people-visible", &[("viewers", viewers.into())])
                 };
                 if watching == 0 {
                     name
@@ -399,7 +396,7 @@ impl TopBarChrome {
             Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
             Self::CONTROL_NOTIFICATIONS => ChromeIntent::ToggleNotifications,
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
-            Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,
+            Self::CONTROL_PEOPLE => ChromeIntent::TogglePeople,
             Self::CONTROL_INVITE => ChromeIntent::Invite,
             _ => return false,
         };

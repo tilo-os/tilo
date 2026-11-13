@@ -1995,7 +1995,7 @@ impl DesktopChrome {
                 delta: Some(delta), ..
             } => ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default()),
             ChromeEffect::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
-            ChromeEffect::ToggleCollaborators => ChromeIntent::ToggleCollaborators,
+            ChromeEffect::TogglePeople => ChromeIntent::TogglePeople,
             ChromeEffect::ShowStrips => ChromeIntent::ShowStrips,
             ChromeEffect::StepStrip { steps } => {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());

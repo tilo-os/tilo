@@ -13,8 +13,6 @@ pub mod apps;
 pub mod capability;
 #[path = "closed_tabs.rs"]
 pub mod closed_tabs;
-#[path = "collaborator.rs"]
-pub mod collaborator;
 #[path = "commands.rs"]
 pub mod commands;
 #[path = "desktop_doc.rs"]

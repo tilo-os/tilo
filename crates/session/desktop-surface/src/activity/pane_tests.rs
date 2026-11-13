@@ -1725,12 +1725,8 @@ mod tests {
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_workspace();
-        tree.desktop
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new(
-                "ghost",
-                "Never Edited",
-            ));
+        tree.desktop.workspaces[0]
+            .member_here(tilo_desktop_model::Member::keyed("ghost", "Never Edited"));
         let pane = pane_over(&mut tree);
         assert!(
             !pane.contributors.iter().any(|c| c == "Never Edited"),

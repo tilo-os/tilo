@@ -48,7 +48,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         read: C::CommittedRead,
     },
     Context {
-        collaborators: Vec<Member>,
+        members: Vec<Member>,
         permissions: Vec<String>,
         /// What each app installed on this device is called, in each language
         /// its package names it in: what a history row names another app's

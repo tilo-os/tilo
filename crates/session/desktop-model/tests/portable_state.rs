@@ -23,10 +23,10 @@ fn persisted_tree() -> DesktopTree {
                         {"id": 9_007_199_254_741_001_u64, "title": "Draft", "tile": {"AppPlaceholder": {"kind": {"Other": "Word"}, "label": "Writer"}}}
                     ]
                 }]
-            }], "collaborators": [{"id":"stale", "name":"Stale"}]
+            }], "members": [{"id":"stale", "name":"Stale"}]
         }, {"id":20,"room":"0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d","name":"Other","strips":[]}],
         "active": 10, "active_strip": {"10":11},
-        "collaborators": [{"id":"stale", "name":"Stale"}]
+        "present": [{"member":"stale", "device":"stale"}]
     })).unwrap()
 }
 
@@ -38,8 +38,8 @@ fn persisted_state_preserves_ids_defaults_and_record_binding() {
         tree.workspaces[0].id().to_string(),
         "6f1c2d9e-4b3a-4e8f-9a7b-1c2d3e4f5a6b"
     );
-    assert!(tree.workspaces[0].collaborators.is_empty());
-    assert!(tree.collaborators.is_empty());
+    assert!(tree.workspaces[0].members.is_empty());
+    assert!(tree.workspaces[0].present.is_empty());
     let group = &tree.workspaces[0].strips[0].window_groups[0];
     assert_eq!(group.width, WindowWidth::Fraction(500));
     assert!(!group.maximized);

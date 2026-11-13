@@ -17,11 +17,12 @@ use tilo_action_policy::{
 use crate::app::AppId;
 use crate::arrangement::Arrangement;
 use crate::capability::Capability;
-use crate::collaborator::Collaborator;
 use crate::ids::{WorkspaceId, WorkspaceSlot};
 use crate::layout::Strip;
+use crate::present::Present;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
+use collab_types::Member;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspace")]
@@ -45,14 +46,20 @@ pub struct Workspace {
     /// 2D surface ([`crate::arrangement`]).
     #[serde(default, skip_serializing_if = "Arrangement::is_default")]
     pub arrangement: Arrangement,
-    /// Who is in this workspace *right now*, asserted present by a
-    /// verified invite or presence frame — not durable membership, which
-    /// is [`Workspace::policy`].
+    /// The workspace's members: its people with their roles, the agents
+    /// admitted in it and its bots, each with the colour it wears everywhere.
+    /// Placed from [`Workspace::policy`] and presence before a surface reads
+    /// them; never read back from a stored workspace.
     /// `skip_deserializing` rather than `skip`: reading is the direction
-    /// that can fabricate a stale person, but `Serialize` still feeds the
+    /// that can fabricate a stale member, but `Serialize` still feeds the
     /// control socket's state dump.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
+    #[serde(skip_deserializing, default)]
+    pub members: Vec<Member>,
+    /// How each of them is here now: where they are, what they say they are
+    /// doing, how available they are. Said again on every frame and never
+    /// written: presence, not the workspace's document.
+    #[serde(skip, default)]
+    pub present: Vec<Present>,
     /// Who may do what in this workspace: its owner (structural, `None` until the
     /// local user adopts it on load), each member's role preset, and every
     /// grant on the workspace's tree. Changed only through governance actions.
@@ -116,8 +123,8 @@ struct StoredWorkspace {
     strips: Vec<Strip>,
     #[serde(default)]
     arrangement: Arrangement,
-    #[serde(skip_deserializing)]
-    collaborators: Vec<Collaborator>,
+    #[serde(skip_deserializing, default)]
+    members: Vec<Member>,
     #[serde(default)]
     policy: Option<WorkspacePolicy>,
     #[serde(default)]
@@ -152,7 +159,8 @@ impl From<StoredWorkspace> for Workspace {
             name: stored.name,
             strips: stored.strips,
             arrangement: stored.arrangement,
-            collaborators: stored.collaborators,
+            members: stored.members,
+            present: Vec::new(),
             policy,
             sandbox: stored.sandbox,
             presets: stored.presets,
@@ -649,6 +657,47 @@ impl Workspace {
         })
     }
 
+    /// `member` joins this workspace's member list: what a host places from its governance and
+    /// presence before a surface reads who is in the workspace. A member already listed keeps
+    /// their place.
+    pub fn list_member(&mut self, member: Member) {
+        match self
+            .members
+            .iter_mut()
+            .find(|listed| listed.id == member.id)
+        {
+            Some(listed) => *listed = member,
+            None => self.members.push(member),
+        }
+    }
+
+    /// `here` is `member`'s presence now, replacing what was said of them before.
+    pub fn place_presence(&mut self, here: Present) {
+        match self
+            .present
+            .iter_mut()
+            .find(|placed| placed.member == here.member)
+        {
+            Some(placed) => *placed = here,
+            None => self.present.push(here),
+        }
+    }
+
+    /// `members` join this workspace's member list, each of them here now saying nothing of
+    /// themselves.
+    pub fn members_here(&mut self, members: impl IntoIterator<Item = Member>) {
+        for member in members {
+            self.member_here(member);
+        }
+    }
+
+    /// `member` is one of this workspace's members and is here now, saying nothing of themselves
+    /// yet: what a host places for someone presence named before the roster listed them.
+    pub fn member_here(&mut self, member: Member) {
+        self.place_presence(Present::of(member.id.clone()));
+        self.list_member(member);
+    }
+
     /// The workspace roster: the owner first, then the members by id.
     #[must_use]
     pub fn roster(&self) -> Vec<(UserId, Role)> {
@@ -942,7 +991,8 @@ impl Workspace {
             name: name.into(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
-            collaborators: Vec::new(),
+            members: Vec::new(),
+            present: Vec::new(),
             policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
@@ -970,7 +1020,8 @@ impl Workspace {
             name,
             strips: _,
             arrangement: _,
-            collaborators,
+            members,
+            present,
             policy,
             sandbox,
             presets,
@@ -988,7 +1039,8 @@ impl Workspace {
             name: name.clone(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
-            collaborators: collaborators.clone(),
+            members: members.clone(),
+            present: present.clone(),
             policy: policy.clone(),
             sandbox: sandbox.clone(),
             presets: presets.clone(),
@@ -1041,7 +1093,8 @@ impl Default for Workspace {
             name: String::new(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
-            collaborators: Vec::new(),
+            members: Vec::new(),
+            present: Vec::new(),
             policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),

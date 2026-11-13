@@ -20,8 +20,8 @@ use ui::time::{Duration, Instant};
 use ui::tokens::{EffectiveMotion, MotionSource};
 use ui::widget::{Button, ButtonFace, ButtonRole};
 
-use crate::collaborators::RosterRow;
 use crate::i18n::{t, t_args};
+use crate::people::RosterRow;
 
 /// How long "Stopped following" stays after the person's own input ended following.
 pub const STOPPED_FOR: Duration = Duration::from_secs(1);

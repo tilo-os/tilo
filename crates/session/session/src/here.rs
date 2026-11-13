@@ -1,5 +1,5 @@
-//! Who is here, and where: the people a workspace's collaborators name, the window each is in, and
-//! the calls in progress in its workspace. This is what the empty launcher lists first.
+//! Who is here, and where: the members a workspace lists, the window each is in, and the calls in
+//! progress in its workspace. This is what the empty launcher lists first.
 
 #![cfg_attr(
     target_arch = "wasm32",
@@ -11,9 +11,8 @@ use tilo_desktop_search::providers::happening::{CallHere, PersonHere, WindowHere
 use crate::Shared;
 
 impl Shared {
-    /// Who is in each workspace now, and the calls in progress there, as the desk's collaborators
-    /// and the presence say: what the empty palette lists first, by workspace, the one in front
-    /// first.
+    /// Who is in each workspace now, and the calls in progress there, as the desk's member list and
+    /// the presence say: what the empty palette lists first, by workspace, the one in front first.
     pub(crate) fn here_now(&self) -> Vec<WorkspaceHere> {
         let calls = self
             .sync
@@ -21,37 +20,30 @@ impl Shared {
             .map(|sync| sync.calls())
             .unwrap_or_default();
         let joined = self.calls_this_person_is_in();
-        let now = tilo_clock::unix_now();
         self.handle.read(|tree| {
             let mut workspaces: Vec<WorkspaceHere> = tree
                 .workspaces
                 .iter()
                 .map(|workspace| {
                     let workspace_id = workspace.id().to_string();
-                    let here_person = |person: &tilo_desktop_model::Collaborator| PersonHere {
-                        id: person.id.clone(),
-                        name: person.name.clone(),
-                        colour: person
-                            .cursor_color
-                            .as_deref()
-                            .and_then(ui::presence::parse_hex_color)
-                            .unwrap_or_else(|| ui::presence::user_color(&person.id)),
-                        agent: tilo_desktop::collaborators::collaborator_is_agent(
-                            Some(workspace),
-                            person,
-                            now,
-                        ),
-                        // Idle and away dim their face everywhere else; the launcher says it in
-                        // words.
-                        away: away(person),
-                        tab: person.active_tab,
+                    let here_person = |member: &collab_types::Member| {
+                        let here = workspace
+                            .present
+                            .iter()
+                            .find(|here| here.member == member.id);
+                        PersonHere {
+                            id: here.map_or_else(|| member.id.key(), |here| here.device.clone()),
+                            name: member.name.clone(),
+                            colour: collab_types::presence::identity_rgb(member.colour),
+                            agent: !member.id.is_person(),
+                            // Idle and away dim their face everywhere else; the launcher says it
+                            // in words.
+                            away: here.is_some_and(away),
+                            tab: here.and_then(|here| here.tab),
+                        }
                     };
-                    let mut people: Vec<PersonHere> = workspace
-                        .collaborators
-                        .iter()
-                        .filter(|person| !person.invited && !person.own_device)
-                        .map(&here_person)
-                        .collect();
+                    let mut people: Vec<PersonHere> =
+                        workspace.members.iter().map(&here_person).collect();
                     people.sort_by_key(|person| person.agent);
                     let mut windows: Vec<WindowHere> = Vec::new();
                     for person in people.iter().filter(|person| person.tab.is_some()) {
@@ -83,9 +75,15 @@ impl Shared {
                                     // Who they are on the desk, when it lists them: the same face
                                     // and name.
                                     workspace
-                                        .collaborators
+                                        .present
                                         .iter()
-                                        .find(|person| person.id == caller.id)
+                                        .find(|here| here.device == caller.id)
+                                        .and_then(|here| {
+                                            workspace
+                                                .members
+                                                .iter()
+                                                .find(|member| member.id == here.member)
+                                        })
                                         .map_or_else(
                                             || PersonHere {
                                                 id: caller.id.clone(),
@@ -136,12 +134,8 @@ impl Shared {
 
 /// Whether the desk's row for someone says they are away from their machine: what dims their face,
 /// and what the launcher says in words.
-fn away(person: &tilo_desktop_model::Collaborator) -> bool {
-    person
-        .availability
-        .as_deref()
-        .and_then(ui::Availability::from_id)
-        .is_some_and(ui::Availability::dims)
+fn away(here: &tilo_desktop_model::Present) -> bool {
+    here.availability.dims()
 }
 
 /// What window `tab` of `workspace` is called, when the workspace shows it.

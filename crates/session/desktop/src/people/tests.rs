@@ -1,5 +1,5 @@
 use super::*;
-use tilo_desktop_model::{Collaborator, DesktopTree};
+use tilo_desktop_model::{DesktopTree, Member, Present};
 
 /// Everything a reader is told of `node` and its children: names and descriptions both.
 fn spoken(node: &ui::a11y::AccessNode, said: &mut Vec<String>) {
@@ -22,7 +22,6 @@ fn row(id: &str, label: &str) -> RosterRow {
         is_agent: false,
         is_bot: false,
         role: None,
-        invited: false,
         activity: Some(format!("Viewing {label}'s notes")),
         working_in: None,
         working_app: None,
@@ -32,7 +31,6 @@ fn row(id: &str, label: &str) -> RosterRow {
         availability: ui::Availability::Available,
         call: None,
         join: None,
-        own_device: false,
     }
 }
 
@@ -50,22 +48,17 @@ fn screen(app: &str) -> Screen {
     }
 }
 
-fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], expanded: Option<&str>) {
+fn paint(overlay: &mut PeopleOverlay, rows: &[RosterRow], expanded: Option<&str>) {
     paint_in(overlay, rows, expanded, Rect::new(0.0, 0.0, 1400.0, 900.0));
 }
 
-fn paint_in(
-    overlay: &mut CollaboratorsOverlay,
-    rows: &[RosterRow],
-    expanded: Option<&str>,
-    host: Rect,
-) {
+fn paint_in(overlay: &mut PeopleOverlay, rows: &[RosterRow], expanded: Option<&str>, host: Rect) {
     paint_over(overlay, rows, expanded, host, false, &[]);
 }
 
 /// The roster kept on screen at an edge, each person's screen under their row.
 fn paint_kept(
-    overlay: &mut CollaboratorsOverlay,
+    overlay: &mut PeopleOverlay,
     rows: &[RosterRow],
     screens: &[(String, Option<Screen>)],
 ) {
@@ -82,7 +75,7 @@ fn paint_kept(
 /// Draw the roster the way `host` shows it; `pinned` keeps it at an edge with each person's
 /// screen under their row.
 fn paint_over(
-    overlay: &mut CollaboratorsOverlay,
+    overlay: &mut PeopleOverlay,
     rows: &[RosterRow],
     expanded: Option<&str>,
     host: Rect,
@@ -97,7 +90,7 @@ fn paint_over(
         Affine::IDENTITY,
         &mut text,
         &theme,
-        &CollaboratorsModel {
+        &PeopleModel {
             host,
             workspace: "Lounge",
             rows,
@@ -120,7 +113,7 @@ fn paint_over(
 /// the list begins.
 #[test]
 fn a_single_section_takes_no_label() {
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint(&mut overlay, &[row("ada", "Ada")], None);
     assert!(overlay.headings.is_empty(), "{:?}", overlay.headings);
     assert_eq!(overlay.rows[0].rect.y0, overlay.body.y0);
@@ -134,7 +127,7 @@ fn a_phone_roster_offers_follow_on_the_agents_row() {
     let mut agent = row("claude", "Claude Code");
     agent.is_agent = true;
     let rows = vec![row("ada", "Ada"), agent];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, 390.0, 844.0));
     let place = overlay
         .rows
@@ -155,16 +148,14 @@ fn a_phone_roster_offers_follow_on_the_agents_row() {
     );
     assert_eq!(
         overlay.hit_test(place.follow.center()),
-        CollaboratorsHit::Follow(1)
+        PeopleHit::Follow(1)
     );
     // A control with no bounds is one nobody can press: what the person
     // sees, the pointer and assistive technology all read this place.
-    let reachable = overlay
-        .rect_for_hit(CollaboratorsHit::Follow(1))
-        .and_then(|rect| {
-            let clipped = overlay.view_rect(rect);
-            (clipped.area() > 0.0).then_some(clipped)
-        });
+    let reachable = overlay.rect_for_hit(PeopleHit::Follow(1)).and_then(|rect| {
+        let clipped = overlay.view_rect(rect);
+        (clipped.area() > 0.0).then_some(clipped)
+    });
     assert!(
         reachable.is_some(),
         "Follow is inside the panel's list on screen: {:?} in body {:?}",
@@ -213,7 +204,7 @@ fn an_agents_row_says_what_it_is_doing_and_where() {
     assert_eq!(working_in_line(&agent), ("Launch notes".to_owned(), None));
     assert!(!says_automatically(&agent));
     let rows = vec![row("ada", "Ada"), agent];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint(&mut overlay, &rows, None);
     assert!(
         overlay.rows[1].working_in.area() > 0.0,
@@ -251,7 +242,7 @@ fn an_agents_doing_line_is_never_cut_short() {
             .0,
     );
     for width in [1400.0, 390.0, 360.0] {
-        let mut overlay = CollaboratorsOverlay::default();
+        let mut overlay = PeopleOverlay::default();
         paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, width, 900.0));
         let place = overlay.rows[0].clone();
         if place.said.area() > 0.0 {
@@ -269,7 +260,7 @@ fn an_agents_doing_line_is_never_cut_short() {
             );
             assert_ne!(
                 overlay.hit_test(place.said.center()),
-                CollaboratorsHit::OpenTab(0),
+                PeopleHit::OpenTab(0),
                 "with no window, the line opens none"
             );
         } else {
@@ -310,7 +301,7 @@ fn an_attached_agent_row_names_its_window_instead_of_mirroring_one() {
     agent.working_in = Some((7, "Lounge notes".into()));
     let rows = vec![row("ada", "Ada"), agent];
     let screens = [("ada".to_owned(), Some(screen("Notes")))];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint_kept(&mut overlay, &rows, &screens);
     assert!(
         overlay.mirrors.iter().any(|(index, _)| *index == 0),
@@ -340,10 +331,10 @@ fn an_attached_agent_row_names_its_window_instead_of_mirroring_one() {
     );
     assert_eq!(
         overlay.hit_test(place.working_in.center()),
-        CollaboratorsHit::OpenTab(1)
+        PeopleHit::OpenTab(1)
     );
     assert_eq!(
-        overlay.rect_for_hit(CollaboratorsHit::OpenTab(1)),
+        overlay.rect_for_hit(PeopleHit::OpenTab(1)),
         Some(place.working_in)
     );
     // It is named for a reader by what it says, not by a control's glyph.
@@ -370,7 +361,7 @@ fn a_private_screen_is_one_line_and_no_well() {
         ("ben".to_owned(), Some(nothing_open)),
         ("cy".to_owned(), Some(screen("Notes"))),
     ];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint_kept(&mut overlay, &rows, &screens);
     let mut text = TextRenderer::new();
     assert!(
@@ -432,18 +423,21 @@ fn software_names_its_now_line_and_its_window() {
     );
 }
 
-/// Software that has published no view yet is still followed: its row
-/// offers Follow rather than hiding it until the agent is seen working.
+/// Software that has published no view yet is still followed: its row offers Follow rather than
+/// hiding it until the agent is seen working.
 #[test]
 fn a_headless_agent_is_followable() {
     use tilo_desktop_model::{Workspace, WorkspaceSlot};
 
     let mut workspace = Workspace::new(WorkspaceSlot(73), "Lounge");
-    workspace
-        .collaborators
-        .push(Collaborator::new("claude", "Claude Code").with_role(AGENT_ROLE_MARKER));
+    let agent = Member::keyed("agent:claude", "Claude Code");
+    workspace.member_here(agent.clone());
+    workspace.place_presence(Present {
+        device: "claude".into(),
+        ..Present::of(agent.id)
+    });
     assert!(
-        workspace.collaborators[0].active_tab.is_none(),
+        workspace.present[0].tab.is_none(),
         "a headless agent names no window"
     );
     let desktop = DesktopTree {
@@ -451,7 +445,7 @@ fn a_headless_agent_is_followable() {
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
-    let rows = collaborator_roster_rows(&desktop, "local");
+    let rows = roster_rows(&desktop, "local");
     let agent = rows.iter().find(|row| row.id == "claude").unwrap();
     assert!(agent.is_agent);
     assert!(agent.followable, "the agent can be followed");
@@ -461,14 +455,14 @@ fn a_headless_agent_is_followable() {
 #[test]
 fn a_wave_just_sent_reads_as_sent() {
     let rows = vec![row("ada", "Ada"), row("ben", "Ben")];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     let waved = ["ada".to_owned()];
     overlay.draw(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        &CollaboratorsModel {
+        &PeopleModel {
             host: Rect::new(0.0, 0.0, 1400.0, 900.0),
             workspace: "Lounge",
             rows: &rows,
@@ -512,7 +506,7 @@ fn a_person_in_a_call_offers_join_on_their_row() {
         channel: "c_voice".into(),
     });
     let rows = vec![ada, row("ben", "Ben")];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint(&mut overlay, &rows, None);
     assert_eq!(
         doing_line(&rows[0]),
@@ -529,20 +523,12 @@ fn a_person_in_a_call_offers_join_on_their_row() {
     );
     assert_eq!(
         overlay.hit_test(ada_place.join.center()),
-        CollaboratorsHit::JoinCall(0)
+        PeopleHit::JoinCall(0)
     );
     assert_eq!(overlay.join_target(0), rows[0].join.as_ref());
     assert_eq!(overlay.rows[1].join, Rect::ZERO, "Ben is in no call");
-    assert!(
-        overlay
-            .focus_order()
-            .contains(&CollaboratorsHit::JoinCall(0))
-    );
-    assert!(
-        !overlay
-            .focus_order()
-            .contains(&CollaboratorsHit::JoinCall(1))
-    );
+    assert!(overlay.focus_order().contains(&PeopleHit::JoinCall(0)));
+    assert!(!overlay.focus_order().contains(&PeopleHit::JoinCall(1)));
 }
 
 #[test]
@@ -550,10 +536,11 @@ fn a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person() {
     use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceSlot};
 
     let device = "ab".repeat(32);
+    let installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".to_owned();
     let mut workspace = Workspace::new(WorkspaceSlot(72), "Lounge");
     workspace.bots.push(WorkspaceBot {
         name: "Standup".into(),
-        installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
+        installation: Some(installation.clone()),
         device: Some(device.clone()),
         entry: Some("so.tilo.bots.standup".into()),
         version: Some("1.2.0".into()),
@@ -561,28 +548,25 @@ fn a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person() {
         requested: true,
         paused: false,
     });
-    workspace
-        .collaborators
-        .push(Collaborator::new(device.clone(), "Standup"));
-    workspace
-        .collaborators
-        .push(Collaborator::new("ada", "Ada"));
+    let bot = Member::of_software(collab_types::MemberId::bot(installation), "Standup", None);
+    workspace.member_here(bot.clone());
+    workspace.place_presence(Present {
+        device: device.clone(),
+        ..Present::of(bot.id)
+    });
+    let ada = Member::keyed("ada", "Ada");
+    workspace.member_here(ada);
     let desktop = DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
 
-    let rows = collaborator_roster_rows(&desktop, "local");
+    let rows = roster_rows(&desktop, "local");
     let bot = rows.iter().find(|row| row.id == device).unwrap();
     assert!(bot.is_bot && bot.is_agent, "a bot is software, tagged Bot");
     let ada = rows.iter().find(|row| row.id == "ada").unwrap();
     assert!(!ada.is_bot && !ada.is_agent);
-    assert!(collaborator_is_agent(
-        desktop.active_workspace(),
-        &Collaborator::new(device, "Standup"),
-        0
-    ));
 }
 
 #[test]
@@ -600,15 +584,18 @@ fn agent_classification_uses_stable_identity_not_display_label() {
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person("owner"),
     ));
-    workspace
-        .collaborators
-        .push(Collaborator::new("scribe", "Release Notes Agent"));
+    let agent = Member::keyed("agent:scribe", "Release Notes Agent");
+    workspace.member_here(agent.clone());
+    workspace.place_presence(Present {
+        device: agent.id.key(),
+        ..Present::of(agent.id.clone())
+    });
     let desktop = DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
-    let rows = collaborator_roster_rows(&desktop, "local");
+    let rows = roster_rows(&desktop, "local");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].label, "Release Notes Agent");
     assert!(
@@ -636,16 +623,19 @@ fn an_agents_face_wears_the_colour_its_admission_assigned() {
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person("owner"),
     ));
-    workspace
-        .collaborators
-        .push(Collaborator::new("scribe", "Scribe"));
+    let agent = Member::keyed("agent:scribe", "Scribe");
+    workspace.member_here(agent.clone());
+    workspace.place_presence(Present {
+        device: "scribe".into(),
+        ..Present::of(agent.id.clone())
+    });
     let desktop = DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
 
-    let rows = collaborator_roster_rows(&desktop, "local");
+    let rows = roster_rows(&desktop, "local");
     let scribe = rows.iter().find(|row| row.id == "scribe").unwrap();
     let assigned = ui::presence::participant_color("agent:scribe", true, Some("owner"));
     assert_eq!(
@@ -699,36 +689,32 @@ fn an_agents_row_names_the_record_it_works_in_once() {
     });
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
     workspace.strips = vec![main];
-    workspace.collaborators = vec![
-        Collaborator {
-            id: "ada".into(),
-            name: "Ada".into(),
-            active_tab: Some(7),
-            status: Some(Status {
-                text: "Reviewing the plan".into(),
-                automatic: false,
-            }),
-            ..Collaborator::default()
-        },
-        Collaborator {
-            id: "claude".into(),
-            name: "Claude Code".into(),
-            role_id: Some(AGENT_ROLE_MARKER.to_owned()),
-            active_tab: Some(7),
-            status: Some(Status {
-                text: "Working in Notes".into(),
-                automatic: false,
-            }),
-            ..Collaborator::default()
-        },
-    ];
+    let ada = Member::keyed("ada", "Ada");
+    let claude = Member::keyed("agent:claude", "Claude Code");
+    workspace.members_here([ada.clone(), claude.clone()]);
+    workspace.present[0] = Present {
+        tab: Some(7),
+        status: Some(Status {
+            text: "Reviewing the plan".into(),
+            automatic: false,
+        }),
+        ..Present::of(ada.id)
+    };
+    workspace.present[1] = Present {
+        tab: Some(7),
+        status: Some(Status {
+            text: "Working in Notes".into(),
+            automatic: false,
+        }),
+        ..Present::of(claude.id)
+    };
     let desktop = DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
 
-    let rows = collaborator_roster_rows(&desktop, "local");
+    let rows = roster_rows(&desktop, "local");
     let agent = rows.iter().find(|row| row.is_agent).expect("the agent");
     assert_eq!(
         agent.activity, None,
@@ -758,7 +744,7 @@ fn an_agents_row_names_the_record_it_works_in_once() {
 fn the_model_keeps_follow_direction_when_cursors_are_not_visible() {
     let rows = vec![row("ada", "Ada"), row("bob", "Bob")];
     let pairs = vec![("ada".to_string(), "bob".to_string())];
-    let model = CollaboratorsModel {
+    let model = PeopleModel {
         host: Rect::ZERO,
         workspace: "Lounge",
         rows: &rows,
@@ -800,31 +786,6 @@ fn a_followers_row_says_whom_they_follow() {
     assert_eq!(rows[2].activity.as_deref(), Some("Following you"));
 }
 
-/// The person's other devices are listed as theirs, under their own heading after people, with nobody to wave at.
-#[test]
-fn the_roster_lists_the_person_s_other_devices_as_their_devices() {
-    let mut pi = row("peer@7", "Orange Pi");
-    pi.own_device = true;
-    let rows = vec![pi, row("ada", "Ada")];
-    let mut overlay = CollaboratorsOverlay::default();
-    paint(&mut overlay, &rows, None);
-    let order: Vec<usize> = overlay.rows.iter().map(|place| place.index).collect();
-    assert_eq!(order, vec![1, 0], "people first, then the devices");
-    assert_eq!(
-        overlay
-            .headings
-            .iter()
-            .map(|h| h.text.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            t("people-panel-section-people"),
-            t("people-panel-section-devices")
-        ]
-    );
-    assert_eq!(overlay.rows[1].wave, Rect::ZERO);
-    assert_eq!(overlay.wave_target(0), None);
-}
-
 /// People, then agents, each with Follow on its row and Wave for people; Invite at the bottom; a press on a row's controls is that control's, on its body opens what they changed.
 #[test]
 fn the_roster_lists_people_then_agents_with_their_actions_and_invite() {
@@ -836,18 +797,12 @@ fn the_roster_lists_people_then_agents_with_their_actions_and_invite() {
         when: "4 min ago".into(),
         entry: Some([1; 16]),
     }];
-    let mut invited = row("cy", "Cy");
-    invited.invited = true;
-    let rows = vec![agent, ada, row("ben", "Ben"), invited];
-    let mut overlay = CollaboratorsOverlay::default();
+    let rows = vec![agent, ada, row("ben", "Ben")];
+    let mut overlay = PeopleOverlay::default();
     paint(&mut overlay, &rows, None);
 
     let order: Vec<usize> = overlay.rows.iter().map(|place| place.index).collect();
-    assert_eq!(
-        order,
-        vec![1, 2, 0],
-        "people first, then agents; the invited are not here"
-    );
+    assert_eq!(order, vec![1, 2, 0], "people first, then agents");
     assert_eq!(
         overlay
             .headings
@@ -862,18 +817,18 @@ fn the_roster_lists_people_then_agents_with_their_actions_and_invite() {
     let ada_place = overlay.rows[0].clone();
     assert_eq!(
         overlay.hit_test(ada_place.follow.center()),
-        CollaboratorsHit::Follow(1)
+        PeopleHit::Follow(1)
     );
     assert_eq!(
         overlay.hit_test(ada_place.wave.center()),
-        CollaboratorsHit::Wave(1)
+        PeopleHit::Wave(1)
     );
     assert_eq!(
         overlay.hit_test(Point::new(
             ada_place.rect.x0 + 80.0,
             ada_place.rect.center().y
         )),
-        CollaboratorsHit::ToggleDetails(1),
+        PeopleHit::ToggleDetails(1),
         "Ada has recent changes: her row opens"
     );
     let ben_place = overlay.rows[1].clone();
@@ -882,18 +837,15 @@ fn the_roster_lists_people_then_agents_with_their_actions_and_invite() {
             ben_place.rect.x0 + 80.0,
             ben_place.rect.center().y
         )),
-        CollaboratorsHit::Absorb,
+        PeopleHit::Absorb,
         "nothing recent: nothing to open"
     );
     assert_eq!(overlay.rows[2].wave, Rect::ZERO, "nobody waves at software");
     assert_eq!(
         overlay.hit_test(overlay.invite_rect().center()),
-        CollaboratorsHit::Invite
+        PeopleHit::Invite
     );
-    assert_eq!(
-        overlay.hit_test(Point::new(5.0, 800.0)),
-        CollaboratorsHit::Dismiss
-    );
+    assert_eq!(overlay.hit_test(Point::new(5.0, 800.0)), PeopleHit::Dismiss);
     assert_eq!(overlay.wave_target(1), Some("ada"));
     assert_eq!(overlay.wave_target(0), None);
 }
@@ -910,7 +862,7 @@ fn the_header_counts_the_people_listed() {
 /// Only you: the roster says nobody else is here, and still offers Invite.
 #[test]
 fn only_you_says_nobody_else_is_here_and_offers_invite() {
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint(&mut overlay, &[], None);
     assert!(overlay.rows.is_empty());
     assert!(overlay.invite_rect().area() > 0.0);
@@ -942,14 +894,14 @@ fn an_open_row_leads_to_history_and_the_keyboard_reaches_every_control() {
         },
     ];
     let rows = vec![ada, row("ben", "Ben")];
-    let mut overlay = CollaboratorsOverlay::default();
+    let mut overlay = PeopleOverlay::default();
     paint(&mut overlay, &rows, Some("ada"));
     paint(&mut overlay, &rows, Some("ada"));
     let changes = overlay.rows[0].changes;
     assert!(changes.area() > 0.0, "the open row has its link to History");
     assert_eq!(
         overlay.hit_test(changes.center()),
-        CollaboratorsHit::OpenChanges(0)
+        PeopleHit::OpenChanges(0)
     );
     assert_eq!(
         overlay.rows[0].change_rows.len(),
@@ -959,7 +911,7 @@ fn an_open_row_leads_to_history_and_the_keyboard_reaches_every_control() {
     let second = overlay.rows[0].change_rows[1];
     assert_eq!(
         overlay.hit_test(second.center()),
-        CollaboratorsHit::OpenChange(0, 1),
+        PeopleHit::OpenChange(0, 1),
         "each change opens History at itself"
     );
     assert_eq!(overlay.change_target(0, 1), Some(("Ada", Some([2; 16]))));
@@ -970,21 +922,21 @@ fn an_open_row_leads_to_history_and_the_keyboard_reaches_every_control() {
         reached.push(overlay.keyboard_focus);
     }
     for wanted in [
-        CollaboratorsHit::ToggleDetails(0),
-        CollaboratorsHit::Wave(0),
-        CollaboratorsHit::Follow(0),
-        CollaboratorsHit::OpenChange(0, 0),
-        CollaboratorsHit::OpenChange(0, 1),
-        CollaboratorsHit::OpenChanges(0),
-        CollaboratorsHit::Wave(1),
-        CollaboratorsHit::Follow(1),
-        CollaboratorsHit::Invite,
+        PeopleHit::ToggleDetails(0),
+        PeopleHit::Wave(0),
+        PeopleHit::Follow(0),
+        PeopleHit::OpenChange(0, 0),
+        PeopleHit::OpenChange(0, 1),
+        PeopleHit::OpenChanges(0),
+        PeopleHit::Wave(1),
+        PeopleHit::Follow(1),
+        PeopleHit::Invite,
     ] {
         assert!(reached.contains(&Some(wanted)), "{wanted:?} is reachable");
     }
     assert_eq!(
         overlay.key(&Key::Named(NamedKey::Escape), false),
-        Some(CollaboratorsHit::Dismiss)
+        Some(PeopleHit::Dismiss)
     );
 }
 

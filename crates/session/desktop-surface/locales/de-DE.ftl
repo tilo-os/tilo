@@ -47,7 +47,7 @@ topbar-bell-silenced = { $unread ->
     [one] Mitteilungen stummgeschaltet, 1 ungelesen
    *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
 }
-topbar-show-collaborators = Alle hier
+topbar-show-people = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -55,7 +55,7 @@ topbar-viewer-entry = { $name } ({ $kind ->
         [person] Person
        *[session] unbekannte Sitzung
     }): { $access }
-topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
+topbar-people-visible = Bildschirm sichtbar für { $viewers }. Zeigen, wer hier ist
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
@@ -1247,7 +1247,7 @@ so-tilo-chrome-step-strip = Durch die Leisten wechseln
 so-tilo-chrome-stop-desktop-control = Die Fernsteuerung beenden
 so-tilo-chrome-switch-workspace = Arbeitsbereich wechseln
 so-tilo-chrome-tilo-menu = Tilo-Menü
-so-tilo-chrome-toggle-collaborators = Wer hier ist
+so-tilo-chrome-toggle-people = Wer hier ist
 so-tilo-chrome-workspace-menu = Arbeitsbereich-Menü
 so-tilo-chrome-workspace-settings = Einstellungen des Arbeitsbereichs
 so-tilo-desk-choose-search-row = Ein Suchergebnis wählen

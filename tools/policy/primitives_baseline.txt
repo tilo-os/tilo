@@ -100,7 +100,7 @@ hand-text 1 crates/session/desktop/src/strip_switcher.rs
 hand-text 2 crates/session/desktop/src/window_switcher.rs
 own-scroll 1 crates/session/desktop-surface/src/surface.rs
 own-scroll 3 crates/session/desktop-surface/src/surface/paging.rs
-own-scroll 5 crates/session/desktop/src/collaborators.rs
+own-scroll 5 crates/session/desktop/src/people.rs
 own-scroll 5 crates/session/desktop/src/overview_panel.rs
 own-scroll 2 crates/session/desktop/src/overview_panel/input.rs
 own-scroll 6 crates/session/desktop/src/overview_panel/layout.rs

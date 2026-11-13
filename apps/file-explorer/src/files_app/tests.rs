@@ -2081,7 +2081,7 @@ mod command_path_tests {
     fn reseeding_the_rename_field_never_mutates_the_shared_document() {
         // An in-progress filename is device-local interaction state. Repeated
         // renames must not create an ever-growing CRDT history, leak a path to
-        // collaborators, or cause a remote client to see a half-typed name.
+        // members, or cause a remote client to see a half-typed name.
         let d = tempfile::tempdir().unwrap();
         for i in 0..40 {
             std::fs::write(d.path().join(format!("report-{i:03}.txt")), b"x").unwrap();

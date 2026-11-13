@@ -307,8 +307,8 @@ impl Widget for EmptyWorkspace {
 mod tests {
     use super::*;
     use tilo_desktop_model::{
-        Collaborator, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-        WorkspaceSlot, partition::Display,
+        Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+        partition::Display,
     };
 
     fn group(id: u64) -> WindowGroup {
@@ -347,7 +347,6 @@ mod tests {
     /// A workspace of two strips: Main holding one window, Games empty.
     fn desk() -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
-        workspace.collaborators = Vec::<Collaborator>::new();
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1)];
         workspace.strips = vec![main, Strip::new(StripId(11), "Games")];

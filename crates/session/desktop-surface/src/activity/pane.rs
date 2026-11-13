@@ -61,27 +61,23 @@ fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
 }
 
 fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model::DesktopTree) {
-    let people = tree.collaborators.iter().chain(
-        tree.workspaces
-            .iter()
-            .flat_map(|ws| ws.collaborators.iter()),
-    );
-    for person in people {
-        if person.name.trim().is_empty() {
+    let members = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.members.iter());
+    for member in members {
+        if member.name.trim().is_empty() {
             continue;
         }
-        let rgb = person
-            .cursor_color
-            .as_deref()
-            .and_then(ui::presence::parse_hex_color)
-            .unwrap_or_else(|| authors.colour_for(&person.id));
-        authors.set_color_override(&person.id, rgb);
-        let handle = automerge::ActorId::from(person.id.as_bytes()).to_hex_string();
+        let id = member.id.key();
+        let rgb = collab_types::presence::identity_rgb(member.colour);
+        authors.set_color_override(&id, rgb);
+        let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
         authors.register(
             &handle,
             ui::history_source::author_coloured(
-                participant_display_label(&person.name),
-                ui::history_source::short_id(&person.id),
+                participant_display_label(&member.name),
+                ui::history_source::short_id(&id),
                 rgb,
             ),
         );

@@ -154,7 +154,7 @@ fn queued_presence_arrival_and_departure_repaint_without_widget_dirtiness() {
     let initial = paint(&mut fixture.tile, &fixture.theme);
     for present in [true, false] {
         fixture.events.borrow_mut().push(CollabEvent::Context {
-            collaborators: if present {
+            members: if present {
                 vec![collab_types::Member::of_person(
                     &collab_types::Person::new("peer", "Peer"),
                     None,

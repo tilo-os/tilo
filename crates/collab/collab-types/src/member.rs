@@ -120,6 +120,18 @@ pub struct Member {
 }
 
 impl Member {
+    /// `key`'s row ([`MemberId::parse`]) named `name`, with no role the workspace has decided and
+    /// the colour their kind gives them.
+    #[must_use]
+    pub fn keyed(key: &str, name: impl Into<String>) -> Self {
+        let id = MemberId::parse(key).unwrap_or_else(|| MemberId::person(key));
+        let name = name.into();
+        match id {
+            MemberId::Person(person) => Self::of_person(&Person::new(person, name), None),
+            id => Self::of_software(id, name, None),
+        }
+    }
+
     /// `person`'s row in a workspace they hold `role` in.
     #[must_use]
     pub fn of_person(person: &Person, role: Option<Role>) -> Self {

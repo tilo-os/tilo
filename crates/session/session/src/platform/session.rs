@@ -1462,9 +1462,9 @@ impl Session {
                         .read(|tree| {
                             tree.workspaces
                                 .iter()
-                                .flat_map(|workspace| workspace.collaborators.iter())
-                                .find(|collaborator| collaborator.id == person)
-                                .map(|collaborator| collaborator.name.clone())
+                                .flat_map(|workspace| workspace.members.iter())
+                                .find(|member| member.id == collab_types::MemberId::person(person))
+                                .map(|member| member.name.clone())
                                 .filter(|name| !name.is_empty())
                         })
                         .unwrap_or_else(tilo_desktop::here::guest_label)

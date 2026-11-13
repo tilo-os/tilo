@@ -195,7 +195,7 @@ pub struct Member {
     /// says nothing itself.
     pub spoken_by: Option<Device>,
     /// The run it is, as the device that speaks for it names it.
-    run: Option<String>,
+    pub run: Option<String>,
     pointer: Smoother,
     /// When this device last heard them say anything, on the clock the
     /// caller hands [`Board::hear`]: `None` while only the roster named them.

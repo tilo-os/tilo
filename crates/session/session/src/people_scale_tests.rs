@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::platform::surfaces::{Heard, Layer, Placement, Surfaces};
-use tilo_desktop_model::{Collaborator, DesktopTree, Tab, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Member, Tab, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::widget::{TileContent, TileHost};
 
@@ -101,11 +101,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
     // desk, and there is no panel of it whose Put back in the bar a pointer could press.
     let here = WorkspaceId::new();
     let mut desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
-    desk.collaborators.push(Collaborator {
-        id: "ada".to_owned(),
-        name: "Ada".to_owned(),
-        ..Collaborator::default()
-    });
+    desk.member_here(Member::keyed("ada", "Ada"));
     let (_desk, handle) = DesktopSurface::new(
         DesktopTree {
             active: desk.slot,
@@ -254,12 +250,7 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
             ))),
             here: Rc::new(|tree: &mut DesktopTree| {
                 if let Some(workspace) = tree.workspaces.first_mut() {
-                    workspace.collaborators = vec![Collaborator {
-                        id: "run".to_owned(),
-                        name: "Claude Code".to_owned(),
-                        role_id: Some("agent".to_owned()),
-                        ..Collaborator::default()
-                    }];
+                    workspace.member_here(Member::keyed("agent:run", "Claude Code"));
                 }
             }),
             intents: Rc::default(),

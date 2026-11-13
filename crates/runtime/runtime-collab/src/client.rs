@@ -1943,11 +1943,11 @@ impl ContextStream {
         let mut context = ChannelContext::default();
         match update {
             ContextUpdate::Snapshot {
-                collaborators,
+                members,
                 permissions,
                 apps,
             } => {
-                context.collaborators = collaborators;
+                context.members = members;
                 context.permissions = permissions;
                 context.apps = apps;
             }

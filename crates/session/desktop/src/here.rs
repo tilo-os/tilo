@@ -13,8 +13,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
-use collab_types::presence::Shown;
-use tilo_desktop_model::{Collaborator, DesktopTree, Status, TabId, TileContent, Workspace};
+use collab_types::presence::{PresenceHue, Shown};
+use collab_types::{Member, MemberId, PersonId, assigned_colour};
+use tilo_desktop_model::{DesktopTree, Present, Status, TabId, TileContent, Workspace};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -65,6 +66,9 @@ pub struct LiveMember {
     /// The person (user root, hex) the device is certified as, once its certificate was heard.
     #[serde(default)]
     pub user: Option<String>,
+    /// The workspace member this presence names, where it names one: an agent's key.
+    #[serde(default)]
+    pub member: Option<String>,
     /// The member's latest wave at someone here.
     #[serde(default)]
     pub wave: Option<Wave>,
@@ -106,6 +110,7 @@ impl LiveMember {
             automatic: shown.automatic,
             place: shown.place.clone(),
             user: shown.user.clone(),
+            member: shown.member.clone(),
             wave: shown.wave.clone(),
             layout: shown.layout.clone(),
             following: shown.following.clone(),
@@ -122,14 +127,14 @@ impl LiveMember {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub text: String,
-    pub source: crate::collaborators::LineSource,
+    pub source: crate::people::LineSource,
 }
 
 impl Line {
     /// Whether software wrote it rather than the person.
     #[must_use]
     pub fn automatic(&self) -> bool {
-        self.source != crate::collaborators::LineSource::Written
+        self.source != crate::people::LineSource::Written
     }
 }
 
@@ -155,6 +160,9 @@ pub struct Person {
     /// The person (user root, hex) their device's certificate names: the id that stays theirs on
     /// every device.
     pub user: Option<String>,
+    /// The agent's workspace key, as its presence names it: what tells two runs of one agent, or a
+    /// client of two people, apart in the member list.
+    pub member: Option<String>,
     /// What everyone here calls them: the person's name, whichever of their devices is the one
     /// listed.
     pub label: String,
@@ -357,7 +365,7 @@ pub fn finished_notice(
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
 
-fn line(text: &str, source: crate::collaborators::LineSource) -> Option<Line> {
+fn line(text: &str, source: crate::people::LineSource) -> Option<Line> {
     let text = text.trim();
     (!text.is_empty()).then(|| Line {
         text: text.to_owned(),
@@ -404,9 +412,9 @@ fn same_agent<'a>(
 /// agent's activity is its own), or what their device read off their steps.
 fn said_line(member: &LiveMember) -> Option<Line> {
     let source = if member.automatic {
-        crate::collaborators::LineSource::Observed
+        crate::people::LineSource::Observed
     } else {
-        crate::collaborators::LineSource::Written
+        crate::people::LineSource::Written
     };
     member
         .activity
@@ -769,12 +777,12 @@ impl HereState {
     /// what it read off their steps while they share an automatic status.
     pub fn own_doing(&self) -> Option<Line> {
         self.shared_words()
-            .and_then(|words| line(words, crate::collaborators::LineSource::Written))
+            .and_then(|words| line(words, crate::people::LineSource::Written))
             .or_else(|| {
                 self.own_reading
                     .as_deref()
                     .filter(|_| self.sharing == ui::StatusSharing::Automatic)
-                    .and_then(|text| line(text, crate::collaborators::LineSource::Observed))
+                    .and_then(|text| line(text, crate::people::LineSource::Observed))
             })
     }
 
@@ -993,7 +1001,7 @@ impl HereState {
         // publisher), with the colour its shell claimed where it claimed one and the
         // one its kind wears where it claimed none: [`ui::presence::participant_color`],
         // the rule every surface asks.
-        let present: Vec<Present<'_>> = self
+        let present: Vec<Settling<'_>> = self
             .members
             .iter()
             .flatten()
@@ -1097,6 +1105,7 @@ impl HereState {
             people.push(Person {
                 id: member.publisher.clone(),
                 user: self.user_of(&member.publisher).map(str::to_owned),
+                member: member.member.clone(),
                 label: [member.label.as_str(), member.device.as_str()]
                     .into_iter()
                     .find_map(ui::presence::shown_name)
@@ -1237,7 +1246,7 @@ impl HereState {
 /// is (an agent, itself), the colour its shell claimed for that person where it
 /// claimed one, and the colour its kind wears where it claimed none
 /// ([`ui::presence::participant_color`]).
-type Present<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>, (u8, u8, u8));
+type Settling<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>, (u8, u8, u8));
 
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
 /// workspace has not settled one for it.
@@ -1319,7 +1328,7 @@ fn focused_app(
     let app = app_name(&member.focus.as_ref()?.app)?;
     let app = app.trim();
     (!app.is_empty() && !status.is_some_and(|status| names(&status.text, app)))
-        .then(|| crate::collaborators::in_app(app))
+        .then(|| crate::people::in_app(app))
 }
 
 /// What `person` says they are doing, as the workspace's own model keeps it: their words, trimmed,
@@ -1346,80 +1355,127 @@ fn names(text: &str, name: &str) -> bool {
     !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
 }
 
-/// `rgb` as the `#rrggbb` a roster row's colour is written in.
-fn hex_of((r, g, b): (u8, u8, u8)) -> String {
-    format!("#{r:02x}{g:02x}{b:02x}")
-}
-
-/// `people` as the active workspace's collaborators, for the bar's avatars: read from a copy of the
-/// tree, never written to the workspace's document.
-pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
+/// `people` written into `tree` as the bar reads who is here: the active workspace's member rows,
+/// each in the colour it wears everywhere, and everyone's presence. `tree` is the copy the bar
+/// paints, never the workspace's document.
+pub fn place_here(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
     let active = tree.active;
-    let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.slot == active) else {
+    let now = tilo_clock::unix_now();
+    let Some(workspace) = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.slot == active)
+    else {
         return;
     };
-    // Following is said again each frame, like where everyone is: someone no longer followed, or
-    // no longer here, carries none.
-    for known in &mut workspace.collaborators {
-        known.following = false;
-    }
+    workspace.members = member_rows(workspace, people, now);
+    workspace.present.clear();
     for person in people {
-        // Who a known member is belongs to the workspace; where they are and how available they are
-        // is presence's, and is said again every frame.
-        if let Some(known) = workspace
-            .collaborators
-            .iter_mut()
-            .find(|c| c.id == person.id)
-        {
-            // Whose view this desk follows: the bar keeps that face when it is too narrow to stand
-            // everyone's. Following names a publisher, which is a person's own device as often as
-            // the person.
-            known.following = following.is_some_and(|followed| {
-                followed == person.id || person.devices.iter().any(|device| device.id == followed)
-            });
-            known.active_tab = person.tab;
-            // The colour everyone here draws them in, as their pointer wears it: one colour per
-            // person on every face of them, whatever an older row said.
-            known.cursor_color = Some(hex_of(person.rgb));
-            known.in_app.clone_from(&person.focus_app);
-            known.availability = Some(person.availability.id().to_owned());
-            known.call = person.call.as_ref().map(ui::CallPresence::encode);
-            // What they are doing now, as their device publishes it: an agent's line is what it
-            // works on, which is the only "where" a roster row has for software.
-            known.status = doing(person);
-            // Software is said on every frame too. A row this page already held (a roster it synced,
-            // or one an older build wrote) carries no marker, and every surface reads the marker to
-            // know an agent is an agent: it would draw as a person — a circle where software wears a
-            // rounded square — for as long as the row exists.
-            if person.agent {
-                known.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.to_owned());
-            } else if known.role_id.as_deref() == Some(crate::collaborators::AGENT_ROLE_MARKER) {
-                // Software that stopped saying it runs here is not drawn as one: the row outlives
-                // the line that named it.
-                known.role_id = None;
-            }
+        workspace.place_presence(present_of(person, following));
+    }
+}
+
+/// The workspace's members, each in the colour it wears everywhere: its people with their roles,
+/// the agents admitted in it, its bots and anyone here its policy does not list yet. A person here
+/// now wears the colour this desk settled for them; software the one its admission gave it.
+fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member> {
+    let here = |id: &MemberId| people.iter().find(|person| member_id_of(person) == *id);
+    let mut rows: Vec<Member> = workspace
+        .roster()
+        .into_iter()
+        .filter(|(person, _)| !workspace.is_blocked(person))
+        .map(|(person, role)| {
+            let id = MemberId::person(person.clone());
+            let (name, colour) = here(&id).map_or_else(
+                || (String::new(), assigned_colour(&id, None)),
+                |person| (person.label.clone(), hue_of(person.rgb)),
+            );
+            let mut row = Member::of_person(
+                &collab_types::Person::new(PersonId::new(person.clone()), name).wearing(colour),
+                Some(role),
+            );
+            row.joined_at = workspace.policy.joined_at(&person);
+            row
+        })
+        .collect();
+    for (agent, _) in workspace.agent_members_at(now) {
+        let id = MemberId::agent(agent.clone());
+        let keeper = workspace.agent_keeper(&agent).map(PersonId::new);
+        let mut row = Member::of_software(id.clone(), agent, keeper.as_ref());
+        if let Some(person) = here(&id) {
+            row.name.clone_from(&person.label);
+        }
+        rows.push(row);
+    }
+    for bot in &workspace.bots {
+        let id = MemberId::bot(
+            bot.installation
+                .clone()
+                .unwrap_or_else(|| bot.name.to_lowercase()),
+        );
+        let mut row = Member::of_software(id, bot.name.clone(), None);
+        row.name.clone_from(&bot.name);
+        rows.push(row);
+    }
+    // Anyone here whom the workspace's policy does not list yet is still someone here.
+    for person in people {
+        let id = member_id_of(person);
+        if rows.iter().any(|row| row.id == id) {
             continue;
         }
-        let follows = following.is_some_and(|followed| {
-            followed == person.id || person.devices.iter().any(|device| device.id == followed)
-        });
-        workspace.collaborators.push(Collaborator {
-            following: follows,
-            id: person.id.clone(),
-            name: person.label.clone(),
-            active_tab: person.tab,
-            in_app: person.focus_app.clone(),
-            // The colour their pointer is drawn in on this desk (`HereState::colors`, settled over
-            // everyone here), so a face, a pill and a caret for one person all wear the one colour,
-            // and their face on the bar matches the one their own bar shows them.
-            cursor_color: Some(hex_of(person.rgb)),
-            role_id: person.agent.then(|| "agent".to_owned()),
-            availability: Some(person.availability.id().to_owned()),
-            call: person.call.as_ref().map(ui::CallPresence::encode),
-            status: doing(person),
-            ..Collaborator::default()
-        });
+        rows.push(member_of_presence(person, &id));
     }
+    rows
+}
+
+/// `person` as a member row, for someone here the workspace's policy does not list.
+fn member_of_presence(person: &Person, id: &MemberId) -> Member {
+    if let MemberId::Person(person_id) = id {
+        Member::of_person(
+            &collab_types::Person::new(person_id.clone(), person.label.clone())
+                .wearing(hue_of(person.rgb)),
+            None,
+        )
+    } else {
+        let mut row = Member::of_software(id.clone(), person.label.clone(), None);
+        row.name.clone_from(&person.label);
+        row
+    }
+}
+
+/// The member `person` is here as: the person behind their device, or the agent its key names.
+fn member_id_of(person: &Person) -> MemberId {
+    if person.agent
+        && let Some(member) = person
+            .member
+            .as_deref()
+            .and_then(|key| MemberId::parse(key))
+    {
+        return member;
+    }
+    MemberId::person(person.user.clone().unwrap_or_else(|| person.id.clone()))
+}
+
+/// `person`'s presence, as this desk reads it.
+fn present_of(person: &Person, following: Option<&str>) -> Present {
+    Present {
+        member: member_id_of(person),
+        device: person.id.clone(),
+        tab: person.tab,
+        app: person.focus_app.clone(),
+        status: doing(person),
+        availability: person.availability,
+        call: person.call.clone(),
+        session: None,
+        followed: following.is_some_and(|followed| {
+            followed == person.id || person.devices.iter().any(|device| device.id == followed)
+        }),
+    }
+}
+
+/// `rgb` as the hue the model stores a member's colour in.
+fn hue_of((red, green, blue): (u8, u8, u8)) -> PresenceHue {
+    PresenceHue::nearest_to_srgb(red, green, blue).unwrap_or(PresenceHue::from_slot(0))
 }
 
 #[cfg(test)]
@@ -1437,6 +1493,7 @@ mod tests {
             automatic: false,
             place: None,
             user: None,
+            member: None,
             wave: None,
             layout: None,
             following: None,
@@ -1861,7 +1918,7 @@ mod tests {
         let app = |id: &str| (id == "so.tilo.chat").then(|| "Chat".to_owned());
         let status = |text: &str| Line {
             text: text.into(),
-            source: crate::collaborators::LineSource::Observed,
+            source: crate::people::LineSource::Observed,
         };
         let place =
             |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, None, &app, line);
@@ -2009,7 +2066,7 @@ mod tests {
     fn an_agent_wears_one_colour_on_every_surface() {
         let helper = "agent:helper@host";
         let (r, g, b) = ui::presence::participant_color(helper, true, None);
-        let announced = hex_of((r, g, b));
+        let announced = format!("#{r:02x}{g:02x}{b:02x}");
         let me = LiveMember {
             user: Some("me-root".into()),
             ..member("me", "person", "Pat")
@@ -2049,8 +2106,8 @@ mod tests {
             ..DesktopTree::default()
         };
         tree.active = tree.workspaces[0].slot;
-        overlay_collaborators(&mut tree, &people, None);
-        let rows = crate::collaborators::collaborator_roster_rows(&tree, "me-root");
+        place_here(&mut tree, &people, None);
+        let rows = crate::people::roster_rows(&tree, "me-root");
         let row = rows
             .iter()
             .find(|row| row.id == helper)
@@ -2064,7 +2121,7 @@ mod tests {
             crate::topbar::TopBarChrome::from_tree_with_local_user(&tree, "me-root".into());
         bar.sync_from_tree(&tree);
         assert_eq!(
-            bar.collaborator_colors(),
+            bar.face_colors(),
             [vello::peniko::Color::from_rgb8(r, g, b)],
             "the face on the bar"
         );
@@ -2205,7 +2262,7 @@ mod tests {
     /// words.
     #[test]
     fn their_own_words_and_their_devices_reading_are_told_apart() {
-        use crate::collaborators::LineSource;
+        use crate::people::LineSource;
         let mut here = HereState::default();
         let mut ada = member("ada", "person", "Ada");
         let mut cy = member("cy", "person", "Cy");
@@ -2235,7 +2292,7 @@ mod tests {
     /// what their device read off their steps, only while they share it.
     #[test]
     fn this_persons_own_words_lead_unless_they_share_nothing() {
-        use crate::collaborators::LineSource;
+        use crate::people::LineSource;
         let mut here = HereState::default();
         here.set_members(Some(member("me", "person", "Me")), Some(Vec::new()));
         here.set_own_reading(Some("Working in Notes".into()));
@@ -2358,10 +2415,7 @@ mod tests {
                 .status
                 .as_ref()
                 .map(|line| (line.text.as_str(), line.source)),
-            Some((
-                "Looking at the apps",
-                crate::collaborators::LineSource::Written
-            )),
+            Some(("Looking at the apps", crate::people::LineSource::Written)),
             "its activity line, as its own words"
         );
 
@@ -2705,7 +2759,7 @@ mod tests {
     /// Whose view this desk follows is said on their row and no other's, each frame: the bar keeps
     /// that face when it has room for only one.
     #[test]
-    fn collaborators_overlay_marks_whom_this_desk_follows() {
+    fn placing_presence_marks_whom_this_desk_follows() {
         let mut tree = DesktopTree::default();
         let workspace = tilo_desktop_model::WorkspaceSlot::default();
         tree.workspaces
@@ -2716,6 +2770,7 @@ mod tests {
             .map(|id| Person {
                 id: id.into(),
                 user: None,
+                member: (id == "cc").then(|| "agent:cc".to_owned()),
                 label: id.into(),
                 devices: Vec::new(),
                 rgb: (1, 2, 3),
@@ -2728,24 +2783,24 @@ mod tests {
                 call: None,
             })
             .collect();
-        overlay_collaborators(&mut tree, &people, Some("cc"));
+        place_here(&mut tree, &people, Some("cc"));
         let following: Vec<String> = tree
             .active_workspace()
             .expect("a workspace")
-            .collaborators
+            .present
             .iter()
-            .filter(|c| c.following)
-            .map(|c| c.id.clone())
+            .filter(|here| here.followed)
+            .map(|here| here.device.clone())
             .collect();
         assert_eq!(following, ["cc"], "the followed one, and only they");
         // Stopping says so on every row, not just the one that was followed.
-        overlay_collaborators(&mut tree, &people, None);
+        place_here(&mut tree, &people, None);
         assert!(
             tree.active_workspace()
                 .expect("a workspace")
-                .collaborators
+                .present
                 .iter()
-                .all(|c| !c.following),
+                .all(|here| !here.followed),
             "nobody is followed"
         );
     }
@@ -2754,7 +2809,7 @@ mod tests {
     /// already holds and on one it writes now: an agent whose work the bar shows is never a name
     /// with nothing under it.
     #[test]
-    fn collaborators_overlay_carries_what_they_are_doing() {
+    fn placing_presence_carries_what_they_are_doing() {
         let mut tree = DesktopTree::default();
         let workspace = tilo_desktop_model::WorkspaceSlot::default();
         tree.workspaces
@@ -2763,6 +2818,7 @@ mod tests {
         let person = |status: Option<Line>| Person {
             id: "cc".into(),
             user: None,
+            member: Some("agent:cc".into()),
             label: "Claude Code".into(),
             devices: Vec::new(),
             rgb: (1, 2, 3),
@@ -2776,12 +2832,12 @@ mod tests {
         };
         let said = Line {
             text: "  Writing in Launch notes ".into(),
-            source: crate::collaborators::LineSource::Observed,
+            source: crate::people::LineSource::Observed,
         };
-        overlay_collaborators(&mut tree, &[person(Some(said.clone()))], None);
+        place_here(&mut tree, &[person(Some(said.clone()))], None);
         let row = tree
             .active_workspace()
-            .and_then(|workspace| workspace.collaborators.first())
+            .and_then(|workspace| workspace.present.first())
             .expect("overlaid");
         assert_eq!(
             row.status.as_ref().map(|status| status.text.as_str()),
@@ -2793,82 +2849,34 @@ mod tests {
             "read off what it did, never typed by it"
         );
         // The same row again, with the line it says a moment later.
-        overlay_collaborators(&mut tree, &[person(Some(said))], None);
+        place_here(&mut tree, &[person(Some(said))], None);
         // A line of nothing but spaces says nothing, and neither does a row nothing said of.
         let blank = Line {
             text: "   ".into(),
-            source: crate::collaborators::LineSource::Written,
+            source: crate::people::LineSource::Written,
         };
-        overlay_collaborators(&mut tree, &[person(Some(blank))], None);
-        overlay_collaborators(&mut tree, &[person(None)], None);
+        place_here(&mut tree, &[person(Some(blank))], None);
+        place_here(&mut tree, &[person(None)], None);
         let row = tree
             .active_workspace()
-            .and_then(|workspace| workspace.collaborators.first())
+            .and_then(|workspace| workspace.present.first())
             .expect("still overlaid");
         assert_eq!(row.status, None, "nothing said of it now");
     }
 
+    /// An agent presence names is software on its row from the first frame: its member key says
+    /// so, never a marker a later frame has to correct.
     #[test]
-    fn collaborators_overlay_marks_agents_and_keeps_existing_rows() {
-        let mut tree = DesktopTree::default();
-        let workspace = tilo_desktop_model::WorkspaceSlot::default();
-        tree.workspaces
-            .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
-        tree.active = workspace;
-        let people = vec![Person {
-            id: "bot".into(),
-            user: None,
-            label: "Scribe".into(),
-            devices: Vec::new(),
-            rgb: (1, 2, 3),
-            agent: true,
-            tab: None,
-            focus_app: None,
-            place: None,
-            status: None,
-            availability: ui::Availability::Available,
-            call: None,
-        }];
-        overlay_collaborators(&mut tree, &people, None);
-        let workspace = tree.active_workspace().expect("a workspace");
-        let bot = workspace
-            .collaborators
-            .iter()
-            .find(|c| c.id == "bot")
-            .expect("overlaid");
-        assert_eq!(bot.role_id.as_deref(), Some("agent"));
-        assert_eq!(
-            bot.cursor_color.as_deref(),
-            Some("#010203"),
-            "the colour everyone here draws them in, as their pointer wears it"
-        );
-        overlay_collaborators(&mut tree, &people, None);
-        assert_eq!(
-            tree.active_workspace().map(|w| w
-                .collaborators
-                .iter()
-                .filter(|c| c.id == "bot")
-                .count()),
-            Some(1)
-        );
-    }
-
-    /// A roster row this page already held is marked as software on every frame: presence says an
-    /// agent is an agent, and a row written before that (or by a host that lists the agent among its
-    /// members) would otherwise wear a person's face — a circle where software wears a square.
-    #[test]
-    fn an_agent_already_on_the_roster_still_wears_the_agent_marker() {
+    fn an_agents_row_is_software() {
         let mut tree = DesktopTree::default();
         let slot = tilo_desktop_model::WorkspaceSlot::default();
-        let mut workspace = tilo_desktop_model::Workspace::new(slot, "Design");
-        workspace
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new("bot", "Scribe"));
-        tree.workspaces.push(workspace);
+        tree.workspaces
+            .push(tilo_desktop_model::Workspace::new(slot, "Design"));
         tree.active = slot;
         let people = vec![Person {
             id: "bot".into(),
             user: None,
+            member: Some("agent:scribe".into()),
             label: "Scribe".into(),
             devices: Vec::new(),
             rgb: (1, 2, 3),
@@ -2880,23 +2888,16 @@ mod tests {
             availability: ui::Availability::Available,
             call: None,
         }];
-        overlay_collaborators(&mut tree, &people, None);
+        place_here(&mut tree, &people, None);
         let workspace = tree.active_workspace().expect("a workspace");
-        let bot = workspace
-            .collaborators
+        let agent = workspace
+            .members
             .iter()
-            .find(|c| c.id == "bot")
-            .expect("the row it held");
-        assert_eq!(
-            bot.role_id.as_deref(),
-            Some(crate::collaborators::AGENT_ROLE_MARKER),
-            "an agent's face is software's, whichever frame wrote its row"
-        );
-        assert!(crate::collaborators::collaborator_is_agent(
-            Some(workspace),
-            bot,
-            u64::MAX
-        ));
+            .find(|member| member.id.key() == "agent:scribe")
+            .expect("the agent is on the member list");
+        assert!(!agent.id.is_person(), "an agent's row is software's");
+        let rows = crate::people::roster_rows(&tree, "me-root");
+        assert!(rows[0].is_agent, "the agent's face is software's");
     }
 
     fn finished_agent(publisher: &str) -> AgentFinished {

@@ -346,7 +346,7 @@ fn workspace_control_event_bytes(
 }
 
 fn context_event_bytes(
-    collaborators: &[Member],
+    members: &[Member],
     collaborator_capacity: usize,
     permissions: &[String],
     permission_capacity: usize,
@@ -354,7 +354,7 @@ fn context_event_bytes(
     meter: &mut ByteMeter,
 ) {
     meter.add_product(collaborator_capacity, std::mem::size_of::<Member>());
-    for collaborator in collaborators {
+    for collaborator in members {
         meter.string_capacity(&collaborator.id.key());
         meter.string_capacity(&collaborator.name);
     }
@@ -452,13 +452,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "CommittedDocument"
         }
         CollabEvent::Context {
-            collaborators,
+            members,
             permissions,
             apps,
         } => {
             context_event_bytes(
-                collaborators,
-                collaborators.capacity(),
+                members,
+                members.capacity(),
                 permissions,
                 permissions.capacity(),
                 apps,

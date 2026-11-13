@@ -15,7 +15,7 @@
 //! [`status_line`] is the one reading of that; the People popover uses it
 //! too.
 
-use crate::collaborators::{LineSource, RosterRow, RosterStatus};
+use crate::people::{LineSource, RosterRow, RosterStatus};
 use tilo_desktop_model::DesktopTree;
 use ui::presence::PresenceCtx;
 use ui::time::SystemTime;
@@ -81,12 +81,10 @@ pub fn members(
 /// person is doing.
 #[must_use]
 pub fn rows(desktop: &DesktopTree, local_user: &str, own_id: &str) -> Vec<RosterRow> {
-    let mut rows: Vec<RosterRow> =
-        crate::collaborators::collaborator_roster_rows(desktop, local_user)
-            .into_iter()
-            .filter(|row| !row.invited && !row.own_device && row.id != own_id)
-            .filter(|row| row.id != local_user)
-            .collect();
+    let mut rows: Vec<RosterRow> = crate::people::roster_rows(desktop, local_user)
+        .into_iter()
+        .filter(|row| row.id != own_id && row.id != local_user)
+        .collect();
     rows.sort_by_key(|row| row.is_agent);
     rows
 }
@@ -146,11 +144,10 @@ pub fn presence_id(
 pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<Place> {
     let workspace = desktop.active_workspace()?;
     let tab_id = workspace
-        .collaborators
+        .present
         .iter()
-        .chain(&desktop.collaborators)
-        .find(|participant| participant.id == participant_id)?
-        .active_tab?;
+        .find(|here| here.device == participant_id)?
+        .tab?;
     workspace.strips.iter().enumerate().find_map(|(at, strip)| {
         let tab = strip
             .window_groups

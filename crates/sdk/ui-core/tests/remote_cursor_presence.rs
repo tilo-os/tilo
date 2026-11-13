@@ -67,7 +67,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::Context {
-            collaborators: vec![Member::of_software(
+            members: vec![Member::of_software(
                 MemberId::agent("release"),
                 "Release assistant",
                 None,

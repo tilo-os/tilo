@@ -208,7 +208,7 @@ impl Shared {
             // The bar's faces, the launcher's Happening now header and a press on someone in a
             // banner all open who is here: one surface at a time, so what stood over the desk goes
             // down.
-            ChromeIntent::ToggleCollaborators => {
+            ChromeIntent::TogglePeople => {
                 if !self.people.borrow().is_open() {
                     self.surfaces.clear_shell();
                     self.surfaces.clear_panel();

@@ -4766,7 +4766,7 @@ async fn spawn_context_stream(
                 // before delivering the new public context. Presentation changes
                 // alone must not cause a private contacts refresh.
                 let mut people: Vec<_> = context
-                    .collaborators
+                    .members
                     .iter()
                     .map(|person| (person.id.clone(), !person.id.is_person(), person.is_self))
                     .collect();
@@ -4779,7 +4779,7 @@ async fn spawn_context_stream(
                 }
                 if !tx
                     .send_durable(CollabEvent::Context {
-                        collaborators: context.collaborators,
+                        members: context.members,
                         permissions: context.permissions,
                         apps: context.apps,
                     })
@@ -4792,7 +4792,7 @@ async fn spawn_context_stream(
             // that source must withdraw it rather than retain stale people.
             let _ = tx
                 .send_durable(CollabEvent::Context {
-                    collaborators: Vec::new(),
+                    members: Vec::new(),
                     permissions: Vec::new(),
                     apps: Vec::new(),
                 })

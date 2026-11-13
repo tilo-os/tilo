@@ -63,7 +63,6 @@ fn sample_chrome() -> TopBarChrome {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -611,7 +610,6 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -660,7 +658,6 @@ fn pressing_the_pill_expands_the_activity_it_names() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -706,7 +703,6 @@ fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -800,7 +796,6 @@ fn two_workspace_tree() -> DesktopTree {
         active,
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     }
 }
@@ -950,7 +945,7 @@ fn an_applications_tray_icon_is_a_named_control_the_keyboard_reaches() {
 #[test]
 fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
     let mut bar = sample_chrome();
-    bar.collaborator_initials.push('A');
+    bar.face_initials.push('A');
     bar.media_indicator_rect = Rect::new(1120.0, 8.0, 1152.0, 40.0);
     bar.set_focus(true);
 
@@ -992,7 +987,7 @@ fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
     assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
     assert_eq!(
         bar.focused_control.as_deref(),
-        Some(TopBarChrome::CONTROL_COLLABORATORS)
+        Some(TopBarChrome::CONTROL_PEOPLE)
     );
 }
 
@@ -1419,13 +1414,10 @@ fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
-    tree.workspaces[0]
-        .collaborators
-        .push(tilo_desktop_model::Collaborator::new("alice", "Alice"));
+    tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("alice", "Alice"));
     let mut bar = TopBarChrome::from_tree(&tree);
     let theme = Theme::default().with_text_scale(1.5);
     lay_out_and_draw_with_theme(&mut bar, 800.0, &theme);
@@ -1499,7 +1491,6 @@ fn a_narrow_bar_centres_its_pill_on_the_reading_it_shows() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -1539,7 +1530,6 @@ fn new_activity_temporarily_shows_over_the_time() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -1608,7 +1598,6 @@ fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -1791,7 +1780,6 @@ fn clicking_a_person_opens_people_not_history() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -1804,7 +1792,7 @@ fn clicking_a_person_opens_people_not_history() {
     let mut handled = false;
     bar.handle_left_click(&mut handled);
     assert!(handled);
-    assert!(chrome.borrow().overlays.collaborators);
+    assert!(chrome.borrow().overlays.people);
     assert!(
         !chrome.borrow().overlays.workspace_activity,
         "a presence face represents People; activity has its own explicit route"
@@ -1845,13 +1833,11 @@ fn live_share_is_persistent_visible_named_and_accessible() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
-    tree.workspaces[0]
-        .collaborators
-        .push(tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7));
+    tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
+    tree.workspaces[0].present[0].session = Some(7);
     tree.workspaces[0]
         .strips
         .push(shared_windows(&[(42, "Budget")]));
@@ -1872,7 +1858,7 @@ fn live_share_is_persistent_visible_named_and_accessible() {
     );
     let node = bar.accessibility().expect("topbar semantics");
     assert!(node.children.iter().any(|child| {
-        child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
+        child.action_target.as_deref() == Some(TopBarChrome::CONTROL_PEOPLE)
             && child
                 .name
                 .as_deref()
@@ -1888,10 +1874,12 @@ fn disclosure_attributes_each_surface_to_its_actual_viewer() {
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
-    tree.workspaces[0].collaborators.extend([
-        tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7),
-        tilo_desktop_model::Collaborator::new("lin", "Lin").with_session(9),
+    tree.workspaces[0].members_here([
+        tilo_desktop_model::Member::keyed("ada", "Ada"),
+        tilo_desktop_model::Member::keyed("lin", "Lin"),
     ]);
+    tree.workspaces[0].present[0].session = Some(7);
+    tree.workspaces[0].present[1].session = Some(9);
     tree.workspaces[0].strips.push(shared_windows(&[
         (42, "Notes"),
         (43, "Budget"),
@@ -1916,7 +1904,7 @@ fn disclosure_attributes_each_surface_to_its_actual_viewer() {
         },
     ]);
     let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-    let disclosure = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+    let disclosure = bar.control_name(TopBarChrome::CONTROL_PEOPLE);
     assert!(
         disclosure.contains("Ada (person): can control Slides; view only Notes"),
         "{disclosure}"
@@ -1948,9 +1936,11 @@ fn agent_viewer_is_never_described_as_a_person() {
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person("owner"),
     ));
-    workspace.collaborators.push(
-        tilo_desktop_model::Collaborator::new("scribe", "Release Notes Agent").with_session(9),
-    );
+    workspace.member_here(tilo_desktop_model::Member::keyed(
+        "agent:scribe",
+        "Release Notes Agent",
+    ));
+    workspace.present[0].session = Some(9);
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     chrome
         .borrow_mut()
@@ -1961,7 +1951,7 @@ fn agent_viewer_is_never_described_as_a_person() {
         }]);
     let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
 
-    let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+    let name = bar.control_name(TopBarChrome::CONTROL_PEOPLE);
     assert!(
         name.contains("Release Notes Agent (agent): view only a window"),
         "{name}"
@@ -1989,9 +1979,8 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person("owner"),
     ));
-    shared
-        .collaborators
-        .push(tilo_desktop_model::Collaborator::new("scribe", "scribe").with_session(9));
+    shared.member_here(tilo_desktop_model::Member::keyed("agent:scribe", "scribe"));
+    shared.present[0].session = Some(9);
     let mut strip = Strip::new(tilo_desktop_model::StripId(2), "Main");
     let tab_id = 42;
     strip.window_groups.push(WindowGroup {
@@ -2023,7 +2012,7 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
             can_control: true,
         }]);
     let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-    let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+    let name = bar.control_name(TopBarChrome::CONTROL_PEOPLE);
     assert!(
         name.contains("scribe (agent): can control Draft in Private"),
         "{name}"
@@ -2042,7 +2031,6 @@ fn unread_activity_paints_nothing_on_the_people_control() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -2116,13 +2104,10 @@ fn avatar_stack_has_breathing_room_to_tray_pill() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
-    tree.workspaces[0]
-        .collaborators
-        .push(tilo_desktop_model::Collaborator::new("alice", "Alice"));
+    tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("alice", "Alice"));
 
     let mut bar = TopBarChrome::from_tree(&tree);
     let theme = Theme::default();
@@ -2176,7 +2161,6 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -2216,7 +2200,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
     bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     assert!(
-        bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
+        bar.face_initials().is_empty() && bar.face_overflow() == 0,
         "this test is about the empty case and the roster is not empty",
     );
     assert!(
@@ -2231,7 +2215,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
     assert!(handled);
     assert_eq!(chrome.borrow().intents.last(), Some(&ChromeIntent::Invite));
     assert!(
-        !chrome.borrow().overlays.collaborators,
+        !chrome.borrow().overlays.people,
         "inviting is one step: the list stays closed"
     );
 
@@ -2309,7 +2293,7 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     chrome.borrow_mut().watching = 2;
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     paint(&mut bar);
-    assert!(bar.collaborator_initials().is_empty());
+    assert!(bar.face_initials().is_empty());
     assert!(bar.people_button_rect.height() >= BAR_CONTROL_PX);
     let node = bar.accessibility().expect("topbar semantics");
     assert!(
@@ -2328,23 +2312,23 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     bar.last_cursor = Some(bar.people_button_rect.center());
     let mut handled = false;
     bar.handle_left_click(&mut handled);
-    assert!(handled && chrome.borrow().overlays.collaborators);
+    assert!(handled && chrome.borrow().overlays.people);
 
-    // A hosted roster marks software by role id; it draws as an agent.
-    let mut agent = tilo_desktop_model::Collaborator::new("scribe", "Scribe");
-    agent.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
-    tree.workspaces[0].collaborators =
-        vec![agent, tilo_desktop_model::Collaborator::new("ada", "Ada")];
+    // An agent's member key says it is software: it draws as an agent.
+    tree.workspaces[0].members_here([
+        tilo_desktop_model::Member::keyed("agent:scribe", "Scribe"),
+        tilo_desktop_model::Member::keyed("ada", "Ada"),
+    ]);
     let mut bar = TopBarChrome::from_tree(&tree);
     bar.sync_from_tree(&tree);
-    assert_eq!(bar.collaborator_agents, vec![true, false]);
+    assert_eq!(bar.face_agents, vec![true, false]);
     // Each face is named for a reader, an agent as one.
     paint(&mut bar);
     let node = bar.accessibility().expect("topbar semantics");
     let people = node
         .children
         .iter()
-        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS))
+        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_PEOPLE))
         .expect("the people control");
     let faces: Vec<_> = people
         .children
@@ -2361,10 +2345,10 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
 #[test]
 fn a_phone_bar_keeps_its_clock_band_to_itself() {
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo Community");
-    workspace.collaborators = vec![
-        tilo_desktop_model::Collaborator::new("scribe", "Claude Code"),
-        tilo_desktop_model::Collaborator::new("ada", "Lively Heron"),
-    ];
+    workspace.members_here(vec![
+        tilo_desktop_model::Member::keyed("agent:scribe", "Claude Code"),
+        tilo_desktop_model::Member::keyed("ada", "Lively Heron"),
+    ]);
     let tree = DesktopTree {
         active: workspace.slot,
         workspaces: vec![workspace],
@@ -2393,19 +2377,19 @@ fn a_phone_bar_keeps_its_clock_band_to_itself() {
     );
 }
 
-/// A face on the bar wears the colour the workspace settled for that participant — the one its
-/// shell announced, which its People row, its card and its marks in every app wear too — and the
-/// one its kind's id gives it where nothing was announced. The bar picks no colour of its own.
+/// A face on the bar wears the colour its member row stores: the one its own shell announced, worn
+/// by its People row, its card and its marks in every app too, and the one its kind's key gives it
+/// where nothing was announced. The bar works out no colour of its own.
 #[test]
-fn an_agents_face_wears_the_colour_the_workspace_settled() {
+fn an_agents_face_wears_the_colour_its_member_row_stores() {
     let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
-    let announced = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
-    let faces = |colour: Option<&str>| {
+    let faces = |colour: Option<ui::tokens::PresenceHue>| {
         let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo");
-        let mut row = tilo_desktop_model::Collaborator::new("agent:helper@host", "Claude Code #1");
-        row.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
-        row.cursor_color = colour.map(str::to_owned);
-        workspace.collaborators = vec![row];
+        let mut row = tilo_desktop_model::Member::keyed("agent:helper@host", "Claude Code #1");
+        if let Some(colour) = colour {
+            row.colour = colour;
+        }
+        workspace.member_here(row);
         let tree = DesktopTree {
             active: workspace.slot,
             workspaces: vec![workspace],
@@ -2413,19 +2397,16 @@ fn an_agents_face_wears_the_colour_the_workspace_settled() {
         };
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
-        (
-            bar.collaborator_agents.clone(),
-            bar.collaborator_colors.clone(),
-        )
+        (bar.face_agents.clone(), bar.face_colors.clone())
     };
-    let (agents, announced_colours) = faces(Some(&announced));
+    let (agents, announced) = faces(Some(ui::tokens::PresenceHue::Violet));
     assert_eq!(agents, vec![true]);
     assert_eq!(
-        announced_colours,
+        announced,
         vec![Color::from_rgb8(violet.0, violet.1, violet.2)],
         "the face wears the colour its own shell announced"
     );
-    // Nothing announced: the colour its kind's id wears, as every app paints it.
+    // Nothing announced: the colour its kind's key wears, as every app paints it.
     let (r, g, b) = ui::presence::participant_color("agent:helper@host", true, None);
     assert_eq!(
         faces(None).1,
@@ -2441,7 +2422,6 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
     tree.active = tree.workspaces[0].slot;
@@ -2502,73 +2482,42 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
 /// Both states asserted together, since a stack that's empty (or full) in both cases would pass
 /// only half.
 #[test]
-fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
-    let empty = DesktopTree {
+fn a_member_here_in_this_workspace_gets_an_avatar() {
+    let mut empty = DesktopTree {
         workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
         active: WorkspaceSlot::from(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
-        collaborators: Vec::new(),
         ..Default::default()
     };
-    let mut empty = empty;
     empty.active = empty.workspaces[0].slot;
     let bar = TopBarChrome::from_tree(&empty);
     assert!(
-        bar.collaborator_initials().is_empty(),
+        bar.face_initials().is_empty(),
         "a workspace nobody else is in has nobody to show",
     );
 
+    // A member the workspace lists who is not here is no face: presence says who is here.
     let mut elsewhere = empty.clone();
-    elsewhere.collaborators = vec![tilo_desktop_model::Collaborator::new("alice", "Alice")];
+    elsewhere.workspaces[0].list_member(tilo_desktop_model::Member::keyed("alice", "Alice"));
     let bar = TopBarChrome::from_tree(&elsewhere);
     assert!(
-        bar.collaborator_initials().is_empty(),
-        "session-wide presence must not leak somebody from another workspace into this bar",
+        bar.face_initials().is_empty(),
+        "a member nobody here speaks for is not someone here",
     );
 
     let mut joined = empty.clone();
-    joined.workspaces[0].collaborators = vec![tilo_desktop_model::Collaborator::new(
+    joined.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
         "peer@11895642303397647149",
         "Bob",
-    )];
+    ));
     let bar = TopBarChrome::from_tree(&joined);
     assert_eq!(
-        bar.collaborator_initials(),
+        bar.face_initials(),
         &['B'],
         "the bar must show somebody present in this workspace",
     );
-    assert_eq!(
-        bar.collaborator_overflow(),
-        0,
-        "one peer is not an overflow",
-    );
-
-    // Invited but not redeemed: an avatar here would falsely claim they are in the workspace.
-    let mut asked = empty.clone();
-    asked.workspaces[0].collaborators = vec![
-        tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "Bob").as_invited(),
-    ];
-    let bar = TopBarChrome::from_tree(&asked);
-    assert!(
-        bar.collaborator_initials().is_empty(),
-        "somebody invited and not yet arrived is not an avatar in the \
-         cluster: {:?}",
-        bar.collaborator_initials(),
-    );
-    assert_eq!(
-        bar.collaborator_overflow(),
-        0,
-        "and does not show up in the +N chip either",
-    );
-
-    // Another device of this person is theirs, not a face in the stack.
-    let mut own = empty;
-    own.workspaces[0].collaborators =
-        vec![tilo_desktop_model::Collaborator::new("peer@7", "Orange Pi").as_own_device()];
-    let bar = TopBarChrome::from_tree(&own);
-    assert!(bar.collaborator_initials().is_empty());
-    assert_eq!(bar.collaborator_overflow(), 0);
+    assert_eq!(bar.face_overflow(), 0, "one peer is not an overflow",);
 }
 
 /// Each reading the machine has draws its own glyph in the status cluster;
@@ -2694,12 +2643,10 @@ fn a_control_hint_stands_in_the_room_beside_the_clock() {
     };
     tree.active = tree.workspaces[0].slot;
     for person in 0..6 {
-        tree.workspaces[0]
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new(
-                format!("person-{person}"),
-                format!("Person {person}"),
-            ));
+        tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
+            &format!("person-{person}"),
+            format!("Person {person}"),
+        ));
     }
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     chrome.borrow_mut().status = crate::chrome::SystemStatus {

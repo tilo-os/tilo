@@ -938,12 +938,8 @@ impl App {
             CollabEvent::LocalDocumentActionReported { request_id, result } => {
                 self.observe_local_input_capture(request_id, result);
             }
-            CollabEvent::Context {
-                collaborators,
-                apps,
-                ..
-            } => {
-                self.apply_collab_context(collaborators);
+            CollabEvent::Context { members, apps, .. } => {
+                self.apply_collab_context(members);
                 // What each app installed here is called: the same feed names the people in it.
                 crate::history_source::set_installed_apps(apps);
             }
@@ -1266,15 +1262,15 @@ impl App {
     /// The self row carries the address others use for this participant (so
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
-    fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Member>) {
-        let current = collaborators
+    fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
+        let current = members
             .iter()
             .map(|participant| crate::permissions::UserId(participant.id.key()))
             .collect::<std::collections::HashSet<_>>();
         for departed in self.collaboration.context_participants.difference(&current) {
             self.presence_ctx.unregister_peer(&departed.0);
         }
-        for participant in &collaborators {
+        for participant in &members {
             self.presence_ctx.set_participant_kind(
                 crate::permissions::UserId(participant.id.key()),
                 !participant.id.is_person(),
@@ -1284,7 +1280,7 @@ impl App {
                 participant.joined_at,
             );
         }
-        if let Some(me) = collaborators.iter().find(|c| c.is_self) {
+        if let Some(me) = members.iter().find(|c| c.is_self) {
             self.presence_ctx
                 .set_self_participant(crate::permissions::UserId(me.id.key()), me.name.clone());
             self.presence_ctx
@@ -1294,7 +1290,7 @@ impl App {
         }
         // Filtered to others: letting the self row through would put the
         // local user in every list built from presence.
-        for c in collaborators.into_iter().filter(|c| !c.is_self) {
+        for c in members.into_iter().filter(|c| !c.is_self) {
             let user = crate::permissions::UserId(c.id.key());
             // Relabel only — the roster doesn't say where a peer's pointer
             // is, so it must not mint one at the origin.

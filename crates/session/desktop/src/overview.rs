@@ -11,11 +11,10 @@
 //! settings name what a share covers, an app's artwork) comes through
 //! [`OverviewHost`].
 
+use collab_types::MemberId;
 use collab_types::caps::{Access, Effect, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
-use tilo_desktop_model::{
-    Collaborator, DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceSlot,
-};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceSlot};
 use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
@@ -218,19 +217,12 @@ impl WorkspaceCard {
 
 /// Falls back to the principal itself rather than a placeholder — a row labelled "Unknown" tells
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
-fn display_name(id: &UserId, ws: &Workspace, tree: &DesktopTree) -> String {
-    known_collaborator(id, ws, tree).map_or_else(|| id.clone(), |c| c.name.clone())
-}
-
-fn known_collaborator<'a>(
-    id: &UserId,
-    ws: &'a Workspace,
-    tree: &'a DesktopTree,
-) -> Option<&'a Collaborator> {
-    ws.collaborators
+fn display_name(id: &UserId, ws: &Workspace, _tree: &DesktopTree) -> String {
+    let wanted = MemberId::person(id.clone());
+    ws.members
         .iter()
-        .chain(tree.collaborators.iter())
-        .find(|c| &c.id == id)
+        .find(|member| member.id == wanted)
+        .map_or_else(|| id.clone(), |member| member.name.clone())
 }
 
 /// Everyone who may be in `ws` at unix time `now` , and whether they are here now.
@@ -255,7 +247,10 @@ pub fn workspace_people(
                 clippy::suspicious_operation_groupings,
                 reason = "id == me and ws.id == tree.active are independent identity checks, not a swapped field pair"
             )]
-            let present = ws.collaborators.iter().any(|c| c.id == id)
+            let present = ws
+                .present
+                .iter()
+                .any(|here| here.member == MemberId::person(id.clone()))
                 || (id == me && ws.slot == tree.active);
             WorkspacePerson {
                 name: display_name(&id, ws, tree),
@@ -402,11 +397,10 @@ fn overview_strips(
                                     .filter(|person| {
                                         !person.is_you
                                             && person.present
-                                            && ws
-                                                .collaborators
-                                                .iter()
-                                                .find(|collaborator| collaborator.id == person.id)
-                                                .is_some_and(|c| c.active_tab == Some(tab.id))
+                                            && ws.present.iter().any(|here| {
+                                                here.member == MemberId::person(person.id.clone())
+                                                    && here.tab == Some(tab.id)
+                                            })
                                     })
                                     .cloned()
                                     .collect(),
@@ -676,7 +670,7 @@ mod workspace_tests {
         fn a_member_makes_the_workspace_read_as_shared_with_them() {
             let mut w = ws("Design");
             w.admit("ada", collab_types::Role::Editor);
-            w.collaborators.push(Collaborator::new("ada", "Ada"));
+            w.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
             assert!(!card.is_private());
@@ -797,7 +791,7 @@ mod workspace_tests {
                 w.admit(who, collab_types::Role::Editor);
             }
             // Only Ada actually showed up.
-            w.collaborators.push(Collaborator::new("ada", "Ada"));
+            w.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
             assert_eq!(card.people.len(), 3, "you + two members");
@@ -892,8 +886,12 @@ mod workspace_tests {
             let strip_id = StripId(fresh_id());
             let tab_id = 71;
             w.admit("ada", collab_types::Role::Editor);
-            w.collaborators
-                .push(Collaborator::with_active_tab("ada", "Ada", tab_id));
+            let ada = tilo_desktop_model::Member::keyed("ada", "Ada");
+            w.member_here(ada.clone());
+            w.place_presence(tilo_desktop_model::Present {
+                tab: Some(tab_id),
+                ..tilo_desktop_model::Present::of(ada.id)
+            });
             w.strips = vec![Strip {
                 id: strip_id,
                 name: String::new(),

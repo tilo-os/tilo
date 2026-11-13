@@ -330,7 +330,7 @@ fn hosted_pump_inbound_event_refreshes_remote_document_state() {
     // Remote document bytes enter only with an inbound collaboration event.
     fixture.app.state.doc.put(ROOT, "more", true).unwrap();
     fixture.events.borrow_mut().push(CollabEvent::Context {
-        collaborators: vec![],
+        members: vec![],
         permissions: vec![],
         apps: Vec::new(),
     });

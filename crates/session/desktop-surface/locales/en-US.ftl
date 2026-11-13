@@ -35,7 +35,7 @@ topbar-bell-silenced = { $unread ->
     [one] Notifications silenced, 1 unread
    *[other] Notifications silenced, { $unread } unread
 }
-topbar-show-collaborators = Everyone here
+topbar-show-people = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -43,7 +43,7 @@ topbar-viewer-entry = { $name } ({ $kind ->
         [person] person
        *[session] unidentified session
     }): { $access }
-topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
+topbar-people-visible = Screen visible to { $viewers }. Show who is here
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
 topbar-invite = Invite
@@ -1234,7 +1234,7 @@ so-tilo-chrome-step-strip = Step through the strips
 so-tilo-chrome-stop-desktop-control = Stop the remote control
 so-tilo-chrome-switch-workspace = Switch workspace
 so-tilo-chrome-tilo-menu = Tilo menu
-so-tilo-chrome-toggle-collaborators = Who is here
+so-tilo-chrome-toggle-people = Who is here
 so-tilo-chrome-workspace-menu = Workspace menu
 so-tilo-chrome-workspace-settings = Workspace settings
 so-tilo-desk-choose-search-row = Choose a search result

@@ -39,7 +39,7 @@ desktop:chrome desktop (Desktop)
   stop-desktop-control Stop the remote control
   switch-workspace Switch workspace
   tilo-menu Tilo menu
-  toggle-collaborators Who is here
+  toggle-people Who is here
   workspace-menu Workspace menu
   workspace-settings Workspace settings
 desktop:desk desktop (Windows)
