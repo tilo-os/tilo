@@ -352,7 +352,8 @@ mod tests {
 #[cfg(target_os = "linux")]
 struct Output {
     backend: Backend,
-    /// The panel's size across and down, in logical pixels.
+    /// The panel's size across and down: a headless output's mode in physical pixels (its logical
+    /// size is that over its scale), a nested window's size in the host's logical pixels.
     size: (u16, u16),
     /// The density a headless output draws at.
     headless: HeadlessPanel,
@@ -821,8 +822,14 @@ fn start_session(
         Backend::Drm => Session::drm(options, DisplayConfig::default()),
         Backend::Nested => Session::nested(
             options,
+            // The window's size is in the host's logical pixels, the same apparent size on a
+            // desktop at any scale, and the output draws at the desktop's own scale: the nested
+            // backend reads it from the window (`wp_fractional_scale_v1` or `wl_surface`'s
+            // preferred scale, as the desktop moved it between screens) rather than asking that
+            // desktop's session bus. The shell is as crisp as the panel it shows on.
             &NestedConfig {
                 size,
+                logical: true,
                 ..NestedConfig::default()
             },
         ),

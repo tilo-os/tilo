@@ -57,13 +57,13 @@
 #                      FILE as JSON (also kept as session.json in the runtime
 #                      directory)
 #
-# The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
-# (physical pixels) to choose another size. A headless session renders a
-# 1280x800 output; set TILO_HEADLESS_SIZE=WxH to choose another size, and
-# TILO_HEADLESS_SCALE=S (or TILO_HEADLESS_PANEL_MM=WxH, the panel's physical
-# size, from which the scale is derived) to have it draw at that density —
-# the same the DRM backend takes from its connector, so a HiDPI panel's
-# desktop can be driven and photographed headless.
+# The window opens at 1280x800 logical pixels, which the desktop shows at its own scale (a 2x
+# panel draws it 2560x1600 pixels wide, the session drawn at 2); set TILO_WINIT_SIZE=WxH to
+# choose another size. A headless session renders a 1280x800 output; set TILO_HEADLESS_SIZE=WxH
+# (physical pixels) to choose another size, and TILO_HEADLESS_SCALE=S (or
+# TILO_HEADLESS_PANEL_MM=WxH, the panel's physical size, from which the scale is derived) to
+# have it draw at that density — the same the DRM backend takes from its connector, so a HiDPI
+# panel's desktop can be driven and photographed headless.
 #
 # dist/dev/nested-session-build.sh builds everything with cargo, into
 # target/nested-session. Re-running repackages only apps
@@ -713,18 +713,13 @@ pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=til
     audio.position=[ FL FR ] }' > "$logs/pipewire-null-sink.log" 2>&1 \
     || say "the session's sound has no output to show (see $logs/pipewire-null-sink.log)"
 
-# The default window is 1600x900 physical pixels, which a 2x host shows as
-# 800x450: too small for the task centre, which drops a card that does not
-# fit. Ask for 1280x800 logical at the host's scale (GNOME reports it; others
-# get scale 1) unless the caller chose a size.
+# The window's size is logical, as the desktop lays out its windows: 1280x800 looks the same on a
+# panel at 1 or 2. The session draws at the desktop's own scale, which it reads from its window
+# (fractional scale included), not from this machine's session bus, so the shell is as crisp there
+# as the panel allows. Set TILO_WINIT_SIZE=WxH to choose another size.
+size=${TILO_WINIT_SIZE:-1280x800}
 if ((headless)); then
     export TILO_HEADLESS_SIZE=${TILO_HEADLESS_SIZE:-1280x800}
-elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
-    host_scale=$(busctl --user --json=short call org.gnome.Mutter.DisplayConfig \
-        /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig GetCurrentState \
-        2>/dev/null | jq -r '[.data[2][] | select(.[4]) | .[2]][0] // empty' 2>/dev/null) || true
-    export TILO_WINIT_SIZE=$(awk -v s="${host_scale:-1}" \
-        'BEGIN { if (s + 0 <= 0) s = 1; printf "%dx%d", 1280 * s, 800 * s }')
 fi
 
 # The host desktop reads a Wayland client's namespaces to admit it, which
@@ -746,10 +741,10 @@ if ((headless)); then
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
     say "starting the session headless at ${TILO_HEADLESS_SIZE}${density} (log: $logs/session.log)"
 else
-    backend=(--backend nested)
+    backend=(--backend nested --size "$size")
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
-    say "starting the nested session at ${TILO_WINIT_SIZE} (log: $logs/session.log)"
+    say "starting the nested session at ${size} logical pixels, at the desktop's scale (log: $logs/session.log)"
 fi
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png

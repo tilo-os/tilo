@@ -33,7 +33,9 @@
 # Options:
 #   --no-build    use the binaries already in target/debug
 #   --no-apps     start without the seeded apps, as a bare session does
-#   --size WxH    the headless output's size (default 1280x800)
+#   --size WxH    the headless output's mode in pixels, or a window's size in the host's
+#                 logical pixels (both default 1280x800). A window draws at the desktop's own
+#                 scale, fractional included, and follows it when moved to another screen
 #   --window      show the session in a window on this Wayland desktop, drawn on its GPU
 #   --model-record FILE  give the person this model provider (`tilo-model-gateway
 #                 provision-provider --record` JSON) once the session is up
@@ -484,10 +486,15 @@ if ((window)); then
     [[ -S $host_display ]] || die "host Wayland socket $host_display does not exist"
     # The nested backend reaches the host through a dumpable helper that hands it the
     # connection (dist/dev/nested-session.sh explains why).
-    backend=(--backend nested)
+    #
+    # The window's size is logical, as the desktop lays out its windows, and the session draws at
+    # the desktop's own scale: a laptop panel at 2944x1840 with scale 2 shows a 1280x800 window as
+    # 2560x1600 pixels, the shell drawn at 2 rather than at 1 (and blurry or tiny). Passing
+    # `--size` is what sets it; the session reads the scale from its window, never from the host's
+    # session bus.
+    backend=(--backend nested --size "$size")
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
-    export TILO_WINIT_SIZE=${size/x/x}
-    say "starting the session in a window at $size (log: $log)"
+    say "starting the session in a window at $size logical pixels, at the desktop's scale (log: $log)"
 else
     say "starting the session headless at $size (log: $log)"
 fi
