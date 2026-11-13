@@ -188,6 +188,34 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.put_member(user_public_key, role, administrator, true, key, now)
+    }
+
+    /// Hold `user_public_key` as a member at `role`, an administrator or not,
+    /// whether or not one of their devices has been admitted here yet: a
+    /// workspace's declaration that someone is in it — its owner declared by a
+    /// deployment's operator before they ever join — is governance, so it is
+    /// here before they arrive and stays after a restart.
+    pub(super) fn declare_member(
+        &mut self,
+        user_public_key: [u8; 32],
+        role: Role,
+        administrator: bool,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.put_member(user_public_key, role, administrator, false, key, now)
+    }
+
+    fn put_member(
+        &mut self,
+        user_public_key: [u8; 32],
+        role: Role,
+        administrator: bool,
+        admitted: bool,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;
         if user_public_key == self.core.owner {
             return Err("owner role cannot be changed through member governance".into());
@@ -198,11 +226,14 @@ impl StatePeer {
             .clone()
             .ok_or("workspace governance missing")?;
         let policy = doc.policy();
-        if !policy.identities.values().any(|bytes| {
-            GovernedIdentity::decode(bytes).is_ok_and(|identity| {
-                identity.device_cert.user_public_key == user_public_key && identity.has_admission()
+        if admitted
+            && !policy.identities.values().any(|bytes| {
+                GovernedIdentity::decode(bytes).is_ok_and(|identity| {
+                    identity.device_cert.user_public_key == user_public_key
+                        && identity.has_admission()
+                })
             })
-        }) {
+        {
             return Err("member is absent from governed admission history".into());
         }
         let person = hex::encode(user_public_key);

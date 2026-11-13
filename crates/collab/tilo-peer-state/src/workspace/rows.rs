@@ -36,7 +36,7 @@ pub enum GovernanceRow {
     Membership,
     /// Device rows and the display names beside them.
     Identities,
-    /// The workspace's name and its saved grant sets.
+    /// The workspace's name, its saved grant sets and its door.
     Settings,
     /// The media policy.
     Media,
@@ -108,7 +108,7 @@ impl GovernanceRow {
                 "invitation_parts_v1",
             ],
             Self::Identities => &["peers", "peer_identities_v1"],
-            Self::Settings => &["name", "presets_v1"],
+            Self::Settings => &["name", "presets_v1", "door_v1"],
             Self::Media => &[MEDIA_KEY],
             Self::Versions => &[VERSIONS_KEY],
             Self::Bots => &BOT_KEYS,

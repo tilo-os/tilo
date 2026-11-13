@@ -58,6 +58,9 @@ pub const WORKSPACE_GRANTS_KEY: &str = "grants";
 pub const WORKSPACE_SANDBOX_KEY: &str = "sandbox";
 /// Key a workspace document stores its schedule claims under.
 pub const WORKSPACE_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
+/// Key of the workspace's door: whether a directory lists it, and what its
+/// door admits (JSON bytes, [`tilo_action_policy::DoorPolicy`]).
+pub const WORKSPACE_DOOR_KEY: &str = "door_v1";
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
 /// collaborators saving different shortcuts concurrently merge as two keys.
@@ -198,6 +201,45 @@ pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset>
         .collect();
     crate::grants::sort_presets(&mut presets);
     presets
+}
+
+/// Project the workspace's door: whether a directory lists it, and what it
+/// admits.
+///
+/// # Errors
+///
+/// The document's error when the value cannot be written.
+pub fn project_workspace_door(
+    doc: &mut AutoCommit,
+    door: &tilo_action_policy::DoorPolicy,
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
+
+    let bytes = serde_json::to_vec(door).unwrap_or_default();
+    let held = doc.get(&ROOT, WORKSPACE_DOOR_KEY)?;
+    if let Some((automerge::Value::Scalar(value), _)) = held
+        && value.as_ref() == &ScalarValue::Bytes(bytes.clone())
+    {
+        return Ok(());
+    }
+    doc.put(&ROOT, WORKSPACE_DOOR_KEY, ScalarValue::Bytes(bytes))
+}
+
+/// The door a workspace document records: unlisted, admitting members and
+/// the people it invited, when it records none.
+pub fn workspace_door_of(doc: &AutoCommit) -> tilo_action_policy::DoorPolicy {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    let Some((value, _)) = doc.get(&ROOT, WORKSPACE_DOOR_KEY).ok().flatten() else {
+        return tilo_action_policy::DoorPolicy::default();
+    };
+    let Value::Scalar(scalar) = value else {
+        return tilo_action_policy::DoorPolicy::default();
+    };
+    match scalar.as_ref() {
+        ScalarValue::Bytes(bytes) => serde_json::from_slice(bytes).unwrap_or_default(),
+        _ => tilo_action_policy::DoorPolicy::default(),
+    }
 }
 
 /// Project a workspace's authority: its owner, each member's role and every grant.

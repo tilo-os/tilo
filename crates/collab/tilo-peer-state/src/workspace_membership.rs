@@ -378,6 +378,10 @@ pub enum SettingsChange {
     /// Save a shortcut of the workspace, or remove the one with this id, as its
     /// saver's own device signed it ([`tilo_automation::ShortcutChange`]).
     Shortcuts(tilo_automation::ShortcutChange),
+    /// Settle the workspace's door: whether a directory lists it, whether it
+    /// takes people by invitation only, and how many requests it keeps
+    /// ([`tilo_action_policy::DoorPolicy`]).
+    Door(tilo_action_policy::DoorPolicy),
 }
 
 /// The action an app-action grant is about: `action` on `target_app`'s
@@ -558,6 +562,11 @@ impl WorkspaceMembershipCommand {
                     &action.action,
                 )
                 .map(drop),
+                SettingsChange::Door(door) => door
+                    .clone()
+                    .checked()
+                    .map(drop)
+                    .map_err(|error| error.to_string()),
                 // Each is checked where it is written: a preset and a sandbox
                 // capability against the writer's own grants, and a shortcut
                 // against what the broker offers its saver, held to the proof

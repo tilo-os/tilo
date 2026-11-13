@@ -898,21 +898,52 @@ impl PeerGovernanceMut<'_> {
         self.peer
             .set_member(user_public_key, role.into(), false, key, now)
     }
-    /// Make a governed collaborator an administrator of the workspace: an Editor
-    /// holding every governance action
-    /// ([`tilo_action_policy::roles::administrator_grant`]).
+    /// Hold the person `user_public_key` as a member of the workspace at
+    /// `role`, an administrator or not, before any device of theirs is
+    /// admitted here: someone a deployment's operator names as an owner while
+    /// the workspace waits for them to join. Their device is admitted when it
+    /// joins, and they hold what this record says from then on.
     ///
     /// # Errors
     ///
-    /// As [`Self::set_member_role`].
+    /// Returns an error if the change is not `key`'s device's to make, the
+    /// person is the workspace's own owner, or governance cannot be updated.
+    pub fn declare_member(
+        self,
+        user_public_key: [u8; 32],
+        role: crate::join::MemberRole,
+        administrator: bool,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer
+            .declare_member(user_public_key, role.into(), administrator, key, now)
+    }
+
+    /// Make a person an administrator of the workspace: a member as an Editor,
+    /// holding every governance action
+    /// ([`tilo_action_policy::roles::administrator_grant`]), whether one of
+    /// their devices has joined yet or not. A declaration made before they
+    /// arrive is governance like any other, so it is here when they do and
+    /// after a restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the change is not `key`'s device's to make, the
+    /// person is the workspace's own owner, or governance cannot be updated.
     pub fn set_member_administrator(
         self,
         user_public_key: [u8; 32],
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer
-            .set_member(user_public_key, Role::Editor, true, key, now)
+        self.declare_member(
+            user_public_key,
+            crate::join::MemberRole::Editor,
+            true,
+            key,
+            now,
+        )
     }
     /// Name the admitted person `user_public_key` `name` in the workspace: the
     /// name every reader of [`PeerGovernance::governed_members`] shows for

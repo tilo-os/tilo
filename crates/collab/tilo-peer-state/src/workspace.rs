@@ -405,16 +405,23 @@ fn held_bytes(value: &Value<'_>) -> Vec<u8> {
     }
 }
 
-/// The workspace's settings as stored: its name and its saved grant sets.
+/// The workspace's settings as stored: its name, its saved grant sets and its
+/// door.
 /// Whatever a key holds counts, so a value of another shape than a writer
 /// writes is a change too.
 fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
-    use tilo_desktop_model::projection::{WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY};
+    use tilo_desktop_model::projection::{
+        WORKSPACE_DOOR_KEY, WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY,
+    };
     let Some(doc) = doc else {
         return Vec::new();
     };
     let mut settings = Vec::new();
-    for key in [WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY] {
+    for key in [
+        WORKSPACE_NAME_KEY,
+        WORKSPACE_PRESETS_KEY,
+        WORKSPACE_DOOR_KEY,
+    ] {
         let Some((value, obj)) = doc.get(ROOT, key).ok().flatten() else {
             continue;
         };

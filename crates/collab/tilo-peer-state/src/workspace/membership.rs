@@ -556,9 +556,10 @@ type Writer<'a> = (
     &'a Context<'a>,
 );
 
-/// The workspace's name and saved grant sets, as the batch changes them: the name
-/// a valid one, given by someone who governs the workspace (a Moderator or above,
-/// or one granted its settings); the grant sets by one granted its settings.
+/// The workspace's name and its settings — its saved grant sets and its door —
+/// as the batch changes them: the name a valid one, given by someone who
+/// governs the workspace (a Moderator or above, or one granted its settings);
+/// the settings by one granted its settings.
 fn settings(
     workspace: &str,
     at: &AutoCommit,
@@ -572,8 +573,8 @@ fn settings(
             .into_iter()
             .partition::<Vec<_>, _>(|(key, _)| key == WORKSPACE_NAME_KEY)
     };
-    let (held_name, held_presets) = parts(at);
-    let (name, presets) = parts(after);
+    let (held_name, held_settings) = parts(at);
+    let (name, settings) = parts(after);
     let settles = held
         .check_action(authority, governance::SETTINGS, cx, false)
         .is_ok();
@@ -599,9 +600,9 @@ fn settings(
             .and_then(|name| crate::workspace_membership::valid_workspace_name(name).map(drop))
             .map_err(MembershipRefusal::Malformed)?;
     }
-    if held_presets != presets && !settles {
+    if held_settings != settings && !settles {
         return Err(MembershipRefusal::Refused(
-            "the workspace's grant sets are not the writer's to change".into(),
+            "the workspace's settings are not the writer's to change".into(),
         ));
     }
     Ok(())
