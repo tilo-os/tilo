@@ -1,11 +1,9 @@
 //! The desk as this device keeps it, where the session keeps it: the file under the state
-//! directory, the older desks a device may have here and the notices a person is owed when this
-//! build did not open theirs.
+//! directory, and the notice a person is owed when this build did not open theirs.
 //! What the desk is — its document, the rule that one change of it is one step of a person's, the
 //! undo that takes the step back — is [`tilo_session_core::desk`]'s, written once for every host.
-//! This module is the native host's side of it: [`load`](DeskDoc::load) reads the file (and brings
-//! over what older Tilos kept, [`crate::desk_migration`]), and what is kept is written away from
-//! the frame ([`tilo_durable_writer`]).
+//! This module is the native host's side of it: [`load`](DeskDoc::load) reads the file, and what is
+//! kept is written away from the frame ([`tilo_durable_writer`]).
 //! A desk this build cannot read is never written over: the session starts on an empty one, keeps
 //! nothing, and the person is told where their own desk still is ([`StateNotice`]).
 

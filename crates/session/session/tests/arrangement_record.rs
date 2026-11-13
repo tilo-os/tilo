@@ -577,18 +577,6 @@ fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
             "the arrangement holds the view it shows"
         );
         assert!(held.pinned, "and the pin on it");
-        // The desk's own window carries both now: nothing is kept beside it.
-        let desk = ui::automerge::AutoCommit::load(
-            &std::fs::read(state.join("tilo").join("desk.automerge")).expect("the desk's document"),
-        )
-        .expect("the desk's document reads");
-        assert!(
-            desk.get(ui::automerge::ROOT, "arrangement_marks_v1")
-                .ok()
-                .flatten()
-                .is_none(),
-            "the view and the pin are the window's own"
-        );
         window
     };
 
